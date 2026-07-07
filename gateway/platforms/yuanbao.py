@@ -1650,7 +1650,7 @@ class AutoSetHomeMiddleware(InboundMiddleware):
             if _should_set:
                 try:
                     from hermes_constants import get_hermes_home
-                    from utils import atomic_yaml_write
+                    from hermes_cli.config import atomic_config_write
                     import yaml
 
                     _home = get_hermes_home()
@@ -1660,7 +1660,7 @@ class AutoSetHomeMiddleware(InboundMiddleware):
                         with open(config_path, encoding="utf-8") as f:
                             user_config = yaml.safe_load(f) or {}
                     user_config["YUANBAO_HOME_CHANNEL"] = ctx.chat_id
-                    atomic_yaml_write(config_path, user_config)
+                    atomic_config_write(config_path, user_config)
                     os.environ["YUANBAO_HOME_CHANNEL"] = str(ctx.chat_id)
                     logger.info(
                         "[%s] Auto-sethome: designated %s (%s) as Yuanbao home channel",
@@ -2618,6 +2618,27 @@ class MediaResolveMiddleware(InboundMiddleware):
                 cls._resource_cache.pop(k, None)
         cls._resource_cache[resource_id] = (local_path, mime, time.time())
 
+    @classmethod
+    def _append_cached_resource(
+        cls,
+        adapter,
+        resource_id: str,
+        media_paths: List[str],
+        mimes: List[str],
+    ) -> bool:
+        """Append a cached resource to output lists when available."""
+        hit = cls._get_cached_resource(resource_id)
+        if hit is None:
+            return False
+        local_path, mime = hit
+        logger.debug(
+            "[%s] resource cache hit: rid=%s path=%s",
+            adapter.name, resource_id, local_path,
+        )
+        media_paths.append(local_path)
+        mimes.append(mime)
+        return True
+
     @staticmethod
     def _guess_image_ext_from_url(url: str) -> str:
         """Guess image extension from URL path."""
@@ -2805,6 +2826,8 @@ class MediaResolveMiddleware(InboundMiddleware):
 
             # Extract resourceId from the placeholder URL for cache dedup.
             rid = ExtractContentMiddleware._parse_resource_id(url)
+            if rid and cls._append_cached_resource(adapter, rid, media_urls, media_types):
+                continue
 
             try:
                 fetch_url = await cls._resolve_download_url(adapter, url)
@@ -2845,6 +2868,8 @@ class MediaResolveMiddleware(InboundMiddleware):
         mimes: List[str] = []
         for rid, kind, filename in refs:
             if kind not in _RESOLVABLE_MEDIA_KINDS:
+                continue
+            if cls._append_cached_resource(adapter, rid, media_paths, mimes):
                 continue
             try:
                 fresh_url = await cls._fetch_resource_url(adapter, rid)

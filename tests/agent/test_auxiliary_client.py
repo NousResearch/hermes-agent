@@ -168,6 +168,112 @@ class TestResolveTaskProviderModel:
         assert api_key == "sk-test"
         assert api_mode is None
 
+    def test_explicit_provider_adopts_configured_task_endpoint(self):
+        """Explicit provider matching the configured one must not bypass
+        auxiliary.<task>.base_url/api_key (#58515)."""
+        task_config = {
+            "provider": "custom",
+            "model": "meta/llama-3.2-11b-vision-instruct",
+            "base_url": "https://integrate.api.nvidia.com/v1",
+            "api_key": "nvapi-secret",
+        }
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
+            resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+                task="vision",
+                provider="custom",
+                model="meta/llama-3.2-11b-vision-instruct",
+            )
+
+        assert resolved_provider == "custom"
+        assert base_url == "https://integrate.api.nvidia.com/v1"
+        assert api_key == "nvapi-secret"
+        assert model == "meta/llama-3.2-11b-vision-instruct"
+        assert api_mode is None
+
+    def test_explicit_provider_adopts_endpoint_when_config_names_no_provider(self):
+        task_config = {
+            "base_url": "https://nim.example/v1",
+            "api_key": "cfg-key",
+        }
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
+            resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+                task="vision",
+                provider="custom",
+            )
+
+        assert resolved_provider == "custom"
+        assert base_url == "https://nim.example/v1"
+        assert api_key == "cfg-key"
+
+    def test_explicit_first_class_provider_with_matching_config_keeps_identity(self):
+        task_config = {
+            "provider": "anthropic",
+            "base_url": "https://anthropic-proxy.example/v1",
+            "api_key": "cfg-key",
+        }
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
+            resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+                task="compression",
+                provider="anthropic",
+            )
+
+        assert resolved_provider == "anthropic"
+        assert base_url == "https://anthropic-proxy.example/v1"
+        assert api_key == "cfg-key"
+
+    def test_explicit_auto_provider_keeps_auto_resolution(self):
+        """provider="auto" is a sentinel for "inherit / auto-detect" and must
+        not adopt the configured endpoint — the auto chain owns resolution."""
+        task_config = {
+            "base_url": "https://nim.example/v1",
+            "api_key": "cfg-key",
+        }
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
+            resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+                task="vision",
+                provider="auto",
+            )
+
+        assert resolved_provider == "auto"
+        assert base_url is None
+        assert api_key is None
+
+    def test_explicit_provider_differing_from_config_ignores_config_endpoint(self):
+        """A caller forcing a different provider keeps full explicit-arg
+        priority — the configured endpoint belongs to cfg_provider only."""
+        task_config = {
+            "provider": "custom",
+            "base_url": "https://nim.example/v1",
+            "api_key": "cfg-key",
+        }
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
+            resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+                task="vision",
+                provider="nous",
+            )
+
+        assert resolved_provider == "nous"
+        assert base_url is None
+        assert api_key is None
+
+    def test_explicit_provider_and_base_url_still_win_over_config(self):
+        task_config = {
+            "provider": "custom",
+            "base_url": "https://configured.example/v1",
+            "api_key": "cfg-key",
+        }
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
+            resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+                task="vision",
+                provider="custom",
+                base_url="https://explicit.example/v1",
+                api_key="explicit-key",
+            )
+
+        assert resolved_provider == "custom"
+        assert base_url == "https://explicit.example/v1"
+        assert api_key == "explicit-key"
+
 
 class TestBuildCallKwargsMaxTokens:
     """_build_call_kwargs should not cap output by default (#34530).
@@ -2053,6 +2159,136 @@ class TestCallLlmPaymentFallback:
         mock_fb.assert_not_called()
 
 
+class TestStaleFallbackCandidateSkip:
+    """A fallback candidate with a stale credential must not abort the task.
+
+    Live case (mattalachia debug dump, Jul 2026): Codex compression timed out,
+    the aux chain fell back to Anthropic using an expired ANTHROPIC_TOKEN, and
+    the resulting 401 aborted compression with a 60s cooldown — five times in
+    one session — even though refreshing or skipping the candidate would have
+    let compression proceed.
+    """
+
+    def _timeout_err(self):
+        # Class name carries "Timeout" — matches _is_connection_error's
+        # type-name detection, like the real Codex stream-deadline error.
+        class _AuxStreamTimeoutError(Exception):
+            pass
+        return _AuxStreamTimeoutError(
+            "Codex auxiliary Responses stream exceeded 120.0s total timeout")
+
+    def test_stale_anthropic_fallback_refreshes_and_retries(self, monkeypatch):
+        """401 from the fallback candidate → refresh its creds → retry succeeds."""
+        primary_client = MagicMock()
+        primary_client.base_url = "https://chatgpt.com/backend-api/codex"
+        primary_client.chat.completions.create.side_effect = self._timeout_err()
+
+        stale_fb = MagicMock()
+        stale_fb.base_url = "https://api.anthropic.com"
+        stale_fb.chat.completions.create.side_effect = _AuxAuth401("Invalid bearer token")
+
+        fresh_fb = MagicMock()
+        fresh_fb.base_url = "https://api.anthropic.com"
+        fresh_fb.chat.completions.create.return_value = _DummyResponse("fresh-fallback")
+
+        def _cached_client(provider, model=None, **kw):
+            if provider == "anthropic":
+                return (fresh_fb, "claude-haiku-4-5-20251001")
+            return (primary_client, "gpt-5.5")
+
+        with patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._get_cached_client", side_effect=_cached_client), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(stale_fb, "claude-haiku-4-5-20251001", "anthropic")), \
+             patch("agent.auxiliary_client._refresh_provider_credentials",
+                   return_value=True) as mock_refresh:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert result.choices[0].message.content == "fresh-fallback"
+        mock_refresh.assert_called_once_with("anthropic")
+        assert stale_fb.chat.completions.create.call_count == 1
+        assert fresh_fb.chat.completions.create.call_count == 1
+
+    def test_unrefreshable_stale_candidate_is_skipped_to_next(self, monkeypatch):
+        """Refresh fails (expired setup token) → candidate quarantined, chain
+        walked again, next candidate serves the request."""
+        primary_client = MagicMock()
+        primary_client.base_url = "https://chatgpt.com/backend-api/codex"
+        primary_client.chat.completions.create.side_effect = self._timeout_err()
+
+        stale_fb = MagicMock()
+        stale_fb.base_url = "https://api.anthropic.com"
+        stale_fb.chat.completions.create.side_effect = _AuxAuth401("Invalid bearer token")
+
+        healthy_fb = MagicMock()
+        healthy_fb.base_url = "https://openrouter.ai/api/v1"
+        healthy_fb.chat.completions.create.return_value = _DummyResponse("openrouter-serves")
+
+        fb_walks = [
+            (stale_fb, "claude-haiku-4-5-20251001", "anthropic"),
+            (healthy_fb, "fallback-model", "openrouter"),
+        ]
+
+        with patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   side_effect=fb_walks) as mock_fb, \
+             patch("agent.auxiliary_client._refresh_provider_credentials",
+                   return_value=False), \
+             patch("agent.auxiliary_client._mark_provider_unhealthy") as mock_mark:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert result.choices[0].message.content == "openrouter-serves"
+        assert mock_fb.call_count == 2
+        assert mock_fb.call_args_list[1].kwargs.get("reason") == "stale fallback credential"
+        mock_mark.assert_called_once_with("anthropic")
+        assert stale_fb.chat.completions.create.call_count == 1
+        assert healthy_fb.chat.completions.create.call_count == 1
+
+    def test_non_auth_fallback_error_still_raises(self, monkeypatch):
+        """A non-auth error from the fallback candidate propagates unchanged."""
+        primary_client = MagicMock()
+        primary_client.base_url = "https://chatgpt.com/backend-api/codex"
+        primary_client.chat.completions.create.side_effect = self._timeout_err()
+
+        broken_fb = MagicMock()
+        broken_fb.base_url = "https://api.anthropic.com"
+        broken_fb.chat.completions.create.side_effect = ValueError("malformed response")
+
+        with patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(broken_fb, "claude-haiku-4-5-20251001", "anthropic")):
+            with pytest.raises(ValueError, match="malformed response"):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "summarize"}],
+                )
+
+
 class TestAuxiliaryFallbackLayering:
     """Explicit-provider users get layered fallback: configured_chain → main agent → warn."""
 
@@ -3307,6 +3543,69 @@ class TestAuxiliaryAuthRefreshRetry:
 
         assert resp.choices[0].message.content == "fresh-non-vision"
         mock_refresh.assert_called_once_with("openai-codex")
+        assert stale_client.chat.completions.create.call_count == 1
+        assert fresh_client.chat.completions.create.call_count == 1
+
+    def test_call_llm_refreshes_copilot_when_auto_routes_to_copilot_on_401(self):
+        stale_client = MagicMock()
+        stale_client.base_url = "https://api.githubcopilot.com"
+        stale_client.chat.completions.create.side_effect = _AuxAuth401(
+            "IDE token expired: unauthorized: token expired"
+        )
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://api.githubcopilot.com"
+        fresh_client.chat.completions.create.return_value = _DummyResponse("fresh-auto-copilot")
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("auto", None, None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.5"), (fresh_client, "gpt-5.5")]) as mock_get_client,
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True) as mock_refresh,
+            patch("agent.auxiliary_client._evict_cached_clients") as mock_evict,
+        ):
+            resp = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hi"}],
+                main_runtime={"provider": "copilot", "model": "gpt-5.5"},
+            )
+
+        assert resp.choices[0].message.content == "fresh-auto-copilot"
+        mock_refresh.assert_called_once_with("copilot")
+        mock_evict.assert_called_once_with("auto")
+        assert mock_get_client.call_args_list[0].args[0] == "auto"
+        assert mock_get_client.call_args_list[1].args[0] == "copilot"
+        assert mock_get_client.call_args_list[1].args[1] == "gpt-5.5"
+        assert stale_client.chat.completions.create.call_count == 1
+        assert fresh_client.chat.completions.create.call_count == 1
+
+    def test_call_llm_refreshes_codex_when_auto_routes_to_codex_on_401(self):
+        # Preflight compression's exact failure (#23670): provider auto →
+        # Codex OAuth backend 401s → before the fix, no refresh was attempted
+        # because resolved_provider stayed "auto".
+        stale_client = MagicMock()
+        stale_client.base_url = "https://chatgpt.com/backend-api/codex"
+        stale_client.chat.completions.create.side_effect = _AuxAuth401("User not found.")
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://chatgpt.com/backend-api/codex"
+        fresh_client.chat.completions.create.return_value = _DummyResponse("fresh-auto-codex")
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("auto", None, None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.5"), (fresh_client, "gpt-5.5")]) as mock_get_client,
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True) as mock_refresh,
+            patch("agent.auxiliary_client._evict_cached_clients") as mock_evict,
+        ):
+            resp = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+                main_runtime={"provider": "openai-codex", "model": "gpt-5.5"},
+            )
+
+        assert resp.choices[0].message.content == "fresh-auto-codex"
+        mock_refresh.assert_called_once_with("openai-codex")
+        mock_evict.assert_called_once_with("auto")
+        assert mock_get_client.call_args_list[1].args[0] == "openai-codex"
         assert stale_client.chat.completions.create.call_count == 1
         assert fresh_client.chat.completions.create.call_count == 1
 
@@ -5119,3 +5418,187 @@ class TestCompressionFallbackContextFilter:
         # Empty / unknown tasks have no minimum
         assert _task_minimum_context_length("") is None
         assert _task_minimum_context_length(None) is None
+
+
+class TestCustomEndpointApiKeyInheritance:
+    """Issue #9318: when an auxiliary task uses provider=custom with an
+    explicit base_url but empty api_key, the custom_key fallback chain must
+    inherit ``model.api_key`` from config.yaml before falling to the
+    ``no-key-required`` placeholder.
+
+    Without this fix, users on self-hosted gateways who share the same
+    endpoint+credentials for both the main model and auxiliary tasks get 401
+    auth errors because the placeholder key is sent instead of the real one.
+
+    Inheritance is host-gated: the main key is only inherited when the aux
+    base_url points at the same host as the main model's base_url, so a
+    misconfigured aux endpoint cannot leak the main credential cross-host.
+    """
+
+    def test_inherits_main_api_key_when_aux_key_empty(self, monkeypatch):
+        """RED→GREEN: explicit_api_key is None, OPENAI_API_KEY unset →
+        model.api_key from config.yaml must be used (same-host gateway)."""
+        import agent.auxiliary_client as ac
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+        fake_config = {
+            "model": {
+                "api_key": "sk-main-config-key",
+                "base_url": "https://gw.example.com/v1",
+                "default": "main-model",
+            }
+        }
+        captured: dict = {}
+
+        def _capture_create(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch("hermes_cli.config.load_config", return_value=fake_config), \
+             patch.object(ac, "_create_openai_client", side_effect=_capture_create):
+            client, model = resolve_provider_client(
+                "custom",
+                model="test-model",
+                explicit_base_url="https://gw.example.com/v1",
+                explicit_api_key=None,
+            )
+
+        assert captured.get("api_key") == "sk-main-config-key", (
+            "Custom endpoint with empty api_key should inherit "
+            "model.api_key from config, got: "
+            + repr(captured.get("api_key"))
+        )
+
+    def test_explicit_api_key_takes_precedence(self, monkeypatch):
+        """explicit_api_key wins over config model.api_key."""
+        import agent.auxiliary_client as ac
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        fake_config = {"model": {"api_key": "sk-main-config-key"}}
+        captured: dict = {}
+
+        def _capture_create(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch("hermes_cli.config.load_config", return_value=fake_config), \
+             patch.object(ac, "_create_openai_client", side_effect=_capture_create):
+            client, model = resolve_provider_client(
+                "custom",
+                model="test-model",
+                explicit_base_url="https://gw.example.com/v1",
+                explicit_api_key="sk-explicit",
+            )
+
+        assert captured.get("api_key") == "sk-explicit"
+
+    def test_local_server_falls_to_no_key_required(self, monkeypatch):
+        """When no key is available anywhere (explicit, env, config), fall
+        back to ``no-key-required`` for local servers (Ollama, etc.)."""
+        import agent.auxiliary_client as ac
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        fake_config = {"model": {}}  # no api_key configured
+        captured: dict = {}
+
+        def _capture_create(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch("hermes_cli.config.load_config", return_value=fake_config), \
+             patch.object(ac, "_create_openai_client", side_effect=_capture_create):
+            client, model = resolve_provider_client(
+                "custom",
+                model="test-model",
+                explicit_base_url="http://localhost:11434/v1",
+                explicit_api_key=None,
+            )
+
+        assert captured.get("api_key") == "no-key-required"
+
+    def test_runtime_override_key_is_used(self, monkeypatch):
+        """When _RUNTIME_MAIN_API_KEY is set (by set_runtime_main), it takes
+        precedence over config.yaml for the custom endpoint key."""
+        import agent.auxiliary_client as ac
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        captured: dict = {}
+
+        def _capture_create(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch.object(ac, "_RUNTIME_MAIN_API_KEY", "sk-runtime-key"), \
+             patch.object(ac, "_RUNTIME_MAIN_BASE_URL", "https://gw.example.com/v1"), \
+             patch("hermes_cli.config.load_config", return_value={"model": {}}), \
+             patch.object(ac, "_create_openai_client", side_effect=_capture_create):
+            client, model = resolve_provider_client(
+                "custom",
+                model="test-model",
+                explicit_base_url="https://gw.example.com/v1",
+                explicit_api_key=None,
+            )
+
+        assert captured.get("api_key") == "sk-runtime-key"
+
+    def test_cross_host_aux_endpoint_does_not_inherit_main_key(self, monkeypatch):
+        """An aux base_url on a DIFFERENT host than the main model must NOT
+        inherit model.api_key — that would leak the main credential to
+        whatever host a misconfigured aux endpoint names. Falls back to the
+        fail-safe no-key-required placeholder instead."""
+        import agent.auxiliary_client as ac
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        fake_config = {
+            "model": {
+                "api_key": "sk-main-config-key",
+                "base_url": "https://gw.example.com/v1",
+            }
+        }
+        captured: dict = {}
+
+        def _capture_create(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch("hermes_cli.config.load_config", return_value=fake_config), \
+             patch.object(ac, "_create_openai_client", side_effect=_capture_create):
+            client, model = resolve_provider_client(
+                "custom",
+                model="test-model",
+                explicit_base_url="https://other-host.example.net/v1",
+                explicit_api_key=None,
+            )
+
+        assert captured.get("api_key") == "no-key-required"
+
+    def test_no_main_base_url_does_not_inherit_main_key(self, monkeypatch):
+        """When the main model has no base_url (e.g. a first-class provider),
+        there is no 'same gateway' to match — do not inherit the key."""
+        import agent.auxiliary_client as ac
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        fake_config = {"model": {"api_key": "sk-main-config-key"}}
+        captured: dict = {}
+
+        def _capture_create(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch("hermes_cli.config.load_config", return_value=fake_config), \
+             patch.object(ac, "_create_openai_client", side_effect=_capture_create):
+            client, model = resolve_provider_client(
+                "custom",
+                model="test-model",
+                explicit_base_url="https://gw.example.com/v1",
+                explicit_api_key=None,
+            )
+
+        assert captured.get("api_key") == "no-key-required"

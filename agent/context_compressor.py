@@ -299,6 +299,32 @@ def _content_length_for_budget(raw_content: Any) -> int:
     return total
 
 
+def _serialized_length_for_budget(value: Any) -> int:
+    """Return a stable char-length for non-content replay/metadata fields."""
+    if value is None or value == "":
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    try:
+        return len(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str))
+    except (TypeError, ValueError):
+        return len(str(value))
+
+
+# Provider replay/metadata fields that ride the wire on every request but are
+# invisible to ``msg["content"]``/``msg["tool_calls"]`` accounting.  Codex
+# Responses sessions in particular carry ``codex_reasoning_items`` blobs of
+# ``encrypted_content`` that can dominate the serialized session (a measured
+# 214-turn session held ~115K tokens / 27% of its payload there — #55572).
+_REPLAY_BUDGET_KEYS = (
+    "reasoning",
+    "reasoning_content",
+    "reasoning_details",
+    "codex_reasoning_items",
+    "codex_message_items",
+)
+
+
 def _estimate_msg_budget_tokens(msg: dict) -> int:
     """Token estimate for one message in the tail-protection budget walks.
 
@@ -309,12 +335,23 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
     4-tool-call turn measures ~73 vs ~1,090 real tokens), so the protected
     tail overshot ``tail_token_budget`` and compression became ineffective.
     See issue #28053.
+
+    Also counts provider replay fields (``codex_reasoning_items`` etc. —
+    see ``_REPLAY_BUDGET_KEYS``).  The preflight "should I compress?"
+    estimator sees the full message shape, so the tail walk must use the
+    same size class; otherwise an assistant message with tiny visible
+    content but large hidden replay blobs is protected as if it were small,
+    the post-compression session stays near the context limit, and
+    compaction re-fires continuously (#55572).  Accounting-only: replay
+    fields are never mutated or pruned here.
     """
     content_len = _content_length_for_budget(msg.get("content") or "")
     tokens = content_len // _CHARS_PER_TOKEN + 10  # +10 for role/key overhead
     for tc in msg.get("tool_calls") or []:
         if isinstance(tc, dict):
             tokens += len(str(tc)) // _CHARS_PER_TOKEN
+    for key in _REPLAY_BUDGET_KEYS:
+        tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
     return tokens
 
 

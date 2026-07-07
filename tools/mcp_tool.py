@@ -34,6 +34,10 @@ Example config::
         headers:
           Authorization: "Bearer sk-..."
         timeout: 180
+        skip_preflight: true  # bypass the content-type probe for a valid
+                              # Streamable HTTP endpoint that answers HEAD/GET
+                              # with a non-MCP content type but serves real
+                              # MCP over POST. Default: false.
       searxng:
         url: "http://localhost:8000/sse"
         transport: sse       # use SSE transport instead of Streamable HTTP
@@ -321,6 +325,11 @@ _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
+# While parked (reconnect budget exhausted, tools deregistered) the run task
+# wakes on this cadence and attempts one revival probe. Without it a parked
+# server is unrevivable: its tools are out of the registry, so no tool call
+# can ever reach the circuit-breaker half-open probe or _signal_reconnect.
+_PARKED_RETRY_INTERVAL = 300     # seconds between parked self-probes
 
 # Keepalive cadence for HTTP/SSE sessions. The MCP spec lets a server expire
 # idle sessions on any TTL it chooses (Streamable HTTP "Session Management"),
@@ -1475,6 +1484,7 @@ class MCPServerTask:
         "_rpc_lock", "_pending_refresh_tasks",
         "_pending_call_context",
         "initialize_result", "_ping_unsupported",
+        "_reconnect_retries",
     )
 
     def __init__(self, name: str):
@@ -1496,6 +1506,7 @@ class MCPServerTask:
         self._sampling: Optional[SamplingHandler] = None
         self._elicitation: Optional[ElicitationHandler] = None
         self._registered_tool_names: list[str] = []
+        self._reconnect_retries: int = 0
         self._auth_type: str = ""
         self._refresh_lock = asyncio.Lock()
         # MCP stdio sessions are a single JSON-RPC stream. Some servers emit
@@ -1681,8 +1692,7 @@ class MCPServerTask:
             # notifications. Tools absent from the fresh list are no longer
             # callable, so remove only those stale registry entries first.
             stale_tool_names = old_tool_names - {
-                f"mcp_{sanitize_mcp_name_component(self.name)}_"
-                f"{sanitize_mcp_name_component(tool.name)}"
+                mcp_prefixed_tool_name(self.name, tool.name)
                 for tool in new_mcp_tools
             }
             for tool_name in stale_tool_names:
@@ -1838,20 +1848,27 @@ class MCPServerTask:
         self._reconnect_event.clear()
         return "reconnect"
 
-    async def _wait_for_reconnect_or_shutdown(self) -> str:
+    async def _wait_for_reconnect_or_shutdown(
+        self, timeout: Optional[float] = None
+    ) -> str:
         """Block until a reconnect or shutdown is requested while parked.
 
         Used by :meth:`run` after the reconnect budget is exhausted. The
         task stays alive (so ``_reconnect_event`` always has a listener) but
         does no work until something explicitly asks it to come back —
-        the circuit-breaker half-open probe, OAuth recovery, or a manual
-        ``/mcp`` refresh.
+        OAuth recovery, a manual ``/mcp`` refresh — or, when ``timeout`` is
+        given, until the timeout elapses (a periodic self-probe). The timed
+        wake matters because parking deregisters this server's tools, so
+        no tool call can ever reach the circuit-breaker's half-open probe
+        or ``_signal_reconnect`` — without a self-probe a parked server
+        would be unrevivable short of a full reload.
 
         Returns:
             ``"shutdown"`` if the server should exit the run loop entirely,
-            ``"reconnect"`` if it should rebuild the transport. The reconnect
-            event is cleared before returning so the next park cycle starts
-            from a fresh signal. Shutdown takes precedence.
+            ``"reconnect"`` if it should rebuild the transport (explicit
+            request or self-probe timeout). The reconnect event is cleared
+            before returning so the next park cycle starts from a fresh
+            signal. Shutdown takes precedence.
         """
         shutdown_task = asyncio.ensure_future(self._shutdown_event.wait())
         reconnect_task = asyncio.ensure_future(self._reconnect_event.wait())
@@ -1859,6 +1876,7 @@ class MCPServerTask:
             await asyncio.wait(
                 {shutdown_task, reconnect_task},
                 return_when=asyncio.FIRST_COMPLETED,
+                timeout=timeout,
             )
         finally:
             for t in (shutdown_task, reconnect_task):
@@ -1985,6 +2003,10 @@ class MCPServerTask:
                     # prior outage so the first call after recovery isn't
                     # gated on a stale consecutive-failure count (#16788).
                     _reset_server_error(self.name)
+                    # This session is live: reset the reconnect retry counter
+                    # so transient prior failures do not accumulate toward
+                    # permanent parking (#57604).
+                    self._reconnect_retries = 0
                     # stdio transport does not use OAuth, but we still honor
                     # _reconnect_event (e.g. future manual /mcp refresh) for
                     # consistency with _run_http.
@@ -2049,11 +2071,17 @@ class MCPServerTask:
 
         Detection is allow-list based: a 2xx response is rejected only when it
         carries a definite content type that is NOT one an MCP endpoint uses
-        (``application/json`` / ``text/event-stream``). A missing or empty
-        content type, non-2xx status, or any network/transport error passes
-        through silently — the probe is strictly best-effort, and the real
-        handshake remains the source of truth for everything except the
-        unambiguous "this is a web page, not MCP" case.
+        (``application/json`` / ``text/event-stream``).  When HEAD/GET returns
+        a non-MCP content type (e.g. ``text/html``), a lightweight JSON-RPC
+        ``initialize`` POST is attempted before giving up — some servers
+        (e.g. DocuSeal) serve a web UI on GET but speak Streamable HTTP only
+        via POST.
+
+        A missing or empty content type, non-2xx status, or any
+        network/transport error passes through silently — the probe is
+        strictly best-effort, and the real handshake remains the source of
+        truth for everything except the unambiguous "this is a web page,
+        not MCP" case.
 
         Runs on its own httpx client OUTSIDE the SDK's anyio task group, so the
         raised error propagates as itself rather than being wrapped in an
@@ -2081,6 +2109,47 @@ class MCPServerTask:
                 resp = await client.head(url, headers=probe_headers)
                 if resp.status_code in (405, 501):
                     resp = await client.get(url, headers=probe_headers)
+
+                # Some MCP servers (e.g. DocuSeal) serve their web UI on
+                # HEAD/GET but speak Streamable HTTP only via POST.  Before
+                # rejecting the endpoint, try a lightweight JSON-RPC POST
+                # probe so we don't false-positive on POST-only servers.
+                ct = (
+                    resp.headers.get("content-type", "")
+                    .split(";")[0]
+                    .strip()
+                    .lower()
+                )
+                if (
+                    ct
+                    and ct not in self._MCP_CONTENT_TYPES
+                    and 200 <= resp.status_code < 300
+                ):
+                    post_resp = await client.post(
+                        url,
+                        headers={
+                            **probe_headers,
+                            "Content-Type": "application/json",
+                            "Accept": "application/json, text/event-stream",
+                        },
+                        content=(
+                            '{"jsonrpc":"2.0","id":"_probe",'
+                            '"method":"initialize",'
+                            '"params":{"protocolVersion":"2025-03-26",'
+                            '"capabilities":{},'
+                            '"clientInfo":{"name":"hermes-probe",'
+                            '"version":"0.1"}}}'
+                        ),
+                    )
+                    if 200 <= post_resp.status_code < 300:
+                        post_ct = (
+                            post_resp.headers.get("content-type", "")
+                            .split(";")[0]
+                            .strip()
+                            .lower()
+                        )
+                        if post_ct in self._MCP_CONTENT_TYPES:
+                            resp = post_resp
         except _httpx.HTTPError:
             return  # DNS/connect/timeout/transport error — let the SDK try.
 
@@ -2222,6 +2291,7 @@ class MCPServerTask:
                     # prior outage so the first call after recovery isn't
                     # gated on a stale consecutive-failure count (#16788).
                     _reset_server_error(self.name)
+                    self._reconnect_retries = 0
                     reason = await self._wait_for_lifecycle_event()
                     if reason == "reconnect":
                         logger.info(
@@ -2275,6 +2345,7 @@ class MCPServerTask:
                         # a prior outage so the first call after recovery
                         # isn't gated on a stale failure count (#16788).
                         _reset_server_error(self.name)
+                        self._reconnect_retries = 0
                         reason = await self._wait_for_lifecycle_event()
                         if reason == "reconnect":
                             logger.info(
@@ -2302,6 +2373,7 @@ class MCPServerTask:
                     # prior outage so the first call after recovery isn't
                     # gated on a stale consecutive-failure count (#16788).
                     _reset_server_error(self.name)
+                    self._reconnect_retries = 0
                     reason = await self._wait_for_lifecycle_event()
                     if reason == "reconnect":
                         logger.info(
@@ -2332,6 +2404,7 @@ class MCPServerTask:
                 self.name,
             )
             self._tools = []
+            self._register_discovered_tools_if_needed()
             return
         async with self._rpc_lock:
             tools_result = await self.session.list_tools()
@@ -2339,6 +2412,23 @@ class MCPServerTask:
             tools_result.tools
             if hasattr(tools_result, "tools")
             else []
+        )
+        self._register_discovered_tools_if_needed()
+
+    def _register_discovered_tools_if_needed(self) -> None:
+        """Re-register tools after a post-ready reconnect if needed.
+
+        Initial registration is performed by ``_discover_and_register_server``
+        after ``start()`` completes. During a later reconnect, however,
+        ``_ready`` remains set; if outage handling previously deregistered
+        stale tools (parking calls ``_deregister_tools``), a successful
+        revival must publish the freshly discovered tools again — otherwise
+        the transport comes back alive with zero registered tools.
+        """
+        if not self._ready.is_set() or self._registered_tool_names:
+            return
+        self._registered_tool_names = _register_server_tools(
+            self.name, self, self._config
         )
 
     async def run(self, config: dict):
@@ -2403,7 +2493,7 @@ class MCPServerTask:
             # re-probing is a redundant round-trip. Also skip for OAuth servers:
             # without a cached token the endpoint returns HTML or 401, which
             # would incorrectly block the OAuth flow before it can run.
-            if config.get("transport") != "sse" and not self._ready.is_set() and self._auth_type != "oauth":
+            if config.get("transport") != "sse" and not config.get("skip_preflight") and not self._ready.is_set() and self._auth_type != "oauth":
                 try:
                     _probe_headers = dict(config.get("headers") or {})
                     await self._preflight_content_type(
@@ -2418,7 +2508,7 @@ class MCPServerTask:
                     self._ready.set()
                     return
 
-        retries = 0
+        self._reconnect_retries = 0
         initial_retries = 0
         backoff = 1.0
 
@@ -2447,14 +2537,14 @@ class MCPServerTask:
                 # failure budget — otherwise transient drops accumulated over
                 # a long-lived session would eventually exhaust it and
                 # permanently kill an otherwise-healthy server.
-                retries = 0
+                self._reconnect_retries = 0
                 backoff = 1.0
-                # Reset the session reference; _run_http/_run_stdio will
-                # repopulate it on successful re-entry.
+                # Reset the session reference and readiness; _run_http/_run_stdio
+                # will repopulate both on successful re-entry.  Leaving
+                # _ready set here lets handler-side recovery mistake the stale
+                # pre-reconnect session for a fresh one and retry too early.
+                self._ready.clear()
                 self.session = None
-                # Keep _ready set across reconnects so tool handlers can
-                # still detect a transient in-flight state — it'll be
-                # re-set after the fresh session initializes.
                 continue
             except asyncio.CancelledError:
                 # Task was cancelled (shutdown, gateway restart, explicit
@@ -2490,12 +2580,30 @@ class MCPServerTask:
                     if initial_retries > _MAX_INITIAL_CONNECT_RETRIES:
                         logger.warning(
                             "MCP server '%s' failed initial connection after "
-                            "%d attempts, giving up: %s",
+                            "%d attempts, parking until a reconnect is requested: %s",
                             self.name, _MAX_INITIAL_CONNECT_RETRIES, exc,
                         )
                         self._error = exc
                         self._ready.set()
-                        return
+                        self._deregister_tools()
+                        self._reconnect_event.clear()
+                        parked = await self._wait_for_reconnect_or_shutdown(
+                            timeout=_PARKED_RETRY_INTERVAL
+                        )
+                        if parked == "shutdown":
+                            return
+                        logger.info(
+                            "MCP server '%s': attempting revival after initial "
+                            "connection failures (self-probe or explicit "
+                            "reconnect request); rebuilding transport.",
+                            self.name,
+                        )
+                        initial_retries = 0
+                        self._reconnect_retries = 0
+                        backoff = 1.0
+                        self._error = None
+                        self._ready.clear()
+                        continue
 
                     logger.warning(
                         "MCP server '%s' initial connection failed "
@@ -2521,41 +2629,49 @@ class MCPServerTask:
                     )
                     return
 
-                retries += 1
-                if retries > _MAX_RECONNECT_RETRIES:
+                self._reconnect_retries += 1
+                if self._reconnect_retries > _MAX_RECONNECT_RETRIES:
                     logger.warning(
                         "MCP server '%s' failed after %d reconnection attempts, "
-                        "parking until a reconnect is requested: %s",
-                        self.name, _MAX_RECONNECT_RETRIES, exc,
+                        "parking; will self-probe every %ds until it recovers: %s",
+                        self.name, _MAX_RECONNECT_RETRIES,
+                        _PARKED_RETRY_INTERVAL, exc,
                     )
                     # Do NOT return — exiting the task orphans the server:
-                    # nothing would ever listen for _reconnect_event again,
-                    # so a half-open circuit-breaker probe could never revive
-                    # it and the server would be permanently wedged for the
+                    # nothing would ever listen for _reconnect_event again
+                    # and the server would be permanently wedged for the
                     # life of the process (#16788). Instead, drop the phantom
-                    # tools from the registry and park as a dormant listener.
-                    # A future _reconnect_event.set() — from the breaker's
-                    # half-open probe, OAuth recovery, or a manual /mcp
-                    # refresh — wakes us to rebuild the transport (respawning
-                    # a dead stdio subprocess in the process).
+                    # tools from the registry and park. Because parking
+                    # deregisters the tools, no tool call can reach the
+                    # circuit-breaker half-open probe or _signal_reconnect —
+                    # so the park is a TIMED wait: every _PARKED_RETRY_INTERVAL
+                    # we wake and attempt one reconnect ourselves (#57129).
+                    # An explicit _reconnect_event.set() (OAuth recovery,
+                    # manual /mcp refresh) still wakes us immediately.
                     self._deregister_tools()
                     self._reconnect_event.clear()
-                    parked = await self._wait_for_reconnect_or_shutdown()
+                    parked = await self._wait_for_reconnect_or_shutdown(
+                        timeout=_PARKED_RETRY_INTERVAL
+                    )
                     if parked == "shutdown":
                         return
                     logger.info(
-                        "MCP server '%s': reconnect requested while parked; "
+                        "MCP server '%s': attempting revival from parked state "
+                        "(self-probe or explicit reconnect request); "
                         "rebuilding transport.",
                         self.name,
                     )
-                    retries = 0
+                    # One probe attempt per wake: budget of 1 so a still-dead
+                    # server parks again for another interval instead of
+                    # burning 5 rapid retries each cycle.
+                    self._reconnect_retries = _MAX_RECONNECT_RETRIES
                     backoff = 1.0
                     continue
 
                 logger.warning(
                     "MCP server '%s' connection lost (attempt %d/%d), "
                     "reconnecting in %.0fs: %s",
-                    self.name, retries, _MAX_RECONNECT_RETRIES,
+                    self.name, self._reconnect_retries, _MAX_RECONNECT_RETRIES,
                     backoff, exc,
                 )
                 await asyncio.sleep(backoff)
@@ -2700,6 +2816,89 @@ def _signal_reconnect(server: Any) -> bool:
     return True
 
 
+def _wait_for_server_session_ready(
+    srv: "MCPServerTask",
+    *,
+    old_session: Any = None,
+    timeout: float = 15.0,
+) -> bool:
+    """Wait for an MCP server to expose a usable session.
+
+    Tool handlers run in normal worker threads while the MCP transport lives on
+    the module's background asyncio loop. During a reconnect there is a short
+    window where ``srv.session`` is ``None`` (or still points at the stale
+    session until the lifecycle coroutine has left the transport context). A
+    handler that blindly retries in that window can burn circuit-breaker strikes
+    and return ``not connected`` even though the reconnect is already in
+    progress.
+
+    When ``old_session`` is supplied, require the observed session object to be
+    different so callers do not mistake the pre-reconnect, stale session for a
+    fresh one.
+    """
+    # Iteration-bounded rather than deadline-bounded: several tests (and the
+    # circuit-breaker cooldown logic) monkeypatch time.monotonic to a frozen
+    # clock, which would make a monotonic-deadline loop spin forever.
+    poll_interval = 0.25
+    iterations = max(1, int(max(float(timeout), 0.0) / poll_interval))
+    for i in range(iterations):
+        session = getattr(srv, "session", None)
+        ready = getattr(srv, "_ready", None)
+        is_ready = True
+        if ready is not None and hasattr(ready, "is_set"):
+            try:
+                is_ready = bool(ready.is_set())
+            except Exception:
+                is_ready = True
+        if session is not None and session is not old_session and is_ready:
+            return True
+        if i < iterations - 1:
+            time.sleep(poll_interval)
+    return False
+
+
+def _signal_reconnect_and_wait(
+    server_name: str,
+    srv: "MCPServerTask",
+    *,
+    op_description: str,
+    timeout: float = 15.0,
+) -> bool:
+    """Ask a live MCP server task to rebuild its transport session.
+
+    The important detail is clearing ``_ready`` on the MCP event loop before
+    setting ``_reconnect_event``. Older code left ``_ready`` set across
+    reconnects, so the caller's readiness poll could return immediately and
+    retry against the same dead HTTP/stream session. That was observed as
+    repeated ``Session terminated`` / ``not connected`` / circuit-breaker
+    failures in long-lived gateway sessions even though a fresh CLI process
+    could connect successfully.
+    """
+    loop = _mcp_loop
+    if loop is None or not loop.is_running():
+        return False
+
+    old_session = getattr(srv, "session", None)
+
+    def _request_reconnect() -> None:
+        ready = getattr(srv, "_ready", None)
+        if ready is not None and hasattr(ready, "clear"):
+            ready.clear()
+        reconnect_event = getattr(srv, "_reconnect_event", None)
+        if reconnect_event is not None and hasattr(reconnect_event, "set"):
+            reconnect_event.set()
+
+    logger.info(
+        "MCP server '%s': %s requesting transport reconnect",
+        server_name, op_description,
+    )
+    loop.call_soon_threadsafe(_request_reconnect)
+    return _wait_for_server_session_ready(
+        srv,
+        old_session=old_session,
+        timeout=timeout,
+    )
+
 # ---------------------------------------------------------------------------
 # Auth-failure detection helpers (Task 6 of MCP OAuth consolidation)
 # ---------------------------------------------------------------------------
@@ -2825,41 +3024,24 @@ def _handle_auth_error_and_retry(
     if recovered:
         with _lock:
             srv = _servers.get(server_name)
+        reconnected = False
         if srv is not None and hasattr(srv, "_reconnect_event"):
-            loop = _mcp_loop
-            if loop is not None and loop.is_running():
-                loop.call_soon_threadsafe(srv._reconnect_event.set)
+            reconnected = _signal_reconnect_and_wait(
+                server_name,
+                srv,
+                op_description=f"{op_description} after OAuth recovery",
+                timeout=15,
+            )
 
-                # Wait briefly for the session to come back ready. Bounded
-                # so that a stuck reconnect falls through to the error
-                # path rather than hanging the caller.  The async helper
-                # runs on the MCP event loop via _run_on_mcp_loop so it
-                # does NOT block the event loop during the poll interval.
-                async def _await_ready() -> bool:
-                    deadline = time.monotonic() + 15
-                    while time.monotonic() < deadline:
-                        if srv.session is not None and srv._ready.is_set():
-                            return True
-                        await asyncio.sleep(0.25)
-                    return False
-
-                try:
-                    _run_on_mcp_loop(_await_ready(), timeout=15)
-                except Exception as exc:
-                    logger.warning(
-                        "MCP OAuth '%s': ready poll failed: %s",
-                        server_name, exc,
-                    )
-
-        # A successful OAuth recovery is independent evidence that the
-        # server is viable again, so close the circuit breaker here —
-        # not only on retry success. Without this, a reconnect
-        # followed by a failing retry would leave the breaker pinned
-        # above threshold forever (the retry-exception branch below
-        # bumps the count again).  The post-reset retry still goes
-        # through _bump_server_error on failure, so a genuinely broken
-        # server will re-trip the breaker as normal.
-        _reset_server_error(server_name)
+        # A successful OAuth recovery + transport reconnect is independent
+        # evidence that the server is viable again, so close the circuit
+        # breaker here — not only on retry success. Without this, a reconnect
+        # followed by a failing retry would leave the breaker pinned above
+        # threshold forever. The post-reset retry still goes through
+        # _bump_server_error on failure, so a genuinely broken server will
+        # re-trip the breaker as normal.
+        if reconnected:
+            _reset_server_error(server_name)
 
         try:
             result = retry_call()
@@ -2988,15 +3170,12 @@ def _handle_session_expired_and_retry(
 
     # Trigger the same reconnect mechanism the OAuth recovery path
     # uses, then wait briefly for the new session to come back ready.
-    loop.call_soon_threadsafe(srv._reconnect_event.set)
-    deadline = time.monotonic() + 15
-    ready = False
-    while time.monotonic() < deadline:
-        if srv.session is not None and srv._ready.is_set():
-            ready = True
-            break
-        time.sleep(0.25)
-    if not ready:
+    if not _signal_reconnect_and_wait(
+        server_name,
+        srv,
+        op_description=op_description,
+        timeout=15,
+    ):
         logger.warning(
             "MCP server '%s': reconnect did not ready within 15s after "
             "session-expired error; falling through to error response.",
@@ -3352,9 +3531,8 @@ def _load_mcp_config() -> Dict[str, dict]:
     """
     try:
         from hermes_cli.config import load_config
-        # Safe mode (--safe-mode / HERMES_SAFE_MODE=1): troubleshooting run
-        # with all customizations disabled — no MCP servers connect.
         from utils import env_var_enabled as _env_enabled
+
         if _env_enabled("HERMES_SAFE_MODE"):
             return {}
         config = load_config()
@@ -3445,27 +3623,38 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             }, ensure_ascii=False)
 
         if not server.session:
-            # No live session — the server task is reconnecting, or it has
-            # exhausted its retry budget and parked (e.g. a dead stdio
-            # subprocess). Probing here would write into a dead/absent
-            # transport and re-arm the breaker forever (#16788). Instead,
-            # ask the (always-present) server task to rebuild the transport
-            # — which respawns a dead stdio subprocess — and return a clean
-            # "reconnecting" error so the model backs off without burning
-            # iterations. The breaker resets once the fresh session
-            # initializes (_run_stdio/_run_http call _reset_server_error).
-            _bump_server_error(server_name)
-            if _signal_reconnect(server):
+            # No live session. A reconnect may already be completing (the
+            # transport swaps in a fresh session object asynchronously) —
+            # wait briefly before treating this as a failure, so a
+            # transient reconnect window doesn't burn a circuit-breaker
+            # strike (#26892).
+            if _wait_for_server_session_ready(
+                server, timeout=min(5.0, float(tool_timeout or 5.0)),
+            ):
+                pass  # Fresh session arrived; proceed below.
+            else:
+                # Still down — the server task is reconnecting, or it has
+                # exhausted its retry budget and parked (e.g. a dead stdio
+                # subprocess). Probing here would write into a dead/absent
+                # transport and re-arm the breaker forever (#16788). Instead,
+                # ask the (always-present) server task to rebuild the
+                # transport — which respawns a dead stdio subprocess — and
+                # return a clean "reconnecting" error so the model backs off
+                # without burning iterations. The breaker resets once the
+                # fresh session initializes (_run_stdio/_run_http call
+                # _reset_server_error).
+                _bump_server_error(server_name)
+                if _signal_reconnect(server):
+                    return json.dumps({
+                        "error": (
+                            f"MCP server '{server_name}' transport is down; "
+                            f"reconnect requested. Do NOT retry this tool "
+                            f"immediately — give it a few seconds to come back."
+                        )
+                    }, ensure_ascii=False)
                 return json.dumps({
-                    "error": (
-                        f"MCP server '{server_name}' transport is down; "
-                        f"reconnect requested. Do NOT retry this tool "
-                        f"immediately — give it a few seconds to come back."
-                    )
+                    "error": f"MCP server '{server_name}' is not connected"
                 }, ensure_ascii=False)
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            }, ensure_ascii=False)
 
         async def _call():
             async with server._rpc_lock:
@@ -3995,6 +4184,27 @@ def sanitize_mcp_name_component(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]", "_", str(value or ""))
 
 
+# Native MCP tool-name prefix. Hermes uses the ``mcp__<server>__<tool>``
+# convention shared by Claude Code, Codex, and OpenCode (anomalyco/opencode
+# #33533). The double-underscore delimiter disambiguates the server/tool
+# boundary even when either component contains underscores, and matches the
+# naming models are trained on. It also aligns native registration with the
+# Anthropic-OAuth wire form (``_MCP_TOOL_PREFIX`` in anthropic_adapter.py),
+# removing the single->double rewrite that path previously had to perform.
+MCP_TOOL_NAME_PREFIX = "mcp__"
+_MCP_NAME_DELIM = "__"
+
+
+def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:
+    """Build the registry/wire name for an MCP tool.
+
+    Produces ``mcp__<sanitizedServer>__<sanitizedTool>``.
+    """
+    safe_server = sanitize_mcp_name_component(server_name)
+    safe_tool = sanitize_mcp_name_component(tool_name)
+    return f"{MCP_TOOL_NAME_PREFIX}{safe_server}{_MCP_NAME_DELIM}{safe_tool}"
+
+
 def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     """Convert an MCP tool listing to the Hermes registry schema format.
 
@@ -4006,9 +4216,7 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     Returns:
         A dict suitable for ``registry.register(schema=...)``.
     """
-    safe_tool_name = sanitize_mcp_name_component(mcp_tool.name)
-    safe_server_name = sanitize_mcp_name_component(server_name)
-    prefixed_name = f"mcp_{safe_server_name}_{safe_tool_name}"
+    prefixed_name = mcp_prefixed_tool_name(server_name, mcp_tool.name)
     return {
         "name": prefixed_name,
         "description": mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}",
@@ -4022,11 +4230,10 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
     Returns a list of (schema, handler_factory_name) tuples encoded as dicts
     with keys: schema, handler_key.
     """
-    safe_name = sanitize_mcp_name_component(server_name)
     return [
         {
             "schema": {
-                "name": f"mcp_{safe_name}_list_resources",
+                "name": mcp_prefixed_tool_name(server_name, "list_resources"),
                 "description": f"List available resources from MCP server '{server_name}'",
                 "parameters": {
                     "type": "object",
@@ -4037,7 +4244,7 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
         },
         {
             "schema": {
-                "name": f"mcp_{safe_name}_read_resource",
+                "name": mcp_prefixed_tool_name(server_name, "read_resource"),
                 "description": f"Read a resource by URI from MCP server '{server_name}'",
                 "parameters": {
                     "type": "object",
@@ -4054,7 +4261,7 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
         },
         {
             "schema": {
-                "name": f"mcp_{safe_name}_list_prompts",
+                "name": mcp_prefixed_tool_name(server_name, "list_prompts"),
                 "description": f"List available prompts from MCP server '{server_name}'",
                 "parameters": {
                     "type": "object",
@@ -4065,7 +4272,7 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
         },
         {
             "schema": {
-                "name": f"mcp_{safe_name}_get_prompt",
+                "name": mcp_prefixed_tool_name(server_name, "get_prompt"),
                 "description": f"Get a prompt by name from MCP server '{server_name}'",
                 "parameters": {
                     "type": "object",
@@ -4395,6 +4602,16 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
             for k, v in servers.items()
             if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
         }
+        # Cached entries with no live session are parked or mid-reconnect.
+        # Their tools are deregistered, so nothing else can reach
+        # _signal_reconnect — without this nudge a new session silently
+        # waits up to _PARKED_RETRY_INTERVAL for the next self-probe
+        # (#50170). Wake them now so their tools come back promptly.
+        stale_cached = [
+            _servers[k]
+            for k in servers
+            if k in _servers and getattr(_servers[k], "session", None) is None
+        ]
         _server_connecting.update(new_servers)
         for srv_name in new_servers:
             _server_connect_errors.pop(srv_name, None)
@@ -4404,6 +4621,9 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
                 _parallel_safe_servers.add(sanitize_mcp_name_component(srv_name))
             else:
                 _parallel_safe_servers.discard(sanitize_mcp_name_component(srv_name))
+
+    for srv in stale_cached:
+        _signal_reconnect(srv)
 
     if not new_servers:
         return _existing_tool_names()
@@ -4525,15 +4745,15 @@ def discover_mcp_tools() -> List[str]:
 def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
     """Check if an MCP tool belongs to a server that supports parallel tool calls.
 
-    MCP tool names follow the pattern ``mcp_{server}_{tool}``, but that string
-    shape is ambiguous when server names contain underscores. Use the exact
-    server provenance captured at registration time rather than prefix
+    MCP tool names follow the pattern ``mcp__{server}__{tool}``, but that
+    string shape is ambiguous when server names contain underscores. Use the
+    exact server provenance captured at registration time rather than prefix
     matching, then check whether that server's config includes
     ``supports_parallel_tool_calls: true``.
 
     Returns False for non-MCP tools or tools from servers without the flag.
     """
-    if not tool_name.startswith("mcp_"):
+    if not tool_name.startswith(MCP_TOOL_NAME_PREFIX):
         return False
     with _lock:
         server_name = _mcp_tool_server_names.get(tool_name)

@@ -710,3 +710,63 @@ def test_sanitize_preserves_distinct_tool_call_ids():
     assistant = [m for m in out if m.get("role") == "assistant"][0]
     assert [tc["id"] for tc in assistant["tool_calls"]] == ["call_A", "call_B"]
     assert sorted(m["tool_call_id"] for m in out if m.get("role") == "tool") == ["call_A", "call_B"]
+
+
+def test_sanitize_drops_empty_tool_calls_array():
+    """sanitize_api_messages strips ``tool_calls: []`` from assistant messages.
+
+    DeepSeek v4 rejects an empty tool_calls array with HTTP 400 "Invalid
+    'messages[N].tool_calls': empty array" (#58755). The empty array is
+    semantically "no tool calls", so the key is dropped while content is
+    preserved.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "answer", "tool_calls": []},
+    ]
+    out = sanitize_api_messages(list(messages))
+    assistant = [m for m in out if m.get("role") == "assistant"][0]
+    assert "tool_calls" not in assistant
+    assert assistant["content"] == "answer"
+
+
+def test_sanitize_drops_non_list_tool_calls():
+    """A malformed non-list ``tool_calls`` (e.g. None under the key) is also
+    dropped so it can't reach a strict provider."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "assistant", "content": "text", "tool_calls": None},
+    ]
+    out = sanitize_api_messages(list(messages))
+    assert "tool_calls" not in out[0]
+
+
+def test_sanitize_does_not_mutate_original_on_empty_tool_calls():
+    """Stripping must be non-destructive: the caller's message dicts (the
+    persisted trajectory) keep their original ``tool_calls`` key."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    original_assistant = {"role": "assistant", "content": "answer", "tool_calls": []}
+    messages = [{"role": "user", "content": "hi"}, original_assistant]
+    sanitize_api_messages(list(messages))
+    assert original_assistant["tool_calls"] == []  # untouched in-place
+
+
+def test_sanitize_preserves_populated_tool_calls():
+    """Negative control: a non-empty tool_calls array (with its matching tool
+    result) must survive untouched."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_Z", "type": "function",
+             "function": {"name": "foo", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "call_Z", "content": "r"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    assistant = [m for m in out if m.get("role") == "assistant"][0]
+    assert [tc["id"] for tc in assistant["tool_calls"]] == ["call_Z"]

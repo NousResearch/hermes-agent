@@ -144,6 +144,44 @@ class TestEnableDisableNested:
     @patch("hermes_cli.plugins_cmd._plugins_dir")
     @patch("hermes_cli.plugins_cmd._save_disabled_set")
     @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_enable_clears_manifest_name_alias_from_disabled(
+        self, mock_en, mock_save_en, mock_save_dis,
+        mock_user, mock_bundled, tmp_path,
+    ):
+        """#40190 follow-up: enabling by canonical key must clear a stale
+        disable entry recorded under the *manifest name*.
+
+        The web providers ship with a manifest name that differs from the
+        key (``web-firecrawl`` vs ``web/firecrawl``). A user who ran
+        ``hermes plugins disable web-firecrawl`` gets ``web-firecrawl`` in
+        ``plugins.disabled``. Since the loader's disable check matches on
+        the manifest name too, ``enable web/firecrawl`` must remove that
+        entry or "explicit disable wins" keeps the plugin off.
+        """
+        from hermes_cli.plugins_cmd import cmd_enable
+        _make_category_plugin(tmp_path, "web", "firecrawl", {
+            "name": "web-firecrawl", "version": "1.0.0",
+            "description": "firecrawl", "kind": "backend",
+        })
+        mock_user.return_value = tmp_path
+        mock_bundled.return_value = tmp_path / "nonexistent"
+        # Disabled under the manifest name (neither key nor bare leaf).
+        with patch(
+            "hermes_cli.plugins_cmd._get_disabled_set",
+            return_value={"web-firecrawl"},
+        ):
+            cmd_enable("web/firecrawl", allow_tool_override=False)
+
+        saved_en = mock_save_en.call_args[0][0]
+        saved_dis = mock_save_dis.call_args[0][0]
+        assert "web/firecrawl" in saved_en
+        assert "web-firecrawl" not in saved_dis  # manifest-name alias cleared
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
     @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
     @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
     def test_disable_bare_name_writes_key_and_clears_alias(
@@ -338,3 +376,63 @@ class TestEnableToolOverrideConsent:
             cmd_enable("trusted_bundled")
 
         mock_set_flag.assert_not_called()
+
+
+class TestCompositeMenuWritesCanonicalKey:
+    """#40190 follow-up: the interactive `hermes plugins` menu must persist
+    the CANONICAL KEY (``web/firecrawl``), never the bare manifest name
+    (``web-firecrawl``), so its disabled-list entries stay aligned with what
+    ``cmd_enable`` clears and what PluginManager gates on. Writing the bare
+    name is what silently vetoed a bundled backend forever (pi314).
+    """
+
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_fallback_unchecked_plugin_disables_by_key_not_name(
+        self, mock_en, mock_save_en, mock_save_dis,
+    ):
+        from hermes_cli.plugins_cmd import _run_composite_fallback
+        from rich.console import Console
+
+        # key differs from the manifest name, mirroring web/firecrawl.
+        plugin_keys = ["web/firecrawl"]
+        plugin_labels = ["web-firecrawl — firecrawl [bundled]"]
+        plugin_selected = set()  # unchecked → should be disabled
+
+        # First input() toggles nothing (blank Enter confirms immediately),
+        # second (category prompt) is skipped with blank Enter.
+        with patch("builtins.input", return_value=""):
+            _run_composite_fallback(
+                plugin_keys, plugin_labels, plugin_selected,
+                set(), [], Console(),
+            )
+
+        saved_dis = mock_save_dis.call_args[0][0]
+        assert "web/firecrawl" in saved_dis      # canonical key persisted
+        assert "web-firecrawl" not in saved_dis   # never the bare name
+
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_fallback_checked_plugin_enables_by_key_and_clears_aliases(
+        self, mock_en, mock_save_en, mock_save_dis,
+    ):
+        from hermes_cli.plugins_cmd import _run_composite_fallback
+        from rich.console import Console
+
+        plugin_keys = ["web/firecrawl"]
+        plugin_labels = ["web-firecrawl — firecrawl [bundled]"]
+        plugin_selected = {0}  # checked → enabled
+
+        # Pre-existing stale bare-leaf disable should be cleared on enable.
+        with patch("builtins.input", return_value=""):
+            _run_composite_fallback(
+                plugin_keys, plugin_labels, plugin_selected,
+                {"firecrawl"}, [], Console(),
+            )
+
+        saved_en = mock_save_en.call_args[0][0]
+        saved_dis = mock_save_dis.call_args[0][0]
+        assert "web/firecrawl" in saved_en
+        assert "firecrawl" not in saved_dis  # stale bare-leaf alias cleared

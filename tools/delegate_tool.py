@@ -28,7 +28,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from toolsets import TOOLSETS
 
@@ -464,6 +464,44 @@ def _get_child_timeout() -> Optional[float]:
     return DEFAULT_CHILD_TIMEOUT
 
 
+def _get_retry_on_failure() -> int:
+    """Read delegation.retry_on_failure from config.
+
+    Number of retry attempts for failed subagents (timeout/error, not
+    interrupted). 0 disables retries (pre-1.23 compatibility). Default: 3.
+    """
+    cfg = _load_config()
+    val = cfg.get("retry_on_failure")
+    if val is not None:
+        try:
+            return max(0, int(val))
+        except (TypeError, ValueError):
+            logger.warning(
+                "delegation.retry_on_failure=%r is not a valid int; using default %d",
+                val, _DEFAULT_RETRY_ON_FAILURE,
+            )
+    return _DEFAULT_RETRY_ON_FAILURE
+
+
+def _get_retry_delay_seconds() -> float:
+    """Read delegation.retry_delay_seconds from config.
+
+    Base delay (seconds) between retries. Exponential backoff: 5 → 10 → 20
+    → capped at 60s. Minimum 1s floor. Default: 5.0.
+    """
+    cfg = _load_config()
+    val = cfg.get("retry_delay_seconds")
+    if val is not None:
+        try:
+            return max(1.0, float(val))
+        except (TypeError, ValueError):
+            logger.warning(
+                "delegation.retry_delay_seconds=%r is not a valid float; using default %.1f",
+                val, _DEFAULT_RETRY_DELAY_SECONDS,
+            )
+    return _DEFAULT_RETRY_DELAY_SECONDS
+
+
 def _get_max_spawn_depth() -> int:
     """Read delegation.max_spawn_depth from config, floored at 1 (no ceiling).
 
@@ -602,6 +640,11 @@ _MIN_SUMMARY_CHARS = 2000
 # detection lives in the heartbeat staleness monitor below. Users can opt back
 # in via delegation.child_timeout_seconds.
 DEFAULT_CHILD_TIMEOUT: Optional[float] = None
+# Subagent retry on failure (timeout/error, not interrupted).
+# Default 0 — disabled unless delegation.retry_on_failure is explicitly set.
+# Set 3 for 3 retries with exponential backoff (5s → 10s → 20s capped at 60s).
+_DEFAULT_RETRY_ON_FAILURE = 0
+_DEFAULT_RETRY_DELAY_SECONDS = 5.0
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 # Stale-heartbeat thresholds. A child with no API-call progress is either:
 #   - idle between turns (no current_tool) — probably stuck on a slow API call
@@ -2316,6 +2359,79 @@ def _run_single_child(
             logger.debug("Failed to close child agent after delegation")
 
 
+def _run_single_child_with_retry(
+    task_index: int,
+    goal: str,
+    child: Any,
+    parent_agent: Any,
+    *,
+    retry_count: int = _DEFAULT_RETRY_ON_FAILURE,
+    retry_delay: float = _DEFAULT_RETRY_DELAY_SECONDS,
+    rebuild_fn: Optional[Callable] = None,
+) -> Dict[str, Any]:
+    """Run a subagent with retry on transient failures.
+
+    Non-retriable results (completed, interrupted) return immediately.
+    Each retry gets a *fresh* child agent via ``rebuild_fn(task_index)`` —
+    the original child is consumed/closed by the first run.
+
+    Backoff: delay * 2^(attempt-1), capped at 60 s.
+    Only statuses ``timeout``, ``error``, ``failed`` trigger retry.
+    """
+    max_attempts = 1 + retry_count  # first run + N retries
+    attempt = 0
+    last_result: Optional[Dict[str, Any]] = None
+
+    while attempt < max_attempts:
+        if attempt > 0:
+            wait = min(retry_delay * (2 ** (attempt - 1)), 60.0)
+            logger.info(
+                "Retrying subagent %d (attempt %d/%d) after %.1fs",
+                task_index, attempt, retry_count, wait,
+            )
+            time.sleep(wait)
+            if rebuild_fn:
+                try:
+                    child = rebuild_fn(task_index)
+                except Exception as exc:
+                    logger.error(
+                        "Failed to rebuild child for retry %d: %s",
+                        attempt, exc,
+                    )
+                    return {
+                        "task_index": task_index,
+                        "status": "error",
+                        "summary": None,
+                        "error": (
+                            f"Subagent rebuild failed on retry {attempt}/{retry_count}: {exc}"
+                        ),
+                        "api_calls": 0,
+                        "duration_seconds": 0.0,
+                        "exit_reason": "error",
+                    }
+
+        last_result = _run_single_child(task_index, goal, child, parent_agent)
+        status = last_result.get("status", "")
+
+        # Completed or user-interrupted: return immediately
+        if status in ("completed", "interrupted"):
+            return last_result
+        # Only retry on transient-looking failures
+        if status not in ("timeout", "error", "failed"):
+            return last_result
+
+        attempt += 1
+
+    # All attempts exhausted — annotate the last error
+    assert last_result is not None  # loop ran at least once
+    original_error = last_result.get("error", "") or ""
+    last_result["error"] = (
+        f"Subagent failed after {retry_count} retries. "
+        f"Last error: {original_error}"
+    )
+    return last_result
+
+
 def _recover_tasks_from_json_string(
     tasks: Any,
 ) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
@@ -2521,10 +2637,67 @@ def delegate_task(
         results block. That is the contract: fan-out runs in the background,
         waits on each other, and returns together.
         """
+        # Read retry config once — same for all children in this batch
+        _retry_count = _get_retry_on_failure()
+        _retry_delay = _get_retry_delay_seconds()
+
+        def _make_rebuild_fn(
+            task_i: int,
+            task_data: dict,
+            task_role: str,
+            task_acp_final,
+        ):
+            """Factory: return a closure that rebuilds a child agent for retry.
+
+            Each call captures one task's params by value so loop closures
+            don't share stale references.
+            """
+            # Resolve task-level acp_args once at bind time
+            _t_acp = task_acp_final
+
+            def _rebuild(task_index: int):
+                """Build a fresh AIAgent for retry attempt."""
+                _p_acp = getattr(parent_agent, "acp_args", None) or []
+                _p_ts = getattr(parent_agent, "_enabled_toolsets", None) or getattr(parent_agent, "toolsets", []) or []
+                child = _build_child_agent(
+                    task_index=task_index,
+                    goal=task_data["goal"],
+                    context=task_data.get("context"),
+                    toolsets=task_data.get("toolsets") or _p_ts,
+                    model=creds["model"],
+                    max_iterations=effective_max_iter,
+                    task_count=n_tasks,
+                    parent_agent=parent_agent,
+                    override_provider=creds["provider"],
+                    override_base_url=creds["base_url"],
+                    override_api_key=creds["api_key"],
+                    override_api_mode=creds["api_mode"],
+                    override_acp_command=task_data.get("acp_command"),
+                    override_acp_args=_t_acp or _p_acp,
+                    role=task_role,
+                )
+                child._delegate_saved_tool_names = list(_parent_tool_names)
+                return child
+
+            return _rebuild
+
         if n_tasks == 1:
             # Single task -- run directly (no thread pool overhead)
             _i, _t, child = children[0]
-            result = _run_single_child(_i, _t["goal"], child, parent_agent)
+            _task_role = _normalize_role(_t.get("role") or top_role)
+            _task_acp_raw = _t.get("acp_args") if "acp_args" in _t else None
+            _p_acp = getattr(parent_agent, "acp_args", None) or []
+            _task_acp_final = (
+                _task_acp_raw
+                if _task_acp_raw is not None
+                else (creds.get("args") or _p_acp)
+            )
+            _rebuild = _make_rebuild_fn(_i, _t, _task_role, _task_acp_final)
+            result = _run_single_child_with_retry(
+                _i, _t["goal"], child, parent_agent,
+                retry_count=_retry_count, retry_delay=_retry_delay,
+                rebuild_fn=_rebuild,
+            )
             results.append(result)
         else:
             # Batch -- run in parallel with per-task progress lines
@@ -2537,14 +2710,33 @@ def delegate_task(
             from tools.daemon_pool import DaemonThreadPoolExecutor
             with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                 futures = {}
+                _p_acp_batch = getattr(parent_agent, "acp_args", None) or []
                 for i, t, child in children:
-                    future = executor.submit(
-                        _run_single_child,
-                        task_index=i,
-                        goal=t["goal"],
-                        child=child,
-                        parent_agent=parent_agent,
+                    _i, _t, _child = i, t, child
+                    _task_role = _normalize_role(_t.get("role") or top_role)
+                    _task_acp_raw = _t.get("acp_args") if "acp_args" in _t else None
+                    _task_acp_final = (
+                        _task_acp_raw
+                        if _task_acp_raw is not None
+                        else (creds.get("args") or _p_acp_batch)
                     )
+                    _rebuild = _make_rebuild_fn(_i, _t, _task_role, _task_acp_final)
+
+                    def _run_with_retry(
+                        idx=_i,
+                        goal=_t["goal"],
+                        child_agent=_child,
+                        rcount=_retry_count,
+                        rdelay=_retry_delay,
+                        rfn=_rebuild,
+                    ):
+                        return _run_single_child_with_retry(
+                            idx, goal, child_agent, parent_agent,
+                            retry_count=rcount, retry_delay=rdelay,
+                            rebuild_fn=rfn,
+                        )
+
+                    future = executor.submit(_run_with_retry)
                     futures[future] = i
 
                 # Poll futures with interrupt checking.  as_completed() blocks

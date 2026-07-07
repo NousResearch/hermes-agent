@@ -265,6 +265,64 @@ def test_definition_draft_endpoint_returns_validated_spec(client, monkeypatch):
     assert body["summary"] == "Drafted dashboard demo."
 
 
+def test_dashboard_plain_language_draft_deploy_run_e2e(client, monkeypatch):
+    import hermes_dashboard_plugin_workflows_test as plugin
+    from hermes_cli.workflows_assistant import parse_assistant_payload
+
+    def fake_draft(goal):
+        assert "plain language" in goal
+        return parse_assistant_payload(
+            {
+                "spec": {
+                    "id": "plain_language_demo",
+                    "name": "Plain Language Demo",
+                    "version": 1,
+                    "triggers": [
+                        {"type": "manual", "id": "manual", "input": {"topic": ""}}
+                    ],
+                    "nodes": {
+                        "start": {
+                            "type": "pass",
+                            "output": {"topic": "${ input.topic }"},
+                        }
+                    },
+                },
+                "summary": "Drafted from plain language.",
+                "assumptions": [],
+                "questions": [],
+                "warnings": [],
+                "unsupported_requests": [],
+            }
+        )
+
+    monkeypatch.setattr(plugin.workflows_assistant, "draft_workflow_with_default_runner", fake_draft)
+
+    r = client.post(
+        "/api/plugins/workflows/definitions/draft", json={"goal": "plain language demo"}
+    )
+    assert r.status_code == 200, r.text
+    spec = r.json()["draft"]["spec"]
+
+    r = client.post("/api/plugins/workflows/definitions/deploy", json={"spec": spec})
+    assert r.status_code == 200, r.text
+    assert r.json()["definition"]["workflow_id"] == "plain_language_demo"
+
+    r = client.post(
+        "/api/plugins/workflows/definitions/plain_language_demo/run",
+        json={"input": {"topic": "ai-first workflows"}},
+    )
+    assert r.status_code == 200, r.text
+    execution_id = r.json()["execution"]["execution_id"]
+
+    r = client.get(f"/api/plugins/workflows/executions/{execution_id}")
+    assert r.status_code == 200, r.text
+    assert r.json()["execution"]["status"] in {"queued", "succeeded"}
+
+    r = client.get(f"/api/plugins/workflows/executions/{execution_id}/node-runs")
+    assert r.status_code == 200, r.text
+    assert isinstance(r.json()["node_runs"], list)
+
+
 def test_definition_draft_endpoint_redacts_unexpected_runtime_errors(client, monkeypatch):
     import hermes_dashboard_plugin_workflows_test as plugin
 

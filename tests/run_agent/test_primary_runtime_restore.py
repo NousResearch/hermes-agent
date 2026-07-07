@@ -30,12 +30,18 @@ def _make_tool_defs(*names: str) -> list:
     ]
 
 
-def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm.example.com/v1"):
+def _make_agent(
+    fallback_model=None,
+    provider="custom",
+    base_url="https://my-llm.example.com/v1",
+    request_overrides=None,
+):
     """Create a minimal AIAgent with optional fallback config."""
     with (
         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
+        patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
     ):
         agent = AIAgent(
             api_key="test-key-12345678",
@@ -45,6 +51,7 @@ def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm
             skip_context_files=True,
             skip_memory=True,
             fallback_model=fallback_model,
+            request_overrides=dict(request_overrides or {}),
         )
         agent.client = MagicMock()
         return agent
@@ -73,6 +80,13 @@ class TestPrimaryRuntimeSnapshot:
         assert rt["api_mode"] == agent.api_mode
         assert "client_kwargs" in rt
         assert "compressor_context_length" in rt
+
+    def test_snapshot_includes_request_overrides(self):
+        overrides = {"extra_body": {"reasoning": {"effort": "medium"}}}
+        agent = _make_agent(request_overrides=overrides)
+        rt = agent._primary_runtime
+        assert rt["request_overrides"] == overrides
+        assert rt["request_overrides"] is not agent.request_overrides
 
     def test_snapshot_includes_compressor_state(self):
         agent = _make_agent()
@@ -200,6 +214,19 @@ class TestRestorePrimaryRuntime:
             agent._restore_primary_runtime()
 
         assert agent._use_prompt_caching == original_caching
+
+    def test_restores_request_overrides(self):
+        original_overrides = {"extra_body": {"reasoning": {"effort": "medium"}}}
+        agent = _make_agent(request_overrides=original_overrides)
+        agent._fallback_activated = True
+        agent.request_overrides = {"extra_body": {"fallback_only": True}}
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent.request_overrides == original_overrides
+        assert agent.request_overrides is not agent._primary_runtime["request_overrides"]
 
     def test_restore_skips_cross_provider_pool_entry(self):
         """Restore must not swap in a fallback provider credential for the primary runtime."""
@@ -409,6 +436,22 @@ class TestTryRecoverPrimaryTransport:
 
         assert result is True
 
+    def test_recovery_restores_request_overrides(self):
+        original_overrides = {"extra_body": {"reasoning": {"effort": "medium"}}}
+        agent = _make_agent(provider="custom", request_overrides=original_overrides)
+        error = _make_transport_error("ReadTimeout")
+        agent.request_overrides = {"extra_body": {"fallback_only": True}}
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()), \
+             patch("time.sleep"):
+            result = agent._try_recover_primary_transport(
+                error, retry_count=3, max_retries=3,
+            )
+
+        assert result is True
+        assert agent.request_overrides == original_overrides
+        assert agent.request_overrides is not agent._primary_runtime["request_overrides"]
+
     def test_recovers_on_connect_timeout(self):
         agent = _make_agent(provider="custom")
         error = _make_transport_error("ConnectTimeout")
@@ -502,6 +545,7 @@ class TestTryRecoverPrimaryTransport:
         error = _make_transport_error("ConnectError")
 
         with patch("run_agent.OpenAI", return_value=MagicMock()), \
+             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()), \
              patch("time.sleep"):
             result = agent._try_recover_primary_transport(
                 error, retry_count=3, max_retries=3,

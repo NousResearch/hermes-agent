@@ -1007,6 +1007,7 @@ def try_recover_primary_transport(
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
+        agent.request_overrides = dict(rt.get("request_overrides") or {})
 
         if agent.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client
@@ -1170,6 +1171,7 @@ def restore_primary_runtime(agent) -> bool:
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
+        agent.request_overrides = dict(rt.get("request_overrides") or {})
         agent._client_kwargs = dict(rt["client_kwargs"])
         agent._use_prompt_caching = rt["use_prompt_caching"]
         # Default to native layout when the restored snapshot predates the

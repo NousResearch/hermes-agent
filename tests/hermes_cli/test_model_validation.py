@@ -278,26 +278,46 @@ class TestFetchApiModels:
         with patch("hermes_cli.models.urllib.request.urlopen", side_effect=Exception("timeout")):
             assert fetch_api_models("key", "https://example.com/v1") is None
 
+    def test_rejects_metadata_url_without_network_call(self):
+        with patch(
+            "httpx.Client",
+            side_effect=AssertionError("metadata endpoints must not be probed"),
+        ):
+            probe = probe_api_models("key", "http://169.254.169.254/latest")
+
+        assert probe["models"] is None
+        assert probe["probed_url"] is None
+
+    def test_rejects_non_http_scheme_without_network_call(self):
+        with patch(
+            "httpx.Client",
+            side_effect=AssertionError("non-http endpoints must not be probed"),
+        ):
+            probe = probe_api_models("key", "file:///etc/passwd")
+
+        assert probe["models"] is None
+        assert probe["probed_url"] is None
+
     def test_probe_api_models_tries_v1_fallback(self):
-        class _Resp:
+        class _Client:
             def __enter__(self):
                 return self
 
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def read(self):
-                return b'{"data": [{"id": "local-model"}]}'
+            def get(self, url, headers=None):
+                calls.append(url)
+                if url.endswith("/v1/models"):
+                    response = MagicMock()
+                    response.raise_for_status.return_value = None
+                    response.json.return_value = {"data": [{"id": "local-model"}]}
+                    return response
+                raise Exception("404")
 
         calls = []
 
-        def _fake_urlopen(req, timeout=5.0):
-            calls.append(req.full_url)
-            if req.full_url.endswith("/v1/models"):
-                return _Resp()
-            raise Exception("404")
-
-        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=_fake_urlopen):
+        with patch("httpx.Client", return_value=_Client()):
             probe = probe_api_models("key", "http://localhost:8000")
 
         assert calls == ["http://localhost:8000/models", "http://localhost:8000/v1/models"]
@@ -897,48 +917,43 @@ class TestProbeApiModelsUserAgent:
     endpoint is reachable and the listing exists.
     """
 
-    def _make_mock_response(self, body: bytes):
-        from unittest.mock import MagicMock
-        mock_resp = MagicMock()
-        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-        mock_resp.__exit__ = MagicMock(return_value=False)
-        mock_resp.read = MagicMock(return_value=body)
-        return mock_resp
-
     def test_probe_sends_hermes_user_agent(self):
         from unittest.mock import patch
 
-        body = b'{"data":[{"id":"claude-opus-4.7"}]}'
-        with patch(
-            "hermes_cli.models.urllib.request.urlopen",
-            return_value=self._make_mock_response(body),
-        ) as mock_urlopen:
+        captured = {}
+        mock_client = MagicMock()
+        mock_client.__enter__.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"data": [{"id": "claude-opus-4.7"}]}
+        mock_client.get.return_value = mock_response
+        mock_client.get.side_effect = lambda url, headers=None: (
+            captured.update({"url": url, "headers": headers}) or mock_response
+        )
+        with patch("httpx.Client", return_value=mock_client):
             result = probe_api_models("sk-test", "https://example.com/v1")
 
         assert result["models"] == ["claude-opus-4.7"]
-        # The urlopen call receives a Request object as its first positional arg
-        req = mock_urlopen.call_args[0][0]
-        ua = req.get_header("User-agent")  # urllib title-cases header names
+        ua = captured["headers"].get("User-Agent")
         assert ua, "probe_api_models must send a User-Agent header"
         assert ua.startswith("hermes-cli/"), (
             f"User-Agent must advertise hermes-cli, got {ua!r}"
         )
-        # Must not fall back to urllib's default — that's what Cloudflare 1010 blocks.
-        assert not ua.startswith("Python-urllib")
 
     def test_probe_user_agent_sent_without_api_key(self):
         """UA must be present even for endpoints that don't need auth."""
         from unittest.mock import patch
 
-        body = b'{"data":[]}'
-        with patch(
-            "hermes_cli.models.urllib.request.urlopen",
-            return_value=self._make_mock_response(body),
-        ) as mock_urlopen:
+        captured = {}
+        mock_client = MagicMock()
+        mock_client.__enter__.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"data": []}
+        mock_client.get.side_effect = lambda url, headers=None: (
+            captured.update({"url": url, "headers": headers}) or mock_response
+        )
+        with patch("httpx.Client", return_value=mock_client):
             probe_api_models(None, "https://example.com/v1")
 
-        req = mock_urlopen.call_args[0][0]
-        ua = req.get_header("User-agent")
+        ua = captured["headers"].get("User-Agent")
         assert ua and ua.startswith("hermes-cli/")
-        # No Authorization was set, but UA must still be present.
-        assert req.get_header("Authorization") is None
+        assert captured["headers"].get("Authorization") is None

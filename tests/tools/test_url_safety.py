@@ -2,9 +2,15 @@
 
 import asyncio
 import socket
+import time
 from unittest.mock import patch
 
+import httpx
+
 from tools.url_safety import (
+    SSRFProtectedAsyncTransport,
+    SSRFProtectedTransport,
+    async_resolve_safe_url_addresses,
     is_safe_url,
     async_is_safe_url,
     is_always_blocked_url,
@@ -12,6 +18,8 @@ from tools.url_safety import (
     redirect_target_from_response,
     _is_blocked_ip,
     _global_allow_private_urls,
+    _dns_timeout_for_connect,
+    _request_connect_timeout,
     _reset_allow_private_cache,
 )
 
@@ -292,15 +300,231 @@ class TestAsyncIsSafeUrl:
             assert await async_is_safe_url("http://localhost:8080/") is False
 
     @pytest.mark.asyncio
-    async def test_dns_timeout_fails_closed(self, monkeypatch):
-        async def never_returns(*_args, **_kwargs):
-            await asyncio.sleep(60)
-            return True
+    async def test_dns_timeout_fails_closed(self):
+        def slow_resolve(*args, **kwargs):
+            time.sleep(0.05)
+            return ("93.184.216.34",)
 
-        monkeypatch.setattr("tools.url_safety._DNS_RESOLUTION_TIMEOUT_SECONDS", 0.01)
-        monkeypatch.setattr("tools.url_safety.asyncio.to_thread", never_returns)
+        with patch(
+            "tools.url_safety.resolve_safe_url_addresses",
+            side_effect=slow_resolve,
+        ):
+            addresses = await async_resolve_safe_url_addresses(
+                "https://slow.example/image.png",
+                timeout_seconds=0.001,
+            )
 
-        assert await async_is_safe_url("https://slow-dns.example/") is False
+        assert addresses == ()
+
+
+class TestSSRFProtectedTransport:
+    def test_sync_transport_pins_validated_address_and_preserves_authority(self):
+        seen = {}
+
+        def handler(request):
+            seen["url"] = str(request.url)
+            seen["host"] = request.headers["host"]
+            seen["sni"] = request.extensions["sni_hostname"]
+            return httpx.Response(200, request=request)
+
+        answers = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+        transport = SSRFProtectedTransport(lambda: httpx.MockTransport(handler))
+        with patch("tools.url_safety.get_environment_proxies", return_value={}), \
+             patch("socket.getaddrinfo", return_value=answers), \
+             httpx.Client(transport=transport) as client:
+            response = client.get("https://example.com/image.png")
+
+        assert response.status_code == 200
+        assert seen == {
+            "url": "https://93.184.216.34/image.png",
+            "host": "example.com",
+            "sni": "example.com",
+        }
+
+    def test_sync_transport_blocks_rebinding_after_preflight(self):
+        public = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+        private = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
+
+        def unexpected_request(request):
+            raise AssertionError(f"unsafe request reached transport: {request.url}")
+
+        transport = SSRFProtectedTransport(
+            lambda: httpx.MockTransport(unexpected_request)
+        )
+        with patch("tools.url_safety.get_environment_proxies", return_value={}), \
+             patch("socket.getaddrinfo", side_effect=[public, private]):
+            assert is_safe_url("https://rebind.example/image.png") is True
+            with httpx.Client(transport=transport) as client, pytest.raises(ValueError):
+                client.get("https://rebind.example/image.png")
+
+    def test_sync_transport_isolates_connection_pools_by_original_origin(self):
+        created = []
+        answers = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+        def factory():
+            transport = httpx.MockTransport(
+                lambda request: httpx.Response(200, request=request)
+            )
+            created.append(transport)
+            return transport
+
+        with patch("tools.url_safety.get_environment_proxies", return_value={}), \
+             patch("socket.getaddrinfo", return_value=answers):
+            transport = SSRFProtectedTransport(factory)
+            with httpx.Client(transport=transport) as client:
+                client.get("https://one.example/image.png")
+                client.get("https://two.example/image.png")
+
+        assert len(created) == 2
+
+    def test_sync_transport_rejects_effective_environment_proxy(self):
+        transport = SSRFProtectedTransport()
+        request = httpx.Request("GET", "https://example.com/image.png")
+
+        with patch(
+            "tools.url_safety.get_environment_proxies",
+            return_value={"https://": "http://proxy"},
+        ), \
+             pytest.raises(RuntimeError, match="environment proxy"):
+            transport.handle_request(request)
+
+    def test_sync_transport_matches_httpx_no_proxy_apex_semantics(self):
+        transport = SSRFProtectedTransport()
+        request = httpx.Request("GET", "https://example.com/image.png")
+
+        with patch(
+            "tools.url_safety.get_environment_proxies",
+            return_value={
+                "https://": "http://proxy",
+                "all://*.example.com": None,
+            },
+        ), pytest.raises(RuntimeError, match="environment proxy"):
+            transport.handle_request(request)
+
+    def test_sync_dns_timeout_honors_connect_budget(self):
+        created = []
+
+        def slow_resolve(*args, **kwargs):
+            time.sleep(0.05)
+            return ("93.184.216.34",)
+
+        transport = SSRFProtectedTransport(
+            lambda: created.append(True) or httpx.MockTransport(
+                lambda request: httpx.Response(200, request=request)
+            )
+        )
+        request = httpx.Request(
+            "GET",
+            "https://slow.example/image.png",
+            extensions={"timeout": {"connect": 0.001}},
+        )
+
+        with patch("tools.url_safety.get_environment_proxies", return_value={}), \
+             patch("tools.url_safety.resolve_safe_url_addresses", side_effect=slow_resolve), \
+             pytest.raises(ValueError, match="Blocked unsafe URL target"):
+            transport.handle_request(request)
+
+        assert created == []
+
+    def test_sync_dns_capacity_exhaustion_fails_closed(self):
+        created = []
+
+        class _FullSlots:
+            def acquire(self, blocking=False):
+                return False
+
+        transport = SSRFProtectedTransport(
+            lambda: created.append(True) or httpx.MockTransport(
+                lambda request: httpx.Response(200, request=request)
+            )
+        )
+        request = httpx.Request("GET", "https://busy.example/image.png")
+
+        with patch("tools.url_safety.get_environment_proxies", return_value={}), \
+             patch("tools.url_safety._DNS_SLOTS", _FullSlots()), \
+             pytest.raises(ValueError, match="Blocked unsafe URL target"):
+            transport.handle_request(request)
+
+        assert created == []
+
+    def test_sync_connection_receives_remaining_connect_budget(self):
+        captured = {}
+
+        def delayed_resolve(*args, **kwargs):
+            time.sleep(0.01)
+            return ("93.184.216.34",)
+
+        def handler(request):
+            captured["connect"] = request.extensions["timeout"]["connect"]
+            return httpx.Response(200, request=request)
+
+        transport = SSRFProtectedTransport(
+            lambda: httpx.MockTransport(handler)
+        )
+        request = httpx.Request(
+            "GET",
+            "https://budget.example/image.png",
+            extensions={"timeout": {"connect": 0.1}},
+        )
+
+        with patch("tools.url_safety.get_environment_proxies", return_value={}), \
+             patch("tools.url_safety.resolve_safe_url_addresses", side_effect=delayed_resolve):
+            response = transport.handle_request(request)
+
+        assert response.status_code == 200
+        assert 0 < captured["connect"] < 0.1
+
+    def test_connect_timeout_semantics_are_preserved(self):
+        long_request = httpx.Request(
+            "GET",
+            "https://example.com",
+            extensions={"timeout": {"connect": 8.0}},
+        )
+        zero_request = httpx.Request(
+            "GET",
+            "https://example.com",
+            extensions={"timeout": {"connect": 0.0}},
+        )
+        unlimited_request = httpx.Request(
+            "GET",
+            "https://example.com",
+            extensions={"timeout": {"connect": None}},
+        )
+
+        assert _request_connect_timeout(long_request) == 8.0
+        assert _request_connect_timeout(zero_request) == 0.0
+        assert _request_connect_timeout(unlimited_request) is None
+        assert _dns_timeout_for_connect(8.0) == 5.0
+        assert _dns_timeout_for_connect(0.0) == 0.0
+        assert _dns_timeout_for_connect(None) == 5.0
+
+    @pytest.mark.asyncio
+    async def test_async_transport_validates_each_redirect_connection(self):
+        public = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+        private = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
+        calls = []
+
+        async def handler(request):
+            calls.append(str(request.url))
+            return httpx.Response(
+                302,
+                headers={"location": "http://rebind.example/private"},
+                request=request,
+            )
+
+        transport = SSRFProtectedAsyncTransport(
+            lambda: httpx.MockTransport(handler)
+        )
+        with patch("tools.url_safety.get_environment_proxies", return_value={}), \
+             patch("socket.getaddrinfo", side_effect=[public, private]):
+            async with httpx.AsyncClient(
+                transport=transport,
+                follow_redirects=True,
+            ) as client:
+                with pytest.raises(ValueError):
+                    await client.get("https://public.example/image.png")
+
+        assert calls == ["https://93.184.216.34/image.png"]
 
 
 class TestIsBlockedIp:

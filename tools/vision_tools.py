@@ -398,6 +398,7 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
         Exception: If download fails after all retries
     """
     import asyncio
+    from tools.url_safety import SSRFProtectedAsyncTransport
     
     # Create parent directories if they don't exist
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -431,6 +432,7 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
                 timeout=_VISION_DOWNLOAD_TIMEOUT,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
+                transport=SSRFProtectedAsyncTransport(),
             ) as client:
                 response = await client.get(
                     image_url,
@@ -1557,6 +1559,7 @@ def _video_to_base64_data_url(video_path: Path, mime_type: Optional[str] = None)
 async def _download_video(video_url: str, destination: Path, max_retries: int = 3) -> Path:
     """Download video from URL with SSRF protection and retry."""
     import asyncio
+    from tools.url_safety import SSRFProtectedAsyncTransport
 
     destination.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1579,6 +1582,7 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
                 timeout=60.0,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
+                transport=SSRFProtectedAsyncTransport(),
             ) as client:
                 response = await client.get(
                     video_url,

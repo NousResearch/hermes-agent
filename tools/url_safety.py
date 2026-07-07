@@ -12,11 +12,11 @@ that use 198.18.0.0/15 or 100.64.0.0/10).  Even when disabled, cloud
 metadata hostnames (metadata.google.internal, 169.254.169.254) are
 **always** blocked — those are never legitimate agent targets.
 
-Limitations (documented, not fixable at pre-flight level):
-  - DNS rebinding (TOCTOU): an attacker-controlled DNS server with TTL=0
-    can return a public IP for the check, then a private IP for the actual
-    connection. Fixing this requires connection-level validation (e.g.
-    Python's Champion library or an egress proxy like Stripe's Smokescreen).
+Connection-level enforcement:
+  - Pre-flight checks alone cannot stop DNS rebinding. Hermes-owned direct
+    HTTPX fetches use ``SSRFProtectedTransport`` or
+    ``SSRFProtectedAsyncTransport`` so the validated numeric address is the
+    address used for the connection while the original Host and TLS SNI remain.
   - Redirect-based bypass is mitigated by httpx event hooks that re-validate
     each redirect target in vision_tools, gateway platform adapters, and
     media cache helpers. Web tools use third-party SDKs (Firecrawl/Tavily)
@@ -29,14 +29,23 @@ import os
 import socket
 import asyncio
 import re
-from typing import Any, Optional
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from threading import BoundedSemaphore
+from typing import Any, Callable, Optional
 from urllib.parse import parse_qsl, quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
+
+import httpx
+from httpx._utils import URLPattern, get_environment_proxies
 
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
 _DNS_RESOLUTION_TIMEOUT_SECONDS = 5.0
+_ASYNC_DNS_TIMEOUT_SECONDS = _DNS_RESOLUTION_TIMEOUT_SECONDS
+_DNS_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="url-safety-dns")
+_DNS_SLOTS = BoundedSemaphore(8)
 
 
 def normalize_url_for_request(url: str) -> str:
@@ -383,11 +392,15 @@ def _allows_private_ip_resolution(hostname: str, scheme: str) -> bool:
     return scheme == "https" and hostname in _TRUSTED_PRIVATE_IP_HOSTS
 
 
-def is_safe_url(url: str) -> bool:
-    """Return True if the URL target is not a private/internal address.
+def resolve_safe_url_addresses(
+    url: str,
+    *,
+    allow_private_urls: bool | None = None,
+) -> tuple[str, ...]:
+    """Resolve and validate every address for a URL in one DNS operation.
 
-    Resolves the hostname to an IP and checks against private ranges.
-    Fails closed: DNS errors and unexpected exceptions block the request.
+    The returned addresses are safe to pin at the connection layer. An empty
+    tuple means the URL must not be fetched.
 
     When ``security.allow_private_urls`` is enabled (or the env var
     ``HERMES_ALLOW_PRIVATE_URLS=true``), private-IP blocking is skipped.
@@ -400,17 +413,21 @@ def is_safe_url(url: str) -> bool:
         scheme = (parsed.scheme or "").strip().lower()
         if scheme not in {"http", "https"}:
             logger.warning("Blocked request — unsupported URL scheme: %s", scheme or "<empty>")
-            return False
+            return ()
         if not hostname:
-            return False
+            return ()
 
         # Block known internal hostnames — ALWAYS, even with toggle on
         if hostname in _BLOCKED_HOSTNAMES:
             logger.warning("Blocked request to internal hostname: %s", hostname)
-            return False
+            return ()
 
         # Check the global toggle AFTER blocking metadata hostnames
-        allow_all_private = _global_allow_private_urls()
+        allow_all_private = (
+            _global_allow_private_urls()
+            if allow_private_urls is None
+            else allow_private_urls
+        )
 
         allow_private_ip = _allows_private_ip_resolution(hostname, scheme)
 
@@ -421,8 +438,9 @@ def is_safe_url(url: str) -> bool:
             # DNS resolution failed — fail closed. If DNS can't resolve it,
             # the HTTP client will also fail, so blocking loses nothing.
             logger.warning("Blocked request — DNS resolution failed for: %s", hostname)
-            return False
+            return ()
 
+        addresses: list[str] = []
         for family, _, _, _, sockaddr in addr_info:
             ip_str = sockaddr[0]
             if '%' in ip_str:
@@ -432,7 +450,7 @@ def is_safe_url(url: str) -> bool:
             except ValueError:
                 # Still unparseable after scope ID strip — fail closed
                 logger.warning("Blocked request — unparseable IP address %r for hostname %s", sockaddr[0], hostname)
-                return False
+                return ()
 
             # Always block cloud metadata IPs and link-local, even with toggle on
             if ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS):
@@ -440,14 +458,22 @@ def is_safe_url(url: str) -> bool:
                     "Blocked request to cloud metadata address: %s -> %s",
                     hostname, ip_str,
                 )
-                return False
+                return ()
 
             if not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
                 logger.warning(
                     "Blocked request to private/internal address: %s -> %s",
                     hostname, ip_str,
                 )
-                return False
+                return ()
+
+            normalized = ip.compressed
+            if normalized not in addresses:
+                addresses.append(normalized)
+
+        if not addresses:
+            logger.warning("Blocked request — DNS returned no usable addresses for: %s", hostname)
+            return ()
 
         if allow_all_private:
             logger.debug(
@@ -460,13 +486,18 @@ def is_safe_url(url: str) -> bool:
                 hostname,
             )
 
-        return True
+        return tuple(addresses)
 
     except Exception as exc:
         # Fail closed on unexpected errors — don't let parsing edge cases
         # become SSRF bypass vectors
         logger.warning("Blocked request — URL safety check error for %s: %s", url, exc)
-        return False
+        return ()
+
+
+def is_safe_url(url: str) -> bool:
+    """Return True if the URL target is not a private/internal address."""
+    return bool(resolve_safe_url_addresses(url))
 
 
 async def async_is_safe_url(url: str) -> bool:
@@ -475,13 +506,236 @@ async def async_is_safe_url(url: str) -> bool:
     ``socket.getaddrinfo`` can block; call this from async code paths (gateway,
     ``web_extract_tool``, vision download hooks) instead of ``is_safe_url``.
     """
+    return bool(await async_resolve_safe_url_addresses(url))
+
+
+async def async_resolve_safe_url_addresses(
+    url: str,
+    *,
+    allow_private_urls: bool | None = None,
+    timeout_seconds: float = _ASYNC_DNS_TIMEOUT_SECONDS,
+) -> tuple[str, ...]:
+    if not _DNS_SLOTS.acquire(blocking=False):
+        logger.warning("Blocked request — DNS resolver capacity exhausted for: %s", url)
+        return ()
+    future = _DNS_EXECUTOR.submit(
+        resolve_safe_url_addresses,
+        url,
+        allow_private_urls=allow_private_urls,
+    )
+    future.add_done_callback(lambda _: _DNS_SLOTS.release())
     try:
         return await asyncio.wait_for(
-            asyncio.to_thread(is_safe_url, url),
-            timeout=_DNS_RESOLUTION_TIMEOUT_SECONDS,
+            asyncio.wrap_future(future),
+            timeout=timeout_seconds,
         )
-    except asyncio.TimeoutError:
-        return False
+    except TimeoutError:
+        future.cancel()
+        logger.warning("Blocked request — DNS resolution timed out for: %s", url)
+        return ()
+
+
+def _effective_environment_proxy(url: httpx.URL) -> str | None:
+    try:
+        mounts = {
+            URLPattern(pattern): proxy
+            for pattern, proxy in get_environment_proxies().items()
+        }
+    except Exception as exc:
+        raise RuntimeError("Could not verify environment proxy routing safely") from exc
+    for pattern, proxy in sorted(mounts.items()):
+        if pattern.matches(url):
+            return proxy
+    return None
+
+
+def _reject_environment_proxy(url: httpx.URL) -> None:
+    if _effective_environment_proxy(url) is not None:
+        raise RuntimeError(
+            "SSRF-protected direct fetch cannot safely use an environment proxy; "
+            "configure an enforcing egress proxy or NO_PROXY for this host"
+        )
+
+
+def _request_connect_timeout(request: httpx.Request) -> float | None:
+    timeout = request.extensions.get("timeout")
+    if isinstance(timeout, dict) and "connect" in timeout:
+        value = timeout["connect"]
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return max(float(value), 0.0)
+    return _ASYNC_DNS_TIMEOUT_SECONDS
+
+
+def _dns_timeout_for_connect(connect_timeout: float | None) -> float:
+    if connect_timeout is None:
+        return _ASYNC_DNS_TIMEOUT_SECONDS
+    return min(connect_timeout, _ASYNC_DNS_TIMEOUT_SECONDS)
+
+
+def _resolve_safe_url_addresses_bounded(
+    url: str,
+    *,
+    allow_private_urls: bool | None,
+    timeout_seconds: float,
+) -> tuple[str, ...]:
+    if not _DNS_SLOTS.acquire(blocking=False):
+        logger.warning("Blocked request — DNS resolver capacity exhausted for: %s", url)
+        return ()
+    future = _DNS_EXECUTOR.submit(
+        resolve_safe_url_addresses,
+        url,
+        allow_private_urls=allow_private_urls,
+    )
+    future.add_done_callback(lambda _: _DNS_SLOTS.release())
+    try:
+        return future.result(timeout=timeout_seconds)
+    except FutureTimeoutError:
+        future.cancel()
+        logger.warning("Blocked request — DNS resolution timed out for: %s", url)
+        return ()
+
+
+def _pinned_httpx_request(
+    request: httpx.Request,
+    address: str,
+    connect_timeout: float | None,
+) -> httpx.Request:
+    extensions = dict(request.extensions)
+    timeouts = dict(extensions.get("timeout") or {})
+    timeouts["connect"] = connect_timeout
+    extensions["timeout"] = timeouts
+    if request.url.scheme == "https":
+        extensions["sni_hostname"] = request.url.raw_host.decode("ascii")
+    return httpx.Request(
+        request.method,
+        request.url.copy_with(host=address),
+        headers=request.headers,
+        stream=request.stream,
+        extensions=extensions,
+    )
+
+
+class SSRFProtectedTransport(httpx.BaseTransport):
+    def __init__(
+        self,
+        transport_factory: Callable[[], httpx.BaseTransport] | None = None,
+        *,
+        allow_private_urls: bool | None = None,
+    ) -> None:
+        self._transport_factory = transport_factory or httpx.HTTPTransport
+        self._transports: dict[tuple[str, bytes, int | None], httpx.BaseTransport] = {}
+        self._allow_private_urls = allow_private_urls
+
+    def _transport_for(self, request: httpx.Request) -> httpx.BaseTransport:
+        key = (request.url.scheme, request.url.raw_host, request.url.port)
+        transport = self._transports.get(key)
+        if transport is None:
+            transport = self._transport_factory()
+            self._transports[key] = transport
+        return transport
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        _reject_environment_proxy(request.url)
+        connect_timeout = _request_connect_timeout(request)
+        deadline = (
+            None
+            if connect_timeout is None
+            else time.monotonic() + connect_timeout
+        )
+        addresses = _resolve_safe_url_addresses_bounded(
+            str(request.url),
+            allow_private_urls=self._allow_private_urls,
+            timeout_seconds=_dns_timeout_for_connect(connect_timeout),
+        )
+        if not addresses:
+            raise ValueError(f"Blocked unsafe URL target: {request.url}")
+
+        candidates = addresses if request.method in {"GET", "HEAD"} else addresses[:1]
+        last_error: Exception | None = None
+        transport = self._transport_for(request)
+        for address in candidates:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                raise httpx.ConnectTimeout(
+                    "DNS resolution exhausted the connect timeout",
+                    request=request,
+                )
+            try:
+                return transport.handle_request(
+                    _pinned_httpx_request(request, address, remaining)
+                )
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                last_error = exc
+        assert last_error is not None
+        raise last_error
+
+    def close(self) -> None:
+        for transport in self._transports.values():
+            transport.close()
+
+
+class SSRFProtectedAsyncTransport(httpx.AsyncBaseTransport):
+    def __init__(
+        self,
+        transport_factory: Callable[[], httpx.AsyncBaseTransport] | None = None,
+        *,
+        allow_private_urls: bool | None = None,
+    ) -> None:
+        self._transport_factory = transport_factory or httpx.AsyncHTTPTransport
+        self._transports: dict[
+            tuple[str, bytes, int | None],
+            httpx.AsyncBaseTransport,
+        ] = {}
+        self._allow_private_urls = allow_private_urls
+
+    def _transport_for(self, request: httpx.Request) -> httpx.AsyncBaseTransport:
+        key = (request.url.scheme, request.url.raw_host, request.url.port)
+        transport = self._transports.get(key)
+        if transport is None:
+            transport = self._transport_factory()
+            self._transports[key] = transport
+        return transport
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        _reject_environment_proxy(request.url)
+        connect_timeout = _request_connect_timeout(request)
+        deadline = (
+            None
+            if connect_timeout is None
+            else time.monotonic() + connect_timeout
+        )
+        addresses = await async_resolve_safe_url_addresses(
+            str(request.url),
+            allow_private_urls=self._allow_private_urls,
+            timeout_seconds=_dns_timeout_for_connect(connect_timeout),
+        )
+        if not addresses:
+            raise ValueError(f"Blocked unsafe URL target: {request.url}")
+
+        candidates = addresses if request.method in {"GET", "HEAD"} else addresses[:1]
+        last_error: Exception | None = None
+        transport = self._transport_for(request)
+        for address in candidates:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                raise httpx.ConnectTimeout(
+                    "DNS resolution exhausted the connect timeout",
+                    request=request,
+                )
+            try:
+                return await transport.handle_async_request(
+                    _pinned_httpx_request(request, address, remaining)
+                )
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                last_error = exc
+        assert last_error is not None
+        raise last_error
+
+    async def aclose(self) -> None:
+        for transport in self._transports.values():
+            await transport.aclose()
 
 
 def redirect_target_from_response(response: Any) -> Optional[str]:

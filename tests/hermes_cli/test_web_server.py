@@ -7403,3 +7403,263 @@ class TestDashboardPluginStaticAssetAllowlist:
         # 403 traversal-blocked OR 404 (depending on URL decode order)
         # — never 200.
         assert resp.status_code in (403, 404)
+
+
+def _fake_httpx_client(*, status: int | None = None, raise_exc: bool = False):
+    """Build a drop-in for httpx.Client whose .get() returns a canned status
+    (or raises a transport error). Patched in for the credential-validate probe
+    so tests never touch the network."""
+    class _Resp:
+        def __init__(self, code):
+            self.status_code = code
+
+        @property
+        def is_success(self):
+            return 200 <= self.status_code < 300
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, *a, **k):
+            if raise_exc:
+                raise RuntimeError("connection refused")
+            return _Resp(status)
+
+    return _Client
+
+
+class TestValidateProviderCredential:
+    """Live-probe credential validation (/api/providers/validate)."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def _post(self, key, value):
+        return self.client.post("/api/providers/validate", json={"key": key, "value": value})
+
+    def test_rejected_key_blocks(self, monkeypatch):
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=401))
+        data = self._post("OPENROUTER_API_KEY", "sk-bogus").json()
+        assert data["ok"] is False and data["reachable"] is True
+
+    def test_valid_key_passes(self, monkeypatch):
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=200))
+        data = self._post("OPENAI_API_KEY", "sk-real").json()
+        assert data["ok"] is True and data["reachable"] is True
+
+    def test_rate_limited_counts_as_valid(self, monkeypatch):
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=429))
+        data = self._post("XAI_API_KEY", "xai-real").json()
+        assert data["ok"] is True
+
+    def test_network_error_is_unreachable_not_blocking(self, monkeypatch):
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(raise_exc=True))
+        data = self._post("OPENROUTER_API_KEY", "sk-real").json()
+        assert data["ok"] is False and data["reachable"] is False
+
+    def test_unknown_provider_is_not_validated(self):
+        # No probe for this key → don't block (ok True, reachable False).
+        data = self._post("SOME_OTHER_API_KEY", "whatever-value").json()
+        assert data["ok"] is True and data["reachable"] is False
+
+    def test_empty_value_rejected(self):
+        data = self._post("OPENAI_API_KEY", "   ").json()
+        assert data["ok"] is False
+
+    def test_local_endpoint_forwards_api_key_as_bearer(self, monkeypatch):
+        """A custom endpoint that gates /v1/models behind auth must still
+        enumerate models: the optional api_key is sent as a Bearer header so the
+        probe doesn't come back empty (the desktop loop's root cause)."""
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            is_success = True
+
+            def json(self):
+                return {"data": [{"id": "gpt-oss-120b"}]}
+
+        class _Client:
+            def __init__(self, *a, **k):
+                captured["transport"] = k.get("transport")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url, *a, headers=None, **k):
+                captured["url"] = url
+                captured["headers"] = headers
+                return _Resp()
+
+        monkeypatch.setattr("httpx.Client", _Client)
+
+        resp = self.client.post(
+            "/api/providers/validate",
+            json={
+                "key": "OPENAI_BASE_URL",
+                "value": "https://text.example.com/v1",
+                "api_key": "sk-secret",
+            },
+        )
+        data = resp.json()
+        assert data["ok"] is True and data["reachable"] is True
+        assert data["models"] == ["gpt-oss-120b"]
+        assert captured["url"] == "https://text.example.com/v1/models"
+        assert captured["headers"] == {"Authorization": "Bearer sk-secret"}
+        from tools.url_safety import SSRFProtectedTransport
+        assert isinstance(captured["transport"], SSRFProtectedTransport)
+        assert captured["transport"]._allow_private_urls is True
+
+    def test_local_endpoint_without_key_sends_no_auth_header(self, monkeypatch):
+        """No key → no Authorization header (keyless local servers unaffected)."""
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            is_success = True
+
+            def json(self):
+                return {"data": []}
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url, *a, headers=None, **k):
+                captured["headers"] = headers
+                return _Resp()
+
+        monkeypatch.setattr("httpx.Client", _Client)
+
+        self.client.post(
+            "/api/providers/validate",
+            json={"key": "OPENAI_BASE_URL", "value": "http://127.0.0.1:8000/v1"},
+        )
+        assert captured["headers"] is None
+
+    def test_local_endpoint_rejects_metadata_url_without_network_call(self, monkeypatch):
+        class _Client:
+            def __init__(self, *a, **k):
+                raise AssertionError("metadata endpoints must not be probed")
+
+        monkeypatch.setattr("httpx.Client", _Client)
+
+        data = self.client.post(
+            "/api/providers/validate",
+            json={
+                "key": "OPENAI_BASE_URL",
+                "value": "http://169.254.169.254/latest/meta-data",
+            },
+        ).json()
+
+        assert data["ok"] is False
+        assert data["reachable"] is False
+        assert "metadata" in data["message"].lower()
+
+    def test_remote_endpoint_rejects_private_provider_url(self):
+        from hermes_cli.web_server import _provider_probe_block_reason
+
+        reason = _provider_probe_block_reason(
+            "http://127.0.0.1:8000/v1/models",
+            strict_private=True,
+        )
+
+        assert reason is not None
+        assert "private" in reason.lower()
+
+    def test_local_endpoint_rejects_non_http_scheme_without_network_call(self, monkeypatch):
+        class _Client:
+            def __init__(self, *a, **k):
+                raise AssertionError("non-http endpoints must not be probed")
+
+        monkeypatch.setattr("httpx.Client", _Client)
+
+        data = self.client.post(
+            "/api/providers/validate",
+            json={"key": "OPENAI_BASE_URL", "value": "file:///etc/passwd"},
+        ).json()
+
+        assert data["ok"] is False
+        assert data["reachable"] is True
+        assert "http" in data["message"].lower()
+
+    def test_custom_base_url_change_without_key_clears_endpoint_key(self):
+        from hermes_cli.web_server import _apply_main_model_assignment
+
+        model_cfg = {
+            "provider": "custom",
+            "default": "old-model",
+            "base_url": "https://old.example.com/v1",
+            "api_key": "sk-old-endpoint",
+        }
+
+        updated = _apply_main_model_assignment(
+            model_cfg,
+            "custom",
+            "new-model",
+            "https://new.example.com/v1",
+            "",
+        )
+
+        assert updated["base_url"] == "https://new.example.com/v1"
+        assert "api_key" not in updated
+
+
+class TestDesktopCronTicker:
+    """The dashboard backend fires cron jobs itself only when desktop-spawned."""
+
+    def _client(self):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+        from hermes_cli.web_server import app
+
+        return TestClient(app)
+
+    def test_ticker_runs_when_desktop(self, monkeypatch, _isolate_hermes_home):
+        import threading
+        import cron.scheduler as sched
+
+        called = threading.Event()
+        monkeypatch.setattr(sched, "tick", lambda *a, **k: called.set())
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+
+        with self._client():
+            assert called.wait(3.0), "expected cron tick under HERMES_DESKTOP=1"
+
+    def test_ticker_skipped_without_desktop(self, monkeypatch, _isolate_hermes_home):
+        import threading
+        import cron.scheduler as sched
+
+        called = threading.Event()
+        monkeypatch.setattr(sched, "tick", lambda *a, **k: called.set())
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+
+        with self._client():
+            assert not called.wait(0.5), "ticker must not run outside the desktop app"

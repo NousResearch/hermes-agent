@@ -3762,6 +3762,33 @@ def github_model_reasoning_efforts(
     return _github_reasoning_efforts_for_model_id(str(model_id or normalized))
 
 
+def _provider_models_probe_url(base_url: str) -> tuple[str | None, str | None]:
+    raw = (base_url or "").strip()
+    if not raw:
+        return None, None
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+        _ = parsed.port
+    except ValueError:
+        return None, "invalid provider endpoint URL"
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in {"http", "https"}:
+        return None, "provider endpoint must use http or https"
+    if not parsed.netloc or not parsed.hostname:
+        return None, "provider endpoint must include a host"
+    if parsed.username or parsed.password:
+        return None, "provider endpoint URL must not include credentials"
+    url = raw.rstrip("/") + "/models"
+    try:
+        from tools.url_safety import is_always_blocked_url
+
+        if is_always_blocked_url(url):
+            return None, "provider endpoint targets a blocked metadata or link-local address"
+    except Exception:
+        return None, "provider endpoint safety check failed"
+    return url, None
+
+
 def probe_api_models(
     api_key: Optional[str],
     base_url: Optional[str],
@@ -3821,13 +3848,27 @@ def probe_api_models(
 
         headers.update(normalize_extra_headers(request_headers))
 
+    blocked_all_candidates = True
     for candidate_base, is_fallback in candidates:
-        url = candidate_base.rstrip("/") + "/models"
+        url, blocked_reason = _provider_models_probe_url(candidate_base)
+        if blocked_reason:
+            continue
+        if url is None:
+            continue
+        blocked_all_candidates = False
         tried.append(url)
-        req = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
+            import httpx
+            from tools.url_safety import SSRFProtectedTransport
+
+            with httpx.Client(
+                timeout=httpx.Timeout(timeout),
+                transport=SSRFProtectedTransport(allow_private_urls=True),
+                follow_redirects=True,
+            ) as client:
+                resp = client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
                 return {
                     "models": [m.get("id", "") for m in data.get("data", [])],
                     "probed_url": url,
@@ -3840,7 +3881,9 @@ def probe_api_models(
 
     return {
         "models": None,
-        "probed_url": tried[0] if tried else normalized.rstrip("/") + "/models",
+        "probed_url": tried[0] if tried else (
+            None if blocked_all_candidates else normalized.rstrip("/") + "/models"
+        ),
         "resolved_base_url": normalized,
         "suggested_base_url": alternate_base if alternate_base != normalized else None,
         "used_fallback": False,

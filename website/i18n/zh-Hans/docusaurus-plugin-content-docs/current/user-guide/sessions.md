@@ -315,6 +315,23 @@ hermes sessions export - --session-id 20250305_091523_a1b2c3d4 --only user-promp
 
 支持 `--format jsonl`（默认）或 `md`，批量导出时同样支持全部过滤器，也可与 `--redact` 组合。
 
+### 导出 Trace 到 HF Agent Trace Viewer
+
+`--format trace` 生成 Claude Code JSONL — Hugging Face Hub 的 [Agent Trace Viewer](https://huggingface.co/docs/hub/agent-traces) 可自动识别的转录格式。可以写入本地文件，或加 `--upload` 推送到你自己的私有 `hermes-traces` 数据集（读取 `HF_TOKEN`）：
+
+```bash
+# 最近一个 session 的 trace，输出到 stdout
+hermes sessions export --format trace
+
+# 将一个 session 导出为本地 trace 文件
+hermes sessions export --format trace --session-id 20250305_091523_a1b2c3d4 trace.jsonl
+
+# 直接上传到你的私有 HF traces 数据集
+hermes sessions export --format trace --session-id 20250305_091523_a1b2c3d4 --upload
+```
+
+Trace 导出默认强制脱敏（它们本来就是要离开本机的）；`--no-redact` 需人工审查后才建议使用。`--upload` 默认私有，除非加 `--public`。带过滤器的批量 trace 导出会为每个 session 写一个 `<id>.trace.jsonl`。
+
 ### 导出 Session 为 Markdown/QMD
 
 当你想在隐藏或删除旧 session 之前保留一份可读的文件归档时，传入 `--format md` 或 `--format qmd`。Markdown/QMD 导出会为每个 session 写入一个文件到目录中（默认：`~/.hermes/session-exports`）。

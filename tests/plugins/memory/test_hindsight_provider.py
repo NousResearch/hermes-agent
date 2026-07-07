@@ -83,6 +83,18 @@ def _make_mock_client():
     return client
 
 
+def _recall_response(pairs, *, trace=None):
+    """Build a mock recall response.
+
+    ``pairs`` is an iterable of ``(id, text)``. The text values are test
+    fixtures only; real recall/trace payloads must not be persisted.
+    """
+    return SimpleNamespace(
+        results=[SimpleNamespace(id=result_id, text=text) for result_id, text in pairs],
+        trace=trace,
+    )
+
+
 def _provider_for_mode(tmp_path, monkeypatch, mode: str):
     """Create an initialized provider without pre-seeding its client."""
     config = {
@@ -306,6 +318,7 @@ class TestConfig:
         assert provider._retain_every_n_turns == 1
         assert provider._recall_max_tokens == 4096
         assert provider._recall_max_input_chars == 800
+        assert provider._recall_min_score is None
         assert provider._tags is None
         assert provider._observation_scopes is None
         assert provider._recall_tags is None
@@ -359,6 +372,7 @@ class TestConfig:
             retain_context="custom-ctx",
             bank_retain_mission="Extract key facts",
             recall_max_tokens=2048,
+            recall_min_score=0.75,
             recall_types=["world", "experience"],
             recall_prompt_preamble="Custom preamble:",
             recall_max_input_chars=500,
@@ -377,6 +391,7 @@ class TestConfig:
         assert p._retain_context == "custom-ctx"
         assert p._bank_retain_mission == "Extract key facts"
         assert p._recall_max_tokens == 2048
+        assert p._recall_min_score == 0.75
         assert p._recall_types == ["world", "experience"]
         assert p._recall_prompt_preamble == "Custom preamble:"
         assert p._recall_max_input_chars == 500
@@ -715,6 +730,120 @@ class TestToolHandlers:
         call_kwargs = p._client.arecall.call_args.kwargs
         assert call_kwargs["types"] == ["world", "experience"]
 
+    def test_recall_min_score_disabled_does_not_request_trace(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "dark mode"}
+        ))
+        call_kwargs = provider._client.arecall.call_args.kwargs
+        assert "trace" not in call_kwargs
+        assert "Memory 1" in result["result"]
+        assert "Memory 2" in result["result"]
+
+    def test_recall_min_score_invalid_config_disables_trace(self, provider_with_config):
+        p = provider_with_config(recall_min_score="not-a-number")
+        assert p._recall_min_score is None
+        p.handle_tool_call("hindsight_recall", {"query": "test"})
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert "trace" not in call_kwargs
+
+    def test_recall_min_score_boolean_config_disables_trace(self, provider_with_config):
+        p = provider_with_config(recall_min_score=True)
+        assert p._recall_min_score is None
+        p.handle_tool_call("hindsight_recall", {"query": "test"})
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert "trace" not in call_kwargs
+
+    def test_recall_min_score_trace_unsupported_retries_without_trace(self, provider_with_config):
+        p = provider_with_config(recall_min_score=0.5)
+
+        async def _arecall(**kwargs):
+            if kwargs.get("trace") is True:
+                raise TypeError("unexpected keyword argument 'trace'")
+            return _recall_response([("node-a", "Memory A"), ("node-b", "Memory B")])
+
+        p._client.arecall = AsyncMock(side_effect=_arecall)
+
+        result = json.loads(p.handle_tool_call("hindsight_recall", {"query": "test"}))
+
+        assert "Memory A" in result["result"]
+        assert "Memory B" in result["result"]
+        assert p._client.arecall.call_count == 2
+        assert p._client.arecall.call_args_list[0].kwargs["trace"] is True
+        assert "trace" not in p._client.arecall.call_args_list[1].kwargs
+
+    def test_recall_min_score_filters_results_by_trace_rerank_score(self, provider_with_config):
+        p = provider_with_config(recall_min_score=0.5)
+        p._client.arecall.return_value = _recall_response(
+            [("node-high", "High relevance memory"), ("node-low", "Low relevance memory")],
+            trace={
+                "reranked": [
+                    {"node_id": "node-high", "rerank_score": 0.91},
+                    {"node_id": "node-low", "rerank_score": 0.12},
+                ]
+            },
+        )
+
+        result = json.loads(p.handle_tool_call("hindsight_recall", {"query": "test"}))
+
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["trace"] is True
+        assert result["result"] == "1. High relevance memory"
+
+    def test_recall_min_score_all_below_floor_returns_no_relevant_memory(self, provider_with_config):
+        p = provider_with_config(recall_min_score=0.5)
+        p._client.arecall.return_value = _recall_response(
+            [("node-a", "Memory A"), ("node-b", "Memory B")],
+            trace={
+                "reranked": [
+                    {"node_id": "node-a", "rerank_score": 0.49},
+                    {"node_id": "node-b", "rerank_score": 0.01},
+                ]
+            },
+        )
+
+        result = json.loads(p.handle_tool_call("hindsight_recall", {"query": "test"}))
+
+        assert result["result"] == "No relevant memories found."
+
+    def test_recall_min_score_missing_trace_fail_opens_all_results(self, provider_with_config):
+        p = provider_with_config(recall_min_score=0.5)
+        p._client.arecall.return_value = _recall_response(
+            [("node-a", "Memory A"), ("node-b", "Memory B")],
+            trace=None,
+        )
+
+        result = json.loads(p.handle_tool_call("hindsight_recall", {"query": "test"}))
+
+        assert "Memory A" in result["result"]
+        assert "Memory B" in result["result"]
+
+    def test_recall_min_score_missing_score_fail_opens_all_results(self, provider_with_config):
+        p = provider_with_config(recall_min_score=0.5)
+        p._client.arecall.return_value = _recall_response(
+            [("node-a", "Memory A"), ("node-b", "Memory B")],
+            trace={
+                "reranked": [
+                    {"node_id": "node-a", "rerank_score": 0.9},
+                ]
+            },
+        )
+
+        result = json.loads(p.handle_tool_call("hindsight_recall", {"query": "test"}))
+
+        assert "Memory A" in result["result"]
+        assert "Memory B" in result["result"]
+
+    def test_recall_min_score_result_without_id_fail_opens_all_results(self, provider_with_config):
+        p = provider_with_config(recall_min_score=0.5)
+        p._client.arecall.return_value = SimpleNamespace(
+            results=[SimpleNamespace(text="Memory without id")],
+            trace={"reranked": [{"node_id": "node-a", "rerank_score": 0.9}]},
+        )
+
+        result = json.loads(p.handle_tool_call("hindsight_recall", {"query": "test"}))
+
+        assert result["result"] == "1. Memory without id"
+
     def test_recall_no_results(self, provider):
         provider._client.arecall.return_value = SimpleNamespace(results=[])
         result = json.loads(provider.handle_tool_call(
@@ -854,6 +983,81 @@ class TestPrefetch:
         assert call_kwargs["tags"] == ["t1"]
         assert call_kwargs["tags_match"] == "all"
         assert call_kwargs["types"] == ["world"]
+
+    def test_queue_prefetch_min_score_disabled_does_not_request_trace(self, provider):
+        provider.queue_prefetch("test query")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        call_kwargs = provider._client.arecall.call_args.kwargs
+        assert "trace" not in call_kwargs
+        result = provider.prefetch("test query")
+        assert "Memory 1" in result
+        assert "Memory 2" in result
+
+    def test_queue_prefetch_min_score_passes_trace_and_filters(self, provider_with_config):
+        p = provider_with_config(recall_min_score=0.5)
+        p._client.arecall.return_value = _recall_response(
+            [("node-high", "High relevance memory"), ("node-low", "Low relevance memory")],
+            trace={
+                "reranked": [
+                    {"node_id": "node-high", "rerank_score": 0.91},
+                    {"node_id": "node-low", "rerank_score": 0.12},
+                ]
+            },
+        )
+
+        p.queue_prefetch("test query")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["trace"] is True
+        result = p.prefetch("test query")
+        assert "High relevance memory" in result
+        assert "Low relevance memory" not in result
+
+    def test_queue_prefetch_min_score_trace_unsupported_retries_without_trace(self, provider_with_config):
+        p = provider_with_config(recall_min_score=0.5)
+
+        async def _arecall(**kwargs):
+            if kwargs.get("trace") is True:
+                raise TypeError("unexpected keyword argument 'trace'")
+            return _recall_response([("node-a", "Memory A")])
+
+        p._client.arecall = AsyncMock(side_effect=_arecall)
+
+        p.queue_prefetch("test query")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        assert p._client.arecall.call_count == 2
+        assert p._client.arecall.call_args_list[0].kwargs["trace"] is True
+        assert "trace" not in p._client.arecall.call_args_list[1].kwargs
+        assert "Memory A" in p.prefetch("test query")
+
+    def test_queue_prefetch_min_score_all_below_floor_injects_no_context(self, provider_with_config):
+        p = provider_with_config(recall_min_score=0.5)
+        p._client.arecall.return_value = _recall_response(
+            [("node-a", "Memory A")],
+            trace={"reranked": [{"node_id": "node-a", "rerank_score": 0.1}]},
+        )
+
+        p.queue_prefetch("test query")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        assert p.prefetch("test query") == ""
+
+    def test_queue_prefetch_reflect_method_does_not_request_recall_trace(self, provider_with_config):
+        p = provider_with_config(recall_min_score=0.5, recall_prefetch_method="reflect")
+
+        p.queue_prefetch("test query")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        p._client.areflect.assert_called_once()
+        p._client.arecall.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -1573,14 +1573,15 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # HERMES_HOME so config/skills/model resolve to it, and hand the
             # agent that profile's db so turns persist to the right state.db.
             session_db = None
+            db_home = Path(profile_home) if profile_home else Path(_hermes_home)
             if profile_home:
                 home_token = set_hermes_home_override(profile_home)
-                try:
-                    from hermes_state import SessionDB
+            try:
+                from hermes_state import SessionDB
 
-                    session_db = SessionDB(db_path=Path(profile_home) / "state.db")
-                except Exception:
-                    session_db = None
+                session_db = SessionDB(db_path=db_home / "state.db")
+            except Exception:
+                session_db = None
             try:
                 # Lazy-resumed (watch) sessions carry the stored conversation
                 # id — pass it through so the upgrade continues that session
@@ -1921,22 +1922,18 @@ def _ensure_session_db_row(session: dict) -> None:
     key = session.get("session_key")
     if not key:
         return
-    # Persist into the session's own profile db (global remote mode), not the
-    # launch profile's — otherwise the row lands in the wrong state.db, the
-    # unified list mis-tags it, and resume 404s ("session not found").
-    profile_home = session.get("profile_home")
-    if profile_home:
-        from hermes_state import SessionDB
+    # Persist into the session's owning state.db. Profile sessions use their
+    # profile home; default sessions use the gateway launch home explicitly so
+    # they cannot inherit a stale global SessionDB handle.
+    db_home = Path(session.get("profile_home") or _hermes_home)
+    from hermes_state import SessionDB
 
-        try:
-            db = SessionDB(db_path=Path(profile_home) / "state.db")
-        except Exception:
-            logger.debug("failed to open profile db for session row", exc_info=True)
-            return
-        close_db = True
-    else:
-        db = _get_db()
-        close_db = False
+    try:
+        db = SessionDB(db_path=db_home / "state.db")
+    except Exception:
+        logger.debug("failed to open session db for session row", exc_info=True)
+        return
+    close_db = True
     if db is None:
         return
     # The session's own model/effort/fast pick — the composer override shipped on
@@ -2045,21 +2042,17 @@ def _session_db(session: dict):
     """Yield the SessionDB that owns this session's row (profile-aware).
 
     Mirrors :func:`_ensure_session_db_row`: a remote/profile session persists
-    into its own profile's ``state.db`` (a fresh handle we close on exit);
-    everything else borrows the shared ``_get_db()`` handle (left open). Yields
-    None when the db is unavailable.
+    into its own profile's ``state.db``; default sessions persist into the
+    gateway launch home's ``state.db``. Yields None when the db is unavailable.
     """
     db, close_db = None, False
-    profile_home = session.get("profile_home")
-    if profile_home:
-        from hermes_state import SessionDB
+    db_home = Path(session.get("profile_home") or _hermes_home)
+    from hermes_state import SessionDB
 
-        try:
-            db, close_db = SessionDB(db_path=Path(profile_home) / "state.db"), True
-        except Exception:
-            logger.debug("failed to open profile db for session", exc_info=True)
-    else:
-        db = _get_db()
+    try:
+        db, close_db = SessionDB(db_path=db_home / "state.db"), True
+    except Exception:
+        logger.debug("failed to open session db for session", exc_info=True)
     try:
         yield db
     finally:

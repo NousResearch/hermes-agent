@@ -147,6 +147,30 @@ def test_configurable_toolsets_include_context_engine():
     assert any(ts_key == "context_engine" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
 
+def test_configurable_toolsets_include_flowstate():
+    assert any(ts_key == "flowstate" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+    assert "flowstate" in _DEFAULT_OFF_TOOLSETS
+
+
+def test_flowstate_toolset_config_exposes_token_and_url():
+    providers = TOOL_CATEGORIES["flowstate"]["providers"]
+    env_keys = {entry["key"] for provider in providers for entry in provider["env_vars"]}
+
+    assert env_keys == {"FLOW_STATE_API_TOKEN", "FLOW_STATE_API_URL"}
+
+
+def test_toolset_has_keys_flowstate_requires_token(monkeypatch):
+    monkeypatch.setattr("hermes_cli.tools_config.get_env_value", lambda key: "tok" if key == "FLOW_STATE_API_TOKEN" else None)
+
+    assert _toolset_has_keys("flowstate")
+
+
+def test_toolset_has_keys_flowstate_missing_token(monkeypatch):
+    monkeypatch.setattr("hermes_cli.tools_config.get_env_value", lambda key: None)
+
+    assert not _toolset_has_keys("flowstate")
+
+
 def test_get_platform_tools_active_context_engine_is_enabled_for_explicit_config():
     config = {
         "context": {"engine": "lcm"},

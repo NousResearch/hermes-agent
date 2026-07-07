@@ -4431,8 +4431,36 @@ def run_conversation(
                     if tc.function.name not in agent.valid_tool_names:
                         repaired = agent._repair_tool_call(tc.function.name)
                         if repaired:
+                            # When repair returns a name that's in the global registry
+                            # but not yet in valid_tool_names (e.g. MCP tool added
+                            # between turns), add it so the call can proceed.
+                            if repaired not in agent.valid_tool_names:
+                                try:
+                                    from tools.registry import registry as _registry
+                                    if _registry.get_entry(repaired) is not None:
+                                        agent.valid_tool_names.add(repaired)
+                                        logger.info(
+                                            "Lazily added tool '%s' to valid_tool_names (registered but not yet snapshotted)",
+                                            repaired,
+                                        )
+                                except Exception:
+                                    pass
                             print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
                             tc.function.name = repaired
+                        elif tc.function.name not in agent.valid_tool_names:
+                            # The name wasn't repaired but might still be a real tool
+                            # that's registered but not yet in valid_tool_names (e.g.
+                            # an MCP tool added between turns).  Check the registry.
+                            try:
+                                from tools.registry import registry as _registry
+                                if _registry.get_entry(tc.function.name) is not None:
+                                    agent.valid_tool_names.add(tc.function.name)
+                                    logger.info(
+                                        "Lazily added tool '%s' to valid_tool_names (registered but not yet snapshotted)",
+                                        tc.function.name,
+                                    )
+                            except Exception:
+                                pass
                 invalid_tool_calls = [
                     tc.function.name for tc in assistant_message.tool_calls
                     if tc.function.name not in agent.valid_tool_names

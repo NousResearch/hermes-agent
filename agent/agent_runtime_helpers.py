@@ -2359,6 +2359,18 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
         if c and c in agent.valid_tool_names:
             return c
 
+    # Before fuzzy-matching, check the global registry.  If the tool is
+    # registered there (e.g. an MCP tool that just hasn't made it into
+    # valid_tool_names yet due to a between-turn refresh gap), return it
+    # as-is rather than "repairing" it to a completely different tool.
+    # MCP tool names are exact identifiers, not model hallucinations.
+    try:
+        from tools.registry import registry as _registry
+        if _registry.get_entry(tool_name) is not None:
+            return tool_name
+    except Exception:
+        pass
+
     # Fuzzy match as last resort.
     matches = get_close_matches(lowered, agent.valid_tool_names, n=1, cutoff=0.7)
     if matches:

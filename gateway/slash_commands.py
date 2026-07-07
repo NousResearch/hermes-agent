@@ -2101,7 +2101,31 @@ class GatewaySlashCommandsMixin:
             "gateway.undo.removed",
             turns=n,
             count=len(result.get("rewound_ids") or []),
-        )
+        ) + self._undo_tail_suffix(session_entry.session_id)
+
+    def _undo_tail_suffix(self, session_id: str) -> str:
+        """Render a one-line '↦ now at …' confirmation of the active tail.
+
+        Lets a user confirm at a glance WHERE the thread landed after /undo or
+        /redo — which message is now last — without scrolling. Best-effort:
+        never let a preview failure break the command's primary reply.
+        """
+        try:
+            import hermes_undo
+
+            hermes_undo._session_db = self.session_store._db
+            info = hermes_undo.tail_preview(session_id)
+        except Exception as e:
+            logger.debug("undo/redo tail preview skipped: %s", e)
+            return ""
+        if info.get("empty"):
+            return "\n" + t("gateway.undo.now_empty")
+        role = info.get("role") or "message"
+        who = t(f"gateway.undo.party.{role}")
+        preview = info.get("preview")
+        if preview:
+            return "\n" + t("gateway.undo.now_at", who=who, preview=preview)
+        return "\n" + t("gateway.undo.now_at_notext", who=who)
 
     async def _handle_redo_command(self, event: MessageEvent) -> str:
         """Handle /redo [N] by delegating to the shared redo core."""
@@ -2137,7 +2161,7 @@ class GatewaySlashCommandsMixin:
             "gateway.redo.restored",
             ops=n,
             count=reactivated,
-        )
+        ) + self._undo_tail_suffix(session_entry.session_id)
 
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""

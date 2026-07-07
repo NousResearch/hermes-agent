@@ -9,6 +9,7 @@ This module provides:
 - hermes config          - Show current configuration
 - hermes config edit     - Open config in editor
 - hermes config set      - Set a specific value
+- hermes config remove   - Remove a specific key
 - hermes config wizard   - Re-run setup wizard
 """
 
@@ -4364,6 +4365,59 @@ def _set_nested(config, dotted_key: str, value):
         current[last] = value
 
 
+def _remove_nested(config, dotted_key: str) -> bool:
+    """Remove a key at an arbitrarily nested dotted key path.
+
+    Supports both dict and list navigation:
+      _remove_nested(c, "a.b.c")    → del c["a"]["b"]["c"]
+      _remove_nested(c, "a.0.b")    → del c["a"][0]["b"]
+
+    Returns True if the key was found and removed, False if it didn't exist.
+    Clean empty parent dicts as it goes (optional, could add later).
+    """
+    parts = dotted_key.split(".")
+    if not parts:
+        return False
+    current = config
+    for part in parts[:-1]:
+        if isinstance(current, list):
+            try:
+                idx = int(part)
+            except (TypeError, ValueError):
+                raise TypeError(
+                    f"Cannot navigate into list at key {dotted_key!r}: "
+                    f"segment {part!r} is not a numeric index"
+                )
+            if idx < 0 or idx >= len(current):
+                return False
+            current = current[idx]
+        elif isinstance(current, dict):
+            if part not in current:
+                return False
+            current = current[part]
+        else:
+            return False
+    last = parts[-1]
+    if isinstance(current, list):
+        try:
+            idx = int(last)
+        except (TypeError, ValueError):
+            raise TypeError(
+                f"Cannot index into list at key {dotted_key!r}: "
+                f"segment {last!r} is not a numeric index"
+            )
+        if idx < 0 or idx >= len(current):
+            return False
+        del current[idx]
+        return True
+    elif isinstance(current, dict):
+        if last not in current:
+            return False
+        del current[last]
+        return True
+    return False
+
+
 def clear_model_endpoint_credentials(
     model_cfg: Dict[str, Any],
     *,
@@ -7835,6 +7889,81 @@ def set_config_value(key: str, value: str):
 # Command handler
 # =============================================================================
 
+
+def remove_config_value(key: str):
+    """Remove a configuration key from config.yaml."""
+    if is_managed():
+        managed_error("remove configuration values")
+        return
+
+    from hermes_cli import managed_scope
+
+    if managed_scope.is_key_managed(key):
+        managed_dir = managed_scope.get_managed_dir()
+        src = (managed_dir / "config.yaml") if managed_dir else "the managed scope"
+        print(
+            f"Cannot remove '{key}': it is managed by your administrator ({src}) "
+            f"and cannot be changed. Contact your administrator to modify it.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Check if it's an API key (goes to .env)
+    api_keys = [
+        'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
+        'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
+        'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
+        'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY',
+        'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
+        'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
+        'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
+        'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
+        'GITHUB_TOKEN', 'HONCHO_API_KEY',
+    ]
+
+    env_key = key.upper()
+    if env_key in api_keys or env_key.endswith(('_API_KEY', '_TOKEN')) or env_key.startswith('TERMINAL_SSH'):
+        # Remove from .env
+        env_path = get_env_path()
+        if not env_path.exists():
+            print(f"Key '{key}' not found in {env_path} (does not exist)", file=sys.stderr)
+            sys.exit(1)
+        try:
+            lines = env_path.read_text(encoding="utf-8").splitlines(keepends=True)
+            new_lines = [ln for ln in lines if not ln.strip().startswith(f"{env_key}=")]
+            if len(new_lines) == len(lines):
+                print(f"Key '{key}' not found in {env_path}", file=sys.stderr)
+                sys.exit(1)
+            env_path.write_text("".join(new_lines), encoding="utf-8")
+            print(f"✓ Removed {key} from {env_path}")
+        except Exception as e:
+            print(f"Error removing {key} from {env_path}: {e}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    # Remove from config.yaml
+    config_path = get_config_path()
+    if not config_path.exists():
+        print(f"Config file not found at {config_path}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            user_config = fast_safe_load(f) or {}
+    except Exception as e:
+        print(f"Error reading config: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not _remove_nested(user_config, key):
+        print(f"Key '{key}' not found in {config_path}", file=sys.stderr)
+        sys.exit(1)
+
+    ensure_hermes_home()
+    from utils import atomic_yaml_write
+    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    print(f"✓ Removed {key} from {config_path}")
+
+
 def config_command(args):
     """Handle config subcommands."""
     subcmd = getattr(args, 'config_command', None)
@@ -7857,7 +7986,18 @@ def config_command(args):
             print("  hermes config set OPENROUTER_API_KEY sk-or-...")
             sys.exit(1)
         set_config_value(key, value)
-    
+
+    elif subcmd == "remove":
+        key = getattr(args, 'key', None)
+        if not key:
+            print("Usage: hermes config remove <key>")
+            print()
+            print("Examples:")
+            print("  hermes config remove model")
+            print("  hermes config remove terminal.backend")
+            sys.exit(1)
+        remove_config_value(key)
+
     elif subcmd == "path":
         print(get_config_path())
     
@@ -7965,6 +8105,7 @@ def config_command(args):
         print("  hermes config           Show current configuration")
         print("  hermes config edit      Open config in editor")
         print("  hermes config set <key> <value>   Set a config value")
+        print("  hermes config remove <key>        Remove a config key")
         print("  hermes config check     Check for missing/outdated config")
         print("  hermes config migrate   Update config with new options")
         print("  hermes config path      Show config file path")

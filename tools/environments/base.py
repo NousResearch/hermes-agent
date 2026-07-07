@@ -397,6 +397,7 @@ class BaseEnvironment(ABC):
         # with ``$BASHPID`` left outside the quotes so it still expands.
         _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
         bootstrap = (
+            f"umask 077\n"
             f"export -p > {_snap_tmp}\n"
             # Dump function definitions, filtering out private (``_``-prefixed)
             # helpers — mainly bash-completion internals (``_git``, ``_make``…)
@@ -504,6 +505,9 @@ class BaseEnvironment(ABC):
         # Run the actual command
         parts.append(f"eval '{escaped}'")
         parts.append("__hermes_ec=$?")
+        # Restrict Hermes metadata files without changing the user's command
+        # umask. Snapshot files may contain env-carried secrets.
+        parts.append("umask 077")
 
         # Re-dump env vars to snapshot (atomic replacement to avoid races).
         # Chain mv on the export succeeding so a failed/partial dump never

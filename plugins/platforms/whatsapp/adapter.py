@@ -82,7 +82,10 @@ def _kill_port_process(port: int) -> None:
     """Kill any process *listening* on the given TCP port (a stale bridge)."""
     try:
         if _IS_WINDOWS:
-            from hermes_cli._subprocess_compat import windows_hide_flags
+            from hermes_cli._subprocess_compat import (
+                windows_detach_flags_without_breakaway,
+                windows_hide_flags,
+            )
 
             # Use netstat to find the PID bound to this port, then taskkill
             result = subprocess.run(
@@ -650,6 +653,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 stderr=bridge_log_fh,
                 start_new_session=True,
                 env=bridge_env,
+                creationflags=windows_detach_flags_without_breakaway() if _IS_WINDOWS else 0,
             )
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             

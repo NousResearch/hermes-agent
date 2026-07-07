@@ -365,11 +365,37 @@ def validate_alias_name(name: str) -> None:
 
 
 def get_profile_dir(name: str) -> Path:
-    """Resolve a profile name to its HERMES_HOME directory."""
+    """Resolve a profile name to its HERMES_HOME directory.
+
+    Supports prefix-aware fallback: ``ceo`` resolves to ``01-ceo``,
+    ``builder`` resolves to ``02-builder``, etc. when the exact name
+    doesn't exist on disk but a ``<NN>-<name>`` sibling does.
+    """
     canon = normalize_profile_name(name)
     if canon == "default":
         return _get_default_hermes_home()
-    return _get_profiles_root() / canon
+
+    profiles_root = _get_profiles_root()
+    exact = profiles_root / canon
+    if exact.is_dir():
+        return exact
+
+    # Prefix-aware fallback: scan for NN-<name> pattern.
+    # E.g. "ceo" → "01-ceo", "builder" → "02-builder".
+    # Only fires when the exact-name directory is missing.
+    try:
+        for entry in profiles_root.iterdir():
+            if not entry.is_dir() or entry.name == canon:
+                continue
+            # Match exactly one or more prefix chars + "-" + canon
+            # e.g. "01-ceo", "02-builder", "05-growth"
+            parts = entry.name.split("-", 1)
+            if len(parts) == 2 and parts[1] == canon:
+                return entry
+    except OSError:
+        pass
+
+    return exact  # Return the non-existent path so callers get a clear error
 
 
 def profile_exists(name: str) -> bool:

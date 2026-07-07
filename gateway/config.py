@@ -316,8 +316,13 @@ class SessionResetPolicy:
     - "idle": Reset after N minutes of inactivity
     - "both": Whichever triggers first (daily boundary OR idle timeout)
     - "none": Never auto-reset (context managed only by compression)
+
+    Default is "none" — sessions never auto-reset unless the user opts in
+    via the `session_reset` section in config.yaml (or gateway.json
+    overrides). Changed July 2026 from "both" (24h idle + daily 4am), which
+    surprised users who expected their conversations to persist.
     """
-    mode: str = "both"  # "daily", "idle", "both", or "none"
+    mode: str = "none"  # "daily", "idle", "both", or "none"
     at_hour: int = 4  # Hour for daily reset (0-23, local time)
     idle_minutes: int = 1440  # Minutes of inactivity before reset (24 hours)
     notify: bool = True  # Send a notification to the user when auto-reset occurs
@@ -349,7 +354,7 @@ class SessionResetPolicy:
         exclude = data.get("notify_exclude_platforms")
         bg_max_age = data.get("bg_process_max_age_hours")
         return cls(
-            mode=mode if mode is not None else "both",
+            mode=mode if mode is not None else "none",
             at_hour=at_hour if at_hour is not None else 4,
             idle_minutes=idle_minutes if idle_minutes is not None else 1440,
             notify=_coerce_bool(notify, True),

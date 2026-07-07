@@ -331,6 +331,18 @@ def _register_miniapp_token_routes() -> None:
     # the desktop dashboard's existing GET surface.
     register_token_route("/api/miniapp/me", required=False, methods=_READ_METHODS)
 
+    # ---- admin-tier read-only actions -------------------------------------
+    # Logs (Status screen's Logs bubble): GET /api/logs?file=... (the SAME
+    # pre-existing desktop log-viewer endpoint, hermes_cli/logs.py's
+    # LOG_FILES + _read_tail -- not a parallel Mini-App-only implementation),
+    # but admin-tier only -- unlike the read-for-every-tier loop above, these
+    # can contain arbitrary operational detail (chat ids, tracebacks) a
+    # paired non-admin caller has no business reading. _require_dashboard_admin
+    # runs in the handler; registering the route here only makes it
+    # dispatch-eligible for a bearer token, same as every other route in
+    # this function.
+    register_token_route("/api/logs", required=False, methods=_READ_METHODS)
+
     # ---- admin-tier mutating actions -------------------------------------
     # Cron: pause/resume/trigger, plus DELETE the job itself -- NOT a prefix
     # (would also expose PUT /api/cron/jobs/{id}, job-detail-edit, which the

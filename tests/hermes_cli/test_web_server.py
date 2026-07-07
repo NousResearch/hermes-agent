@@ -9960,6 +9960,48 @@ class TestMiniAppAdminOnlyMutatingEndpoints:
         resp = self.session_client.get("/api/sessions/search", params={"q": "x"})
         assert resp.status_code == 200
 
+    # ---- logs ----
+    # Reuses the pre-existing GET /api/logs (hermes_cli/logs.py's LOG_FILES +
+    # _read_tail) the desktop dashboard already has -- the Mini App just
+    # gains admin-tier dispatch access to the SAME endpoint, not a
+    # parallel one. get_hermes_home() is already overridden by
+    # _isolate_hermes_home, and get_logs() re-resolves it per call (no
+    # module-level path caching to fight), so no extra monkeypatching here.
+
+    def test_non_admin_token_cannot_list_logs(self):
+        resp = self.client.get("/api/logs", headers=self.own)
+        assert resp.status_code == 403
+
+    def test_admin_token_can_read_agent_log(self):
+        from hermes_constants import get_hermes_home
+        log_dir = get_hermes_home() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "agent.log").write_text("2026-07-07 12:00:00 INFO hello\n")
+
+        resp = self.client.get("/api/logs", params={"file": "agent"}, headers=self.admin)
+        assert resp.status_code == 200
+        assert resp.json()["lines"]
+
+    def test_admin_token_can_read_new_update_log_key(self):
+        # "update" is the one file this feature added to LOG_FILES --
+        # update.log wasn't part of the desktop log viewer's set before.
+        from hermes_constants import get_hermes_home
+        log_dir = get_hermes_home() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "update.log").write_text("=== hermes update started ===\n")
+
+        resp = self.client.get("/api/logs", params={"file": "update"}, headers=self.admin)
+        assert resp.status_code == 200
+        assert resp.json()["lines"]
+
+    def test_cookie_caller_can_list_logs(self):
+        resp = self.session_client.get("/api/logs")
+        assert resp.status_code == 200
+
+    def test_admin_token_unknown_file_is_400(self):
+        resp = self.client.get("/api/logs", params={"file": "does-not-exist"}, headers=self.admin)
+        assert resp.status_code == 400
+
 
 class TestDashboardPluginManifestExtensions:
     """Tests for the extended plugin manifest fields (tab.override,

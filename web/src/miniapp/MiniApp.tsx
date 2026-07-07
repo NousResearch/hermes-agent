@@ -22,12 +22,14 @@ import { SessionsScreen } from "./screens/SessionsScreen";
 import { SessionDetailPane } from "./screens/SessionDetailPane";
 import { SessionNotFoundPane } from "./screens/SessionNotFoundPane";
 import { UsersScreen } from "./screens/UsersScreen";
+import { LogDetailPane } from "./screens/LogDetailPane";
 
 type DetailView =
   | { kind: "none" }
   | { kind: "skill"; name: string }
   | { kind: "session"; id: string }
-  | { kind: "session-not-found" };
+  | { kind: "session-not-found" }
+  | { kind: "log"; key: string; label: string };
 
 const TAB_TITLES: Record<MiniAppTab, string> = {
   status: "Hermes Agent",
@@ -199,10 +201,12 @@ export default function MiniApp() {
   const openSkill = (name: string) => setDetail({ kind: "skill", name });
   const openSession = (id: string) => setDetail({ kind: "session", id });
   const openSessionNotFound = () => setDetail({ kind: "session-not-found" });
+  const openLog = (key: string, label: string) => setDetail({ kind: "log", key, label });
 
   const headerTitle = useMemo(() => {
     if (detail.kind === "skill") return detail.name;
     if (detail.kind === "session" || detail.kind === "session-not-found") return "Session";
+    if (detail.kind === "log") return detail.label;
     return TAB_TITLES[tab];
   }, [detail, tab]);
 
@@ -329,7 +333,10 @@ export default function MiniApp() {
           className="miniapp-noscroll"
           style={{ flex: 1, minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch" }}
         >
-          {tab === "status" && !inDetail && <StatusScreen statusExtra={statusExtra} />}
+          {tab === "status" && detail.kind === "none" && (
+            <StatusScreen statusExtra={statusExtra} onOpenLog={openLog} />
+          )}
+          {tab === "status" && detail.kind === "log" && <LogDetailPane fileKey={detail.key} />}
           {tab === "skills" && detail.kind === "none" && <SkillsScreen onOpen={openSkill} />}
           {tab === "skills" && detail.kind === "skill" && <SkillDetailPane name={detail.name} />}
           {tab === "cron" && isAdmin && (

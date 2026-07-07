@@ -86,14 +86,29 @@ def _is_orphaned(original_ppid: int, parent_create_time: float, getppid=os.getpp
 
 
 def _terminate_process_group(proc: subprocess.Popen) -> None:
-    """Best-effort SIGTERM-then-SIGKILL of the child's process group."""
+    """Best-effort SIGTERM-then-SIGKILL of the child's process group.
+
+    This module only ever runs on POSIX (the wrap site in tools/mcp_tool.py
+    gates on ``os.name == "posix"``), but guard the POSIX-only primitives
+    anyway so an accidental Windows import/execute degrades to a plain
+    child kill instead of AttributeError.
+    """
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:  # windows-footgun: ok — non-POSIX fallback
+        try:
+            proc.terminate()
+            proc.wait(timeout=_TERM_GRACE_S)
+        except (OSError, subprocess.TimeoutExpired):
+            proc.kill()
+        return
     try:
         pgid = os.getpgid(proc.pid)
     except (ProcessLookupError, OSError):
         return
-    for sig in (signal.SIGTERM, signal.SIGKILL):
+    sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+    for sig in (signal.SIGTERM, sigkill):
         try:
-            os.killpg(pgid, sig)
+            killpg(pgid, sig)
         except (ProcessLookupError, PermissionError, OSError):
             return
         try:

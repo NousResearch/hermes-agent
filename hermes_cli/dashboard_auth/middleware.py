@@ -185,6 +185,17 @@ def _auto_sso_response(request: Request) -> Response | None:
     from hermes_cli.dashboard_auth.prefix import prefix_from_request
 
     provider = providers[0]
+
+    # Local patch (2026-07-07): auto-SSO is an OAuth-redirect optimization — it
+    # bounces straight to /auth/login?provider=... (start_login / PKCE). A
+    # password-only provider (e.g. `basic`) has no OAuth redirect flow;
+    # start_login() raises NotImplementedError and the bounce 500s. Fall
+    # through to the server-rendered /login form (which POSTs to
+    # /auth/password-login) instead. Upstream bug — auto-SSO assumes the sole
+    # session provider supports the redirect flow.
+    if getattr(provider, "supports_password", False):
+        return None
+
     prefix = prefix_from_request(request)
     next_param = _safe_next_target(request)
     from urllib.parse import quote

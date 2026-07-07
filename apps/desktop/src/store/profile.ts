@@ -146,9 +146,37 @@ export async function switchProfile(name: string): Promise<void> {
 // gateway to that profile's backend (spawned on demand by the Electron pool).
 // A single-profile user never triggers a swap, so their path is unchanged.
 
+function initialSecondaryWindowProfile(): string | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  try {
+    const params = new URLSearchParams(window.location.search)
+
+    if (params.get('win') !== 'secondary') {
+      return null
+    }
+
+    const profile = params.get('profile')?.trim()
+
+    return profile ? normalizeProfileKey(profile) : null
+  } catch {
+    return null
+  }
+}
+
+const initialGatewayProfile = initialSecondaryWindowProfile()
+
+export function initialWindowGatewayProfile(): string | null {
+  return initialGatewayProfile
+}
+
 // The profile the live gateway WebSocket is currently connected to. Initialized
-// to the primary (window) backend's profile on boot.
-export const $activeGatewayProfile = atom<string>('default')
+// to the primary (window) backend's profile on boot, except secondary session
+// windows opened from a profile-scoped row seed this from the URL so route resume
+// targets the session's owning backend before the first gateway connection.
+export const $activeGatewayProfile = atom<string>(initialGatewayProfile ?? 'default')
 
 // Profile for the NEXT new chat (chosen via the new-chat picker). null = primary
 // / default, so single-profile users are unaffected.

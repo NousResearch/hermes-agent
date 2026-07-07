@@ -37,12 +37,16 @@ class TestApprovalModeParsing:
         assert _normalize_approval_mode("smart") == "smart"
         assert _normalize_approval_mode("off") == "off"
 
+    def test_auto_is_alias_for_smart(self):
+        assert _normalize_approval_mode("auto") == "smart"
+
     def test_valid_mode_is_case_insensitive_and_trimmed(self):
         assert _normalize_approval_mode("  SMART  ") == "smart"
+        assert _normalize_approval_mode("  AUTO  ") == "smart"
 
     def test_unknown_mode_defaults_to_manual_with_warning(self):
         with mock_patch.object(approval_module.logger, "warning") as warn:
-            assert _normalize_approval_mode("auto") == "manual"
+            assert _normalize_approval_mode("unknown_mode") == "manual"
             warn.assert_called_once()
 
     def test_empty_string_defaults_to_manual_without_warning(self):

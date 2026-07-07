@@ -1787,14 +1787,19 @@ def _normalize_approval_mode(mode) -> str:
     """Normalize approval mode values loaded from YAML/config.
 
     YAML 1.1 treats bare words like `off` as booleans, so a config entry like
-    `approvals:\n  mode: off` is parsed as False unless quoted. Treat that as the
+    `approvals:\\n  mode: off` is parsed as False unless quoted. Treat that as the
     intended string mode instead of falling back to manual approvals.
 
-    Unknown string values (e.g. 'auto') are rejected with a warning rather than
-    being silently accepted and falling through every mode check downstream.
+    ``auto`` is accepted as an alias for ``smart`` — it is the most intuitive
+    value for users who want LLM-based auto-approval of low-risk commands without
+    having to know the internal mode names.  Without this alias, ``auto`` was
+    silently rejected and fell back to ``manual``, causing every dangerous-pattern
+    match to prompt the user — the exact opposite of what ``auto`` implies.
+
     Always returns one of 'manual', 'smart', or 'off'.
     """
-    _VALID_MODES = ("manual", "smart", "off")
+    _VALID_MODES = ("manual", "smart", "off", "auto")
+    _MODE_ALIASES = {"auto": "smart"}
     if isinstance(mode, bool):
         return "off" if mode is False else "manual"
     if isinstance(mode, str):
@@ -1802,12 +1807,11 @@ def _normalize_approval_mode(mode) -> str:
         if not normalized:
             return "manual"
         if normalized in _VALID_MODES:
-            return normalized
+            return _MODE_ALIASES.get(normalized, normalized)
         logger.warning(
             "Unknown approvals.mode %r — defaulting to 'manual'. "
-            "Valid values: %s",
+            "Valid values: manual, smart, auto (= smart), off",
             mode,
-            ", ".join(_VALID_MODES),
         )
         return "manual"
     return "manual"

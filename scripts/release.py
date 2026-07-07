@@ -52,6 +52,7 @@ AUTHOR_MAP = {
     "AndreasHiltner@users.noreply.github.com": "AndreasHiltner",  # PR #56854 salvage (gateway: route multiplex profile responses through the profile's own adapter — 53-site _adapter_for_source sweep)
     "allenliang2022@users.noreply.github.com": "allenliang2022",  # PR #56932 test coverage folded into #56909 salvage (408 → retryable timeout)
     "m888.braun@hotmail.com": "ManniBr",  # PR #57417 partial salvage (gateway: fail-closed adapter resolution for unregistered secondary profiles)
+    "blueirobin02@gmail.com": "irresi",  # PR #59048 salvage (gateway: scope reset banners' session info to the serving profile; #59003)
     "jashlee+microsoft@microsoft.com": "s905060",  # PR #57943 salvage (photon: auto-reinstall stale sidecar node_modules when lockfile is newer than npm's install marker; #59169)
     "lohinth25@proton.me": "l0h1nth",  # PR #32210 salvage (mattermost: accept leading-space slash commands from mobile clients; #25184)
     "perkintahmaz50@gmail.com": "devatnull",  # PR #58704 salvage (whatsapp: native Baileys polls, clarify-as-poll, location pins, structured quoted replies, PTT/audio split, bridge_helpers extraction)

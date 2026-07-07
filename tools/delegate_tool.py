@@ -2916,6 +2916,7 @@ def delegate_task(
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
             max_async_children=_get_max_async_children(),
+            timeout_seconds=_get_child_timeout(),
         )
 
         if dispatch.get("status") == "dispatched":

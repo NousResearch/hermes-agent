@@ -419,6 +419,22 @@ class MemoryStore:
                 unique_texts = {e for _, e in matches}
                 if len(unique_texts) > 1:
                     previews = self._previews([e for _, e in matches])
+                    # Check if new_content already exists verbatim as a separate entry
+                    # — prevents the model from falling back to add() and creating
+                    # a duplicate (#60089).
+                    if new_content in entries and new_content not in unique_texts:
+                        return {
+                            "success": False,
+                            "error": (
+                                f"Multiple entries matched '{old_text}'. "
+                                f"Be more specific, or use batch 'operations' instead: "
+                                f"the new content you want to write is *already present* "
+                                f"as a separate entry — create a replace operation with "
+                                f"a more specific old_text to disambiguate, or leave it "
+                                f"unchanged."
+                            ),
+                            "matches": previews,
+                        }
                     return {
                         "success": False,
                         "error": f"Multiple entries matched '{old_text}'. Be more specific.",

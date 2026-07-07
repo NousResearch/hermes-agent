@@ -3983,7 +3983,12 @@ def get_sessions(
     if profile:
         profile_name, _ = _cron_profile_home(profile)
     try:
-        db = _open_session_db_for_profile(profile)
+        # When this dashboard is scoped to a specific profile via
+        # --open-profile and the caller did not explicitly request a
+        # profile, default to the scoped profile so the dashboard's
+        # session list matches its profile context.
+        _effective_profile = profile or getattr(app.state, "open_profile", "")
+        db = _open_session_db_for_profile(_effective_profile or None)
         try:
             min_message_count = max(0, min_messages)
             archived_only = archived == "only"
@@ -4072,9 +4077,18 @@ def get_profiles_sessions(
     from hermes_state import SessionDB
     from hermes_cli import profiles as profiles_mod
 
+    # When this dashboard is scoped to a specific profile via
+    # --open-profile, honour that scope: only return the scoped
+    # profile's sessions.  This prevents a profile-specific dashboard
+    # (e.g. juicecup on port 9120) from leaking other profiles' data.
+    _scoped = getattr(app.state, "open_profile", "")
     targets: List[Tuple[str, Path]] = []
     if profile and profile != "all":
         name, home = _cron_profile_home(profile)
+        targets.append((name, home))
+    elif _scoped:
+        # Dashboard is scoped to one profile — return only that profile.
+        name, home = _cron_profile_home(_scoped)
         targets.append((name, home))
     else:
         try:
@@ -4182,7 +4196,8 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
     if not q or not q.strip():
         return {"results": []}
     try:
-        db = _open_session_db_for_profile(profile)
+        _effective_profile = profile or getattr(app.state, "open_profile", "")
+        db = _open_session_db_for_profile(_effective_profile or None)
         try:
             safe_limit = max(1, min(int(limit or 20), 100))
 
@@ -16990,6 +17005,10 @@ def start_server(
     # uses this to decide whether to refuse the bind, log the gate-on
     # banner, and enable uvicorn proxy_headers.
     app.state.auth_required = should_require_auth(host)
+    # Store the --open-profile scope so API endpoints (e.g.
+    # /api/profiles/sessions) can restrict data to this profile only,
+    # instead of always returning all profiles' aggregated data.
+    app.state.open_profile = (initial_profile or "").strip()
 
     # ``--insecure`` no longer disables the auth gate (June 2026 hardening:
     # the hermes-0day MCP-persistence campaign abused unauthenticated public

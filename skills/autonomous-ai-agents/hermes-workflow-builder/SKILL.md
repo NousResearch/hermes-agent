@@ -13,19 +13,20 @@ metadata:
 
 # Hermes Workflow Builder
 
-Use this skill when the user wants to create, design, improve, or deploy a Hermes Workflow graph.
+Use this skill when the user wants to create, design, improve, validate, or deploy a Hermes Workflow from a plain-language goal.
 
 ## Core behavior
 
 1. Clarify only if required. If the user gives enough goal/context, proceed.
-2. Identify workflow inputs, cells, assigned profiles, routing decisions, waits, joins, and terminal outputs.
-3. Prefer text-first `agent_task.prompt` strings. Use `${ input.foo }` and `${ node.cell.output.field }` placeholders for runtime context.
-4. Include an explicit JSON output contract inside each agent-task prompt.
-5. Keep workflow YAML human-readable. Do not require users to write raw JSON.
-6. Validate the YAML with `hermes workflow validate <path>` before claiming it is ready.
-7. Deploy only when the user asked for deployment or explicitly approves it.
+2. Prefer dashboard/API `workflow_draft` from the user's plain-language goal whenever available.
+3. Use dashboard/API `workflow_refine` for corrections, missing steps, profile changes, routing changes, and prompt improvements.
+4. Review the generated spec with the user when approval is needed; otherwise continue with the requested validate/deploy/test flow.
+5. Always validate before deploy.
+6. Deploy only when the user asked for deployment or explicitly approves it.
+7. After deploy, verify deployed state with `hermes workflow show <workflow-id> --json` or the dashboard definition view.
+8. Only write YAML by hand when the user asks for advanced/manual authoring or when `workflow_draft` / `workflow_refine` tooling is unavailable.
 
-## Workflow design checklist
+## Review checklist for generated specs
 
 - Workflow id: lowercase kebab/snake style, stable across versions.
 - Triggers: start with manual unless schedule/event is explicitly needed.
@@ -44,39 +45,18 @@ Use this skill when the user wants to create, design, improve, or deploy a Herme
   - output JSON contract in the prompt
 - Edges must use `switch.case_name` or `parallel.branch_name` when leaving branch nodes.
 
-## Authoring workflow
+## Prompt and cell guidance
 
-1. Draft a compact cell table:
+Use the prompt/cell checklist to review and refine generated specs, not as a default reason to hand-author YAML first.
+
+Useful cell-table view:
 
 | Cell id | Type | Profile | Objective | Output contract | Next |
 | --- | --- | --- | --- | --- | --- |
 
-2. Write YAML under `.hermes/workflows/<workflow-id>.yaml` unless the user specifies another path.
-3. Validate:
+Prefer text-first `agent_task.prompt` strings. Use `${ input.foo }` and `${ node.cell.output.field }` placeholders for runtime context. Include an explicit JSON output contract inside each agent-task prompt.
 
-```bash
-hermes workflow validate .hermes/workflows/<workflow-id>.yaml
-```
-
-4. If validation fails, fix the YAML and validate again.
-5. If the user asked to deploy:
-
-```bash
-hermes workflow deploy .hermes/workflows/<workflow-id>.yaml
-hermes workflow show <workflow-id> --json
-```
-
-6. If the user asked to test a manual run, create an input JSON file and run:
-
-```bash
-hermes workflow run <workflow-id> --input /path/to/input.json --json
-hermes workflow tick --limit 10 --json
-hermes workflow executions show <execution-id> --json
-```
-
-## Agent-task prompt template
-
-Use this structure for each cell prompt:
+Agent-task prompt pattern:
 
 ```text
 You are the `<profile>` profile executing workflow cell `<cell_id>`.
@@ -103,9 +83,39 @@ Return JSON matching this contract:
 }
 ```
 
+## Manual YAML fallback
+
+Only write YAML by hand for advanced/manual requests or when draft/refine tooling is unavailable. Keep workflow YAML human-readable and do not require users to write raw JSON.
+
+If manual authoring is needed:
+
+1. Draft a compact cell table.
+2. Write YAML under `.hermes/workflows/<workflow-id>.yaml` unless the user specifies another path.
+3. Validate and fix until green:
+
+```bash
+hermes workflow validate .hermes/workflows/<workflow-id>.yaml
+```
+
+4. If the user asked to deploy, deploy and verify:
+
+```bash
+hermes workflow deploy .hermes/workflows/<workflow-id>.yaml
+hermes workflow show <workflow-id> --json
+```
+
+5. If the user asked to test a manual run, create an input JSON file and run:
+
+```bash
+hermes workflow run <workflow-id> --input /path/to/input.json --json
+hermes workflow tick --limit 10 --json
+hermes workflow executions show <execution-id> --json
+```
+
 ## Common pitfalls
 
+- Do not default to raw YAML authoring when `workflow_draft` / `workflow_refine` can produce and revise the spec.
 - Mixed text prompts require runtime interpolation support; if `${ input.foo }` appears literally in a Kanban task body, the workflow runtime is stale.
-- Do not use JSON as the dashboard-facing editing format; use text prompts and YAML definitions.
+- Do not use JSON as the dashboard-facing editing format; use plain-language draft/refine and text prompts, with YAML/JSON as advanced import/export/debug formats.
 - Do not create switch edges from `switch` directly for named cases; use `switch.case_name` or `switch.default`.
-- Do not claim a workflow is deployed until `hermes workflow show <id> --json` returns it.
+- Do not claim a workflow is deployed until `hermes workflow show <workflow-id> --json` returns it.

@@ -1,12 +1,12 @@
 ---
 sidebar_position: 11
-title: "Workflow Graph Engine"
-description: "Durable declarative graphs for multi-step orchestration."
+title: "Workflows"
+description: "Prompt-first durable automations for multi-step orchestration."
 ---
 
-# Workflow Graph Engine
+# Workflows
 
-Workflows are durable, declarative graphs for multi-step orchestration. A workflow definition is YAML, deployed into `~/.hermes/workflows.db`, then advanced by the workflow dispatcher. Nodes can transform data locally, branch, wait, fan out, and create durable Kanban agent tasks.
+Workflows are named, versioned automations that Hermes can draft from a plain-language goal, validate, deploy, and run durably. You normally start by describing what you want to automate; YAML/JSON remains available as an advanced import/export/debug format.
 
 Workflows are not arbitrary scripts. Conditions and templates use a small data-path DSL; they do not run Python, shell, JavaScript, or model-generated code.
 
@@ -14,46 +14,105 @@ Workflows are not arbitrary scripts. Conditions and templates use a small data-p
 The command is singular today: `hermes workflow ...`.
 :::
 
-## Workflows vs Kanban vs Cron vs `delegate_task`
+## Build from plain language
+
+Start with the outcome, not a YAML file. In the dashboard or through workflow draft tooling, describe:
+
+- the goal you want automated
+- inputs a run should ask for
+- profiles or workers that should handle each part
+- review/routing rules
+- expected final output
+
+Example prompt:
+
+```text
+Draft a workflow that researches a topic, scores source quality, sends high-value findings to an analyst profile, and produces a concise final report.
+```
+
+Hermes drafts a workflow spec from that goal. Review the draft, ask for corrections with workflow refine tooling, validate it, then deploy. Use YAML/JSON only when you are importing, exporting, debugging, or intentionally authoring the definition by hand.
+
+## When to use Workflows vs Kanban
 
 | Primitive | Best for | Durable? | Runs agents? | Main interface |
 |---|---|---:|---:|---|
 | `delegate_task` | Short fork/join subagent work inside the current turn | No | Yes, in-process child agents | `delegate_task` tool |
 | Kanban | Long-lived task queue across profiles, humans, retries, and workspaces | Yes | Yes, as full worker processes | `hermes kanban`, `/kanban`, Kanban tools |
 | Cron | Time-based prompts or scripts | Yes | Yes for prompt jobs; no for `--no-agent` scripts | `cronjob`, `hermes cron`, `/cron` |
-| Workflows | A declarative graph with branching, waits, fan-out, and Kanban agent steps | Yes | Only through `agent_task` nodes | `hermes workflow`, Workflows dashboard |
+| Workflows | A named graph with branching, waits, fan-out, and Kanban agent steps | Yes | Only through `agent_task` nodes | Dashboard Workflows tab, `hermes workflow` |
 
 Use a workflow when the shape matters: "do A, run B and C, wait for both, route on reviewer output, then either finish or create a revision task." Use Kanban directly when you just need a queue of work cards. Use Cron when the main question is "when should this run?" Use `delegate_task` when the parent agent needs a quick answer before continuing.
 
 Workflows can include schedule triggers, but scheduled workflows still run through the workflow dispatcher and workflow state database. Cron jobs remain the general-purpose scheduled prompt/script system.
 
-## Quick start
+## Create a workflow in the dashboard
 
-The examples live under `examples/workflows/`; this quick start uses `examples/workflows/code-change-review.yaml`.
-
-That example leaves `agent_task.workspace_kind` unset, so Kanban uses scratch workspaces; each prompt passes `repo` and tells the worker to use that path. Set `agent_task.workspace_kind`/`workspace_path` on a workflow node when that node should run in a specific worktree or directory. To pin the default dispatcher working directory for a board, set board metadata with `hermes kanban boards create <slug> --default-workdir <path>` or `hermes kanban boards set-default-workdir <slug> <path>`.
-
-Validate and deploy it:
+Open the dashboard and select the **Workflows** tab:
 
 ```bash
-hermes workflow validate examples/workflows/code-change-review.yaml
-hermes workflow deploy examples/workflows/code-change-review.yaml
-hermes workflow list
-hermes workflow show code-change-review --json
+hermes dashboard
 ```
 
-Start a manual execution. `--input` must point to a JSON file containing an object:
+The bundled `workflows` dashboard plugin mounts at `/workflows`, after Kanban in the sidebar. The dashboard flow is prompt-first:
+
+1. Use **Describe workflow**.
+2. Describe the automation in plain language.
+3. Add known inputs, profiles, constraints, and expected outputs.
+4. Let Hermes create the draft spec.
+5. Review the generated graph before validating or deploying.
+
+The screen also provides definition list, import/export/copy controls, a visual graph view with an HTML fallback, and Advanced JSON/YAML panels for debugging or manual edits.
+
+## Review and refine the draft
+
+Treat the generated spec as a draft. Review:
+
+- workflow id, name, version, and enabled state
+- manual or scheduled trigger inputs
+- each cell objective and node type
+- profile assignment for each `agent_task`
+- text-first prompts with `${ input.foo }` and `${ node.cell.output.field }` placeholders
+- explicit JSON output contracts in agent prompts
+- switch cases, parallel branches, joins, waits, and terminal states
+- workspace settings when a worker must use a specific worktree or directory
+
+Use `workflow_refine` from the dashboard/API when the draft is close but needs corrections, such as "make the reviewer run before deployment" or "add a blocked path when confidence is below 0.8". The useful cell-table view is a review aid, not a requirement to hand-write YAML first:
+
+| Cell id | Type | Profile | Objective | Output contract | Next |
+| --- | --- | --- | --- | --- | --- |
+| research | `agent_task` | researcher | Gather sources | `{ "sources": [...] }` | score |
+| score | `agent_task` | reviewer | Score quality | `{ "approved": true/false }` | route |
+
+For a single agent cell, the Prompt assistant can draft or improve the text prompt from the workflow goal, cell objective, available context placeholders, output contract, and constraints. Review the prompt before applying it.
+
+## Validate and deploy
+
+Always validate before deploy. The validation surface checks deployable workflow shape, including:
+
+- required top-level fields (`id`, `name`, `version`, `nodes`)
+- node ids and workflow id are stable and valid
+- every referenced edge target exists
+- switch and parallel edges use dotted ports where required
+- each `agent_task` has `profile` and `prompt`
+
+Also review the draft manually before deploy for semantic issues that graph validation cannot fully prove yet, such as whether prompt placeholders refer to the intended input/upstream node output and whether scheduled trigger strings express the schedule you meant.
+
+The dashboard shows validation results before deployment. It also shows a dispatcher readiness banner so you can see whether gateway dispatch is enabled; deployed workflows will not advance automatically until the dispatcher is ready.
+
+Deploy only after validation is green. After deployment, verify the deployed definition is visible by reopening it in the dashboard or running:
 
 ```bash
-cat > /tmp/workflow-input.json <<'JSON'
-{
-  "repo": "/home/me/project",
-  "branch": "feature/workflow-demo",
-  "change_request": "Add input validation and tests for the signup endpoint."
-}
-JSON
+hermes workflow show <workflow_id> --json
+```
 
-hermes workflow run code-change-review --input /tmp/workflow-input.json --json
+## Run a test execution
+
+For a manual trigger, the dashboard generates a run form from the workflow's expected input shape. Fill the form, start the test run, and watch the execution enter the queue.
+
+The equivalent CLI path uses a JSON object as input:
+
+```bash
+hermes workflow run <workflow_id> --input /path/to/input.json --json
 ```
 
 The CLI run command creates a queued execution. Advance queued local nodes manually with:
@@ -73,20 +132,64 @@ hermes gateway restart
 
 `workflow.dispatch_in_gateway` defaults to `false`, so a gateway will not tick workflows until you opt in.
 
-## Build workflows with Hermes
+## Monitor execution and linked worker tasks
 
-You do not have to write a workflow definition by hand. Ask Hermes to use the
-`hermes-workflow-builder` skill:
+Use the dashboard execution list to find a run, then open execution detail. The detail view shows the event timeline, node-runs, node outputs, waits, failures, and current status.
 
-```text
-Use hermes-workflow-builder to create a workflow that researches a topic,
-reviews source quality, summarizes findings, and routes high-value results to
-an analyst profile.
+When a workflow reaches an `agent_task` node, Hermes creates or reuses a linked Kanban worker task. The execution detail node-runs drill-down shows `Linked worker task: <id>` and worker status when a run is waiting on an agent. Use that task id in Kanban views or CLI commands to inspect the worker card, logs, result, blocked reason, workspace, and assignee. Long-running `agent_task` nodes wait for their Kanban task to complete before the workflow resumes.
+
+CLI inspection commands:
+
+```bash
+hermes workflow executions list --workflow <workflow_id> --json
+hermes workflow executions show <execution_id> --json
+hermes kanban list --workflow-template-id <workflow_id>
+hermes kanban list --workflow-template-id <workflow_id> --step-key <node_id>
 ```
 
-The skill decomposes the goal into workflow cells, writes text-first cell
-prompts, creates YAML under `.hermes/workflows/`, validates it with
-`hermes workflow validate`, and can deploy it when you approve.
+There is no standalone `hermes workflow events` CLI command yet. Use `hermes workflow executions show ... --json` for execution state, or inspect the dashboard timeline for recorded events.
+
+## Advanced: YAML definitions
+
+YAML/JSON definitions remain the portable representation for import, export, debugging, code review, and manual advanced authoring. Most users should draft and refine in the dashboard first.
+
+The examples live under `examples/workflows/`:
+
+```bash
+hermes workflow validate examples/workflows/code-change-review.yaml
+hermes workflow validate examples/workflows/research-triage.yaml
+```
+
+Before deploying examples, edit the `profile` names (`implementer`, `reviewer`, `researcher`, `analyst`) to match profiles installed on your machine.
+
+A minimal manual definition looks like this:
+
+```yaml
+id: research-triage
+name: Research triage
+version: 1
+triggers:
+  - type: manual
+    id: manual
+nodes:
+  start:
+    type: pass
+    output:
+      topic: "${ input.topic }"
+  research:
+    type: agent_task
+    profile: researcher
+    title: Research topic
+    prompt: |
+      You are the researcher profile executing workflow cell research.
+      Research: ${ node.start.output.topic }
+      Return JSON only: {"summary": "string", "sources": ["url"]}
+edges:
+  - from: start
+    to: research
+```
+
+Definitions are data stored in SQLite after deploy, not executable scripts. Unknown YAML keys may validate because the internal models allow forward-compatible extras, but only the fields documented here have runtime behavior. Do not rely on unknown keys in production workflows.
 
 ## CLI reference
 
@@ -103,65 +206,7 @@ hermes workflow executions cancel <execution_id>
 hermes workflow tick [--limit N] [--json]
 ```
 
-There is no standalone `hermes workflow events` CLI command yet. Use `hermes workflow executions show ... --json` for execution state, or inspect the dashboard timeline for recorded events.
-
-## Dashboard workflow screen
-
-Open the dashboard and select the **Workflows** tab:
-
-```bash
-hermes dashboard
-```
-
-The bundled `workflows` dashboard plugin mounts at `/workflows`, after Kanban in the sidebar. It provides:
-
-- workflow definition list
-- validate/deploy editor for YAML, plus import/export/copy
-- manual run form with JSON input
-- execution list
-- execution detail timeline from `workflow_events`
-- React Flow visual graph editor for nodes and edges, with an HTML fallback when React Flow is unavailable
-- node inspector with a text-first agent cell editor, Prompt assistant for prompt drafts, and Advanced JSON for rare low-level node edits
-
-The dashboard run action starts an execution and nudges one dispatcher tick. Long-running `agent_task` nodes still wait for their Kanban task to complete, just like CLI-started executions.
-
-## Agent cell prompts
-
-Every `agent_task` cell has a `profile` and a `prompt`. The dashboard is text-first: write a plain text prompt for new agent cells, and Hermes renders inline `${ ... }` placeholders in that text before creating a Kanban task assigned to the profile. String/list/object prompt values remain supported in the reference below for existing definitions.
-
-```yaml
-review:
-  type: agent_task
-  profile: reviewer
-  title: Review implementation
-  prompt: |
-    You are the `reviewer` profile executing workflow cell `review`.
-
-    Review implementation output:
-    ${ node.implement.output }
-
-    Return JSON only:
-    {
-      "verdict": "approved or changes_requested",
-      "reason": "string"
-    }
-```
-
-The dashboard edits this prompt as text. Advanced JSON remains available for rare low-level node edits, but ordinary prompt writing should not require JSON.
-
-### Prompt assistant
-
-Select an `agent_task` cell and open **Prompt assistant**. Provide:
-
-- workflow goal
-- cell objective
-- available context placeholders
-- expected output contract
-- constraints
-
-The assistant is a deterministic dashboard draft helper, not an autonomous model or LLM run. It drafts a text prompt that you can review and apply to the cell.
-
-## Workflow definition YAML reference
+## Schema reference
 
 A workflow file is a YAML object with these supported top-level fields:
 
@@ -175,8 +220,6 @@ A workflow file is a YAML object with these supported top-level fields:
 | `triggers` | No | List of trigger specs. |
 | `nodes` | Yes | Mapping of node id to node spec. Node ids use lowercase letters/digits/underscore/hyphen, start with a letter, max 64 chars. |
 | `edges` | No | List of `{from, to}` edges. |
-
-Unknown keys may validate because the internal models allow forward-compatible extras, but only the fields documented here have runtime behavior. Do not rely on unknown keys in production workflows.
 
 ### Triggers
 
@@ -225,7 +268,7 @@ A dotted edge source is valid only from a `switch` or `parallel` node. A `parall
 
 Root nodes are the nodes with no incoming edge, no `default` target, and no `catch` target. Multiple roots are allowed.
 
-## Node type reference
+### Node type reference
 
 Common fields on node specs:
 
@@ -237,7 +280,7 @@ Common fields on node specs:
 
 The schema also accepts `workspace: {cwd, env}` for forward compatibility, but the bundled dispatcher does not use it today. For Kanban workers, use `agent_task.workspace_kind` and `agent_task.workspace_path`.
 
-### `pass`
+#### `pass`
 
 Computes a local output with safe templates and immediately continues.
 
@@ -251,7 +294,7 @@ start:
 
 The output is stored at `$.node.<node_id>.output`.
 
-### `switch`
+#### `switch`
 
 Evaluates cases in order. The first true case selects a port with the case `name`. If no case matches, the selected port is `default`; you can route that with an edge from `route.default` or set `default: <node_id>`.
 
@@ -271,7 +314,7 @@ edges:
     to: revise
 ```
 
-### `agent_task`
+#### `agent_task`
 
 Creates a Kanban task and waits for it. Required fields are `profile` and `prompt`.
 
@@ -307,7 +350,7 @@ Supported `agent_task` fields:
 
 When the Kanban task reaches `done`, the workflow resumes. If the task result or latest summary is valid JSON, that object becomes the node output. Plain text becomes `{"result": "..."}`. If the Kanban task is blocked, the workflow execution becomes `blocked` with the block reason.
 
-### `wait`
+#### `wait`
 
 Pauses the workflow until a future dispatcher tick.
 
@@ -319,7 +362,7 @@ cooldown:
 
 After the wait, the node output is `{"waited": true}`.
 
-### `parallel` and `join`
+#### `parallel` and `join`
 
 `parallel` fans out along dotted branch edges. `join` waits until all reachable branch work has completed, then stores branch outputs under `$.node.<join_id>.output.branches`.
 
@@ -347,7 +390,7 @@ edges:
     to: merge
 ```
 
-### `fail`
+#### `fail`
 
 Emits a node execution failure; if retries are exhausted, a configured `catch` may run.
 
@@ -360,15 +403,11 @@ reject:
 
 The error payload includes the node id, type `fail`, and rendered output.
 
-### `send_message` and `subworkflow`
-
-These node types are schema-accepted waiting nodes. The bundled dispatcher does not yet include a built-in message sender or subworkflow runner to complete them, so they are extension points. For normal user workflows, prefer `agent_task`, `pass`, `wait`, `parallel`, `join`, `switch`, and `fail`.
-
-## Condition DSL reference
+### Condition DSL reference
 
 Conditions are YAML objects. There is no Python `eval`; unsupported operators raise validation errors during execution.
 
-### Paths
+#### Paths
 
 Paths start with `$.` and read from workflow context:
 
@@ -382,7 +421,7 @@ $.branches.fork.research
 
 Only mapping keys, dots, and numeric list indexes are supported. Missing paths make comparison/string operators return `false`; `missing` can test for them explicitly.
 
-### Values
+#### Values
 
 `left`, `right`, and `arg` values may be literals or a path object:
 
@@ -393,7 +432,7 @@ right: {path: "$.input.min_score"}
 
 A mapping is treated as a path only when it is exactly `{path: "$.some.path"}`.
 
-### Operators
+#### Operators
 
 | Operator | Shape | Meaning |
 |---|---|---|
@@ -422,7 +461,7 @@ when:
       right: 0.8
 ```
 
-## Template reference
+### Template reference
 
 General workflow templates are path-only. Outside `agent_task` prompt text, a string is templated only when the whole string is a `${ ... }` expression:
 
@@ -438,7 +477,7 @@ Inside `${ ... }`, the leading `$.` is optional. Lists and objects are rendered 
 
 This is intentional safety: templates can only copy values out of the workflow context. They cannot call functions, read files, run shell commands, or evaluate code.
 
-## Safety model
+### Safety model
 
 - Definitions are data stored in SQLite, not executable scripts.
 - Conditions use an explicit operator allowlist.
@@ -449,7 +488,7 @@ This is intentional safety: templates can only copy values out of the workflow c
 
 Normal Hermes tool safety still applies inside the Kanban worker that picks up an `agent_task` card: profile config, toolsets, command approvals, workspace selection, and model behavior all come from Kanban/agent runtime.
 
-## How `agent_task` maps to Kanban
+### How `agent_task` maps to Kanban
 
 When a workflow reaches an `agent_task` node, the dispatcher creates or reuses a Kanban task with:
 
@@ -471,20 +510,11 @@ The workflow execution stays `waiting` while the Kanban task is open. On later t
 - `blocked` task → workflow execution becomes `blocked` and records the reason.
 - missing/still-running task → execution remains waiting.
 
-You can inspect workflow-created Kanban cards directly:
+## Limitations / unsupported primitives
 
-```bash
-hermes kanban list --workflow-template-id code-change-review
-hermes kanban list --workflow-template-id code-change-review --step-key review
-```
-
-## Examples
-
-Two copyable examples ship in the repo:
-
-```bash
-hermes workflow validate examples/workflows/code-change-review.yaml
-hermes workflow validate examples/workflows/research-triage.yaml
-```
-
-Before deploying them, edit the `profile` names (`implementer`, `reviewer`, `researcher`, `analyst`) to match profiles installed on your machine.
+- `send_message` and `subworkflow` are schema-accepted waiting nodes, but the bundled dispatcher does not yet include a built-in message sender or subworkflow runner to complete them.
+- `webhook` and `kanban_event` triggers are schema-accepted for future/external launchers; they are not wired to built-in launchers by default.
+- There is no standalone `hermes workflow events` CLI command yet.
+- Workflows do not run arbitrary Python, shell, JavaScript, or model-generated code.
+- `workflow.dispatch_in_gateway` defaults to `false`; a deployed workflow will not advance unattended until dispatch is enabled.
+- Unknown YAML keys may validate for forward compatibility but do not imply runtime behavior.

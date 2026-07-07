@@ -114,3 +114,57 @@ def test_guess_category_empty_tags(mod):
 def test_guess_category_skips_first_junk_tag_for_later_known_tag(mod):
     # First tag is junk, second is curated — we should still find the curated one.
     assert mod._guess_category(["Some Brand", "security"]) == "security"
+
+
+# --------------------------------------------------------------------------
+# Workflow docs / shipped skill content
+# --------------------------------------------------------------------------
+
+
+def test_workflows_docs_lead_with_plain_language_flow():
+    docs = REPO_ROOT / "website" / "docs" / "user-guide" / "features" / "workflows.md"
+    text = docs.read_text(encoding="utf-8")
+
+    assert (
+        "Workflows are named, versioned automations that Hermes can draft from a plain-language goal, "
+        "validate, deploy, and run durably. You normally start by describing what you want to "
+        "automate; YAML/JSON remains available as an advanced import/export/debug format."
+    ) in text
+
+    headings = [
+        "# Workflows",
+        "## Build from plain language",
+        "## When to use Workflows vs Kanban",
+        "## Create a workflow in the dashboard",
+        "## Review and refine the draft",
+        "## Validate and deploy",
+        "## Run a test execution",
+        "## Monitor execution and linked worker tasks",
+        "## Advanced: YAML definitions",
+        "## CLI reference",
+        "## Schema reference",
+        "## Limitations / unsupported primitives",
+    ]
+    positions = [text.index(heading) for heading in headings]
+    assert positions == sorted(positions)
+    assert "Use **Describe workflow**" in text
+    assert "graph validation cannot fully prove yet" in text
+    assert "The execution detail node-runs drill-down shows `Linked worker task: <id>`" in text
+    assert "Use that task id in Kanban views or CLI commands" in text
+    assert "Use the linked worker task drill-down from execution detail to inspect" not in text
+
+
+def test_workflow_builder_skill_prefers_draft_refine_before_yaml():
+    skill = REPO_ROOT / "skills" / "autonomous-ai-agents" / "hermes-workflow-builder" / "SKILL.md"
+    text = skill.read_text(encoding="utf-8")
+
+    assert "workflow_draft" in text
+    assert "workflow_refine" in text
+    assert "Only write YAML by hand" in text
+    assert "Always validate before deploy" in text
+
+    first_draft = text.index("workflow_draft")
+    first_refine = text.index("workflow_refine")
+    manual_yaml = text.index("Only write YAML by hand")
+    assert first_draft < manual_yaml
+    assert first_refine < manual_yaml

@@ -17,6 +17,7 @@ from tools.process_registry import (
     FINISHED_TTL_SECONDS,
     MAX_PROCESSES,
     MAX_ACTIVE_PROCESS_AGE,
+    format_uptime_short,
 )
 
 
@@ -1840,3 +1841,36 @@ class TestHandleProcessRedaction:
         monkeypatch.setattr(pr, "process_registry", reg)
         out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
         assert "zzzopaque1234567890abcdef" in out["output"]
+
+
+class TestFormatUptimeShort:
+    @pytest.mark.parametrize("seconds,expected", [
+        (0, "0s"),
+        (5, "5s"),
+        (59, "59s"),
+    ])
+    def test_under_a_minute(self, seconds, expected):
+        assert format_uptime_short(seconds) == expected
+
+    @pytest.mark.parametrize("seconds,expected", [
+        (60, "1m 0s"),
+        (90, "1m 30s"),
+        (3599, "59m 59s"),
+    ])
+    def test_minutes_and_seconds(self, seconds, expected):
+        assert format_uptime_short(seconds) == expected
+
+    @pytest.mark.parametrize("seconds,expected", [
+        (3600, "1h 0m"),
+        (3661, "1h 1m"),
+        (7325, "2h 2m"),
+    ])
+    def test_hours_and_minutes(self, seconds, expected):
+        assert format_uptime_short(seconds) == expected
+
+    def test_negative_is_clamped_to_zero(self):
+        assert format_uptime_short(-10) == "0s"
+
+    def test_float_is_truncated(self):
+        # int() truncation, not rounding.
+        assert format_uptime_short(45.9) == "45s"

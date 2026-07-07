@@ -5120,6 +5120,26 @@ class DiscordAdapter(BasePlatformAdapter):
     # Auto-thread helpers
     # ------------------------------------------------------------------
 
+    def _derive_auto_thread_name(self, content: str) -> str:
+        """Return the fast placeholder name used at Discord thread creation time.
+
+        Strip Discord mention syntax (users / roles / channels) so thread
+        titles don't show raw <@id>, <@&id>, or <#id> markers — the ID
+        isn't meaningful to humans glancing at the thread list (#6336).
+        Real semantic naming is done after the first agent turn, when
+        Hermes has an LLM-generated session title and can safely rename
+        only this newly-created thread.
+        """
+        content = (content or "").strip()
+        # <@123>, <@!123>, <@&123>, <#123> — collapse to empty; normalize spaces.
+        content = re.sub(r"<@[!&]?\d+>", "", content)
+        content = re.sub(r"<#\d+>", "", content)
+        content = re.sub(r"\s+", " ", content).strip()
+        thread_name = content[:80] if content else "Hermes"
+        if len(content) > 80:
+            thread_name = thread_name[:77] + "..."
+        return thread_name
+
     async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
         """Create a thread from a user message for auto-threading.
 
@@ -5129,19 +5149,7 @@ class DiscordAdapter(BasePlatformAdapter):
         (e.g. ``Cannot connect to host discord.com:443``) don't immediately
         burn through to the caller's failure path (#20243).
         """
-        # Build a short thread name from the message. Strip Discord mention
-        # syntax (users / roles / channels) so thread titles don't end up
-        # showing raw <@id>, <@&id>, or <#id> markers — the ID isn't
-        # meaningful to humans glancing at the thread list (#6336).
-        content = (message.content or "").strip()
-        # <@123>, <@!123>, <@&123>, <#123> — collapse to empty; normalize spaces.
-        content = re.sub(r"<@[!&]?\d+>", "", content)
-        content = re.sub(r"<#\d+>", "", content)
-        content = re.sub(r"\s+", " ", content).strip()
-        thread_name = content[:80] if content else "Hermes"
-        if len(content) > 80:
-            thread_name = thread_name[:77] + "..."
-
+        thread_name = self._derive_auto_thread_name(message.content or "")
         display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
         reason = f"Auto-threaded from mention by {display_name}"
 
@@ -5151,6 +5159,10 @@ class DiscordAdapter(BasePlatformAdapter):
         for attempt in range(2):
             try:
                 thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+                try:
+                    setattr(thread, "_hermes_auto_thread_initial_name", thread_name)
+                except Exception:
+                    pass
                 return thread
             except Exception as direct_error:
                 last_direct_error = direct_error
@@ -5163,6 +5175,10 @@ class DiscordAdapter(BasePlatformAdapter):
                         auto_archive_duration=1440,
                         reason=reason,
                     )
+                    try:
+                        setattr(thread, "_hermes_auto_thread_initial_name", thread_name)
+                    except Exception:
+                        pass
                     return thread
                 except Exception as fallback_error:
                     last_fallback_error = fallback_error
@@ -5180,6 +5196,67 @@ class DiscordAdapter(BasePlatformAdapter):
             last_fallback_error,
         )
         return None
+
+    async def rename_thread(
+        self,
+        thread_id: str,
+        name: str,
+        *,
+        only_if_current_name: Optional[str] = None,
+    ) -> bool:
+        """Best-effort Discord thread rename.
+
+        ``only_if_current_name`` prevents overwriting human-renamed or
+        pre-existing threads.  This is intentionally a no-op on mismatch.
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return False
+
+        try:
+            thread_id_int = int(str(thread_id))
+        except (TypeError, ValueError):
+            return False
+
+        cleaned = re.sub(r"\s+", " ", str(name or "")).strip()
+        if not cleaned:
+            return False
+        # Discord thread names are budgeted in UTF-16 code units (emoji count
+        # double) — truncate with the UTF-16 helpers, not code-point slices.
+        from gateway.platforms.base import utf16_len, _prefix_within_utf16_limit
+        if utf16_len(cleaned) > 80:
+            cleaned = _prefix_within_utf16_limit(cleaned, 77).rstrip() + "..."
+
+        try:
+            thread = self._client.get_channel(thread_id_int)
+            if thread is None:
+                thread = await self._client.fetch_channel(thread_id_int)
+        except Exception:
+            logger.debug("[%s] Failed to resolve Discord thread %s for rename", self.name, thread_id, exc_info=True)
+            return False
+
+        current_name = getattr(thread, "name", None)
+        if only_if_current_name is not None and current_name != only_if_current_name:
+            logger.info(
+                "[%s] Discord semantic thread rename skipped for %s: current name %r != expected %r",
+                self.name, thread_id, current_name, only_if_current_name,
+            )
+            return False
+        if current_name == cleaned:
+            return True
+
+        edit = getattr(thread, "edit", None)
+        if edit is None:
+            return False
+        try:
+            await edit(name=cleaned, reason="Hermes semantic session title")
+            logger.info(
+                "[%s] Renamed Discord thread %s from %r to %r",
+                self.name, thread_id, current_name, cleaned,
+            )
+            return True
+        except Exception:
+            logger.debug("[%s] Failed to rename Discord thread %s", self.name, thread_id, exc_info=True)
+            return False
 
     async def create_handoff_thread(
         self,
@@ -5964,6 +6041,11 @@ class DiscordAdapter(BasePlatformAdapter):
             parent_chat_id=parent_channel_id,
             message_id=str(message.id),
             role_authorized=role_authorized,
+            auto_thread_created=auto_threaded_channel is not None,
+            auto_thread_initial_name=(
+                getattr(auto_threaded_channel, "_hermes_auto_thread_initial_name", None)
+                or self._derive_auto_thread_name(message.content or "")
+            ) if auto_threaded_channel is not None else None,
         )
 
         # Build media URLs -- download image attachments to local cache so the

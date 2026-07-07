@@ -4497,23 +4497,14 @@ def interactive_setup() -> None:
                 __import__("mautrix")
             except ImportError:
                 print_info(f"Installing {matrix_pkg}...")
-                import subprocess
-                uv_bin = shutil.which("uv")
-                if uv_bin:
-                    result = subprocess.run(
-                        [uv_bin, "pip", "install", "--python", _sys.executable, matrix_pkg],
-                        capture_output=True, text=True,
-                    )
-                else:
-                    result = subprocess.run(
-                        [_sys.executable, "-m", "pip", "install", matrix_pkg],
-                        capture_output=True, text=True,
-                    )
+                from hermes_cli.tools_config import _pip_install
+
+                result = _pip_install([matrix_pkg])
                 if result.returncode == 0:
                     print_success(f"{matrix_pkg} installed")
                 else:
                     print_warning(
-                        f"Install failed — run manually: pip install "
+                        f"Install failed — run manually: uv pip install "
                         f"'{matrix_pkg}' asyncpg aiosqlite Markdown aiohttp-socks"
                     )
 

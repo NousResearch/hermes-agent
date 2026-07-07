@@ -181,6 +181,14 @@ class SessionSource:
     # namespacing and the per-turn config/credential scope.
     profile: Optional[str] = None
 
+    # Discord auto-thread metadata.  Newly auto-created Discord threads start
+    # with a fast placeholder title from the raw message, then the gateway can
+    # rename them after the first agent turn using the generated session title.
+    # Keep this explicit so pre-existing or human-renamed threads are not
+    # mistaken for safe rename targets.
+    auto_thread_created: bool = False
+    auto_thread_initial_name: Optional[str] = None
+
     # Internal, wire-INVISIBLE trust signal: True when this event was delivered
     # to the gateway over the per-instance-authenticated relay WebSocket (the
     # Team Gateway connector). The connector authenticates the gateway's socket
@@ -254,6 +262,10 @@ class SessionSource:
             d["message_id"] = self.message_id
         if self.profile:
             d["profile"] = self.profile
+        if self.auto_thread_created:
+            d["auto_thread_created"] = True
+        if self.auto_thread_initial_name:
+            d["auto_thread_initial_name"] = self.auto_thread_initial_name
         return d
 
     @classmethod
@@ -275,6 +287,8 @@ class SessionSource:
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
             profile=data.get("profile"),
+            auto_thread_created=bool(data.get("auto_thread_created", False)),
+            auto_thread_initial_name=data.get("auto_thread_initial_name"),
         )
     
 

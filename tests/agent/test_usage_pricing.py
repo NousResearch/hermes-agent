@@ -322,3 +322,29 @@ def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     )
     assert result.status == "estimated"
     assert result.amount_usd is not None
+
+
+def test_gemini_3_5_flash_pricing_resolved():
+    """Ensure gemini-3.5-flash pricing exists and resolves correctly."""
+    entry = get_pricing_entry("gemini-3.5-flash", provider="google")
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 1.50
+    assert float(entry.output_cost_per_million) == 9.00
+    assert float(entry.cache_read_cost_per_million) == 0.15
+    assert float(entry.cache_write_cost_per_million) == 1.50
+
+
+def test_gemini_provider_maps_to_google():
+    """Ensure using 'gemini' as provider resolves to 'google' pricing."""
+    entry = get_pricing_entry("gemini-3.5-flash", provider="gemini")
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 1.50
+
+    # Also check base URL matching
+    entry_base = get_pricing_entry(
+        "gemini-3.5-flash",
+        provider="custom",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+    )
+    assert entry_base is not None
+    assert float(entry_base.input_cost_per_million) == 1.50

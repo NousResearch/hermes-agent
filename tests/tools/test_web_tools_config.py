@@ -668,6 +668,8 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+    assert "PERPLEXITY_API_KEY" in _web_requires_env()
+    assert "PPLX_API_KEY" in _web_requires_env()
 
 
 class TestNonBuiltinProviderAvailability:

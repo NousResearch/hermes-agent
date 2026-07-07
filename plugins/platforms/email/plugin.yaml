@@ -21,6 +21,10 @@ requires_env:
     prompt: "SMTP host"
     password: false
 optional_env:
+  - name: EMAIL_ACCOUNTS_JSON
+    description: "JSON array for multi-account email gateway configuration; when set, it supersedes the legacy single-account EMAIL_ADDRESS/EMAIL_PASSWORD/SMTP/IMAP variables."
+    prompt: "Email accounts JSON"
+    password: true
   - name: EMAIL_SMTP_PORT
     description: "SMTP port (default 587)"
     prompt: "SMTP port"

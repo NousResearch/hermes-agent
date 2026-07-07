@@ -376,6 +376,8 @@ def _web_requires_env() -> list[str]:
     """
     return [
         "EXA_API_KEY",
+        "PERPLEXITY_API_KEY",
+        "PPLX_API_KEY",
         "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY",

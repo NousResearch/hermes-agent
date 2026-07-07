@@ -188,7 +188,8 @@ def test_hard_stop_enabled_halts_same_tool_varying_args_failure_streak():
     assert third.count == 3
 
 
-def test_idempotent_no_progress_repeated_result_warns_without_blocking_by_default():
+def test_same_result_warns_without_blocking_by_default():
+    """Repeated same-result (even with varying args) triggers same_result_warning."""
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)
     )
@@ -200,12 +201,13 @@ def test_idempotent_no_progress_repeated_result_warns_without_blocking_by_defaul
         decision = controller.after_call("read_file", args, result, failed=False)
 
     assert decision.action == "warn"
-    assert decision.code == "idempotent_no_progress_warning"
+    assert decision.code == "same_result_warning"
     assert controller.before_call("read_file", args).action == "allow"
     assert controller.halt_decision is None
 
 
-def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
+def test_hard_stop_enabled_warns_same_result_future_repeat():
+    """Hard-stop enabled: same-result triggers same_result_warning, not block."""
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(
             hard_stop_enabled=True,
@@ -221,23 +223,37 @@ def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
     assert controller.before_call("read_file", args).action == "allow"
     warn = controller.after_call("read_file", args, result, failed=False)
     assert warn.action == "warn"
-    assert warn.code == "idempotent_no_progress_warning"
+    assert warn.code == "same_result_warning"
 
-    blocked = controller.before_call("read_file", args)
-    assert blocked.action == "block"
-    assert blocked.code == "idempotent_no_progress_block"
+    # Same-result detection doesn't block — it warns every time.
+    assert controller.before_call("read_file", args).action == "allow"
+    warn2 = controller.after_call("read_file", args, result, failed=False)
+    assert warn2.action == "warn"
+    assert warn2.code == "same_result_warning"
 
 
-def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():
+def test_non_idempotent_tools_warn_on_same_result():
+    """Non-idempotent tools now trigger same_result_warning on repeated output."""
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)
     )
 
-    for _ in range(3):
+    for i in range(3):
         assert controller.before_call("write_file", {"path": "/tmp/x", "content": "x"}).action == "allow"
-        assert controller.after_call("write_file", {"path": "/tmp/x", "content": "x"}, "ok", failed=False).action == "allow"
+        dec = controller.after_call("write_file", {"path": "/tmp/x", "content": "x"}, "ok", failed=False)
+        if i >= 1:
+            assert dec.action == "warn"
+            assert dec.code == "same_result_warning"
+        else:
+            assert dec.action == "allow"
+
         assert controller.before_call("custom_tool", {"x": 1}).action == "allow"
-        assert controller.after_call("custom_tool", {"x": 1}, "ok", failed=False).action == "allow"
+        dec2 = controller.after_call("custom_tool", {"x": 1}, "ok", failed=False)
+        if i >= 1:
+            assert dec2.action == "warn"
+            assert dec2.code == "same_result_warning"
+        else:
+            assert dec2.action == "allow"
 
 
 def test_reset_for_turn_clears_bounded_guardrail_state():
@@ -250,7 +266,8 @@ def test_reset_for_turn_clears_bounded_guardrail_state():
     controller.after_call("read_file", {"path": "/tmp/x"}, "same", failed=False)
 
     assert controller.before_call("web_search", {"query": "same"}).action == "block"
-    assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "block"
+    # Same-result detection warns but does not block.
+    assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
 
     controller.reset_for_turn()
 

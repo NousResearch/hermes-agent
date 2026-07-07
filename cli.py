@@ -3882,6 +3882,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 20)
         self.checkpoint_max_total_size_mb = cp_cfg.get("max_total_size_mb", 500)
         self.checkpoint_max_file_size_mb = cp_cfg.get("max_file_size_mb", 10)
+        # Trajectory sample capture (documented as agent.save_trajectories in
+        # config.yaml). The AIAgent already knows how to write JSONL samples,
+        # but the interactive CLI never read the config flag, so enabling it
+        # in config.yaml did nothing (issue #58200). Config is the sole
+        # user-facing control (no new non-secret HERMES_* env vars).
+        self.save_trajectories = bool(CLI_CONFIG["agent"].get("save_trajectories", False))
         self.pass_session_id = pass_session_id
         # --ignore-rules: honor either the constructor flag or the env var set
         # by `hermes chat --ignore-rules` in hermes_cli/main.py. When true we

@@ -353,6 +353,7 @@ class CLIAgentSetupMixin:
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 disabled_toolsets=self.disabled_toolsets,
+                save_trajectories=getattr(self, "save_trajectories", False),
                 verbose_logging=self.verbose,
                 quiet_mode=not self.verbose,
                 tool_progress_mode=getattr(self, "tool_progress_mode", "all"),

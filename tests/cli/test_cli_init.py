@@ -91,6 +91,85 @@ class TestMaxTurnsResolution:
         assert isinstance(cli.max_turns, int) and cli.max_turns == 90
 
 
+class TestSaveTrajectories:
+    """agent.save_trajectories in config.yaml must reach the CLI (issue #58200)."""
+
+    def test_default_save_trajectories_is_false(self):
+        cli = _make_cli()
+        assert cli.save_trajectories is False
+
+    def test_config_enables_save_trajectories(self):
+        cli = _make_cli(config_overrides={"agent": {"save_trajectories": True}})
+        assert cli.save_trajectories is True
+
+    def test_config_forwards_save_trajectories_to_aiagent(self):
+        """Config must reach AIAgent(...), not just the HermesCLI attribute."""
+        import importlib
+        from unittest.mock import MagicMock, patch
+
+        _clean_config = {
+            "model": {
+                "default": "anthropic/claude-opus-4.6",
+                "base_url": "https://openrouter.ai/api/v1",
+                "provider": "auto",
+            },
+            "display": {"compact": False, "tool_progress": "all"},
+            "agent": {"save_trajectories": True},
+            "terminal": {"env_type": "local"},
+        }
+        prompt_toolkit_stubs = {
+            "prompt_toolkit": MagicMock(),
+            "prompt_toolkit.history": MagicMock(),
+            "prompt_toolkit.styles": MagicMock(),
+            "prompt_toolkit.patch_stdout": MagicMock(),
+            "prompt_toolkit.application": MagicMock(),
+            "prompt_toolkit.layout": MagicMock(),
+            "prompt_toolkit.layout.processors": MagicMock(),
+            "prompt_toolkit.filters": MagicMock(),
+            "prompt_toolkit.layout.dimension": MagicMock(),
+            "prompt_toolkit.layout.menus": MagicMock(),
+            "prompt_toolkit.widgets": MagicMock(),
+            "prompt_toolkit.key_binding": MagicMock(),
+            "prompt_toolkit.completion": MagicMock(),
+            "prompt_toolkit.formatted_text": MagicMock(),
+            "prompt_toolkit.auto_suggest": MagicMock(),
+        }
+
+        class _DummyAgent:
+            def __init__(self, *args, **kwargs):
+                self.kwargs = kwargs
+
+        with patch.dict(sys.modules, prompt_toolkit_stubs), \
+             patch.dict("os.environ", {"LLM_MODEL": "", "HERMES_MAX_ITERATIONS": ""}, clear=False):
+            import cli as _cli_mod
+            _cli_mod = importlib.reload(_cli_mod)
+            with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), \
+                 patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": _clean_config}), \
+                 patch.object(_cli_mod, "AIAgent", _DummyAgent), \
+                 patch(
+                     "hermes_cli.runtime_provider.resolve_runtime_provider",
+                     return_value={
+                         "provider": "openrouter",
+                         "api_mode": "chat_completions",
+                         "base_url": "https://openrouter.ai/api/v1",
+                         "api_key": "test-key",
+                         "source": "env/config",
+                     },
+                 ), \
+                 patch(
+                     "hermes_cli.runtime_provider.format_runtime_provider_error",
+                     side_effect=lambda exc: str(exc),
+                 ), \
+                 patch("hermes_cli.mcp_startup.wait_for_mcp_discovery"), \
+                 patch.object(_cli_mod, "_prepare_deferred_agent_startup"):
+                shell = _cli_mod.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+                # Skip session-db / credential side paths where practical.
+                shell._session_db = None
+                assert shell._init_agent() is True
+                assert shell.agent is not None
+                assert shell.agent.kwargs.get("save_trajectories") is True
+
+
 class TestVerboseAndToolProgress:
     def test_default_verbose_is_bool(self):
         cli = _make_cli()

@@ -8783,6 +8783,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         source.chat_id or "unknown",
                     )
                     return None
+                if _action == "reply":
+                    _reply_text = _result.get("text")
+                    if not isinstance(_reply_text, str) or not _reply_text.strip():
+                        logger.warning(
+                            "pre_gateway_dispatch reply ignored: invalid text reason=%s platform=%s chat=%s",
+                            _result.get("reason"),
+                            source.platform.value if source.platform else "unknown",
+                            source.chat_id or "unknown",
+                        )
+                        continue
+                    _adapter = self.adapters.get(source.platform)
+                    if _adapter is None:
+                        logger.warning(
+                            "pre_gateway_dispatch reply skipped: no adapter reason=%s platform=%s chat=%s",
+                            _result.get("reason"),
+                            source.platform.value if source.platform else "unknown",
+                            source.chat_id or "unknown",
+                        )
+                        return None
+                    _reply_to = event.message_id if _result.get("reply_to") is True else None
+                    try:
+                        await _adapter.send(source.chat_id, _reply_text, reply_to=_reply_to)
+                    except Exception as _reply_exc:
+                        logger.warning("pre_gateway_dispatch reply send failed: %s", _reply_exc)
+                    return None
                 if _action == "rewrite":
                     _new_text = _result.get("text")
                     if isinstance(_new_text, str):

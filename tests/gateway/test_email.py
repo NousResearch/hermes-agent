@@ -13,6 +13,7 @@ Covers:
 """
 
 import os
+import json
 import unittest
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -84,6 +85,41 @@ class TestCheckRequirements(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_requirements_empty_env(self):
+        from plugins.platforms.email.adapter import check_email_requirements
+        self.assertFalse(check_email_requirements())
+
+    @patch.dict(os.environ, {
+        "EMAIL_ACCOUNTS_JSON": json.dumps([
+            {
+                "address": "one@gmail.com",
+                "password": "pw1",
+                "imap_host": "imap.gmail.com",
+                "smtp_host": "smtp.gmail.com",
+            },
+            {
+                "address": "two@gmail.com",
+                "password": "pw2",
+                "imap_host": "imap.gmail.com",
+                "smtp_host": "smtp.gmail.com",
+                "imap_port": 1993,
+                "smtp_port": 1465,
+            },
+        ]),
+    }, clear=True)
+    def test_requirements_met_from_accounts_json(self):
+        from plugins.platforms.email.adapter import check_email_requirements
+        self.assertTrue(check_email_requirements())
+
+    @patch.dict(os.environ, {
+        "EMAIL_ACCOUNTS_JSON": json.dumps([
+            {
+                "address": "one@gmail.com",
+                "password": "pw1",
+                "imap_host": "imap.gmail.com",
+            },
+        ]),
+    }, clear=True)
+    def test_requirements_reject_invalid_accounts_json(self):
         from plugins.platforms.email.adapter import check_email_requirements
         self.assertFalse(check_email_requirements())
 
@@ -855,6 +891,129 @@ class TestThreadContext(unittest.TestCase):
             send_call = mock_server.send_message.call_args[0][0]
             self.assertEqual(send_call["Subject"], "Re: Hermes Agent")
             self.assertIn("Date", send_call)
+
+    def test_reply_uses_receiving_account_from_thread_context(self):
+        """Replies to an inbound email should leave from the account that received it."""
+        import asyncio
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        accounts = [
+            {
+                "address": "first@gmail.com",
+                "password": "pw1",
+                "imap_host": "imap.gmail.com",
+                "smtp_host": "smtp.gmail.com",
+            },
+            {
+                "address": "second@gmail.com",
+                "password": "pw2",
+                "imap_host": "imap2.gmail.com",
+                "smtp_host": "smtp2.gmail.com",
+            },
+        ]
+        with patch.dict(os.environ, {
+            "EMAIL_ACCOUNTS_JSON": json.dumps(accounts),
+            "EMAIL_ALLOW_ALL_USERS": "true",
+        }, clear=True):
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+        msg_data = {
+            "uid": b"42",
+            "account": "second@gmail.com",
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": "Project question",
+            "message_id": "<original@test.com>",
+            "in_reply_to": "",
+            "body": "Hello",
+            "attachments": [],
+            "date": "",
+        }
+
+        asyncio.run(adapter._dispatch_message(msg_data))
+
+        self.assertEqual(captured_events[0].metadata["email_account"], "second@gmail.com")
+        self.assertEqual(adapter._thread_context["user@test.com"]["account"], "second@gmail.com")
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            adapter._send_email("user@test.com", "Here is the answer.", None)
+
+            mock_smtp.assert_called_once_with("smtp2.gmail.com", 587, timeout=ANY)
+            mock_server.login.assert_called_once_with("second@gmail.com", "pw2")
+            sent_message = mock_server.send_message.call_args[0][0]
+            self.assertEqual(sent_message["From"], "second@gmail.com")
+            self.assertEqual(sent_message["To"], "user@test.com")
+
+    def test_connect_tests_imap_and_smtp_for_each_account(self):
+        """Multi-account startup should verify both IMAP and SMTP per account."""
+        import asyncio
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        accounts = [
+            {
+                "address": "first@gmail.com",
+                "password": "pw1",
+                "imap_host": "imap1.gmail.com",
+                "imap_port": 1993,
+                "smtp_host": "smtp1.gmail.com",
+                "smtp_port": 1587,
+            },
+            {
+                "address": "second@gmail.com",
+                "password": "pw2",
+                "imap_host": "imap2.gmail.com",
+                "imap_port": 2993,
+                "smtp_host": "smtp2.gmail.com",
+                "smtp_port": 2587,
+            },
+        ]
+        with patch.dict(os.environ, {
+            "EMAIL_ACCOUNTS_JSON": json.dumps(accounts),
+        }, clear=True):
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        imap_one = MagicMock()
+        imap_one.uid.return_value = ("OK", [b"1 2"])
+        imap_two = MagicMock()
+        imap_two.uid.return_value = ("OK", [b"3"])
+        smtp_one = MagicMock()
+        smtp_two = MagicMock()
+
+        def close_created_task(coro):
+            coro.close()
+            return None
+
+        with patch("imaplib.IMAP4_SSL", side_effect=[imap_one, imap_two]) as mock_imap, \
+             patch("smtplib.SMTP", side_effect=[smtp_one, smtp_two]) as mock_smtp, \
+             patch("asyncio.create_task", side_effect=close_created_task):
+            result = asyncio.run(adapter.connect())
+
+        self.assertTrue(result)
+        self.assertEqual(
+            [call.args[:2] for call in mock_imap.call_args_list],
+            [("imap1.gmail.com", 1993), ("imap2.gmail.com", 2993)],
+        )
+        imap_one.login.assert_called_once_with("first@gmail.com", "pw1")
+        imap_two.login.assert_called_once_with("second@gmail.com", "pw2")
+        self.assertEqual(
+            [call.args[:2] for call in mock_smtp.call_args_list],
+            [("smtp1.gmail.com", 1587), ("smtp2.gmail.com", 2587)],
+        )
+        smtp_one.login.assert_called_once_with("first@gmail.com", "pw1")
+        smtp_two.login.assert_called_once_with("second@gmail.com", "pw2")
+        self.assertIn(b"first@gmail.com:1", adapter._seen_uids)
+        self.assertIn(b"second@gmail.com:3", adapter._seen_uids)
 
 
 class TestSendMethods(unittest.TestCase):

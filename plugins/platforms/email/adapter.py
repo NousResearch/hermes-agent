@@ -11,6 +11,8 @@ Environment variables:
     EMAIL_SMTP_PORT     — SMTP server port (default: 587)
     EMAIL_ADDRESS       — Email address for the agent
     EMAIL_PASSWORD      — Email password or app-specific password
+    EMAIL_ACCOUNTS_JSON — Optional JSON list of account objects:
+                          {address,password,imap_host,imap_port,smtp_host,smtp_port}
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
     EMAIL_ALLOWED_USERS — Comma-separated list of allowed sender addresses
 """
@@ -18,6 +20,7 @@ Environment variables:
 import asyncio
 import email as email_lib
 import imaplib
+import json
 import logging
 import os
 import re
@@ -65,6 +68,55 @@ _AUTOMATED_HEADERS = {
 MAX_MESSAGE_LENGTH = 50_000
 
 SMTP_CONNECT_TIMEOUT = 30
+
+
+def _clean_account(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize one email account config object."""
+    return {
+        "address": str(raw.get("address", "")).strip(),
+        "password": str(raw.get("password", "")),
+        "imap_host": str(raw.get("imap_host", "")).strip(),
+        "imap_port": int(raw.get("imap_port") or 993),
+        "smtp_host": str(raw.get("smtp_host", "")).strip(),
+        "smtp_port": int(raw.get("smtp_port") or 587),
+    }
+
+
+def _accounts_from_json(raw: str) -> List[Dict[str, Any]]:
+    """Parse EMAIL_ACCOUNTS_JSON into normalized account dictionaries."""
+    if not raw.strip():
+        return []
+    parsed = json.loads(raw)
+    if not isinstance(parsed, list):
+        raise ValueError("EMAIL_ACCOUNTS_JSON must be a JSON list")
+    accounts = []
+    for idx, item in enumerate(parsed):
+        if not isinstance(item, dict):
+            raise ValueError(f"EMAIL_ACCOUNTS_JSON account {idx} must be an object")
+        account = _clean_account(item)
+        missing = [
+            key
+            for key in ("address", "password", "imap_host", "smtp_host")
+            if not account[key]
+        ]
+        if missing:
+            raise ValueError(
+                f"EMAIL_ACCOUNTS_JSON account {idx} missing {', '.join(missing)}"
+            )
+        accounts.append(account)
+    return accounts
+
+
+def _legacy_account(extra: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the backward-compatible single account from legacy settings."""
+    return _clean_account({
+        "address": os.getenv("EMAIL_ADDRESS", "") or extra.get("address", ""),
+        "password": os.getenv("EMAIL_PASSWORD", ""),
+        "imap_host": os.getenv("EMAIL_IMAP_HOST", "") or extra.get("imap_host", ""),
+        "imap_port": env_int("EMAIL_IMAP_PORT", 993),
+        "smtp_host": os.getenv("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", ""),
+        "smtp_port": env_int("EMAIL_SMTP_PORT", 587),
+    })
 
 
 def _create_ipv4_connection(
@@ -164,6 +216,13 @@ def check_email_requirements() -> bool:
     Treats blank/whitespace-only values as missing so an abandoned setup that
     left empty ``EMAIL_*`` keys in ``.env`` does not enable the platform (#40715).
     """
+    accounts_json = os.getenv("EMAIL_ACCOUNTS_JSON", "")
+    if accounts_json.strip():
+        try:
+            return bool(_accounts_from_json(accounts_json))
+        except Exception:
+            return False
+
     addr = os.getenv("EMAIL_ADDRESS", "").strip()
     pwd = os.getenv("EMAIL_PASSWORD", "").strip()
     imap = os.getenv("EMAIL_IMAP_HOST", "").strip()
@@ -434,12 +493,22 @@ class EmailAdapter(BasePlatformAdapter):
         # misleading ``[Errno 8] nodename nor servname`` (an unresolvable name)
         # instead of an obvious "host not set" error.
         extra = config.extra or {}
-        self._address = (os.getenv("EMAIL_ADDRESS", "") or extra.get("address", "")).strip()
-        self._password = os.getenv("EMAIL_PASSWORD", "")
-        self._imap_host = (os.getenv("EMAIL_IMAP_HOST", "") or extra.get("imap_host", "")).strip()
-        self._imap_port = env_int("EMAIL_IMAP_PORT", 993)
-        self._smtp_host = (os.getenv("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
-        self._smtp_port = env_int("EMAIL_SMTP_PORT", 587)
+        accounts_json = os.getenv("EMAIL_ACCOUNTS_JSON", "")
+        if accounts_json.strip():
+            self._accounts = _accounts_from_json(accounts_json)
+        else:
+            self._accounts = [_legacy_account(extra)]
+
+        default_account = self._accounts[0] if self._accounts else _legacy_account(extra)
+        self._accounts_by_address = {
+            account["address"].lower(): account for account in self._accounts
+        }
+        self._address = default_account["address"]
+        self._password = default_account["password"]
+        self._imap_host = default_account["imap_host"]
+        self._imap_port = default_account["imap_port"]
+        self._smtp_host = default_account["smtp_host"]
+        self._smtp_port = default_account["smtp_port"]
         self._poll_interval = env_int("EMAIL_POLL_INTERVAL", 15)
 
         # Skip attachments — configured via config.yaml:
@@ -498,7 +567,10 @@ class EmailAdapter(BasePlatformAdapter):
             return
         try:
             # UIDs are bytes like b'1234' — sort numerically and keep top half
-            sorted_uids = sorted(self._seen_uids, key=lambda u: int(u))
+            sorted_uids = sorted(
+                self._seen_uids,
+                key=lambda u: int(bytes(u).rsplit(b":", 1)[-1]),
+            )
             keep = self._seen_uids_max // 2
             self._seen_uids = set(sorted_uids[-keep:])
             logger.debug("[Email] Trimmed seen UIDs to %d entries", len(self._seen_uids))
@@ -506,7 +578,36 @@ class EmailAdapter(BasePlatformAdapter):
             # Fallback: just clear old entries if sort fails
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
 
-    def _connect_smtp(self) -> smtplib.SMTP:
+    def _uid_key(self, account: Dict[str, Any], uid: bytes) -> bytes:
+        """Return the de-duplication key for an account UID."""
+        if len(self._accounts) == 1:
+            return uid
+        return f"{account['address'].lower()}:".encode("utf-8") + uid
+
+    def _account_for_address(self, address: Optional[str]) -> Dict[str, Any]:
+        if address:
+            account = self._accounts_by_address.get(address.lower())
+            if account:
+                return account
+        return self._accounts[0]
+
+    def _account_for_send(
+        self,
+        to_addr: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        account_address = ""
+        if metadata:
+            account_address = str(
+                metadata.get("email_account")
+                or metadata.get("email_account_address")
+                or ""
+            )
+        if not account_address:
+            account_address = self._thread_context.get(to_addr, {}).get("account", "")
+        return self._account_for_address(account_address)
+
+    def _connect_smtp(self, account: Optional[Dict[str, Any]] = None) -> smtplib.SMTP:
         """Create an SMTP connection, selecting the correct protocol for the port.
 
         Port 465 uses implicit TLS (``SMTP_SSL``).  All other ports use
@@ -522,8 +623,9 @@ class EmailAdapter(BasePlatformAdapter):
         can proceed directly to ``login()``.
         """
         ctx = ssl.create_default_context()
-        host = self._smtp_host
-        port = self._smtp_port
+        account = account or self._accounts[0]
+        host = account["smtp_host"]
+        port = account["smtp_port"]
 
         def _connect(*, ipv4_only: bool = False) -> smtplib.SMTP:
             """Attempt one SMTP connection."""
@@ -553,16 +655,25 @@ class EmailAdapter(BasePlatformAdapter):
         # Validate up front so a missing host surfaces as an actionable config
         # error instead of IMAP4_SSL("") raising the cryptic
         # ``[Errno 8] nodename nor servname provided, or not known``.
-        missing = [
-            name
+        missing = []
+        for idx, account in enumerate(self._accounts):
+            legacy_names = {
+                "address": "EMAIL_ADDRESS",
+                "password": "EMAIL_PASSWORD",
+                "imap_host": "EMAIL_IMAP_HOST",
+                "smtp_host": "EMAIL_SMTP_HOST",
+            }
+            prefix = "" if len(self._accounts) == 1 else f"EMAIL_ACCOUNTS_JSON[{idx}]."
             for name, value in (
-                ("EMAIL_ADDRESS", self._address),
-                ("EMAIL_PASSWORD", self._password),
-                ("EMAIL_IMAP_HOST", self._imap_host),
-                ("EMAIL_SMTP_HOST", self._smtp_host),
-            )
-            if not value
-        ]
+                ("address", account["address"]),
+                ("password", account["password"]),
+                ("imap_host", account["imap_host"]),
+                ("smtp_host", account["smtp_host"]),
+            ):
+                if not value:
+                    missing.append(
+                        legacy_names[name] if len(self._accounts) == 1 else f"{prefix}{name}"
+                    )
         if missing:
             message = (
                 "Not configured — missing "
@@ -581,31 +692,35 @@ class EmailAdapter(BasePlatformAdapter):
             return False
 
         try:
-            # Test IMAP connection
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
-            imap.login(self._address, self._password)
-            _send_imap_id(imap)
-            # Mark all existing messages as seen so we only process new ones
-            imap.select("INBOX")
-            status, data = imap.uid("search", None, "ALL")
-            if status == "OK" and data and data[0]:
-                for uid in data[0].split():
-                    self._seen_uids.add(uid)
+            skipped = 0
+            for account in self._accounts:
+                # Test IMAP connection
+                imap = imaplib.IMAP4_SSL(account["imap_host"], account["imap_port"], timeout=30)
+                imap.login(account["address"], account["password"])
+                _send_imap_id(imap)
+                # Mark all existing messages as seen so we only process new ones
+                imap.select("INBOX")
+                status, data = imap.uid("search", None, "ALL")
+                if status == "OK" and data and data[0]:
+                    for uid in data[0].split():
+                        self._seen_uids.add(self._uid_key(account, uid))
+                        skipped += 1
+                imap.logout()
             # Keep only the most recent UIDs to prevent unbounded growth
             self._trim_seen_uids()
-            imap.logout()
-            logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+            logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", skipped)
         except Exception as e:
             logger.error("[Email] IMAP connection failed: %s", e)
             return False
 
         try:
-            # Test SMTP connection
-            smtp = self._connect_smtp()
-            try:
-                smtp.login(self._address, self._password)
-            finally:
-                smtp.quit()
+            for account in self._accounts:
+                # Test SMTP connection
+                smtp = self._connect_smtp(account)
+                try:
+                    smtp.login(account["address"], account["password"])
+                finally:
+                    smtp.quit()
             logger.info("[Email] SMTP connection test passed.")
         except Exception as e:
             logger.error("[Email] SMTP connection failed: %s", e)
@@ -650,10 +765,17 @@ class EmailAdapter(BasePlatformAdapter):
     def _fetch_new_messages(self) -> List[Dict[str, Any]]:
         """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
         results = []
+        for account in self._accounts:
+            results.extend(self._fetch_new_messages_for_account(account))
+        return results
+
+    def _fetch_new_messages_for_account(self, account: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Fetch new messages for one configured account."""
+        results = []
         try:
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+            imap = imaplib.IMAP4_SSL(account["imap_host"], account["imap_port"], timeout=30)
             try:
-                imap.login(self._address, self._password)
+                imap.login(account["address"], account["password"])
                 _send_imap_id(imap)
                 imap.select("INBOX")
 
@@ -662,9 +784,10 @@ class EmailAdapter(BasePlatformAdapter):
                     return results
 
                 for uid in data[0].split():
-                    if uid in self._seen_uids:
+                    seen_key = self._uid_key(account, uid)
+                    if seen_key in self._seen_uids:
                         continue
-                    self._seen_uids.add(uid)
+                    self._seen_uids.add(seen_key)
                     # Trim periodically to prevent unbounded memory growth
                     if len(self._seen_uids) > self._seen_uids_max:
                         self._trim_seen_uids()
@@ -725,6 +848,7 @@ class EmailAdapter(BasePlatformAdapter):
 
                     results.append({
                         "uid": uid,
+                        "account": account["address"],
                         "sender_addr": sender_addr,
                         "sender_name": sender_name,
                         "subject": subject,
@@ -780,7 +904,7 @@ class EmailAdapter(BasePlatformAdapter):
         sender_addr = msg_data["sender_addr"]
 
         # Skip self-messages
-        if sender_addr == self._address.lower():
+        if sender_addr in self._accounts_by_address:
             return
 
         # Never reply to automated senders
@@ -867,6 +991,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._thread_context[sender_addr] = {
             "subject": subject,
             "message_id": msg_data["message_id"],
+            "account": msg_data.get("account", self._address),
         }
 
         source = self.build_source(
@@ -885,6 +1010,7 @@ class EmailAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
             reply_to_message_id=msg_data["in_reply_to"] or None,
+            metadata={"email_account": msg_data.get("account", self._address)},
         )
 
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
@@ -901,21 +1027,22 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
-                None, self._send_email, chat_id, content, reply_to
+                None, self._send_email, chat_id, content, reply_to, metadata
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             logger.error("[Email] Send failed to %s: %s", chat_id, e)
             return SendResult(success=False, error=str(e))
 
-    def _message_id_domain(self) -> str:
+    def _message_id_domain(self, account: Optional[Dict[str, Any]] = None) -> str:
         """Domain part for generated Message-IDs.
 
         EMAIL_ADDRESS may lack an ``@`` (misconfiguration); fall back to
         ``localhost`` instead of crashing send with an IndexError.
         """
-        if "@" in self._address:
-            return self._address.rsplit("@", 1)[-1] or "localhost"
+        address = (account or self._accounts[0])["address"]
+        if "@" in address:
+            return address.rsplit("@", 1)[-1] or "localhost"
         return "localhost"
 
     def _send_email(
@@ -923,10 +1050,12 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         reply_to_msg_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
+        account = self._account_for_send(to_addr, metadata)
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = account["address"]
         msg["To"] = to_addr
 
         # Thread context for reply
@@ -943,14 +1072,14 @@ class EmailAdapter(BasePlatformAdapter):
             msg["References"] = original_msg_id
 
         msg["Date"] = formatdate(localtime=True)
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain(account)}>"
         msg["Message-ID"] = msg_id
 
         msg.attach(MIMEText(body, "plain", "utf-8"))
 
-        smtp = self._connect_smtp()
+        smtp = self._connect_smtp(account)
         try:
-            smtp.login(self._address, self._password)
+            smtp.login(account["address"], account["password"])
             smtp.send_message(msg)
         finally:
             try:
@@ -979,7 +1108,7 @@ class EmailAdapter(BasePlatformAdapter):
         """
         text = caption or ""
         text += f"\n\nImage: {image_url}"
-        return await self.send(chat_id, text.strip(), reply_to)
+        return await self.send(chat_id, text.strip(), reply_to, metadata)
 
     async def send_multiple_images(
         self,
@@ -1041,7 +1170,8 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        account = self._account_for_send(to_addr)
+        msg["From"] = account["address"]
         msg["To"] = to_addr
 
         ctx = self._thread_context.get(to_addr, {})
@@ -1056,7 +1186,7 @@ class EmailAdapter(BasePlatformAdapter):
             msg["References"] = original_msg_id
 
         msg["Date"] = formatdate(localtime=True)
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain(account)}>"
         msg["Message-ID"] = msg_id
 
         if body:
@@ -1074,9 +1204,9 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Email] Failed to attach %s: %s", file_path, e)
 
-        smtp = self._connect_smtp()
+        smtp = self._connect_smtp(account)
         try:
-            smtp.login(self._address, self._password)
+            smtp.login(account["address"], account["password"])
             smtp.send_message(msg)
         finally:
             try:
@@ -1121,7 +1251,8 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> str:
         """Send an email with a file attachment via SMTP."""
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        account = self._account_for_send(to_addr)
+        msg["From"] = account["address"]
         msg["To"] = to_addr
 
         ctx = self._thread_context.get(to_addr, {})
@@ -1136,7 +1267,7 @@ class EmailAdapter(BasePlatformAdapter):
             msg["References"] = original_msg_id
 
         msg["Date"] = formatdate(localtime=True)
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain(account)}>"
         msg["Message-ID"] = msg_id
 
         if body:
@@ -1152,9 +1283,9 @@ class EmailAdapter(BasePlatformAdapter):
             part.add_header("Content-Disposition", f"attachment; filename={fname}")
             msg.attach(part)
 
-        smtp = self._connect_smtp()
+        smtp = self._connect_smtp(account)
         try:
-            smtp.login(self._address, self._password)
+            smtp.login(account["address"], account["password"])
             smtp.send_message(msg)
         finally:
             try:
@@ -1204,13 +1335,15 @@ async def _standalone_send(
     from email.utils import formatdate
 
     extra = getattr(pconfig, "extra", {}) or {}
-    address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
-    password = os.getenv("EMAIL_PASSWORD", "")
-    smtp_host = extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", "")
     try:
-        smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
-    except (ValueError, TypeError):
-        smtp_port = 587
+        accounts = _accounts_from_json(os.getenv("EMAIL_ACCOUNTS_JSON", ""))
+    except Exception:
+        accounts = []
+    account = accounts[0] if accounts else _legacy_account(extra)
+    address = account["address"]
+    password = account["password"]
+    smtp_host = account["smtp_host"]
+    smtp_port = account["smtp_port"]
 
     if not all([address, password, smtp_host]):
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
@@ -1243,6 +1376,11 @@ def _is_connected(config) -> bool:
     extra = getattr(config, "extra", {}) or {}
     if extra.get("address"):
         return True
+    if os.getenv("EMAIL_ACCOUNTS_JSON", "").strip():
+        try:
+            return bool(_accounts_from_json(os.getenv("EMAIL_ACCOUNTS_JSON", "")))
+        except Exception:
+            return False
     import hermes_cli.gateway as gateway_mod
     return bool((gateway_mod.get_env_value("EMAIL_ADDRESS") or "").strip())
 

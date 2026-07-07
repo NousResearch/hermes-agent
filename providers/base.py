@@ -194,6 +194,7 @@ class ProviderProfile:
             url = effective_base.rstrip("/") + "/models"
 
         import json
+        import urllib.parse
         import urllib.request
 
         req = urllib.request.Request(url)
@@ -207,8 +208,30 @@ class ProviderProfile:
         for k, v in self.default_headers.items():
             req.add_header(k, v)
 
+        # urllib keeps every header — including Authorization — when it
+        # follows a redirect, so a catalog endpoint answering 3xx to a
+        # different host would receive the provider API key.  Drop
+        # credential headers on cross-host redirects.
+        sensitive = {"authorization", "x-api-key", "api-key", "x-goog-api-key", "cookie"}
+        original_host = (urllib.parse.urlparse(url).hostname or "").lower()
+
+        class _StripAuthOnCrossHostRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, redirected, fp, code, msg, hdrs, newurl):
+                new_req = super().redirect_request(
+                    redirected, fp, code, msg, hdrs, newurl
+                )
+                if new_req is not None:
+                    new_host = (urllib.parse.urlparse(newurl).hostname or "").lower()
+                    if new_host != original_host:
+                        for header in list(new_req.headers):
+                            if header.lower() in sensitive:
+                                new_req.remove_header(header)
+                return new_req
+
+        opener = urllib.request.build_opener(_StripAuthOnCrossHostRedirect())
+
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with opener.open(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             items = data if isinstance(data, list) else data.get("data", [])
             return [m["id"] for m in items if isinstance(m, dict) and "id" in m]

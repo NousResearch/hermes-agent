@@ -3895,7 +3895,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # stream trips flood control (200s+ penalties) and hangs the final
             # delivery. Skip silently until finalize.
             if self._last_overflow_preview.get(_preview_key) == content:
-                return SendResult(success=True, message_id=message_id)
+                return self._stream_preview_partial_result(message_id, content)
         elif not finalize:
             # Content shrank back under the cap (segment break / new message
             # id) — clear stale saturation state so dedup can't mask a real
@@ -3911,6 +3911,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = content
+                    return self._stream_preview_partial_result(message_id, content)
                 return SendResult(success=True, message_id=message_id)
 
             formatted = self.format_message(content)
@@ -3942,7 +3943,11 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as e:
             err_str = str(e).lower()
             # "Message is not modified" — content identical, treat as success
+            # (unless the screen holds only a truncated preview — then keep
+            # reporting partial delivery so the final send is not suppressed).
             if "not modified" in err_str:
+                if _saturated_preview:
+                    return self._stream_preview_partial_result(message_id, content)
                 return SendResult(success=True, message_id=message_id)
             # Reactive split-and-deliver: parse_mode formatting can inflate
             # the payload past the limit even when the raw text was under
@@ -3960,14 +3965,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 truncated = self._truncate_stream_overflow_preview(content)
                 if self._last_overflow_preview.get(_preview_key) == truncated:
                     # Saturated-preview dedup (see pre-flight path above).
-                    return SendResult(success=True, message_id=message_id)
-                await self._bot.edit_message_text(
-                    chat_id=normalize_telegram_chat_id(chat_id),
-                    message_id=int(message_id),
-                    text=truncated,
-                )
+                    return self._stream_preview_partial_result(message_id, truncated)
+                try:
+                    await self._bot.edit_message_text(
+                        chat_id=normalize_telegram_chat_id(chat_id),
+                        message_id=int(message_id),
+                        text=truncated,
+                    )
+                except Exception as retry_err:
+                    if "not modified" not in str(retry_err).lower():
+                        raise
                 self._last_overflow_preview[_preview_key] = truncated
-                return SendResult(success=True, message_id=message_id)
+                return self._stream_preview_partial_result(message_id, truncated)
             # Flood control / RetryAfter — short waits are retried inline,
             # long waits return a failure immediately so streaming can fall back
             # to a normal final send instead of leaving a truncated partial.
@@ -4031,6 +4040,33 @@ class TelegramAdapter(BasePlatformAdapter):
                 safe_error,
             )
             return SendResult(success=False, error=safe_error)
+
+    def _stream_preview_partial_result(
+        self, message_id: str, delivered_prefix: str,
+    ) -> SendResult:
+        """Report a truncated mid-stream preview as partial delivery.
+
+        The preview edit succeeded (or deduped), but the screen holds only a
+        truncated prefix of the accumulated text.  Returning plain success
+        lets the stream consumer record the full text as visible; the gateway
+        then matches the final response against that bookkeeping and
+        suppresses the normal final send, so the truncated preview becomes
+        the only delivery the user ever sees.  Reuse the ``partial_overflow``
+        contract (see ``SendResult.raw_response`` docs): the consumer's
+        existing branch switches into fallback-final mode and delivers the
+        missing tail on completion.
+        """
+        return SendResult(
+            success=False,
+            message_id=message_id,
+            error="mid-stream preview truncated at platform limit",
+            error_kind="too_long",
+            raw_response={
+                "partial_overflow": True,
+                "last_message_id": message_id,
+                "delivered_prefix": delivered_prefix,
+            },
+        )
 
     def _truncate_stream_overflow_preview(self, content: str) -> str:
         """Return a one-message preview for oversized streaming edits.

@@ -191,6 +191,47 @@ async def test_astral_cjk_rich_content_skips_rich_send_to_avoid_tdesktop_garble(
 
 
 @pytest.mark.asyncio
+async def test_cjk_rich_content_explicit_opt_out_uses_legacy_send():
+    adapter = _make_adapter(extra={"allow_cjk_rich_messages": False})
+
+    result = await adapter.send("12345", CJK_RICH_CONTENT)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cjk_rich_content_opt_in_uses_rich_send():
+    adapter = _make_adapter(extra={"allow_cjk_rich_messages": True})
+
+    result = await adapter.send("12345", CJK_RICH_CONTENT)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    api_kwargs = _rich_api_kwargs(adapter)
+    assert api_kwargs["rich_message"]["markdown"] == CJK_RICH_CONTENT
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_astral_cjk_rich_content_opt_in_uses_rich_send():
+    adapter = _make_adapter(extra={"allow_cjk_rich_messages": True})
+
+    result = await adapter.send("12345", ASTRAL_CJK_RICH_CONTENT)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    api_kwargs = _rich_api_kwargs(adapter)
+    assert api_kwargs["rich_message"]["markdown"] == ASTRAL_CJK_RICH_CONTENT
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_rich_messages_opt_out_uses_legacy_send_path():
     adapter = _make_adapter(extra={"rich_messages": False})
 

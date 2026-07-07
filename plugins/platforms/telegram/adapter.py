@@ -525,6 +525,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # can leave Bot API 10.1 rich draft frames visually overlaid until the
         # chat is redrawn, while final rich messages remain useful.
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
+        # Current Telegram Desktop/macOS builds can garble CJK text in Bot API
+        # 10.1 rich rendering. Keep the safe default, but let users who prefer
+        # native rich tables for Chinese/Japanese/Korean opt in explicitly.
+        self._allow_cjk_rich_messages: bool = self._coerce_bool_extra(
+            "allow_cjk_rich_messages", False
+        )
         # Latched off after a capability failure on sendRichMessage /
         # sendRichMessageDraft (e.g. older python-telegram-bot without the
         # endpoint) so later sends skip the doomed rich attempt entirely.
@@ -1437,7 +1443,10 @@ class TelegramAdapter(BasePlatformAdapter):
             and content.strip()
             and self._needs_rich_rendering(content)
             and not self._has_telegram_desktop_details_math_crash_shape(content)
-            and not self._has_telegram_desktop_cjk_rich_garble_shape(content)
+            and (
+                getattr(self, "_allow_cjk_rich_messages", False)
+                or not self._has_telegram_desktop_cjk_rich_garble_shape(content)
+            )
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()
         )
@@ -1785,7 +1794,10 @@ class TelegramAdapter(BasePlatformAdapter):
             and content
             and content.strip()
             and not self._has_telegram_desktop_details_math_crash_shape(content)
-            and not self._has_telegram_desktop_cjk_rich_garble_shape(content)
+            and (
+                getattr(self, "_allow_cjk_rich_messages", False)
+                or not self._has_telegram_desktop_cjk_rich_garble_shape(content)
+            )
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()
         )

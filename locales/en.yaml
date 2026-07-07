@@ -88,6 +88,21 @@ gateway:
     switch_failed:         "Branch created but failed to switch to it."
     branched_one:          "⑂ Branched to **{title}** ({count} message copied)\nOriginal: `{parent}`\nBranch: `{new}`\nUse `/resume` to switch back to the original."
     branched_many:         "⑂ Branched to **{title}** ({count} messages copied)\nOriginal: `{parent}`\nBranch: `{new}`\nUse `/resume` to switch back to the original."
+    thread_intro:          "⑂ **Branched thread — {title}**\nThis thread inherits the parent conversation ({count} messages). Explore freely here; the parent channel keeps its own session. Use `/merge` to fold a summary back into the parent."
+    thread_branched_one:   "⑂ Branched into a new thread → {thread} (**{title}**, {count} message inherited).\nThe parent channel stays on its own session; use `/merge` inside the thread to fold it back."
+    thread_branched_many:  "⑂ Branched into a new thread → {thread} (**{title}**, {count} messages inherited).\nThe parent channel stays on its own session; use `/merge` inside the thread to fold it back."
+
+  merge:
+    discord_only:          "`/merge` only works on Discord (it folds a branched thread back into its parent)."
+    not_a_thread:          "`/merge` only works inside a branched thread. Start one with `/branch` in a channel first."
+    not_a_branch:          "This thread wasn't created by `/branch`, so there's no parent session to merge into."
+    no_conversation:       "Nothing to merge — this branch has no conversation yet."
+    no_summary:            "Couldn't generate a summary of this branch; nothing was merged. Try again in a moment."
+    fold_failed:           "Failed to fold the summary into the parent session: {error}"
+    fold_body:             "[BRANCHED THREAD MERGED — {title}] A branched thread was explored and folded back into this conversation. Summary of what happened in the branch:\n\n{summary}"
+    parent_note:           "🔀 **Merged from thread '{title}'**\n{summary}"
+    merged:                "✅ Merged into the parent session ✓ — summary is now in the parent's context, and this thread is archived (still resumable)."
+    merged_no_archive:     "✅ Merged into the parent session ✓ — summary is now in the parent's context. (Couldn't archive the thread automatically; you can close it manually.)"
 
   commands:
     usage:                 "Usage: `/commands [page]`"

@@ -3768,6 +3768,103 @@ class GatewaySlashCommandsMixin:
             title=title,
         )
 
+    async def _try_discord_branch_thread(
+        self,
+        source: "SessionSource",
+        branch_title: str,
+        new_session_id: str,
+        msg_count: int,
+    ) -> Optional[str]:
+        """Discord path for /branch: spawn a thread bound to the branch session.
+
+        On Discord, /branch spawns a NEW thread under the parent text channel
+        and binds the copied (branch) session to that thread's session key —
+        leaving the parent channel on its own session (the parent conversation
+        continues in place). Inside a thread already, spawns a SIBLING thread
+        under the same parent channel (Discord can't nest threads).
+
+        Returns the new thread id on success. Returns ``None`` to signal the
+        caller to fall back to the classic in-place branch (non-Discord, DMs,
+        a thread with no resolvable parent, or thread creation failed).
+        """
+        if source.platform != Platform.DISCORD:
+            return None
+        adapter = self.adapters.get(Platform.DISCORD) if getattr(self, "adapters", None) else None
+        if adapter is None:
+            return None
+        # Threads only exist in server channels, not DMs.
+        if source.chat_type == "dm":
+            return None
+
+        # Resolve the parent text channel to host the new thread. In a thread
+        # already → sibling under the same parent; in a channel → this channel.
+        if source.chat_type == "thread":
+            parent_channel_id = source.parent_chat_id
+            if not parent_channel_id:
+                # No resolvable parent — fall back to classic in-place branch.
+                return None
+        else:
+            parent_channel_id = source.chat_id
+        if not parent_channel_id:
+            return None
+
+        try:
+            new_thread_id = await adapter.create_handoff_thread(
+                str(parent_channel_id), branch_title,
+            )
+        except Exception as exc:
+            logger.debug("branch: create_handoff_thread raised: %s", exc, exc_info=True)
+            new_thread_id = None
+        if not new_thread_id:
+            # Thread creation not permitted / failed — classic in-place branch.
+            return None
+
+        # Build the thread's session source. For a Discord thread the adapter
+        # keys chat_id to the thread id itself (effective_channel), thread_id to
+        # the thread id, and parent_chat_id to the hosting channel — mirror that
+        # so the session key we bind here matches the one a real user message in
+        # the thread will produce (thread sessions are user-shared by default).
+        dest_source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id=str(new_thread_id),
+            chat_type="thread",
+            user_id="system:branch",
+            user_name="Branch",
+            thread_id=str(new_thread_id),
+            parent_chat_id=str(parent_channel_id),
+        )
+        thread_session_key = self._session_key_for_source(dest_source)
+
+        # Make sure a session_store entry exists for the thread key, then
+        # re-point it at the copied branch session (mirrors _process_handoff).
+        self.session_store.get_or_create_session(dest_source)
+        switched = self.session_store.switch_session(thread_session_key, new_session_id)
+        if switched is None:
+            logger.warning(
+                "branch: could not bind thread key %s -> %s",
+                thread_session_key, new_session_id,
+            )
+            return None
+        self._clear_session_boundary_security_state(thread_session_key)
+        self._evict_cached_agent(thread_session_key)
+        try:
+            self._release_running_agent_state(thread_session_key)
+        except Exception:
+            pass
+
+        # Post an intro into the new thread so the branch has a visible anchor.
+        try:
+            intro = t(
+                "gateway.branch.thread_intro",
+                title=branch_title,
+                count=msg_count,
+            )
+            await adapter.send(str(new_thread_id), intro)
+        except Exception as exc:
+            logger.debug("branch: thread intro send failed: %s", exc)
+
+        return str(new_thread_id)
+
     async def _handle_branch_command(self, event: MessageEvent) -> str:
         """Handle /branch [name] — fork the current session into a new independent copy.
 
@@ -3852,7 +3949,31 @@ class GatewaySlashCommandsMixin:
         except Exception:
             pass
 
-        # Switch the session store entry to the new session
+        msg_count = len([m for m in history if m.get("role") == "user"])
+
+        # Discord: spawn a NEW thread bound to the branch session and leave the
+        # parent channel on its own session (the parent conversation continues
+        # in place). Every other platform keeps the classic in-place switch.
+        new_thread_id = await self._try_discord_branch_thread(
+            source, branch_title, new_session_id, msg_count,
+        )
+        if new_thread_id:
+            thread_mention = f"<#{new_thread_id}>"
+            key = (
+                "gateway.branch.thread_branched_one"
+                if msg_count == 1
+                else "gateway.branch.thread_branched_many"
+            )
+            return t(
+                key,
+                title=branch_title,
+                count=msg_count,
+                thread=thread_mention,
+                parent=parent_session_id,
+                new=new_session_id,
+            )
+
+        # Classic in-place branch: switch the current session key to the copy.
         new_entry = await self.async_session_store.switch_session(session_key, new_session_id)
         if not new_entry:
             return t("gateway.branch.switch_failed")
@@ -3861,9 +3982,174 @@ class GatewaySlashCommandsMixin:
         # Evict any cached agent for this session
         self._evict_cached_agent(session_key)
 
-        msg_count = len([m for m in history if m.get("role") == "user"])
         key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
         return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
+
+    def _build_merge_summarizer(self):
+        """Construct a minimal ContextCompressor for /merge's summary call.
+
+        Reuses the auxiliary ``task="compression"`` path (cheap model resolved
+        from config) — ``main_runtime`` is only a fallback. Returns None if the
+        runtime provider can't be resolved (surfaced as a no-summary merge).
+        """
+        try:
+            from agent.context_compressor import ContextCompressor
+            from hermes_cli.runtime_provider import (
+                resolve_runtime_provider,
+                _get_model_config,
+            )
+            runtime = resolve_runtime_provider()
+            model_cfg = _get_model_config() or {}
+            model = (
+                (model_cfg.get("default") if isinstance(model_cfg, dict) else None)
+                or runtime.get("model")
+                or "gpt-4o-mini"
+            )
+            return ContextCompressor(
+                model=model,
+                quiet_mode=True,
+                base_url=runtime.get("base_url", "") or "",
+                api_key=runtime.get("api_key", "") or "",
+                provider=runtime.get("provider", "") or "",
+                api_mode=runtime.get("api_mode", "") or "",
+            )
+        except Exception as exc:
+            logger.warning("merge: could not build summarizer: %s", exc)
+            return None
+
+    async def _handle_merge_command(self, event: MessageEvent) -> str:
+        """Handle /merge — fold a branched Discord thread back into its parent.
+
+        Only valid inside a Discord thread that was created by /branch (i.e. the
+        thread's session has a ``parent_session_id`` / ``_branched_from`` link).
+        Summarizes the branch conversation, appends that summary into the PARENT
+        session's transcript as one labeled context message, posts a visible note
+        into the parent channel, and archives+locks the thread (non-destructive —
+        the branch session stays resumable). Outside a branched thread → no-op.
+        """
+        if not self._session_db:
+            from hermes_state import format_session_db_unavailable
+            return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
+
+        source = event.source
+
+        # Guard 1: Discord only.
+        if source.platform != Platform.DISCORD:
+            return t("gateway.merge.discord_only")
+        adapter = self.adapters.get(Platform.DISCORD) if getattr(self, "adapters", None) else None
+        if adapter is None:
+            return t("gateway.merge.discord_only")
+
+        # Guard 2: must be inside a thread.
+        if source.chat_type != "thread" or not source.thread_id:
+            return t("gateway.merge.not_a_thread")
+
+        # Resolve the branch (current) session and its parent link.
+        current_entry = self.session_store.get_or_create_session(source)
+        branch_session_id = current_entry.session_id
+        try:
+            branch_row = await self._session_db.get_session(branch_session_id)
+        except Exception as exc:
+            logger.warning("merge: get_session failed for %s: %s", branch_session_id, exc)
+            branch_row = None
+
+        parent_session_id = None
+        if branch_row:
+            parent_session_id = branch_row.get("parent_session_id")
+            if not parent_session_id:
+                # Fall back to the _branched_from marker in model_config.
+                mc = branch_row.get("model_config")
+                if isinstance(mc, str) and mc:
+                    try:
+                        import json as _json
+                        mc = _json.loads(mc)
+                    except Exception:
+                        mc = {}
+                if isinstance(mc, dict):
+                    parent_session_id = mc.get("_branched_from")
+
+        # Guard 3: this thread must be a branch (have a parent session).
+        if not parent_session_id:
+            return t("gateway.merge.not_a_branch")
+
+        # Load the branch transcript to summarize.
+        branch_history = self.session_store.load_transcript(branch_session_id)
+        if not branch_history:
+            return t("gateway.merge.no_conversation")
+
+        branch_title = None
+        try:
+            branch_title = await self._session_db.get_session_title(branch_session_id)
+        except Exception:
+            branch_title = None
+        branch_title = branch_title or "branch"
+
+        # Generate the summary off the event loop (aux/cheap model).
+        summarizer = self._build_merge_summarizer()
+        summary = None
+        if summarizer is not None:
+            try:
+                summary = await asyncio.to_thread(
+                    summarizer._generate_summary,
+                    branch_history,
+                    f"merging branch thread '{branch_title}' into parent",
+                )
+            except Exception as exc:
+                logger.warning("merge: summary generation failed: %s", exc)
+                summary = None
+
+        # Strip the compaction prefix if present — this is a merge fold, not a
+        # context compaction, so the summary body reads on its own.
+        if summary:
+            summary = summary.strip()
+
+        if not summary:
+            return t("gateway.merge.no_summary")
+
+        # Fold the summary into the PARENT session's transcript as ONE labeled
+        # user-role context message (models trust a single labeled fold; a
+        # verbatim dump gets disavowed). Role-alternation in the parent is
+        # normalized by repair_message_sequence when the parent reloads.
+        fold_text = t("gateway.merge.fold_body", title=branch_title, summary=summary)
+        try:
+            await self._session_db.append_message(
+                session_id=parent_session_id,
+                role="user",
+                content=fold_text,
+            )
+        except Exception as exc:
+            logger.error("merge: failed to append fold to parent %s: %s", parent_session_id, exc)
+            return t("gateway.merge.fold_failed", error=exc)
+
+        # Evict the parent's cached agent so its next turn rebuilds with the
+        # fold present. Find the parent's live session key via reverse lookup.
+        parent_entry = self.session_store.lookup_by_session_id(parent_session_id)
+        if parent_entry is not None:
+            try:
+                self._evict_cached_agent(parent_entry.session_key)
+            except Exception as exc:
+                logger.debug("merge: parent agent eviction skipped: %s", exc)
+
+        # Post a visible note into the PARENT channel. The parent channel id is
+        # this thread's parent_chat_id (we're running inside the branch thread).
+        parent_channel_id = source.parent_chat_id
+        note_short = summary if len(summary) <= 600 else summary[:597] + "..."
+        if parent_channel_id:
+            try:
+                note = t("gateway.merge.parent_note", title=branch_title, summary=note_short)
+                await adapter.send(str(parent_channel_id), note)
+            except Exception as exc:
+                logger.debug("merge: parent-channel note send failed: %s", exc)
+
+        # Archive + lock the thread (non-destructive; branch session kept).
+        archived = False
+        try:
+            archived = await adapter.archive_thread(str(source.thread_id), lock=True)
+        except Exception as exc:
+            logger.debug("merge: archive_thread failed: %s", exc)
+
+        confirm_key = "gateway.merge.merged" if archived else "gateway.merge.merged_no_archive"
+        return t(confirm_key, title=branch_title, parent=parent_session_id)
 
     async def _handle_credits_command(self, event: MessageEvent) -> str:
         """Handle /credits -- show Nous credit balance and the top-up handoff.

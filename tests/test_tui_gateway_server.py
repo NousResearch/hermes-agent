@@ -2764,7 +2764,7 @@ def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
         {"role": "assistant", "content": "done"},
     ]
     server._sessions["trunc-sid"] = _session(history=list(history))
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: _FakeDB())
     # If the guard ever lets a negative ordinal through, these would run and the
     # session would be marked busy; failing here makes that regression loud.
     monkeypatch.setattr(
@@ -3425,7 +3425,7 @@ def test_run_prompt_submit_prefers_origin_ui_session_id(monkeypatch, tmp_path):
         def create_session(self, *args, **kwargs):
             created.append((args, kwargs))
 
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: _FakeDB())
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(
         server.threading,
@@ -3456,7 +3456,7 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
                 {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
             )
 
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
     server._ensure_session_db_row({
@@ -3479,7 +3479,7 @@ def test_ensure_session_db_row_persists_session_source(monkeypatch):
                 {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
             )
 
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
     server._ensure_session_db_row({"session_key": "k1", "source": "tool"})
@@ -3500,7 +3500,7 @@ def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
                 {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
             )
 
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path)})
@@ -3527,7 +3527,7 @@ def test_ensure_session_db_row_persists_session_model_override(monkeypatch):
                 {"key": key, "model": model, "model_config": model_config, "cwd": cwd}
             )
 
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "global/default")
 
     server._ensure_session_db_row(
@@ -3557,12 +3557,37 @@ def test_ensure_session_db_row_no_override_uses_global(monkeypatch):
         def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None):
             created.append({"model": model, "model_config": model_config})
 
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "global/default")
 
     server._ensure_session_db_row({"session_key": "k1", "model_override": None})
 
     assert created == [{"model": "global/default", "model_config": None}]
+
+
+def test_ensure_session_db_row_default_session_uses_launch_home(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    launch_home = tmp_path / "launch-home"
+    stale_home = tmp_path / "stale-home"
+    launch_home.mkdir()
+    stale_home.mkdir()
+    stale_db = SessionDB(db_path=stale_home / "state.db")
+    launch_db = None
+
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    monkeypatch.setattr(server, "_get_db", lambda: stale_db)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "global/default")
+
+    try:
+        server._ensure_session_db_row({"session_key": "k-default"})
+        launch_db = SessionDB(db_path=launch_home / "state.db")
+        assert launch_db.get_session("k-default") is not None
+        assert stale_db.get_session("k-default") is None
+    finally:
+        if launch_db is not None:
+            launch_db.close()
+        stale_db.close()
 
 
 def test_session_title_clears_pending_after_persist(monkeypatch):

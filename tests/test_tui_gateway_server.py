@@ -88,6 +88,78 @@ def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
         server._sessions.pop(sid, None)
 
 
+def test_session_context_uses_dashboard_identity_env(monkeypatch, tmp_path):
+    from gateway.session_context import get_session_env
+
+    session_key = "dashboard-key"
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "dashboard")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "alice")
+    monkeypatch.setenv("HERMES_SESSION_USER_NAME", "Alice Example")
+    server._sessions["dashboard-sid"] = {
+        "session_key": session_key,
+        "cwd": str(tmp_path),
+        "source": "tui",
+    }
+
+    try:
+        tokens = server._set_session_context(session_key)
+        try:
+            assert get_session_env("HERMES_SESSION_USER_ID") == "alice"
+            assert get_session_env("HERMES_SESSION_USER_NAME") == "Alice Example"
+        finally:
+            server._clear_session_context(tokens)
+    finally:
+        server._sessions.pop("dashboard-sid", None)
+
+
+def test_session_context_uses_stored_dashboard_identity(monkeypatch, tmp_path):
+    from gateway.session_context import get_session_env
+
+    session_key = "dashboard-key"
+    server._sessions["dashboard-sid"] = {
+        "session_key": session_key,
+        "cwd": str(tmp_path),
+        "source": "tui",
+        "dashboard_identity": {
+            "user_id": "alice",
+            "display_name": "Alice Example",
+            "provider": "stub",
+        },
+    }
+
+    try:
+        tokens = server._set_session_context(session_key)
+        try:
+            assert get_session_env("HERMES_SESSION_USER_ID") == "alice"
+            assert get_session_env("HERMES_SESSION_USER_NAME") == "Alice Example"
+        finally:
+            server._clear_session_context(tokens)
+    finally:
+        server._sessions.pop("dashboard-sid", None)
+
+
+def test_dispatch_binds_dashboard_identity_for_session_create(monkeypatch):
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+    server._sessions.clear()
+    try:
+        resp = server.dispatch(
+            {"id": "1", "method": "session.create", "params": {"cols": 80}},
+            dashboard_identity={
+                "user_id": "alice",
+                "display_name": "Alice Example",
+                "provider": "stub",
+            },
+        )
+        sid = resp["result"]["session_id"]
+        assert server._sessions[sid]["dashboard_identity"] == {
+            "user_id": "alice",
+            "user_name": "Alice Example",
+            "provider": "stub",
+        }
+    finally:
+        server._sessions.clear()
+
+
 def test_handoff_fail_marks_only_inflight_rows(monkeypatch):
     class DbContext:
         def __init__(self, db):
@@ -1719,6 +1791,79 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
     assert captured["platform"] == "tui"
 
 
+def test_make_agent_passes_dashboard_identity(monkeypatch):
+    captured = {}
+
+    def fake_agent(**kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(model=kwargs.get("model"))
+
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "dashboard")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "alice")
+    monkeypatch.setenv("HERMES_SESSION_USER_NAME", "Alice Example")
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"model": {"default": "gpt-5.5", "provider": "openai-codex"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None, target_model=None: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "token",
+            "api_mode": "codex_responses",
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    server._make_agent("sid", "session-key")
+
+    assert captured["user_id"] == "alice"
+    assert captured["user_name"] == "Alice Example"
+
+
+def test_slash_worker_receives_dashboard_identity_env(monkeypatch):
+    captured = {}
+
+    class FakeProc:
+        stdin = None
+        stdout = None
+        stderr = None
+
+        def poll(self):
+            return None
+
+    def fake_popen(*args, **kwargs):
+        captured["env"] = kwargs["env"]
+        return FakeProc()
+
+    monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
+
+    server._SlashWorker(
+        "session-key",
+        "gpt-5.5",
+        dashboard_identity={
+            "user_id": "alice",
+            "display_name": "Alice Example",
+            "provider": "stub",
+        },
+    )
+
+    env = captured["env"]
+    assert env["HERMES_SESSION_PLATFORM"] == "tui"
+    assert env["HERMES_SESSION_SOURCE"] == "dashboard"
+    assert env["HERMES_SESSION_USER_ID"] == "alice"
+    assert env["HERMES_SESSION_USER_NAME"] == "Alice Example"
+    assert env["HERMES_DASHBOARD_AUTH_PROVIDER"] == "stub"
+
+
 def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
     chain = [
         {"provider": "openrouter", "model": "openai/gpt-5.5"},
@@ -1736,6 +1881,23 @@ def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
     kwargs = server._background_agent_kwargs(agent, "task-id")
 
     assert kwargs["fallback_model"] == chain
+
+
+def test_background_agent_kwargs_preserves_dashboard_identity(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="gpt-5.5",
+        provider="openai-codex",
+        _user_id="alice",
+        _user_name="Alice Example",
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 25})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    kwargs = server._background_agent_kwargs(agent, "task-id")
+
+    assert kwargs["user_id"] == "alice"
+    assert kwargs["user_name"] == "Alice Example"
 
 
 def test_background_agent_kwargs_preserves_empty_fallback_chain(monkeypatch):

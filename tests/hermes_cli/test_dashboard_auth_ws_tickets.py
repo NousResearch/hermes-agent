@@ -41,6 +41,22 @@ class TestMintAndConsume:
         assert info["provider"] == "nous"
         assert "minted_at" in info
 
+    def test_round_trip_includes_display_name(self):
+        ticket = mint_ticket(
+            user_id="u1",
+            provider="nous",
+            display_name="User One",
+        )
+        info = consume_ticket(ticket)
+        assert info["user_id"] == "u1"
+        assert info["display_name"] == "User One"
+
+    def test_display_name_does_not_duplicate_user_id(self):
+        ticket = mint_ticket(user_id="u1", provider="nous", display_name="u1")
+        info = consume_ticket(ticket)
+        assert info["user_id"] == "u1"
+        assert "display_name" not in info
+
     def test_ticket_has_minimum_length(self):
         # ``secrets.token_urlsafe(32)`` produces ~43 chars; enforce a floor
         # so a future refactor can't accidentally shrink the entropy.

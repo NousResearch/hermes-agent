@@ -275,7 +275,13 @@ _detached_ws_transport = _DropTransport()
 class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
-    def __init__(self, session_key: str, model: str, profile_home: str | None = None):
+    def __init__(
+        self,
+        session_key: str,
+        model: str,
+        profile_home: str | None = None,
+        dashboard_identity: dict | None = None,
+    ):
         self._lock = threading.Lock()
         self._seq = 0
         self.stderr_tail: list[str] = []
@@ -297,6 +303,7 @@ class _SlashWorker:
         # slash_worker runs the Hermes agent → needs provider credentials.
         # Tier-1 secrets (gateway/GitHub/infra) are still stripped (#29157).
         env = hermes_subprocess_env(inherit_credentials=True)
+        _apply_dashboard_identity_env(env, dashboard_identity)
         if profile_home:
             # Global-remote / multi-profile sessions: the worker must resolve
             # config/skills/state against the session's profile home, not the
@@ -1164,7 +1171,12 @@ def handle_request(req: dict) -> dict | None:
     return fn(rid, params)
 
 
-def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
+def dispatch(
+    req: dict,
+    transport: Optional[Transport] = None,
+    *,
+    dashboard_identity: dict | None = None,
+) -> dict | None:
     """Route inbound RPCs — long handlers to the pool, everything else inline.
 
     Returns a response dict when handled inline. Returns None when the
@@ -1178,6 +1190,9 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
     """
     t = transport or _stdio_transport
     token = bind_transport(t)
+    identity_token = _dashboard_identity_context.set(
+        _normalize_dashboard_identity(dashboard_identity)
+    )
     try:
         normalized = _normalize_request(req)
         if isinstance(normalized, dict):
@@ -1202,6 +1217,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
 
         return None
     finally:
+        _dashboard_identity_context.reset(identity_token)
         reset_transport(token)
 
 
@@ -1310,6 +1326,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     key,
                     getattr(agent, "model", _resolve_model()),
                     profile_home=current.get("profile_home"),
+                    dashboard_identity=current.get("dashboard_identity"),
                 )
                 _attach_worker(sid, current, worker)
             except Exception:
@@ -1558,6 +1575,76 @@ def _session_source(session: dict | None) -> str:
         if source:
             return source
     return "tui"
+
+
+_dashboard_identity_context: contextvars.ContextVar[dict[str, str]] = contextvars.ContextVar(
+    "dashboard_identity",
+    default={},
+)
+
+
+def _normalize_dashboard_identity(identity: dict | None) -> dict[str, str]:
+    if not isinstance(identity, dict):
+        return {}
+    result: dict[str, str] = {}
+    user_id = str(identity.get("user_id") or "").strip()
+    if user_id and user_id != "server-internal":
+        result["user_id"] = user_id
+    user_name = str(
+        identity.get("user_name") or identity.get("display_name") or ""
+    ).strip()
+    if user_name and user_name != user_id:
+        result["user_name"] = user_name
+    provider = str(identity.get("provider") or "").strip()
+    if provider:
+        result["provider"] = provider
+    return result
+
+
+def _current_dashboard_identity(identity: dict | None = None) -> dict[str, str]:
+    normalized = _normalize_dashboard_identity(identity)
+    if normalized.get("user_id"):
+        return normalized
+
+    context_identity = _normalize_dashboard_identity(_dashboard_identity_context.get({}))
+    if context_identity.get("user_id"):
+        return context_identity
+
+    try:
+        from gateway.session_context import get_session_env
+
+        if get_session_env("HERMES_SESSION_SOURCE") == "dashboard":
+            session_identity = _normalize_dashboard_identity({
+                "user_id": get_session_env("HERMES_SESSION_USER_ID"),
+                "user_name": get_session_env("HERMES_SESSION_USER_NAME"),
+                "provider": get_session_env("HERMES_DASHBOARD_AUTH_PROVIDER"),
+            })
+            if session_identity.get("user_id"):
+                return session_identity
+    except Exception:
+        pass
+
+    if os.environ.get("HERMES_SESSION_SOURCE", "").strip() != "dashboard":
+        return {}
+    return _normalize_dashboard_identity({
+        "user_id": os.environ.get("HERMES_SESSION_USER_ID", ""),
+        "user_name": os.environ.get("HERMES_SESSION_USER_NAME", ""),
+        "provider": os.environ.get("HERMES_DASHBOARD_AUTH_PROVIDER", ""),
+    })
+
+
+def _apply_dashboard_identity_env(env: dict[str, str], identity: dict | None = None) -> None:
+    ident = _current_dashboard_identity(identity)
+    user_id = ident.get("user_id", "")
+    if not user_id:
+        return
+    env["HERMES_SESSION_PLATFORM"] = "tui"
+    env["HERMES_SESSION_SOURCE"] = "dashboard"
+    env["HERMES_SESSION_USER_ID"] = user_id
+    if ident.get("user_name"):
+        env["HERMES_SESSION_USER_NAME"] = ident["user_name"]
+    if ident.get("provider"):
+        env["HERMES_DASHBOARD_AUTH_PROVIDER"] = ident["provider"]
 
 
 def _register_session_cwd(session: dict | None) -> None:
@@ -1892,7 +1979,11 @@ def _cwd_for_session_key(session_key: str) -> str:
     return ""
 
 
-def _set_session_context(session_key: str, cwd: str | None = None) -> list:
+def _set_session_context(
+    session_key: str,
+    cwd: str | None = None,
+    dashboard_identity: dict | None = None,
+) -> list:
     try:
         from gateway.session_context import set_session_vars
 
@@ -1906,8 +1997,18 @@ def _set_session_context(session_key: str, cwd: str | None = None) -> list:
             for sess in list(_sessions.values()):
                 if sess.get("session_key") == session_key:
                     source = _session_source(sess)
+                    if dashboard_identity is None:
+                        dashboard_identity = sess.get("dashboard_identity")
                     break
-        return set_session_vars(session_key=session_key, source=source, cwd=resolved)
+        identity = _current_dashboard_identity(dashboard_identity)
+        return set_session_vars(
+            platform="tui",
+            session_key=session_key,
+            source=source,
+            cwd=resolved,
+            user_id=identity.get("user_id", ""),
+            user_name=identity.get("user_name", ""),
+        )
     except Exception:
         return []
 
@@ -2640,6 +2741,7 @@ def _restart_slash_worker(sid: str, session: dict):
             session["session_key"],
             getattr(session.get("agent"), "model", _resolve_model()),
             profile_home=session.get("profile_home"),
+            dashboard_identity=session.get("dashboard_identity"),
         )
     except Exception:
         session["slash_worker"] = None
@@ -4015,6 +4117,8 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "service_tier": getattr(agent, "service_tier", None) or _load_service_tier(),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "platform": "tui",
+        "user_id": getattr(agent, "_user_id", None) or None,
+        "user_name": getattr(agent, "_user_name", None) or None,
         "session_db": _get_db(),
         "fallback_model": _agent_fallback_model(agent),
     }
@@ -4419,6 +4523,7 @@ def _make_agent(
             "target_model": model or None,
         })
     _pr = _load_provider_routing()
+    identity = _current_dashboard_identity()
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
@@ -4456,6 +4561,8 @@ def _make_agent(
         provider_require_parameters=_pr.get("require_parameters", False),
         provider_data_collection=_pr.get("data_collection"),
         platform="tui",
+        user_id=identity.get("user_id") or None,
+        user_name=identity.get("user_name") or None,
         session_id=session_id or key,
         session_db=session_db if session_db is not None else _get_db(),
         ephemeral_system_prompt=system_prompt or None,
@@ -4530,6 +4637,7 @@ def _init_session(
                 key,
                 getattr(agent, "model", _resolve_model()),
                 profile_home=_sessions[sid].get("profile_home"),
+                dashboard_identity=_sessions[sid].get("dashboard_identity"),
             ),
         )
     except Exception:
@@ -5018,6 +5126,7 @@ def _(rid, params: dict) -> dict:
     # and each turn re-bind HERMES_HOME. None/own profile → launch (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    dashboard_identity = _current_dashboard_identity(params.get("dashboard_identity"))
 
     # The desktop composer owns its model/effort/fast as plain UI state and ships
     # it on every session.create. Honor each as a PER-SESSION override (built into
@@ -5065,6 +5174,7 @@ def _(rid, params: dict) -> dict:
             "history_version": 0,
             "image_counter": 0,
             "cwd": resolved_cwd,
+            "dashboard_identity": dashboard_identity,
             "inflight_turn": None,
             "last_active": now,
             "model_override": session_model_override,
@@ -12727,6 +12837,7 @@ def _(rid, params: dict) -> dict:
                 session["session_key"],
                 getattr(session.get("agent"), "model", _resolve_model()),
                 profile_home=session.get("profile_home"),
+                dashboard_identity=session.get("dashboard_identity"),
             )
             _attach_worker(params.get("session_id", ""), session, worker)
         except Exception as e:

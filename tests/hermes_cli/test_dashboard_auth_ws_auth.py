@@ -24,6 +24,7 @@ from hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_cli.dashboard_auth.ws_tickets import (
     _reset_for_tests,
     consume_internal_credential,
+    consume_ticket,
     internal_ws_credential,
     mint_ticket,
 )
@@ -120,6 +121,9 @@ class TestWsTicketEndpoint:
         assert isinstance(body["ticket"], str)
         assert len(body["ticket"]) >= 32
         assert body["ttl_seconds"] == 30
+        info = consume_ticket(body["ticket"])
+        assert info["user_id"] == "stub-user-1"
+        assert info["display_name"] == "Stub User"
 
     def test_unauthenticated_returns_401_or_redirect(self, gated_app):
         r = gated_app.post("/api/auth/ws-ticket", follow_redirects=False)
@@ -228,6 +232,49 @@ class TestWsAuthOkGated:
         ticket = mint_ticket(user_id="u1", provider="stub")
         ws = _fake_ws(query={"ticket": ticket})
         assert web_server._ws_auth_ok(ws) is True
+
+    def test_valid_ticket_identity_is_returned(self, gated_app):
+        ticket = mint_ticket(user_id="u1", provider="stub", display_name="User One")
+        ws = _fake_ws(query={"ticket": ticket})
+
+        reason, credential, identity = web_server._ws_auth_reason(ws)
+
+        assert reason is None
+        assert credential == "ticket"
+        assert identity == {
+            "user_id": "u1",
+            "provider": "stub",
+            "display_name": "User One",
+        }
+
+    def test_ticket_identity_does_not_use_user_id_as_display_name(self, gated_app):
+        ticket = mint_ticket(user_id="u1", provider="stub", display_name="u1")
+        ws = _fake_ws(query={"ticket": ticket})
+
+        reason, credential, identity = web_server._ws_auth_reason(ws)
+
+        assert reason is None
+        assert credential == "ticket"
+        assert identity == {"user_id": "u1", "provider": "stub"}
+
+    def test_legacy_token_has_no_dashboard_identity(self, loopback_app):
+        ws = _fake_ws(query={"token": web_server._SESSION_TOKEN})
+
+        reason, credential, identity = web_server._ws_auth_reason(ws)
+
+        assert reason is None
+        assert credential == "token"
+        assert identity == {}
+
+    def test_internal_credential_has_no_browser_identity(self, gated_app):
+        cred = internal_ws_credential()
+        ws = _fake_ws(query={"internal": cred})
+
+        reason, credential, identity = web_server._ws_auth_reason(ws)
+
+        assert reason is None
+        assert credential == "internal"
+        assert identity == {}
 
     def test_consumed_ticket_rejected(self, gated_app):
         ticket = mint_ticket(user_id="u1", provider="stub")

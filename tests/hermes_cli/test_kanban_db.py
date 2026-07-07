@@ -1218,6 +1218,76 @@ def test_complete_preserves_claimed_artifact_before_scratch_cleanup(kanban_home)
     assert payload["completion_artifact_evidence"] == evidence
 
 
+def test_completion_artifact_claims_unit_dedupes_supported_metadata_keys():
+    """The artifact verifier only treats explicit artifact fields as claims.
+
+    Legacy report tasks sometimes stored a report path under the singular
+    ``artifact`` key, while newer tool calls use ``artifacts``.  Arbitrary
+    descriptive metadata such as ``report_path`` is intentionally not promoted
+    unless the worker also lists it under one of those explicit artifact keys.
+    """
+    metadata = {
+        "artifacts": [" report.md ", "report.md", "chart.png", None],
+        "artifact": "report.md",
+        "report_path": "unsupported-unless-explicit.md",
+    }
+
+    assert kb._completion_artifact_claims(metadata) == ["report.md", "chart.png"]
+
+
+def test_complete_preserves_legacy_singular_artifact_regression_t_12fe5625(kanban_home):
+    """Regression for t_12fe5625-style report metadata.
+
+    That run recorded its report path in ``task_runs.metadata['artifact']`` and
+    the completed event's artifact payload.  Completion must rewrite the legacy
+    singular field to a durable attachment path before scratch cleanup, not
+    leave a dead workspace path as the durable evidence.
+    """
+    workspace = kb.workspaces_root() / "t_12fe5625-style-workspace"
+    workspace.mkdir(parents=True)
+    report = workspace / "territory_state_sos_backtest_report.md"
+    report.write_text("# NO-BUILD\n", encoding="utf-8")
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="Backtest: territory-state incorporation registries as discovery source",
+            workspace_kind="scratch",
+            workspace_path=str(workspace),
+            tenant="prospecting",
+        )
+        assert kb.complete_task(
+            conn,
+            t,
+            summary="Completed the read-only backtest report",
+            metadata={
+                "artifact": str(report),
+                "recommendation": "NO-BUILD",
+                "registry_snapshot": "C:/external/snapshot.sqlite",
+            },
+        )
+        run = kb.latest_run(conn, t)
+        payload = [e for e in kb.list_events(conn, t) if e.kind == "completed"][-1].payload or {}
+        attachments = kb.list_attachments(conn, t)
+
+    assert not workspace.exists(), "scratch workspace should still be cleaned up"
+    assert len(attachments) == 1
+    stored = Path(attachments[0].stored_path)
+    assert stored.is_file()
+    assert stored.read_text(encoding="utf-8") == "# NO-BUILD\n"
+
+    evidence = run.metadata["completion_artifact_evidence"]
+    assert len(evidence) == 1
+    assert evidence[0]["status"] == "preserved"
+    assert evidence[0]["original_path"] == str(report)
+    assert evidence[0]["stored_path"] == str(stored.resolve())
+    assert run.metadata["artifact"] == str(stored.resolve())
+    assert run.metadata["artifacts"] == [str(stored.resolve())]
+    assert run.metadata["recommendation"] == "NO-BUILD"
+    assert payload["artifacts"] == [str(stored.resolve())]
+    assert payload["completion_artifact_evidence"] == evidence
+
+
 def test_complete_marks_missing_artifact_with_machine_checkable_reason(kanban_home):
     workspace = kb.workspaces_root() / "missing-artifact-source"
     workspace.mkdir(parents=True)

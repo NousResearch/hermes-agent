@@ -285,6 +285,17 @@ function formatPollUpdateText(update) {
   return `[Poll update${target ? `: ${target}` : ''}]`;
 }
 
+/**
+ * Append a visible note for media that failed to download, so the agent knows
+ * something was sent rather than silently losing the attachment. Returns
+ * `content` unchanged when nothing failed. (Port of nanoclaw#2895.)
+ */
+export function appendMediaFailureNote(content, failures) {
+  if (!failures || failures.length === 0) return content;
+  const note = failures.map((t) => `[${t} could not be downloaded]`).join(' ');
+  return content ? `${content}\n${note}` : note;
+}
+
 export async function extractBridgeEvent({
   msg,
   chatId,
@@ -314,13 +325,28 @@ export async function extractBridgeEvent({
   const mediaUrls = [];
   const nativeMetadata = {};
 
-  const saveMedia = async ({ mediaMessage, dir, prefix, fallbackExt, fileName: name }) => {
+  const mediaFailures = [];
+
+  const saveMedia = async ({ mediaMessage, dir, prefix, fallbackExt, fileName: name, type }) => {
     if (!downloadMedia) return;
-    const buf = await downloadMedia(msg);
-    const ext = mediaExtForMime(mediaMessage?.mimetype, fallbackExt);
-    const writer = writeMediaFile || defaultWriteMediaFile;
-    const saved = await writer({ buffer: buf, dir, prefix, ext, fileName: name });
-    if (saved) mediaUrls.push(saved);
+    try {
+      const buf = await downloadMedia(msg);
+      const ext = mediaExtForMime(mediaMessage?.mimetype, fallbackExt);
+      const writer = writeMediaFile || defaultWriteMediaFile;
+      const saved = await writer({ buffer: buf, dir, prefix, ext, fileName: name });
+      if (saved) mediaUrls.push(saved);
+    } catch (err) {
+      // A failed CDN fetch (expired media URL, transient network error) must
+      // never reject out of extractBridgeEvent — that would drop this message
+      // AND every remaining message in the same upsert batch. Record the
+      // failure so the agent is told media was sent instead of losing it
+      // silently. (Port of nanoclaw#2895's never-silently-drop guarantee; the
+      // reuploadRequest recovery half is already wired in bridge.js.)
+      mediaFailures.push(type || 'media');
+      try {
+        console.warn(`[bridge] failed to download inbound ${type || 'media'}:`, err?.message || err);
+      } catch {}
+    }
   };
 
   if (messageContent.conversation) {
@@ -336,7 +362,7 @@ export async function extractBridgeEvent({
     mediaType = 'image';
     nativeType = 'imageMessage';
     mime = item.mimetype || 'image/jpeg';
-    await saveMedia({ mediaMessage: item, dir: cacheDirs.image, prefix: 'img', fallbackExt: '.jpg' });
+    await saveMedia({ mediaMessage: item, dir: cacheDirs.image, prefix: 'img', fallbackExt: '.jpg', type: 'image' });
   } else if (messageContent.videoMessage) {
     const item = messageContent.videoMessage;
     body = item.caption || '';
@@ -345,7 +371,7 @@ export async function extractBridgeEvent({
     nativeType = 'videoMessage';
     mime = item.mimetype || 'video/mp4';
     nativeMetadata.video = { gifPlayback: !!item.gifPlayback };
-    await saveMedia({ mediaMessage: item, dir: cacheDirs.document, prefix: 'vid', fallbackExt: '.mp4' });
+    await saveMedia({ mediaMessage: item, dir: cacheDirs.document, prefix: 'vid', fallbackExt: '.mp4', type: mediaType });
   } else if (messageContent.audioMessage || messageContent.pttMessage) {
     const item = messageContent.pttMessage || messageContent.audioMessage;
     hasMedia = true;
@@ -353,7 +379,7 @@ export async function extractBridgeEvent({
     nativeType = messageContent.pttMessage ? 'pttMessage' : 'audioMessage';
     mime = item.mimetype || 'audio/ogg';
     nativeMetadata.audio = { ptt: mediaType === 'ptt' };
-    await saveMedia({ mediaMessage: item, dir: cacheDirs.audio, prefix: 'aud', fallbackExt: '.ogg' });
+    await saveMedia({ mediaMessage: item, dir: cacheDirs.audio, prefix: 'aud', fallbackExt: '.ogg', type: 'audio' });
   } else if (messageContent.documentMessage) {
     const item = messageContent.documentMessage;
     body = item.caption || '';
@@ -362,7 +388,7 @@ export async function extractBridgeEvent({
     nativeType = 'documentMessage';
     mime = item.mimetype || 'application/octet-stream';
     fileName = item.fileName || 'document';
-    await saveMedia({ mediaMessage: item, dir: cacheDirs.document, prefix: 'doc', fallbackExt: '.bin', fileName });
+    await saveMedia({ mediaMessage: item, dir: cacheDirs.document, prefix: 'doc', fallbackExt: '.bin', fileName, type: 'document' });
   } else if (messageContent.stickerMessage) {
     hasMedia = true;
     mediaType = 'sticker';
@@ -373,7 +399,7 @@ export async function extractBridgeEvent({
       animated: !!messageContent.stickerMessage.isAnimated,
       mimetype: mime,
     };
-    await saveMedia({ mediaMessage: messageContent.stickerMessage, dir: cacheDirs.image, prefix: 'sticker', fallbackExt: '.webp' });
+    await saveMedia({ mediaMessage: messageContent.stickerMessage, dir: cacheDirs.image, prefix: 'sticker', fallbackExt: '.webp', type: 'sticker' });
   } else if (messageContent.locationMessage || messageContent.liveLocationMessage) {
     const isLive = !!messageContent.liveLocationMessage;
     const item = messageContent.liveLocationMessage || messageContent.locationMessage;
@@ -424,6 +450,12 @@ export async function extractBridgeEvent({
     body = formatPollUpdateText(messageContent.pollUpdateMessage);
     nativeMetadata.pollUpdate = messageContent.pollUpdateMessage;
   }
+
+  // Surface failed downloads to the agent instead of silently losing the
+  // attachment. Applied before the generic "[<type> received]" fallback so an
+  // uncaptioned message whose download failed reads "[image could not be
+  // downloaded]" rather than claiming the media arrived.
+  body = appendMediaFailureNote(body, mediaFailures);
 
   if (hasMedia && !body) {
     body = `[${mediaType} received]`;

@@ -570,6 +570,11 @@ def redact_sensitive_text(
         if ":" in text and '"' in text:
             def _redact_json(m):
                 key, value = m.group(1), m.group(2)
+                # Same programmatic-env-lookup exception as _redact_env above
+                # (issue #2852): "apiKey": "os.getenv('X')" is a code snippet,
+                # not a leaked secret value.
+                if _ENV_LOOKUP_VALUE_RE.match(value):
+                    return m.group(0)
                 return f'{key}: "{_mask_token(value)}"'
             text = _JSON_FIELD_RE.sub(_redact_json, text)
 
@@ -579,6 +584,11 @@ def redact_sensitive_text(
         if ":" in text and "://" not in text:
             def _redact_yaml(m):
                 key, sep, value = m.group(1), m.group(2), m.group(3)
+                # Same programmatic-env-lookup exception as _redact_env above
+                # (issue #2852): api_key: os.getenv('X') is a code snippet,
+                # not a leaked secret value.
+                if _ENV_LOOKUP_VALUE_RE.match(value):
+                    return m.group(0)
                 return f"{key}{sep}{_mask_token(value)}"
             text = _YAML_ASSIGN_RE.sub(_redact_yaml, text)
 

@@ -411,7 +411,11 @@ def _resolve_runtime_from_pool_entry(
     api_mode = "chat_completions"
     if provider == "openai-codex":
         api_mode = "codex_responses"
-        base_url = base_url or DEFAULT_CODEX_BASE_URL
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_base_url = ""
+        if cfg_provider == "openai-codex":
+            cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+        base_url = base_url or cfg_base_url or DEFAULT_CODEX_BASE_URL
     elif provider == "xai-oauth":
         api_mode = "codex_responses"
         base_url = base_url or DEFAULT_XAI_OAUTH_BASE_URL
@@ -1392,14 +1396,18 @@ def _resolve_explicit_runtime(
         }
 
     if provider == "openai-codex":
-        base_url = explicit_base_url or DEFAULT_CODEX_BASE_URL
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_base_url = ""
+        if cfg_provider == "openai-codex":
+            cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+        base_url = explicit_base_url or cfg_base_url or DEFAULT_CODEX_BASE_URL
         api_key = explicit_api_key
         last_refresh = None
         if not api_key:
             creds = resolve_codex_runtime_credentials()
             api_key = creds.get("api_key", "")
             last_refresh = creds.get("last_refresh")
-            if not explicit_base_url:
+            if not explicit_base_url and not cfg_base_url:
                 base_url = creds.get("base_url", "").rstrip("/") or base_url
         return {
             "provider": "openai-codex",
@@ -1766,10 +1774,14 @@ def resolve_runtime_provider(
     if provider == "openai-codex":
         try:
             creds = resolve_codex_runtime_credentials()
+            cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+            cfg_base_url = ""
+            if cfg_provider == "openai-codex":
+                cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
             return {
                 "provider": "openai-codex",
                 "api_mode": "codex_responses",
-                "base_url": creds.get("base_url", "").rstrip("/"),
+                "base_url": cfg_base_url or creds.get("base_url", "").rstrip("/"),
                 "api_key": creds.get("api_key", ""),
                 "source": creds.get("source", "hermes-auth-store"),
                 "last_refresh": creds.get("last_refresh"),

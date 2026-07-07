@@ -6306,7 +6306,7 @@ def test_status_update_emits_compression_diagnostic(monkeypatch):
 def test_compression_watchdog_default_is_desktop_bounded(monkeypatch):
     monkeypatch.delenv("HERMES_COMPRESSION_WATCHDOG_SECONDS", raising=False)
 
-    assert server._compression_watchdog_timeout_seconds() == 45.0
+    assert server._compression_watchdog_timeout_seconds() == 12.0
 
 
 def test_compression_watchdog_env_override(monkeypatch):
@@ -6318,7 +6318,7 @@ def test_compression_watchdog_env_override(monkeypatch):
 def test_compression_watchdog_bad_env_uses_desktop_default(monkeypatch):
     monkeypatch.setenv("HERMES_COMPRESSION_WATCHDOG_SECONDS", "not-a-number")
 
-    assert server._compression_watchdog_timeout_seconds() == 45.0
+    assert server._compression_watchdog_timeout_seconds() == 12.0
 
 
 def test_turn_idle_watchdog_default_is_alert_only(monkeypatch):

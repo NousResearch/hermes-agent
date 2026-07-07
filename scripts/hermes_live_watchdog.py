@@ -230,6 +230,20 @@ def run(args: argparse.Namespace) -> int:
     signal.signal(signal.SIGINT, stop)
     refresh_ledgers()
     watched = ", ".join(str(path) for path in tails) or str(home / "logs" / "turn-watchdog.jsonl")
+    append_jsonl(
+        alerts,
+        {
+            "ts": utc_now(),
+            "severity": "info",
+            "component": "live_watchdog",
+            "event": "watchdog_started",
+            "message": "Hermes live watchdog started",
+            "home": str(home),
+            "ledgers": [str(path) for path in tails],
+            "idle_seconds": args.idle_seconds,
+            "alert_cooldown_seconds": args.alert_cooldown,
+        },
+    )
     print(
         f"[hermes-live-watchdog] watching {watched} "
         f"(idle>{args.idle_seconds:.1f}s, cooldown>{args.alert_cooldown:.1f}s)",

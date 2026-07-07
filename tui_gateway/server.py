@@ -8851,11 +8851,11 @@ def _compression_watchdog_timeout_seconds() -> float:
     # thread" turn. If the auxiliary compression call has not completed quickly,
     # continuity recovery is more reliable than making the user stare at a
     # non-terminal busy state for minutes.
-    raw = os.environ.get("HERMES_COMPRESSION_WATCHDOG_SECONDS", "45")
+    raw = os.environ.get("HERMES_COMPRESSION_WATCHDOG_SECONDS", "12")
     try:
         return max(0.0, float(raw))
     except (TypeError, ValueError):
-        return 45.0
+        return 12.0
 
 
 def _turn_idle_watchdog_timeout_seconds() -> float:

@@ -80,6 +80,8 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        "provider_override": t.provider_override,
+        "model_override": t.model_override,
     }
 
 
@@ -1523,6 +1525,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print(f"  branch:    {task.branch_name}")
     if task.skills:
         print(f"  skills:    {', '.join(task.skills)}")
+    if task.provider_override:
+        print(f"  provider:  {task.provider_override}")
     if task.model_override:
         print(f"  model:     {task.model_override}")
     # Effective retry threshold. Show the per-task override if set,

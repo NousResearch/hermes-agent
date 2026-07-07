@@ -123,6 +123,11 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
     When ``certifi`` is installed, use its Mozilla CA bundle to guarantee
     verification. Otherwise fall back to aiohttp's default (which honors
     ``SSL_CERT_FILE`` env var via ``trust_env=True``).
+
+    ``enable_cleanup_closed=True`` prevents connection pool poisoning
+    (aiohttp#12795) when the iLink server closes idle keep-alive connections
+    after ~2-3 minutes. Without this, the stale connection remains in the pool,
+    gets handed out to the next request, and causes an immediate read timeout.
     """
     try:
         import ssl
@@ -132,7 +137,7 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
     if not AIOHTTP_AVAILABLE:
         return None
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-    return aiohttp.TCPConnector(ssl=ssl_ctx)
+    return aiohttp.TCPConnector(ssl=ssl_ctx, enable_cleanup_closed=True)
 
 ITEM_TEXT = 1
 ITEM_IMAGE = 2
@@ -387,7 +392,13 @@ async def _api_post(
             if not response.ok:
                 raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status}: {raw[:200]}")
             return json.loads(raw)
-    return await asyncio.wait_for(_do(), timeout=timeout_ms / 1000)
+    try:
+        return await asyncio.wait_for(_do(), timeout=timeout_ms / 1000)
+    except (asyncio.TimeoutError, aiohttp.ClientError):
+        # Stale pooled connection (aiohttp#12795): the TCPConnector may hand
+        # out a server-closed keep-alive connection.  Retry once — the second
+        # attempt creates a fresh TCP connection.
+        return await asyncio.wait_for(_do(), timeout=timeout_ms / 1000)
 
 
 async def _api_get(
@@ -411,7 +422,10 @@ async def _api_get(
             if not response.ok:
                 raise RuntimeError(f"iLink GET {endpoint} HTTP {response.status}: {raw[:200]}")
             return json.loads(raw)
-    return await asyncio.wait_for(_do(), timeout=timeout_ms / 1000)
+    try:
+        return await asyncio.wait_for(_do(), timeout=timeout_ms / 1000)
+    except (asyncio.TimeoutError, aiohttp.ClientError):
+        return await asyncio.wait_for(_do(), timeout=timeout_ms / 1000)
 
 
 async def _get_updates(

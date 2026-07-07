@@ -346,9 +346,18 @@ class _ReadWriteLock:
             try:
                 while self._writer_active or self._readers > 0:
                     self._cond.wait()
+                # Set the writer-active flag *while still holding* the condition
+                # lock.  Historically this assignment sat one level *outside* the
+                # `with` block, leaving a window where the condition lock was
+                # released but ``_writer_active`` was still ``False`` — a
+                # concurrent reader (a workdir-less cron job, which only observes
+                # ``os.environ["TERMINAL_CWD"]``) could pass its guard and run in
+                # this writer's workdir override, corrupting the TERMINAL_CWD
+                # isolation contract.  Setting it inside the lock makes the
+                # release/await ordering consistent with release_write().
+                self._writer_active = True
             finally:
                 self._writers_waiting -= 1
-            self._writer_active = True
 
     def release_write(self) -> None:
         with self._cond:

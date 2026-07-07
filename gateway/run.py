@@ -1790,6 +1790,13 @@ _OWN_POLICY_OPEN_ENV = {
     Platform.YUANBAO: ("YUANBAO_DM_POLICY", "YUANBAO_GROUP_POLICY", "YUANBAO_ALLOW_ALL_USERS"),
     Platform.QQBOT: (None, None, "QQ_ALLOW_ALL_USERS"),
     Platform.WHATSAPP: ("WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY", "WHATSAPP_ALLOW_ALL_USERS"),
+    # Feishu has no dm_policy knob (DMs are gated by FEISHU_ALLOW_ALL_USERS
+    # directly, an unambiguous opt-in on its own) but its group_policy
+    # supports the same "open" footgun as the platforms above:
+    # FeishuAdapter._allow_group_message() returns True unconditionally for
+    # policy == "open" (plugins/platforms/feishu/adapter.py), with no
+    # secondary allow-all check the way WeCom's DM "open" path has.
+    Platform.FEISHU: (None, "FEISHU_GROUP_POLICY", "FEISHU_ALLOW_ALL_USERS"),
 }
 
 
@@ -1809,6 +1816,12 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
         ).strip().lower()
         group_policy = str(
             extra.get("group_policy")
+            # Feishu's config-file override for the ungated-groups default is
+            # named "default_group_policy", not "group_policy" — see
+            # FeishuAdapterSettings.default_group_policy /
+            # FeishuAdapter._apply_settings. Harmless no-op for every other
+            # platform in this dict, none of which read this key.
+            or extra.get("default_group_policy")
             or (os.getenv(group_env, "pairing") if group_env else "pairing")
         ).strip().lower()
         if dm_policy != "open" and group_policy != "open":

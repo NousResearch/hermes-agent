@@ -130,21 +130,43 @@ class _Runtime:
     def _clear_plugins_toml(self) -> None:
         if not self._plugin_config_initialized:
             return
-        try:
-            if self._plugin_activation is not None:
+        failures: list[str] = []
+        if self._plugin_activation is not None:
+            activation = self._plugin_activation
+            try:
                 _flush_relay_subscribers(self.nemo_relay)
-                close = getattr(self._plugin_activation, "close", None)
-                if callable(close):
+            except Exception as exc:
+                failures.append(f"subscriber flush failed: {exc}")
+
+            close = getattr(activation, "close", None)
+            if callable(close):
+                try:
                     _resolve_awaitable(close())
+                except Exception as exc:
+                    failures.append(f"dynamic plugin activation close failed: {exc}")
+                finally:
+                    # Retain the owned activation through the complete close
+                    # attempt. The binding transitions it to a terminal state
+                    # before its awaitable resolves, including error results.
+                    self._plugin_activation = None
+                    self._plugin_config_initialized = False
+                    self._plugin_config_needs_reinit = bool(self.settings.plugins_config)
             else:
+                failures.append("dynamic plugin activation has no close method")
+        else:
+            try:
                 plugin_mod = getattr(self.nemo_relay, "plugin", None)
                 clear = getattr(plugin_mod, "clear", None)
                 if callable(clear):
                     _resolve_awaitable(clear())
-        finally:
-            self._plugin_activation = None
-            self._plugin_config_initialized = False
-            self._plugin_config_needs_reinit = bool(self.settings.plugins_config)
+            except Exception as exc:
+                failures.append(f"static plugin configuration clear failed: {exc}")
+            finally:
+                self._plugin_config_initialized = False
+                self._plugin_config_needs_reinit = bool(self.settings.plugins_config)
+
+        if failures:
+            raise RuntimeError("; ".join(failures))
 
     def _activate_direct_fallbacks(self) -> None:
         self._plugin_config_needs_reinit = False
@@ -267,21 +289,25 @@ class _Runtime:
         state = self.sessions.pop(session_id, None)
         if state is None:
             return
+        failures: list[str] = []
         if state.handle is not None:
             try:
                 self.nemo_relay.scope.pop(state.handle, output=_jsonable(kwargs))
-            except Exception:
-                logger.debug("NeMo Relay session pop failed", exc_info=True)
+            except Exception as exc:
+                failures.append(f"session scope pop failed: {exc}")
         try:
             _flush_relay_subscribers(self.nemo_relay)
-        except Exception:
-            logger.debug("NeMo Relay subscriber flush failed", exc_info=True)
-        self.export_atif(state)
+        except Exception as exc:
+            failures.append(f"subscriber flush failed: {exc}")
+        try:
+            self.export_atif(state)
+        except Exception as exc:
+            failures.append(f"ATIF export failed: {exc}")
         if state.atif_exporter is not None and state.atif_subscriber_name:
             try:
                 state.atif_exporter.deregister(state.atif_subscriber_name)
-            except Exception:
-                logger.debug("NeMo Relay ATIF deregister failed", exc_info=True)
+            except Exception as exc:
+                failures.append(f"ATIF deregister failed: {exc}")
         if (
             self._plugin_config_initialized
             and self._plugin_activation is None
@@ -289,28 +315,43 @@ class _Runtime:
         ):
             try:
                 self._clear_plugins_toml()
-            except Exception:
-                logger.debug("NeMo Relay plugins.toml clear failed", exc_info=True)
+            except Exception as exc:
+                failures.append(f"plugin configuration clear failed: {exc}")
         elif (
             self.settings.plugins_config
             and self._plugin_activation is None
             and not self.sessions
         ):
             self._plugin_config_needs_reinit = True
+        if failures:
+            logger.warning(
+                "NeMo Relay session %s teardown completed with errors: %s",
+                session_id,
+                "; ".join(failures),
+            )
 
     def shutdown(self) -> None:
         """Close active sessions and the process-lifetime plugin activation."""
+        failures: list[str] = []
         for session_id in list(self.sessions):
-            self.close_session({"session_id": session_id, "reason": "runtime_shutdown"})
+            try:
+                self.close_session({"session_id": session_id, "reason": "runtime_shutdown"})
+            except Exception as exc:
+                failures.append(f"session {session_id} close failed: {exc}")
         if self._plugin_config_initialized:
             try:
                 self._clear_plugins_toml()
-            except Exception:
-                logger.debug("NeMo Relay plugin runtime shutdown failed", exc_info=True)
+            except Exception as exc:
+                failures.append(f"plugin runtime close failed: {exc}")
         self._clear_atof()
-        if self._shutdown_registered:
+        if self._shutdown_registered and self._plugin_activation is None:
             atexit.unregister(self.shutdown)
             self._shutdown_registered = False
+        if failures:
+            logger.warning(
+                "NeMo Relay runtime shutdown completed with errors: %s",
+                "; ".join(failures),
+            )
 
     def mark(self, name: str, kwargs: dict[str, Any]) -> None:
         state = self.ensure_session(kwargs)
@@ -372,7 +413,7 @@ class _Runtime:
         # execution so Hermes retry classification still sees it. The LLM and tool
         # paths share this scaffolding; they differ only in payload normalization,
         # response shaping, and the Relay call itself.
-        raw_response: dict[str, Any] = {"set": False, "value": None}
+        raw_response: dict[str, Any] = {"set": False, "value": None, "normalized": None}
         callback_error: Exception | None = None
         downstream_error: BaseException | None = None
 
@@ -386,7 +427,8 @@ class _Runtime:
                 raise
             raw_response["set"] = True
             raw_response["value"] = raw
-            return shape_response(raw)
+            raw_response["normalized"] = shape_response(raw)
+            return raw_response["normalized"]
 
         try:
             managed_result = _resolve_awaitable(make_managed_execute(_impl))
@@ -394,7 +436,11 @@ class _Runtime:
             if downstream_error is not None and _is_relay_wrapped_callback_error(exc, callback_error):
                 raise downstream_error
             raise
-        if preserve_raw_response and raw_response["set"]:
+        if (
+            preserve_raw_response
+            and raw_response["set"]
+            and _json_semantically_equal(managed_result, raw_response["normalized"])
+        ):
             return raw_response["value"]
         return managed_result
 
@@ -763,11 +809,13 @@ def _dynamic_plugin_specs(plugins_config: dict[str, Any] | None) -> list[dict[st
         return []
 
     specs: list[dict[str, Any]] = []
+    invalid = False
     for index, raw_spec in enumerate(raw_specs):
         if not isinstance(raw_spec, dict):
             logger.warning(
-                "Ignoring invalid NeMo Relay dynamic_plugins[%d]: expected an object", index
+                "Invalid NeMo Relay dynamic_plugins[%d]: expected an object", index
             )
+            invalid = True
             continue
         plugin_id = raw_spec.get("plugin_id")
         kind = raw_spec.get("kind")
@@ -776,30 +824,35 @@ def _dynamic_plugin_specs(plugins_config: dict[str, Any] | None) -> list[dict[st
         environment_ref = raw_spec.get("environment_ref")
         if not isinstance(plugin_id, str) or not plugin_id.strip():
             logger.warning(
-                "Ignoring invalid NeMo Relay dynamic_plugins[%d]: plugin_id is required", index
+                "Invalid NeMo Relay dynamic_plugins[%d]: plugin_id is required", index
             )
+            invalid = True
             continue
         if kind not in {"rust_dynamic", "worker"}:
             logger.warning(
-                "Ignoring invalid NeMo Relay dynamic_plugins[%d]: kind must be rust_dynamic or worker",
+                "Invalid NeMo Relay dynamic_plugins[%d]: kind must be rust_dynamic or worker",
                 index,
             )
+            invalid = True
             continue
         if not isinstance(manifest_ref, str) or not manifest_ref.strip():
             logger.warning(
-                "Ignoring invalid NeMo Relay dynamic_plugins[%d]: manifest_ref is required", index
+                "Invalid NeMo Relay dynamic_plugins[%d]: manifest_ref is required", index
             )
+            invalid = True
             continue
         if not isinstance(config, dict):
             logger.warning(
-                "Ignoring invalid NeMo Relay dynamic_plugins[%d]: config must be an object", index
+                "Invalid NeMo Relay dynamic_plugins[%d]: config must be an object", index
             )
+            invalid = True
             continue
         if environment_ref is not None and not isinstance(environment_ref, str):
             logger.warning(
-                "Ignoring invalid NeMo Relay dynamic_plugins[%d]: environment_ref must be a string",
+                "Invalid NeMo Relay dynamic_plugins[%d]: environment_ref must be a string",
                 index,
             )
+            invalid = True
             continue
         spec: dict[str, Any] = {
             "plugin_id": plugin_id,
@@ -810,6 +863,12 @@ def _dynamic_plugin_specs(plugins_config: dict[str, Any] | None) -> list[dict[st
         if environment_ref is not None:
             spec["environment_ref"] = environment_ref
         specs.append(spec)
+    if invalid:
+        logger.error(
+            "NeMo Relay dynamic plugin configuration is invalid; no dynamic plugins "
+            "will be activated. Continuing with static observability only."
+        )
+        return []
     return specs
 
 
@@ -997,6 +1056,15 @@ def _jsonable(value: Any) -> Any:
         return json.loads(json.dumps(value, default=str))
     except Exception:
         return str(value)
+
+
+def _json_semantically_equal(left: Any, right: Any) -> bool:
+    """Compare JSON-compatible values without conflating booleans and numbers."""
+    try:
+        options = {"ensure_ascii": False, "sort_keys": True, "separators": (",", ":")}
+        return json.dumps(_jsonable(left), **options) == json.dumps(_jsonable(right), **options)
+    except (TypeError, ValueError):
+        return False
 
 
 def _value(obj: Any, key: str, default: Any = None) -> Any:

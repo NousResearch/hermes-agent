@@ -662,6 +662,42 @@ def test_nemo_relay_managed_llm_uses_wire_protocol_for_interceptor_dispatch(
         assert "rewritten_for" not in result
 
 
+def test_nemo_relay_managed_llm_returns_post_next_interceptor_result(tmp_path, monkeypatch):
+    fake = _FakeNemoRelay()
+    raw_response = SimpleNamespace(
+        model="fixture",
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(role="assistant", content="raw", tool_calls=[]),
+                finish_reason="stop",
+            )
+        ],
+        usage=None,
+    )
+
+    def execute(name, request, func, **kwargs):
+        del name, kwargs
+        normalized = func(_FakeLLMRequest(request.headers, request.content))
+        return {**normalized, "post_next_interceptor": True}
+
+    fake.llm.execute = execute
+    plugin = _fresh_plugin(monkeypatch, fake)
+    _enable_dynamic_plugin(tmp_path, monkeypatch)
+
+    result = plugin.on_llm_execution_middleware(
+        session_id="s1",
+        provider="openai",
+        api_mode="chat_completions",
+        model="fixture",
+        request={"messages": []},
+        next_call=lambda request: raw_response,
+    )
+
+    assert result["post_next_interceptor"] is True
+    assert result["assistant_message"]["content"] == "raw"
+    assert result is not raw_response
+
+
 def test_nemo_relay_managed_tool_returns_post_interceptor_result(tmp_path, monkeypatch):
     fake = _FakeNemoRelay()
 
@@ -730,7 +766,7 @@ def test_nemo_relay_plugin_degrades_to_static_config_on_relay_0_5(
     assert "require nemo-relay>=0.6,<0.7" in caplog.text
 
 
-def test_nemo_relay_plugin_ignores_invalid_dynamic_specs(tmp_path, monkeypatch, caplog):
+def test_nemo_relay_plugin_rejects_invalid_dynamic_specs(tmp_path, monkeypatch, caplog):
     fake = _FakeNemoRelay()
     plugin = _fresh_plugin(monkeypatch, fake)
     plugins_toml = tmp_path / "plugins.toml"
@@ -748,6 +784,38 @@ dynamic_plugins = [{ kind = "rust_dynamic", manifest_ref = "missing-id" }]
 
     assert not any(event[0] == "plugin.activate_dynamic" for event in fake.events)
     assert "plugin_id is required" in caplog.text
+
+
+def test_nemo_relay_plugin_rejects_entire_mixed_valid_invalid_dynamic_request(
+    tmp_path, monkeypatch, caplog
+):
+    fake = _FakeNemoRelay()
+    plugin = _fresh_plugin(monkeypatch, fake)
+    plugins_toml = tmp_path / "plugins.toml"
+    plugins_toml.write_text(
+        f"""
+version = 1
+
+[[dynamic_plugins]]
+plugin_id = "valid-fixture"
+kind = "rust_dynamic"
+manifest_ref = "{(tmp_path / "valid" / "relay-plugin.toml").as_posix()}"
+
+[[dynamic_plugins]]
+kind = "worker"
+manifest_ref = "{(tmp_path / "invalid" / "relay-plugin.toml").as_posix()}"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
+
+    with caplog.at_level("WARNING"):
+        plugin.on_session_start(session_id="s1")
+
+    assert not any(event[0] == "plugin.activate_dynamic" for event in fake.events)
+    initialize = next(event for event in fake.events if event[0] == "plugin.initialize")
+    assert "dynamic_plugins" not in initialize[1]
+    assert "no dynamic plugins will be activated" in caplog.text
 
 
 def test_nemo_relay_plugin_registers_shutdown_after_dynamic_retry(tmp_path, monkeypatch):
@@ -779,6 +847,66 @@ def test_nemo_relay_plugin_registers_shutdown_after_dynamic_retry(tmp_path, monk
     assert activation_attempts == 2
     runtime.shutdown()
     assert any(event[0] == "plugin.activation.close" for event in fake.events)
+
+
+def test_nemo_relay_plugin_attempts_activation_close_after_subscriber_flush_failure(
+    tmp_path, monkeypatch, caplog
+):
+    fake = _FakeNemoRelay()
+
+    def _failing_flush():
+        fake.events.append(("subscribers.flush.failed",))
+        raise RuntimeError("flush boom")
+
+    fake.subscribers.flush = _failing_flush
+    plugin = _fresh_plugin(monkeypatch, fake)
+    _enable_dynamic_plugin(tmp_path, monkeypatch)
+    plugin.on_session_start(session_id="s1")
+    runtime = plugin._get_runtime()
+    assert runtime is not None
+
+    with caplog.at_level("WARNING"):
+        runtime.shutdown()
+
+    event_names = [event[0] for event in fake.events]
+    assert event_names.count("subscribers.flush.failed") == 2
+    flush_indices = [
+        index for index, name in enumerate(event_names) if name == "subscribers.flush.failed"
+    ]
+    assert max(flush_indices) < event_names.index("plugin.activation.close")
+    assert runtime._plugin_activation is None
+    assert "subscriber flush failed: flush boom" in caplog.text
+
+
+def test_nemo_relay_plugin_continues_shutdown_after_atif_export_failure(
+    tmp_path, monkeypatch, caplog
+):
+    fake = _FakeNemoRelay()
+
+    class _FailingAtifExporter(_FakeAtifExporter):
+        def export_json(self):
+            self.events.append(("atif.export.failed", self.session_id))
+            raise OSError("disk full")
+
+    fake.AtifExporter = lambda session_id, agent_name, agent_version, **kwargs: (
+        _FailingAtifExporter(fake.events, session_id, agent_name, agent_version, kwargs)
+    )
+    plugin = _fresh_plugin(monkeypatch, fake)
+    _enable_dynamic_plugin(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_NEMO_RELAY_ATIF_ENABLED", "1")
+    monkeypatch.setenv("HERMES_NEMO_RELAY_ATIF_OUTPUT_DIRECTORY", str(tmp_path / "atif"))
+    plugin.on_session_start(session_id="s1")
+    runtime = plugin._get_runtime()
+    assert runtime is not None
+
+    with caplog.at_level("WARNING"):
+        runtime.shutdown()
+
+    event_names = [event[0] for event in fake.events]
+    assert event_names.index("atif.export.failed") < event_names.index("atif.deregister")
+    assert event_names.index("atif.deregister") < event_names.index("plugin.activation.close")
+    assert runtime._plugin_activation is None
+    assert "ATIF export failed: disk full" in caplog.text
 
 
 def test_nemo_relay_plugin_keeps_plugins_toml_active_while_other_sessions_remain(tmp_path, monkeypatch):
@@ -1037,15 +1165,16 @@ mode = "observe_only"
         ),
         finish_reason="tool_calls",
     )
+    raw_response = SimpleNamespace(
+        id="resp-1",
+        model="demo-model",
+        choices=[raw_choice],
+        usage=SimpleNamespace(prompt_tokens=3, completion_tokens=5, total_tokens=8),
+    )
 
     def next_call(request):
         seen_request.update(request)
-        return SimpleNamespace(
-            id="resp-1",
-            model="demo-model",
-            choices=[raw_choice],
-            usage=SimpleNamespace(prompt_tokens=3, completion_tokens=5, total_tokens=8),
-        )
+        return raw_response
 
     response = plugin.on_llm_execution_middleware(
         session_id="s1",
@@ -1059,6 +1188,7 @@ mode = "observe_only"
         next_call=next_call,
     )
 
+    assert response is raw_response
     assert response.model == "demo-model"
     assert response.choices == [raw_choice]
     assert seen_request["intercepted"] is True

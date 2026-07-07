@@ -27,6 +27,43 @@ from utils import env_var_enabled, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
+# ContextVar marking tool-worker threads.  Set by
+# propagate_context_to_thread() before target invocation so that
+# check_all_command_guards can detect the worker context and skip the
+# CLI approval prompt.  Worker threads cannot prompt the user because
+# the main thread is blocked waiting for the worker to finish — any
+# interactive prompt would deadlock (issue #60174).
+_tool_worker_thread_ctx: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "tool_worker_thread",
+    default=False,
+)
+
+
+def _set_tool_worker_thread(active: bool = True) -> contextvars.Token:
+    """Mark (or unmark) the current context as a tool-worker thread.
+
+    Called by ``propagate_context_to_thread`` before dispatching the
+    target function.  Returns a token that can be passed to
+    ``_reset_tool_worker_thread`` to restore the prior state.
+    """
+    return _tool_worker_thread_ctx.set(active)
+
+
+def _reset_tool_worker_thread(token: contextvars.Token) -> None:
+    """Restore the ``_tool_worker_thread_ctx`` to its value before the
+    matching ``_set_tool_worker_thread`` call."""
+    _tool_worker_thread_ctx.reset(token)
+
+
+def _is_tool_worker_thread() -> bool:
+    """Return ``True`` when the current code runs inside a tool-worker
+    thread (set by ``propagate_context_to_thread``)."""
+    try:
+        return _tool_worker_thread_ctx.get()
+    except Exception:
+        return False
+
+
 # Freeze YOLO mode at module import time. Reading os.environ on every call
 # would allow any skill running inside the process to set this variable and
 # instantly bypass all approval checks — a prompt-injection escalation path.
@@ -2637,6 +2674,24 @@ def check_all_command_guards(command: str, env_type: str,
         }
 
     # CLI interactive: single combined prompt
+    # Worker-thread guard: tool-worker threads cannot prompt the user
+    # because the main thread is blocked waiting for the worker to finish.
+    # Any interactive CLI prompt raised from a worker would deadlock
+    # (issue #60174).  Auto-approve instead so the command can proceed.
+    # Gateway approvals are unaffected — they use a per-session notification
+    # queue that works across threads.
+    if _is_tool_worker_thread():
+        logger.info(
+            "Tool worker thread: auto-approved dangerous command "
+            "(pattern: %s): %s",
+            combined_desc, command[:200],
+        )
+        return {
+            "approved": True,
+            "message": None,
+            "description": combined_desc,
+        }
+
     # Hide [a]lways when any tirith warning is present
     _fire_approval_hook(
         "pre_approval_request",

@@ -101,9 +101,16 @@ def propagate_context_to_thread(target: Callable) -> Callable:
                         "dangerous-command approval will fail closed",
                         exc_info=True,
                     )
+            # Mark this context as a tool-worker thread so
+            # check_all_command_guards can skip the CLI approval prompt
+            # (worker threads cannot prompt the user; doing so would
+            # deadlock against the main thread, issue #60174).
+            from tools.approval import _set_tool_worker_thread, _reset_tool_worker_thread
+            _wt_token = _set_tool_worker_thread(True)
             try:
                 return target(*args, **kwargs)
             finally:
+                _reset_tool_worker_thread(_wt_token)
                 if setters is not None:
                     set_approval, set_sudo = setters
                     try:

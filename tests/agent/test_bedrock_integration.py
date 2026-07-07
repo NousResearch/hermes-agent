@@ -590,3 +590,56 @@ class TestAuxiliaryClientBedrockResolution:
             _, model = resolve_provider_client("bedrock", None)
 
         assert "haiku" in model.lower()
+
+    def test_bedrock_non_claude_model_uses_converse_client(self, monkeypatch):
+        """Non-Claude Bedrock models (e.g. gpt-oss) must use Converse, not Anthropic SDK."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+
+        with patch("agent.anthropic_adapter.build_anthropic_bedrock_client") as mock_build:
+            from agent.auxiliary_client import (
+                BedrockAuxiliaryClient,
+                resolve_provider_client,
+            )
+            client, model = resolve_provider_client(
+                "bedrock", "openai.gpt-oss-20b-1:0"
+            )
+
+        mock_build.assert_not_called()
+        assert isinstance(client, BedrockAuxiliaryClient)
+        assert model == "openai.gpt-oss-20b-1:0"
+
+    def test_bedrock_claude_model_still_uses_anthropic_client(self, monkeypatch):
+        """Claude Bedrock IDs should keep the Anthropic SDK auxiliary path."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+
+        mock_anthropic_bedrock = MagicMock()
+        with patch("agent.anthropic_adapter.build_anthropic_bedrock_client",
+                   return_value=mock_anthropic_bedrock):
+            from agent.auxiliary_client import (
+                AnthropicAuxiliaryClient,
+                resolve_provider_client,
+            )
+            client, model = resolve_provider_client(
+                "bedrock", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+            )
+
+        assert isinstance(client, AnthropicAuxiliaryClient)
+        assert "claude-sonnet" in model
+
+    def test_bedrock_non_claude_async_mode(self, monkeypatch):
+        """Async mode for non-Claude Bedrock should return AsyncBedrockAuxiliaryClient."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+
+        with patch("agent.anthropic_adapter.build_anthropic_bedrock_client"):
+            from agent.auxiliary_client import (
+                AsyncBedrockAuxiliaryClient,
+                resolve_provider_client,
+            )
+            client, _ = resolve_provider_client(
+                "bedrock", "openai.gpt-oss-20b-1:0", async_mode=True
+            )
+
+        assert isinstance(client, AsyncBedrockAuxiliaryClient)

@@ -176,10 +176,12 @@ gateway/platforms/                  # 核心 base 与旧的直接适配器
 └── api_server.py        # REST API 服务器适配器
 ```
 
-适配器实现统一接口：
-- `connect()` / `disconnect()` — 生命周期管理
-- `send_message()` — 出站消息投递
-- `on_message()` — 入站消息规范化 → `MessageEvent`
+适配器共享 `BasePlatformAdapter` 契约：
+- `connect(*, is_reconnect=False)` / `disconnect()` — 生命周期管理
+- `send(chat_id, content, reply_to=None, metadata=None)` — 出站消息投递
+- `set_message_handler(handler)` — 安装接收入站 `MessageEvent` 的 gateway 回调
+
+每个适配器的平台专属监听器会把入站平台事件规范化为 `MessageEvent`，再交给 base 的 `handle_message(event)` 流程。
 
 ### Token 锁
 

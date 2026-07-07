@@ -20,9 +20,9 @@ User ↔ Messaging Platform ↔ Platform Adapter ↔ Gateway Runner ↔ AIAgent
 
 Every adapter extends `BasePlatformAdapter` from `gateway/platforms/base.py` and implements:
 
-- **`connect()`** — Establish connection (WebSocket, long-poll, HTTP server, etc.) *(abstract)*
+- **`connect(*, is_reconnect=False)`** — Establish connection (WebSocket, long-poll, HTTP server, etc.) *(abstract)*
 - **`disconnect()`** — Clean shutdown *(abstract)*
-- **`send()`** — Send a text message to a chat *(abstract)*
+- **`send(chat_id, content, reply_to=None, metadata=None)`** — Send a text message to a chat *(abstract)*
 - **`send_typing()`** — Show typing indicator (optional override)
 - **`get_chat_info()`** — Return chat metadata (optional override)
 
@@ -77,7 +77,7 @@ class MyPlatformAdapter(BasePlatformAdapter):
         extra = config.extra or {}
         self.token = os.getenv("MY_PLATFORM_TOKEN") or extra.get("token", "")
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Connect to the platform API, start listeners
         self._mark_connected()
         return True
@@ -495,7 +495,7 @@ class NewPlatAdapter(BasePlatformAdapter):
         extra = config.extra or {}
         self._api_key = extra.get("api_key") or os.getenv("NEWPLAT_API_KEY", "")
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Set up connection, start polling/webhook
         self._mark_connected()
         return True
@@ -635,7 +635,7 @@ Repeat for `.md` and `.ts` files. Investigate each gap — is it a platform enum
 If your adapter uses long-polling (like Telegram or Weixin), use a polling loop task:
 
 ```python
-async def connect(self):
+async def connect(self, *, is_reconnect: bool = False):
     self._poll_task = asyncio.create_task(self._poll_loop())
     self._mark_connected()
 
@@ -651,7 +651,7 @@ async def _poll_loop(self):
 If the platform pushes messages to your endpoint (like WeCom Callback), run an HTTP server:
 
 ```python
-async def connect(self):
+async def connect(self, *, is_reconnect: bool = False):
     self._app = web.Application()
     self._app.router.add_post("/callback", self._handle_callback)
     # ... start aiohttp server
@@ -672,7 +672,7 @@ If the adapter holds a persistent connection with a unique credential, add a sco
 ```python
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 
-async def connect(self):
+async def connect(self, *, is_reconnect: bool = False):
     if not acquire_scoped_lock("newplat", self._token):
         logger.error("Token already in use by another profile")
         return False

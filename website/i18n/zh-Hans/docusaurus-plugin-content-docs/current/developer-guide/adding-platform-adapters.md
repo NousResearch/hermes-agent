@@ -20,9 +20,9 @@ sidebar_position: 9
 
 每个适配器都继承自 `gateway/platforms/base.py` 中的 `BasePlatformAdapter`，并实现以下方法：
 
-- **`connect()`** — 建立连接（WebSocket、长轮询、HTTP 服务器等）*(抽象方法)*
+- **`connect(*, is_reconnect=False)`** — 建立连接（WebSocket、长轮询、HTTP 服务器等）*(抽象方法)*
 - **`disconnect()`** — 清理关闭 *(抽象方法)*
-- **`send()`** — 向聊天发送文本消息 *(抽象方法)*
+- **`send(chat_id, content, reply_to=None, metadata=None)`** — 向聊天发送文本消息 *(抽象方法)*
 - **`send_typing()`** — 显示正在输入指示器（可选覆盖）
 - **`get_chat_info()`** — 返回聊天元数据（可选覆盖）
 
@@ -77,7 +77,7 @@ class MyPlatformAdapter(BasePlatformAdapter):
         extra = config.extra or {}
         self.token = os.getenv("MY_PLATFORM_TOKEN") or extra.get("token", "")
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         # 连接到平台 API，启动监听器
         self._mark_connected()
         return True
@@ -491,7 +491,7 @@ class NewPlatAdapter(BasePlatformAdapter):
         extra = config.extra or {}
         self._api_key = extra.get("api_key") or os.getenv("NEWPLAT_API_KEY", "")
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         # 建立连接，启动轮询/webhook
         self._mark_connected()
         return True
@@ -631,7 +631,7 @@ search_files "newplat" output_mode="files_only" file_glob="*.py"
 如果你的适配器使用长轮询（如 Telegram 或 Weixin），使用轮询循环任务：
 
 ```python
-async def connect(self):
+async def connect(self, *, is_reconnect: bool = False):
     self._poll_task = asyncio.create_task(self._poll_loop())
     self._mark_connected()
 
@@ -647,7 +647,7 @@ async def _poll_loop(self):
 如果平台将消息推送到你的端点（如 WeCom 回调），运行 HTTP 服务器：
 
 ```python
-async def connect(self):
+async def connect(self, *, is_reconnect: bool = False):
     self._app = web.Application()
     self._app.router.add_post("/callback", self._handle_callback)
     # ... 启动 aiohttp 服务器
@@ -668,7 +668,7 @@ async def _handle_callback(self, request):
 ```python
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 
-async def connect(self):
+async def connect(self, *, is_reconnect: bool = False):
     if not acquire_scoped_lock("newplat", self._token):
         logger.error("Token already in use by another profile")
         return False

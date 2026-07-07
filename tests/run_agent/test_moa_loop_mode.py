@@ -395,6 +395,80 @@ def test_moa_provider_backed_slot_survives_aux_resolution(monkeypatch, provider)
     assert api_key == f"token-for-{provider}"
 
 
+def test_moa_copilot_reference_forwards_user_initiator_header(monkeypatch):
+    """Copilot MoA advisors must carry the same user-turn attribution as main calls.
+
+    Copilot Pro/Pro+ gates some premium chat models on the ``x-initiator``
+    request header. MoA references are direct fan-out for the user's current
+    turn, so Copilot advisors need ``x-initiator: user`` rather than inheriting
+    the Copilot language-server default attribution.
+    """
+    from agent import moa_loop
+
+    calls = []
+
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda _slot: {
+            "provider": "copilot",
+            "model": "claude-sonnet-4.6",
+            "api_mode": "chat_completions",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "copilot-token",
+        },
+    )
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("copilot advice")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+
+    _label, text, _acct = moa_loop._run_reference(
+        {"provider": "copilot", "model": "claude-sonnet-4.6"},
+        [{"role": "user", "content": "solve this"}],
+    )
+
+    assert text == "copilot advice"
+    assert calls[0]["task"] == "moa_reference"
+    assert calls[0]["extra_headers"] == {"x-initiator": "user"}
+
+
+def test_moa_non_copilot_reference_does_not_forward_initiator_header(monkeypatch):
+    """The Copilot attribution header must stay scoped to Copilot advisors."""
+    from agent import moa_loop
+
+    calls = []
+
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda _slot: {
+            "provider": "openrouter",
+            "model": "anthropic/claude-sonnet-4.6",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "openrouter-token",
+        },
+    )
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("openrouter advice")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+
+    _label, text, _acct = moa_loop._run_reference(
+        {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+        [{"role": "user", "content": "solve this"}],
+    )
+
+    assert text == "openrouter advice"
+    assert calls[0]["task"] == "moa_reference"
+    assert calls[0]["extra_headers"] is None
+
+
 def test_moa_slot_runtime_falls_back_on_resolution_error(monkeypatch):
     """A slot whose provider can't be resolved still attempts the call with the
     bare provider/model rather than aborting the whole MoA turn."""

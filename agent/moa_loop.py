@@ -338,12 +338,32 @@ def _run_reference(
         # reference model have its own output cap independently.
         _slot_max_tokens: int | None = slot.get("max_tokens")
         _effective_max_tokens = _slot_max_tokens if _slot_max_tokens is not None else max_tokens
+        extra_headers = None
+        # Normalize provider aliases (github, github-copilot, github-models,
+        # ...) through the auxiliary client's canonical alias table so slot
+        # configs that spell Copilot differently still get the header.
+        from agent.auxiliary_client import _normalize_aux_provider
+
+        if _normalize_aux_provider(str(runtime.get("provider") or "")) in (
+            "copilot",
+            "copilot-acp",
+        ):
+            # Copilot Pro/Pro+ gates some premium chat models on request
+            # attribution. The main agent marks the first API request of a
+            # user turn as ``x-initiator: user``; MoA reference fan-out is also
+            # directly serving the user's current turn, not a background agent
+            # task, so mirror that header here. Without it, Claude/Gemini
+            # Copilot advisors can be rejected as unavailable to the
+            # ``copilot-language-server`` integrator even though standalone
+            # Copilot calls work.
+            extra_headers = {"x-initiator": "user"}
         response = call_llm(
             task="moa_reference",
             messages=messages,
             temperature=temperature,
             max_tokens=_effective_max_tokens,
             reasoning_config=_slot_reasoning_config(slot),
+            extra_headers=extra_headers,
             **runtime,
         )
         usage = CanonicalUsage()

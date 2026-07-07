@@ -117,6 +117,66 @@ class TestCustomProviderBaseUrlPassthrough:
             server.shutdown()
 
 
+class _RedirectingHandler(BaseHTTPRequestHandler):
+    """Redirects /models to another hostname and records received headers."""
+
+    redirect_host = "localhost"  # resolves to the same server, different hostname
+    received_headers: dict = {}
+
+    def do_GET(self):
+        if self.path.rstrip("/") == "/models":
+            self.send_response(302)
+            self.send_header(
+                "Location",
+                f"http://{self.redirect_host}:{self.server.server_address[1]}/redirected",
+            )
+            self.end_headers()
+        else:
+            type(self).received_headers = dict(self.headers)
+            body = json.dumps({"data": [{"id": "redirected-model"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass
+
+
+class TestFetchModelsRedirectCredentialStripping:
+    """Credential headers must not follow a redirect to a different host."""
+
+    def _run(self, redirect_host):
+        _RedirectingHandler.redirect_host = redirect_host
+        _RedirectingHandler.received_headers = {}
+        server = HTTPServer(("127.0.0.1", 0), _RedirectingHandler)
+        port = server.server_address[1]
+        Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            profile = ProviderProfile(
+                name="test",
+                base_url=f"http://127.0.0.1:{port}",
+                default_headers={"x-api-key": "default-header-secret"},
+            )
+            result = profile.fetch_models(api_key="bearer-secret")
+        finally:
+            server.shutdown()
+        headers = {k.lower(): v for k, v in _RedirectingHandler.received_headers.items()}
+        return result, headers
+
+    def test_cross_host_redirect_strips_credentials(self):
+        result, headers = self._run(redirect_host="localhost")
+        assert result == ["redirected-model"]  # fetch itself still works
+        assert "authorization" not in headers
+        assert "x-api-key" not in headers
+
+    def test_same_host_redirect_keeps_credentials(self):
+        result, headers = self._run(redirect_host="127.0.0.1")
+        assert result == ["redirected-model"]
+        assert headers.get("authorization") == "Bearer bearer-secret"
+        assert headers.get("x-api-key") == "default-header-secret"
+
+
 class TestModelPickerBaseUrlIntegration:
     """The /model picker path should pass model.base_url to fetch_models."""
 

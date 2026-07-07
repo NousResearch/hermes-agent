@@ -36,6 +36,9 @@ from hermes_cli.providers import (
 from hermes_cli.model_normalize import (
     normalize_model_for_provider,
 )
+from hermes_cli.config import (
+    resolve_custom_provider_model_alias,
+)
 from agent.models_dev import (
     ModelCapabilities,
     ModelInfo,
@@ -1318,6 +1321,17 @@ def switch_model(
     if validation.get("corrected_model"):
         new_model = validation["corrected_model"]
 
+    # --- Resolve custom provider model_aliases ---
+    # If the target provider is backed by a custom_providers entry with a
+    # model_aliases map, resolve user-facing alias names to the actual
+    # endpoint model name before the result is built.
+    if custom_providers and isinstance(custom_providers, list) and base_url:
+        _resolved = resolve_custom_provider_model_alias(
+            new_model, base_url, custom_providers=custom_providers,
+        )
+        if _resolved != new_model:
+            new_model = _resolved
+    
     # --- Copilot api_mode override ---
     if target_provider in {"copilot", "github-copilot"}:
         api_mode = copilot_model_api_mode(new_model, api_key=api_key)

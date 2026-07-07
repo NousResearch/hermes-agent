@@ -706,6 +706,12 @@
     const stateAgentTitle = useState("");
     const agentTitle = stateAgentTitle[0];
     const setAgentTitle = stateAgentTitle[1];
+    const stateCellId = useState("");
+    const cellId = stateCellId[0];
+    const setCellId = stateCellId[1];
+    const stateCellType = useState("pass");
+    const cellType = stateCellType[0];
+    const setCellType = stateCellType[1];
     const stateAdvancedJsonOpen = useState(false);
     const advancedJsonOpen = stateAdvancedJsonOpen[0];
     const setAdvancedJsonOpen = stateAdvancedJsonOpen[1];
@@ -857,6 +863,8 @@
       setPromptAssistantOpen(false);
       const rawPrompt = node ? node.prompt : undefined;
       const assistantOutput = node && node.result_contract ? jsonBlock(node.result_contract) : '{"summary":"string","status":"string"}';
+      setCellId(node && (node.id || node.name) ? String(node.id || node.name) : "");
+      setCellType(node && node.specKind === "trigger" ? String(node.trigger_type || node.type || "manual") : String((node && node.type) || "pass"));
       setAgentProfile(node && node.profile ? String(node.profile) : "");
       setAgentTitle(node && node.title ? String(node.title) : "");
       setPromptText(rawPrompt === null || rawPrompt === undefined ? "" : (typeof rawPrompt === "string" ? rawPrompt : jsonBlock(rawPrompt)));
@@ -1281,6 +1289,53 @@
       setSelectedNode(nextNode);
       setNodeJson(jsonBlock(nextNode));
       setNodeMessage("Applied agent cell prompt to workflow draft.");
+    }
+
+    function applyBasicCellForm() {
+      if (!selectedNode) return;
+      const spec = activeSpec();
+      if (!spec) {
+        setNodeMessage("Validate or select a workflow before applying cell edits; no stale workflow was used.");
+        return;
+      }
+      const nextId = cellId.trim() || selectedNode.id;
+      const nextType = cellType.trim() || (selectedNode.specKind === "trigger" ? "manual" : "pass");
+      const nextNode = Object.assign({}, selectedNode, { id: nextId, type: nextType });
+      const titleText = agentTitle.trim();
+      const promptValue = promptText.trim();
+      if (titleText) nextNode.title = titleText;
+      else delete nextNode.title;
+      if (promptValue && selectedNode.specKind !== "trigger") nextNode.prompt = promptText;
+      else delete nextNode.prompt;
+
+      if (selectedNode.specKind === "trigger") {
+        const nextSpec = cloneSpec(spec);
+        nextSpec.triggers = asArray(nextSpec.triggers).map(function (trigger) {
+          const triggerId = trigger.id || trigger.name;
+          if (triggerId !== selectedNode.id) return trigger;
+          const clean = Object.assign({}, trigger, { id: nextId, type: nextType });
+          delete clean.specKind;
+          delete clean.trigger_type;
+          if (titleText) clean.title = titleText;
+          else delete clean.title;
+          return clean;
+        });
+        updateEditorText(specToEditorText(nextSpec));
+        setDraftSpec(nextSpec);
+        setSelectedDefinition(Object.assign({}, selectedDefinition || {}, { spec: nextSpec }));
+        setSelectedNode(Object.assign({}, nextNode, { id: nextId, specKind: "trigger", trigger_type: nextType }));
+        setNodeJson(jsonBlock(Object.assign({}, nextNode, { id: nextId, trigger_type: nextType })));
+        setNodeMessage("Applied cell changes to workflow draft.");
+        return;
+      }
+
+      const nextSpec = upsertSpecNode(spec, selectedNode.id, cleanedNodeForSpec(nextNode));
+      updateEditorText(specToEditorText(nextSpec));
+      setDraftSpec(nextSpec);
+      setSelectedDefinition(Object.assign({}, selectedDefinition || {}, { spec: nextSpec }));
+      setSelectedNode(nextNode);
+      setNodeJson(jsonBlock(nextNode));
+      setNodeMessage("Applied cell changes to workflow draft.");
     }
 
     function draftPromptWithAssistant() {
@@ -1811,11 +1866,32 @@
     }
 
     function renderBasicCellEditor() {
+      const typeOptions = selectedNode && selectedNode.specKind === "trigger"
+        ? ["manual", "schedule"]
+        : ["pass", "switch", "agent_task", "wait", "parallel", "join", "fail"];
       return h("div", { className: "hermes-workflows-stack" },
         h("h3", null, "Cell editor"),
-        h("div", { className: "hermes-workflows-meta" }, "Node " + safeString(selectedNode.id)),
-        h("p", { className: "hermes-workflows-muted" }, "This node type does not have a prompt form yet. Use Advanced JSON for full node settings."),
+        h("div", { className: "hermes-workflows-meta" }, "Edit common cell settings here. Advanced JSON is optional for uncommon fields."),
+        h("label", null,
+          h("span", { className: "hermes-workflows-muted" }, "Cell id"),
+          h("input", { value: cellId, onChange: function (event) { setCellId(event.target.value); }, placeholder: "cell-id" })
+        ),
+        h("label", null,
+          h("span", { className: "hermes-workflows-muted" }, selectedNode && selectedNode.specKind === "trigger" ? "Trigger type" : "Cell type"),
+          h("select", { value: cellType, onChange: function (event) { setCellType(event.target.value); } }, typeOptions.map(function (type) {
+            return h("option", { key: type, value: type }, type);
+          }))
+        ),
+        h("label", null,
+          h("span", { className: "hermes-workflows-muted" }, "Title / description"),
+          h("input", { value: agentTitle, onChange: function (event) { setAgentTitle(event.target.value); }, placeholder: "What this cell does" })
+        ),
+        selectedNode && selectedNode.specKind === "trigger" ? null : h("label", null,
+          h("span", { className: "hermes-workflows-muted" }, "Notes or prompt"),
+          h("textarea", { className: "hermes-workflows-prompt-editor", value: promptText, onChange: function (event) { setPromptText(event.target.value); }, placeholder: "Optional plain-language instructions for this cell." })
+        ),
         h("div", { className: "hermes-workflows-row" },
+          h("button", { type: "button", onClick: applyBasicCellForm, className: "hermes-workflows-primary" }, "Apply cell changes"),
           h("button", { type: "button", onClick: function () { setAdvancedJsonOpen(!advancedJsonOpen); } }, advancedJsonOpen ? "Hide Advanced JSON" : "Advanced JSON")
         )
       );
@@ -1865,9 +1941,7 @@
                   }
                 } : undefined,
               },
-                Background ? h(Background, null) : null,
-                Controls ? h(Controls, null) : null,
-                MiniMap ? h(MiniMap, null) : null
+                Controls ? h(Controls, null) : null
               )
             )
           )

@@ -422,9 +422,9 @@
   text-align: left;
 }
 
+.hermes-workflows .react-flow__background,
 .hermes-workflows .react-flow__minimap {
-  background: rgba(5, 8, 15, 0.92) !important;
-  border: 1px solid rgba(130, 180, 255, 0.35);
+  display: none !important;
 }
 
 .hermes-workflows .hermes-workflows-canvas {

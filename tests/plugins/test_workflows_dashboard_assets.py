@@ -22,10 +22,21 @@ def test_workflow_dashboard_has_accessible_cell_editor_path() -> None:
     assert "Workflow cell list" in text
     assert "Edit cell" in text
     assert "aria-label" in text
+    assert "Edit common cell settings here" in text
+    assert "Apply cell changes" in text
+    assert "This node type does not have a prompt form yet" not in text
+
+
+def test_workflow_dashboard_hides_default_reactflow_grid_overlays() -> None:
+    text = BUNDLE.read_text(encoding="utf-8")
+    css = (ROOT / "plugins" / "workflows" / "dashboard" / "dist" / "style.css").read_text(encoding="utf-8")
+    assert "Background ? h(Background" not in text
+    assert "MiniMap ? h(MiniMap" not in text
+    assert ".react-flow__background" in css
+    assert "display: none !important" in css
 
 
 def test_workflow_dashboard_has_responsive_editor_css() -> None:
     css = (ROOT / "plugins" / "workflows" / "dashboard" / "dist" / "style.css").read_text(encoding="utf-8")
     assert "hermes-workflows-editor-layout" in css
     assert "@media" in css
-    assert "react-flow__minimap" in css or "hermes-workflows-minimap" in css

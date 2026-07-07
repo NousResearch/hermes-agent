@@ -206,7 +206,10 @@ class TestGetDisabledSkillNames:
         monkeypatch.delenv("HERMES_PLATFORM", raising=False)
         monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
 
+        from gateway.session_context import reset_session_vars
         from agent.skill_utils import get_disabled_skill_names
+
+        reset_session_vars()
         result = get_disabled_skill_names()
         assert result == {"discord-skill", "global-skill"}
 

@@ -299,7 +299,9 @@ def _build_skill_message(
         parts.append("")
         parts.append("[This skill has supporting files:]")
         for sf in supporting:
-            parts.append(f"- {sf}  ->  {skill_dir / sf}")
+            sf_display = str(sf).replace("\\", "/")
+            sf_path = skill_dir / sf
+            parts.append(f"- {sf_display}  ->  {sf_path}")
         parts.append(
             f'\nLoad any of these with skill_view(name="{skill_view_target}", '
             f'file_path="<path>"), or run scripts directly by absolute path '

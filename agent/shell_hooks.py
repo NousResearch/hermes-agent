@@ -429,6 +429,75 @@ def _parse_single_entry(
 _TOP_LEVEL_PAYLOAD_KEYS = {"tool_name", "args", "session_id", "parent_session_id"}
 
 
+def _split_windows_command(command: str) -> List[str]:
+    """Split a Windows command line without treating backslashes as escapes.
+
+    Python's POSIX ``shlex`` corrupts native paths (``C:\\tmp`` -> ``C:tmp``),
+    while ``shlex(..., posix=False)`` preserves quote characters and splits
+    ``--flag=\"C:\\Program Files\\x\"`` in the middle. Hooks only need a
+    shell-style argv split; this small parser keeps backslashes literal and uses
+    quotes solely for grouping/removal.
+    """
+    argv: List[str] = []
+    current: List[str] = []
+    in_quotes = False
+    quote_char = ""
+    for ch in command:
+        if ch in {'"', "'"}:
+            if in_quotes and ch == quote_char:
+                in_quotes = False
+                quote_char = ""
+            elif not in_quotes:
+                in_quotes = True
+                quote_char = ch
+            else:
+                current.append(ch)
+            continue
+        if ch.isspace() and not in_quotes:
+            if current:
+                argv.append("".join(current))
+                current = []
+            continue
+        current.append(ch)
+    if in_quotes:
+        raise ValueError("No closing quotation")
+    if current:
+        argv.append("".join(current))
+    return argv
+
+
+def _split_command(command: str) -> List[str]:
+    """Split a hook command while preserving native Windows paths."""
+    if os.name != "nt":
+        return shlex.split(command)
+    return _split_windows_command(command)
+
+
+def _expand_user_path(path: str) -> str:
+    if path.startswith("~"):
+        home = os.environ.get("HOME")
+        if home:
+            if path == "~":
+                return home
+            if path.startswith(("~/", "~\\")):
+                return os.path.join(home, path[2:])
+    return os.path.expanduser(path)
+
+
+def _argv_for_spawn(command: str) -> List[str]:
+    argv = [_expand_user_path(part) for part in _split_command(command)]
+    if (
+        os.name == "nt"
+        and argv
+        and argv[0].lower().endswith((".sh", ".bash"))
+    ):
+        # Windows cannot CreateProcess a shebang script directly. Git/MSYS
+        # provides ``sh.exe`` reliably in the Hermes runtime; invoking via sh
+        # mirrors what a POSIX shebang would do without shell=True.
+        return ["sh", *argv]
+    return argv
+
+
 def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     """Run ``spec.command`` as a subprocess with ``stdin_json`` on stdin.
 
@@ -448,7 +517,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         "error": None,
     }
     try:
-        argv = shlex.split(os.path.expanduser(spec.command))
+        argv = _argv_for_spawn(spec.command)
     except ValueError as exc:
         result["error"] = f"command {spec.command!r} cannot be parsed: {exc}"
         return result
@@ -813,7 +882,7 @@ def _command_script_path(command: str) -> str:
     common bare-path form.
     """
     try:
-        parts = shlex.split(command)
+        parts = _split_command(command)
     except ValueError:
         return command
     if not parts:
@@ -877,7 +946,7 @@ def script_mtime_iso(command: str) -> Optional[str]:
     if not path:
         return None
     try:
-        expanded = os.path.expanduser(path)
+        expanded = _expand_user_path(path)
         return datetime.fromtimestamp(
             os.path.getmtime(expanded), tz=timezone.utc,
         ).isoformat().replace("+00:00", "Z")
@@ -896,14 +965,18 @@ def script_is_executable(command: str) -> bool:
     path = _command_script_path(command)
     if not path:
         return False
-    expanded = os.path.expanduser(path)
+    expanded = _expand_user_path(path)
     if not os.path.isfile(expanded):
         return False
     try:
-        argv = shlex.split(command)
+        argv = _split_command(command)
     except ValueError:
         return False
     is_bare_invocation = bool(argv) and argv[0] == path
+    if os.name == "nt" and is_bare_invocation and expanded.lower().endswith((".py", ".pyw")):
+        return False
+    if os.name == "nt" and is_bare_invocation and expanded.lower().endswith((".sh", ".bash")):
+        return os.access(expanded, os.R_OK)
     required = os.X_OK if is_bare_invocation else os.R_OK
     return os.access(expanded, required)
 

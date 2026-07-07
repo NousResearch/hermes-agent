@@ -9,6 +9,7 @@ covered in ``test_shell_hooks_consent.py``.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -356,10 +357,11 @@ class TestCallbackSubprocess:
     def test_matcher_regex_filters_callback(self, tmp_path, monkeypatch):
         """A matcher set to 'terminal' must not fire for 'web_search'."""
         calls = tmp_path / "calls.log"
+        calls_for_sh = calls.as_posix()
         script = _write_script(
             tmp_path, "log.sh",
             f"#!/usr/bin/env bash\n"
-            f"echo \"$(cat -)\" >> {calls}\n"
+            f"echo \"$(cat -)\" >> {calls_for_sh}\n"
             f"printf '{{}}\\n'\n",
         )
         spec = shell_hooks.ShellHookSpec(
@@ -377,9 +379,10 @@ class TestCallbackSubprocess:
 
     def test_payload_schema_delivered(self, tmp_path):
         capture = tmp_path / "payload.json"
+        capture_for_sh = capture.as_posix()
         script = _write_script(
             tmp_path, "capture.sh",
-            f"#!/usr/bin/env bash\ncat - > {capture}\nprintf '{{}}\\n'\n",
+            f"#!/usr/bin/env bash\ncat - > {capture_for_sh}\nprintf '{{}}\\n'\n",
         )
         spec = shell_hooks.ShellHookSpec(
             event="pre_tool_call", command=str(script),
@@ -431,6 +434,20 @@ class TestCallbackSubprocess:
         cb = shell_hooks._make_callback(spec)
         # No crash = shlex parsed it correctly.
         assert cb(tool_name="terminal") is None  # empty object parses to None
+
+    def test_windows_bare_shell_script_with_args_routes_through_sh(self, monkeypatch):
+        monkeypatch.setattr(shell_hooks.os, "name", "nt", raising=False)
+
+        argv = shell_hooks._argv_for_spawn(r'"C:\tmp\hook.sh" --flag x')
+
+        assert argv == ["sh", r"C:\tmp\hook.sh", "--flag", "x"]
+
+    def test_windows_split_preserves_quoted_path_in_flag_value(self, monkeypatch):
+        monkeypatch.setattr(shell_hooks.os, "name", "nt", raising=False)
+
+        argv = shell_hooks._argv_for_spawn(r'hook.exe --config="C:\Program Files\Hermes\cfg.json"')
+
+        assert argv == ["hook.exe", r"--config=C:\Program Files\Hermes\cfg.json"]
 
     def test_missing_binary_logged_not_raised(self, tmp_path):
         spec = shell_hooks.ShellHookSpec(
@@ -693,9 +710,12 @@ class TestAllowlistConcurrency:
         # Bare invocation on the same non-X_OK file: not runnable.
         assert not shell_hooks.script_is_executable(str(script))
 
-        # Flip +x; bare invocation is now runnable too.
+        # Flip +x; bare invocation is now runnable too on platforms that
+        # preserve executable mode bits. Windows cannot run a bare .py script
+        # via CreateProcess even after chmod, so the doctor check should keep
+        # reporting it as not directly executable there.
         script.chmod(0o755)
-        assert shell_hooks.script_is_executable(str(script))
+        assert shell_hooks.script_is_executable(str(script)) is (os.name != "nt")
 
     def test_command_script_path_resolution(self):
         """Regression: ``_command_script_path`` used to return the first

@@ -1,6 +1,7 @@
 """Shared SKILL.md preprocessing helpers."""
 
 import logging
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -62,45 +63,100 @@ def substitute_template_vars(
     return _SKILL_TEMPLATE_RE.sub(_replace, content)
 
 
+def _shell_candidates() -> list[str]:
+    """Return shell executables to try for inline snippets.
+
+    Windows may expose a broken WSL ``bash.exe`` ahead of Git Bash in clean
+    subprocess environments. Trying ``sh`` as a fallback keeps simple POSIX
+    snippets working when ``bash`` only prints the WSL relay error.
+    """
+    if os.name == "nt":
+        return ["bash", "sh"]
+    return ["bash"]
+
+
+def _normalize_inline_shell_output(output: str, cwd: Path | None) -> str:
+    """Normalize shell cwd echoes back to the native skill directory path."""
+    if not output or not cwd:
+        return output
+    native_cwd = str(cwd)
+    aliases = {native_cwd, native_cwd.replace("\\", "/")}
+    try:
+        resolved = str(cwd.resolve())
+        aliases.add(resolved)
+        aliases.add(resolved.replace("\\", "/"))
+    except Exception:
+        pass
+    try:
+        _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
+        cyg = subprocess.run(
+            ["sh", "-c", "pwd"],
+            cwd=native_cwd,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            **_popen_kwargs,
+        )
+        if cyg.stdout:
+            aliases.add(cyg.stdout.strip())
+    except Exception:
+        pass
+    for alias in sorted((a for a in aliases if a), key=len, reverse=True):
+        output = output.replace(alias, native_cwd)
+    return output
+
+
 def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     """Execute a single inline-shell snippet and return its stdout (trimmed).
 
     Failures return a short ``[inline-shell error: ...]`` marker instead of
     raising, so one bad snippet can't wreck the whole skill message.
     """
+    last_error = "bash not found"
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
-    try:
-        completed = subprocess.run(
-            ["bash", "-c", command],
-            cwd=str(cwd) if cwd else None,
-            capture_output=True,
-            text=True,
-            timeout=max(1, int(timeout)),
-            check=False,
-            stdin=subprocess.DEVNULL,
-            **_popen_kwargs,
-        )
-    except subprocess.TimeoutExpired:
-        return f"[inline-shell timeout after {timeout}s: {command}]"
-    except FileNotFoundError:
-        return "[inline-shell error: bash not found]"
-    except RuntimeError as exc:
-        # tests/conftest.py installs a live-system guard that blocks real
-        # os.kill on out-of-tree PIDs. subprocess.run(timeout=...) may trip
-        # that guard while trying to clean up the timed-out shell; treat that
-        # as the same timeout outcome instead of surfacing the guard error.
-        if "live-system guard: blocked os.kill" in str(exc):
+    for shell in _shell_candidates():
+        try:
+            completed = subprocess.run(
+                [shell, "-c", command],
+                cwd=str(cwd) if cwd else None,
+                capture_output=True,
+                text=True,
+                timeout=max(1, int(timeout)),
+                check=False,
+                stdin=subprocess.DEVNULL,
+                **_popen_kwargs,
+            )
+        except subprocess.TimeoutExpired:
             return f"[inline-shell timeout after {timeout}s: {command}]"
-        return f"[inline-shell error: {exc}]"
-    except Exception as exc:
-        return f"[inline-shell error: {exc}]"
+        except FileNotFoundError:
+            last_error = f"{shell} not found"
+            continue
+        except RuntimeError as exc:
+            # tests/conftest.py installs a live-system guard that blocks real
+            # os.kill on out-of-tree PIDs. subprocess.run(timeout=...) may trip
+            # that guard while trying to clean up the timed-out shell; treat it
+            # as the same timeout outcome instead of surfacing the guard error.
+            if "live-system guard: blocked os.kill" in str(exc):
+                return f"[inline-shell timeout after {timeout}s: {command}]"
+            return f"[inline-shell error: {exc}]"
+        except Exception as exc:
+            return f"[inline-shell error: {exc}]"
 
-    output = (completed.stdout or "").rstrip("\n")
-    if not output and completed.stderr:
-        output = completed.stderr.rstrip("\n")
-    if len(output) > _INLINE_SHELL_MAX_OUTPUT:
-        output = output[:_INLINE_SHELL_MAX_OUTPUT] + "...[truncated]"
-    return output
+        output = (completed.stdout or "").rstrip("\n")
+        stderr = (completed.stderr or "").rstrip("\n")
+        combined = "\n".join(part for part in (output, stderr) if part)
+        if completed.returncode != 0 and "execvpe(/bin/bash) failed" in combined:
+            last_error = combined
+            continue
+        if not output and stderr:
+            output = stderr
+        output = _normalize_inline_shell_output(output, cwd)
+        if len(output) > _INLINE_SHELL_MAX_OUTPUT:
+            output = output[:_INLINE_SHELL_MAX_OUTPUT] + "...[truncated]"
+        return output
+    return f"[inline-shell error: {last_error}]"
 
 
 def expand_inline_shell(

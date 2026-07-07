@@ -1782,7 +1782,14 @@ def _get_platform_tools(
         # toolset whose authored tools the composite does list.
         ts_tools = set(resolve_toolset(ts_key, include_registry=False))
         if not ts_tools or not ts_tools.issubset(platform_tool_universe):
-            continue
+            # Kanban tools are not in any platform composite — they are gated
+            # on HERMES_KANBAN_TASK via check_fn in tools/kanban_tools.py.
+            # Recover them for CLI workers (e.g. kanban dispatcher spawning an
+            # agent worker) so the worker gets the kanban_* tool surface.
+            if ts_key == "kanban" and os.environ.get("HERMES_KANBAN_TASK"):
+                pass  # falls through to the claimed check below
+            else:
+                continue
         if ts_tools.issubset(configurable_tool_universe):
             continue
         if not ts_tools.issubset(claimed):

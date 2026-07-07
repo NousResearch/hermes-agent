@@ -30,10 +30,12 @@ from __future__ import annotations
 
 import copy
 import inspect
+import json
 import logging
 import math
 import os
 import tempfile
+import time
 import uuid
 import threading
 from datetime import datetime
@@ -171,6 +173,43 @@ def _session_was_rotated_by_compression(session_db: Any, session_id: str) -> boo
         and session.get("ended_at") is not None
         and session.get("end_reason") == "compression"
     )
+
+
+def _emit_compression_attempt_telemetry(
+    agent: Any,
+    *,
+    started_at: float,
+    commit_status: str,
+    split_status: str,
+    failure_class: str | None = None,
+) -> None:
+    """Emit one content-free JSON log line for a compression attempt."""
+    try:
+        telemetry = getattr(agent.context_compressor, "_last_compression_telemetry", None)
+        if not isinstance(telemetry, dict):
+            telemetry = {}
+        payload = dict(telemetry)
+        payload.setdefault("event", "compression_attempt")
+        payload.setdefault("attempt_id", getattr(agent, "_compression_attempt_id", "") or uuid.uuid4().hex)
+        payload.setdefault("session_id", getattr(agent, "session_id", "") or "")
+        payload["total_duration_ms"] = int((time.monotonic() - started_at) * 1000)
+        payload["commit_status"] = commit_status
+        payload["split_status"] = split_status
+        if failure_class:
+            payload["failure_class"] = failure_class
+        payload.setdefault("chunking", False)
+        payload.setdefault("chunk_count", 0)
+        payload["fallback_used"] = bool(
+            payload.get("fallback_used")
+            or getattr(agent.context_compressor, "_last_summary_fallback_used", False)
+            or getattr(agent.context_compressor, "_last_aux_model_failure_model", None)
+        )
+        logger.info(
+            "context compression attempt telemetry: %s",
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        )
+    except Exception as exc:
+        logger.debug("failed to emit compression attempt telemetry: %s", exc)
 
 
 def _compression_lock_holder(agent: Any) -> str:
@@ -904,6 +943,19 @@ def compress_context(
     ):
         raise RuntimeError("a compression notification is already pending")
 
+    _attempt_started_at = time.monotonic()
+    _attempt_id = uuid.uuid4().hex
+    _trigger_source = "manual" if force else "auto"
+    try:
+        agent._compression_attempt_id = _attempt_id
+        setattr(agent.context_compressor, "_compression_telemetry_seed", {
+            "attempt_id": _attempt_id,
+            "session_id": agent.session_id or "",
+            "trigger_source": _trigger_source,
+        })
+    except Exception:
+        pass
+
     # Codex app-server sessions: the codex agent owns the real thread context;
     # Hermes' summarizer would only rewrite a local mirror without shrinking
     # the actual thread (#36801). Route compaction to the app server's own
@@ -1110,6 +1162,18 @@ def compress_context(
             _existing_sp = getattr(agent, "_cached_system_prompt", None)
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)
+            try:
+                if hasattr(agent.context_compressor, "_begin_compression_telemetry"):
+                    agent.context_compressor._begin_compression_telemetry(current_tokens=approx_tokens)
+            except Exception:
+                pass
+            _emit_compression_attempt_telemetry(
+                agent,
+                started_at=_attempt_started_at,
+                commit_status="aborted",
+                split_status="aborted",
+                failure_class="lock_contended",
+            )
             return messages, _existing_sp
     _lock_released = False
 
@@ -1235,7 +1299,7 @@ def compress_context(
         messages_before_compression = copy.deepcopy(messages)
         _activity_heartbeat = _CompressionActivityHeartbeat(agent).start()
         compressed = compress_fn(messages, **compress_kwargs)
-    except BaseException:
+    except BaseException as _compress_exc:
         # ANY exception after lock acquisition — memory hook, capability
         # inspection, engine lookup, or compress() — must release the lock so
         # the session isn't permanently blocked from future compression.
@@ -1243,6 +1307,13 @@ def compress_context(
             _activity_heartbeat.stop("context compression failed")
             _activity_heartbeat = None
         _release_lock()
+        _emit_compression_attempt_telemetry(
+            agent,
+            started_at=_attempt_started_at,
+            commit_status="aborted",
+            split_status="aborted",
+            failure_class=f"exception:{type(_compress_exc).__name__}",
+        )
         raise
     finally:
         if _activity_heartbeat is not None:
@@ -1278,6 +1349,16 @@ def compress_context(
                 _existing_sp = getattr(agent, "_cached_system_prompt", None)
                 if not _existing_sp:
                     _existing_sp = agent._build_system_prompt(system_message)
+                _emit_compression_attempt_telemetry(
+                    agent,
+                    started_at=_attempt_started_at,
+                    commit_status="aborted",
+                    split_status="aborted",
+                    failure_class=(
+                        getattr(agent.context_compressor, "_last_summary_error", None)
+                        and "summary_generation_aborted"
+                    ),
+                )
                 return messages, _existing_sp
             finally:
                 _release_lock()
@@ -1296,6 +1377,13 @@ def compress_context(
             _existing_sp = getattr(agent, "_cached_system_prompt", None)
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)
+            _emit_compression_attempt_telemetry(
+                agent,
+                started_at=_attempt_started_at,
+                commit_status="aborted",
+                split_status="aborted",
+                failure_class="no_progress",
+            )
             _release_lock()
             return messages, _existing_sp
 
@@ -1377,7 +1465,9 @@ def compress_context(
             agent._cached_system_prompt = new_system_prompt
 
         _session_commit_succeeded = False
+        split_status = "not_applicable"
         if agent._session_db:
+            split_status = "pending"
             try:
                 # Trigger memory extraction on the current session before the
                 # transcript is rewritten (runs in BOTH modes — the logical
@@ -1405,6 +1495,7 @@ def compress_context(
                     # WITHOUT destroying history, unlike a hard replace_messages).
                     # See #38763.
                     agent._session_db.archive_and_compact(agent.session_id, compressed)
+                    split_status = "in_place_committed"
                     # Reset the flush identity set so the next turn's appends are
                     # diffed against the COMPACTED transcript: the compacted dicts
                     # are passed as conversation_history next turn and skipped by
@@ -1521,6 +1612,7 @@ def compress_context(
                         agent._session_db_created = True
                         raise
                     agent._session_db_created = True
+                    split_status = "rotated_committed"
                     # Carry a persistent /goal onto the continuation session.
                     # Compression mints a fresh child id; load_goal does a flat
                     # per-session lookup with no parent walk, so without this an
@@ -1559,6 +1651,7 @@ def compress_context(
                     }
                 _session_commit_succeeded = True
             except Exception as e:
+                split_status = "aborted" if locals().get("old_session_id") is None and not in_place else "failed_not_indexed"
                 # If the rotation rolled back to the parent (orphan-avoidance
                 # above), agent.session_id is the still-indexed parent and
                 # old_session_id was cleared — so this is recovery, not an
@@ -1700,6 +1793,18 @@ def compress_context(
             "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",
             agent.session_id or "none", _pre_msg_count, len(compressed),
             f"{_compressed_est:,}",
+        )
+        _commit_status = "committed" if split_status in {"not_applicable", "in_place_committed", "rotated_committed"} else "aborted"
+        _emit_compression_attempt_telemetry(
+            agent,
+            started_at=_attempt_started_at,
+            commit_status=_commit_status,
+            split_status=split_status,
+            failure_class=(
+                "session_split_failed"
+                if split_status in {"failed_not_indexed", "aborted"}
+                else None
+            ),
         )
         return compressed, new_system_prompt
     finally:

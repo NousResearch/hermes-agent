@@ -1788,6 +1788,33 @@ def test_definition_validate_and_deploy_reject_unsupported_primitives(client, pa
     assert "unsupported node type: send_message on node start" in str(response.json()["detail"])
 
 
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/plugins/workflows/definitions/validate", "x" * 1_100_000),
+        ("/api/plugins/workflows/definitions/deploy", "x" * 1_100_000),
+        ("/api/plugins/workflows/definitions/dashboard_demo/run", "x" * 1_100_000),
+        ("/api/plugins/workflows/definitions/draft", {"goal": "x" * 1_100_000}),
+        (
+            "/api/plugins/workflows/definitions/refine",
+            {"instruction": "x" * 1_100_000, "spec": PASS_SPEC},
+        ),
+    ],
+)
+def test_workflow_plugin_rejects_oversized_bodies(client, path, payload):
+    if isinstance(payload, str):
+        response = client.post(
+            path,
+            content=payload,
+            headers={"content-type": "application/x-yaml"},
+        )
+    else:
+        response = client.post(path, json=payload)
+
+    assert response.status_code == 413
+    assert response.json()["detail"]["code"] == "workflow_request_too_large"
+
+
 def test_deploy_endpoint_returns_deployed_version_not_latest(client):
     workflow_id = "dashboard_deploy_version_demo"
 

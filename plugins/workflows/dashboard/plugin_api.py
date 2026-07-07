@@ -26,6 +26,7 @@ from utils import is_truthy_value
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+MAX_WORKFLOW_REQUEST_BYTES = 1_000_000
 
 
 @contextlib.contextmanager
@@ -55,6 +56,16 @@ def _http_500(message: str = "workflow assistant failed") -> HTTPException:
     return HTTPException(status_code=500, detail=message)
 
 
+def _http_413() -> HTTPException:
+    return HTTPException(
+        status_code=413,
+        detail={
+            "code": "workflow_request_too_large",
+            "message": f"Workflow request body must be <= {MAX_WORKFLOW_REQUEST_BYTES} bytes.",
+        },
+    )
+
+
 def _assistant_validation_http() -> HTTPException:
     return HTTPException(
         status_code=400,
@@ -78,7 +89,18 @@ def _assistant_runtime_http() -> HTTPException:
 
 
 async def _read_body(request: Request) -> Any:
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_WORKFLOW_REQUEST_BYTES:
+                raise _http_413()
+        except HTTPException:
+            raise
+        except ValueError:
+            pass
     raw = await request.body()
+    if len(raw) > MAX_WORKFLOW_REQUEST_BYTES:
+        raise _http_413()
     if not raw or not raw.strip():
         return {}
     text = raw.decode("utf-8")
@@ -322,8 +344,9 @@ def workflow_status() -> dict[str, Any]:
 
 
 @router.post("/definitions/draft")
-def draft_definition(req: WorkflowDraftRequest) -> dict[str, Any]:
+async def draft_definition(request: Request) -> dict[str, Any]:
     try:
+        req = WorkflowDraftRequest.model_validate(await _read_body(request))
         result = workflows_assistant.draft_workflow_with_default_runner(req.goal)
     except HTTPException:
         raise
@@ -339,8 +362,9 @@ def draft_definition(req: WorkflowDraftRequest) -> dict[str, Any]:
 
 
 @router.post("/definitions/refine")
-def refine_definition(req: WorkflowRefineRequest) -> dict[str, Any]:
+async def refine_definition(request: Request) -> dict[str, Any]:
     try:
+        req = WorkflowRefineRequest.model_validate(await _read_body(request))
         if req.spec is not None:
             spec = WorkflowSpec.model_validate(req.spec)
             validate_graph(spec)

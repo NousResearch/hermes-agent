@@ -1761,8 +1761,10 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    _prefix_within_utf16_limit,
     _reply_anchor_for_event,
     merge_pending_message_event,
+    utf16_len,
 )
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -13328,12 +13330,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
     def _sanitize_discord_thread_title(self, title: str) -> str:
-        """Return a Discord-safe semantic thread title from a session title."""
+        """Return a Discord-safe semantic thread title from a session title.
+
+        Discord thread names are capped at 100 characters measured in UTF-16
+        code units (emoji count double), so truncate with the UTF-16 helpers
+        rather than Python code-point slices.
+        """
         cleaned = re.sub(r"\s+", " ", str(title or "")).strip()
         if not cleaned:
             return "Hermes Chat"
-        if len(cleaned) > 80:
-            cleaned = cleaned[:77].rstrip() + "..."
+        if utf16_len(cleaned) > 80:
+            cleaned = _prefix_within_utf16_limit(cleaned, 77).rstrip() + "..."
         return cleaned
 
     async def _rename_discord_auto_thread_for_session_title(

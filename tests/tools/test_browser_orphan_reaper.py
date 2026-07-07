@@ -182,16 +182,16 @@ class TestReapOrphanedBrowserSessions:
 
 
 class TestOrphanedChromiumCleanup:
-    """Tests for _kill_orphaned_chromium_for_session() — kills Chromium
+    """Tests for _kill_orphaned_chromium_processes() — kills Chromium
     processes left behind when the agent-browser daemon dies before cleanup.
 
     When the daemon (Node process) crashes or is SIGKILLed, its Chromium
     children are reparented to PID 1 and the normal tree-kill path (which
     walks children of the daemon PID) never reaches them.  The reaper
     discovers the dead daemon PID, removes the socket dir, and calls
-    _kill_orphaned_chromium_for_session to scan for surviving Chromium
-    processes by matching the ``agent-browser-chrome-`` pattern in their
-    command line.
+    _kill_orphaned_chromium_processes to scan for surviving orphaned
+    Chromium processes by matching PPID == 1 + the ``agent-browser-chrome-``
+    cmdline pattern.
     """
 
     def test_dead_daemon_triggers_chromium_scan(self, fake_tmpdir):
@@ -202,16 +202,16 @@ class TestOrphanedChromiumCleanup:
 
         chromium_killed = []
 
-        def mock_kill_chromium(socket_dir, session_name):
-            chromium_killed.append((socket_dir, session_name))
+        def mock_kill_chromium(session_name):
+            chromium_killed.append(session_name)
             return 0
 
-        with patch("tools.browser_tool._kill_orphaned_chromium_for_session",
+        with patch("tools.browser_tool._kill_orphaned_chromium_processes",
                     side_effect=mock_kill_chromium):
             _reap_orphaned_browser_sessions()
 
         assert len(chromium_killed) == 1
-        assert chromium_killed[0][1] == "h_dead123456"
+        assert chromium_killed[0] == "h_dead123456"
         assert not d.exists()
 
     def test_alive_daemon_does_not_trigger_chromium_scan(self, fake_tmpdir):
@@ -223,33 +223,29 @@ class TestOrphanedChromiumCleanup:
 
         chromium_killed = []
 
-        def mock_kill_chromium(socket_dir, session_name):
+        def mock_kill_chromium(session_name):
             chromium_killed.append(session_name)
             return 0
 
         with patch("gateway.status._pid_exists", return_value=True), \
              patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
              patch("tools.process_registry.ProcessRegistry._terminate_host_pid"), \
-             patch("tools.browser_tool._kill_orphaned_chromium_for_session",
+             patch("tools.browser_tool._kill_orphaned_chromium_processes",
                    side_effect=mock_kill_chromium):
             _reap_orphaned_browser_sessions()
 
         assert len(chromium_killed) == 0
 
-    def test_only_reparented_chromium_is_killed(self, fake_tmpdir):
-        """_kill_orphaned_chromium_for_session only kills Chromium whose
-        PPID==1 (reparented to init = true orphan), NOT Chromium whose
-        parent is a still-running daemon (live session).
+    def test_kill_orphaned_chromium_skips_non_orphan_active_session(self, fake_tmpdir):
+        """_kill_orphaned_chromium_processes only kills Chromium whose PPID
+        is 1 (reparented to init = true orphan).  It must NOT kill:
 
-        Regression test for the cross-session kill issue raised in review:
-        without the PPID check, the function would terminate Chromium
-        belonging to *other* live agent-browser sessions.
+        - Chromium whose parent is a still-running daemon (active session)
+        - Non-agent-browser Chromium (user-installed Chrome, even if PPID=1)
         """
-        from tools.browser_tool import _kill_orphaned_chromium_for_session
+        from tools.browser_tool import _kill_orphaned_chromium_processes
 
-        # Simulate two Chromium processes:
-        #  - orphan_proc: PPID=1 (daemon died, reparented to init) → should kill
-        #  - live_proc:   PPID=99999 (daemon alive) → must NOT kill
+        # 1. orphaned agent-browser Chromium (PPID=1) → should terminate
         orphan_proc = MagicMock()
         orphan_proc.info = {
             "pid": 2001, "name": "chrome", "cmdline": [
@@ -257,12 +253,20 @@ class TestOrphanedChromiumCleanup:
                 "--user-data-dir=/tmp/agent-browser-chrome-aaaa1111",
             ], "ppid": 1,
         }
+        # 2. active session Chromium (PPID=daemon) → must NOT terminate
         live_proc = MagicMock()
         live_proc.info = {
             "pid": 2002, "name": "chrome", "cmdline": [
                 "/usr/bin/chromium", "--headless",
                 "--user-data-dir=/tmp/agent-browser-chrome-bbbb2222",
             ], "ppid": 99999,
+        }
+        # 3. user-installed Chrome (PPID=1 but no agent-browser pattern) → must NOT terminate
+        user_chrome = MagicMock()
+        user_chrome.info = {
+            "pid": 2003, "name": "chrome", "cmdline": [
+                "/usr/bin/google-chrome", "--user-data-dir=/home/user/.config/chrome",
+            ], "ppid": 1,
         }
 
         terminated_pids = []
@@ -271,15 +275,18 @@ class TestOrphanedChromiumCleanup:
             terminated_pids.append(orphan_proc.info["pid"])
 
         orphan_proc.terminate = fake_terminate
-        live_proc.terminate = MagicMock()  # should never be called
+        live_proc.terminate = MagicMock()
+        user_chrome.terminate = MagicMock()
 
-        with patch("psutil.process_iter", return_value=[orphan_proc, live_proc]), \
+        with patch("psutil.process_iter",
+                   return_value=[orphan_proc, live_proc, user_chrome]), \
              patch("psutil.wait_procs", return_value=([], [])):
-            result = _kill_orphaned_chromium_for_session("/tmp/fake", "h_test1234")
+            result = _kill_orphaned_chromium_processes("h_test1234")
 
         assert result == 1  # only the orphan was killed
         assert 2001 in terminated_pids
         live_proc.terminate.assert_not_called()
+        user_chrome.terminate.assert_not_called()
 
 
 class TestOwnerPidCrossProcess:

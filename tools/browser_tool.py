@@ -1626,7 +1626,7 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
     return True
 
 
-def _kill_orphaned_chromium_for_session(socket_dir: str, session_name: str) -> int:
+def _kill_orphaned_chromium_processes(session_name: str) -> int:
     """Kill Chromium processes orphaned by a dead agent-browser daemon.
 
     When the agent-browser daemon (a Node process) dies before its owner
@@ -1636,19 +1636,24 @@ def _kill_orphaned_chromium_for_session(socket_dir: str, session_name: str) -> i
     process, so the reaper's normal tree-kill path (which walks children of
     the *daemon* PID) never reaches them.
 
-    This function scans running processes for Chromium instances whose
-    ``--user-data-dir`` command-line argument references the
-    ``agent-browser-chrome-*`` pattern that agent-browser assigns to its
-    spawned Chromium, **and whose parent PID is 1** (init — meaning the
-    daemon that spawned them is gone and they were reparented).  This
-    prevents killing Chromium instances belonging to *other* live
-    agent-browser sessions, whose parent PID is still the alive daemon.
+    We cannot map Chromium's ``--user-data-dir`` UUID back to a specific
+    session's socket directory, so this function targets **all** orphaned
+    agent-browser Chromium processes (PPID == 1 + ``agent-browser-chrome-``
+    cmdline pattern), not just those from ``session_name``.  This is safe
+    because any agent-browser Chromium with PPID 1 is a true orphan whose
+    daemon is gone — leaving it running is the same resource leak this fix
+    addresses.  Active sessions are unaffected: their Chromium still has
+    the live daemon as parent (PPID != 1).
 
     Security: the ``agent-browser-chrome-`` prefix is specific to
     agent-browser-spawned Chromium and distinct from user-installed
     Chrome/Chromium.  The PPID==1 check ensures we only kill true orphans,
     not Chromium children of a still-running daemon.  Same-user only
     (psutil can only signal same-user processes).
+
+    Args:
+        session_name: Used for logging context only; the actual kill
+            criteria are orphaned parent + agent-browser cmdline pattern.
 
     Returns the number of Chromium processes killed.
     """
@@ -1797,15 +1802,13 @@ def _reap_orphaned_browser_sessions():
         # is NOT a no-op — use the handle-based existence check.
         from gateway.status import _pid_exists
         if not _pid_exists(daemon_pid):
-            # The daemon (Node process) is gone, but it may have left behind
-            # orphaned Chromium child processes.  When the daemon dies
-            # unexpectedly (SIGKILL, crash, OOM), Chromium processes are
-            # reparented to PID 1 and the tree-kill path below never runs.
-            # Scan for Chromium processes whose --user-data-dir references
-            # this session's socket directory and terminate them before
-            # cleaning up the socket dir.  See issue: orphaned Chrome
-            # processes accumulate ~20% CPU / ~14 GB RAM over 10 days.
-            _kill_orphaned_chromium_for_session(socket_dir, session_name)
+            # The daemon is gone, but it may have left behind Chromium children.
+            # Once the daemon dies unexpectedly, those Chromium processes are
+            # reparented to PID 1.  We cannot map Chromium's --user-data-dir UUID
+            # back to this socket directory, so only terminate agent-browser
+            # Chromium processes that are already orphaned.  Active sessions still
+            # have a live daemon parent and are skipped.
+            _kill_orphaned_chromium_processes(session_name)
             shutil.rmtree(socket_dir, ignore_errors=True)
             continue
 

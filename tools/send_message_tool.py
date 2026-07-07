@@ -516,6 +516,16 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
+    if platform_name == "wecom":
+        # WeCom native IDs: user ID starts with "wo" (open_userid), group/room
+        # ID starts with "wr" (open_chatid). Both are opaque tokens made of
+        # letters/digits/underscore, typically 30-40 chars. Treat them as
+        # explicit so `wecom:wrXXXX` routes to the group instead of falling
+        # through to resolve_channel_name (which then loops back to the
+        # home DM channel — bug #wecom-group-route, 2026-07-07).
+        trimmed = target_ref.strip()
+        if trimmed and (trimmed.startswith("wr") or trimmed.startswith("wo") or trimmed.startswith("wm")):
+            return trimmed, None, True
     if platform_name == "yuanbao":
         match = _YUANBAO_TARGET_RE.fullmatch(target_ref)
         if match:

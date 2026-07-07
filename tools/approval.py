@@ -11,6 +11,7 @@ This module is the single source of truth for the dangerous command system:
 import contextvars
 import fnmatch
 import functools
+import hashlib
 import logging
 import os
 import re
@@ -1995,6 +1996,302 @@ def _smart_approve(command: str, description: str) -> str:
         return "escalate"
 
 
+def _run_approval_gate(
+    *,
+    pattern_key: str,
+    description: str,
+    display_target: str,
+    approval_callback=None,
+    cron_deny_message: str,
+    autoapprove_log_prefix: str,
+    fail_closed_when_no_human: bool = False,
+    no_human_block_message: str = "",
+) -> dict:
+    """Shared human-approval gate for a flagged action (command or tool).
+
+    This is the single decision core reused by both
+    :func:`check_dangerous_command` (dangerous shell patterns) and
+    :func:`request_tool_approval` (plugin ``pre_tool_call`` ``approve``
+    escalations). Extracting it keeps the fail-closed / cron / gateway /
+    persist policy in ONE place so the two entry points can never drift.
+
+    Ordering mirrors the historical ``check_dangerous_command`` tail:
+    yolo bypass → session-cache short-circuit → interactive/gateway/cron
+    branch → prompt → ``deny/session/always`` persistence. The caller is
+    responsible for the checks that are specific to its input shape
+    (hardline detection, command-string permanent allowlist, dangerous-
+    pattern detection) BEFORE calling this gate.
+
+    Args:
+        pattern_key: Allowlist/session key this decision is stored under.
+        description: Human-facing reason shown in the prompt.
+        display_target: The command string or synthetic tool label shown
+            to the user (redacted by ``prompt_dangerous_approval``).
+        approval_callback: Optional CLI prompt callback. When ``None`` the
+            per-thread callback registered via
+            ``tools.terminal_tool.set_approval_callback`` is used.
+        cron_deny_message: Message returned when a cron job hits this gate
+            under ``cron_mode: deny``.
+        autoapprove_log_prefix: Log line prefix for the non-interactive
+            auto-approve warning (identifies command vs plugin origin).
+        fail_closed_when_no_human: When True, a non-interactive non-gateway
+            context that is NOT a cron session (e.g. a bare script with
+            HERMES_INTERACTIVE unset) BLOCKS instead of auto-approving. The
+            dangerous-command path keeps its historical fail-open default
+            (False); the plugin-escalation path opts in to fail-closed so a
+            plugin-flagged action never runs ungated without a human.
+        no_human_block_message: Message returned when
+            ``fail_closed_when_no_human`` blocks.
+
+    Returns:
+        ``{"approved": bool, "message": str|None, ...}`` — shape shared with
+        ``check_dangerous_command`` so all callers handle it uniformly.
+    """
+    # --yolo bypasses all approval prompts (session- or process-scoped).
+    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
+        return {"approved": True, "message": None}
+
+    session_key = get_current_session_key()
+    if is_approved(session_key, pattern_key):
+        return {"approved": True, "message": None}
+
+    if approval_callback is None:
+        try:
+            from tools.terminal_tool import _get_approval_callback
+            approval_callback = _get_approval_callback()
+        except Exception:
+            approval_callback = None
+
+    is_cli = _is_interactive_cli()
+    is_gateway = _is_gateway_approval_context()
+
+    if not is_cli and not is_gateway:
+        # Cron sessions: respect cron_mode config
+        if env_var_enabled("HERMES_CRON_SESSION"):
+            if _get_cron_approval_mode() == "deny":
+                return {
+                    "approved": False,
+                    "message": cron_deny_message,
+                    "pattern_key": pattern_key,
+                    "description": description,
+                }
+            # cron_mode: approve — fall through to auto-approve below.
+        elif fail_closed_when_no_human:
+            # Non-cron, non-interactive, no gateway: no human can answer.
+            # The plugin-escalation path opts in to fail-closed here so a
+            # plugin-flagged action never runs ungated. (The dangerous-
+            # command path keeps the historical fail-open default.)
+            logger.warning(
+                "%s (pattern: %s): %s — no interactive user/gateway present; "
+                "BLOCKED (fail-closed). Set HERMES_INTERACTIVE or "
+                "HERMES_GATEWAY_SESSION to answer the prompt.",
+                autoapprove_log_prefix, pattern_key, description,
+            )
+            return {
+                "approved": False,
+                "message": no_human_block_message or (
+                    f"BLOCKED: approval required ({description}) but no "
+                    "interactive user or gateway is present to approve it."
+                ),
+                "pattern_key": pattern_key,
+                "description": description,
+            }
+        logger.warning(
+            "%s (pattern: %s): %s — set HERMES_INTERACTIVE or "
+            "HERMES_GATEWAY_SESSION to require approval.",
+            autoapprove_log_prefix, pattern_key, description,
+        )
+        return {"approved": True, "message": None}
+
+    if is_gateway or env_var_enabled("HERMES_EXEC_ASK"):
+        # Fix: use _await_gateway_decision (which fires the notify callback
+        # and blocks for user response) instead of submit_pending (which
+        # silently stores but never notifies the user on desktop/gateway).
+        # This makes plugin-triggered approvals visible to the user over
+        # the bridge, resolving #59201.
+        notify_cb = _gateway_notify_cbs.get(session_key)
+        if notify_cb is not None:
+            approval_data = {
+                "command": display_target,
+                "pattern_key": pattern_key,
+                "description": description,
+            }
+            decision = _await_gateway_decision(
+                session_key, notify_cb, approval_data, surface="gateway"
+            )
+            if decision.get("notify_failed"):
+                return {
+                    "approved": False,
+                    "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
+                    "pattern_key": pattern_key,
+                    "description": description,
+                }
+            resolved = decision["resolved"]
+            choice = decision["choice"]
+            deny_reason = decision.get("reason")
+
+            if not resolved or choice is None or choice == "deny":
+                if not resolved:
+                    reason = "timed out without user response"
+                    timeout_addendum = " Silence is not consent."
+                else:
+                    reason = "denied by user"
+                    timeout_addendum = ""
+                reason_addendum = ""
+                if choice == "deny" and deny_reason:
+                    reason_addendum = f' Reason given by the user: "{deny_reason}".'
+                return {
+                    "approved": False,
+                    "message": (
+                        f"BLOCKED: Action {reason}.{reason_addendum} The user "
+                        f"has NOT consented to this action.{timeout_addendum}"
+                    ),
+                    "pattern_key": pattern_key,
+                    "description": description,
+                }
+
+            # Persist approval based on scope
+            if choice == "session":
+                approve_session(session_key, pattern_key)
+            elif choice == "always":
+                approve_session(session_key, pattern_key)
+                approve_permanent(pattern_key)
+                save_permanent_allowlist(_permanent_approved)
+
+            return {"approved": True, "message": None,
+                    "user_approved": True, "description": description}
+
+        # Fallback: no gateway callback registered (e.g. cron, batch).
+        # Store as pending for legacy compatibility.
+        submit_pending(session_key, {
+            "command": display_target,
+            "pattern_key": pattern_key,
+            "description": description,
+        })
+        return {
+            "approved": False,
+            "pattern_key": pattern_key,
+            "status": "approval_required",
+            "command": display_target,
+            "description": description,
+            "message": (
+                f"⚠️ This action is potentially dangerous ({description}). "
+                f"Asking the user for approval.\n\n**Target:**\n```\n{display_target}\n```"
+            ),
+        }
+
+    choice = prompt_dangerous_approval(display_target, description,
+                                       approval_callback=approval_callback)
+
+    if choice == "deny":
+        return {
+            "approved": False,
+            "message": (
+                f"BLOCKED: User denied this potentially dangerous action "
+                f"(matched '{description}'). Do NOT retry — the user has "
+                "explicitly rejected it."
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+        }
+
+    if choice == "session":
+        approve_session(session_key, pattern_key)
+    elif choice == "always":
+        approve_session(session_key, pattern_key)
+        approve_permanent(pattern_key)
+        save_permanent_allowlist(_permanent_approved)
+
+    return {"approved": True, "message": None}
+
+
+def request_tool_approval(
+    tool_name: str,
+    reason: str,
+    *,
+    rule_key: str = "",
+    approval_callback=None,
+) -> dict:
+    """Escalate an arbitrary tool call to the human-approval gate.
+
+    This is the entry point for a plugin ``pre_tool_call`` hook that returns
+    ``{"action": "approve", "message": ...}``: instead of the plugin vetoing
+    the call (``action: block``) or silently allowing it, it asks the SAME
+    human gate that Tier-2 dangerous shell patterns use. The LLM cannot skip
+    or bypass this — the tool call is intercepted before execution.
+
+    It reuses the existing approval primitives (session/permanent allowlist,
+    ``prompt_dangerous_approval`` for CLI, ``_await_gateway_decision`` for
+    gateway notify callbacks, ``[o]nce/[s]ession/[a]lways/[d]eny``, timeout
+    fail-closed) so behavior is identical to a dangerous-command match —
+    only the trigger (a plugin rule on any tool) differs.
+
+    Args:
+        tool_name: The tool being gated (e.g. ``"write_file"``, ``"terminal"``).
+        reason: Human-facing message from the plugin explaining why approval
+            is needed (rendered in the prompt).
+        rule_key: Optional stable identifier the plugin can supply to control
+            the ``[a]lways`` allowlist grain. When empty, the key is derived
+            from ``tool_name`` + a hash of ``reason`` so that DISTINCT reasons
+            on the same tool persist independently (answering ``[a]lways`` to
+            "write to ~/.ssh" does NOT auto-approve a later "send email" rule
+            on the same tool).
+        approval_callback: Optional CLI callback for interactive prompts
+            (same contract as ``check_dangerous_command``).
+
+    Returns:
+        ``{"approved": True, "message": None}`` when allowed, or
+        ``{"approved": False, "message": <reason>, ...}`` when denied /
+        blocked. Shape matches ``check_dangerous_command`` so callers handle
+        both paths identically.
+
+    Non-interactive contexts: cron jobs honor ``approvals.cron_mode`` (parity
+    with dangerous commands); any OTHER non-interactive non-gateway context
+    (a bare script with no ``HERMES_INTERACTIVE``) fails CLOSED — a plugin-
+    flagged action never runs ungated without a human.
+    """
+    description = reason or f"Plugin requires approval for {tool_name}"
+    # Allowlist grain: an explicit plugin rule_key wins; otherwise derive from
+    # tool + a short hash of the reason so distinct reasons on the same tool
+    # get independent [a]lways entries.
+    if rule_key:
+        key_suffix = rule_key
+    else:
+        import hashlib
+        _reason_hash = hashlib.sha256(description.encode("utf-8")).hexdigest()[:12]
+        key_suffix = f"{tool_name}:{_reason_hash}"
+    # Synthetic pattern key so plugin-rule approvals live in the same
+    # session/permanent allowlist machinery as command patterns, namespaced
+    # to avoid ever colliding with a real command pattern key.
+    pattern_key = f"plugin_rule:{key_suffix}"
+    # A synthetic "command" string for the display/allowlist layer. It never
+    # executes; it only labels the gate. Namespaced identically.
+    display_target = f"<{tool_name}> (plugin approval rule)"
+
+    return _run_approval_gate(
+        pattern_key=pattern_key,
+        description=description,
+        display_target=display_target,
+        approval_callback=approval_callback,
+        cron_deny_message=(
+            f"BLOCKED: Tool '{tool_name}' requires approval ({description}) "
+            "but cron jobs run without a user present to approve it. Find an "
+            "alternative approach. To allow flagged actions in cron jobs, set "
+            "approvals.cron_mode: approve in config.yaml."
+        ),
+        autoapprove_log_prefix=(
+            f"plugin-escalated tool call '{tool_name}' in "
+            "non-interactive non-gateway context"
+        ),
+        fail_closed_when_no_human=True,
+        no_human_block_message=(
+            f"BLOCKED: Tool '{tool_name}' requires approval ({description}) "
+            "but no interactive user or gateway is present to approve it. "
+            "A plugin flagged this action for human confirmation."
+        ),
+    )
+
+
 def _should_skip_container_guards(env_type: str, has_host_access: bool = False) -> bool:
     """Return True when the backend is isolated enough to skip dangerous-command prompts.
 
@@ -2061,71 +2358,22 @@ def check_dangerous_command(command: str, env_type: str,
     if not is_dangerous:
         return {"approved": True, "message": None}
 
-    session_key = get_current_session_key()
-    if is_approved(session_key, pattern_key):
-        return {"approved": True, "message": None}
-
-    is_cli = _is_interactive_cli()
-    is_gateway = _is_gateway_approval_context()
-
-    if not is_cli and not is_gateway:
-        # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
-            if _get_cron_approval_mode() == "deny":
-                return {
-                    "approved": False,
-                    "message": (
-                        f"BLOCKED: Command flagged as dangerous ({description}) "
-                        "but cron jobs run without a user present to approve it. "
-                        "Find an alternative approach that avoids this command. "
-                        "To allow dangerous commands in cron jobs, set "
-                        "approvals.cron_mode: approve in config.yaml."
-                    ),
-                }
-        logger.warning(
-            "AUTO-APPROVED dangerous command in non-interactive non-gateway context "
-            "(pattern: %s): %s — set HERMES_INTERACTIVE or HERMES_GATEWAY_SESSION to require approval.",
-            description, command[:200],
-        )
-        return {"approved": True, "message": None}
-
-    if is_gateway or env_var_enabled("HERMES_EXEC_ASK"):
-        submit_pending(session_key, {
-            "command": command,
-            "pattern_key": pattern_key,
-            "description": description,
-        })
-        return {
-            "approved": False,
-            "pattern_key": pattern_key,
-            "status": "approval_required",
-            "command": command,
-            "description": description,
-            "message": (
-                f"⚠️ This command is potentially dangerous ({description}). "
-                f"Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
-            ),
-        }
-
-    choice = prompt_dangerous_approval(command, description,
-                                       approval_callback=approval_callback)
-
-    if choice == "deny":
-        return {
-            "approved": False,
-            "message": f"BLOCKED: User denied this potentially dangerous command (matched '{description}' pattern). Do NOT retry this command - the user has explicitly rejected it.",
-            "pattern_key": pattern_key,
-            "description": description,
-        }
-
-    if choice == "session":
-        approve_session(session_key, pattern_key)
-    elif choice == "always":
-        approve_session(session_key, pattern_key)
-        approve_permanent(pattern_key)
-        save_permanent_allowlist(_permanent_approved)
-
-    return {"approved": True, "message": None}
+    return _run_approval_gate(
+        pattern_key=pattern_key,
+        description=description,
+        display_target=command,
+        approval_callback=approval_callback,
+        cron_deny_message=(
+            f"BLOCKED: Command flagged as dangerous ({description}) "
+            "but cron jobs run without a user present to approve it. "
+            "Find an alternative approach that avoids this command. "
+            "To allow dangerous commands in cron jobs, set "
+            "approvals.cron_mode: approve in config.yaml."
+        ),
+        autoapprove_log_prefix=(
+            "AUTO-APPROVED dangerous command in non-interactive non-gateway context"
+        ),
+    )
 
 
 # =========================================================================

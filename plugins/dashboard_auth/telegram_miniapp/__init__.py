@@ -261,8 +261,18 @@ def register(ctx) -> None:
 # docstrings for the full design.
 # ---------------------------------------------------------------------------
 
-_SESSION_ID_RE = r"/api/sessions/\d{8}_\d{6}_[0-9a-f]{6,8}"
-_SESSION_MESSAGES_RE = r"/api/sessions/\d{8}_\d{6}_[0-9a-f]{6,8}/messages"
+# Two id shapes: an ordinary interactive session (started_at timestamp +
+# short uuid4 hex, see gateway/session.py and slash_commands.py's /branch) or
+# a cron run (cron/scheduler.py's run_job: "cron_{job_id}_{timestamp}", where
+# job_id is cron/jobs.py create_job's uuid4().hex[:12]). Opening a cron-run
+# session used to fall through this seam entirely (fullmatch failed, so the
+# request reached the downstream cookie/session gate instead, which has no
+# cookie to check for a Mini App caller and returned a 401) -- surfaced in
+# the Mini App as an instant, incorrect "session expired" screen, since
+# api.ts treats any post-establishment 401 as auth expiry.
+_SESSION_ID_SHAPE = r"(?:\d{8}_\d{6}_[0-9a-f]{6,8}|cron_[0-9a-f]{12}_\d{8}_\d{6})"
+_SESSION_ID_RE = rf"/api/sessions/{_SESSION_ID_SHAPE}"
+_SESSION_MESSAGES_RE = rf"/api/sessions/{_SESSION_ID_SHAPE}/messages"
 
 # Cron job ids are uuid4().hex[:12] (cron/jobs.py's create_job) -- 12 lowercase
 # hex chars, never a shape that could collide with a sibling literal path.

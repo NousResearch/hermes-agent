@@ -210,25 +210,32 @@ class ProviderProfile:
 
         # urllib keeps every header — including Authorization — when it
         # follows a redirect, so a catalog endpoint answering 3xx to a
-        # different host would receive the provider API key.  Drop
-        # credential headers on cross-host redirects.
+        # different origin would receive the provider API key.  Drop
+        # credential headers on cross-origin redirects.  Origin = scheme +
+        # hostname + effective port: a different port on the same host can
+        # be a different service, so it must not inherit credentials either.
         sensitive = {"authorization", "x-api-key", "api-key", "x-goog-api-key", "cookie"}
-        original_host = (urllib.parse.urlparse(url).hostname or "").lower()
 
-        class _StripAuthOnCrossHostRedirect(urllib.request.HTTPRedirectHandler):
+        def _origin(target_url: str) -> tuple:
+            parsed = urllib.parse.urlparse(target_url)
+            scheme = (parsed.scheme or "").lower()
+            port = parsed.port or {"http": 80, "https": 443}.get(scheme)
+            return scheme, (parsed.hostname or "").lower(), port
+
+        original_origin = _origin(url)
+
+        class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
             def redirect_request(self, redirected, fp, code, msg, hdrs, newurl):
                 new_req = super().redirect_request(
                     redirected, fp, code, msg, hdrs, newurl
                 )
-                if new_req is not None:
-                    new_host = (urllib.parse.urlparse(newurl).hostname or "").lower()
-                    if new_host != original_host:
-                        for header in list(new_req.headers):
-                            if header.lower() in sensitive:
-                                new_req.remove_header(header)
+                if new_req is not None and _origin(newurl) != original_origin:
+                    for header in list(new_req.headers):
+                        if header.lower() in sensitive:
+                            new_req.remove_header(header)
                 return new_req
 
-        opener = urllib.request.build_opener(_StripAuthOnCrossHostRedirect())
+        opener = urllib.request.build_opener(_StripAuthOnCrossOriginRedirect())
 
         try:
             with opener.open(req, timeout=timeout) as resp:

@@ -204,6 +204,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._host = ""
         self._user_id = _DEFAULT_USER_ID
         self._agent_id = "hermes"
+        self._rerank_default = False
         self._channel = "cli"  # gateway channel name (cli/telegram/discord/...)
         self._sync_thread = None
         self._prefetch_thread = None
@@ -353,6 +354,14 @@ class Mem0MemoryProvider(MemoryProvider):
             configured = None
         self._user_id = configured or kwargs.get("user_id") or _DEFAULT_USER_ID
         self._agent_id = self._config.get("agent_id", "hermes")
+        # Persisted rerank preference (setup wizard / mem0.json). Used as the
+        # DEFAULT for mem0_search when the model doesn't pass ``rerank``
+        # explicitly; per-call args still win. Platform-only feature — other
+        # backends accept-and-ignore the flag.
+        _rr = self._config.get("rerank", False)
+        self._rerank_default = (
+            _rr.lower() in ("true", "1", "yes") if isinstance(_rr, str) else bool(_rr)
+        )
         self._channel = kwargs.get("platform") or "cli"
         self._backend = self._create_backend()
         if self._backend and not self._atexit_registered:
@@ -527,7 +536,7 @@ class Mem0MemoryProvider(MemoryProvider):
                 return tool_error("Missing required parameter: query")
             try:
                 top_k = max(1, min(int(args.get("top_k", 10)), 50))
-                rerank_raw = args.get("rerank", False)
+                rerank_raw = args.get("rerank", getattr(self, "_rerank_default", False))
                 if isinstance(rerank_raw, str):
                     rerank = rerank_raw.lower() not in ("false", "0", "no")
                 else:

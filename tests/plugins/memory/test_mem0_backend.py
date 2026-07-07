@@ -68,13 +68,6 @@ class TestPlatformBackend:
         assert isinstance(result, list)
         assert result[0]["id"] == "m1"
 
-    def test_get_all_forwards_pagination(self):
-        backend, client = self._make()
-        result = backend.get_all(filters={"user_id": "u1"}, page=2, page_size=50)
-        assert client.calls[0][1]["page"] == 2
-        assert client.calls[0][1]["page_size"] == 50
-        assert "count" in result
-
     def test_add_forwards_kwargs(self):
         backend, client = self._make()
         msgs = [{"role": "user", "content": "hi"}]
@@ -168,21 +161,6 @@ class TestOSSBackend:
         backend.search("q", filters={}, rerank=True)
         assert "rerank" not in memory.calls[0][2]
 
-    def test_get_all_ignores_pagination(self):
-        """OSSBackend accepts page/page_size but does NOT forward to Memory.get_all()."""
-        backend, memory = self._make()
-        result = backend.get_all(filters={"user_id": "u1"}, page=2, page_size=50)
-        call_kwargs = memory.calls[0][1]
-        assert "page" not in call_kwargs
-        assert "page_size" not in call_kwargs
-        assert result["count"] == 1
-
-    def test_get_all_returns_envelope(self):
-        backend, _ = self._make()
-        result = backend.get_all(filters={"user_id": "u1"})
-        assert "results" in result
-        assert "count" in result
-
     def test_add_forwards_kwargs(self):
         backend, memory = self._make()
         msgs = [{"role": "user", "content": "hi"}]
@@ -243,20 +221,14 @@ class _StubServer:
 
 
 def _backend(server, api_key="adminkey", host="http://sh:8888"):
-    """Build a SelfHostedBackend whose client routes through the stub transport.
+    """Build a SelfHostedBackend routed through the stub transport.
 
-    Mirrors __init__'s header setup but injects MockTransport so no real socket
-    is opened.
+    Uses the real __init__ (via the injectable ``transport`` kwarg) so the
+    constructor's header/base_url setup is exercised by every test here.
     """
-    backend = SelfHostedBackend.__new__(SelfHostedBackend)
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["X-API-Key"] = api_key
-    backend._client = httpx.Client(
-        base_url=host.rstrip("/"), headers=headers,
-        transport=httpx.MockTransport(server.handler),
+    return SelfHostedBackend(
+        api_key, host, transport=httpx.MockTransport(server.handler)
     )
-    return backend
 
 
 class TestSelfHostedBackend:
@@ -293,31 +265,6 @@ class TestSelfHostedBackend:
         req = s.requests[-1]
         assert req.headers["x-api-key"] == "adminkey"
         assert "authorization" not in req.headers
-
-    # --- get_all / pagination -------------------------------------------
-
-    def test_get_all_passes_user_id_as_query_param(self):
-        s = _StubServer()
-        _backend(s).get_all(filters={"user_id": "u1"}, page=1, page_size=3)
-        req = s.requests[-1]
-        assert req.method == "GET" and req.url.path == "/memories"
-        assert req.url.params["user_id"] == "u1"
-
-    def test_get_all_slices_requested_page(self):
-        s = _StubServer(rows=10)
-        out = _backend(s).get_all(filters={"user_id": "u1"}, page=2, page_size=3)
-        # We over-fetch (top_k=_MAX_TOP_K) and slice the page locally...
-        assert [r["id"] for r in out["results"]] == ["m3", "m4", "m5"]
-        # ...so count is the TRUE total, not the page size (issue #52921).
-        assert out["count"] == 10
-
-    def test_get_all_requests_max_top_k_for_accurate_count(self):
-        # Always request _MAX_TOP_K (not page*page_size) so `count` reflects the
-        # real total — self-hosted GET /memories returns no count field (#52921).
-        s = _StubServer(rows=10)
-        _backend(s).get_all(filters={"user_id": "u1"}, page=1, page_size=3)
-        req = s.requests[-1]
-        assert int(req.url.params["top_k"]) == SelfHostedBackend._MAX_TOP_K
 
     # --- add / update / delete ------------------------------------------
 

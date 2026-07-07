@@ -644,6 +644,56 @@ class TestPluginLlmFacade:
         assert rf["type"] == "json_schema"
         assert rf["json_schema"]["schema"] == schema
 
+    def test_complete_structured_routes_title_purpose_to_title_generation_task(self):
+        """Title-generating plugins should hit auxiliary.title_generation.
+
+        Regression coverage for plugin LLM calls previously flowing to
+        call_llm(task=None), which bypassed task-specific auxiliary config and
+        could pick up an unrelated process-global runtime model.
+        """
+        captured: dict = {}
+
+        def fake_caller(**kwargs):
+            captured.update(kwargs)
+            return "openai", "gpt-4o", _fake_response('{"title": "Hello"}')
+
+        llm = make_plugin_llm_for_test(
+            plugin_id="discord-thread-autotitle",
+            policy=_TrustPolicy(plugin_id="discord-thread-autotitle"),
+            sync_caller=fake_caller,
+        )
+        result = llm.complete_structured(
+            instructions="Generate a title",
+            input=[PluginLlmTextInput(text="First Discord message")],
+            json_mode=True,
+            purpose="discord_thread_autotitle",
+        )
+
+        assert result.parsed == {"title": "Hello"}
+        assert captured["task"] == "title_generation"
+
+    def test_complete_structured_accepts_explicit_task(self):
+        captured: dict = {}
+
+        def fake_caller(**kwargs):
+            captured.update(kwargs)
+            return "openai", "gpt-4o", _fake_response('{"ok": true}')
+
+        llm = make_plugin_llm_for_test(
+            plugin_id="my-plugin",
+            policy=_TrustPolicy(plugin_id="my-plugin"),
+            sync_caller=fake_caller,
+        )
+        llm.complete_structured(
+            instructions="Extract data",
+            input=[PluginLlmTextInput(text="x")],
+            json_mode=True,
+            task="mcp",
+            purpose="custom structured task",
+        )
+
+        assert captured["task"] == "mcp"
+
     def test_complete_structured_with_image_passes_image_url_part(self):
         captured: dict = {}
 

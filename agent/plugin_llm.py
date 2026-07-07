@@ -69,6 +69,52 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Uni
 logger = logging.getLogger(__name__)
 
 
+_KNOWN_AUX_TASKS = frozenset(
+    {
+        "compression",
+        "vision",
+        "web_extract",
+        "session_search",
+        "skills_hub",
+        "mcp",
+        "title_generation",
+    }
+)
+
+
+def _normalize_task(raw: Optional[str]) -> Optional[str]:
+    if not isinstance(raw, str):
+        return None
+    normalized = raw.strip().lower().replace("-", "_")
+    if not normalized:
+        return None
+    return normalized if normalized in _KNOWN_AUX_TASKS else None
+
+
+def _infer_task_from_purpose(purpose: Optional[str]) -> Optional[str]:
+    """Map legacy free-form plugin purposes onto auxiliary task slots.
+
+    ``purpose`` existed before plugin LLM calls were task-aware and was used
+    only for audit/logging. Keep existing plugins compatible by recognizing
+    common title-generation purpose strings instead of requiring every plugin
+    to add ``task=\"title_generation\"`` immediately.
+    """
+    if not isinstance(purpose, str):
+        return None
+    normalized = purpose.strip().lower().replace("-", "_")
+    if not normalized:
+        return None
+    if normalized in _KNOWN_AUX_TASKS:
+        return normalized
+    if "title" in normalized or "autotitle" in normalized or "auto_title" in normalized:
+        return "title_generation"
+    return None
+
+
+def _resolve_task(*, task: Optional[str], purpose: Optional[str]) -> Optional[str]:
+    return _normalize_task(task) or _infer_task_from_purpose(purpose)
+
+
 # ---------------------------------------------------------------------------
 # Public dataclasses
 # ---------------------------------------------------------------------------
@@ -631,6 +677,7 @@ class PluginLlm:
         agent_id: Optional[str] = None,
         profile: Optional[str] = None,
         purpose: Optional[str] = None,
+        task: Optional[str] = None,
     ) -> PluginLlmCompleteResult:
         """Run a host-owned chat completion against the user's active model.
 
@@ -649,6 +696,7 @@ class PluginLlm:
             requested_agent_id=agent_id,
             requested_profile=profile,
         )
+        resolved_task = _resolve_task(task=task, purpose=purpose)
         real_provider, real_model, response = self._invoke_sync(
             messages=messages,
             provider_override=eff_provider,
@@ -657,6 +705,7 @@ class PluginLlm:
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
+            task=resolved_task,
         )
         text = _extract_text(response)
         usage = _extract_usage(response)
@@ -669,6 +718,7 @@ class PluginLlm:
             audit={
                 "plugin_id": self._plugin_id,
                 "purpose": purpose or "",
+                "task": resolved_task or "",
                 "profile": eff_profile or "",
             },
         )
@@ -697,6 +747,7 @@ class PluginLlm:
         agent_id: Optional[str] = None,
         profile: Optional[str] = None,
         purpose: Optional[str] = None,
+        task: Optional[str] = None,
     ) -> PluginLlmStructuredResult:
         """Run a bounded host-owned structured completion.
 
@@ -733,6 +784,7 @@ class PluginLlm:
             system_prompt=system_prompt,
         )
         extra_body = self._json_response_format(json_mode=json_mode, json_schema=json_schema)
+        resolved_task = _resolve_task(task=task, purpose=purpose)
 
         real_provider, real_model, response = self._invoke_sync(
             messages=messages,
@@ -743,6 +795,7 @@ class PluginLlm:
             max_tokens=max_tokens,
             timeout=timeout,
             extra_body=extra_body,
+            task=resolved_task,
         )
         text = _extract_text(response)
         usage = _extract_usage(response)
@@ -760,6 +813,7 @@ class PluginLlm:
             audit={
                 "plugin_id": self._plugin_id,
                 "purpose": purpose or "",
+                "task": resolved_task or "",
                 "profile": eff_profile or "",
                 "schema_name": schema_name or "",
             },
@@ -786,6 +840,7 @@ class PluginLlm:
         agent_id: Optional[str] = None,
         profile: Optional[str] = None,
         purpose: Optional[str] = None,
+        task: Optional[str] = None,
     ) -> PluginLlmCompleteResult:
         """Async sibling of :meth:`complete`."""
         policy = self._policy_loader(self._plugin_id)
@@ -796,6 +851,7 @@ class PluginLlm:
             requested_agent_id=agent_id,
             requested_profile=profile,
         )
+        resolved_task = _resolve_task(task=task, purpose=purpose)
         real_provider, real_model, response = await self._invoke_async(
             messages=messages,
             provider_override=eff_provider,
@@ -804,6 +860,7 @@ class PluginLlm:
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
+            task=resolved_task,
         )
         text = _extract_text(response)
         usage = _extract_usage(response)
@@ -816,6 +873,7 @@ class PluginLlm:
             audit={
                 "plugin_id": self._plugin_id,
                 "purpose": purpose or "",
+                "task": resolved_task or "",
                 "profile": eff_profile or "",
             },
         )
@@ -837,6 +895,7 @@ class PluginLlm:
         agent_id: Optional[str] = None,
         profile: Optional[str] = None,
         purpose: Optional[str] = None,
+        task: Optional[str] = None,
     ) -> PluginLlmStructuredResult:
         """Async sibling of :meth:`complete_structured`."""
         if not instructions or not instructions.strip():
@@ -861,6 +920,7 @@ class PluginLlm:
             system_prompt=system_prompt,
         )
         extra_body = self._json_response_format(json_mode=json_mode, json_schema=json_schema)
+        resolved_task = _resolve_task(task=task, purpose=purpose)
         real_provider, real_model, response = await self._invoke_async(
             messages=messages,
             provider_override=eff_provider,
@@ -870,6 +930,7 @@ class PluginLlm:
             max_tokens=max_tokens,
             timeout=timeout,
             extra_body=extra_body,
+            task=resolved_task,
         )
         text = _extract_text(response)
         usage = _extract_usage(response)
@@ -887,6 +948,7 @@ class PluginLlm:
             audit={
                 "plugin_id": self._plugin_id,
                 "purpose": purpose or "",
+                "task": resolved_task or "",
                 "profile": eff_profile or "",
                 "schema_name": schema_name or "",
             },
@@ -926,6 +988,7 @@ class PluginLlm:
         temperature: Optional[float],
         max_tokens: Optional[int],
         timeout: Optional[float],
+        task: Optional[str] = None,
         extra_body: Optional[Dict[str, Any]] = None,
     ) -> tuple[str, str, Any]:
         """Invoke the host's ``call_llm``. Lazy-imports
@@ -940,6 +1003,7 @@ class PluginLlm:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
+                task=task,
                 extra_body=extra_body,
             )
         from agent.auxiliary_client import call_llm
@@ -947,7 +1011,7 @@ class PluginLlm:
         if profile_override:
             merged_extra.setdefault("metadata", {})["auth_profile"] = profile_override
         response = call_llm(
-            task=None,
+            task=task or "",
             provider=provider_override,
             model=model_override,
             messages=messages,
@@ -973,6 +1037,7 @@ class PluginLlm:
         temperature: Optional[float],
         max_tokens: Optional[int],
         timeout: Optional[float],
+        task: Optional[str] = None,
         extra_body: Optional[Dict[str, Any]] = None,
     ) -> tuple[str, str, Any]:
         if self._async_caller is not None:
@@ -984,6 +1049,7 @@ class PluginLlm:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
+                task=task,
                 extra_body=extra_body,
             )
         from agent.auxiliary_client import async_call_llm
@@ -991,7 +1057,7 @@ class PluginLlm:
         if profile_override:
             merged_extra.setdefault("metadata", {})["auth_profile"] = profile_override
         response = await async_call_llm(
-            task=None,
+            task=task or "",
             provider=provider_override,
             model=model_override,
             messages=messages,

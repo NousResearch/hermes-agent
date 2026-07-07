@@ -232,6 +232,7 @@ class ToolCallGuardrailController:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._same_result: dict[tuple[str, str], int] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -347,32 +348,55 @@ class ToolCallGuardrailController:
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
-        if not self._is_idempotent(tool_name):
-            self._no_progress.pop(signature, None)
-            return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
-
+        # Always track repeated identical results — even when args vary
+        # (e.g. execute_code generating different code that all returns the
+        # same output; vision_load reading the same image with different
+        # prompts).  #60084: the old code only tracked idempotent tools and
+        # keyed on (name, args), so varying-arg repeat-result loops slipped
+        # through.
         result_hash = _result_hash(result)
-        previous = self._no_progress.get(signature)
-        repeat_count = 1
-        if previous is not None and previous[0] == result_hash:
-            repeat_count = previous[1] + 1
-        self._no_progress[signature] = (result_hash, repeat_count)
+        same_key = (tool_name, result_hash)
+        same_count = self._same_result.get(same_key, 0) + 1
+        self._same_result[same_key] = same_count
 
-        if self.config.warnings_enabled and repeat_count >= self.config.no_progress_warn_after:
+        if self.config.warnings_enabled and same_count >= self.config.no_progress_warn_after:
             return ToolGuardrailDecision(
                 action="warn",
-                code="idempotent_no_progress_warning",
+                code="same_result_warning",
                 message=(
-                    f"{tool_name} returned the same result {repeat_count} times. "
+                    f"{tool_name} returned the same result {same_count} times. "
                     "Use the result already provided or change the query instead of "
                     "repeating it unchanged."
                 ),
                 tool_name=tool_name,
-                count=repeat_count,
+                count=same_count,
                 signature=signature,
             )
 
-        return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
+        if self._is_idempotent(tool_name):
+            previous = self._no_progress.get(signature)
+            repeat_count = 1
+            if previous is not None and previous[0] == result_hash:
+                repeat_count = previous[1] + 1
+            self._no_progress[signature] = (result_hash, repeat_count)
+
+            if self.config.warnings_enabled and repeat_count >= self.config.no_progress_warn_after:
+                return ToolGuardrailDecision(
+                    action="warn",
+                    code="idempotent_no_progress_warning",
+                    message=(
+                        f"{tool_name} returned the same result {repeat_count} times. "
+                        "Use the result already provided or change the query instead of "
+                        "repeating it unchanged."
+                    ),
+                    tool_name=tool_name,
+                    count=repeat_count,
+                    signature=signature,
+                )
+        else:
+            self._no_progress.pop(signature, None)
+
+        return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
     def _is_idempotent(self, tool_name: str) -> bool:
         if tool_name in self.config.mutating_tools:

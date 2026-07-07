@@ -42,7 +42,13 @@ The plugin has three connection modes:
 Connect the plugin to a standalone Mem0 server you run yourself — the Docker-shipped Mem0 dashboard/server with its own REST API. Unlike OSS mode (which runs `mem0ai` in-process with your own vector store), here the plugin just talks HTTP to your server.
 
 1. Run the Mem0 server (FastAPI + pgvector) from its Docker image and note its URL and `ADMIN_API_KEY`.
-2. Point the plugin at it — either via env vars:
+2. Point the plugin at it — via the setup wizard:
+   ```bash
+   hermes memory setup    # select "mem0" → "Self-hosted server"
+   # Or non-interactive:
+   hermes memory setup mem0 --mode selfhosted --host http://localhost:8888 --api-key your-admin-api-key
+   ```
+   or via env vars:
    ```bash
    echo "MEM0_HOST=http://localhost:8888" >> ~/.hermes/.env
    echo "MEM0_API_KEY=your-admin-api-key" >> ~/.hermes/.env

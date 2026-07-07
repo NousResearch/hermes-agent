@@ -67,6 +67,7 @@ def parse_flags(argv: list[str] | None = None) -> dict[str, str]:
     flags: dict[str, str] = {
         "mode": "",
         "api_key": "",
+        "host": "",
         "oss_llm": "openai",
         "oss_llm_key": "",
         "oss_llm_model": "",
@@ -90,6 +91,7 @@ def parse_flags(argv: list[str] | None = None) -> dict[str, str]:
     flag_map = {
         "--mode": "mode",
         "--api-key": "api_key",
+        "--host": "host",
         "--oss-llm": "oss_llm",
         "--oss-llm-key": "oss_llm_key",
         "--oss-llm-model": "oss_llm_model",
@@ -328,6 +330,102 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
     print("  Provider config saved")
     if env_writes:
         print("  API keys saved to .env")
+    print("\n  Start a new session to activate.\n")
+
+
+def _check_selfhosted_server(host: str) -> None:
+    """Best-effort reachability check for a self-hosted Mem0 server (non-fatal)."""
+    import urllib.error
+    import urllib.request as _urlreq
+
+    try:
+        req = _urlreq.Request(f"{host.rstrip('/')}/docs", method="GET")
+        _urlreq.urlopen(req, timeout=5)
+        print(f"  ✓ Mem0 server reachable at {host}")
+    except urllib.error.HTTPError:
+        # Any HTTP response (401/403/404) still means something is listening.
+        print(f"  ✓ Mem0 server responding at {host}")
+    except Exception:
+        print(f"  ⚠ Could not reach {host} — check the URL and that the server is running.")
+
+
+def _setup_selfhosted(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
+    """Self-hosted mode setup — point at an existing Mem0 dashboard server.
+
+    For users already running the Dockerized Mem0 FastAPI server: stores the
+    server URL (behavioral -> mem0.json) and an optional API key
+    (secret -> .env as MEM0_API_KEY).
+    """
+    existing_config = {}
+    config_path = Path(hermes_home) / "mem0.json"
+    if config_path.exists():
+        try:
+            existing_config = json.loads(config_path.read_text())
+        except Exception:
+            pass
+
+    provider_config = dict(existing_config)
+
+    print("\n  Configuring mem0 (self-hosted server):\n")
+
+    host = flags.get("host") or _prompt(
+        "Mem0 server URL (e.g. http://localhost:8888)",
+        default=provider_config.get("host") or None,
+    )
+    if not host:
+        print("  Error: a server URL is required for self-hosted mode.", file=sys.stderr)
+        return
+    host = host.rstrip("/")
+
+    env_writes: dict[str, str] = {}
+    if flags.get("api_key"):
+        env_writes["MEM0_API_KEY"] = flags["api_key"]
+    else:
+        existing_key = os.environ.get("MEM0_API_KEY", "")
+        if existing_key:
+            masked = f"...{existing_key[-4:]}" if len(existing_key) > 4 else "set"
+            val = _prompt(f"Server API key (current: {masked}, blank to keep)", secret=True)
+        else:
+            val = _prompt("Server API key (blank if AUTH_DISABLED)", secret=True)
+        if val:
+            env_writes["MEM0_API_KEY"] = val
+
+    user_id = flags.get("user_id") or _prompt(
+        "User identifier", default=provider_config.get("user_id") or "hermes-user"
+    )
+    agent_id = _prompt("Agent identifier", default=provider_config.get("agent_id") or "hermes")
+
+    if flags.get("dry_run"):
+        print(f"\n  [dry-run] Would save config: host={host}, user_id={user_id}, agent_id={agent_id}")
+        if env_writes:
+            print("  [dry-run] Would write API key to .env")
+        _check_selfhosted_server(host)
+        print("  [dry-run] No files written.\n")
+        return
+
+    provider_config["mode"] = "platform"  # routing: oss > host > platform; host wins
+    provider_config["host"] = host
+    provider_config["user_id"] = user_id
+    provider_config["agent_id"] = agent_id
+
+    from hermes_cli.config import save_config
+    config["memory"]["provider"] = "mem0"
+    save_config(config)
+
+    from plugins.memory.mem0 import Mem0MemoryProvider
+    provider = Mem0MemoryProvider()
+    provider.save_config(provider_config, hermes_home)
+
+    if env_writes:
+        _write_env(Path(hermes_home) / ".env", env_writes)
+
+    _check_selfhosted_server(host)
+    print("\n  Memory provider: mem0 (self-hosted)")
+    print(f"  Server: {host}")
+    print("  Activation saved to config.yaml")
+    print("  Provider config saved")
+    if env_writes:
+        print("  API key saved to .env")
     print("\n  Start a new session to activate.\n")
 
 
@@ -846,10 +944,10 @@ def _check_min_dep_version() -> None:
 def post_setup(hermes_home: str, config: dict) -> None:
     """Entry point called by hermes memory setup framework.
 
-    Only intercepts when OSS mode is requested (via --mode oss flag or
-    interactive picker). For platform mode, returns without action so the
-    framework's schema-based flow handles it (preserving the original
-    platform onboarding experience).
+    Routes on --mode (platform / selfhosted / oss); with no flag it shows an
+    interactive picker with all three modes. Platform keeps the framework's
+    original schema-based onboarding; selfhosted points at an existing Mem0
+    server; oss builds a local SDK config.
     """
     _check_min_dep_version()
     flags = parse_flags(sys.argv[1:])
@@ -859,6 +957,10 @@ def post_setup(hermes_home: str, config: dict) -> None:
         _setup_oss(hermes_home, config, flags)
         return
 
+    if flags["mode"] in ("selfhosted", "self-hosted"):
+        _setup_selfhosted(hermes_home, config, flags)
+        return
+
     if flags["mode"] == "platform":
         _setup_platform(hermes_home, config, flags)
         return
@@ -866,10 +968,13 @@ def post_setup(hermes_home: str, config: dict) -> None:
     # No --mode flag: show interactive picker
     mode_items = [
         ("Platform", "Mem0 Cloud API (lightweight, just needs an API key)"),
+        ("Self-hosted server", "Connect to an existing self-hosted Mem0 server (Docker/FastAPI)"),
         ("Open Source", "Run Mem0 locally (self-hosted LLM + vector store)"),
     ]
     mode_idx = _curses_select("  Select mode", mode_items, 0)
     if mode_idx == 1:
+        _setup_selfhosted(hermes_home, config, flags)
+    elif mode_idx == 2:
         flags["_mode_from_flag"] = False
         _setup_oss(hermes_home, config, flags)
     else:

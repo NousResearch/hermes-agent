@@ -1418,7 +1418,7 @@ _permanent_approved: set = set()
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason")
+    __slots__ = ("event", "data", "result", "reason", "finalized")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
@@ -1428,6 +1428,14 @@ class _ApprovalEntry:
         # (``/deny <reason>``) so the agent can adapt instead of only
         # hearing "denied". Ported from qwibitai/nanoclaw#2832.
         self.reason: Optional[str] = None
+        # Once an outcome is decided (interrupt-driven deny, timeout-driven
+        # cleanup, or a user /approve//deny), this entry is ``finalized`` and
+        # must not be re-resolved.  Without it, a /stop-driven "deny" and a
+        # concurrent gateway "/approve" race on the shared ``result`` field:
+        # the approve can overwrite the deny after the wait loop has already
+        # broken on the interrupt's event.set(), causing a cancelled dangerous
+        # command to execute.  See _finalize_entry.
+        self.finalized: bool = False
 
 
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
@@ -1459,6 +1467,31 @@ def unregister_gateway_notify(session_key: str) -> None:
         entry.event.set()
 
 
+def _finalize_entry(entry: "_ApprovalEntry", result: str,
+                    reason: Optional[str] = None) -> bool:
+    """Decide an approval entry exactly once, under the global lock.
+
+    Returns True if this call set the outcome, False if the entry was already
+    finalized by a concurrent path (e.g. an interrupt-driven deny vs. a
+    gateway /approve).  Either way the entry's ``result`` is left at the
+    *first* decision so the agent thread reads a single, stable outcome.
+
+    The wait loop reads ``entry.result`` *after* it has broken out of its
+    poll loop (outside ``_lock``), so without this guarded single-writer the
+    shared field can be clobbered by a racing ``resolve_gateway_approval`` or
+    ``clear_session`` call, flipping a user-issued "deny" into an "approve".
+    """
+    with _lock:
+        if entry.finalized:
+            return False
+        entry.result = result
+        if reason:
+            entry.reason = reason
+        entry.finalized = True
+        entry.event.set()
+    return True
+
+
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
                              reason: Optional[str] = None) -> int:
@@ -1487,12 +1520,15 @@ def resolve_gateway_approval(session_key: str, choice: str,
         if not queue:
             _gateway_queues.pop(session_key, None)
 
+    # A finalized entry (e.g. already denied by a concurrent /stop, or cleared
+    # on session teardown) must keep its existing outcome — a late /approve
+    # must not revive a cancelled command.  _finalize_entry is a no-op for
+    # already-finalized entries, so only genuinely-pending entries count.
+    resolved = 0
     for entry in targets:
-        entry.result = choice
-        if reason:
-            entry.reason = reason
-        entry.event.set()
-    return len(targets)
+        if _finalize_entry(entry, choice, reason=reason):
+            resolved += 1
+    return resolved
 
 
 def has_blocking_approval(session_key: str) -> bool:
@@ -1541,8 +1577,9 @@ def clear_session(session_key: str) -> None:
     for entry in entries:
         # Session-boundary cleanup should cancel any blocked approval waits
         # immediately so the old run can unwind instead of idling until timeout.
-        entry.result = "deny"
-        entry.event.set()
+        # Finalize so a late /approve arriving after teardown cannot flip this
+        # cancellation back into an approval (see _finalize_entry).
+        _finalize_entry(entry, "deny")
 
 
 def is_session_yolo_enabled(session_key: str) -> bool:
@@ -2244,14 +2281,36 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
                 "returning deny for session %s",
                 session_key,
             )
-            entry.result = "deny"
-            entry.event.set()
+            # An explicit /stop (or /new) is a cancel: it MUST finalize this
+            # approval as "deny" and win over any concurrent /approve, even one
+            # that already finalized "once" while this worker was parked in
+            # event.wait().  Force the outcome under the lock and ignore the
+            # check-first guard in _finalize_entry, so a racing approve cannot
+            # flip a user-issued cancel into an execution.  The wait loop reads
+            # entry.result below; forcing it here makes that read stable.
+            with _lock:
+                entry.result = "deny"
+                entry.finalized = True
+                entry.event.set()
             resolved = True
             break
         _remaining = _deadline - time.monotonic()
         if _remaining <= 0:
             break
         if entry.event.wait(timeout=min(1.0, _remaining)):
+            # The event was signalled, but it may have been signalled by a
+            # concurrent /approve while the user was also cancelling via /stop.
+            # Honor the cancel: a user-issued interrupt must win over a racing
+            # approval (fail-closed).  Re-checking here is essential because the
+            # interrupt branch below only runs when we *reach* the top of the
+            # loop; if we were woken by an /approve's event.set() we would
+            # otherwise trust entry.result without ever re-checking the cancel.
+            if is_interrupted():
+                with _lock:
+                    entry.result = "deny"
+                    entry.finalized = True
+                resolved = True
+                break
             resolved = True
             break
         if touch_activity_if_due is not None:

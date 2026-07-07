@@ -122,7 +122,7 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # ``BLOCK_RECURRENCE_LIMIT``) escalates them to ``triage`` if a cron keeps
 # unblocking them only to have the worker re-block for the same reason.
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
-VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient", "policy_violation"}
 
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
@@ -6994,6 +6994,127 @@ def dispatch_once(
             max_in_progress_per_profile=max_in_progress_per_profile,
         )
 
+def _validate_merge_card(
+    conn: sqlite3.Connection,
+    task: "Task",
+) -> Optional[str]:
+    """Validate a merge-intent card before dispatch.
+
+    A card is merge-intent when its body contains ``gh pr merge``.
+    Returns ``None`` if the card passes all checks or is not merge-intent.
+    Returns a blocked-reason string describing the failing check otherwise.
+
+    Checks performed (in order):
+    1. Merge card has at least one parent/dependency.
+    2. At least one parent is assigned to ``preflight``.
+    3. The preflight parent has evidence of ``CODE_APPROVED``.
+    4. The preflight parent evidence contains a PR head SHA.
+    5. The merge card references the same approved head SHA.
+    6. The merge card contains ``--squash`` and
+       ``--match-head-commit <sha>``, and does NOT contain
+       ``--merge`` or ``--rebase``.
+    """
+    import re
+
+    body = (task.body or "").strip()
+    if not body:
+        return None
+    # Only validate cards that contain a merge command.
+    if "gh pr merge" not in body.lower():
+        return None
+
+    # 1. Must have at least one parent/dependency.
+    parents = parent_ids(conn, task.id)
+    if not parents:
+        return (
+            "merge_card_no_parent: card body contains 'gh pr merge' but has no "
+            "parent/dependency. A merge card must have at least one preflight "
+            "parent with CODE_APPROVED evidence before it can be dispatched."
+        )
+
+    # 2. At least one parent must be assigned to preflight.
+    preflight_parents = []
+    for pid in parents:
+        ptask = get_task(conn, pid)
+        if ptask and ptask.assignee == "preflight" and ptask.status == "done":
+            preflight_parents.append(ptask)
+    if not preflight_parents:
+        return (
+            "merge_card_no_preflight_parent: card body contains 'gh pr merge' but "
+            "no parent is assigned to 'preflight' with status 'done'. A merge "
+            "card must have a completed preflight parent with CODE_APPROVED "
+            "evidence."
+        )
+
+    # 3 & 4. Search preflight parents for CODE_APPROVED and extract SHA.
+    approved_sha = None
+    for ptask in preflight_parents:
+        pbody = (ptask.body or "")
+        if "CODE_APPROVED" in pbody:
+            # Extract a 40-char hex SHA from the preflight evidence.
+            sha_match = re.search(r"\b([0-9a-fA-F]{40})\b", pbody)
+            if sha_match:
+                approved_sha = sha_match.group(1)
+                break
+    if approved_sha is None:
+        # Also search preflight parent comments for CODE_APPROVED + SHA.
+        for ptask in preflight_parents:
+            try:
+                comments = list_comments(conn, ptask.id)
+            except Exception:
+                comments = []
+            for comment in comments:
+                cbody = (comment.body or "")
+                if "CODE_APPROVED" in cbody:
+                    sha_match = re.search(r"\b([0-9a-fA-F]{40})\b", cbody)
+                    if sha_match:
+                        approved_sha = sha_match.group(1)
+                        break
+            if approved_sha is not None:
+                break
+
+    if approved_sha is None:
+        return (
+            "merge_card_no_approved_sha: no preflight parent contains both "
+            "CODE_APPROVED and a valid 40-character hex SHA. The merge card "
+            "cannot be dispatched without an approved head SHA from preflight."
+        )
+
+    # 5. The merge card must reference the same approved head SHA.
+    body_shas = re.findall(r"\b([0-9a-fA-F]{40})\b", body)
+    if approved_sha not in body_shas:
+        return (
+            f"merge_card_sha_mismatch: the approved SHA from preflight "
+            f"({approved_sha}) does not appear in the merge card body. "
+            f"SHAs found in merge card: {body_shas if body_shas else 'none'}."
+        )
+
+    # 6. Must use --squash + --match-head-commit, must not use --merge/--rebase.
+    if "--merge" in body:
+        return (
+            "merge_card_forbidden_flag: '--merge' found in card body. "
+            "Merge cards must use '--squash', not '--merge'."
+        )
+    if "--rebase" in body:
+        return (
+            "merge_card_forbidden_flag: '--rebase' found in card body. "
+            "Merge cards must use '--squash', not '--rebase'."
+        )
+    if "--squash" not in body:
+        return (
+            "merge_card_missing_squash: '--squash' not found in card body. "
+            "Merge cards must use '--squash'."
+        )
+    if f"--match-head-commit {approved_sha}" not in body:
+        return (
+            f"merge_card_missing_match_head: '--match-head-commit {approved_sha}' "
+            f"not found in card body. Merge cards must pin the exact approved "
+            f"head SHA with --match-head-commit."
+        )
+
+    # All checks passed.
+    return None
+
 
 def _dispatch_once_locked(
     conn: sqlite3.Connection,
@@ -7242,6 +7363,14 @@ def _dispatch_once_locked(
                     )
             continue
         if dry_run:
+            # In dry-run mode, still validate merge cards (read-only).
+            # We need the task body for validation, so fetch it.
+            dry_task = get_task(conn, row["id"])
+            if dry_task is not None:
+                validation_error = _validate_merge_card(conn, dry_task)
+                if validation_error is not None:
+                    result.auto_blocked.append(row["id"])
+                    continue
             result.spawned.append((row["id"], row_assignee, ""))
             # Increment per-profile counter even in dry_run so the cap
             # check sees the would-be spawn on subsequent iterations.
@@ -7254,6 +7383,17 @@ def _dispatch_once_locked(
             continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
+            continue
+        # Validate merge-intent cards before spawning.
+        validation_error = _validate_merge_card(conn, claimed)
+        if validation_error is not None:
+            if not dry_run:
+                block_task(
+                    conn, claimed.id,
+                    reason=validation_error[:500],
+                    kind="policy_violation",
+                )
+            result.auto_blocked.append(claimed.id)
             continue
         try:
             resolved_branch_name = None
@@ -7342,10 +7482,28 @@ def _dispatch_once_locked(
             result.skipped_nonspawnable.append(row["id"])
             continue
         if dry_run:
+            # In dry-run mode, still validate merge cards (read-only).
+            dry_task = get_task(conn, row["id"])
+            if dry_task is not None:
+                validation_error = _validate_merge_card(conn, dry_task)
+                if validation_error is not None:
+                    result.auto_blocked.append(row["id"])
+                    continue
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
+            continue
+        # Validate merge-intent cards before spawning.
+        validation_error = _validate_merge_card(conn, claimed)
+        if validation_error is not None:
+            if not dry_run:
+                block_task(
+                    conn, claimed.id,
+                    reason=validation_error[:500],
+                    kind="policy_violation",
+                )
+            result.auto_blocked.append(claimed.id)
             continue
         try:
             resolved_branch_name = None

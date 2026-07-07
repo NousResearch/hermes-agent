@@ -2106,6 +2106,72 @@ def _run_approval_gate(
         return {"approved": True, "message": None}
 
     if is_gateway or env_var_enabled("HERMES_EXEC_ASK"):
+        # Interactive gateway round-trip when a notify callback is
+        # registered for this session (Discord/Telegram/Slack embed +
+        # buttons, same mechanism as check_dangerous_command). Blocks the
+        # agent thread until the user answers; the agent never sees
+        # "approval_required" on this path — it gets a definitive
+        # approved/BLOCKED outcome.
+        notify_cb = None
+        with _lock:
+            notify_cb = _gateway_notify_cbs.get(session_key)
+
+        if notify_cb is not None:
+            from agent.redact import redact_sensitive_text
+            approval_data = {
+                "command": redact_sensitive_text(display_target),
+                "pattern_key": pattern_key,
+                "pattern_keys": [pattern_key],
+                "description": redact_sensitive_text(description),
+                "allow_permanent": True,
+            }
+            decision = _await_gateway_decision(
+                session_key, notify_cb, approval_data, surface="gateway"
+            )
+            if decision.get("notify_failed"):
+                return {
+                    "approved": False,
+                    "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
+                    "pattern_key": pattern_key,
+                    "description": description,
+                }
+            resolved = decision["resolved"]
+            choice = decision["choice"]
+            deny_reason = decision.get("reason")
+
+            if not resolved or choice is None or choice == "deny":
+                if not resolved:
+                    reason = "timed out without user response"
+                    timeout_addendum = " Silence is not consent."
+                else:
+                    reason = "denied by user"
+                    timeout_addendum = ""
+                reason_addendum = ""
+                if resolved and deny_reason:
+                    reason_addendum = f' Reason given by the user: "{deny_reason}".'
+                return {
+                    "approved": False,
+                    "message": (
+                        f"BLOCKED: Action {reason}.{reason_addendum} The user "
+                        f"has NOT consented to this action. Do NOT retry it, "
+                        f"do NOT rephrase it, and do NOT attempt the same "
+                        f"outcome via a different path.{timeout_addendum}"
+                    ),
+                    "pattern_key": pattern_key,
+                    "description": description,
+                    "user_consent": False,
+                }
+
+            if choice == "session":
+                approve_session(session_key, pattern_key)
+            elif choice == "always":
+                approve_session(session_key, pattern_key)
+                approve_permanent(pattern_key)
+                save_permanent_allowlist(_permanent_approved)
+            return {"approved": True, "message": None}
+
+        # No notify callback (e.g. API server without an attached chat):
+        # queue for /approve /deny review, agent sees approval_required.
         submit_pending(session_key, {
             "command": display_target,
             "pattern_key": pattern_key,

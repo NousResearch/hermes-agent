@@ -142,11 +142,21 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
     """
     provider = str(slot.get("provider") or "").strip()
     model = str(slot.get("model") or "").strip()
+    slot_api_key = str(slot.get("api_key") or "").strip() or None
+    slot_base_url = str(slot.get("base_url") or "").strip() or None
+    slot_api_mode = str(slot.get("api_mode") or "").strip() or None
     out: dict[str, Any] = {"provider": provider, "model": model}
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
-        rt = resolve_runtime_provider(requested=provider, target_model=model)
+        rt = resolve_runtime_provider(
+            requested=provider,
+            target_model=model,
+            explicit_api_key=slot_api_key,
+            explicit_base_url=slot_base_url,
+        )
+        if slot_api_mode:
+            out["api_mode"] = slot_api_mode
         # Forward the resolved endpoint through to call_llm unconditionally.
         # call_llm's _resolve_task_provider_model() is the single chokepoint that
         # decides whether an explicit base_url collapses a call to the generic
@@ -166,7 +176,8 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
             out["base_url"] = rt["base_url"]
         if rt.get("api_key"):
             out["api_key"] = rt["api_key"]
-        if rt.get("api_mode"):
+        # Slot's api_mode overrides resolver's detection when explicitly set
+        if rt.get("api_mode") and not slot_api_mode:
             out["api_mode"] = rt["api_mode"]
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("MoA slot runtime resolution failed for %s: %s", _slot_label(slot), exc)

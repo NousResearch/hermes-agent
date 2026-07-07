@@ -153,7 +153,7 @@ def test_moa_slots_routed_through_resolve_runtime_provider(monkeypatch):
 
     resolved = []
 
-    def fake_resolve(*, requested, target_model=None):
+    def fake_resolve(*, requested, target_model=None, explicit_api_key=None, explicit_base_url=None):
         resolved.append((requested, target_model))
         return {
             "provider": requested,
@@ -186,7 +186,7 @@ def test_moa_codex_slot_preserves_provider_identity(monkeypatch):
     from agent import moa_loop
     from agent.auxiliary_client import _resolve_task_provider_model
 
-    def fake_resolve(*, requested, target_model=None):
+    def fake_resolve(*, requested, target_model=None, explicit_api_key=None, explicit_base_url=None):
         return {
             "provider": requested,
             "api_mode": "codex_responses",
@@ -235,7 +235,7 @@ def test_moa_provider_backed_slot_survives_aux_resolution(monkeypatch, provider)
     from agent import moa_loop
     from agent.auxiliary_client import _resolve_task_provider_model
 
-    def fake_resolve(*, requested, target_model=None):
+    def fake_resolve(*, requested, target_model=None, explicit_api_key=None, explicit_base_url=None):
         return {
             "provider": requested,
             "api_mode": "anthropic_messages",
@@ -266,7 +266,7 @@ def test_moa_slot_runtime_falls_back_on_resolution_error(monkeypatch):
     bare provider/model rather than aborting the whole MoA turn."""
     from agent import moa_loop
 
-    def boom(*, requested, target_model=None):
+    def boom(*, requested, target_model=None, explicit_api_key=None, explicit_base_url=None):
         raise RuntimeError("unknown provider")
 
     monkeypatch.setattr(
@@ -716,7 +716,7 @@ def test_slot_runtime_anthropic_oauth_routes_through_provider_branch(monkeypatch
     from agent import moa_loop
     from agent.auxiliary_client import _resolve_task_provider_model
 
-    def fake_resolve(*, requested, target_model=None):
+    def fake_resolve(*, requested, target_model=None, explicit_api_key=None, explicit_base_url=None):
         return {
             "provider": requested,
             "base_url": "https://resolved.example/v1",

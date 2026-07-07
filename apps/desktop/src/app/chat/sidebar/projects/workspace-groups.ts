@@ -567,6 +567,7 @@ export function overlayLivePreviews(
     }
 
     const liveRows = (byProject.get(node.id) ?? []).filter(session => session.end_reason !== 'compression')
+
     const base = (node.previewSessions ?? []).filter(
       session => session.end_reason !== 'compression' && !removed.has(session.id)
     )

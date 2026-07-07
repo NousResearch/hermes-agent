@@ -2,7 +2,7 @@
 daemons whose Python parent exited without cleaning up."""
 
 import os
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -235,6 +235,51 @@ class TestOrphanedChromiumCleanup:
             _reap_orphaned_browser_sessions()
 
         assert len(chromium_killed) == 0
+
+    def test_only_reparented_chromium_is_killed(self, fake_tmpdir):
+        """_kill_orphaned_chromium_for_session only kills Chromium whose
+        PPID==1 (reparented to init = true orphan), NOT Chromium whose
+        parent is a still-running daemon (live session).
+
+        Regression test for the cross-session kill issue raised in review:
+        without the PPID check, the function would terminate Chromium
+        belonging to *other* live agent-browser sessions.
+        """
+        from tools.browser_tool import _kill_orphaned_chromium_for_session
+
+        # Simulate two Chromium processes:
+        #  - orphan_proc: PPID=1 (daemon died, reparented to init) → should kill
+        #  - live_proc:   PPID=99999 (daemon alive) → must NOT kill
+        orphan_proc = MagicMock()
+        orphan_proc.info = {
+            "pid": 2001, "name": "chrome", "cmdline": [
+                "/usr/bin/chromium", "--headless",
+                "--user-data-dir=/tmp/agent-browser-chrome-aaaa1111",
+            ], "ppid": 1,
+        }
+        live_proc = MagicMock()
+        live_proc.info = {
+            "pid": 2002, "name": "chrome", "cmdline": [
+                "/usr/bin/chromium", "--headless",
+                "--user-data-dir=/tmp/agent-browser-chrome-bbbb2222",
+            ], "ppid": 99999,
+        }
+
+        terminated_pids = []
+
+        def fake_terminate():
+            terminated_pids.append(orphan_proc.info["pid"])
+
+        orphan_proc.terminate = fake_terminate
+        live_proc.terminate = MagicMock()  # should never be called
+
+        with patch("psutil.process_iter", return_value=[orphan_proc, live_proc]), \
+             patch("psutil.wait_procs", return_value=([], [])):
+            result = _kill_orphaned_chromium_for_session("/tmp/fake", "h_test1234")
+
+        assert result == 1  # only the orphan was killed
+        assert 2001 in terminated_pids
+        live_proc.terminate.assert_not_called()
 
 
 class TestOwnerPidCrossProcess:

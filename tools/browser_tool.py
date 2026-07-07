@@ -1639,12 +1639,16 @@ def _kill_orphaned_chromium_for_session(socket_dir: str, session_name: str) -> i
     This function scans running processes for Chromium instances whose
     ``--user-data-dir`` command-line argument references the
     ``agent-browser-chrome-*`` pattern that agent-browser assigns to its
-    spawned Chromium, and terminates them via ``psutil``.
+    spawned Chromium, **and whose parent PID is 1** (init — meaning the
+    daemon that spawned them is gone and they were reparented).  This
+    prevents killing Chromium instances belonging to *other* live
+    agent-browser sessions, whose parent PID is still the alive daemon.
 
-    Security: matches on the ``agent-browser-chrome-`` prefix in the process
-    command line, which is specific to agent-browser-spawned Chromium and
-    distinct from user-installed Chrome/Chromium.  Same-user only (psutil
-    can only signal same-user processes).
+    Security: the ``agent-browser-chrome-`` prefix is specific to
+    agent-browser-spawned Chromium and distinct from user-installed
+    Chrome/Chromium.  The PPID==1 check ensures we only kill true orphans,
+    not Chromium children of a still-running daemon.  Same-user only
+    (psutil can only signal same-user processes).
 
     Returns the number of Chromium processes killed.
     """
@@ -1661,16 +1665,26 @@ def _kill_orphaned_chromium_for_session(socket_dir: str, session_name: str) -> i
     # without re-scanning the entire process table.
     terminated_procs = []
 
-    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+    for proc in psutil.process_iter(["pid", "name", "cmdline", "ppid"]):
         try:
             cmdline = " ".join(proc.info["cmdline"] or [])
-            if "agent-browser-chrome-" in cmdline and "--user-data-dir=" in cmdline:
-                proc.terminate()
-                terminated_procs.append(proc)
-                killed += 1
-                logger.info(
-                    "Killed orphaned Chromium PID %d (session %s, daemon gone)",
-                    proc.info["pid"], session_name)
+            # Match agent-browser-spawned Chromium by its user-data-dir pattern.
+            if "agent-browser-chrome-" not in cmdline:
+                continue
+            if "--user-data-dir=" not in cmdline:
+                continue
+            # Only kill true orphans: Chromium whose parent (the daemon)
+            # has died, causing reparenting to PID 1 (init).  Chromium
+            # belonging to a *live* daemon still has the daemon as its
+            # parent and must not be touched.
+            if proc.info["ppid"] != 1:
+                continue
+            proc.terminate()
+            terminated_procs.append(proc)
+            killed += 1
+            logger.info(
+                "Killed orphaned Chromium PID %d (session %s, daemon gone)",
+                proc.info["pid"], session_name)
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
         except Exception as exc:

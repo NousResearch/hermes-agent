@@ -115,7 +115,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       // One submit in flight per session — drop any concurrent re-fire so a
       // stalled turn can't stack the same prompt into multiple real turns.
-      const submitLockKey = selectedStoredSessionIdRef.current || activeSessionId || '__pending_new__'
+      const submitLockKey = selectedStoredSessionIdRef.current || activeSessionId || activeSessionIdRef.current || '__pending_new__'
 
       if (_submitInFlight.has(submitLockKey)) {
         return false
@@ -207,7 +207,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       clearSessionReplyReady(selectedStoredSessionIdRef.current ?? activeSessionIdRef.current)
       clearNotifications()
 
-      let sessionId: null | string = activeSessionId
+      let sessionId: null | string = activeSessionId || activeSessionIdRef.current
 
       if (sessionId) {
         seedOptimistic(sessionId)

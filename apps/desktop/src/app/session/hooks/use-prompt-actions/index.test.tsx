@@ -65,6 +65,7 @@ interface HarnessHandle {
 }
 
 function Harness({
+  activeSessionId = RUNTIME_SESSION_ID,
   busyRef,
   createBackendSessionForSend,
   onReady,
@@ -76,10 +77,11 @@ function Harness({
   seedMessages,
   storedSessionId
 }: {
+  activeSessionId?: null | string
   busyRef?: MutableRefObject<boolean>
   createBackendSessionForSend?: (preview?: string | null) => Promise<string | null>
   onReady: (handle: HarnessHandle) => void
-  onSeedState?: (state: Record<string, unknown>) => void
+  onSeedState?: (state: Record<string, unknown>, sessionId: string) => void
   openMemoryGraph?: () => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -103,7 +105,7 @@ function Harness({
   } as never)
 
   const actions = usePromptActions({
-    activeSessionId: RUNTIME_SESSION_ID,
+    activeSessionId,
     activeSessionIdRef,
     branchCurrentSession: async () => true,
     busyRef: localBusyRef,
@@ -116,11 +118,11 @@ function Harness({
     selectedStoredSessionIdRef,
     startFreshSessionDraft: () => undefined,
     sttEnabled: false,
-    updateSessionState: (_sessionId, updater) => {
+    updateSessionState: (sessionId, updater) => {
       // Seed with interrupted:true so we can prove a fresh submit clears it.
       const next = updater(stateRef.current) as unknown as Record<string, unknown>
       stateRef.current = next as never
-      onSeedState?.(next)
+      onSeedState?.(next, sessionId)
 
       return next as never
     }
@@ -541,6 +543,49 @@ describe('usePromptActions submit / queue drain semantics', () => {
       {
         session_id: RUNTIME_SESSION_ID,
         text: 'queued message'
+      },
+      1_800_000
+    )
+  })
+
+  it('a fromQueue drain uses the live session ref when rendered activeSessionId is stale', async () => {
+    const seeds: Array<{ sessionId: string; state: Record<string, unknown> }> = []
+    const createBackendSessionForSend = vi.fn(async () => 'new-session-should-not-be-created')
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        createBackendSessionForSend={createBackendSessionForSend}
+        onReady={h => (handle = h)}
+        onSeedState={(state, sessionId) => seeds.push({ sessionId, state })}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const accepted = await handle!.submitText('queued after continuation', { fromQueue: true })
+
+    expect(accepted).toBe(true)
+    expect(createBackendSessionForSend).not.toHaveBeenCalled()
+    expect(seeds.some(seed => seed.sessionId === RUNTIME_SESSION_ID)).toBe(true)
+    expect(
+      seeds.some(
+        seed =>
+          seed.sessionId === RUNTIME_SESSION_ID &&
+          Array.isArray(seed.state.messages) &&
+          seed.state.messages.some(
+            (message: { parts?: Array<{ text?: string }> }) =>
+              message.parts?.some(part => part.text === 'queued after continuation')
+          )
+      )
+    ).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'queued after continuation'
       },
       1_800_000
     )

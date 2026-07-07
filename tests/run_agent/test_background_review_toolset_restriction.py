@@ -173,7 +173,7 @@ def test_background_review_excludes_memory_when_disabled():
 
     captured = {}
 
-    def _capture_whitelist(whitelist, deny_msg_fmt=None):
+    def _capture_whitelist(whitelist, deny_msg_fmt=None, block_callback=None):
         captured["whitelist"] = set(whitelist)
         raise RuntimeError("stop after capturing whitelist")
 
@@ -208,7 +208,7 @@ def test_background_review_includes_memory_when_user_profile_enabled():
 
     captured = {}
 
-    def _capture_whitelist(whitelist, deny_msg_fmt=None):
+    def _capture_whitelist(whitelist, deny_msg_fmt=None, block_callback=None):
         captured["whitelist"] = set(whitelist)
         raise RuntimeError("stop after capturing whitelist")
 

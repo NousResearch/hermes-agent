@@ -26,7 +26,14 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
+import {
+  ChevronsDown,
+  ChevronsUp,
+  Copy,
+  PanelRight,
+  RotateCcw,
+  X,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
@@ -363,6 +370,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     copyResetRef.current = setTimeout(() => setCopyState("idle"), 1500);
     termRef.current?.focus();
   };
+
+  const scrollChatToTop = useCallback(() => {
+    termRef.current?.scrollToTop();
+    termRef.current?.focus();
+  }, []);
+
+  const scrollChatToBottom = useCallback(() => {
+    termRef.current?.scrollToBottom();
+    termRef.current?.focus();
+  }, []);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -1001,9 +1018,67 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           }}
         >
           <div
+            aria-hidden="true"
+            className={cn(
+              "pointer-events-none absolute inset-0 z-20 flex items-center justify-center overflow-hidden",
+              "select-none text-center font-mondwest uppercase tracking-[0.18em]",
+              "opacity-[0.055] mix-blend-screen",
+            )}
+          >
+            <div className="rotate-[-8deg] space-y-2 px-6">
+              <div className="text-[clamp(3rem,14vw,11rem)] font-bold leading-[0.72] text-midground">
+                Mini App
+              </div>
+              <div className="text-[clamp(2rem,9vw,7rem)] font-bold leading-[0.72] text-midground">
+                Chat
+              </div>
+              <div className="mx-auto mt-5 w-fit border-y border-current/60 py-2 text-[clamp(0.7rem,2vw,1.25rem)] text-text-secondary">
+                the workspace advertisement
+              </div>
+            </div>
+          </div>
+
+          <div
             ref={hostRef}
-            className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
+            className="hermes-chat-xterm-host relative z-10 min-h-0 min-w-0 flex-1"
           />
+
+          <div
+            className={cn(
+              "absolute left-3 top-1/2 z-30 flex -translate-y-1/2 flex-col gap-3",
+              "sm:left-4 lg:left-5",
+            )}
+            aria-label="Chat transcript scroll controls"
+          >
+            <Button
+              onClick={scrollChatToTop}
+              title="Scroll chat transcript to top"
+              aria-label="Scroll chat transcript to top"
+              className={cn(
+                "h-16 min-w-20 flex-col gap-1 rounded-xl border-2 border-current/50 px-3 py-2",
+                "bg-black/55 text-[0.7rem] font-bold uppercase tracking-[0.16em] text-white backdrop-blur-md",
+                "shadow-[0_0_22px_rgba(255,255,255,0.16)] hover:border-current hover:bg-black/75",
+                "sm:h-20 sm:min-w-24 sm:text-xs",
+              )}
+            >
+              <ChevronsUp className="h-5 w-5 sm:h-6 sm:w-6" />
+              Top
+            </Button>
+            <Button
+              onClick={scrollChatToBottom}
+              title="Scroll chat transcript to bottom"
+              aria-label="Scroll chat transcript to bottom"
+              className={cn(
+                "h-16 min-w-20 flex-col gap-1 rounded-xl border-2 border-current/50 px-3 py-2",
+                "bg-black/55 text-[0.7rem] font-bold uppercase tracking-[0.16em] text-white backdrop-blur-md",
+                "shadow-[0_0_22px_rgba(255,255,255,0.16)] hover:border-current hover:bg-black/75",
+                "sm:h-20 sm:min-w-24 sm:text-xs",
+              )}
+            >
+              <ChevronsDown className="h-5 w-5 sm:h-6 sm:w-6" />
+              Bottom
+            </Button>
+          </div>
 
           {/* NS-504: the agent process exited (e.g. `/exit` or a new session).
               Offer an in-place restart so the user never has to refresh the
@@ -1029,7 +1104,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             title="Copy last assistant response as raw markdown"
             aria-label="Copy last assistant response"
             className={cn(
-              "absolute z-10",
+              "absolute z-30",
               "normal-case tracking-normal font-normal",
               "rounded border border-current/30",
               "bg-black/20 backdrop-blur-sm",

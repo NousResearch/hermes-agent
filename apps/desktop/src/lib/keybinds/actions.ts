@@ -131,7 +131,10 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   { id: 'composer.help', category: 'composer', keys: ['?'] },
   { id: 'composer.history', category: 'composer', keys: ['up', 'down'] },
   { id: 'composer.cancel', category: 'composer', keys: ['escape'] },
+  { id: 'approval.runOnce', category: 'composer', keys: ['mod+enter'] },
+  { id: 'approval.reject', category: 'composer', keys: ['escape'] },
   // Fixed, context-local shortcuts surfaced for discoverability.
+  { id: 'view.refreshCurrent', category: 'view', keys: ['r'] },
   { id: 'view.terminalSelection', category: 'view', keys: ['mod+l'] },
   { id: 'view.closePreviewTab', category: 'view', keys: ['mod+w'] }
 ]

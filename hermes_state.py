@@ -3474,6 +3474,7 @@ class SessionDB:
         sort: str = None,
         include_inactive: bool = False,
         session_ids: Optional[List[str]] = None,
+        since_timestamp: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
@@ -3506,6 +3507,11 @@ class SessionDB:
         Pass ``session_ids`` to restrict results to a deterministic set of
         sessions (for example, a Mini App project-linked session list). An empty
         list is an explicit empty scope and returns no results.
+
+        Pass ``since_timestamp`` to restrict matches to messages at or after a
+        Unix timestamp. This is used by the Mini App's recent-chat search so a
+        keyword lookup can stay focused on the last couple of days without
+        scanning or surfacing old conversations.
         """
         if not self._fts_enabled:
             return []
@@ -3566,6 +3572,16 @@ class SessionDB:
             session_placeholders = ",".join("?" for _ in session_ids)
             where_clauses.append(f"m.session_id IN ({session_placeholders})")
             params.extend(session_ids)
+
+        valid_since_timestamp: Optional[float] = None
+        if since_timestamp is not None:
+            try:
+                valid_since_timestamp = float(since_timestamp)
+            except (TypeError, ValueError):
+                valid_since_timestamp = None
+        if valid_since_timestamp is not None:
+            where_clauses.append("m.timestamp >= ?")
+            params.append(valid_since_timestamp)
 
         where_sql = " AND ".join(where_clauses)
         params.extend([limit, offset])
@@ -3647,6 +3663,9 @@ class SessionDB:
                         return []
                     tri_where.append(f"m.session_id IN ({','.join('?' for _ in session_ids)})")
                     tri_params.extend(session_ids)
+                if valid_since_timestamp is not None:
+                    tri_where.append("m.timestamp >= ?")
+                    tri_params.append(valid_since_timestamp)
                 tri_sql = f"""
                     SELECT
                         m.id,
@@ -3709,6 +3728,9 @@ class SessionDB:
                         return []
                     like_where.append(f"m.session_id IN ({','.join('?' for _ in session_ids)})")
                     like_params.extend(session_ids)
+                if valid_since_timestamp is not None:
+                    like_where.append("m.timestamp >= ?")
+                    like_params.append(valid_since_timestamp)
                 like_sql = f"""
                     SELECT m.id, m.session_id, m.role,
                            substr(m.content,

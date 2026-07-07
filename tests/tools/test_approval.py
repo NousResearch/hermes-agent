@@ -220,6 +220,62 @@ class TestMiniAppExternalApprovalBridge:
         assert choice == "session"
         assert not request_path.exists()
 
+    def test_external_bridge_routes_generic_gateway_session_to_configured_miniapp_target(self, tmp_path, monkeypatch):
+        session_key = "20260703_212049_f27888"
+        miniapp_session_key = "miniapp-8578467390-970"
+        request_path = tmp_path / f"{miniapp_session_key}.json"
+
+        monkeypatch.setenv("MINI_APP_AGENT_APPROVAL_DIR", str(tmp_path))
+        monkeypatch.setenv("MINI_APP_INTERNAL_BASE_URL", "http://127.0.0.1:8787")
+        monkeypatch.setenv("MINI_APP_OPERATOR_API_TOKEN", "operator-token")
+        monkeypatch.setenv("MINI_APP_APPROVAL_SESSION_ID", miniapp_session_key)
+        monkeypatch.setattr(approval_module, "_get_approval_config", lambda: {"gateway_timeout": 1})
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                data = json.loads(request_path.read_text(encoding="utf-8"))
+                assert data["session_id"] == miniapp_session_key
+                data["choice"] = "once"
+                data["status"] = "resolved"
+                request_path.write_text(json.dumps(data), encoding="utf-8")
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        captured_payload: dict[str, object] = {}
+
+        def fake_urlopen(req, timeout):
+            assert req.full_url == "http://127.0.0.1:8787/api/chat/external-approval"
+            captured_payload.update(json.loads(req.data.decode("utf-8")))
+            return FakeResponse()
+
+        monkeypatch.setattr(approval_module.urllib.request, "urlopen", fake_urlopen)
+
+        choice = approval_module._publish_miniapp_external_approval(
+            session_key=session_key,
+            command="rm -rf /tmp/demo",
+            pattern_key="rm-rf",
+            pattern_keys=["rm-rf"],
+            description="delete in root path",
+            allow_permanent=True,
+        )
+
+        assert choice == "once"
+        assert captured_payload["session_id"] == miniapp_session_key
+        assert not request_path.exists()
+
+    def test_external_bridge_can_build_target_from_gateway_user_and_configured_chat(self, monkeypatch):
+        monkeypatch.setenv("MINI_APP_APPROVAL_CHAT_ID", "970")
+        monkeypatch.setenv("HERMES_SESSION_USER_ID", "8578467390")
+
+        assert (
+            approval_module._resolve_miniapp_external_approval_session_key("20260703_212049_f27888")
+            == "miniapp-8578467390-970"
+        )
+
 
 class TestRmFalsePositiveFix:
     """Regression tests: filenames starting with 'r' must NOT trigger recursive delete."""

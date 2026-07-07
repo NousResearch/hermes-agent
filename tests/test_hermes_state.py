@@ -1027,6 +1027,26 @@ class TestFTS5Search:
 
         assert db.search_messages("sharedtopic", session_ids=[]) == []
 
+    def test_search_with_since_timestamp_filters_old_messages(self, db):
+        db.create_session(session_id="recent", source="telegram")
+        db.append_message(
+            "recent",
+            role="user",
+            content="recentkeyword from today",
+            timestamp=2_000.0,
+        )
+        db.create_session(session_id="old", source="telegram")
+        db.append_message(
+            "old",
+            role="user",
+            content="recentkeyword from last week",
+            timestamp=1_000.0,
+        )
+
+        results = db.search_messages("recentkeyword", since_timestamp=1_500.0)
+
+        assert {row["session_id"] for row in results} == {"recent"}
+
     def test_search_default_sources_include_acp(self, db):
         db.create_session(session_id="s1", source="acp")
         db.append_message("s1", role="user", content="ACP question about Python")

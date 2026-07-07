@@ -162,7 +162,7 @@ class TestJudgeGoal:
         assert verdict == "continue"
 
     def test_no_aux_client_continues(self):
-        """Fail-open: if no aux client, we must return continue, not skipped/done."""
+        """Fail-open: if no aux client, continue under the normal goal budget."""
         from hermes_cli import goals
 
         with patch(
@@ -173,7 +173,7 @@ class TestJudgeGoal:
         assert verdict == "continue"
 
     def test_api_error_continues(self):
-        """Judge exception → fail-open continue (don't wedge progress on judge bugs)."""
+        """Judge exception → fail-open continue; don't wedge progress on judge bugs."""
         from hermes_cli import goals
 
         fake_client = MagicMock()
@@ -356,6 +356,44 @@ class TestGoalManager:
             assert mgr.state.turns_used == 2
             assert "budget" in (mgr.state.paused_reason or "").lower()
 
+    def test_budget_exhausted_even_when_judge_skipped(self, hermes_home):
+        """Fail-open judge outages still obey the hard /goal turn budget."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="eval-skipped-budget-sid", default_max_turns=1)
+        mgr.set("hard goal")
+
+        with patch.object(
+            goals, "judge_goal", return_value=("skipped", "aux unavailable", False, None)
+        ):
+            d = mgr.evaluate_after_turn("still going")
+
+        assert d["should_continue"] is False
+        assert d["status"] == "paused"
+        assert mgr.state is not None
+        assert mgr.state.status == "paused"
+        assert mgr.state.turns_used == 1
+        assert "budget" in (mgr.state.paused_reason or "").lower()
+
+    def test_budget_exhausted_even_when_judge_done_but_response_is_partial(self, hermes_home):
+        """The slice-complete guard must not bypass the hard turn budget."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="eval-partial-budget-sid", default_max_turns=1)
+        mgr.set("Workhorse goal: finish every acceptance checklist item with concrete evidence")
+
+        with patch.object(goals, "judge_goal", return_value=("done", "slice accepted", False, None)):
+            d = mgr.evaluate_after_turn("Goal is complete for this slice. Next step: final smoke.")
+
+        assert d["should_continue"] is False
+        assert d["status"] == "paused"
+        assert mgr.state is not None
+        assert mgr.state.status == "paused"
+        assert mgr.state.turns_used == 1
+        assert "budget" in (mgr.state.paused_reason or "").lower()
+
     def test_evaluate_after_turn_inactive(self, hermes_home):
         """evaluate_after_turn is a no-op when goal isn't active."""
         from hermes_cli.goals import GoalManager
@@ -444,8 +482,8 @@ class TestJudgeParseFailureAutoPause:
         assert verdict == "continue"
         assert parse_failed is False
 
-    def test_api_error_does_not_count_as_parse_failure(self):
-        """Transient network/API errors must not trip the auto-pause guard."""
+    def test_api_error_continues_without_parse_failure(self):
+        """Transport/API errors continue and are not judge parse failures."""
         from hermes_cli import goals
 
         fake_client = MagicMock()
@@ -527,8 +565,8 @@ class TestJudgeParseFailureAutoPause:
             assert d["should_continue"] is True
             assert mgr.state.consecutive_parse_failures == 0
 
-    def test_parse_failure_counter_not_incremented_by_api_errors(self, hermes_home):
-        """API/transport errors must NOT count toward the auto-pause threshold."""
+    def test_judge_unavailable_continues_under_budget(self, hermes_home):
+        """API/transport errors must not pause the goal loop immediately."""
         from hermes_cli import goals
         from hermes_cli.goals import GoalManager
 
@@ -541,8 +579,132 @@ class TestJudgeParseFailureAutoPause:
             for _ in range(5):
                 d = mgr.evaluate_after_turn("still going")
                 assert d["should_continue"] is True
+                assert d["status"] == "active"
+                assert d["verdict"] == "continue"
+            assert mgr.state is not None
             assert mgr.state.consecutive_parse_failures == 0
             assert mgr.state.status == "active"
+
+    def test_legacy_skipped_judge_verdict_continues_under_budget(self, hermes_home):
+        """Even a legacy skipped verdict must not pause solely due judge outage."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="judge-skipped-continues-sid", default_max_turns=20)
+        mgr.set("goal")
+
+        with patch.object(
+            goals, "judge_goal", return_value=("skipped", "auxiliary client unavailable", False, None)
+        ):
+            d = mgr.evaluate_after_turn("still going")
+
+        assert d["should_continue"] is True
+        assert d["status"] == "active"
+        assert d["verdict"] == "continue"
+        assert "judge unavailable" in d["message"]
+        assert mgr.state is not None
+        assert mgr.state.status == "active"
+
+    def test_judge_unavailable_stops_when_worker_reports_goal_complete(self, hermes_home):
+        """Regression: don't keep looping when the worker explicitly says complete."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="judge-unavailable-done-sid", default_max_turns=20)
+        mgr.set("finish the project refactor")
+
+        last_response = """Goal is complete.
+
+Validation passed:
+- Focused tests passed.
+- Browser QA passed.
+
+Live-readiness verdict: Ready for review.
+"""
+        judge = MagicMock(return_value=("skipped", "auxiliary client unavailable", False, None))
+        with patch.object(goals, "judge_goal", judge):
+            d = mgr.evaluate_after_turn(last_response)
+
+        judge.assert_not_called()
+        assert d["should_continue"] is False
+        assert d["status"] == "done"
+        assert d["verdict"] == "done"
+        assert mgr.state is not None
+        assert mgr.state.status == "done"
+
+    def test_workhorse_pass_fail_label_does_not_mask_explicit_completion(self, hermes_home):
+        """Regression: the phrase PASS/FAIL evidence table is not a failed row."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="pass-fail-label-complete-sid", default_max_turns=20)
+        mgr.set("Workhorse goal: finish every acceptance checklist item with concrete evidence")
+
+        last_response = """Goal is complete. Stopping. Every acceptance item is PASS.
+
+| Checklist item | Status | Evidence |
+|---|---:|---|
+| Final answer includes a PASS/FAIL evidence table for every checklist item. | PASS | This table. |
+| Worktree is clean or every remaining diff is explicitly listed as intentional. | PASS | No untracked scope changes. |
+
+No further action is required.
+"""
+        judge = MagicMock(return_value=("continue", "judge would have continued", False, None))
+        with patch.object(goals, "judge_goal", judge):
+            d = mgr.evaluate_after_turn(last_response)
+
+        judge.assert_not_called()
+        assert d["should_continue"] is False
+        assert d["status"] == "done"
+        assert d["verdict"] == "done"
+        assert mgr.state is not None
+        assert mgr.state.status == "done"
+
+    def test_slice_complete_language_does_not_complete_end_to_end_goal(self, hermes_home):
+        """A completed slice is progress, not completion of an end-to-end workhorse goal."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="slice-complete-is-not-done-sid", default_max_turns=20)
+        mgr.set("Own the Mini App legacy-framework sunset end-to-end until every acceptance item is PASS")
+
+        last_response = """Goal is complete for this slice.
+
+Completed the next Mini App legacy-framework sunset slice end-to-end.
+Focused QA passed for the slice. Remaining work: final import audit and live smoke.
+"""
+        judge = MagicMock(return_value=("done", "the response says goal complete", False, None))
+        with patch.object(goals, "judge_goal", judge):
+            d = mgr.evaluate_after_turn(last_response)
+
+        judge.assert_called_once()
+        assert d["should_continue"] is True
+        assert d["status"] == "active"
+        assert d["verdict"] == "continue"
+        assert "partial" in d["reason"].lower() or "slice" in d["reason"].lower()
+        assert mgr.state is not None
+        assert mgr.state.status == "active"
+
+    def test_goal_condition_for_slice_language_does_not_complete_workhorse_goal(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="goal-condition-slice-not-done-sid", default_max_turns=20)
+        mgr.set("Workhorse goal: finish every acceptance checklist item with concrete evidence")
+
+        judge = MagicMock(return_value=("done", "judge accepted the slice summary", False, None))
+        with patch.object(goals, "judge_goal", judge):
+            d = mgr.evaluate_after_turn(
+                "Goal condition for this slice is met. Next step: run the full focused suite."
+            )
+
+        judge.assert_called_once()
+        assert d["should_continue"] is True
+        assert d["status"] == "active"
+        assert d["verdict"] == "continue"
+        assert "slice" in d["reason"].lower()
+        assert mgr.state is not None
+        assert mgr.state.status == "active"
 
     def test_consecutive_parse_failures_persists_across_goalmanager_reloads(
         self, hermes_home

@@ -15,8 +15,9 @@ Design notes / invariants:
 - The continuation prompt is just a normal user message appended to the
   session via ``run_conversation``. No system-prompt mutation, no toolset
   swap — prompt caching stays intact.
-- Judge failures are fail-OPEN: ``continue``. A broken judge must not wedge
-  progress; the turn budget is the backstop.
+- Judge failures are fail-OPEN: continue under the normal turn budget. A
+  broken side-LLM judge must not wedge progress; explicit worker completion
+  and the turn budget remain the backstops.
 - When a real user message arrives mid-loop it preempts the continuation
   prompt and also pauses the goal loop for that turn (we still re-judge
   after, so if the user's message happens to complete the goal the judge
@@ -66,6 +67,36 @@ _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 # exhausted with every reply shaped like `judge returned empty response` or
 # `judge reply was not JSON`.
 DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
+
+_GOAL_COMPLETE_PATTERNS = [
+    re.compile(r"^\s*(?:[#>*\-\s]*)?goal\s+(?:is\s+)?complete(?:d)?\b", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"^\s*(?:[#>*\-\s]*)?goal\s+complete(?:d)?\s*[:.!-]", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"^\s*(?:[#>*\-\s]*)?live-readiness\s+verdict\s*:\s*ready\b", re.IGNORECASE | re.MULTILINE),
+]
+
+_SLICE_COMPLETION_PATTERNS = [
+    re.compile(r"\b(?:for|of)\s+this\s+slice\b", re.IGNORECASE),
+    re.compile(r"\bnext\s+[^\n.]{0,80}\bslice\b", re.IGNORECASE),
+    re.compile(r"\bslice\s+(?:is\s+)?(?:complete|completed|done)\b", re.IGNORECASE),
+    re.compile(r"\b(?:remaining|follow[- ]?up|next)\s+work\b", re.IGNORECASE),
+]
+
+_INCOMPLETE_EVIDENCE_PATTERNS = [
+    # Markdown evidence tables usually put the status in its own cell. Keep
+    # this narrower than a bare word match so phrases like "PASS/FAIL evidence
+    # table" in the checklist don't falsely turn a completed workhorse run into
+    # another continuation loop.
+    re.compile(r"\|\s*(?:fail|unknown|pending)\s*\|", re.IGNORECASE),
+    re.compile(r"^\s*[-*]\s*\[[ x-]?\]\s+.*\b(?:fail|unknown|pending)\b", re.IGNORECASE | re.MULTILINE),
+]
+
+_END_TO_END_GOAL_PATTERNS = [
+    re.compile(r"\bend[- ]to[- ]end\b", re.IGNORECASE),
+    re.compile(r"\be2e\b", re.IGNORECASE),
+    re.compile(r"\bevery\s+acceptance\b", re.IGNORECASE),
+    re.compile(r"\ball\s+(?:acceptance\s+)?(?:criteria|items)\b", re.IGNORECASE),
+    re.compile(r"\bworkhorse\b", re.IGNORECASE),
+]
 
 
 CONTINUATION_PROMPT_TEMPLATE = (
@@ -787,6 +818,33 @@ def _parse_judge_response(raw: str) -> Tuple[str, str, bool, Optional[Dict[str, 
     return "continue", f"{reason} (wait verdict had no target — continuing)", False, None
 
 
+def _response_declares_goal_complete(last_response: str) -> bool:
+    """Return True when the worker explicitly says the standing goal is done.
+
+    This is intentionally narrow: it only recognizes summary/handoff language
+    the /goal continuation prompt asks workers to use ("Goal is complete", or
+    the Mini App review verdict format). It is a fallback for judge outages,
+    not a replacement for the normal judge decision.
+    """
+    text = (last_response or "").strip()
+    if not text:
+        return False
+    return any(pattern.search(text) for pattern in _GOAL_COMPLETE_PATTERNS)
+
+
+def _response_indicates_partial_completion(goal: str, last_response: str) -> bool:
+    """Return True when a final-looking response is only slice/progress work."""
+    goal_text = (goal or "").strip()
+    response_text = (last_response or "").strip()
+    if not goal_text or not response_text:
+        return False
+    if not any(pattern.search(goal_text) for pattern in _END_TO_END_GOAL_PATTERNS):
+        return False
+    return any(pattern.search(response_text) for pattern in _SLICE_COMPLETION_PATTERNS) or any(
+        pattern.search(response_text) for pattern in _INCOMPLETE_EVIDENCE_PATTERNS
+    )
+
+
 def _render_background_block(background_processes: Optional[List[Dict[str, Any]]]) -> str:
     """Render the live background-process list for the judge prompt.
 
@@ -867,9 +925,11 @@ def judge_goal(
     judge prompt; when none are set, behavior is identical to the original
     free-form judge.
 
-    This is deliberately fail-open: any error returns ``("continue", ..., False, None)``
-    so a broken judge doesn't wedge progress — the turn budget and the
-    consecutive-parse-failures auto-pause are the backstops.
+    This is deliberately fail-open for transport/config errors: callers keep
+    working under the normal turn budget instead of pausing the whole /goal
+    loop because a side-LLM judge is unavailable. Explicit worker completion
+    is detected locally before the judge call, so completed handoffs still stop
+    cleanly even during judge outages.
     """
     if not goal.strip():
         return "skipped", "empty goal", False, None
@@ -1440,6 +1500,45 @@ class GoalManager:
         # Count the turn that just finished.
         state.turns_used += 1
         state.last_turn_at = time.time()
+        partial_completion = _response_indicates_partial_completion(state.goal, last_response)
+
+        def _pause_for_budget(reason_text: str, verdict_text: str = "continue") -> Dict[str, Any]:
+            state.status = "paused"
+            state.paused_reason = f"turn budget exhausted ({state.turns_used}/{state.max_turns})"
+            state.last_verdict = verdict_text
+            state.last_reason = reason_text
+            save_goal(self.session_id, state)
+            return {
+                "status": "paused",
+                "should_continue": False,
+                "continuation_prompt": None,
+                "verdict": verdict_text,
+                "reason": reason_text,
+                "message": (
+                    f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used. "
+                    "Use /goal resume to keep going, or /goal clear to stop."
+                ),
+            }
+
+        # The continuation prompt explicitly tells workers to say so and stop
+        # when they believe the goal is complete. Honor that narrow handoff
+        # signal locally instead of requiring a side-LLM judge to agree; this
+        # prevents complete handoffs from being re-run until the budget is
+        # exhausted when the judge is down or flaky.
+        if _response_declares_goal_complete(last_response) and not partial_completion:
+            reason = "worker explicitly reported goal completion"
+            state.last_verdict = "done"
+            state.last_reason = reason
+            state.status = "done"
+            save_goal(self.session_id, state)
+            return {
+                "status": "done",
+                "should_continue": False,
+                "continuation_prompt": None,
+                "verdict": "done",
+                "reason": reason,
+                "message": f"✓ Goal achieved: {reason}",
+            }
 
         verdict, reason, parse_failed, wait_directive = judge_goal(
             state.goal,
@@ -1458,6 +1557,26 @@ class GoalManager:
             state.consecutive_parse_failures += 1
         else:
             state.consecutive_parse_failures = 0
+
+        if verdict == "skipped":
+            # Historical versions of judge_goal returned "skipped" for
+            # unavailable auxiliary clients. Treat that as fail-open too so an
+            # older/monkeypatched judge path cannot reintroduce the wedge where
+            # /goal pauses solely because a side-LLM judge is down. Explicit
+            # completion is handled above before the judge is called.
+            if state.turns_used >= state.max_turns:
+                return _pause_for_budget(reason, "continue")
+            state.last_verdict = "continue"
+            state.last_reason = reason
+            save_goal(self.session_id, state)
+            return {
+                "status": "active",
+                "should_continue": True,
+                "continuation_prompt": self.next_continuation_prompt(),
+                "verdict": "continue",
+                "reason": reason,
+                "message": f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): judge unavailable ({reason})",
+            }
 
         # WAIT verdict: the judge decided the agent is blocked on async work
         # and re-poking now would be busy-work. Set the barrier and park —
@@ -1482,6 +1601,22 @@ class GoalManager:
                 "verdict": "wait",
                 "reason": reason,
                 "message": f"⏳ Goal parked (judge) — waiting on {tgt}: {reason}",
+            }
+
+        if verdict == "done" and partial_completion:
+            reason = f"partial/slice completion is not enough for this end-to-end goal ({reason})"
+            if state.turns_used >= state.max_turns:
+                return _pause_for_budget(reason, "continue")
+            state.last_verdict = "continue"
+            state.last_reason = reason
+            save_goal(self.session_id, state)
+            return {
+                "status": "active",
+                "should_continue": True,
+                "continuation_prompt": self.next_continuation_prompt(),
+                "verdict": "continue",
+                "reason": reason,
+                "message": f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {reason}",
             }
 
         if verdict == "done":
@@ -1527,20 +1662,7 @@ class GoalManager:
             }
 
         if state.turns_used >= state.max_turns:
-            state.status = "paused"
-            state.paused_reason = f"turn budget exhausted ({state.turns_used}/{state.max_turns})"
-            save_goal(self.session_id, state)
-            return {
-                "status": "paused",
-                "should_continue": False,
-                "continuation_prompt": None,
-                "verdict": "continue",
-                "reason": reason,
-                "message": (
-                    f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used. "
-                    "Use /goal resume to keep going, or /goal clear to stop."
-                ),
-            }
+            return _pause_for_budget(reason, "continue")
 
         save_goal(self.session_id, state)
         return {

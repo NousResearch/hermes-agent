@@ -210,7 +210,8 @@ export const zh: Translations = {
       'view.toggleRightSidebar': '切换文件浏览器',
       'view.showFiles': '显示文件浏览器',
       'view.showTerminal': '显示终端',
-      'view.terminalSelection': '将终端选区发送到输入框',
+      'view.refreshCurrent': '刷新当前视图',
+      'view.terminalSelection': '将终端/文件选区发送到输入框',
       'view.closePreviewTab': '关闭预览标签',
       'view.flipPanes': '交换侧边栏位置',
       'appearance.toggleMode': '切换浅色/深色',
@@ -245,7 +246,9 @@ export const zh: Translations = {
       'composer.slash': '斜杠命令面板',
       'composer.help': '快速帮助',
       'composer.history': '切换弹窗/历史',
-      'composer.cancel': '关闭弹窗·取消运行'
+      'composer.cancel': '关闭弹窗·取消运行',
+      'approval.runOnce': '批准本次命令',
+      'approval.reject': '拒绝待处理命令'
     }
   },
 

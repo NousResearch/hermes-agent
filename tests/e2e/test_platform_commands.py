@@ -17,6 +17,7 @@ import pytest
 
 from gateway.config import Platform
 from gateway.platforms.base import SendResult
+from gateway.session import build_session_key
 from tests.e2e.conftest import make_event, send_and_capture
 
 
@@ -55,6 +56,52 @@ class TestSlashCommands:
         response_text = send.call_args[1].get("content") or send.call_args[0][1]
         response_lower = response_text.lower()
         assert "no" in response_lower or "stop" in response_lower or "not running" in response_lower
+
+    @pytest.mark.asyncio
+    async def test_plaintext_stop_interrupts_active_dm_session(self, adapter, runner, session_entry, platform):
+        """Regression: typing "Stop" while busy must behave like /stop.
+
+        Without the shortcut, the text is queued as a follow-up and the running
+        LLM/API call can continue for minutes before answering "Stopped." as
+        normal chat.
+        """
+        adapter._active_sessions[session_entry.session_key] = asyncio.Event()
+        runner._handle_stop_command = AsyncMock(return_value="Stopped.")
+
+        send = await send_and_capture(adapter, "Stop", platform)
+
+        send.assert_called_once()
+        response_text = send.call_args[1].get("content") or send.call_args[0][1]
+        assert response_text == "Stopped."
+        runner._handle_stop_command.assert_awaited_once()
+        assert session_entry.session_key not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_plaintext_stop_in_group_stays_normal_busy_text(self, adapter, runner, platform):
+        group_event = make_event(platform, "Stop", chat_id="group-chat-1", user_id="u1", chat_type="group")
+        group_key = build_session_key(group_event.source)
+        adapter._active_sessions[group_key] = asyncio.Event()
+        runner._handle_stop_command = AsyncMock(return_value="Stopped.")
+
+        adapter.send.reset_mock()
+        await adapter.handle_message(group_event)
+        await asyncio.sleep(0.3)
+        send = adapter.send
+
+        runner._handle_stop_command.assert_not_awaited()
+        assert not send.called
+        assert group_key in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_plaintext_stop_phrase_stays_normal_busy_text(self, adapter, runner, session_entry, platform):
+        adapter._active_sessions[session_entry.session_key] = asyncio.Event()
+        runner._handle_stop_command = AsyncMock(return_value="Stopped.")
+
+        send = await send_and_capture(adapter, "stop doing that part", platform)
+
+        runner._handle_stop_command.assert_not_awaited()
+        assert not send.called
+        assert session_entry.session_key in adapter._pending_messages
 
     @pytest.mark.asyncio
     async def test_commands_shows_listing(self, adapter, platform):

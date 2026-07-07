@@ -84,6 +84,26 @@ def _mark_notify_metadata(metadata: dict | None) -> dict:
     return notify_metadata
 
 
+def _is_plaintext_busy_stop(event: "MessageEvent") -> bool:
+    """Return True when a busy-session text message is an unambiguous stop request.
+
+    Gateway users often type ``Stop`` in Telegram/Discord DMs instead of the
+    slash command while an agent is visibly running. Treat only the exact
+    one-word form as the active-session ``/stop`` command; longer phrases stay
+    normal conversational input so we do not eat messages like "stop doing X in
+    the plan" after the current turn.
+    """
+    if getattr(event, "message_type", None) is not MessageType.TEXT:
+        return False
+    if getattr(event, "internal", False):
+        return False
+    source = getattr(event, "source", None)
+    if getattr(source, "chat_type", "") != "dm":
+        return False
+    text = (getattr(event, "text", "") or "").strip().lower()
+    return text == "stop"
+
+
 def _reply_anchor_for_event(event) -> str | None:
     """Return reply_to id for platforms that need reply semantics.
 
@@ -4260,6 +4280,27 @@ class BasePlatformAdapter(ABC):
 
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
+            if _is_plaintext_busy_stop(event):
+                # Users frequently type "Stop" while watching a gateway run.
+                # Without this exact-match shortcut the text is queued as the
+                # next user turn, so the current LLM/API call keeps running and
+                # may only later answer "Stopped." as normal chat. Route it
+                # through the same serialized handoff as /stop so it cancels the
+                # active task immediately and drains any queued follow-ups in
+                # the established command-safe order.
+                self._discard_text_debounce(session_key)
+                event.text = "/stop"
+                try:
+                    await self._dispatch_active_session_command(event, session_key, "stop")
+                except Exception as e:
+                    logger.error(
+                        "[%s] Plaintext stop dispatch failed: %s",
+                        self.name,
+                        e,
+                        exc_info=True,
+                    )
+                return
+
             # Certain commands must bypass the active-session guard and be
             # dispatched directly to the gateway runner.  Without this, they
             # are queued as pending messages and either:

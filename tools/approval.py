@@ -790,6 +790,57 @@ def _miniapp_external_approval_dir() -> Path:
     return (Path.cwd() / "var" / "agent_approvals").resolve()
 
 
+def _get_session_env_value(name: str, default: str = "") -> str:
+    """Read gateway task-local session env with process-env fallback."""
+    try:
+        from gateway.session_context import get_session_env
+
+        value = get_session_env(name, "")
+        if value:
+            return value
+    except Exception:
+        pass
+    return os.getenv(name, default)
+
+
+def _resolve_miniapp_external_approval_session_key(session_key: str) -> str | None:
+    """Return the Mini App chat session key that should receive approvals.
+
+    A host-side Telegram/tool-runner session often has a generic Hermes session
+    id (for example ``20260703_...``), while the Mini App approval API needs the
+    target chat key shaped like ``miniapp-<user_id>-<chat_id>``.  Keep native
+    Mini App sessions as-is, and let deployments opt a generic gateway session
+    into a target Mini App chat through an explicit bridge env var.
+    """
+    normalized = str(session_key or "").strip()
+    if normalized.startswith("miniapp-"):
+        return normalized
+
+    for env_name in (
+        "MINI_APP_APPROVAL_SESSION_ID",
+        "MINI_APP_EXTERNAL_APPROVAL_SESSION_ID",
+        "HERMES_MINIAPP_SESSION_ID",
+    ):
+        target = str(os.environ.get(env_name) or "").strip()
+        if target.startswith("miniapp-"):
+            return target
+
+    user_id = str(os.environ.get("MINI_APP_APPROVAL_USER_ID") or "").strip()
+    if not user_id:
+        user_id = _get_session_env_value("HERMES_SESSION_USER_ID", "").strip()
+    chat_id = ""
+    for env_name in (
+        "MINI_APP_APPROVAL_CHAT_ID",
+        "MINI_APP_EXTERNAL_APPROVAL_CHAT_ID",
+    ):
+        chat_id = str(os.environ.get(env_name) or "").strip()
+        if chat_id:
+            break
+    if user_id and chat_id:
+        return f"miniapp-{user_id}-{chat_id}"
+    return None
+
+
 def _publish_miniapp_external_approval(
     *,
     session_key: str,
@@ -806,7 +857,8 @@ def _publish_miniapp_external_approval(
     best-effort and opt-in through MINI_APP_INTERNAL_BASE_URL,
     MINI_APP_OPERATOR_API_TOKEN, and a miniapp-* session key.
     """
-    if not session_key.startswith("miniapp-"):
+    target_session_key = _resolve_miniapp_external_approval_session_key(session_key)
+    if not target_session_key:
         return None
     base_url = str(os.environ.get("MINI_APP_INTERNAL_BASE_URL") or "").strip().rstrip("/")
     token = str(os.environ.get("MINI_APP_OPERATOR_API_TOKEN") or "").strip()
@@ -824,7 +876,7 @@ def _publish_miniapp_external_approval(
     expires_at = time.time() + int(_get_approval_config().get("gateway_timeout", 300) or 300)
     request_doc = {
         "id": approval_id,
-        "session_id": session_key,
+        "session_id": target_session_key,
         "status": "pending",
         "command": command,
         "pattern_key": pattern_key,
@@ -835,8 +887,8 @@ def _publish_miniapp_external_approval(
         "expires_at": expires_at,
         "source": "host_gateway",
     }
-    request_path = approval_dir / f"{session_key}.json"
-    tmp_path = approval_dir / f".{session_key}.{approval_id}.tmp"
+    request_path = approval_dir / f"{target_session_key}.json"
+    tmp_path = approval_dir / f".{target_session_key}.{approval_id}.tmp"
     try:
         tmp_path.write_text(json.dumps(request_doc, ensure_ascii=False), encoding="utf-8")
         tmp_path.replace(request_path)

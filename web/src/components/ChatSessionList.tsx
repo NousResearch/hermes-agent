@@ -19,14 +19,15 @@
  */
 
 import { Button } from "@nous-research/ui/ui/components/button";
+import { Input } from "@nous-research/ui/ui/components/input";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { AlertCircle, MessageSquarePlus, RefreshCw } from "lucide-react";
+import { AlertCircle, MessageSquarePlus, RefreshCw, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { useI18n } from "@/i18n";
-import { api, type SessionInfo } from "@/lib/api";
+import { api, type SessionInfo, type SessionSearchResult } from "@/lib/api";
 import { cn, timeAgo } from "@/lib/utils";
 
 const SESSION_LIMIT = 30;
@@ -67,6 +68,10 @@ export function ChatSessionList({
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SessionSearchResult[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Bumped to force a refetch (after switching, on Refresh, on mount).
   const [reloadNonce, setReloadNonce] = useState(0);
 
@@ -79,6 +84,7 @@ export function ChatSessionList({
   // commit state, so a fast profile switch (or Refresh spam) can't land a
   // stale list out of order.
   const reqRef = useRef(0);
+  const searchReqRef = useRef(0);
 
   const load = useCallback(() => {
     const myReq = ++reqRef.current;
@@ -107,6 +113,38 @@ export function ChatSessionList({
     load();
     // `reloadNonce` is a manual refetch trigger (Refresh button / row pick).
   }, [load, reloadNonce]);
+
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    if (!trimmed) {
+      return;
+    }
+
+    const myReq = ++searchReqRef.current;
+    const sessionIds = sessions?.map((session) => session.id) ?? [];
+    searchDebounceRef.current = setTimeout(() => {
+      setSearching(true);
+      api
+        .searchSessions(trimmed, scopeKey, {
+          limit: SESSION_LIMIT,
+          sessionIds: sessionIds.length > 0 ? sessionIds : undefined,
+        })
+        .then((res) => {
+          if (searchReqRef.current === myReq) setSearchResults(res.results);
+        })
+        .catch(() => {
+          if (searchReqRef.current === myReq) setSearchResults([]);
+        })
+        .finally(() => {
+          if (searchReqRef.current === myReq) setSearching(false);
+        });
+    }, 250);
+
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    };
+  }, [query, scopeKey, sessions]);
 
   const reload = useCallback(() => setReloadNonce((n) => n + 1), []);
 
@@ -150,6 +188,68 @@ export function ChatSessionList({
   }, [onNewChat, onPicked, setSearchParams]);
 
   const content = useMemo(() => {
+    const trimmedQuery = query.trim();
+    if (trimmedQuery) {
+      if (searching && searchResults === null) {
+        return (
+          <div className="flex items-center justify-center gap-2 px-2 py-6 text-xs text-text-secondary">
+            <Spinner /> Searching chats in this list…
+          </div>
+        );
+      }
+      if (!searchResults || searchResults.length === 0) {
+        return (
+          <div className="px-2 py-6 text-center text-xs text-text-secondary">
+            No chat matches in this list.
+          </div>
+        );
+      }
+      return (
+        <div className="flex flex-col gap-0.5">
+          {searchResults.map((result) => {
+            const isActive = result.session_id === activeSessionId;
+            const snippet = result.snippet
+              .replaceAll(">>>", "")
+              .replaceAll("<<<", "")
+              .trim();
+            return (
+              <ListItem
+                key={`${result.lineage_root ?? result.session_id}-${result.role ?? "id"}`}
+                onClick={() => pick(result.session_id)}
+                aria-current={isActive ? "true" : undefined}
+                className={cn(
+                  "flex-col items-start gap-1 rounded px-2 py-1.5",
+                  "normal-case tracking-normal",
+                  isActive
+                    ? "bg-primary/10 text-foreground border-l-2 border-primary"
+                    : "text-text-secondary hover:bg-midground/5 hover:text-foreground",
+                )}
+              >
+                <span className="line-clamp-2 w-full text-sm font-medium">
+                  {snippet || result.session_id}
+                </span>
+                <span className="flex w-full items-center gap-1.5 text-[0.6875rem] text-text-tertiary">
+                  {result.session_started && <span>{timeAgo(result.session_started)}</span>}
+                  {result.role && (
+                    <>
+                      <span aria-hidden>·</span>
+                      <span>{result.role}</span>
+                    </>
+                  )}
+                  {result.source && result.source !== "cli" && (
+                    <>
+                      <span aria-hidden>·</span>
+                      <span className="truncate">{result.source}</span>
+                    </>
+                  )}
+                </span>
+              </ListItem>
+            );
+          })}
+        </div>
+      );
+    }
+
     if (loading && sessions === null) {
       return (
         <div className="flex items-center justify-center gap-2 px-2 py-6 text-xs text-text-secondary">
@@ -217,7 +317,18 @@ export function ChatSessionList({
         })}
       </div>
     );
-  }, [activeSessionId, error, loading, pick, reload, sessions, t]);
+  }, [
+    activeSessionId,
+    error,
+    loading,
+    pick,
+    query,
+    reload,
+    searchResults,
+    searching,
+    sessions,
+    t,
+  ]);
 
   return (
     <aside
@@ -251,6 +362,37 @@ export function ChatSessionList({
       >
         {t.sessions.newChat}
       </Button>
+
+      <div className="relative mx-2 mb-2">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
+        <Input
+          value={query}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setSearchResults(null);
+            if (!event.target.value.trim()) setSearching(false);
+          }}
+          placeholder="Search chats in this list…"
+          className="h-8 pl-8 pr-8 text-xs"
+          aria-label="Search chats in this list"
+        />
+        {query.trim() ? (
+          <Button
+            ghost
+            size="icon"
+            onClick={() => {
+              setQuery("");
+              setSearchResults(null);
+              setSearching(false);
+            }}
+            aria-label="Clear chat search"
+            title="Clear chat search"
+            className="absolute right-0.5 top-1/2 h-7 w-7 -translate-y-1/2 text-text-tertiary hover:text-foreground"
+          >
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        ) : null}
+      </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 pb-1">
         {content}

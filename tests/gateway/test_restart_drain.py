@@ -15,9 +15,9 @@ from tests.gateway.restart_test_helpers import make_restart_runner, make_restart
 
 
 @pytest.mark.asyncio
-async def test_restart_command_while_busy_requests_drain_without_interrupt(monkeypatch):
-    # Ensure INVOCATION_ID is NOT set — systemd sets this in service mode,
-    # which changes the restart call signature.
+async def test_restart_command_while_busy_is_blocked_without_interrupt(monkeypatch):
+    # Ensure INVOCATION_ID is NOT set — the busy guard must run before any
+    # service/detached restart path is chosen.
     monkeypatch.delenv("INVOCATION_ID", raising=False)
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
@@ -33,18 +33,12 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
 
     result = await runner._handle_message(event)
 
-    expected = t("gateway.draining", count=1)
+    expected = t("gateway.restart.blocked_active", count=1)
     assert result == expected
-    # Guard against the silent-degradation regression in #22266: if the i18n
-    # catalog cannot be resolved (e.g. xdist workers losing the locales path)
-    # then ``t("gateway.draining", count=1)`` returns the bare key
-    # ``"gateway.draining"`` instead of the formatted English string, and both
-    # sides of the equality above would still match. Assert on the catalog
-    # output explicitly so a broken locale resolution fails loudly here.
-    assert expected != "gateway.draining"
-    assert "Draining" in expected and "1" in expected
+    assert expected != "gateway.restart.blocked_active"
+    assert "blocked" in expected.lower() and "1" in expected
     running_agent.interrupt.assert_not_called()
-    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+    runner.request_restart.assert_not_called()
 
 
 @pytest.mark.asyncio

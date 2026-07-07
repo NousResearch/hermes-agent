@@ -940,6 +940,15 @@ class GatewaySlashCommandsMixin:
                 return t("gateway.draining", count=count)
             return EphemeralReply(t("gateway.restart.in_progress"))
 
+        active_agents = self._running_agent_count()
+        if active_agents:
+            logger.info(
+                "Refusing /restart while %d active agent(s) are running; "
+                "gateway restarts must be explicit idle-only operations.",
+                active_agents,
+            )
+            return t("gateway.restart.blocked_active", count=active_agents)
+
         # Save the requester's routing info so the new gateway process can
         # notify them once it comes back online.
         try:
@@ -990,7 +999,6 @@ class GatewaySlashCommandsMixin:
         except Exception as e:
             logger.debug("Failed to write restart dedup marker: %s", e)
 
-        active_agents = self._running_agent_count()
         # When running under a service manager (systemd/launchd) or inside a
         # Docker/Podman container, use the service restart path: exit with
         # code 75 so the service manager / container restart policy restarts

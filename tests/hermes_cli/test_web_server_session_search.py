@@ -13,9 +13,12 @@ class _FakeSessionDB:
     """
 
     closed = False
+    expected_query = "20260603"
+    expected_message_query = "20260603*"
+    expected_search_kwargs = {"since_timestamp": None, "session_ids": None}
 
     def search_sessions_by_id(self, query, limit=20, include_archived=True):
-        assert query == "20260603"
+        assert query == self.expected_query
         assert include_archived is True
         return [
             {
@@ -27,8 +30,9 @@ class _FakeSessionDB:
             }
         ]
 
-    def search_messages(self, query, limit=20):
-        assert query == "20260603*"
+    def search_messages(self, query, limit=20, **kwargs):
+        assert query == self.expected_message_query
+        assert kwargs == self.expected_search_kwargs
         return [
             {
                 "session_id": "20260603_090200_exact",
@@ -77,6 +81,40 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
                 "model": "claude",
                 "session_started": 100,
             },
+            {
+                "session_id": "content_session",
+                "lineage_root": "content_session",
+                "snippet": "content hit",
+                "role": "assistant",
+                "source": "desktop",
+                "model": "gpt",
+                "session_started": 200,
+            },
+        ]
+    }
+
+
+def test_desktop_session_search_scopes_to_explicit_session_ids(monkeypatch):
+    class ScopedFakeDB(_FakeSessionDB):
+        expected_search_kwargs = {
+            "since_timestamp": None,
+            "session_ids": ["content_session"],
+        }
+
+    monkeypatch.setattr("hermes_state.SessionDB", ScopedFakeDB)
+
+    response = asyncio.run(
+        web_server.search_sessions(
+            q="20260603",
+            limit=2,
+            session_ids="content_session",
+        )
+    )
+
+    # The direct ID match is outside the caller's scope, but the content match
+    # inside the explicit scope is retained.
+    assert response == {
+        "results": [
             {
                 "session_id": "content_session",
                 "lineage_root": "content_session",

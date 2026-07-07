@@ -3145,7 +3145,13 @@ async def get_profiles_sessions(
 
 
 @app.get("/api/sessions/search")
-async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] = None):
+async def search_sessions(
+    q: str = "",
+    limit: int = 20,
+    profile: Optional[str] = None,
+    since_days: Optional[int] = None,
+    session_ids: Optional[str] = None,
+):
     """Search sessions by ID plus full-text message content using FTS5.
 
     Direct session-id matches are surfaced first, then FTS message-content
@@ -3155,6 +3161,11 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
     logical chat can own many ``sessions`` rows that all match the same query.
     Branches also use ``parent_session_id``, but they are real alternate
     conversations; don't collapse branch-specific hits back into the parent.
+    ``since_days`` optionally limits keyword matches to recent message
+    timestamps, which powers the Mini App Chat sidebar's "past 2 days" search.
+    ``session_ids`` optionally scopes both ID and content matches to a
+    comma-separated set of known-interest chats (for example project-linked or
+    pinned chats) without widening the query to the whole session store.
     """
     if not q or not q.strip():
         return {"results": []}
@@ -3162,6 +3173,21 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
         db = _open_session_db_for_profile(profile)
         try:
             safe_limit = max(1, min(int(limit or 20), 100))
+            since_timestamp = None
+            if since_days is not None:
+                safe_days = max(1, min(int(since_days or 1), 365))
+                since_timestamp = time.time() - (safe_days * 86400)
+            scoped_session_ids: Optional[list[str]] = None
+            if session_ids is not None:
+                scoped_session_ids = [
+                    sid.strip()
+                    for sid in str(session_ids).split(",")
+                    if sid and sid.strip()
+                ]
+                # Keep the URL-based scope bounded; callers that need huge
+                # scopes should grow a POST endpoint instead of shipping large
+                # query strings through proxies.
+                scoped_session_ids = scoped_session_ids[:200]
 
             # Walk parent_session_id to the compression root, memoized so a
             # chain of compression segments only costs one walk. We deliberately
@@ -3255,6 +3281,15 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
             # id happens to appear in message text. search_sessions_by_id is
             # SQL-bounded, so this stays cheap even with thousands of sessions.
             for row in db.search_sessions_by_id(q, limit=safe_limit, include_archived=True):
+                if scoped_session_ids is not None and row.get("id") not in scoped_session_ids:
+                    continue
+                if since_timestamp is not None:
+                    try:
+                        last_active = float(row.get("last_active") or row.get("started_at") or 0)
+                    except (TypeError, ValueError):
+                        last_active = 0
+                    if last_active < since_timestamp:
+                        continue
                 sid = row.get("id")
                 preview = (row.get("preview") or "").strip()
                 snippet = preview or f"Session ID: {sid}"
@@ -3283,11 +3318,21 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
             # Over-fetch so lineage dedup can still surface `limit` distinct
             # conversations even when several hits collapse onto one root.
             fetch_limit = max(safe_limit * 5, 50)
-            matches = db.search_messages(query=prefix_query, limit=fetch_limit)
+            search_kwargs = {
+                "query": prefix_query,
+                "limit": fetch_limit,
+                "since_timestamp": since_timestamp,
+                "session_ids": scoped_session_ids,
+            }
+            if since_timestamp is not None:
+                search_kwargs["sort"] = "newest"
+            matches = db.search_messages(**search_kwargs)
 
             for m in matches:
                 if len(seen) >= safe_limit:
                     break
+                if scoped_session_ids is not None and m.get("session_id") not in scoped_session_ids:
+                    continue
                 add_lineage_result(
                     m["session_id"],
                     {

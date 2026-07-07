@@ -731,10 +731,21 @@ export const api = {
     ),
 
   // Session search (FTS5)
-  searchSessions: (q: string, profile = getManagementProfile()) =>
-    fetchJSON<SessionSearchResponse>(
-      appendProfileParam(`/api/sessions/search?q=${encodeURIComponent(q)}`, profile),
-    ),
+  searchSessions: (
+    q: string,
+    profile = getManagementProfile(),
+    options: { sinceDays?: number; limit?: number; sessionIds?: string[] } = {},
+  ) => {
+    const params = new URLSearchParams({ q });
+    if (options.limit) params.set("limit", String(options.limit));
+    if (options.sinceDays) params.set("since_days", String(options.sinceDays));
+    if (options.sessionIds?.length) {
+      params.set("session_ids", options.sessionIds.join(","));
+    }
+    return fetchJSON<SessionSearchResponse>(
+      appendProfileParam(`/api/sessions/search?${params.toString()}`, profile),
+    );
+  },
 
   // OAuth provider management
   getOAuthProviders: () =>
@@ -2001,6 +2012,7 @@ export interface ToolsetEnvResult {
 
 export interface SessionSearchResult {
   session_id: string;
+  lineage_root?: string;
   snippet: string;
   role: string | null;
   source: string | null;

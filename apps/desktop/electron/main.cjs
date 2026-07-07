@@ -2563,7 +2563,7 @@ async function applyUpdatesPosixInApp() {
   //       ("quit and never came back"). DO NOT quit into a dead app — keep the
   //       working window and surface the closeable manual-restart state.
   if (!IS_MAC) {
-    const unpackedDir = resolveUnpackedRelease(process.execPath, updateRoot, process.platform)
+    const unpackedDir = resolveUnpackedRelease(process.execPath, updateRoot, process.platform, process.arch)
     const underUnpacked = unpackedDir !== null
 
     const preflight = underUnpacked

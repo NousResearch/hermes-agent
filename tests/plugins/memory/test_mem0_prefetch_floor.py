@@ -322,3 +322,133 @@ def test_query_hash_stable_and_short(monkeypatch, tmp_path):
     h2 = p._prefetch_query_hash("yes please")
     assert h1 == h2 and len(h1) == 10
     assert p._prefetch_query_hash(None) == "-" or len(p._prefetch_query_hash(None)) == 10
+
+
+# ---------------------------------------------------------------------------
+# L2 — rerank-score gate (spec 2026-07-07): the data-proven primary lever.
+# The server returns a per-row `rerank_score` (cross-encoder logit) that SEPARATES
+# on-topic (+2..+5) from off-topic junk (-6..-11) where score/cosine cannot.
+# ---------------------------------------------------------------------------
+
+def _write_cfg_block(tmp_path, key, block):
+    cfg_path = tmp_path / "mem0.json"
+    existing = {}
+    if cfg_path.exists():
+        existing = json.loads(cfg_path.read_text())
+    existing[key] = block
+    cfg_path.write_text(json.dumps(existing))
+
+
+def _rr_results(*pairs):
+    """(memory, rerank_score) pairs → result rows with a saturated score + the rerank_score."""
+    return [{"memory": m, "score": 1.0, "rerank_score": rs} for m, rs in pairs]
+
+
+def test_rerank_gate_default_off_is_inert(monkeypatch, tmp_path):
+    """Ships OFF: with no config block, the gate returns everything untouched."""
+    p = _provider(monkeypatch, tmp_path)
+    results = _rr_results(("on", 5.0), ("junk", -9.0))
+    kept, outcome = p._apply_rerank_gate("substantive query", results)
+    assert kept == results
+    assert outcome == "rr_disabled"
+
+
+def test_rerank_gate_drops_negative_keeps_positive(monkeypatch, tmp_path):
+    """The core behavior: at min_rerank=0.0, keep +score rows, drop the deeply-negative junk
+    (the weather→Clanker case). Off-topic turn → 0 injected."""
+    p = _provider(monkeypatch, tmp_path)
+    _write_cfg_block(tmp_path, "prefetch_rerank_gate", {"enabled": True, "min_rerank": 0.0})
+    # on-topic: 2 positive, 3 negative → keep 2
+    on = _rr_results(("dns1", 5.36), ("dns2", 2.03), ("t1", -1.2), ("t2", -2.5), ("t3", -2.8))
+    kept, outcome = p._apply_rerank_gate("what is my home DNS", on)
+    assert [r["memory"] for r in kept] == ["dns1", "dns2"]
+    assert outcome == "rr_kept_2_of_5"
+    # off-topic: all deeply negative → keep 0 (the junk block is eliminated)
+    off = _rr_results(("j1", -7.4), ("j2", -11.2), ("j3", -11.2), ("j4", -11.2), ("j5", -11.3))
+    kept2, outcome2 = p._apply_rerank_gate("the weather is nice today", off)
+    assert kept2 == []
+    assert outcome2 == "rr_kept_0_of_5"
+
+
+def test_rerank_gate_threshold_configurable(monkeypatch, tmp_path):
+    p = _provider(monkeypatch, tmp_path)
+    _write_cfg_block(tmp_path, "prefetch_rerank_gate", {"enabled": True, "min_rerank": 3.0})
+    results = _rr_results(("a", 5.0), ("b", 2.5), ("c", 3.0))
+    kept, _ = p._apply_rerank_gate("q", results)
+    assert [r["memory"] for r in kept] == ["a", "c"]  # >= 3.0
+
+
+def test_rerank_gate_missing_score_fails_open(monkeypatch, tmp_path):
+    """If ANY row lacks a numeric rerank_score (rerank off / server variant), keep ALL —
+    never drop a candidate to a missing field."""
+    p = _provider(monkeypatch, tmp_path)
+    _write_cfg_block(tmp_path, "prefetch_rerank_gate", {"enabled": True, "min_rerank": 0.0})
+    results = [{"memory": "a", "score": 1.0, "rerank_score": 5.0},
+               {"memory": "b", "score": 1.0}]  # no rerank_score
+    kept, outcome = p._apply_rerank_gate("q", results)
+    assert kept == results
+    assert outcome == "rr_failed_open"
+
+
+def test_rerank_gate_exact_token_query_bypasses(monkeypatch, tmp_path):
+    """IP/email/port queries bypass — the cross-encoder is unreliable for exact-identifier
+    lookups (same carve-out as Gate B)."""
+    p = _provider(monkeypatch, tmp_path)
+    _write_cfg_block(tmp_path, "prefetch_rerank_gate", {"enabled": True, "min_rerank": 0.0})
+    results = _rr_results(("hit", -5.0))  # would be dropped if the gate ran
+    kept, outcome = p._apply_rerank_gate("192.168.1.208", results)
+    assert kept == results
+    assert outcome == "rr_bypass_exact"
+
+
+def test_rerank_gate_telemetry_logs_distribution(monkeypatch, tmp_path, caplog):
+    import logging
+    p = _provider(monkeypatch, tmp_path)
+    _write_cfg_block(tmp_path, "prefetch_rerank_gate", {"enabled": True, "min_rerank": 0.0})
+    results = _rr_results(("a", 5.36), ("b", -9.0))
+    with caplog.at_level(logging.INFO):
+        p._apply_rerank_gate("substantive query", results)
+    line = next((r.getMessage() for r in caplog.records if "prefetch_rerank outcome=kept" in r.getMessage()), "")
+    assert line
+    for field in ("rr_max=", "rr_min=", "rr=", "min="):
+        assert field in line, f"missing {field}: {line}"
+    # no memory text leaks (privacy) — only scores + query hash
+    assert "substantive query" not in line and " a " not in line
+
+
+def test_rerank_gap_default_off_is_inert(monkeypatch, tmp_path):
+    p = _provider(monkeypatch, tmp_path)
+    results = _rr_results(("a", 5.0), ("b", 2.0), ("c", -1.0))
+    kept, outcome = p._apply_rerank_gap("q", results)
+    assert kept == results and outcome == "gap_disabled"
+
+
+def test_rerank_gap_trims_tail_beyond_gap(monkeypatch, tmp_path):
+    """1 great + a tail: keep only candidates within max_gap of the top score."""
+    p = _provider(monkeypatch, tmp_path)
+    _write_cfg_block(tmp_path, "prefetch_rerank_gap", {"enabled": True, "max_gap": 3.0})
+    results = _rr_results(("top", 5.0), ("near", 2.5), ("far", 1.0), ("tail", -2.0))
+    kept, outcome = p._apply_rerank_gap("q", results)
+    # top=5.0; keep >= 2.0 (5.0-3.0): top(5.0), near(2.5). far(1.0) and tail(-2.0) trimmed.
+    assert [r["memory"] for r in kept] == ["top", "near"]
+    assert outcome == "gap_kept_2_of_4"
+
+
+def test_rerank_gap_missing_score_fails_open(monkeypatch, tmp_path):
+    p = _provider(monkeypatch, tmp_path)
+    _write_cfg_block(tmp_path, "prefetch_rerank_gap", {"enabled": True, "max_gap": 3.0})
+    results = [{"memory": "a", "score": 1.0, "rerank_score": 5.0}, {"memory": "b", "score": 1.0}]
+    kept, outcome = p._apply_rerank_gap("q", results)
+    assert kept == results and outcome == "gap_failed_open"
+
+
+def test_rerank_gap_negative_config_clamped_not_fail_closed(monkeypatch, tmp_path):
+    """A config typo like max_gap:-1 must NOT silently clear all L2 survivors.
+    Negative gap is clamped to the default (6.0), keeping recall open."""
+    p = _provider(monkeypatch, tmp_path)
+    _write_cfg_block(tmp_path, "prefetch_rerank_gap", {"enabled": True, "max_gap": -1.0})
+    results = _rr_results(("top", 5.0), ("near", 2.5), ("far", 1.0))
+    kept, outcome = p._apply_rerank_gap("q", results)
+    # clamped to 6.0 → top=5.0, keep >= -1.0: all three survive, nothing wrongly dropped.
+    assert [r["memory"] for r in kept] == ["top", "near", "far"]
+    assert outcome == "gap_kept_3_of_3"

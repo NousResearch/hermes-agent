@@ -790,6 +790,16 @@ class Mem0MemoryProvider(MemoryProvider):
     _PREFETCH_FLOOR_MAX_EMBED_TIMEOUT_S = 3.0
     _PREFETCH_FLOOR_MIN_EMBED_TIMEOUT_S = 1.0
 
+    # -- L2 rerank-score gate (spec 2026-07-07) --------------------------------------------
+    # The mem0 /search response already returns a per-row `rerank_score` (the cross-encoder's
+    # raw logit) SEPARATE from the RRF-fused `score`. Unlike `score` (saturates ~1.0) and the
+    # client cosine (flat 0.40-0.46 on this store), rerank_score SEPARATES on-topic (+2..+5)
+    # from off-topic junk (-6..-11) — measured live 2026-07-07. This gate drops any candidate
+    # below `min_rerank`. Default threshold 0.0 (keep only what the reranker rates positively).
+    # Config-gated (default OFF), fails OPEN (a missing rerank_score → keep all), exact-token
+    # queries bypass (rerank unreliable for IP/email/port, same carve-out as Gate B).
+    _PREFETCH_RERANK_DEFAULT_MIN = 0.0
+
     # Pure acknowledgment / politeness / filler tokens ONLY (INV-7: never a domain verb/noun,
     # never a ≤2-char filter — "ac","tv","ip" are real content). A message that reduces to
     # zero non-wordlist tokens carries no recall intent.
@@ -957,6 +967,111 @@ class Mem0MemoryProvider(MemoryProvider):
             logger.info("mem0.prefetch_floor outcome=failed_open reason=exc:%s of=%d",
                         type(e).__name__, len(results) if results else 0)
             return results, "failed_open"
+
+    # -- L2 rerank-score gate (spec 2026-07-07) ------------------------------------------------
+    def _prefetch_cfg_block(self, key: str) -> dict:
+        """Fresh read of a named config block from mem0.json each call (canary pattern), so
+        enable/threshold flips take effect on the next turn with no restart. Fail-safe: a
+        missing file / read / parse error → {} (the layer falls back to its default = OFF)."""
+        try:
+            from hermes_constants import get_hermes_home
+            cfg_path = get_hermes_home() / "mem0.json"
+            blk = json.loads(cfg_path.read_text(encoding="utf-8")).get(key)
+            return blk if isinstance(blk, dict) else {}
+        except Exception:
+            return {}
+
+    def _rerank_gate_enabled(self) -> bool:
+        """Default-OFF (unlike the cosine floor which is default-on): the rerank gate ships inert
+        and is enabled by data. Read fresh each call (canary pattern) so a flip takes effect on
+        the next turn with no restart."""
+        cfg = self._prefetch_cfg_block("prefetch_rerank_gate")
+        return self._truthy(cfg.get("enabled", False))
+
+    def _rerank_gate_min(self) -> float:
+        """Threshold; default 0.0 (keep only what the cross-encoder rates positively). A garbage
+        value falls back to the default."""
+        cfg = self._prefetch_cfg_block("prefetch_rerank_gate")
+        try:
+            return float(cfg.get("min_rerank", self._PREFETCH_RERANK_DEFAULT_MIN))
+        except (TypeError, ValueError):
+            return self._PREFETCH_RERANK_DEFAULT_MIN
+
+    def _apply_rerank_gate(self, query, results):
+        """Drop candidates whose server-provided `rerank_score` is below `min_rerank`. Returns
+        (kept, outcome). ALWAYS fails OPEN (returns full `results`) when disabled, on an
+        exact-token query (rerank unreliable there), or if ANY row lacks a numeric rerank_score
+        (rerank was off / server variant) — only ever removes a proven-low-rerank candidate,
+        never loses one to a missing field."""
+        try:
+            if not self._rerank_gate_enabled():
+                return results, "rr_disabled"
+            if not results:
+                return results, "rr_disabled"
+            if self._is_exact_token_query(query):
+                return results, "rr_bypass_exact"
+            scores = []
+            for r in results:
+                rs = r.get("rerank_score") if isinstance(r, dict) else None
+                if not isinstance(rs, (int, float)):
+                    # missing/non-numeric on any row → can't trust the gate → fail open
+                    logger.info("mem0.prefetch_rerank outcome=failed_open reason=no_score of=%d",
+                                len(results))
+                    return results, "rr_failed_open"
+                scores.append(float(rs))
+            floor = self._rerank_gate_min()
+            kept = [r for r, s in zip(results, scores) if s >= floor]
+            ordered = sorted(scores, reverse=True)
+            logger.info(
+                "mem0.prefetch_rerank outcome=kept_%d_of_%d min=%.2f "
+                "rr_max=%.2f rr_min=%.2f rr=%s q=%s",
+                len(kept), len(results), floor, ordered[0], ordered[-1],
+                ",".join(f"{s:.2f}" for s in ordered),
+                self._prefetch_query_hash(query),
+            )
+            return kept, f"rr_kept_{len(kept)}_of_{len(results)}"
+        except Exception as e:
+            logger.info("mem0.prefetch_rerank outcome=failed_open reason=exc:%s of=%d",
+                        type(e).__name__, len(results) if results else 0)
+            return results, "rr_failed_open"
+
+    # -- L3 dynamic top-k by rerank gap (spec 2026-07-07) --------------------------------------
+    def _rerank_gap_cfg(self):
+        cfg = self._prefetch_cfg_block("prefetch_rerank_gap")
+        enabled = self._truthy(cfg.get("enabled", False))
+        try:
+            gap = float(cfg.get("max_gap", 6.0))
+        except (TypeError, ValueError):
+            gap = 6.0
+        # A negative gap would make `(top - s) <= gap` unmatchable and silently
+        # clear every L2 survivor — a config typo must not fail closed. Clamp.
+        if gap < 0:
+            gap = 6.0
+        return enabled, gap
+
+    def _apply_rerank_gap(self, query, results):
+        """Even above the rerank threshold, drop the long tail: keep only candidates within
+        `max_gap` of the TOP rerank_score. Prevents a '1 great + 4 mediocre' turn from injecting
+        all 5. Runs AFTER L2. Default-OFF, fails OPEN, needs numeric rerank_scores (else keep)."""
+        try:
+            enabled, gap = self._rerank_gap_cfg()
+            if not enabled or not results or self._is_exact_token_query(query):
+                return results, "gap_disabled"
+            scores = []
+            for r in results:
+                rs = r.get("rerank_score") if isinstance(r, dict) else None
+                if not isinstance(rs, (int, float)):
+                    return results, "gap_failed_open"
+                scores.append(float(rs))
+            top = max(scores)
+            kept = [r for r, s in zip(results, scores) if (top - s) <= gap]
+            logger.info("mem0.prefetch_gap outcome=kept_%d_of_%d gap=%.1f top=%.2f q=%s",
+                        len(kept), len(results), gap, top, self._prefetch_query_hash(query))
+            return kept, f"gap_kept_{len(kept)}_of_{len(results)}"
+        except Exception as e:
+            logger.info("mem0.prefetch_gap outcome=failed_open reason=exc:%s of=%d",
+                        type(e).__name__, len(results) if results else 0)
+            return results, "gap_failed_open"
 
 
 
@@ -1379,6 +1494,19 @@ class Mem0MemoryProvider(MemoryProvider):
                     )))
                     _floor_outcome = "no_results"
                     _injected = 0
+                    # L2 RERANK GATE (PRIMARY, spec 2026-07-07): the cross-encoder's per-row
+                    # rerank_score SEPARATES on-topic (+2..+5) from off-topic junk (-6..-11)
+                    # where the RRF score (saturates ~1.0) and cosine (flat) cannot. Runs FIRST
+                    # (cheapest — no embed, just reads the score already in the response) and
+                    # drops sub-threshold candidates. Default-OFF (config-gated); fails OPEN.
+                    _rr_outcome = "rr_disabled"
+                    if results:
+                        results, _rr_outcome = self._apply_rerank_gate(run_query, results)
+                    # L3 GAP (dynamic top-k): trim the long tail beyond `max_gap` of the top
+                    # rerank_score. Runs after L2, config-gated (default OFF), fails OPEN.
+                    _gap_outcome = "gap_disabled"
+                    if results:
+                        results, _gap_outcome = self._apply_rerank_gap(run_query, results)
                     # GATE B (cosine, weak SECONDARY): a substantive query passed Gate A, so
                     # trim any truly-orthogonal candidate (cos < low floor) that slipped into
                     # the top-5. Budget = time left before the 10s join ceiling (−0.5s margin);
@@ -1411,8 +1539,8 @@ class Mem0MemoryProvider(MemoryProvider):
                     # placed in front of the model; `floor_outcome` says which path decided it.
                     # No memory text (privacy). This is the top-level recall observability row.
                     logger.info(
-                        "mem0.prefetch injected=%d floor_outcome=%s rerank=%s exact=%s q=%s",
-                        _injected, _floor_outcome, _pf_rerank,
+                        "mem0.prefetch injected=%d floor_outcome=%s rr_outcome=%s gap_outcome=%s rerank=%s exact=%s q=%s",
+                        _injected, _floor_outcome, _rr_outcome, _gap_outcome, _pf_rerank,
                         self._is_exact_token_query(run_query),
                         self._prefetch_query_hash(run_query),
                     )

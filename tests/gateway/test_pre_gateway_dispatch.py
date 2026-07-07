@@ -177,3 +177,61 @@ async def test_internal_events_bypass_hook(monkeypatch):
     # Even though the hook would say skip, internal events bypass it.
     await runner._handle_message(event)
     assert called["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_log_entry_fastpath_handles_and_skips_agent(monkeypatch):
+    """Successful router payload short-circuits before agent dispatch."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+
+    seen = {"called": False}
+
+    def _fake_hook(name, **kwargs):
+        return []
+
+    async def _capture(event, source, _quick_key, _run_generation):
+        seen["called"] = True
+        return "ok"
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    monkeypatch.setattr(
+        "gateway.run._run_agentless_log_entry_router",
+        lambda *, message_text: {"ok": True, "domain": "expense", "confidence": 0.95},
+    )
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    runner._handle_message_with_agent = _capture  # noqa: SLF001
+
+    result = await runner._handle_message(_make_event("Rs 120 dinner"))
+    assert result == ""
+    assert seen["called"] is False
+
+
+@pytest.mark.asyncio
+async def test_log_entry_fastpath_needs_agent_falls_through(monkeypatch):
+    """Router escalation (needs_agent=true) continues to normal agent path."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+
+    seen = {"called": False}
+
+    def _fake_hook(name, **kwargs):
+        return []
+
+    async def _capture(event, source, _quick_key, _run_generation):
+        seen["called"] = True
+        return "ok"
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    monkeypatch.setattr(
+        "gateway.run._run_agentless_log_entry_router",
+        lambda *, message_text: {"ok": False, "needs_agent": True, "reason": "low_confidence"},
+    )
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    runner._handle_message_with_agent = _capture  # noqa: SLF001
+
+    result = await runner._handle_message(_make_event("stuff happened"))
+    assert result == "ok"
+    assert seen["called"] is True

@@ -40,6 +40,7 @@ import tempfile
 import threading
 import time
 import sqlite3
+import subprocess
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
@@ -155,6 +156,47 @@ _GATEWAY_SECRET_PATTERNS = (
     re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b"),
     re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{20,}\b"),
 )
+
+
+def _run_agentless_log_entry_router(*, message_text: str) -> Optional[Dict[str, Any]]:
+    """Best-effort gateway fast-path for short logging messages.
+
+    Executes ``~/.hermes/scripts/log_entry.py`` and returns parsed JSON payload
+    when available. Returns ``None`` when the router script is unavailable,
+    execution fails, or output is not valid JSON.
+    """
+    msg = (message_text or "").strip()
+    if not msg:
+        return None
+
+    router_path = _hermes_home / "scripts" / "log_entry.py"
+    if not router_path.exists():
+        return None
+
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(router_path),
+                "--silent",
+                msg,
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(router_path.parent),
+            timeout=12,
+        )
+    except Exception:
+        return None
+
+    raw = (proc.stdout or "").strip() or (proc.stderr or "").strip()
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _ensure_windows_gateway_venv_imports() -> None:
@@ -10054,6 +10096,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents_ts[_quick_key] = time.time()
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
+
+        # Agent-less logging fast-path: run short log-like messages through
+        # ~/.hermes/scripts/log_entry.py after the session slot is claimed but
+        # before full agent dispatch. This preserves active-session race
+        # semantics (sentinel/queue/stop), while still avoiding agent fallback
+        # when router handling succeeds. If router reports needs_agent=true
+        # (or emits invalid output), we fall through to normal handling.
+        if not is_internal:
+            _router_payload = await asyncio.to_thread(
+                _run_agentless_log_entry_router,
+                message_text=(event.text or ""),
+            )
+            if isinstance(_router_payload, dict):
+                if _router_payload.get("needs_agent") is True:
+                    logger.debug(
+                        "log_entry router escalated to agent: reason=%s",
+                        _router_payload.get("reason"),
+                    )
+                elif _router_payload.get("ok") is True:
+                    logger.info(
+                        "log_entry router handled message: domain=%s confidence=%s",
+                        _router_payload.get("domain"),
+                        _router_payload.get("confidence"),
+                    )
+                    self._release_running_agent_state(_quick_key)
+                    return ""
 
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)

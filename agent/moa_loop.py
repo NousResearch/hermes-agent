@@ -275,6 +275,7 @@ def _run_reference(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            tools=None,
             **runtime,
         )
         usage = CanonicalUsage()

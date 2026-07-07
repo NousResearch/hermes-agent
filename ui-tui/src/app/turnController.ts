@@ -446,7 +446,7 @@ class TurnController {
     const todos = parseTodos(value)
 
     if (todos !== null) {
-      patchTurnState({ todos })
+      patchTurnState({ todoPanelTodos: todos, todos })
     }
   }
 

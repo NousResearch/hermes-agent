@@ -2269,6 +2269,24 @@ def _coerce_statusbar(raw) -> str:
     return "top"
 
 
+_TODO_PANEL_FALSEY = frozenset({"0", "false", "no", "off"})
+_TODO_PANEL_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _coerce_todo_panel(raw) -> bool:
+    if raw is False or raw == 0:
+        return False
+    if raw is True or raw is None:
+        return True
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if s in _TODO_PANEL_FALSEY:
+            return False
+        if s in _TODO_PANEL_TRUTHY:
+            return True
+    return True
+
+
 _MOUSE_TRACKING_ALIASES = {
     "0": "off",
     "1": "all",
@@ -10201,6 +10219,24 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.tui_statusbar", nv)
         return _ok(rid, {"key": key, "value": nv})
 
+    if key == "todo_panel":
+        raw = str(value or "").strip().lower()
+        display = _load_cfg().get("display")
+        d0 = display if isinstance(display, dict) else {}
+        current = _coerce_todo_panel(d0.get("tui_todo_panel", True))
+
+        if raw in {"", "toggle"}:
+            nv_b = not current
+        elif raw in _TODO_PANEL_TRUTHY:
+            nv_b = True
+        elif raw in _TODO_PANEL_FALSEY:
+            nv_b = False
+        else:
+            return _err(rid, 4002, f"unknown todo_panel value: {value}")
+
+        _write_config_key("display.tui_todo_panel", nv_b)
+        return _ok(rid, {"key": key, "value": "on" if nv_b else "off"})
+
     if key == "mouse":
         # Explicit None check rather than `value or ""` so falsy non-string
         # inputs (0, False) reach the alias map as themselves — both map to
@@ -10842,6 +10878,12 @@ def _(rid, params: dict) -> dict:
             display.get("tui_statusbar", "top") if isinstance(display, dict) else "top"
         )
         return _ok(rid, {"value": _coerce_statusbar(raw)})
+    if key == "todo_panel":
+        display = _load_cfg().get("display")
+        raw = (
+            display.get("tui_todo_panel", True) if isinstance(display, dict) else True
+        )
+        return _ok(rid, {"value": "on" if _coerce_todo_panel(raw) else "off"})
     if key == "mouse":
         display = _load_cfg().get("display")
         return _ok(rid, {"value": _display_mouse_tracking(display)})
@@ -11130,6 +11172,7 @@ _TUI_EXTRA: list[tuple[str, str, str]] = [
         "TUI",
     ),
     ("/sessions", "Switch between live TUI sessions", "TUI"),
+    ("/todos", "Show or hide the persistent bottom todo panel", "TUI"),
 ]
 
 # Commands that queue messages onto _pending_input in the CLI.
@@ -12218,6 +12261,11 @@ def _(rid, params: dict) -> dict:
                 "text": "/mouse",
                 "display": "/mouse",
                 "meta": "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]",
+            },
+            {
+                "text": "/todos",
+                "display": "/todos",
+                "meta": "Show or hide the persistent bottom todo panel",
             },
         ]
         for extra in extras:

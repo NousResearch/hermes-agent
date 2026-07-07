@@ -2751,6 +2751,34 @@ def test_config_busy_get_and_set(monkeypatch):
     assert ("display.busy_input_mode", "interrupt") in writes
 
 
+def test_config_todo_panel_get_and_set(monkeypatch):
+    writes = []
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"display": {"tui_todo_panel": False}},
+    )
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
+
+    get_resp = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "todo_panel"}}
+    )
+    assert get_resp["result"]["value"] == "off"
+
+    set_resp = server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {"key": "todo_panel", "value": "on"},
+        }
+    )
+    assert set_resp["result"]["value"] == "on"
+    assert ("display.tui_todo_panel", True) in writes
+
+
 def test_config_set_yolo_process_scope_treats_false_like_env_as_disabled(monkeypatch):
     monkeypatch.setenv("HERMES_YOLO_MODE", "false")
 
@@ -3135,6 +3163,14 @@ def test_complete_slash_includes_tui_mouse_command():
     )
 
     assert any(item["text"] == "/mouse" for item in resp["result"]["items"])
+
+
+def test_complete_slash_includes_tui_todos_command():
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/tod"}}
+    )
+
+    assert any(item["text"] == "/todos" for item in resp["result"]["items"])
 
 
 def test_complete_slash_details_args():
@@ -4240,6 +4276,19 @@ def test_commands_catalog_includes_tui_mouse_command():
 
     assert "/mouse" in pairs
     assert "/mouse" in tui_pairs
+
+
+def test_commands_catalog_includes_tui_todos_command():
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    pairs = dict(resp["result"]["pairs"])
+    tui_cat = next(c for c in resp["result"]["categories"] if c["name"] == "TUI")
+    tui_pairs = dict(tui_cat["pairs"])
+
+    assert "/todos" in pairs
+    assert "/todos" in tui_pairs
 
 
 def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible():

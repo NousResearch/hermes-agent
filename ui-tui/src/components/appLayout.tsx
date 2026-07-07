@@ -6,6 +6,7 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $petBox } from '../app/petFlashStore.js'
+import { useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
@@ -30,8 +31,9 @@ import { Journey } from './journey.js'
 import { MessageLine } from './messageLine.js'
 import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
-import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
+import { StreamingAssistant } from './streamingAssistant.js'
 import { TextInput, type TextInputMouseApi } from './textInput.js'
+import { BottomTodoPanel } from './todoPanel.js'
 
 // Box geometry, kept here so the transcript's reservation math matches the
 // rendered overlay exactly.
@@ -142,21 +144,6 @@ const TranscriptPane = memo(function TranscriptPane({
   const bodyCols = useGutter && petBox ? composer.cols - petBox.width : composer.cols
   const petBandRows = petBox && !useGutter ? petBox.height : 0
 
-  // LiveTodoPanel rides as a child of the latest user-message row so it
-  // visually belongs to the prompt and follows it during scroll. -1 when
-  // empty → row.index === -1 is always false → no render.
-  const lastUserIdx = useMemo(() => {
-    const items = transcript.historyItems
-
-    for (let i = items.length - 1; i >= 0; i--) {
-      if (items[i].role === 'user') {
-        return i
-      }
-    }
-
-    return -1
-  }, [transcript.historyItems])
-
   // Index of the first user-role message; every later user message gets a
   // small dash above it so multi-turn transcripts visually segment by
   // turn. -1 when no user message has been sent yet → no separator ever
@@ -223,7 +210,6 @@ const TranscriptPane = memo(function TranscriptPane({
                 />
               )}
 
-              {row.index === lastUserIdx && <LiveTodoPanel />}
             </Box>
           ))}
 
@@ -255,6 +241,17 @@ const TranscriptPane = memo(function TranscriptPane({
         scrollRef={transcript.scrollRef}
       />
     </>
+  )
+})
+
+const BottomTodoPanelPane = memo(function BottomTodoPanelPane({ cols }: { cols: number }) {
+  const ui = useStore($uiState)
+  const todos = useTurnSelector(state => state.todoPanelTodos)
+
+  return (
+    <Box flexShrink={0} paddingX={1}>
+      <BottomTodoPanel cols={cols} t={ui.theme} todos={todos} visible={ui.todoPanel} />
+    </Box>
   )
 })
 
@@ -536,6 +533,10 @@ export const AppLayout = memo(function AppLayout({
                 onSecretSubmit={actions.answerSecret}
                 onSudoSubmit={actions.answerSudo}
               />
+            </PerfPane>
+
+            <PerfPane id="todo-panel">
+              <BottomTodoPanelPane cols={composer.cols} />
             </PerfPane>
 
             <PerfPane id="composer">

@@ -29,6 +29,7 @@ const buildUiState = (): UiState => ({
   statusBar: 'top',
   streaming: true,
   theme: DEFAULT_THEME,
+  todoPanel: true,
   usage: ZERO
 })
 

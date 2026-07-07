@@ -27,6 +27,39 @@ const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
 export const normalizeStatusBar = (raw: unknown): StatusBarMode =>
   raw === false ? 'off' : typeof raw === 'string' ? (STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'top') : 'top'
 
+const TODO_PANEL_FALSEY = new Set(['0', 'false', 'no', 'off'])
+const TODO_PANEL_TRUTHY = new Set(['1', 'true', 'yes', 'on'])
+
+export const normalizeTodoPanel = (raw: unknown): boolean => {
+  if (raw === false || raw === 0) {
+    return false
+  }
+
+  if (raw === true || raw === undefined || raw === null) {
+    return true
+  }
+
+  if (typeof raw === 'number') {
+    return true
+  }
+
+  if (typeof raw !== 'string') {
+    return true
+  }
+
+  const v = raw.trim().toLowerCase()
+
+  if (TODO_PANEL_FALSEY.has(v)) {
+    return false
+  }
+
+  if (TODO_PANEL_TRUTHY.has(v)) {
+    return true
+  }
+
+  return true
+}
+
 const BUSY_MODES = new Set<BusyInputMode>(['interrupt', 'queue', 'steer'])
 
 // TUI defaults to `queue` even though the framework default
@@ -229,7 +262,8 @@ export const applyDisplay = (
     sections: resolveSections(d.sections),
     showReasoning: !!d.show_reasoning,
     statusBar: normalizeStatusBar(d.tui_statusbar),
-    streaming: d.streaming !== false
+    streaming: d.streaming !== false,
+    todoPanel: normalizeTodoPanel(d.tui_todo_panel)
   })
 }
 

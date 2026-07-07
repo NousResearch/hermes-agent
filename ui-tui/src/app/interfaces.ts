@@ -181,6 +181,7 @@ export interface UiState {
   statusBar: StatusBarMode
   streaming: boolean
   theme: Theme
+  todoPanel: boolean
   usage: Usage
 }
 

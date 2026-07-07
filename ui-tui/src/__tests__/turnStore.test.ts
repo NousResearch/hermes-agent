@@ -51,6 +51,20 @@ describe('turnStore live progress helpers', () => {
     expect(getTurnState().todos).toEqual([])
   })
 
+  it('keeps a bottom-panel snapshot when archiving clears the live anchor', () => {
+    const todos = [
+      { content: 'cook', id: 'cook', status: 'completed' },
+      { content: 'serve', id: 'serve', status: 'in_progress' }
+    ] as const
+
+    patchTurnState({ todoPanelTodos: [...todos], todos: [...todos] })
+
+    archiveTodosAtTurnEnd()
+
+    expect(getTurnState().todos).toEqual([])
+    expect(getTurnState().todoPanelTodos).toEqual(todos)
+  })
+
   it('returns nothing when there are no todos at turn end', () => {
     expect(archiveTodosAtTurnEnd()).toEqual([])
     expect(archiveDoneTodos()).toEqual([])

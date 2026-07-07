@@ -7,7 +7,8 @@ import {
   normalizeBusyInputMode,
   normalizeIndicatorStyle,
   normalizeMouseTracking,
-  normalizeStatusBar
+  normalizeStatusBar,
+  normalizeTodoPanel
 } from '../app/useConfigSync.js'
 
 describe('applyDisplay', () => {
@@ -28,6 +29,7 @@ describe('applyDisplay', () => {
             show_reasoning: true,
             streaming: false,
             tui_compact: true,
+            tui_todo_panel: false,
             tui_statusbar: false
           }
         }
@@ -43,6 +45,7 @@ describe('applyDisplay', () => {
     expect(s.showReasoning).toBe(true)
     expect(s.statusBar).toBe('off')
     expect(s.streaming).toBe(false)
+    expect(s.todoPanel).toBe(false)
   })
 
   it('coerces legacy true + "on" alias to top', () => {
@@ -66,6 +69,7 @@ describe('applyDisplay', () => {
     expect(s.showReasoning).toBe(false)
     expect(s.statusBar).toBe('top')
     expect(s.streaming).toBe(true)
+    expect(s.todoPanel).toBe(true)
     expect(s.sections).toEqual({})
   })
 
@@ -188,6 +192,25 @@ describe('normalizeStatusBar', () => {
     expect(normalizeStatusBar('TOP')).toBe('top')
     expect(normalizeStatusBar('  on  ')).toBe('top')
     expect(normalizeStatusBar('OFF')).toBe('off')
+  })
+})
+
+describe('normalizeTodoPanel', () => {
+  it('defaults to visible and accepts on/off aliases', () => {
+    expect(normalizeTodoPanel(undefined)).toBe(true)
+    expect(normalizeTodoPanel(null)).toBe(true)
+    expect(normalizeTodoPanel(true)).toBe(true)
+    expect(normalizeTodoPanel(false)).toBe(false)
+    expect(normalizeTodoPanel('on')).toBe(true)
+    expect(normalizeTodoPanel('true')).toBe(true)
+    expect(normalizeTodoPanel('off')).toBe(false)
+    expect(normalizeTodoPanel('false')).toBe(false)
+  })
+
+  it('trims and lowercases strings, falling back to visible for unknown values', () => {
+    expect(normalizeTodoPanel(' OFF ')).toBe(false)
+    expect(normalizeTodoPanel('YES')).toBe(true)
+    expect(normalizeTodoPanel('later')).toBe(true)
   })
 })
 

@@ -1671,6 +1671,9 @@ DEFAULT_CONFIG = {
         # starts delegating, nudging the user toward the live spawn-tree
         # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
+        # Persistent bottom todo panel in the Ink TUI. Set false or run
+        # `/todos off` to hide it while keeping transcript todo archives.
+        "tui_todo_panel": True,
         "bell_on_complete": False,
         "show_reasoning": False,
         # When reasoning display is on, the post-response "Reasoning" recap box

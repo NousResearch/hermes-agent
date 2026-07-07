@@ -488,6 +488,36 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenCalledWith('details activity: hidden')
   })
 
+  it('toggles the persistent bottom todo panel locally and persists the setting', () => {
+    patchUiState({ todoPanel: true })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/todos off')).toBe(true)
+    expect(getUiState().todoPanel).toBe(false)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'todo_panel',
+      value: 'off'
+    })
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('todo panel off')
+
+    expect(createSlashHandler(ctx)('/todos on')).toBe(true)
+    expect(getUiState().todoPanel).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenLastCalledWith('config.set', {
+      key: 'todo_panel',
+      value: 'on'
+    })
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('todo panel on')
+  })
+
+  it('rejects unknown /todos arguments before hitting the gateway', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/todos sideways')).toBe(true)
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('usage: /todos [on|off|toggle]')
+  })
+
   it('clears a per-section override on /details <section> reset', () => {
     const ctx = buildCtx()
     createSlashHandler(ctx)('/details tools expanded')

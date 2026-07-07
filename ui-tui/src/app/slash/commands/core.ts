@@ -106,6 +106,7 @@ export const coreCommands: SlashCommand[] = [
               '/details <section> [hidden|collapsed|expanded|reset]',
               'override one section (thinking/tools/subagents/activity)'
             ],
+            ['/todos [on|off|toggle]', 'show or hide the persistent bottom todo panel'],
             ['/fortune [random|daily]', 'show a random or daily local fortune']
           ],
           title: 'TUI'
@@ -576,6 +577,24 @@ export const coreCommands: SlashCommand[] = [
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar', value: next }).catch(() => {})
 
       queueMicrotask(() => ctx.transcript.sys(`status bar ${next}`))
+    }
+  },
+
+  {
+    aliases: ['todo-list', 'todo-panel'],
+    help: 'show or hide the persistent bottom todo panel',
+    name: 'todos',
+    run: (arg, ctx) => {
+      const next = flagFromArg(arg, ctx.ui.todoPanel)
+
+      if (next === null) {
+        return ctx.transcript.sys('usage: /todos [on|off|toggle]')
+      }
+
+      patchUiState({ todoPanel: next })
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'todo_panel', value: next ? 'on' : 'off' }).catch(() => {})
+
+      ctx.transcript.sys(`todo panel ${next ? 'on' : 'off'}`)
     }
   },
 

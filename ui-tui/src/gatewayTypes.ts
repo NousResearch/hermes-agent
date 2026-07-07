@@ -172,6 +172,7 @@ export interface ConfigDisplayConfig {
   tui_compact?: boolean
   /** Legacy alias for display.mouse_tracking. */
   tui_mouse?: boolean | null | number | string
+  tui_todo_panel?: boolean | null | number | string
   // Forward-compat: backend may send styles this client doesn't know yet —
   // `normalizeIndicatorStyle` falls back to 'kaomoji' for those — but the
   // wire type is documented as `string` so consumers don't get a false

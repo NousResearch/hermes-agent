@@ -172,7 +172,7 @@ class TestEffectiveLastActiveSchema:
         finally:
             db.close()
 
-    def test_v18_stale_backfill_marker_repairs_on_open_without_manual_backfill(self, tmp_path):
+    def test_v18_v2_stale_backfill_marker_repairs_on_open_without_manual_backfill(self, tmp_path):
         db_path = tmp_path / "state.db"
         db = SessionDB(db_path=db_path)
         try:
@@ -189,7 +189,7 @@ class TestEffectiveLastActiveSchema:
 
             with db._lock:
                 # Simulate the live failure shape: schema_version is already current
-                # and the old additive-column backfill marker is present, but the
+                # and the already-deployed v2 backfill marker is present, but the
                 # denormalized root value is stale behind its continuation tip.
                 conn = db._conn
                 assert conn is not None
@@ -203,7 +203,7 @@ class TestEffectiveLastActiveSchema:
                 )
                 conn.execute(
                     "INSERT OR REPLACE INTO state_meta (key, value) VALUES (?, ?)",
-                    (hermes_state._EFFECTIVE_LAST_ACTIVE_BACKFILL_META_KEY, "1"),
+                    (hermes_state._EFFECTIVE_LAST_ACTIVE_BACKFILL_META_KEY, "2"),
                 )
                 conn.commit()
         finally:

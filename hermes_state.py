@@ -163,7 +163,7 @@ DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
 SCHEMA_VERSION = 18
 _EFFECTIVE_LAST_ACTIVE_BACKFILL_META_KEY = "effective_last_active_backfill_version"
-_EFFECTIVE_LAST_ACTIVE_BACKFILL_VERSION = "2"
+_EFFECTIVE_LAST_ACTIVE_BACKFILL_VERSION = "3"
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback

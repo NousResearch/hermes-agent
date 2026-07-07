@@ -2584,13 +2584,27 @@ def run_job(
     agent = None
 
     # Mark this as a cron session so the approval system can apply cron_mode.
-    # This env var is process-wide and persists for the lifetime of the
-    # scheduler process — every job this process runs is a cron job.
-    os.environ["HERMES_CRON_SESSION"] = "1"
+    # Use a contextvar rather than ``os.environ["HERMES_CRON_SESSION"]``: the
+    # in-process ticker (``InProcessCronScheduler``) shares a process with the
+    # gateway, and a process-global env var set here would persist for the
+    # lifetime of the process and misroute every subsequent interactive
+    # gateway user into the cron-mode approval branch — either auto-approved
+    # under ``approvals.cron_mode=approve`` or hard-blocked with the
+    # "no user present" message under the default ``deny`` mode (issue #58662).
+    # The contextvar is bound below, propagated through the worker thread via
+    # ``contextvars.copy_context()``, and reset in the ``finally`` block so
+    # the marker never bleeds into a sibling gateway task on the same process.
+    from gateway.session_context import (
+        set_session_vars,
+        clear_session_vars,
+        set_cron_session,
+        reset_cron_session,
+        _VAR_MAP,
+    )
+    _cron_session_token = set_cron_session(job_id)
 
     # Use ContextVars for per-job session/delivery state so parallel jobs
     # don't clobber each other's targets (os.environ is process-global).
-    from gateway.session_context import set_session_vars, clear_session_vars, _VAR_MAP
 
     # Cron execution is an internal scheduler context, not a live inbound
     # gateway message. Do not seed HERMES_SESSION_* contextvars from the
@@ -3170,6 +3184,22 @@ def run_job(
         return False, output, "", error_msg
 
     finally:
+        # Clear the cron-session marker first so a sibling gateway task can
+        # never observe it on this process after run_job returns. The marker
+        # was bound via a contextvar token above and is scoped to this job's
+        # execution context; resetting it MUST happen in the finally block
+        # so an exception (or an early return path) still unwinds the marker
+        # (issue #58662). For the inactivity-monitor worker — which was
+        # spawned with ``contextvars.copy_context()`` — the snapshot owns its
+        # own copy, so resetting here does NOT affect an in-flight worker; it
+        # only undoes the parent-thread binding.
+        try:
+            reset_cron_session(_cron_session_token)
+        except (LookupError, ValueError):
+            # Token from a different context (e.g. a copy_context snapshot
+            # that has since exited its frame) — silently ignore, exactly as
+            # reset_session_vars does for its tokens.
+            pass
         # Restore TERMINAL_CWD to whatever it was before this job ran.  We
         # only ever mutate it when the job has a workdir; see the setup block
         # at the top of run_job for the serialization guarantee.

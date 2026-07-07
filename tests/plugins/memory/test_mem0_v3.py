@@ -77,6 +77,15 @@ class TestMem0V3Tools:
         provider.handle_tool_call("mem0_search", {"query": "test", "rerank": False})
         assert backend.captured[0][2]["rerank"] is False
 
+    def test_search_rerank_config_default_used_when_arg_absent(self, monkeypatch):
+        """The persisted mem0.json ``rerank`` preference is the tool default;
+        a per-call arg still wins (see the explicit-False override above)."""
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        provider._rerank_default = True  # as initialize() sets from config
+        provider.handle_tool_call("mem0_search", {"query": "test"})
+        assert backend.captured[0][2]["rerank"] is True
+
     def test_add_uses_content_param(self, monkeypatch):
         backend = FakeBackend()
         provider = self._make_provider(monkeypatch, backend)

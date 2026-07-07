@@ -321,7 +321,7 @@ Server-side LLM fact extraction with semantic search, reranking, and automatic d
 
 | | |
 |---|---|
-| **Best for** | Hands-off memory management Mem0 handles extraction automatically |
+| **Best for** | Hands-off memory management — Mem0 handles extraction automatically |
 | **Requires** | `pip install mem0ai` + API key (platform), a running Mem0 server (self-hosted dashboard), or an LLM + vector store (OSS) |
 | **Data storage** | Mem0 Cloud (platform), your own Mem0 server (self-hosted dashboard), or in-process (OSS) |
 | **Cost** | Mem0 pricing (platform) / free (self-hosted or OSS) |

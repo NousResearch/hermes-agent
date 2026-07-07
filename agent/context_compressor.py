@@ -21,6 +21,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm, _is_connection_error, aux_interrupt_protection
@@ -33,6 +34,14 @@ from agent.model_metadata import (
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_int(value: Any) -> int | None:
+    """Best-effort integer coercion for telemetry fields."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 HISTORICAL_IN_PROGRESS_HEADING = "## Historical In-Progress State"
@@ -642,6 +651,104 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
+        self._last_compression_telemetry = None
+        self._active_compression_telemetry = None
+        self._compression_telemetry_seed = None
+
+    def _begin_compression_telemetry(
+        self,
+        *,
+        current_tokens: int | None,
+        attempt_id: str | None = None,
+        session_id: str | None = None,
+        trigger_source: str | None = None,
+    ) -> Dict[str, Any]:
+        """Initialize content-free per-attempt compression telemetry.
+
+        The payload deliberately stores only counts, durations, model labels,
+        and status flags. It must never include prompt text, summary text, or raw
+        session content.
+        """
+        seed = getattr(self, "_compression_telemetry_seed", None)
+        if isinstance(seed, dict):
+            attempt_id = attempt_id or seed.get("attempt_id")
+            session_id = session_id or seed.get("session_id")
+            trigger_source = trigger_source or seed.get("trigger_source")
+        telemetry: Dict[str, Any] = {
+            "event": "compression_attempt",
+            "attempt_id": attempt_id or uuid.uuid4().hex,
+            "session_id": session_id or "",
+            "trigger_source": trigger_source or "unknown",
+            "main_provider": self.provider or "",
+            "main_model": self.model or "",
+            "main_context_limit": _safe_int(self.context_length),
+            "current_estimated_tokens": _safe_int(current_tokens),
+            "effective_threshold": _safe_int(self.threshold_tokens),
+            "protected_head_tokens": None,
+            "protected_tail_tokens": None,
+            "middle_window_tokens": None,
+            "aux_prompt_tokens": None,
+            "aux_output_reservation": None,
+            "aux_provider": "",
+            "aux_model": "",
+            "effective_aux_context": None,
+            "fit_margin": None,
+            "chunking": False,
+            "chunk_count": 0,
+            "total_duration_ms": None,
+            "aux_call_duration_ms": None,
+            "fallback_used": False,
+            "commit_status": "unknown",
+            "split_status": "unknown",
+            "failure_class": None,
+        }
+        self._active_compression_telemetry = telemetry
+        self._last_compression_telemetry = telemetry
+        return telemetry
+
+    def _record_compression_regions(
+        self,
+        *,
+        head_messages: List[Dict[str, Any]],
+        middle_messages: List[Dict[str, Any]],
+        tail_messages: List[Dict[str, Any]],
+    ) -> None:
+        telemetry = getattr(self, "_active_compression_telemetry", None)
+        if not isinstance(telemetry, dict):
+            return
+        telemetry["protected_head_tokens"] = estimate_messages_tokens_rough(head_messages)
+        telemetry["middle_window_tokens"] = estimate_messages_tokens_rough(middle_messages)
+        telemetry["protected_tail_tokens"] = estimate_messages_tokens_rough(tail_messages)
+
+    def _record_aux_compression_call(
+        self,
+        *,
+        prompt_messages: List[Dict[str, Any]],
+        max_tokens: int,
+        duration_ms: int,
+        aux_provider: str | None = None,
+        aux_model: str | None = None,
+        effective_aux_context: int | None = None,
+    ) -> None:
+        telemetry = getattr(self, "_active_compression_telemetry", None)
+        if not isinstance(telemetry, dict):
+            return
+        telemetry["aux_prompt_tokens"] = estimate_messages_tokens_rough(prompt_messages)
+        telemetry["aux_output_reservation"] = _safe_int(max_tokens)
+        if aux_provider:
+            telemetry["aux_provider"] = aux_provider
+        if aux_model:
+            telemetry["aux_model"] = aux_model
+        if effective_aux_context is not None:
+            telemetry["effective_aux_context"] = _safe_int(effective_aux_context)
+        if telemetry["effective_aux_context"] is not None and telemetry["aux_prompt_tokens"] is not None:
+            telemetry["fit_margin"] = (
+                telemetry["effective_aux_context"]
+                - telemetry["aux_prompt_tokens"]
+                - (telemetry["aux_output_reservation"] or 0)
+            )
+        previous = telemetry.get("aux_call_duration_ms") or 0
+        telemetry["aux_call_duration_ms"] = previous + max(0, int(duration_ms))
 
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Clear per-session compaction state at a real session boundary.
@@ -896,6 +1003,9 @@ class ContextCompressor(ContextEngine):
         # succeeded.  Silent recovery would hide the broken config.
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
+        self._last_compression_telemetry: Optional[Dict[str, Any]] = None
+        self._active_compression_telemetry: Optional[Dict[str, Any]] = None
+        self._compression_telemetry_seed: Optional[Dict[str, Any]] = None
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -1439,6 +1549,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             _err_text = _err_text[:217].rstrip() + "..."
         self._last_aux_model_failure_error = _err_text
         self._last_aux_model_failure_model = self.summary_model
+        telemetry = getattr(self, "_active_compression_telemetry", None)
+        if isinstance(telemetry, dict):
+            telemetry["fallback_used"] = True
+            telemetry["failure_class"] = telemetry.get("failure_class") or "aux_model_fallback"
         self.summary_model = ""  # empty = use main model
         self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
 
@@ -1651,13 +1765,40 @@ This compaction should PRIORITISE preserving all information related to the focu
             }
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
+            _aux_provider = ""
+            _aux_model = self.summary_model or ""
+            _aux_context = None
+            try:
+                from agent.auxiliary_client import _resolve_task_provider_model
+
+                _resolved_provider, _resolved_model, _, _, _ = _resolve_task_provider_model(
+                    "compression",
+                    model=(self.summary_model or ""),
+                )
+                _aux_provider = _resolved_provider or ""
+                _aux_model = _resolved_model or _aux_model or self.model or ""
+                if _aux_model == self.model:
+                    _aux_context = self.context_length
+            except Exception:
+                pass
             # Compression is atomic: protect the in-flight summary call from a
             # mid-turn gateway interrupt. Without this, an incoming user message
             # aborts the summary and compression falls back to a degraded static
             # marker, losing the real handoff (#23975). Re-entrant: a main-model
             # retry (_generate_summary recursion) re-enters harmlessly.
-            with aux_interrupt_protection():
-                response = call_llm(**call_kwargs)
+            _aux_call_start = time.monotonic()
+            try:
+                with aux_interrupt_protection():
+                    response = call_llm(**call_kwargs)
+            finally:
+                self._record_aux_compression_call(
+                    prompt_messages=call_kwargs["messages"],
+                    max_tokens=call_kwargs["max_tokens"],
+                    duration_ms=int((time.monotonic() - _aux_call_start) * 1000),
+                    aux_provider=_aux_provider,
+                    aux_model=_aux_model,
+                    effective_aux_context=_aux_context,
+                )
             content = response.choices[0].message.content
             # Handle cases where content is not a string (e.g., dict from llama.cpp)
             if not isinstance(content, str):
@@ -2382,6 +2523,8 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
         self._last_summary_auth_failure = False
+        telemetry = self._begin_compression_telemetry(current_tokens=current_tokens)
+        telemetry["chunk_count"] = 0
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without
@@ -2392,6 +2535,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
         if n_messages <= _min_for_compress:
+            telemetry["failure_class"] = "insufficient_messages"
             if not self.quiet_mode:
                 logger.warning(
                     "Cannot compress: only %d messages (need > %d)",
@@ -2417,6 +2561,12 @@ This compaction should PRIORITISE preserving all information related to the focu
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
 
         if compress_start >= compress_end:
+            self._record_compression_regions(
+                head_messages=messages[:compress_start],
+                middle_messages=[],
+                tail_messages=messages[compress_end:],
+            )
+            telemetry["failure_class"] = "no_compressible_window"
             # No compressable window — the entire transcript fits within
             # the tail budget (soft_ceiling).  Without recording this as
             # an ineffective compression the anti-thrashing guard in
@@ -2459,6 +2609,13 @@ This compaction should PRIORITISE preserving all information related to the focu
             # it so _generate_summary() does not inject cross-session content
             # into the summarizer prompt via the iterative-update path.
             self._previous_summary = None
+
+        self._record_compression_regions(
+            head_messages=messages[:compress_start],
+            middle_messages=turns_to_summarize,
+            tail_messages=messages[compress_end:],
+        )
+        telemetry["chunk_count"] = 1 if turns_to_summarize else 0
 
         if not self.quiet_mode:
             logger.info(
@@ -2511,6 +2668,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             self._last_summary_dropped_count = 0  # nothing actually dropped
             self._last_summary_fallback_used = False
             self._last_compress_aborted = True
+            telemetry["failure_class"] = "summary_auth_failure" if self._last_summary_auth_failure else "summary_generation_aborted"
             if not self.quiet_mode:
                 if self._last_summary_auth_failure:
                     logger.warning(
@@ -2554,6 +2712,8 @@ This compaction should PRIORITISE preserving all information related to the focu
             n_dropped = compress_end - compress_start
             self._last_summary_dropped_count = n_dropped
             self._last_summary_fallback_used = True
+            telemetry["fallback_used"] = True
+            telemetry["failure_class"] = telemetry.get("failure_class") or "summary_generation_failed"
             summary = self._build_static_fallback_summary(
                 turns_to_summarize,
                 reason=self._last_summary_error,

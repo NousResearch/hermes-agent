@@ -49,6 +49,9 @@ hermes chat --verbose
 # Isolated git worktree (for running multiple agents in parallel)
 hermes -w                         # Interactive mode in worktree
 hermes -w -z "Fix issue #123"     # Single query in worktree
+
+# Write a JSON usage report for one-shot automation
+hermes -z "Summarize this repository" --usage-file usage.json
 ```
 
 ## Interface Layout
@@ -88,7 +91,7 @@ The bar adapts to terminal width — full layout at ≥ 76 columns, compact at 5
 | Orange | 80–95% | Approaching limit |
 | Red | ≥ 95% | Near overflow — consider `/compress` |
 
-Use `/usage` for a detailed breakdown including per-category costs (input vs output tokens).
+Use `/usage` for a detailed breakdown including per-category costs (input vs output tokens). For non-interactive `-z` runs, `--usage-file <path>` writes a JSON report with estimated cost, token counts, model/provider, API call count, and completion or failure status.
 
 ### Session Resume Display
 

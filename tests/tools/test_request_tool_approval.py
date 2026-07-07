@@ -93,7 +93,7 @@ class TestRequestToolApproval:
         monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: True)
         submitted = {}
         monkeypatch.setattr(approval, "submit_pending",
-                            lambda sk, data: submitted.update(data))
+                            lambda sk, data, user_id="": submitted.update(data))
         res = request_tool_approval("browser_navigate", "external URL",
                                     rule_key="ext-nav")
         assert res["approved"] is False

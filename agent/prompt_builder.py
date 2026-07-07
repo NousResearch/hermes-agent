@@ -181,8 +181,11 @@ MEMORY_GUIDANCE = (
     "'User prefers concise responses' ✓ — 'Always respond concisely' ✗. "
     "'Project uses pytest with xdist' ✓ — 'Run tests with pytest -n 4' ✗. "
     "Imperative phrasing gets re-read as a directive in later sessions and can "
-    "cause repeated work or override the user's current request. Procedures and "
-    "workflows belong in skills, not memory."
+    "Procedures and "
+    "workflows belong in skills, not memory.\n"
+    "When two memories are related, link them with [[memory-slug]] in the body. "
+    "A [[link]] that doesn't match an existing memory yet is fine — it marks "
+    "something worth capturing later, not an error."
 )
 
 SESSION_SEARCH_GUIDANCE = (
@@ -204,6 +207,28 @@ SKILLS_GUIDANCE = (
     "2. **RELOAD** — Before performing any action that depends on a skill, re-check its content with `skill_view(name='...')` if it shows `[SKILL_PRUNED]`.\n"
     "3. **WAIT** — If a skill is loading or was just pruned, wait for the reload confirmation before proceeding.\n"
     "4. **DEDUP** — After reloading a pruned skill, **ignore any remaining `[SKILL_PRUNED]` markers for that same skill** — they are historical artifacts from previous compactions and do not need further action."
+)
+
+# Cron/schedule restraint — injected only when the cronjob tool is loaded.
+#
+# Modeled on Claude Code's harness rule: "Default: NO /schedule offer —
+# most tasks just end." Agents over-eagerly offer to create cron jobs
+# for anything — a bug fix, a refactor, a one-off task. The human finds
+# it annoying noise. Only offer when there's a concrete, dated obligation
+# that can be quoted verbatim from the work product.
+#
+# Injected when cronjob tool is present — minimal token cost, high
+# signal-to-noise payoff.
+CRON_RESTRAINT_GUIDANCE = (
+    "## Cron/schedule restraint\n"
+    "You have access to the cronjob tool for scheduling recurring tasks. "
+    "Default: do NOT offer to create a cron job. Most tasks just end — "
+    "a completed bug fix, a refactor, a one-off query. Only offer when "
+    "this turn's work left a concrete artifact with a future obligation "
+    "you can quote verbatim: a flag/gate with a stated ramp date, a TODO "
+    "with a written \"remove after X\" condition, or a recurring check the "
+    "user explicitly asked for. Never invent a timeframe. At most once "
+    "per session."
 )
 
 KANBAN_GUIDANCE = (
@@ -354,6 +379,32 @@ TASK_COMPLETION_GUIDANCE = (
     "output (made-up data, invented file contents, synthesised API responses) "
     "for results you couldn't actually produce. Reporting a blocker honestly "
     "is always better than inventing a result."
+)
+
+# Universal outcome-reporting guidance — applied to ALL models.
+#
+# Modeled on Claude Code's harness directive: "Report outcomes faithfully:
+# if tests fail, say so with the output; if a step was skipped, say that;
+# when something is done and verified, state it plainly without hedging."
+# Addresses a cross-model failure mode where agents gloss over failures
+# or soft-pedal results — the human debugging from the other side needs
+# ground truth, not a smoothed-over summary.
+#
+# Injected unconditionally — the guidance is model-agnostic and costs ≅100
+# tokens, paid once at install and amortised via prefix caching.
+OUTCOME_REPORTING_GUIDANCE = (
+    "# Reporting outcomes\n"
+    "When reporting results to the user, be direct and faithful:\n"
+    "- If a test, build, or command **failed**, say exactly that — include "
+    "the error output. Do not soften it with 'there were some issues' or "
+    "'mostly worked'.\n"
+    "- If a step was **skipped** or blocked, say so and why. Do not silently "
+    "omit it.\n"
+    "- If a task is truly **done and verified**, state it plainly without "
+    "hedging ('seems to work', 'should be fine').\n"
+    "- Never claim a file was written, a command succeeded, or an API call "
+    "returned data unless you have verified it with a tool. A tool's exit "
+    "code or return value is your evidence — cite it."
 )
 
 # Universal parallel-tool-call guidance — applied to ALL models.

@@ -846,20 +846,35 @@ def test_server_strips_client_auth_header():
 
 
 def test_server_returns_502_when_upstream_unreachable():
-    """A refused TCP connection to the upstream must surface as 502, not a 500/crash."""
+    """A failed upstream connection must surface as 502, not a 500/crash.
+
+    Patches ClientSession.request (rather than pointing at a real closed
+    port) so the test is deterministic regardless of how the CI/container
+    network handles connections to unused ports (refuse vs. silently drop
+    -> timeout). Only requests to the fake upstream URL are intercepted;
+    everything else (the test client's own call into the proxy) falls
+    through to the real implementation.
+    """
     async def run():
-        # Nothing is listening on this port -> aiohttp.ClientConnectorError
-        # (an aiohttp.ClientError subclass) when the proxy tries to connect.
-        adapter = FakeAdapter("http://127.0.0.1:1/v1")
+        adapter = FakeAdapter("http://unused.example/v1")
         proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+
+        original_request = aiohttp.ClientSession.request
+
+        async def _raise_conn_error(self, method, url, *args, **kwargs):
+            if "unused.example" in str(url):
+                raise aiohttp.ClientError("simulated connection refused")
+            return await original_request(self, method, url, *args, **kwargs)
+
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{proxy_base}/v1/chat/completions", json={},
-                ) as resp:
-                    assert resp.status == 502
-                    body = await resp.json()
-                    assert body["error"]["type"] == "upstream_unreachable"
+            with patch("aiohttp.ClientSession.request", _raise_conn_error):
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{proxy_base}/v1/chat/completions", json={},
+                    ) as resp:
+                        assert resp.status == 502
+                        body = await resp.json()
+                        assert body["error"]["type"] == "upstream_unreachable"
         finally:
             await proxy_runner.cleanup()
 
@@ -872,8 +887,12 @@ def test_server_returns_504_when_upstream_times_out():
         adapter = FakeAdapter("http://unused.example/v1")
         proxy_runner, proxy_base = await _start_runner(create_app(adapter))
 
-        async def _raise_timeout(self, *args, **kwargs):
-            raise asyncio.TimeoutError()
+        original_request = aiohttp.ClientSession.request
+
+        async def _raise_timeout(self, method, url, *args, **kwargs):
+            if "unused.example" in str(url):
+                raise asyncio.TimeoutError()
+            return await original_request(self, method, url, *args, **kwargs)
 
         try:
             with patch("aiohttp.ClientSession.request", _raise_timeout):

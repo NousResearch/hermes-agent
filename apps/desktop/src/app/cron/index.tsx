@@ -718,6 +718,8 @@ function CronEditorDialog({
   const [schedule, setSchedule] = useState('')
   const [schedulePreset, setSchedulePreset] = useState('daily')
   const [deliver, setDeliver] = useState(DEFAULT_DELIVER)
+  const [enabled, setEnabled] = useState(true)
+  const [repeat, setRepeat] = useState<number | undefined>()
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
@@ -731,6 +733,8 @@ function CronEditorDialog({
     setSchedule(initial ? jobScheduleExpr(initial) : (SCHEDULE_OPTIONS[0].expr ?? ''))
     setSchedulePreset(initial ? scheduleOptionForExpr(jobScheduleExpr(initial)).value : 'daily')
     setDeliver(initial ? jobDeliver(initial) : DEFAULT_DELIVER)
+    setEnabled(initial ? (initial.enabled ?? true) : true)
+    setRepeat(initial.repeat)
     setError(null)
     setSaving(false)
   }, [initial, open])
@@ -770,9 +774,11 @@ function CronEditorDialog({
     try {
       await onSave({
         deliver,
+        enabled,
         name: name.trim(),
         prompt: trimmedPrompt,
-        schedule: trimmedSchedule
+        schedule: trimmedSchedule,
+        repeat: repeat || undefined
       })
     } catch (err) {
       setError(err instanceof Error ? err.message : c.failedSave)
@@ -862,6 +868,35 @@ function CronEditorDialog({
             </div>
           )}
 
+          <div className="grid items-start gap-4 sm:grid-cols-2">
+            <Field htmlFor="cron-repeat" label={c.repeatLabel} optional optionalLabel={c.optional}>
+              <Input
+                id="cron-repeat"
+                min={1}
+                onChange={event => {
+                  const val = event.target.value
+                  setRepeat(val ? parseInt(val, 10) : undefined)
+                }}
+                placeholder={c.repeatPlaceholder}
+                type="number"
+                value={repeat ?? ''}
+              />
+            </Field>
+
+            <div className="flex items-center gap-2 pt-6">
+              <input
+                checked={enabled}
+                className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                id="cron-enabled"
+                onChange={event => setEnabled(event.target.checked)}
+                type="checkbox"
+              />
+              <label className="text-xs font-medium text-foreground" htmlFor="cron-enabled">
+                {c.enabledLabel}
+              </label>
+            </div>
+          </div>
+
           {error && (
             <div className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
               <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
@@ -915,9 +950,11 @@ type EditorState = { mode: 'closed' } | { mode: 'create' } | { job: CronJob; mod
 
 interface EditorValues {
   deliver: string
+  enabled: boolean
   name: string
   prompt: string
   schedule: string
+  repeat?: number
 }
 
 interface ScheduleOption {

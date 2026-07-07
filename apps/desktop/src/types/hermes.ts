@@ -581,6 +581,12 @@ export interface CronJobUpdates {
   name?: string
   prompt?: string
   schedule?: string
+  repeat?: number
+  skills?: string[]
+  model?: string
+  provider?: string
+  script?: string
+  context_from?: string[]
 }
 
 export interface ProfileCreatePayload {

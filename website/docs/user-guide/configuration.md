@@ -1894,6 +1894,8 @@ Smart mode is particularly useful for reducing approval fatigue — it lets the 
 Setting `approvals.mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.
 :::
 
+Discord button prompts use a separate component timeout from the approval mode. Set `approvals.discord_prompt_timeout` to control how long exec-approval, slash-confirm, update-prompt, and clarify-choice buttons remain clickable in Discord. The default is `300` seconds and values are clamped to 30-900 seconds.
+
 ### Deny rules
 
 `approvals.deny` is a list of glob patterns that block matching terminal commands unconditionally — even under `--yolo`, `/yolo`, or `mode: off`. It's the user-editable counterpart to the built-in hardline blocklist:

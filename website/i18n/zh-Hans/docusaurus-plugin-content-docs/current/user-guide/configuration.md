@@ -1598,6 +1598,8 @@ approvals:
 设置 `approvals.mode: off` 会禁用终端命令的所有安全检查。仅在受信任的沙箱环境中使用。
 :::
 
+Discord 按钮提示使用与审批模式分开的组件超时。设置 `approvals.discord_prompt_timeout` 可控制 Discord 中 exec 审批、斜杠确认、更新提示和 clarify 选项按钮保持可点击的时间。默认值为 `300` 秒，取值会限制在 30-900 秒之间。
+
 ## 检查点
 
 破坏性文件操作之前的自动文件系统快照。详情请参阅[检查点与回滚](/user-guide/checkpoints-and-rollback)。

@@ -524,7 +524,19 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     if not identifier_path.is_absolute():
         return raw_identifier.lstrip("/")
 
-    trusted_roots = [get_skills_dir()]
+    # Look the primary skills root up on tools.skills_tool at CALL time
+    # (not via get_skills_dir()): callers and tests patch
+    # ``tools.skills_tool.SKILLS_DIR`` and skill_view() itself resolves
+    # against that module attribute, so normalization must agree with the
+    # exact root skill_view() will enforce.  Import deferred to avoid a
+    # module cycle (tools.skills_tool imports agent.skill_utils).
+    try:
+        from tools import skills_tool as _skills_tool
+        primary_root = Path(_skills_tool.SKILLS_DIR)
+    except Exception:
+        primary_root = get_skills_dir()
+
+    trusted_roots = [primary_root]
     try:
         trusted_roots.extend(get_external_skills_dirs())
     except Exception:
@@ -542,7 +554,7 @@ def normalize_skill_lookup_name(identifier: str) -> str:
             continue
 
     try:
-        return str(identifier_path.resolve().relative_to(get_skills_dir().resolve()))
+        return str(identifier_path.resolve().relative_to(primary_root.resolve()))
     except Exception:
         return raw_identifier
 

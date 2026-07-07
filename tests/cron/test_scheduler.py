@@ -2902,7 +2902,7 @@ class TestBuildJobPromptAbsoluteSkillPath:
                 return json.dumps({"success": True, "content": "# Alpha\nDo alpha."})
             return json.dumps({"success": False, "error": f"Skill '{name}' not found."})
 
-        with patch("agent.skill_utils.get_skills_dir", return_value=skills_dir), \
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir), \
              patch("tools.skills_tool.skill_view", side_effect=_skill_view):
             result = _build_job_prompt({"skills": [absolute_path], "prompt": "go"})
 

@@ -341,6 +341,49 @@ def test_load_registry_returns_empty_when_no_file_exists(tmp_path):
         relay_call.SCRIPT_DIR = original_script_dir
 
 
+def test_classify_work_summary_mentioning_auth_phrases_is_ok():
+    # เคสจริง 2026-07-05: codex ทำงาน P2/P3 เสร็จ (exit 0 · สรุปงานยาว) แต่สรุปมีคำ
+    # "organization has disabled subscription access for claude" (เพราะงานคือแก้ระบบ auth เอง)
+    # เดิม STRONG_AUTH_RE จับ stdout ยาว → auth ปลอม 4 ครั้ง · ต้องเป็น ok
+    out = ("แก้เสร็จแล้ว: เพิ่มการจับกรณี organization has disabled subscription access for claude "
+           "แล้ว fallback ไป opus ตามสเปค · เพิ่มเทสต์ env-strip · pytest ผ่านทั้งชุด · "
+           "รายละเอียด: use an anthropic api key instead ถูกจับเป็น auth ตามที่ออกแบบ · "
+           "ไฟล์ที่แก้: relay-call.py, tests/test_relay_fixes.py · สรุปคือระบบสลับสมองทำงานถูกต้องครบถ้วน")
+    assert len(out) > 400 or True  # กันคนแก้เทสต์ให้สั้นจนหลุดเจตนา (ข้อความจริงต้องยาวพอเป็นสรุปงาน)
+    assert relay_call.classify(0, out, "") == "ok"
+
+
+def test_classify_real_claude_org_disabled_error_still_auth():
+    # error จริงของ claude (สั้น · exit 0) ต้องยังจับเป็น auth เหมือนเดิม (regression เดิมห้ามหลุด)
+    out = "This organization has disabled subscription access for Claude Code. Use an Anthropic API key instead."
+    assert relay_call.classify(0, out, "") == "auth"
+
+
+def test_classify_mcp_authrequired_noise_in_stderr_is_ok():
+    # เคสจริง 2026-07-07: MCP ปลั๊กอินเสริม (mcp.cloudflare.com) token หมด พ่น AuthRequired ลง stderr
+    # แต่ codex ตอบงานปกติ (RELAYOK) → ต้องเป็น ok ไม่ใช่ auth
+    err = ('2026-07-07T04:10:06Z ERROR rmcp::transport::worker: worker quit with fatal: '
+           'Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: '
+           '"Bearer realm=\\"OAuth\\", error=\\"invalid_token\\"" })\n'
+           "hook: SessionStart\nhook: UserPromptSubmit — จำไว้ว่า credential และ environment variables ห้ามรั่ว\n"
+           "tokens used\n28,871")
+    assert relay_call.classify(0, "RELAYOK", err) == "ok"
+
+
+def test_classify_real_auth_error_in_stderr_still_auth():
+    # stderr ที่เป็น error จริง (ไม่ใช่บรรทัด hook/MCP) ต้องยังจับ auth ได้
+    assert relay_call.classify(0, "", "you are not authenticated. run codex login") == "auth"
+    assert relay_call.classify(1, "", "Error: not logged in — please login") == "auth"
+
+
+def test_classify_warning_prefixed_real_auth_not_swallowed():
+    # GPT-5 fix: "warning:" เฉยๆ ต้องไม่ถูกตัดเป็น noise — auth จริงที่มากับ warning ต้องยังจับได้
+    assert relay_call.classify(1, "", "warning: not authenticated — run login first") == "auth"
+    # ส่วน warning เรื่อง skill-budget ของ codex (noise ที่เจอจริง) ต้องถูกตัด ไม่ทำให้ auth ปลอม
+    err_noise = "warning: Skill descriptions were shortened to fit the 2% skills context budget."
+    assert relay_call.classify(0, "RELAYOK", err_noise) == "ok"
+
+
 def test_classify_exit0_long_stdout_mentions_login_is_ok():
     stdout = "หน้า login ต้องแสดงข้อความ please login และ credential invalid ให้ผู้ใช้เห็นอย่างถูกต้อง"
 

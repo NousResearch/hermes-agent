@@ -238,6 +238,15 @@ QUOTA_RE = re.compile(r"\b429\b|rate.?limit|quota|too many request|usage limit|s
 # ข้อความ auth ที่ชัดเจนมาก (คำตอบปกติไม่มีทางพูด) · ถือเป็นล็อกอินพัง แม้ CLI จะ exit 0 · กันเอา error มาเป็นคำตอบ
 STRONG_AUTH_RE = re.compile(r"you are not authenticated|organization has disabled|subscription access for claude|use an anthropic api key instead", re.I)
 
+# บรรทัด log ปนใน stderr ที่ "ไม่ใช่" ข้อความ error ของ CLI เอง — ต้องตัดทิ้งก่อนตีความ auth/quota
+# (hook ของ session ฉีดความจำ/กฎที่ "พูดถึง" เรื่อง auth ได้ · MCP ปลั๊กอินเสริมพ่น AuthRequired ของมันเอง
+#  ทั้งที่งานหลักสำเร็จ — เคสจริง 2026-07-07: mcp.cloudflare.com token หมด แต่ codex ตอบงานปกติ)
+# หมายเหตุ (GPT-5 review): "warning:" เฉยๆ กว้างไป (จะกลืน "warning: not authenticated" จริง)
+# → จำกัดเป็นเฉพาะ warning เรื่อง skill-budget ของ codex ที่เจอจริงเท่านั้น
+NOISE_LINE_RE = re.compile(r"^\s*(hook:|mcp:|codex$|tokens used|warning: skill descriptions)|ERROR\s+rmcp::|AuthRequired\(AuthRequiredError", re.I)
+def _clean_stream(text):
+    return "\n".join(l for l in (text or "").splitlines() if not NOISE_LINE_RE.search(l))
+
 # ---- จัดประเภท error จาก exit code + stdout/stderr (เป็นที่เดียวที่ตีความ) ----
 def classify(exit_code, stdout, stderr):
     out = stdout or ""
@@ -247,24 +256,32 @@ def classify(exit_code, stdout, stderr):
         return "timeout"   # ค้างจริง (run_once ตั้งป้ายนี้ตอน subprocess เกินนาฬิกาปลุก · CLI ที่บังเอิญ exit 124 เอง ไม่เข้าเงื่อนไขนี้ → ตกไป crash)
     if exit_code == 127:
         return "not_found"
+    out_clean = _clean_stream(out)
+    err_clean = _clean_stream(err)
     if exit_code == 0:
         # บาง CLI (เช่น claude เมื่อ org ปิดสิทธิ์) พิมพ์ error ยาวแต่ exit 0 · กันเอา error มาเป็นคำตอบ
-        if STRONG_AUTH_RE.search(out) or STRONG_AUTH_RE.search(err):
+        # แต่ "งานสำเร็จที่เนื้อหาพูดถึงเรื่อง auth" (เช่นแก้โค้ด/เอกสารระบบ login) ต้องไม่โดนจับ:
+        #  - stdout ยาว (>250) = คำตอบงานจริง · error จริงของ CLI สั้น (~110 ตัว) → ไม่ตรวจ STRONG บน stdout ยาว
+        #  - stderr ตรวจได้เสมอ แต่หลังตัดบรรทัด log ปน (hook:/MCP) แล้วเท่านั้น
+        # เคสจริง 2026-07-05: codex ทำงาน P2/P3 เสร็จ แต่สรุปงานมีคำ "organization has disabled ..."
+        # → โดนตีเป็น auth ปลอม 4 ครั้ง ทั้งที่ login ติดปกติ
+        if (len(out_clean.strip()) <= 250 and STRONG_AUTH_RE.search(out_clean)) or STRONG_AUTH_RE.search(err_clean):
             return "auth"
-        if QUOTA_RE.search(out) or QUOTA_RE.search(err):
+        if QUOTA_RE.search(out_clean) or QUOTA_RE.search(err_clean):
             return "quota"
-        if len(out.strip()) < 40 and AUTH_RE.search(err):
+        if len(out_clean.strip()) < 40 and AUTH_RE.search(err_clean):
             return "auth"
         return "ok"
     if "command not found" in err_low or "no such file" in err_low:
         return "not_found"
-    if AUTH_RE.search(err):
+    # exit != 0: ตรวจบน stream ที่ตัด log ปน (hook:/MCP) แล้ว — เหตุผลเดียวกับฝั่ง exit 0
+    if AUTH_RE.search(err_clean):
         return "auth"
-    if QUOTA_RE.search(err):
+    if QUOTA_RE.search(err_clean):
         return "quota"
-    if AUTH_RE.search(out):
+    if AUTH_RE.search(out_clean):
         return "auth"
-    if QUOTA_RE.search(out):
+    if QUOTA_RE.search(out_clean):
         return "quota"
     return "crash"
 
@@ -621,8 +638,16 @@ def main():
                 "rounds_used":rounds,"tried":tried}, ensure_ascii=False))
             sys.exit(0)
 
-        # ไม่ ok → จดความพยายามลง ledger ก่อน (relay-report จะได้เห็นครั้งที่พัง/ชนโควต้าด้วย) แล้วค่อยตัดสินว่าสลับหรือหยุด
-        attempt_row(tool, st, rotated_from)
+        # ไม่ ok → เก็บ output ดิบตอนพังไว้วินิจฉัย (เคสจริง: auth ปลอม 4 ครั้งแต่ไม่มีหลักฐานให้ดูย้อน)
+        # แล้วจดความพยายามลง ledger (relay-report จะได้เห็นครั้งที่พัง/ชนโควต้าด้วย) ค่อยตัดสินว่าสลับหรือหยุด
+        fail_ref = ""
+        try:
+            ffile = cfg_dir(cwd)/f"fail-{re.sub(r'[^A-Za-z0-9]', '_', a.task_id)}-{tool}.txt"
+            ffile.write_text(redact(f"status={st} exit={code}\n--- stdout (ท้าย 4000) ---\n{out[-4000:]}\n--- stderr (ท้าย 4000) ---\n{err[-4000:]}"), encoding="utf-8")
+            fail_ref = str(ffile)
+        except Exception:
+            pass  # เก็บหลักฐานไม่ได้ ไม่ควรทำให้ตัวสายพานพัง
+        attempt_row(tool, st, rotated_from, fail_ref)
         if st in ("quota", "crash", "timeout"):
             # timeout = ค้าง/หมดเวลา · นับเป็นพังเข้า cooldown + สลับตัวถัดไปเหมือน crash
             record_fail(cwd, tool, cd_cfg, time.time())  # พังซ้ำครบเกณฑ์ = พักตัวนี้ชั่วคราว

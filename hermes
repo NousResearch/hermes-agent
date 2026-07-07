@@ -6,6 +6,68 @@ This wrapper should behave like the installed `hermes` command, including
 subcommands such as `gateway`, `cron`, and `doctor`.
 """
 
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+
+def _adjacent_venv_python() -> Path | None:
+    """Return the Python interpreter from the checkout-local venv, if present.
+
+    Legacy service units and direct checkout invocations may execute this file
+    with `/usr/bin/env python3`, bypassing the Hermes virtualenv and therefore
+    missing packages installed only in the managed venv.  Prefer the venv that
+    sits next to this launcher, but fall back to the current interpreter for
+    editable/source checkouts that intentionally have no managed venv.
+    """
+
+    root = Path(__file__).resolve().parent
+    candidates: list[Path]
+    if os.name == "nt":
+        candidates = [
+            root / "venv" / "Scripts" / "python.exe",
+            root / ".venv" / "Scripts" / "python.exe",
+        ]
+    else:
+        candidates = [
+            root / "venv" / "bin" / "python",
+            root / ".venv" / "bin" / "python",
+        ]
+
+    current = Path(sys.executable)
+    try:
+        current_resolved = current.resolve()
+    except OSError:
+        current_resolved = current
+
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            candidate_resolved = candidate.resolve()
+        except OSError:
+            candidate_resolved = candidate
+        if candidate_resolved == current_resolved:
+            return None
+        return candidate
+    return None
+
+
+def _reexec_with_adjacent_venv() -> None:
+    python = _adjacent_venv_python()
+    if python is None:
+        return
+
+    os.environ.pop("PYTHONPATH", None)
+    os.environ.pop("PYTHONHOME", None)
+    os.environ.setdefault("VIRTUAL_ENV", str(python.parent.parent))
+    os.execv(str(python), [str(python), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
 if __name__ == "__main__":
+    _reexec_with_adjacent_venv()
     from hermes_cli.main import main
+
     main()

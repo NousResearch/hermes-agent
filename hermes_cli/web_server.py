@@ -39,6 +39,8 @@ import urllib.error
 import urllib.parse
 import zipfile
 
+import secrets
+import sqlite3
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
@@ -8153,8 +8155,14 @@ async def add_sessions_to_folder(folder_id: str, body: FolderMemberships):
     """Add sessions to a folder. Returns count of newly added."""
     db = _open_session_db_for_profile(body.profile)
     try:
-        count = db.add_sessions_to_folder(folder_id, body.session_ids)
-        return {"ok": True, "count": count}
+        try:
+            count = db.add_sessions_to_folder(folder_id, body.session_ids)
+            return {"ok": True, "count": count}
+        except sqlite3.IntegrityError:
+            raise HTTPException(
+                status_code=500,
+                detail="Folder not found or foreign key constraint violated",
+            )
     finally:
         db.close()
 

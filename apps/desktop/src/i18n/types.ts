@@ -1321,6 +1321,15 @@ export interface Translations {
       ageDay: string
       ageHour: string
       ageMin: string
+      folders: string
+      createFolder: string
+      renameFolder: string
+      deleteFolder: string
+      deleteFolderConfirm: string
+      moveToFolder: string
+      removeFromFolder: string
+      addToFolder: string
+      noFolders: string
     }
   }
 

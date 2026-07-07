@@ -22,7 +22,19 @@ import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeSessionId, $selectedStoredSessionId, setSessions } from '@/store/session'
+import { $folders, moveToFolder as storeMoveToFolder, removeFromFolder as storeRemoveFromFolder } from '@/store/session-folders'
+import { useStore } from '@nanostores/react'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
+import {
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
+} from '@/components/ui/context-menu'
 
 import type { SessionTitleResponse } from '../../types'
 
@@ -80,6 +92,8 @@ interface SessionActions {
   onBranch?: () => void
   onArchive?: () => void
   onDelete?: () => void
+  folderIds?: string[]
+  currentFolderId?: string | null
 }
 
 type MenuItem = typeof DropdownMenuItem | typeof ContextMenuItem
@@ -98,6 +112,8 @@ function useSessionActions({
   title,
   pinned = false,
   profile,
+  folderIds = [],
+  currentFolderId,
   onPin,
   onBranch,
   onArchive,
@@ -106,6 +122,7 @@ function useSessionActions({
   const { t } = useI18n()
   const r = t.sidebar.row
   const [renameOpen, setRenameOpen] = useState(false)
+  const foldersList = useStore($folders)
 
   const pinItem: ItemSpec = {
     disabled: !onPin,
@@ -187,7 +204,7 @@ function useSessionActions({
     </Item>
   )
 
-  const renderItems = (Item: MenuItem) => (
+  const renderItems = (Item: MenuItem, Sub?: typeof DropdownMenuSub, SubTrigger?: typeof DropdownMenuSubTrigger, SubContent?: typeof DropdownMenuSubContent) => (
     <>
       {renderMenuItem(Item, pinItem)}
       <CopyButton
@@ -201,6 +218,39 @@ function useSessionActions({
         text={sessionId}
       />
       {items.map(spec => renderMenuItem(Item, spec))}
+      {currentFolderId && (
+        <Item
+          onSelect={() => {
+            triggerHaptic('selection')
+            void storeRemoveFromFolder(sessionId, currentFolderId)
+          }}
+        >
+          <Codicon name="close" size="0.875rem" />
+          <span>{r.removeFromFolder ?? 'Remove from folder'}</span>
+        </Item>
+      )}
+      {foldersList.length > 0 && Sub && SubTrigger && SubContent && (
+        <Sub>
+          <SubTrigger>
+            <Codicon name="folder" size="0.875rem" />
+            <span>{r.moveToFolder ?? 'Move to folder'}</span>
+          </SubTrigger>
+          <SubContent>
+            {foldersList.map(folder => (
+              <Item
+                key={folder.id}
+                onSelect={() => {
+                  triggerHaptic('selection')
+                  void storeMoveToFolder(sessionId, folder.id, currentFolderId)
+                }}
+              >
+                <span>{folder.name}</span>
+                {folder.id === currentFolderId && <span className="ml-auto text-(--ui-text-tertiary)">✓</span>}
+              </Item>
+            ))}
+          </SubContent>
+        </Sub>
+      )}
     </>
   )
 
@@ -236,7 +286,7 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
           className="w-40"
           sideOffset={sideOffset}
         >
-          {renderItems(DropdownMenuItem)}
+          {renderItems(DropdownMenuItem, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent)}
         </DropdownMenuContent>
       </DropdownMenu>
       {renameDialog}
@@ -257,7 +307,7 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
       <ContextMenu>
         <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
         <ContextMenuContent aria-label={t.sidebar.row.actionsFor(actions.title)} className="w-40">
-          {renderItems(ContextMenuItem)}
+          {renderItems(ContextMenuItem, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent)}
         </ContextMenuContent>
       </ContextMenu>
       {renameDialog}

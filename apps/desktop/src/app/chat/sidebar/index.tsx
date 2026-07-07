@@ -94,6 +94,7 @@ import {
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
+import { $folders } from '@/store/session-folders'
 
 import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
 import type { SidebarNavItem } from '../../types'
@@ -121,6 +122,7 @@ import {
 } from './projects'
 import { SidebarBlankState, SidebarPinnedEmptyState, SidebarSessionSkeletons } from './section-states'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
+import { SidebarFoldersSection } from './folders-section'
 
 // Non-session groups (messaging platforms) stay compact: show a few rows up
 // front, reveal more in larger steps on demand. Keeps a busy platform from
@@ -239,6 +241,8 @@ export function ChatSidebar({
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
   const cronOpen = useStore($sidebarCronOpen)
+  const foldersList = useStore($folders)
+  const [foldersOpen, setFoldersOpen] = useState(true)
   const selectedSessionId = useStore($selectedStoredSessionId)
   const sessions = useStore($sessions)
   const cronSessions = useStore($cronSessions)
@@ -1173,6 +1177,18 @@ export function ChatSidebar({
                 sessions={pinnedSessions}
                 sortable={pinnedSessions.length > 1}
                 workingSessionIdSet={workingSessionIdSet}
+              />
+            )}
+
+            {!trimmedQuery && foldersList.length > 0 && (
+              <SidebarFoldersSection
+                label={r.folders ?? 'Folders'}
+                onArchiveSession={onArchiveSession}
+                onDeleteSession={onDeleteSession}
+                onResumeSession={onResumeSession}
+                onToggle={() => setFoldersOpen(!foldersOpen)}
+                onTogglePin={pinSession}
+                open={foldersOpen}
               />
             )}
 

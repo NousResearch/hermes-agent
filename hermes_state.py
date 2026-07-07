@@ -19,6 +19,7 @@ import json
 import logging
 import random
 import re
+import secrets
 import sqlite3
 import sys
 import threading
@@ -1270,21 +1271,26 @@ class SessionDB:
     # ── Session Folders ──────────────────────────────────────────────
 
     def list_folders(self) -> list[dict]:
-        """Return all folders with per-folder session count."""
-        rows = self._execute_write(
-            lambda conn: conn.execute(
-                """SELECT f.*, COUNT(m.session_id) AS session_count
+        """Return all folders with per-folder session count and member session IDs."""
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT f.*, COUNT(m.session_id) AS session_count,
+                          COALESCE(GROUP_CONCAT(m.session_id), '') AS session_ids
                    FROM session_folders f
                    LEFT JOIN session_folder_members m ON m.folder_id = f.id
                    GROUP BY f.id
                    ORDER BY f.sort_order ASC, f.created_at ASC"""
             ).fetchall()
-        )
-        return [dict(r) for r in rows]
+        result = []
+        for r in rows:
+            d = dict(r)
+            raw = d.pop("session_ids", "")
+            d["session_ids"] = raw.split(",") if raw else []
+            result.append(d)
+        return result
 
     def create_folder(self, *, name: str) -> dict:
         """Create a folder and return its row."""
-        import secrets
         name = (name or "").strip()
         if not name:
             raise ValueError("folder name must not be empty")
@@ -1365,13 +1371,12 @@ class SessionDB:
         if not session_ids:
             return {}
         ph = ",".join("?" * len(session_ids))
-        rows = self._execute_write(
-            lambda conn: conn.execute(
+        with self._lock:
+            rows = self._conn.execute(
                 f"SELECT session_id, folder_id FROM session_folder_members "
                 f"WHERE session_id IN ({ph})",
                 list(session_ids),
             ).fetchall()
-        )
         result: dict[str, list[str]] = {}
         for r in rows:
             result.setdefault(r["session_id"], []).append(r["folder_id"])

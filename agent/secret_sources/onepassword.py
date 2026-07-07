@@ -172,16 +172,19 @@ def _validate_references(
 def _auth_fingerprint(token_env: str) -> str:
     """SHA-256 prefix over the auth material `op` would use.
 
-    Folds in the service-account token, ``OP_ACCOUNT``, and *all*
-    ``OP_SESSION_*`` vars (the names `op` actually exports for interactive
-    sessions — ``OP_SESSION_<account_shorthand>``).  Signing out and into a
-    different identity therefore changes the cache key, so a value cached under
-    a previous identity is never served under a new one.  Never logged or
+    Folds in the service-account token, ``OP_ACCOUNT``, the 1Password Connect
+    ``OP_CONNECT_HOST``/``OP_CONNECT_TOKEN``, and *all* ``OP_SESSION_*`` vars
+    (the names `op` actually exports for interactive sessions —
+    ``OP_SESSION_<account_shorthand>``).  Signing out and into a different
+    identity therefore changes the cache key, so a value cached under a
+    previous identity is never served under a new one.  Never logged or
     displayed; the raw token never leaves this hash.
     """
     parts: List[str] = [
         f"token={os.environ.get(token_env, '')}",
         f"account={os.environ.get('OP_ACCOUNT', '')}",
+        f"connect_host={os.environ.get('OP_CONNECT_HOST', '')}",
+        f"connect_token={os.environ.get('OP_CONNECT_TOKEN', '')}",
     ]
     for key in sorted(os.environ):
         if key.startswith("OP_SESSION_"):

@@ -501,6 +501,142 @@ class TestHandleSessionsCommand:
         assert "AN-94 Prestige Barrel Build #2" in result
         assert "target_an94" in result
         assert "Filler" not in result
+        assert "latest session list" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_number_uses_latest_sessions_search_results(self, tmp_path):
+        """A number after `/sessions search` must map to that search result list,
+        not to the default recent `/resume` list."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("match_old", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("match_old", "AN-94 older match")
+        db.append_message("match_old", "user", "old match", timestamp=1000)
+        db.create_session("match_new", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("match_new", "AN-94 newer match")
+        db.append_message("match_new", "user", "new match", timestamp=2000)
+        for i in range(12):
+            sid = f"recent_filler_{i:02d}"
+            db.create_session(sid, "telegram", user_id="12345", chat_id="67890")
+            db.set_session_title(sid, f"Recent filler {i:02d}")
+            db.append_message(sid, "user", f"recent {i}", timestamp=3000 + i)
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
+
+        search_event = _make_event(text="/sessions search an94")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=search_event,
+        )
+
+        search_result = await runner._handle_sessions_command(search_event)
+        assert "1. **AN-94 newer match**" in search_result
+        assert "2. **AN-94 older match**" in search_result
+
+        resume_event = _make_event(text="/resume 2")
+        result = await runner._handle_resume_command(resume_event)
+
+        assert "Resumed" in result
+        runner.session_store.switch_session.assert_called_once()
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "match_old"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_number_out_of_range_uses_latest_sessions_search_results(
+        self, tmp_path
+    ):
+        """Once a search list is armed, an invalid number should not fall back
+        to a different recent `/resume` list."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("only_match", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("only_match", "AN-94 only match")
+        db.append_message("only_match", "user", "only match", timestamp=1000)
+        for i in range(3):
+            sid = f"recent_filler_{i}"
+            db.create_session(sid, "telegram", user_id="12345", chat_id="67890")
+            db.set_session_title(sid, f"Recent filler {i}")
+            db.append_message(sid, "user", f"recent {i}", timestamp=3000 + i)
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
+
+        search_event = _make_event(text="/sessions search an94")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=search_event,
+        )
+
+        search_result = await runner._handle_sessions_command(search_event)
+        assert "AN-94 only match" in search_result
+
+        resume_event = _make_event(text="/resume 2")
+        result = await runner._handle_resume_command(resume_event)
+
+        assert "out of range" in result.lower()
+        runner.session_store.switch_session.assert_not_called()
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_search_no_results_clears_previous_numbered_choices(
+        self, tmp_path
+    ):
+        """A no-result search must disarm any previous numbered choices."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("match_old", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("match_old", "AN-94 older match")
+        db.append_message("match_old", "user", "old match", timestamp=1000)
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
+
+        search_event = _make_event(text="/sessions search an94")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=search_event,
+        )
+        search_result = await runner._handle_sessions_command(search_event)
+        assert "AN-94 older match" in search_result
+
+        empty_search_event = _make_event(text="/sessions search definitely-no-match")
+        empty_result = await runner._handle_sessions_command(empty_search_event)
+        assert "No sessions found" in empty_result
+
+        resume_event = _make_event(text="/resume 1")
+        result = await runner._handle_resume_command(resume_event)
+
+        assert "out of range" in result.lower()
+        runner.session_store.switch_session.assert_not_called()
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_number_search_choices_are_scoped_by_session_key(
+        self, tmp_path
+    ):
+        """A search list in one chat must not arm numeric resume in another."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("chat_a_match", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("chat_a_match", "AN-94 chat A")
+        db.append_message("chat_a_match", "user", "chat a", timestamp=1000)
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
+        db.create_session("current_session_b", "telegram", user_id="12345", chat_id="other-chat")
+
+        search_event = _make_event(text="/sessions search an94", chat_id="67890")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=search_event,
+        )
+        search_result = await runner._handle_sessions_command(search_event)
+        assert "AN-94 chat A" in search_result
+
+        other_event = _make_event(text="/resume 1", chat_id="other-chat")
+        result = await runner._handle_resume_command(other_event)
+
+        assert "Resumed" not in result
+        runner.session_store.switch_session.assert_not_called()
         db.close()
 
     @pytest.mark.asyncio

@@ -89,6 +89,42 @@ class GatewaySlashCommandsMixin:
 
     async_session_store: AsyncSessionStore
 
+    def _remember_gateway_session_choices(
+        self,
+        session_key: str,
+        rows: list[dict],
+    ) -> None:
+        """Remember the latest numbered session rows shown in this gateway chat."""
+        if not session_key:
+            return
+        choices = [
+            {
+                "id": str(row.get("id") or ""),
+                "title": str(row.get("title") or ""),
+            }
+            for row in rows[:10]
+            if row.get("id")
+        ]
+        latest = getattr(self, "_latest_gateway_session_choices", None)
+        if not isinstance(latest, dict):
+            latest = {}
+            self._latest_gateway_session_choices = latest
+        latest[session_key] = choices
+
+    def _latest_gateway_session_choice(
+        self,
+        session_key: str,
+        index: int,
+    ) -> tuple[dict | None, bool]:
+        """Return a remembered numbered row and whether a list was armed."""
+        latest = getattr(self, "_latest_gateway_session_choices", None)
+        if not isinstance(latest, dict) or session_key not in latest:
+            return None, False
+        choices = latest.get(session_key) or []
+        if index < 1 or index > len(choices):
+            return None, True
+        return choices[index - 1], True
+
     def _typed_command_prefix_for(self, platform) -> str:
         """Return the prefix users can always type to reach Hermes commands.
 
@@ -3570,6 +3606,7 @@ class GatewaySlashCommandsMixin:
                     if source.platform == Platform.MATRIX and not allow_all:
                         return t("gateway.resume.matrix_no_named_sessions")
                     return t("gateway.resume.no_named_sessions")
+                self._remember_gateway_session_choices(session_key, titled[:10])
                 lines = [t("gateway.resume.list_header")]
                 for idx, s in enumerate(titled[:10], start=1):
                     title = s["title"]
@@ -3588,19 +3625,25 @@ class GatewaySlashCommandsMixin:
 
         # Resolve a numbered choice or a title to a session ID.
         if name.isdigit():
-            try:
-                titled = await _list_titled_sessions()
-                titled = [
-                    s for s in titled
-                    if await self._resume_row_visible(source, s, allow_all)
-                ]
-            except Exception as e:
-                logger.debug("Failed to list titled sessions for numeric resume: %s", e)
-                return t("gateway.resume.list_failed", error=e)
             index = int(name)
-            if index < 1 or index > len(titled):
+            target, choices_armed = self._latest_gateway_session_choice(
+                session_key, index
+            )
+            if not choices_armed:
+                try:
+                    titled = await _list_titled_sessions()
+                    titled = [
+                        s for s in titled
+                        if await self._resume_row_visible(source, s, allow_all)
+                    ]
+                except Exception as e:
+                    logger.debug("Failed to list titled sessions for numeric resume: %s", e)
+                    return t("gateway.resume.list_failed", error=e)
+                if index < 1 or index > len(titled):
+                    return t("gateway.resume.out_of_range", index=index)
+                target = titled[index - 1]
+            elif target is None:
                 return t("gateway.resume.out_of_range", index=index)
-            target = titled[index - 1]
             target_id = target.get("id")
             name = target.get("title") or name
         else:
@@ -3758,6 +3801,10 @@ class GatewaySlashCommandsMixin:
                 if await self._resume_row_visible(source, row, allow_all=False)
             ]
         rows = rows[:10]
+        self._remember_gateway_session_choices(
+            self._session_key_for_source(source),
+            rows,
+        )
         if search_query:
             title = f"Sessions matching “{search_query}”"
         else:

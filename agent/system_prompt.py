@@ -187,8 +187,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # Universal self-healing guidance — tells the model to switch strategy
     # after repeated same-error failures. Gated by config.yaml
-    # ``agent.same_error_retry_limit`` (default 3, 0 = disabled).
-    _same_error_limit = getattr(agent, "_same_error_retry_limit", 3)
+    # ``agent.same_error_retry_limit`` (default 0 = off).
+    _same_error_limit = getattr(agent, "_same_error_retry_limit", 0)
     if _same_error_limit > 0 and agent.valid_tool_names:
         stable_parts.append(SELF_HEALING_GUIDANCE)
 

@@ -114,7 +114,6 @@ def _detect_consecutive_error(
         # Terminal: non-zero exit code is the canonical failure signal
         if name == "terminal":
             try:
-                import json
                 data = json.loads(content)
                 if isinstance(data, dict):
                     ec = data.get("exit_code")
@@ -128,6 +127,10 @@ def _detect_consecutive_error(
                     has_error = True
                     snippet = content[:80]
         else:
+            # ponytail: naive heuristic — scans for "error"/"failed" substring
+            # in first 500 chars. False positives are harmless (just a nudge
+            # to reconsider strategy). Upgrade to structured-error-only if
+            # false-positive rate becomes an issue.
             lower = content[:500].lower()
             has_error = (
                 '"error"' in lower
@@ -4769,7 +4772,7 @@ def run_conversation(
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
                 # ── Self-healing: detect repeated same errors ──────────
-                _same_error_limit = getattr(agent, "_same_error_retry_limit", 3)
+                _same_error_limit = getattr(agent, "_same_error_retry_limit", 0)
                 if _same_error_limit > 0:
                     _error_sig = _detect_consecutive_error(
                         messages, agent._last_error_signature

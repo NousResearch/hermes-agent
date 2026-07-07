@@ -1931,7 +1931,8 @@ def get_model_context_length(
             from hermes_cli.moa_config import resolve_moa_preset
             from hermes_cli.runtime_provider import resolve_runtime_provider
 
-            preset = resolve_moa_preset(load_config().get("moa") or {}, model)
+            _moa_cfg = load_config()
+            preset = resolve_moa_preset(_moa_cfg.get("moa") or {}, model)
             agg = preset.get("aggregator") or {}
             agg_provider = str(agg.get("provider") or "").strip()
             agg_model = str(agg.get("model") or "").strip()
@@ -1942,6 +1943,7 @@ def get_model_context_length(
                     base_url=rt.get("base_url", "") or "",
                     api_key=rt.get("api_key", "") or "",
                     provider=agg_provider,
+                    custom_providers=_moa_cfg.get("custom_providers"),
                 )
         except Exception:
             logger.debug("MoA aggregator context-length resolution failed", exc_info=True)

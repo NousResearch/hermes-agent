@@ -12879,6 +12879,44 @@ def _resolve_chat_argv(
     return list(argv), str(cwd) if cwd else None, env
 
 
+# Hosts that mean "listen on every interface" — the server should bind to
+# them, but an in-container client must NOT dial them: dialing 0.0.0.0
+# resolves to "any local interface", which on most platforms routes through
+# the kernel's wildcard stack and behind a forward proxy (HTTPS_PROXY with
+# a NO_PROXY that doesn't list 0.0.0.0) gets MITM'd into a failed handshake
+# (issue #58993).  The fix is to use a loopback address for the client
+# netloc while leaving the bind host alone.
+_WILDCARD_HOSTS = frozenset({"0.0.0.0", "::"})
+
+
+def _resolve_client_ws_host() -> Optional[str]:
+    """Return the host the in-container WS client should dial.
+
+    Resolution order:
+
+    1. Explicit ``HERMES_DASHBOARD_WS_HOST`` env var — wins always. Operators
+       running the dashboard behind a forward proxy can pin a routable host
+       (e.g. ``127.0.0.1``, the container's internal IP, or a sidecar DNS
+       name) and bypass auto-detection entirely.
+    2. The configured bind host — if it's a wildcard (``0.0.0.0`` / ``::``),
+       substitute ``127.0.0.1`` since both the dashboard and its TUI child
+       run in the same container.
+    3. Any other bind host (loopback or LAN IP) — preserved verbatim.
+    """
+    explicit = os.environ.get("HERMES_DASHBOARD_WS_HOST", "").strip()
+    if explicit:
+        return explicit
+
+    host = getattr(app.state, "bound_host", None)
+    if not host:
+        return None
+
+    if host in _WILDCARD_HOSTS:
+        return "127.0.0.1"
+
+    return host
+
+
 def _build_gateway_ws_url() -> Optional[str]:
     """ws:// URL the PTY child should attach to for JSON-RPC gateway traffic.
 
@@ -12890,7 +12928,7 @@ def _build_gateway_ws_url() -> Optional[str]:
     the child reads this URL once at startup and reuses it on every reconnect,
     and a 30s-TTL ticket can expire before a slow cold boot even dials.
     """
-    host = getattr(app.state, "bound_host", None)
+    host = _resolve_client_ws_host()
     port = getattr(app.state, "bound_port", None)
 
     if not host or not port:
@@ -12957,7 +12995,7 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
     Connections authenticated this way are recorded under the
     ``server-internal`` identity in the audit log.
     """
-    host = getattr(app.state, "bound_host", None)
+    host = _resolve_client_ws_host()
     port = getattr(app.state, "bound_port", None)
 
     if not host or not port:

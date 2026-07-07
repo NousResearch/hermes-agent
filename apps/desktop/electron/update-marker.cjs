@@ -85,9 +85,43 @@ function readLiveUpdateMarker(hermesHome, { kill, now = Date.now, maxAgeMs = UPD
   return { pid, ageMs }
 }
 
+/**
+ * Write the update-in-progress marker *from the desktop* before handing off
+ * to the detached updater.
+ *
+ * The Tauri-based hermes-setup.exe takes several seconds to initialise its
+ * window and reach the Rust `run_update` entry point where it writes the
+ * marker itself. During that gap the desktop's `app.quit()` teardown kills
+ * the backend child, the renderer's WebSocket drops, and the renderer
+ * immediately calls `ensureBackend()` → `waitForUpdateToFinish()`. Because
+ * the updater hasn't written the marker yet, the gate sees no live update
+ * and spawns a *new* backend — which re-locks `.pyd` files in the venv.
+ * When the updater finally reaches the venv-rebuild stage it finds those
+ * files locked and the update bricks.
+ *
+ * Fix: the desktop writes the marker itself, using the spawned updater's
+ * PID, immediately after `spawn()`. The updater's `UpdateMarkerGuard` will
+ * later overwrite it with its own PID — that's fine, the marker body is
+ * the same format and `readLiveUpdateMarker` only cares that *some* live
+ * pid owns it. When the updater finishes it deletes the marker as before.
+ * If the updater never starts (spawn failure) the marker still contains a
+ * real PID, so `readLiveUpdateMarker` will self-heal once that PID exits.
+ */
+function writeUpdateMarker(hermesHome, pid, { now = Date.now } = {}) {
+  const file = markerPath(hermesHome)
+  const startedAt = Math.floor(now() / 1000)
+  try {
+    fs.writeFileSync(file, `${pid}\n${startedAt}\n`, 'utf8')
+  } catch {
+    // Best-effort: if we can't write the marker, proceed anyway. The
+    // updater will write its own when it reaches run_update.
+  }
+}
+
 module.exports = {
   UPDATE_MARKER_MAX_AGE_MS,
   markerPath,
   isPidAlive,
-  readLiveUpdateMarker
+  readLiveUpdateMarker,
+  writeUpdateMarker
 }

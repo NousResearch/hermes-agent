@@ -833,6 +833,13 @@ class DiscordAdapter(BasePlatformAdapter):
         # Persistent set of bot-authored lifecycle/status message IDs that
         # should not act as conversational history boundaries after restart.
         self._nonconversational_messages = _DiscordNonConversationalMessageTracker()
+        # Last truncated mid-stream preview delivered per (chat_id, message_id).
+        # Once an oversized streaming edit saturates at the 2000-char preview
+        # cap, every subsequent progressive edit truncates to the SAME text;
+        # re-sending it is a no-op that still counts against Discord's edit
+        # rate limit (~1 edit per stream tick for the rest of a long reply).
+        # Mirrors the Telegram #58563 fix. Entries are dropped on finalize.
+        self._last_overflow_preview: Dict[tuple, str] = {}
 
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits to the gateway supervisor.
@@ -1066,6 +1073,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     elif allow_bots == "mentions":
                         if not self._self_is_explicitly_mentioned(message):
                             return
+                    if (
+                        self._discord_bots_require_inline_mention()
+                        and not self._self_is_raw_mentioned(message)
+                    ):
+                        return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
                 else:
@@ -2148,6 +2160,13 @@ class DiscordAdapter(BasePlatformAdapter):
             msg = await channel.fetch_message(int(message_id))
             formatted = self.format_message(content)
 
+            _preview_key = (str(chat_id), str(message_id))
+            _saturated_preview = False
+            if finalize:
+                # Any saturation state for this message is finished with —
+                # the final edit always delivers real (full) content.
+                self._last_overflow_preview.pop(_preview_key, None)
+
             # Pre-flight: oversized payload.  Final edits split-and-deliver;
             # streaming edits truncate a one-message preview in place.
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
@@ -2158,9 +2177,24 @@ class DiscordAdapter(BasePlatformAdapter):
                 formatted = self.truncate_message(
                     formatted, self.MAX_MESSAGE_LENGTH,
                 )[0]
+                _saturated_preview = True
+                # Saturated-preview dedup: past the cap, every progressive
+                # edit truncates to the same text. Re-sending it is a visual
+                # no-op that still counts against Discord's edit rate limit —
+                # skip silently until finalize (mirrors the Telegram #58563
+                # fix).
+                if self._last_overflow_preview.get(_preview_key) == formatted:
+                    return SendResult(success=True, message_id=message_id)
+            elif not finalize:
+                # Content shrank back under the cap (segment break / new
+                # message id) — clear stale saturation state so dedup can't
+                # mask a real edit later.
+                self._last_overflow_preview.pop(_preview_key, None)
 
             try:
                 await msg.edit(content=formatted)
+                if _saturated_preview:
+                    self._last_overflow_preview[_preview_key] = formatted
             except Exception as edit_err:
                 # Reactive split-and-deliver: format_message inflation (or a
                 # server-side rule change) can push the payload past 2,000
@@ -2175,7 +2209,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     truncated = self.truncate_message(
                         formatted, self.MAX_MESSAGE_LENGTH,
                     )[0]
+                    if self._last_overflow_preview.get(_preview_key) == truncated:
+                        # Saturated-preview dedup (see pre-flight path above).
+                        return SendResult(success=True, message_id=message_id)
                     await msg.edit(content=truncated)
+                    self._last_overflow_preview[_preview_key] = truncated
                 else:
                     raise
             return SendResult(success=True, message_id=message_id)
@@ -4670,6 +4708,44 @@ class DiscordAdapter(BasePlatformAdapter):
             return True
         return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
 
+    def _self_is_raw_mentioned(self, message: Any) -> bool:
+        """Return True only when this bot has an inline mention token.
+
+        Discord reply-pings can add the replied-to bot to ``message.mentions``
+        without a literal ``<@bot>`` token in ``message.content``. This helper
+        intentionally ignores the resolved mentions list so the bot admission
+        gate can distinguish an explicit cross-bot address from a reply chip.
+        """
+        if not self._client or not self._client.user:
+            return False
+        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+
+    def _discord_bots_require_inline_mention(self) -> bool:
+        """Whether another bot must type an inline @mention to trigger us.
+
+        Off by default. When on, a bot-authored message only wakes this bot
+        if its content contains a literal ``<@thisbot>`` token. A Discord
+        reply/quote to one of our messages is NOT enough on its own, because
+        Discord's reply-ping silently adds us to ``message.mentions`` even
+        though the author never typed our handle — which otherwise lets two
+        bots ping-pong replies at each other indefinitely. Humans are never
+        affected by this gate; it only applies to bot authors.
+
+        Config: ``discord.bots_require_inline_mention`` (or env
+        ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``).
+        """
+        configured = self.config.extra.get("bots_require_inline_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION", "false").lower() in {
+            "true",
+            "1",
+            "yes",
+            "on",
+        }
+
     def _discord_channel_keys(self, message: Any, parent_channel_id: Optional[str] = None) -> set[str]:
         """Return channel identifiers accepted by Discord channel config gates.
 
@@ -5257,10 +5333,15 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             embed.add_field(name="Reason", value=description, inline=False)
 
+            require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(
+                getattr(self.config, "extra", None)
+            )
             view = ExecApprovalView(
                 session_key=session_key,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
+                require_admin=require_admin,
+                admin_user_ids=admin_user_ids,
             )
 
             msg = await channel.send(embed=embed, view=view)
@@ -6354,6 +6435,42 @@ def _component_check_auth(
     return False
 
 
+def _resolve_exec_approval_admin_gate(
+    config_extra: Optional[dict],
+) -> Tuple[bool, set]:
+    """Resolve the exec-approval admin gate from a platform's ``extra`` config.
+
+    Returns ``(require_admin, admin_user_ids)``.
+
+    Behavior (default-OFF, opt-in):
+
+      - ``require_admin_for_exec_approval`` absent/false -> ``(False, set())``;
+        exec-approval buttons stay user-scope (any admitted user can click),
+        which is the v0.16-restored behavior. This is the default so existing
+        installs are unaffected.
+      - toggle true -> ``(True, <admin ids from allow_admin_from>)``. Only
+        users in ``allow_admin_from`` (the same key the slash-access split
+        uses) may click exec-approval buttons.
+
+    The admin id list reuses ``slash_access._coerce_id_list`` so a string,
+    list, or scalar all normalize identically to the slash-command gate.
+    Misconfiguration (toggle on, no admins listed) returns ``(True, set())``
+    -> the view fails closed and logs once, rather than silently locking the
+    owner out without explanation.
+    """
+    extra = config_extra if isinstance(config_extra, dict) else {}
+    raw_toggle = extra.get("require_admin_for_exec_approval", False)
+    require_admin = str(raw_toggle).strip().lower() in {"true", "1", "yes"}
+    if not require_admin:
+        return (False, set())
+    try:
+        from gateway.slash_access import _coerce_id_list
+        admin_ids = set(_coerce_id_list(extra.get("allow_admin_from")))
+    except Exception:
+        admin_ids = set()
+    return (True, admin_ids)
+
+
 def _define_discord_view_classes() -> None:
     """Register Discord UI view classes as module globals.
 
@@ -6381,18 +6498,54 @@ def _define_discord_view_classes() -> None:
             session_key: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            require_admin: bool = False,
+            admin_user_ids: Optional[set] = None,
         ):
             super().__init__(timeout=300)  # 5-minute timeout
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            # Opt-in admin gate for exec approval (default off → user-scope,
+            # the v0.16-restored behavior). When on, the clicker must be in
+            # ``admin_user_ids`` on top of passing the base admission check.
+            self.require_admin = require_admin
+            self.admin_user_ids = {
+                str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()
+            }
             self.resolved = False
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
-            """Verify the user clicking is authorized."""
-            return _component_check_auth(
+            """Verify the user clicking is authorized.
+
+            Base admission (allowlist / role / pairing) is always required.
+            When ``require_admin`` is on, the clicker must ALSO be an admin —
+            approving a dangerous command is gated to operators, while plain
+            chat and the lower-stakes component views stay user-scope. The
+            gate fails closed: if it's on but no admins are configured, nobody
+            can approve (logged once so the misconfiguration is visible).
+            """
+            if not _component_check_auth(
                 interaction, self.allowed_user_ids, self.allowed_role_ids,
-            )
+            ):
+                return False
+            if not self.require_admin:
+                return True
+            user = getattr(interaction, "user", None)
+            try:
+                uid = str(getattr(user, "id", "") or "")
+            except Exception:
+                uid = ""
+            if uid and uid in self.admin_user_ids:
+                return True
+            if not self.admin_user_ids:
+                logger.warning(
+                    "[Discord] require_admin_for_exec_approval is enabled but "
+                    "no admins are configured (allow_admin_from is empty) — "
+                    "exec approval buttons are disabled for everyone. Add "
+                    "admin user IDs under the discord platform's "
+                    "allow_admin_from, or disable the toggle."
+                )
+            return False
 
         async def _resolve(
             self, interaction: discord.Interaction, choice: str,
@@ -7599,7 +7752,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     ``DISCORD_IGNORED_CHANNELS``, ``DISCORD_ALLOWED_CHANNELS``,
     ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_HISTORY_BACKFILL``,
     ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_MENTION_*``,
-    ``DISCORD_REPLY_TO_MODE``, ``DISCORD_THREAD_REQUIRE_MENTION``).
+    ``DISCORD_REPLY_TO_MODE``, ``DISCORD_THREAD_REQUIRE_MENTION``,
+    ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``).
     Rather than rewrite ~50 call sites inside the adapter to read from
     ``PlatformConfig.extra`` instead, this hook keeps the existing
     env-driven model and merely owns the YAML→env translation here, next to
@@ -7614,6 +7768,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
     if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
         os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
+    if "bots_require_inline_mention" in discord_cfg and not os.getenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION"):
+        os.environ["DISCORD_BOTS_REQUIRE_INLINE_MENTION"] = str(discord_cfg["bots_require_inline_mention"]).lower()
     platforms_cfg = yaml_cfg.get("platforms")
     platform_extra_cfg = {}
     if isinstance(platforms_cfg, dict):

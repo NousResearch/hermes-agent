@@ -220,6 +220,20 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
             conflict("Conflict: terminated by other getUpdates request")
         )
 
+    # Retries 1-4 each schedule a background recovery task via
+    # loop.create_task(self._handle_polling_conflict(...)) that this test
+    # never awaits.  Cancel the last one so a leaked task can't get a
+    # scheduler turn under load and re-drive the counter into the fatal
+    # branch a second time — which would fire _notify_fatal_error twice and
+    # break assert_awaited_once() non-deterministically.
+    leaked = adapter._polling_error_task
+    if leaked is not None and not leaked.done():
+        leaked.cancel()
+        try:
+            await leaked
+        except (asyncio.CancelledError, Exception):
+            pass
+
     # After 5 failed retries (count 1-5 each enter the retry branch but
     # start_polling raises), the 6th conflict pushes count to 6 which
     # exceeds MAX_CONFLICT_RETRIES (5), entering the fatal branch.

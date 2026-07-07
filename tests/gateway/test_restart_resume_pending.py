@@ -384,6 +384,27 @@ class TestGetOrCreateResumePending:
         # Flag is NOT cleared on read — only on successful turn completion.
         assert second.resume_pending is True
 
+    def test_resume_pending_follows_compression_tip(self, tmp_path):
+        """Interrupted platform mappings must not stay pinned to compressed roots."""
+        store = _make_store(tmp_path)
+        source = _make_source(
+            platform=Platform.WEIXIN,
+            chat_id="wx-chat",
+            user_id="wx-user",
+        )
+        first = store.get_or_create_session(source)
+        original_sid = first.session_id
+        store.mark_resume_pending(first.session_key)
+
+        with patch.object(
+            store, "_compression_tip_for_session_id", return_value="child-session"
+        ) as mock_tip:
+            second = store.get_or_create_session(source)
+
+        assert second.session_id == "child-session"
+        assert second.resume_pending is True
+        mock_tip.assert_called_with(original_sid)
+
     def test_suspended_still_creates_new_session(self, tmp_path):
         """Regression guard — suspended must still force a clean slate."""
         store = _make_store(tmp_path)
@@ -1189,6 +1210,84 @@ async def test_startup_auto_resume_skips_disallowed_reasons():
 
     assert scheduled == 0
     adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_skips_unauthorized_owner():
+    """A resume-pending session whose owner is no longer authorized under the
+    current allowlist must not receive a synthesized agent turn on restart.
+
+    Auto-resume dispatches a full agent turn without going through the normal
+    inbound-message auth gate, so it re-checks _is_user_authorized here
+    (issue #23778).  An unauthorized owner is skipped WITHOUT claiming a
+    _running_agents slot or persisting one — the slot claim happens only
+    after this gate passes.
+    """
+    runner, adapter = make_restart_runner()
+    runner._is_user_authorized = lambda _source: False
+    runner._persist_active_agents = MagicMock()
+    source = make_restart_source(chat_id="revoked-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:revoked-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
+    # No slot was claimed and nothing was persisted for the skipped session.
+    assert pending_entry.session_key not in runner._running_agents
+    runner._persist_active_agents.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_fails_closed_on_auth_error():
+    """If the authorization check itself raises, the session is skipped
+    (fail-closed) rather than resumed — a broken auth check must never
+    default to granting a full agent turn.
+    """
+    runner, adapter = make_restart_runner()
+
+    def _boom(_source):
+        raise RuntimeError("allowlist backend down")
+
+    runner._is_user_authorized = _boom
+    runner._persist_active_agents = MagicMock()
+    source = make_restart_source(chat_id="err-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:err-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
+    assert pending_entry.session_key not in runner._running_agents
+    runner._persist_active_agents.assert_not_called()
 
 
 @pytest.mark.asyncio

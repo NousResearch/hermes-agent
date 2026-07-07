@@ -20,6 +20,7 @@ Storage: ~/.hermes/pairing/
 
 import hashlib
 import json
+import logging
 import os
 import secrets
 import tempfile
@@ -34,6 +35,8 @@ from gateway.whatsapp_identity import (
 )
 from hermes_constants import get_hermes_dir
 from utils import atomic_replace
+
+logger = logging.getLogger(__name__)
 
 
 # Unambiguous alphabet -- excludes 0/O, 1/I to prevent confusion
@@ -50,6 +53,112 @@ MAX_PENDING_PER_PLATFORM = 3        # Max pending codes per platform
 MAX_FAILED_ATTEMPTS = 5             # Failed approvals before lockout
 
 PAIRING_DIR = get_hermes_dir("platforms/pairing", "pairing")
+
+
+# Platform value -> its per-platform allowlist env var. When an operator has
+# already configured an allowlist for a platform, approving a pairing code also
+# writes the user into that allowlist (and revoking removes them), so the
+# operator's own list stays the single visible/editable source of truth instead
+# of drifting from an opaque approved.json (#23778 consolidation, option i).
+# Platforms absent from this map (or with no allowlist configured) keep the
+# pairing store as the sole grant record, honored by the authz union.
+_PLATFORM_ALLOWLIST_ENV = {
+    "telegram": "TELEGRAM_ALLOWED_USERS",
+    "discord": "DISCORD_ALLOWED_USERS",
+    "whatsapp": "WHATSAPP_ALLOWED_USERS",
+    "whatsapp_cloud": "WHATSAPP_CLOUD_ALLOWED_USERS",
+    "slack": "SLACK_ALLOWED_USERS",
+    "signal": "SIGNAL_ALLOWED_USERS",
+    "email": "EMAIL_ALLOWED_USERS",
+    "sms": "SMS_ALLOWED_USERS",
+    "mattermost": "MATTERMOST_ALLOWED_USERS",
+    "matrix": "MATRIX_ALLOWED_USERS",
+    "dingtalk": "DINGTALK_ALLOWED_USERS",
+    "feishu": "FEISHU_ALLOWED_USERS",
+    "wecom": "WECOM_ALLOWED_USERS",
+    "wecom_callback": "WECOM_CALLBACK_ALLOWED_USERS",
+    "weixin": "WEIXIN_ALLOWED_USERS",
+    "bluebubbles": "BLUEBUBBLES_ALLOWED_USERS",
+    "qqbot": "QQ_ALLOWED_USERS",
+    "yuanbao": "YUANBAO_ALLOWED_USERS",
+}
+
+
+def _allowlist_env_for_platform(platform: str) -> Optional[str]:
+    """Return the per-platform allowlist env var name, or None.
+
+    Falls back to the platform registry for plugin platforms so a plugin's
+    own ``allowed_users_env`` is honored too.
+    """
+    platform = (platform or "").lower().strip()
+    env_var = _PLATFORM_ALLOWLIST_ENV.get(platform)
+    if env_var:
+        return env_var
+    try:
+        from gateway.platform_registry import platform_registry
+
+        entry = platform_registry.get(platform)
+        if entry and entry.allowed_users_env:
+            return entry.allowed_users_env
+    except Exception:
+        pass
+    return None
+
+
+def _split_allowlist(raw: str) -> list:
+    return [uid.strip() for uid in raw.split(",") if uid.strip()]
+
+
+def _sync_allowlist_add(platform: str, user_id: str) -> None:
+    """Add ``user_id`` to the platform allowlist env var IF one is configured.
+
+    Option (i): only materialize the grant into the allowlist when the operator
+    already runs an allowlist for this platform. On an open gateway (no
+    allowlist) we do nothing — the pairing store remains the grant record and
+    the authz union honors it, so we never silently convert an open gateway into
+    a locked one on first pairing.
+    """
+    env_var = _allowlist_env_for_platform(platform)
+    if not env_var:
+        return
+    current = os.getenv(env_var, "").strip()
+    if not current:
+        return  # No allowlist configured — leave the gateway open (option i).
+    ids = _split_allowlist(current)
+    if "*" in ids or str(user_id) in ids:
+        return  # Already covered.
+    ids.append(str(user_id))
+    try:
+        from hermes_cli.config import save_env_value
+
+        save_env_value(env_var, ",".join(ids))
+    except Exception:
+        # Best-effort: the pairing store grant still authorizes via the union,
+        # so a failure here degrades to "grant recorded but not mirrored".
+        pass
+
+
+def _sync_allowlist_remove(platform: str, user_id: str) -> None:
+    """Remove ``user_id`` from the platform allowlist env var if present."""
+    env_var = _allowlist_env_for_platform(platform)
+    if not env_var:
+        return
+    current = os.getenv(env_var, "").strip()
+    if not current:
+        return
+    ids = _split_allowlist(current)
+    remaining = [i for i in ids if i != str(user_id)]
+    if len(remaining) == len(ids):
+        return  # Not present.
+    try:
+        from hermes_cli.config import save_env_value, remove_env_value
+
+        if remaining:
+            save_env_value(env_var, ",".join(remaining))
+        else:
+            remove_env_value(env_var)
+    except Exception:
+        pass
 
 
 def _secure_write(path: Path, data: str) -> None:
@@ -107,6 +216,30 @@ class PairingStore:
         if path.exists():
             try:
                 return json.loads(path.read_text(encoding="utf-8"))
+            except PermissionError as e:
+                # Surface this loudly: a 0600 file owned by a different user
+                # (classic Docker symptom: `docker exec` runs as root and writes
+                # the file, then the gateway process — running as `hermes` after
+                # gosu drop — can't read it) would otherwise be swallowed by
+                # the generic OSError branch below, silently leaving the user
+                # marked unauthorized. See issue #10270.
+                try:
+                    st = path.stat()
+                    owner_info = f"owner_uid={st.st_uid} mode={oct(st.st_mode)[-4:]}"
+                except OSError:
+                    owner_info = "<stat failed>"
+                # os.geteuid doesn't exist on Windows; the Docker scenario is
+                # POSIX-only, but the gateway (and this fallback) runs anywhere.
+                euid = os.geteuid() if hasattr(os, "geteuid") else "n/a"
+                logger.warning(
+                    "Pairing file %s exists but is not readable as uid=%s (%s; %s). "
+                    "If you ran `docker exec <container> hermes pairing approve ...` as root, "
+                    "re-run with `docker exec -u hermes <container> ...` and "
+                    "chown the existing file to the hermes user, or restart the "
+                    "container so the entrypoint can fix ownership.",
+                    path, euid, owner_info, e,
+                )
+                return {}
             except (json.JSONDecodeError, OSError):
                 return {}
         return {}
@@ -177,6 +310,11 @@ class PairingStore:
         }
         self._save_json(self._approved_path(platform), approved)
 
+        # Mirror the grant into the operator's allowlist when one is configured
+        # (option i), so the pairing store and the allowlist stay a single
+        # visible source of truth. No-op on open gateways.
+        _sync_allowlist_add(platform, normalized_user_id)
+
     def revoke(self, platform: str, user_id: str) -> bool:
         """Remove a user from the approved list. Returns True if found."""
         path = self._approved_path(platform)
@@ -191,6 +329,10 @@ class PairingStore:
                 for approved_user_id in matching_ids:
                     del approved[approved_user_id]
                 self._save_json(path, approved)
+                # Keep the allowlist mirror in sync: revoking a paired user
+                # also removes the entry the approval added (option i). No-op if
+                # the user was added to the allowlist by other means.
+                _sync_allowlist_remove(platform, user_id)
                 return True
         return False
 

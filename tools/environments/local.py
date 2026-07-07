@@ -40,6 +40,24 @@ def _msys_to_windows_path(cwd: str) -> str:
     return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
 
 
+def _windows_to_msys_path(cwd: str) -> str:
+    """Translate a native Windows path (``C:\\Users\\x``) to Git Bash /
+    MSYS form (``/c/Users/x``) so ``builtin cd`` resolves it reliably.
+
+    No-ops on non-Windows hosts or for paths that aren't drive-qualified
+    native Windows paths. Returns the input unchanged when no translation
+    applies.
+    """
+    if not _IS_WINDOWS or not cwd:
+        return cwd
+    m = re.match(r'^([a-zA-Z]):[\\/]*(.*)$', cwd)
+    if not m:
+        return cwd
+    drive = m.group(1).lower()
+    tail = (m.group(2) or "").replace('\\', '/').lstrip('/')
+    return f"/{drive}/{tail}" if tail else f"/{drive}/"
+
+
 def _resolve_safe_cwd(cwd: str) -> str:
     """Return ``cwd`` if it exists as a directory, else the nearest existing
     ancestor.  Falls back to ``tempfile.gettempdir()`` only if walking up the
@@ -134,9 +152,12 @@ def _build_provider_env_blocklist() -> frozenset:
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_TOKEN",
-        "CLAUDE_CODE_OAUTH_TOKEN",
         "LLM_MODEL",
         "GOOGLE_API_KEY",
+        # Path to a GCP service-account JSON, not a bare key, so
+        # OPTIONAL_ENV_VARS marks it password=False and the loop above skips it.
+        "VERTEX_CREDENTIALS_PATH",
+        "GOOGLE_APPLICATION_CREDENTIALS",
         "DEEPSEEK_API_KEY",
         "MISTRAL_API_KEY",
         "GROQ_API_KEY",
@@ -190,6 +211,16 @@ def _build_provider_env_blocklist() -> frozenset:
         "GATEWAY_RELAY_SECRET",
         "GATEWAY_RELAY_DELIVERY_KEY",
     })
+    # CLAUDE_CODE_OAUTH_TOKEN is deliberately NOT stripped.  It is set and
+    # owned by the user's Claude Code install (subscription OAuth), not a
+    # Hermes-managed inference credential — Claude subscription auth is not a
+    # working Hermes provider path.  Stripping it broke agent-spawned
+    # ``claude`` CLIs: the child fell through to the shared macOS Keychain /
+    # ``~/.claude/.credentials.json`` store and, on auth failure, cleared it,
+    # logging the user out of their interactive Claude sessions (#55878).
+    # It arrives via the registry loop above (anthropic api_key_env_vars),
+    # so remove it explicitly.
+    blocked.discard("CLAUDE_CODE_OAUTH_TOKEN")
     return frozenset(blocked)
 
 
@@ -352,6 +383,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         sanitized.pop(_marker, None)
 
+    _apply_windows_msys_bash_env_defaults(sanitized)
+
     return sanitized
 
 
@@ -462,6 +495,8 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         env.pop(_marker, None)
 
+    _apply_windows_msys_bash_env_defaults(env)
+
     # Cross-session leak guard, same as the terminal spawn paths: this helper
     # copies os.environ, whose HERMES_SESSION_* mirror is a last-writer-wins
     # global under a concurrent multi-session host. A caller that re-binds the
@@ -509,10 +544,10 @@ def _find_bash() -> str:
             if os.path.isfile(candidate):
                 return candidate
 
-    found = shutil.which("bash")
-    if found:
-        return found
-
+    # Check known Git for Windows install locations before PATH lookup.
+    # On machines with both WSL and Git for Windows, shutil.which("bash")
+    # may return WSL's bash (which doesn't understand Windows paths and
+    # will fail silently).  Explicit Git-for-Windows paths avoid that.
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
@@ -520,6 +555,10 @@ def _find_bash() -> str:
     ):
         if candidate and os.path.isfile(candidate):
             return candidate
+
+    found = shutil.which("bash")
+    if found:
+        return found
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
@@ -711,6 +750,29 @@ def _append_missing_sane_path_entries(existing_path: str) -> str:
     return ":".join(ordered_entries)
 
 
+def _apply_windows_msys_bash_env_defaults(env: dict) -> None:
+    """Disable MSYS argument path conversion for Git Bash subprocesses.
+
+    Git Bash rewrites arguments that look like Unix paths (``/FO``, ``/TN``,
+    ``/Create``) into ``C:/.../git/FO``-style paths, which breaks native
+    Windows commands such as ``tasklist``, ``schtasks``, and ``wmic``.  Hermes
+    runs terminal commands through bash on Windows, so set the standard MSYS
+    opt-out by default.  Users who need conversion can override in their env.
+    Refs #56700.
+
+    ``MSYS_NO_PATHCONV`` is honored by Git for Windows bash only.  MSYS2-proper
+    and Cygwin bash (which ``_find_bash`` can still return via the final
+    ``shutil.which`` fallback) ignore it and honor ``MSYS2_ARG_CONV_EXCL``
+    instead, so set both.  ``*`` disables all argv conversion — the semantic
+    equivalent of ``MSYS_NO_PATHCONV=1``.  Also fixes ``cmd /c`` mangling
+    (#56147).
+    """
+    if not _IS_WINDOWS:
+        return
+    env.setdefault("MSYS_NO_PATHCONV", "1")
+    env.setdefault("MSYS2_ARG_CONV_EXCL", "*")
+
+
 def _path_env_key(run_env: dict) -> str | None:
     """Return the PATH env key to update without altering Windows casing.
 
@@ -768,6 +830,8 @@ def _make_run_env(env: dict) -> dict:
 
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         run_env.pop(_marker, None)
+
+    _apply_windows_msys_bash_env_defaults(run_env)
 
     return run_env
 
@@ -916,6 +980,11 @@ class LocalEnvironment(BaseEnvironment):
             return candidate.rstrip("/") or "/"
 
         return "/tmp"
+
+    @staticmethod
+    def _quote_cwd_for_cd(cwd: str) -> str:
+        """Use native paths for Python, but Git Bash-friendly paths for cd."""
+        return BaseEnvironment._quote_cwd_for_cd(_windows_to_msys_path(cwd))
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,

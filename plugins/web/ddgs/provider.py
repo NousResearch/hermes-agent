@@ -28,6 +28,33 @@ logger = logging.getLogger(__name__)
 _SEARCH_TIMEOUT_SECS = 30
 
 
+def _ensure_ddgs_package_importable() -> bool:
+    """Return True once ``ddgs`` is importable, lazy-installing if allowed."""
+    try:
+        import ddgs  # noqa: F401
+
+        return True
+    except ImportError:
+        pass
+
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+
+        _lazy_ensure("search.ddgs", prompt=False)
+    except ImportError:
+        pass
+    except Exception as exc:  # noqa: BLE001 — lazy_deps carries the install hint
+        logger.debug("DDGS lazy install unavailable: %s", exc)
+        return False
+
+    try:
+        import ddgs  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def _run_ddgs_search(query: str, safe_limit: int) -> list[dict[str, Any]]:
     """Run the blocking ddgs query and return normalized hits.
 
@@ -78,12 +105,7 @@ class DDGSWebSearchProvider(WebSearchProvider):
         NOT perform network I/O — runs at tool-registration time and on every
         ``hermes tools`` paint.
         """
-        try:
-            import ddgs  # noqa: F401
-
-            return True
-        except ImportError:
-            return False
+        return _ensure_ddgs_package_importable()
 
     def supports_search(self) -> bool:
         return True
@@ -98,12 +120,13 @@ class DDGSWebSearchProvider(WebSearchProvider):
         wall-clock timeout (``_SEARCH_TIMEOUT_SECS``) so a hung search cannot
         block the shared agent loop indefinitely (#36776).
         """
-        try:
-            import ddgs  # type: ignore  # noqa: F401 — availability probe
-        except ImportError:
+        if not _ensure_ddgs_package_importable():
             return {
                 "success": False,
-                "error": "ddgs package is not installed — run `pip install ddgs`",
+                "error": (
+                    "ddgs package is not installed and lazy installation could not make "
+                    "it available — run `pip install ddgs==9.14.4`"
+                ),
             }
 
         # DDGS().text yields at most `max_results` items; we cap defensively

@@ -110,6 +110,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "provider.azure_identity": ("azure-identity==1.25.3",),
 
     # ─── Web search backends ───────────────────────────────────────────────
+    "search.ddgs": ("ddgs==9.14.4",),
     "search.exa": ("exa-py==2.10.2",),
     "search.firecrawl": ("firecrawl-py==4.17.0",),
     "search.parallel": ("parallel-web==0.4.2",),

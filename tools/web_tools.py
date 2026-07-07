@@ -342,9 +342,10 @@ def _ddgs_package_importable() -> bool:
     (and tests can monkeypatch a single symbol).
     """
     try:
-        import ddgs  # noqa: F401
-        return True
-    except ImportError:
+        from plugins.web.ddgs.provider import _ensure_ddgs_package_importable
+
+        return _ensure_ddgs_package_importable()
+    except Exception:
         return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────

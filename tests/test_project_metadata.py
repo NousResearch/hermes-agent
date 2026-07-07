@@ -66,7 +66,7 @@ def test_lazy_installable_extras_excluded_from_all():
     # this list AND verify [all] doesn't contain it.
     lazy_covered_extras = {
         "anthropic", "bedrock",
-        "exa", "firecrawl", "parallel-web",
+        "ddgs", "exa", "firecrawl", "parallel-web",
         "fal",
         "edge-tts", "tts-premium",
         "voice",  # faster-whisper / sounddevice / numpy

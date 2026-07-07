@@ -68,6 +68,12 @@ class TestDDGSProviderIsConfigured:
     def test_not_configured_when_package_missing(self, monkeypatch):
         monkeypatch.delitem(sys.modules, "ddgs", raising=False)
         monkeypatch.delitem(sys.modules, "plugins.web.ddgs.provider", raising=False)
+        from tools import lazy_deps
+
+        unavailable = lazy_deps.FeatureUnavailable(
+            "search.ddgs", ("ddgs==9.14.4",), "blocked for test"
+        )
+        monkeypatch.setattr(lazy_deps, "ensure", lambda *_a, **_kw: (_ for _ in ()).throw(unavailable))
         # Block the import so ``import ddgs`` raises ImportError even if the package is actually installed
         import builtins
         orig_import = builtins.__import__
@@ -80,6 +86,31 @@ class TestDDGSProviderIsConfigured:
         monkeypatch.setattr(builtins, "__import__", blocked_import)
         from plugins.web.ddgs.provider import DDGSWebSearchProvider
         assert DDGSWebSearchProvider().is_available() is False
+
+    def test_configured_after_lazy_install(self, monkeypatch):
+        monkeypatch.delitem(sys.modules, "ddgs", raising=False)
+        monkeypatch.delitem(sys.modules, "plugins.web.ddgs.provider", raising=False)
+        from tools import lazy_deps
+
+        calls = []
+        orig_import = __import__
+
+        def fake_ensure(feature, prompt=True):
+            calls.append((feature, prompt))
+            _install_fake_ddgs(monkeypatch)
+
+        def blocked_first_import(name, *args, **kwargs):
+            if name == "ddgs" and not calls:
+                raise ImportError("missing until lazy install")
+            return orig_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(lazy_deps, "ensure", fake_ensure)
+        monkeypatch.setattr("builtins.__import__", blocked_first_import)
+
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
+
+        assert DDGSWebSearchProvider().is_available() is True
+        assert calls == [("search.ddgs", False)]
 
     def test_provider_name(self):
         from plugins.web.ddgs.provider import DDGSWebSearchProvider
@@ -134,6 +165,12 @@ class TestDDGSProviderSearch:
     def test_missing_package_returns_failure(self, monkeypatch):
         monkeypatch.delitem(sys.modules, "ddgs", raising=False)
         monkeypatch.delitem(sys.modules, "plugins.web.ddgs.provider", raising=False)
+        from tools import lazy_deps
+
+        unavailable = lazy_deps.FeatureUnavailable(
+            "search.ddgs", ("ddgs==9.14.4",), "blocked for test"
+        )
+        monkeypatch.setattr(lazy_deps, "ensure", lambda *_a, **_kw: (_ for _ in ()).throw(unavailable))
         import builtins
         orig_import = builtins.__import__
 
@@ -148,6 +185,7 @@ class TestDDGSProviderSearch:
         result = DDGSWebSearchProvider().search("q", limit=5)
         assert result["success"] is False
         assert "ddgs" in result["error"].lower()
+        assert "9.14.4" in result["error"]
 
     def test_runtime_error_returns_failure(self, monkeypatch):
         _install_fake_ddgs(monkeypatch, text_raises=RuntimeError("rate limited 202"))
@@ -230,6 +268,13 @@ class TestDDGSBackendWiring:
         from tools import web_tools
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
         assert web_tools._is_backend_available("ddgs") is False
+
+    def test_web_tools_ddgs_probe_uses_lazy_install_chokepoint(self, monkeypatch):
+        from plugins.web.ddgs import provider
+        from tools import web_tools
+
+        monkeypatch.setattr(provider, "_ensure_ddgs_package_importable", lambda: True)
+        assert web_tools._ddgs_package_importable() is True
 
     def test_configured_backend_accepted(self, monkeypatch):
         from tools import web_tools

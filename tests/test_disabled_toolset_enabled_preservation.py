@@ -31,7 +31,7 @@ class TestDisabledToolsetPreservesEnabledTools:
         """Disabling 'safe' while 'web' is enabled preserves web tools."""
         from model_tools import _compute_tool_definitions
 
-        with patch("tools.registry.check_web_api_key", return_value=True):
+        with patch("tools.web_tools.check_web_api_key", return_value=True):
             defs = _compute_tool_definitions(
                 enabled_toolsets=["web"],
                 disabled_toolsets=["safe"],

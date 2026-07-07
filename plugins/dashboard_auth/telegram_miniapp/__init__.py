@@ -273,6 +273,7 @@ def register(ctx) -> None:
 _SESSION_ID_SHAPE = r"(?:\d{8}_\d{6}_[0-9a-f]{6,8}|cron_[0-9a-f]{12}_\d{8}_\d{6})"
 _SESSION_ID_RE = rf"/api/sessions/{_SESSION_ID_SHAPE}"
 _SESSION_MESSAGES_RE = rf"/api/sessions/{_SESSION_ID_SHAPE}/messages"
+_SESSION_RESUME_RE = rf"/api/sessions/{_SESSION_ID_SHAPE}/resume"
 
 # Cron job ids are uuid4().hex[:12] (cron/jobs.py's create_job) -- 12 lowercase
 # hex chars, never a shape that could collide with a sibling literal path.
@@ -347,6 +348,10 @@ def _register_miniapp_token_routes() -> None:
     # Sessions: PATCH (archive) + DELETE, same path already registered
     # read-only above -- methods union, required stays False either way.
     register_token_route(_SESSION_ID_RE, match="regex", required=False, methods=("PATCH", "DELETE"))
+
+    # Sessions: resume (make this the active session for its own Telegram
+    # chat) -- a distinct sibling path, its own regex registration.
+    register_token_route(_SESSION_RESUME_RE, match="regex", required=False, methods=("POST",))
 
     # Telegram allowlist: the Users tab's own narrow surface (see
     # hermes_cli/web_server.py's module comment on why this exists instead

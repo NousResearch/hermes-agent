@@ -207,6 +207,35 @@ def _extract_text_from_slack_blocks(blocks: list) -> str:
     return "\n".join(parts)
 
 
+def _blocks_text_duplicates_plain_text(
+    blocks_text: str,
+    plain_text: str,
+    *,
+    bang_command_rewritten: bool = False,
+) -> bool:
+    """Return True when Slack block text only mirrors the plain-text field.
+
+    Slack's rich_text composer often duplicates ``text`` in ``blocks``.  When
+    the adapter rewrites a leading ``!known-cmd`` to ``/known-cmd``, blocks
+    still contain the original ``!`` form, so a naive substring check would
+    append a duplicate line.
+    """
+    stripped_blocks = blocks_text.strip()
+    stripped_plain = plain_text.strip()
+    if not stripped_blocks:
+        return True
+    if stripped_blocks == stripped_plain or stripped_blocks in stripped_plain:
+        return True
+    if (
+        bang_command_rewritten
+        and stripped_blocks.startswith("!")
+        and stripped_plain.startswith("/")
+        and stripped_blocks[1:] == stripped_plain[1:]
+    ):
+        return True
+    return False
+
+
 def _serialize_slack_blocks_for_agent(blocks: list, max_chars: int = 6000) -> str:
     """Return a compact, redacted JSON view of the current message's Block Kit payload."""
     if not blocks:
@@ -2628,6 +2657,7 @@ class SlackAdapter(BasePlatformAdapter):
         # gateway dispatcher) handles it like a normal slash command.  Only
         # rewrite when the first token resolves to a known gateway command
         # so casual messages like "!nice work" pass through unchanged.
+        bang_command_rewritten = False
         if original_text.startswith("!"):
             try:
                 from hermes_cli.commands import is_gateway_known_command
@@ -2642,6 +2672,7 @@ class SlackAdapter(BasePlatformAdapter):
                     and is_gateway_known_command(cmd_name)
                 ):
                     original_text = "/" + original_text[1:]
+                    bang_command_rewritten = True
             except Exception:  # pragma: no cover - defensive
                 pass
 
@@ -2658,14 +2689,17 @@ class SlackAdapter(BasePlatformAdapter):
             if blocks_text:
                 # Only append if the blocks contain text not already present
                 # in the plain text field (avoids duplication).
-                stripped_blocks = blocks_text.strip()
-                if stripped_blocks and stripped_blocks not in text.strip():
+                if not _blocks_text_duplicates_plain_text(
+                    blocks_text,
+                    text,
+                    bang_command_rewritten=bang_command_rewritten,
+                ):
                     logger.debug(
                         "Slack: extracted additional text from blocks "
                         "(likely quoted/forwarded content): %s",
-                        stripped_blocks[:300],
+                        blocks_text.strip()[:300],
                     )
-                    text = (text.strip() + "\n" + stripped_blocks).strip()
+                    text = (text.strip() + "\n" + blocks_text.strip()).strip()
 
             blocks_payload = _serialize_slack_blocks_for_agent(blocks)
             if blocks_payload:

@@ -1129,7 +1129,7 @@ class TestBangPrefixCommands:
     command before downstream processing.
     """
 
-    def _make_event(self, text, thread_ts=None, channel_type="im", channel="D123"):
+    def _make_event(self, text, thread_ts=None, channel_type="im", channel="D123", blocks=None):
         evt = {
             "text": text,
             "user": "U_USER",
@@ -1139,7 +1139,23 @@ class TestBangPrefixCommands:
         }
         if thread_ts:
             evt["thread_ts"] = thread_ts
+        if blocks is not None:
+            evt["blocks"] = blocks
         return evt
+
+    def _rich_text_command_blocks(self, command_text: str) -> list:
+        """Slack rich_text blocks mirroring a typed ``!cmd`` message."""
+        return [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [{"type": "text", "text": command_text}],
+                    }
+                ],
+            }
+        ]
 
     @pytest.mark.asyncio
     async def test_bang_known_command_is_rewritten_to_slash(self, adapter):
@@ -1199,6 +1215,60 @@ class TestBangPrefixCommands:
         msg_event = adapter.handle_message.call_args[0][0]
         assert msg_event.text.startswith("/queue")
         assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_known_command_with_blocks_no_duplicate(self, adapter):
+        """``!model`` rewritten to ``/model`` must not re-append block ``!model`` line."""
+        command = "!model glm-5.2-nu176"
+        await adapter._handle_slack_message(
+            self._make_event(
+                command,
+                blocks=self._rich_text_command_blocks(command),
+            )
+        )
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/model glm-5.2-nu176"
+        assert msg_event.message_type == MessageType.COMMAND
+        assert "!model" not in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_bang_unknown_with_blocks_still_extracts_extra(self, adapter):
+        """``!nice work`` is not rewritten; quoted block content is still merged."""
+        await adapter._handle_slack_message(
+            self._make_event(
+                "!nice work",
+                blocks=[
+                    {
+                        "type": "rich_text",
+                        "elements": [
+                            {
+                                "type": "rich_text_section",
+                                "elements": [
+                                    {"type": "text", "text": "!nice work"},
+                                ],
+                            },
+                            {
+                                "type": "rich_text_quote",
+                                "elements": [
+                                    {
+                                        "type": "rich_text_section",
+                                        "elements": [
+                                            {"type": "text", "text": "quoted context"},
+                                        ],
+                                    }
+                                ],
+                            },
+                        ],
+                    }
+                ],
+            )
+        )
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("!nice work")
+        assert msg_event.message_type != MessageType.COMMAND
+        assert "> quoted context" in msg_event.text
 
 
 # ---------------------------------------------------------------------------

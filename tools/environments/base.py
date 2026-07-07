@@ -167,11 +167,13 @@ def _load_json_store(path: Path) -> dict:
 
 
 def _save_json_store(path: Path, data: dict) -> None:
-    """Write *data* as pretty-printed JSON to *path*."""
+    """Write *data* as pretty-printed JSON to *path* with owner-only perms."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-
+    old_umask = os.umask(0o077)
+    try:
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    finally:
+        os.umask(old_umask)
 def _file_mtime_key(host_path: str) -> tuple[float, int] | None:
     """Return ``(mtime, size)`` for cache comparison, or ``None`` if unreadable."""
     try:

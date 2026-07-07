@@ -24,7 +24,14 @@ from tools.environments.base import (
 
 logger = logging.getLogger(__name__)
 
-_SNAPSHOT_STORE = get_hermes_home() / "singularity_snapshots.json"
+def _snapshot_store_path() -> Path:
+    """Return the active profile's singularity snapshot store path at call time.
+
+    Long-lived multi-profile runtimes import this module once; resolve at
+    call time so the live profile-scoped HERMES_HOME is always respected
+    (#40677).
+    """
+    return get_hermes_home() / "singularity_snapshots.json"
 
 
 def _find_singularity_executable() -> str:
@@ -62,11 +69,11 @@ def _ensure_singularity_available() -> str:
 
 
 def _load_snapshots() -> dict:
-    return _load_json_store(_SNAPSHOT_STORE)
+    return _load_json_store(_snapshot_store_path())
 
 
 def _save_snapshots(data: dict) -> None:
-    _save_json_store(_SNAPSHOT_STORE, data)
+    _save_json_store(_snapshot_store_path(), data)
 
 
 def _get_scratch_dir() -> Path:

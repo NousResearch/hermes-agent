@@ -11068,6 +11068,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "insights":
             return await self._handle_insights_command(event)
 
+        if canonical == "behavior":
+            return await self._handle_behavior_command(event)
+
         if canonical == "reload-mcp":
             return await self._handle_reload_mcp_command(event)
 

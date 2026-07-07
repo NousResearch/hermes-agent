@@ -238,6 +238,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("topup", "Show your Nous balance and manage billing on the portal", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]"),
+    CommandDef("behavior", "Show behavioral analysis and insight cards", "Info",
+               args_hint="[days]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
                cli_only=True, aliases=("gateway",)),
     CommandDef("platform", "Pause, resume, or list a failing gateway platform", "Info",
@@ -1167,7 +1169,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug"})
+#   - behavior: the behavioral-analysis report; reached via /hermes behavior
+#     on Slack to avoid displacing existing native slashes at the 50-command cap.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "behavior"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

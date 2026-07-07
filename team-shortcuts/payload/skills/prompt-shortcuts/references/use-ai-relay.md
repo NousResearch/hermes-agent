@@ -17,13 +17,13 @@ tags:
   - code-review
   - token-saving
 status: tooling-ready
-version: "2.7"
-updated: 2026-07-06
+version: "2.9"
+updated: 2026-07-08
 schema: memory-schema-v1.1
 note: v2.8 ถอด Fable/Faber/Fiber 5 ออกจากเส้นทางใช้งานแล้ว · สมองหลัก = Opus 4.8 ตัวเดียว · ก้อน B เป็นโค้ดจริงใน GitHub ของเจ้าของ และพนักงานติดตั้งผ่าน `relay-setup.sh` โดยไม่ต้องมี repo Hermes Agent · project ไม่มี config ให้รัน relay-doctor สร้างค่าเริ่มต้น ไม่ต้องหยุด
 ---
 
-# Use AI Relay (v2.8 · 2026-07-06)
+# Use AI Relay (v2.9 · 2026-07-08)
 
 คู่กับ Memory Schema v1.1 + AI Relay Catalog + ตัวห่อ relay-call + ตัวรัน gate-run · เช็ก schema version ตอนเริ่ม ไม่ตรง = เตือน
 
@@ -48,6 +48,11 @@ Use AI Relay
 [กฎ non-dev] อธิบายภาษาคน · ทุกคำสั่งให้คนรันก๊อปวางได้ + บอกผลที่จะเกิด · ห้ามถามว่าใช้ test ตัวไหน (gate-run ค้นเอง Schema §5)
 
 [ความสัมพันธ์กับ Use Continue] Relay ทำงานภายใต้ระดับอิสระของ Continue (Schema §12) · merge→main / deploy prod / migration prod ต้องขอคนเสมอ (ALLOW_AUTO_PROD=OFF) Relay ไม่ยกเว้น
+
+[กฎ re-anchor — กันลืมแผนหลังคำถามแทรก · แผน GRD 2026-07-07]
+- หลังตอบคำถามแทรก / ออกนอกเรื่อง / สลับงาน — ก่อนยิง relay-call หรือแตะไฟล์ครั้งถัดไป ต้องเปิด `.project/plan.md` ทวน "เฟสปัจจุบัน + ข้อห้าม" ก่อนเสมอ ห้ามทำต่อจากความจำในแชท
+- ถ้า plan.md ประกาศ plan_id (เช่น GRD) → เลขงาน (task-id) ต้องขึ้นต้นด้วย plan_id และมีจริงใน plan.md · เลขที่ไม่มี = ห้ามยิง (ตรวจได้ด้วย `plan-anchor --task-id <id>` · งานจรนอกแผนต้องใช้ `--no-plan` ให้เห็นชัดใน ledger)
+- ใบสั่งงาน (brief) ทุกใบต้องฝังข้อความเฟส + ข้อห้ามจาก plan.md ลงไปในตัว (ใช้ `plan-anchor --emit-brief`) ไม่พึ่งความจำแชท
 
 [สมองหลัก = Opus 4.8 ตัวเดียว] Fable 5 ถอดออกแล้ว (เจ้าของสั่ง 2026-07-06 · ประหยัดโควต้า)
 - สมองหลัก: **Opus 4.8** (`relay-call --tool opus` หรือตัว Claude ที่รัน shortcut นี้เอง) · ทำหน้าที่ คิด/วิเคราะห์/วางแผน/เลือก coder/ตรวจ/ตัดสิน
@@ -152,6 +157,7 @@ Use AI Relay
 
 ## Changelog
 
+- v2.9 (2026-07-08): เพิ่มกฎ re-anchor (หลังตอบคำถามแทรก เปิด plan.md ทวนเฟส+ข้อห้ามก่อนยิงงาน) + เลขงานต้องขึ้นต้น plan_id และมีจริงใน plan.md (ตรวจด้วย `plan-anchor` · งานจรใช้ `--no-plan`) + brief ฝังข้อความแผนในตัว · จากการสอบสวนแผน GRD 2026-07-07 (ต้นตอ 6 ข้อ: AI ลืมแผนหลังตอบคำถาม · เลขงานชนข้ามแผน · ฯลฯ — ดู decisions.md ของ repo Hermes Agent)
 - v2.8 (2026-07-06): **แก้กติกาติดตั้งพนักงาน** · พนักงานไม่มี repo Hermes Agent ในเครื่อง จึงต้องใช้ `relay-setup.sh` ผ่าน GitHub raw URL และโหลดเครื่องมือไปไว้ใต้ `~/.hermes/ai-relay-tools` แทนแนวทางเก่าที่สมมติว่าพนักงานมี repo local
 - v2.7 (2026-07-06): **ถอด Fable/Faber/Fiber 5 ออกจากเส้นทางใช้งานทั้งหมด · สมองหลัก = Opus 4.8 ตัวเดียว** (เจ้าของสั่ง · ประหยัดโควต้า) — ลบ adapter `fable` + ด่านกันเครื่องเก่า + logic premium เก่าออกจาก `relay-call.py` · ลบ fable จาก sample-config (adapters/accounts) · เอา fable ออกจาก registry sample · RELAY-RULES.md + prompt/catalog: สมอง = Opus 4.8 เดียว ไม่มีด่านคะแนนความยาก/บันไดยกงานให้ Fable (งานยากใช้ Opus + ตรวจข้ามค่าย Grok/Codex แทน) · เพิ่ม prompt สำหรับพนักงานโหลดไปใช้ (`scripts/ai-relay/EMPLOYEE-PROMPT.md`) · pytest ผ่านครบด้วยเทสต์ยืนยัน opus เป็นสมองเดียว
 - v2.6 (2026-07-05): แก้ปัญหา coder ค้าง/แฮงก์แบบไม่มีใครรู้ — เพิ่ม "นาฬิกาปลุกกันค้าง" ใน relay-call · ผ่าน GPT-5.5 (Codex) review (fix-then-proceed → แก้ 2/3): (1) coder `call_timeout_seconds`=900 วิ (15 นาที ลดจาก 1800) · สมอง `brain_call_timeout_seconds`=1800 วิ (30 นาที แยก ไม่ตัดงานคิดยาวเร็วเกิน) · ตั้งต่อเครื่อง/ต่อ tool ได้ (2) จับ timeout ด้วยป้ายเฉพาะ `TIMEOUT_MARK` ไม่ใช่เดาจาก exit 124 ล้วน (CLI ที่ exit 124 เอง → crash ไม่ใช่ timeout) · classify แยกสถานะ `timeout` → ledger/relay-report เห็น "ค้าง" ชัด · timeout เข้า cooldown + สลับ coder ตัวถัดไปอัตโนมัติ · แก้ `relay-call.py` · pytest 16/16 (เพิ่ม 3 เทสต์ รวมกัน exit-124-ปลอม) · ค้างเฟสหน้า (จุด 3 จาก GPT-5): ปิดโปรเซสลูกที่ค้างต่อหลัง timeout ต้องรื้อเป็น Popen แบบสตรีม

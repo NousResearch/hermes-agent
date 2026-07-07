@@ -21,7 +21,7 @@ This skill loads standard reusable prompts from HermesAgent. The v2 prompt files
 | `Use Viber Structure` | `use-viber-structure`, `Viber Structure`, `viber-structure`, `ใช้ Viber Structure`, `โครงสร้าง Viber`, `วางโครงสร้าง Viber Code`, `วางแผน Viber Code`, `Vibe Code Enterprise` | `references/use-viber-structure.md` |
 | `Use Viber Audit` | `use-viber-audit`, `Viber Audit`, `viber-audit`, `Use Viber Standard Audit`, `Use Viber Compliance`, `ใช้ Viber Audit`, `ตรวจ Viber Standard`, `ตรวจ Viber Enterprise`, `ตรวจมาตรฐาน Viber`, `Viber Enterprise Standard` | `references/use-viber-audit.md` |
 | `Use Impeccable` | `use-impeccable`, `Impeccable`, `ใช้ Impeccable`, `ตรวจ UI Slop`, `แก้ AI Slop` | `references/use-impeccable.md` |
-| `Use Blog Auto` | `use-blog-auto`, `Blog Auto`, `blog-auto`, `ใช้ Blog Auto`, `เขียนบล็อกอัตโนมัติ`, `ทำบล็อกจากงานนี้`, `ส่งเข้า Hi Logic Labs` | `references/use-blog-auto.md` |
+| `Use Blog Auto` | `use-blog-auto`, `Blog Auto`, `blog-auto`, `ใช้ Blog Auto`, `เขียนบล็อกอัตโนมัติ`, `ทำบล็อกจากงานนี้`, `ส่งเข้า One Man Fleet` | `references/use-blog-auto.md` |
 | `Use WOW Resource` | `use-wow-resource`, `WOW Resource`, `wow-resource`, `ใช้ WOW Resource`, `ใช้ WOW`, `WOW Layout`, `WOW Menu`, `WOW Script`, `WOW Design`, `WOW Web Engine` | `references/use-wow-resource.md` |
 | `Use Flow Guardian` | `use-flow-guardian`, `Flow Guardian`, `Safe Flow`, `New Chat Gate`, `ใช้ Flow Guardian`, `ใช้ Safe Flow`, `เปิด Flow Guardian`, `ตรวจ worktree`, `กัน AI แก้งานทับกัน` | `references/use-flow-guardian.md` |
 | `Use New Chat` | `use-new-chat`, `Start New Chat`, `New Chat Startup`, `Initialize Hermes Agent chat`, `เริ่ม New Chat`, `เปิด New Chat`, `เริ่มแชทใหม่`, `เปิดแชทใหม่` | `references/use-new-chat.md` |
@@ -76,7 +76,7 @@ For `Use Viber Audit`, inspect one or many real Viber Project repos against the 
 
 For `Use Impeccable`, use exactly one owner-facing shortcut for Impeccable UI quality work. Read the mapped prompt, infer the target from context when possible, ask one short target question only when needed, and let the AI choose whether to install, scan, explain, fix blocking UI issues, or plan UI-debt cleanup. Do not expose multiple Impeccable sub-shortcuts to the owner.
 
-For `Use Blog Auto`, extract useful work knowledge into a Hi Logic Labs blog route, run privacy review first, decide whether to create a new post or update an existing one, use English public plus Thai internal summary by default, create only drafts until owner approval, record Obsidian index/traceability, and hand off platform drafts to Content Factory without auto-posting.
+For `Use Blog Auto`, extract useful work knowledge into a One Man Fleet blog route, run privacy review first, decide whether to create a new post or update an existing one, use English public plus Thai internal summary by default, create only drafts until owner approval, record Obsidian index/traceability, and hand off platform drafts to Content Factory without auto-posting.
 
 For `Use WOW Resource`, read the mapped prompt, route through WOW System and Web Design Intelligence, select resources based on the project goal, reject mismatched/generic options, and transform the selected patterns into project-specific layout/design/script direction. Do not copy scripts or visual patterns directly.
 

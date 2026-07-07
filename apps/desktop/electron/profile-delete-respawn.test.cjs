@@ -60,3 +60,29 @@ test('hermes:api handler routes profile-delete requests to the primary backend',
     'handler should pass routeProfile (not raw profile) to ensureBackend'
   )
 })
+
+test('hermes:api handler restarts a timed-out local pooled profile backend once', () => {
+  const source = readElectronFile('main.cjs')
+
+  assert.match(source, /function isHermesBackendTimeout\(error\)/, 'missing timeout classifier')
+  assert.match(
+    source,
+    /function shouldRetryLocalPooledBackend\(profile, connection, error\)/,
+    'missing local pooled backend retry guard'
+  )
+  assert.match(
+    source,
+    /connection\?\.mode === 'local' && connection\?\.source === 'local'/,
+    'retry guard should apply only to local pooled backends'
+  )
+  assert.match(
+    source,
+    /stopPoolBackend\(key\)[\s\S]*const restarted = await ensureBackend\(key\)[\s\S]*return send\(restarted\)/,
+    'handler should stop, respawn, and retry the local profile backend'
+  )
+  assert.match(
+    source,
+    /event: 'profile\.timeout\.restart'/,
+    'restart should emit a diagnostic event for crash forensics'
+  )
+})

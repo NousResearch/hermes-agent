@@ -3480,6 +3480,17 @@ function fetchJson(url, token, options = {}) {
   })
 }
 
+function isHermesBackendTimeout(error) {
+  return /Timed out connecting to Hermes backend/.test(String(error?.message || ''))
+}
+
+function shouldRetryLocalPooledBackend(profile, connection, error) {
+  const key = profile && String(profile).trim() ? String(profile).trim() : null
+  if (!key || key === primaryProfileKey()) return false
+  if (!isHermesBackendTimeout(error)) return false
+  return connection?.mode === 'local' && connection?.source === 'local'
+}
+
 function fetchPublicJson(url, options = {}) {
   // Credential-free JSON GET/POST for public gateway endpoints
   // (``/api/status``, ``/api/auth/providers``). Unlike ``fetchJson`` it sends
@@ -6811,29 +6822,52 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   // backend calls ensure_hermes_home() which recreates the profile directory,
   // defeating the deletion and leaving a zombie process.
   const routeProfile = tornDownProfile ? null : profile
-  const connection = await ensureBackend(routeProfile)
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
   const requestPath = pathWithGlobalRemoteProfile(request.path, profile, {
     globalRemote: globalRemoteActive(),
     profileRemoteOverride: profileHasRemoteOverride(profile)
   })
-  const url = `${connection.baseUrl}${requestPath}`
-  // OAuth gateways authenticate REST via the HttpOnly session cookie held in
-  // the OAuth partition — route through Electron's net stack bound to that
-  // session so the cookie attaches automatically. Token/local modes keep using
-  // the static session-token header.
-  if (connection.authMode === 'oauth') {
-    return fetchJsonViaOauthSession(url, {
+
+  async function send(connection) {
+    const url = `${connection.baseUrl}${requestPath}`
+    // OAuth gateways authenticate REST via the HttpOnly session cookie held in
+    // the OAuth partition — route through Electron's net stack bound to that
+    // session so the cookie attaches automatically. Token/local modes keep using
+    // the static session-token header.
+    if (connection.authMode === 'oauth') {
+      return fetchJsonViaOauthSession(url, {
+        method: request?.method,
+        body: request?.body,
+        timeoutMs
+      })
+    }
+    return fetchJson(url, connection.token, {
       method: request?.method,
       body: request?.body,
       timeoutMs
     })
   }
-  return fetchJson(url, connection.token, {
-    method: request?.method,
-    body: request?.body,
-    timeoutMs
-  })
+
+  const connection = await ensureBackend(routeProfile)
+  try {
+    return await send(connection)
+  } catch (error) {
+    if (!shouldRetryLocalPooledBackend(routeProfile, connection, error)) {
+      throw error
+    }
+    const key = String(routeProfile).trim()
+    rememberLog(`Pooled backend for profile "${key}" timed out on ${requestPath}; restarting once`)
+    recordDiagnosticEvent({
+      component: 'backend',
+      event: 'profile.timeout.restart',
+      message: `Pooled backend for profile ${key} timed out; restarting`,
+      severity: 'warn',
+      details: { profile: key, path: requestPath, mode: 'pool', error: error.message }
+    })
+    stopPoolBackend(key)
+    const restarted = await ensureBackend(key)
+    return send(restarted)
+  }
 })
 
 ipcMain.handle('hermes:notify', (_event, payload) => {

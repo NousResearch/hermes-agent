@@ -1550,6 +1550,41 @@ def cache_document_from_bytes(data: bytes, filename: str) -> str:
     safe_name = safe_name.replace("\x00", "").strip()
     if not safe_name or safe_name in {".", ".."}:
         safe_name = "document"
+    # Decode URL-encoded names (e.g. WeCom sends %E5%B8%82... for Chinese titles)
+    # so on-disk names stay human-readable AND short. Without this, one CJK char
+    # becomes 9 bytes and long titles overflow the 255-byte NAME_MAX on macOS/ext4.
+    try:
+        from urllib.parse import unquote as _unquote
+        decoded = _unquote(safe_name)
+        if decoded and decoded != safe_name:
+            safe_name = decoded.replace("\x00", "").strip() or safe_name
+    except Exception:
+        pass
+    # Enforce filesystem NAME_MAX (255 bytes on macOS/ext4). Reserve budget for
+    # the ``doc_{uuid12}_`` prefix (17 chars) and a safety margin.
+    MAX_NAME_BYTES = 200
+    ext = Path(safe_name).suffix
+    stem = Path(safe_name).stem or "document"
+    # Truncate stem in bytes (UTF-8-safe), keeping the extension intact.
+    stem_bytes = stem.encode("utf-8", errors="ignore")
+    ext_bytes = ext.encode("utf-8", errors="ignore")
+    budget = MAX_NAME_BYTES - len(ext_bytes)
+    if budget < 1:
+        # Extension itself is absurdly long; drop it.
+        ext = ""
+        budget = MAX_NAME_BYTES
+    if len(stem_bytes) > budget:
+        # Trim on a UTF-8 code-point boundary.
+        trimmed = stem_bytes[:budget]
+        for _ in range(4):
+            try:
+                stem = trimmed.decode("utf-8")
+                break
+            except UnicodeDecodeError:
+                trimmed = trimmed[:-1]
+        else:
+            stem = trimmed.decode("utf-8", errors="ignore") or "document"
+        safe_name = f"{stem}{ext}"
     cached_name = f"doc_{uuid.uuid4().hex[:12]}_{safe_name}"
     filepath = cache_dir / cached_name
     # Final safety check: ensure path stays inside cache dir

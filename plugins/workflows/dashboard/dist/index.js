@@ -66,6 +66,25 @@
     }
   }
 
+  function hasPreviewValue(value) {
+    if (value === null || value === undefined) return false;
+    if (typeof value === "string") return !!value.trim();
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === "object") return Object.keys(value).length > 0;
+    return true;
+  }
+
+  function previewJson(value) {
+    let text;
+    try {
+      text = JSON.stringify(value, null, 2);
+    } catch (_) {
+      text = String(value);
+    }
+    if (text === undefined) text = String(value);
+    return text.length > 800 ? text.slice(0, 800) + "\n…" : text;
+  }
+
   function parseJsonObject(text) {
     try {
       const parsed = JSON.parse(text);
@@ -726,6 +745,9 @@
     const stateEvents = useState([]);
     const events = stateEvents[0];
     const setEvents = stateEvents[1];
+    const stateNodeRuns = useState([]);
+    const nodeRuns = stateNodeRuns[0];
+    const setNodeRuns = stateNodeRuns[1];
     const stateStatus = useState("");
     const status = stateStatus[0];
     const setStatus = stateStatus[1];
@@ -828,16 +850,34 @@
       });
     }
 
+    function loadNodeRuns(executionId) {
+      if (!executionId) {
+        setNodeRuns([]);
+        return Promise.resolve([]);
+      }
+      return api("/executions/" + encodeURIComponent(executionId) + "/node-runs")
+        .then(function (res) {
+          const rows = asArray(res.node_runs);
+          setNodeRuns(rows);
+          return rows;
+        })
+        .catch(function () {
+          setNodeRuns([]);
+          return [];
+        });
+    }
+
     function loadExecution(executionId) {
       if (!executionId) {
         setSelectedExecution(null);
         setEvents([]);
+        setNodeRuns([]);
         return Promise.resolve(null);
       }
       return api("/executions/" + encodeURIComponent(executionId)).then(function (res) {
         const execution = res.execution || null;
         setSelectedExecution(execution);
-        return loadEvents(executionId).then(function () { return execution; });
+        return Promise.all([loadEvents(executionId), loadNodeRuns(executionId)]).then(function () { return execution; });
       });
     }
 
@@ -865,6 +905,7 @@
         if (nextId) return loadExecution(nextId);
         setSelectedExecution(null);
         setEvents([]);
+        setNodeRuns([]);
         return null;
       });
     }
@@ -1494,6 +1535,7 @@
           ),
           h("pre", { className: "hermes-workflows-pre" }, jsonBlock(selectedExecution.input))
         ) : h("p", { className: "hermes-workflows-muted" }, "Select an execution to inspect it."),
+        renderNodeRuns(),
         events.length ? events.map(function (row) {
           return h("div", { key: row.id, className: "hermes-workflows-event" },
             h("div", { className: "hermes-workflows-item-title" },
@@ -1504,6 +1546,55 @@
             h("pre", { className: "hermes-workflows-pre" }, jsonBlock(row.payload))
           );
         }) : h("p", { className: "hermes-workflows-muted" }, "No events recorded for this execution.")
+      );
+    }
+
+    function renderNodeRunPreview(label, value) {
+      if (!hasPreviewValue(value)) return null;
+      return h("div", { className: "hermes-workflows-node-run-preview" },
+        h("div", { className: "hermes-workflows-meta" }, label),
+        h("pre", { className: "hermes-workflows-pre" }, previewJson(value))
+      );
+    }
+
+    function renderNodeRuns() {
+      if (!selectedExecution) return null;
+      if (!nodeRuns.length) {
+        return h("p", { className: "hermes-workflows-muted" }, "No node runs recorded for this execution yet.");
+      }
+      const groups = [];
+      const byNode = {};
+      nodeRuns.forEach(function (row, index) {
+        const nodeId = safeString(row && row.node_id);
+        if (!byNode[nodeId]) {
+          byNode[nodeId] = [];
+          groups.push({ nodeId: nodeId, rows: byNode[nodeId] });
+        }
+        byNode[nodeId].push({ row: row || {}, index: index });
+      });
+      return h("div", { className: "hermes-workflows-node-runs" },
+        h("h3", null, "Node runs"),
+        groups.map(function (group) {
+          return h("div", { key: group.nodeId, className: "hermes-workflows-node-run-group" },
+            group.rows.map(function (item) {
+              const row = item.row;
+              const status = safeString(row.status);
+              const workerStatus = row.kanban_task_id && row.status === "waiting" ? "waiting on agent" : status;
+              return h("div", { key: String(row.id || row.event_id || item.index), className: "hermes-workflows-node-run-card" },
+                h("div", { className: "hermes-workflows-item-title" },
+                  h("strong", null, safeString(row.node_id)),
+                  h("span", { className: "hermes-workflows-badge" }, status)
+                ),
+                row.kanban_task_id ? h("div", { className: "hermes-workflows-node-run-worker" },
+                  h("div", null, "Linked worker task: " + safeString(row.kanban_task_id)),
+                  h("div", { className: "hermes-workflows-meta" }, "Worker status: " + workerStatus)
+                ) : null,
+                renderNodeRunPreview("Output", row.output),
+                renderNodeRunPreview("Error", row.error)
+              );
+            })
+          );
+        })
       );
     }
 

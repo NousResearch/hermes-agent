@@ -78,7 +78,9 @@
 
 .hermes-workflows .hermes-workflows-list,
 .hermes-workflows .hermes-workflows-executions,
-.hermes-workflows .hermes-workflows-timeline {
+.hermes-workflows .hermes-workflows-timeline,
+.hermes-workflows .hermes-workflows-node-runs,
+.hermes-workflows .hermes-workflows-node-run-group {
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
@@ -341,7 +343,8 @@
 
 .hermes-workflows .hermes-workflows-node-card,
 .hermes-workflows .hermes-workflows-edge-card,
-.hermes-workflows .hermes-workflows-event {
+.hermes-workflows .hermes-workflows-event,
+.hermes-workflows .hermes-workflows-node-run-card {
   border: 1px solid var(--color-border);
   border-radius: calc(var(--radius, 0.75rem) * 0.75);
   background: color-mix(in srgb, var(--color-background) 72%, transparent);
@@ -362,6 +365,26 @@
   color: var(--color-muted-foreground);
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 0.72rem;
+}
+
+.hermes-workflows .hermes-workflows-node-runs {
+  border-top: 1px solid var(--color-border);
+  margin-top: 0.3rem;
+  padding-top: 0.75rem;
+}
+
+.hermes-workflows .hermes-workflows-node-run-worker {
+  margin-top: 0.45rem;
+  color: var(--color-muted-foreground);
+  font-size: 0.82rem;
+}
+
+.hermes-workflows .hermes-workflows-node-run-preview {
+  margin-top: 0.45rem;
+}
+
+.hermes-workflows .hermes-workflows-node-run-preview .hermes-workflows-pre {
+  max-height: 12rem;
 }
 
 .hermes-workflows .hermes-workflows-builder {

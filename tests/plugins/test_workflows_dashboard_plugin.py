@@ -397,6 +397,42 @@ def test_dashboard_bundle_is_syntax_valid_when_node_is_available():
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+def test_dashboard_bundle_renders_node_runs_and_linked_worker_tasks():
+    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+
+    assert "node-runs" in bundle
+    assert "Linked worker task" in bundle
+    assert "waiting on agent" in bundle or "waiting_on_agent" in bundle
+    assert "renderNodeRuns" in bundle
+
+
+def test_dashboard_bundle_wires_node_runs_as_execution_drilldown():
+    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    load_node_runs = bundle[
+        bundle.index("function loadNodeRuns") : bundle.index("function loadExecution")
+    ]
+    load_execution = bundle[
+        bundle.index("function loadExecution") : bundle.index("function loadDefinitions")
+    ]
+    render_timeline = bundle[
+        bundle.index("function renderTimeline") : bundle.index("function renderSimpleGraph")
+    ]
+    goal_builder = bundle[
+        bundle.index("function renderGoalBuilder") : bundle.index("function renderDraftReview")
+    ]
+
+    assert "stateNodeRuns" in bundle
+    assert "setNodeRuns" in bundle
+    assert 'api("/executions/" + encodeURIComponent(executionId) + "/node-runs")' in load_node_runs
+    assert "if (!executionId)" in load_node_runs
+    assert "setNodeRuns([])" in load_node_runs
+    assert "loadNodeRuns(executionId)" in load_execution
+    assert "Promise.all([loadEvents(executionId), loadNodeRuns(executionId)])" in load_execution
+    assert "setNodeRuns([])" in load_execution
+    assert "renderNodeRuns()" in render_timeline
+    assert "renderNodeRuns()" not in goal_builder
+
+
 def test_dashboard_bundle_contains_validation_checklist_and_dispatcher_banner():
     bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
 

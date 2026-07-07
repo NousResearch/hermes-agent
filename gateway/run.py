@@ -2636,12 +2636,14 @@ def _channel_override_lookup_keys(
 ) -> list[str]:
     """Ordered, de-duplicated keys for ``channel_overrides`` lookup.
 
-    Matches ``resolve_channel_prompt`` semantics: exact thread/channel id first,
-    then parent channel/forum id (Discord threads inherit parent overrides).
+    Telegram forum topics need a stable key scoped by both chat and topic,
+    e.g. ``-100123:188``. After that, preserve the existing lookup order:
+    chat/channel id, thread id, then parent id.
     """
     keys: list[str] = []
     seen: set[str] = set()
-    for key in (chat_id, thread_id, parent_id):
+    composite_key = f"{chat_id}:{thread_id}" if chat_id and thread_id else None
+    for key in (composite_key, chat_id, thread_id, parent_id):
         if not key:
             continue
         sk = str(key)
@@ -2662,8 +2664,8 @@ def _get_channel_override(
 ) -> Optional[ChannelOverride]:
     """Return per-channel override for this platform/chat_id, or None.
 
-    Looks up ``channel_overrides`` by ``chat_id``, then ``thread_id``, then
-    ``parent_id`` (forum threads / child channels inherit the parent entry).
+    Looks up ``channel_overrides`` by ``chat_id:thread_id`` first, then
+    ``chat_id``, ``thread_id``, and ``parent_id``.
     """
     platforms = getattr(config, "platforms", None)
     if not platforms:
@@ -5209,9 +5211,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> dict | None:
         """Resolve reasoning effort for a session, honoring session overrides.
 
-        Priority: session-scoped ``/reasoning --session`` override >
-        per-model override (``agent.reasoning_overrides``) > global
-        ``agent.reasoning_effort``. ``model`` should be the session's
+        Priority: session-scoped ``/reasoning --session`` override > channel
+        override > per-model override (``agent.reasoning_overrides``) >
+        global ``agent.reasoning_effort``. ``model`` should be the session's
         *effective* model (session ``/model`` override included) so
         per-model overrides track what the session actually runs — when
         empty, the config's ``model.default`` is used.
@@ -5226,6 +5228,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         overrides = getattr(self, "_session_reasoning_overrides", {}) or {}
         if resolved_session_key and resolved_session_key in overrides:
             return overrides[resolved_session_key]
+        config = getattr(self, "config", None)
+        if config and source is not None:
+            try:
+                override = _get_channel_override(
+                    config,
+                    source.platform,
+                    str(source.chat_id) if source.chat_id else "",
+                    thread_id=(
+                        str(source.thread_id)
+                        if getattr(source, "thread_id", None)
+                        else None
+                    ),
+                    parent_id=(
+                        str(source.parent_chat_id)
+                        if getattr(source, "parent_chat_id", None)
+                        else None
+                    ),
+                )
+                channel_effort = getattr(override, "reasoning_effort", None)
+                if channel_effort is not None:
+                    from hermes_constants import parse_reasoning_effort
+
+                    parsed = parse_reasoning_effort(channel_effort)
+                    if parsed is not None:
+                        return parsed
+                    if str(channel_effort).strip():
+                        logger.warning(
+                            "Unknown channel reasoning_effort '%s', using global default",
+                            channel_effort,
+                        )
+            except Exception:
+                logger.debug("Failed to resolve channel reasoning override", exc_info=True)
         return self._load_reasoning_config(model)
 
     def _set_session_reasoning_override(

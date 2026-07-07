@@ -125,6 +125,7 @@ class TestPlatformConfigRoundtrip:
                     model="openrouter/healer-alpha",
                     provider="openrouter",
                     system_prompt="You are a daily news summarizer.",
+                    reasoning_effort="high",
                 ),
                 "9876543210": ChannelOverride(
                     model="anthropic/claude-opus-4.6",
@@ -136,9 +137,11 @@ class TestPlatformConfigRoundtrip:
         d = pc.to_dict()
         assert "channel_overrides" in d
         assert d["channel_overrides"]["1234567890"]["model"] == "openrouter/healer-alpha"
+        assert d["channel_overrides"]["1234567890"]["reasoning_effort"] == "high"
         assert d["channel_overrides"]["9876543210"]["system_prompt"] == "You are a coding assistant."
         restored = PlatformConfig.from_dict(d)
         assert restored.channel_overrides["1234567890"].model == "openrouter/healer-alpha"
+        assert restored.channel_overrides["1234567890"].reasoning_effort == "high"
         assert restored.channel_overrides["9876543210"].provider == "anthropic"
 
     def test_channel_overrides_from_dict_normalizes_channel_id_to_str(self):

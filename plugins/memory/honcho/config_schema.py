@@ -101,9 +101,9 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             default="per-directory",
             description="How conversations map to Honcho sessions.",
             options=(
+                ProviderFieldOption("per-session", "Per session"),
                 ProviderFieldOption("per-directory", "Per directory"),
                 ProviderFieldOption("per-repo", "Per repo"),
-                ProviderFieldOption("per-session", "Per session"),
                 ProviderFieldOption("global", "Global"),
             ),
             inline=True,

@@ -15,6 +15,7 @@ import time
 from email.utils import formatdate
 
 from agent.redact import redact_sensitive_text
+from agent.secret_scope import get_secret
 
 logger = logging.getLogger(__name__)
 
@@ -353,8 +354,8 @@ def _handle_send(args):
         # Weixin can be configured purely via .env; synthesize a pconfig so
         # send_message and cron delivery work without a gateway.yaml entry.
         if platform_name == "weixin":
-            wx_token = os.getenv("WEIXIN_TOKEN", "").strip()
-            wx_account = os.getenv("WEIXIN_ACCOUNT_ID", "").strip()
+            wx_token = get_secret("WEIXIN_TOKEN", "").strip()
+            wx_account = get_secret("WEIXIN_ACCOUNT_ID", "").strip()
             if wx_token and wx_account:
                 from gateway.config import PlatformConfig
                 pconfig = PlatformConfig(
@@ -362,8 +363,8 @@ def _handle_send(args):
                     token=wx_token,
                     extra={
                         "account_id": wx_account,
-                        "base_url": os.getenv("WEIXIN_BASE_URL", "").strip(),
-                        "cdn_base_url": os.getenv("WEIXIN_CDN_BASE_URL", "").strip(),
+                        "base_url": get_secret("WEIXIN_BASE_URL", "").strip(),
+                        "cdn_base_url": get_secret("WEIXIN_CDN_BASE_URL", "").strip(),
                     },
                 )
             else:

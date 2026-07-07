@@ -729,7 +729,14 @@ def recover_with_credential_pool(
     # that seeded the pool.
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
-    if current_provider and pool_provider and current_provider != pool_provider:
+    # Guard: skip credential pool recovery when the pool is scoped to a
+    # different provider than the agent.  Only guard when the pool has a
+    # known provider — an empty pool provider means "unscoped" (applies to
+    # any provider).  An empty agent provider is treated as a mismatch
+    # because swapping the pool's credentials would set base_url/api_key
+    # without fixing the empty provider field, leaving the agent in a
+    # corrupted state (provider="" model="").
+    if pool_provider and current_provider != pool_provider:
         # Custom endpoints use two naming conventions for the SAME provider:
         # the agent carries the generic ``custom`` label while the pool is
         # keyed ``custom:<name>`` (see CUSTOM_POOL_PREFIX). A literal string

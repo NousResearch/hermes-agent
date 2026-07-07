@@ -33,6 +33,7 @@ import threading
 import time
 import urllib.error
 import urllib.parse
+import zipfile
 
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
@@ -473,6 +474,73 @@ async def host_header_middleware(request: Request, call_next):
                     ),
                 },
             )
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def _plugin_api_runtime_gate(request: Request, call_next):
+    """Block requests to disabled plugin API routes at request time.
+
+    :func:`_mount_plugin_api_routes` gates at import time, but if a plugin
+    is disabled *after* the dashboard is already running, its FastAPI router
+    remains mounted until restart.  This middleware enforces the enabled/
+    disabled policy on every request to ``/api/plugins/{name}/...`` so that
+    runtime config changes take effect immediately.
+
+    Registered BEFORE the auth middlewares (so it executes AFTER them): a
+    request that hasn't cleared auth must get auth's 401 first, never this
+    gate's 404 — otherwise an unauthenticated caller could fingerprint which
+    plugins are installed/enabled by reading the status code. We only reach
+    the enabled/disabled check for a request that auth already let through.
+    """
+    path = request.url.path
+    if path.startswith("/api/plugins/"):
+        # Only gate authenticated requests. Unauthenticated ones fall
+        # through so auth_middleware / the OAuth gate return 401 first and
+        # this route can't be used as a plugin-name oracle.
+        _authed = (
+            getattr(request.state, "token_authenticated", False)
+            or getattr(request.app.state, "auth_required", False)
+            or _has_valid_session_token(request)
+            or _has_valid_query_token(request, path)
+        )
+        if _authed:
+            # Extract plugin name from /api/plugins/<name>/...
+            parts = path.split("/")
+            # parts: ['', 'api', 'plugins', '<name>', ...]
+            if len(parts) >= 4:
+                plugin_name = parts[3]
+                if plugin_name:
+                    try:
+                        from hermes_cli.plugins_cmd import (
+                            _get_enabled_set,
+                            _get_disabled_set,
+                        )
+                        enabled_set = _get_enabled_set()
+                        disabled_set = _get_disabled_set()
+                    except Exception:
+                        enabled_set = set()
+                        disabled_set = set()
+                    # Determine plugin source.  Check the cached plugin list;
+                    # if not found, assume user plugin (safe default — blocks).
+                    plugins = _get_dashboard_plugins()
+                    plugin = next(
+                        (p for p in plugins if p.get("name") == plugin_name),
+                        None,
+                    )
+                    source = plugin.get("source") if plugin else "user"
+                    if source == "user":
+                        if plugin_name in disabled_set or plugin_name not in enabled_set:
+                            return JSONResponse(
+                                status_code=404,
+                                content={"detail": "Plugin not found"},
+                            )
+                    elif source == "bundled":
+                        if plugin_name in disabled_set:
+                            return JSONResponse(
+                                status_code=404,
+                                content={"detail": "Plugin not found"},
+                            )
     return await call_next(request)
 
 
@@ -2451,6 +2519,70 @@ async def run_curator():
     return {"ok": True, "pid": proc.pid, "name": "curator-run"}
 
 
+@app.get("/api/learning/graph")
+async def get_learning_graph(profile: Optional[str] = None):
+    """Learning graph payload for the desktop panel.
+
+    Profile-scoped view of learned, non-base skills plus memory chunks, with
+    graph links derived from skill relations and memory-skill overlap.
+    """
+    try:
+        from agent.learning_graph import build_learning_graph
+
+        with _profile_scope(profile):
+            return build_learning_graph()
+    except Exception:
+        _log.exception("GET /api/learning/graph failed")
+        raise HTTPException(status_code=500, detail="Failed to build learning graph")
+
+
+class LearningNodeRef(BaseModel):
+    id: str
+    profile: Optional[str] = None
+
+
+class LearningNodeEdit(BaseModel):
+    id: str
+    content: str
+    profile: Optional[str] = None
+
+
+@app.get("/api/learning/node")
+async def get_learning_node(id: str, profile: Optional[str] = None):
+    """Current content of a journey node (skill SKILL.md or memory chunk), for an edit prefill."""
+    from agent.learning_mutations import node_detail
+
+    with _profile_scope(profile):
+        res = node_detail(id)
+    if not res.get("ok"):
+        raise HTTPException(status_code=404, detail=res.get("message", "not found"))
+    return res
+
+
+@app.delete("/api/learning/node")
+async def delete_learning_node(body: LearningNodeRef):
+    """Delete a journey node — skills are archived (restorable), memories removed."""
+    from agent.learning_mutations import delete_node
+
+    with _profile_scope(body.profile):
+        res = delete_node(body.id)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("message", "delete failed"))
+    return res
+
+
+@app.put("/api/learning/node")
+async def update_learning_node(body: LearningNodeEdit):
+    """Rewrite a journey node's content (SKILL.md or memory chunk)."""
+    from agent.learning_mutations import edit_node
+
+    with _profile_scope(body.profile):
+        res = edit_node(body.id, body.content)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("message", "edit failed"))
+    return res
+
+
 def _safe_call(mod, fn_name: str, default):
     try:
         fn = getattr(mod, fn_name, None)
@@ -2867,8 +2999,15 @@ async def gateway_drain(request: Request):
             detail=f"Unknown drain action {action!r}; expected 'drain' or 'cancel'",
         )
 
-    payload = write_drain_request(principal=str(principal))
-    _log.info("Gateway drain BEGIN requested by %s", principal)
+    payload = write_drain_request(
+        principal=str(principal),
+        suppress_notification=bool((body or {}).get("suppress_notification", False)),
+    )
+    _log.info(
+        "Gateway drain BEGIN requested by %s (suppress_notification=%s)",
+        principal,
+        payload["suppress_notification"],
+    )
     return {
         "ok": True,
         "action": "drain",
@@ -2876,6 +3015,7 @@ async def gateway_drain(request: Request):
         # Echo so a caller polling /api/status knows the marker is now set;
         # the gateway watcher flips gateway_state -> draining within ~1s.
         "draining": drain_requested(),
+        "suppress_notification": payload["suppress_notification"],
     }
 
 
@@ -3429,7 +3569,7 @@ async def get_sessions(
 
 
 @app.get("/api/profiles/sessions")
-async def get_profiles_sessions(
+def get_profiles_sessions(
     limit: int = 20,
     offset: int = 0,
     min_messages: int = 0,
@@ -4706,6 +4846,25 @@ def _catalog_provider_env_metadata() -> dict:
                     "advanced": existing.get("advanced", True),
                     "category": "provider",
                 }
+
+        # Vertex AI authenticates via OAuth2 (service-account JSON or ADC), not a
+        # pasted API key, so it also has no api_key_env_vars. Tag its credential
+        # env var to the provider card so it appears on the Keys tab (otherwise
+        # Vertex — a `hermes model` provider — would be invisible in the desktop
+        # app). The value is a filesystem path, not a secret string, so it is
+        # not a password field.
+        if d.auth_type == "vertex":
+            existing = meta.get("VERTEX_CREDENTIALS_PATH", {})
+            meta["VERTEX_CREDENTIALS_PATH"] = {
+                "provider": d.slug,
+                "provider_label": d.label,
+                "description": existing.get("description")
+                or f"{d.label} — service account JSON path (or use ADC)",
+                "url": existing.get("url"),
+                "is_password": False,
+                "advanced": existing.get("advanced", True),
+                "category": "provider",
+            }
     return meta
 
 
@@ -4716,7 +4875,7 @@ async def get_env_vars(profile: Optional[str] = None):
     channel_keys = _channel_managed_env_keys()
     catalog_meta = _catalog_provider_env_metadata()
 
-    def _row(var_name: str, info: dict) -> dict:
+    def _row(var_name: str, info: dict, *, custom: bool = False) -> dict:
         value = env_on_disk.get(var_name)
         cat_meta = catalog_meta.get(var_name) or {}
         # Hand OPTIONAL_ENV_VARS prose wins where present; the catalog fills any
@@ -4739,6 +4898,12 @@ async def get_env_vars(profile: Optional[str] = None):
             # CLI `hermes model` picker uses (not desktop-only prefix guesses).
             "provider": cat_meta.get("provider", ""),
             "provider_label": cat_meta.get("provider_label", ""),
+            # True when this key exists in the user's .env but is NOT in any
+            # catalog (OPTIONAL_ENV_VARS or the provider catalog) — an
+            # arbitrary/custom env var the user added directly. Surfaced so the
+            # Keys page can list (and let the user manage) them instead of
+            # hiding everything it doesn't recognise.
+            "custom": custom,
         }
 
     result = {}
@@ -4750,6 +4915,19 @@ async def get_env_vars(profile: Optional[str] = None):
     for var_name in catalog_meta:
         if var_name not in result:
             result[var_name] = _row(var_name, {})
+    # Surface arbitrary/custom keys the user set in .env that aren't in any
+    # catalog. These are always "set" (they're on disk). Treated as secrets by
+    # default (is_password=True → redacted, reveal-gated) since an unrecognised
+    # key could hold anything. Channel-managed credentials are excluded — those
+    # belong to the Channels page. This makes the "add a custom key" surface
+    # round-trip: a key added there reappears here under its own section.
+    for var_name in env_on_disk:
+        if var_name in result or var_name in channel_keys:
+            continue
+        row = _row(var_name, {}, custom=True)
+        row["category"] = "custom"
+        row["is_password"] = True
+        result[var_name] = row
     return result
 
 
@@ -9631,17 +9809,63 @@ class BackupRequest(BaseModel):
     output: Optional[str] = None
 
 
+def _dashboard_backup_dir() -> Path:
+    return get_hermes_home() / "backups"
+
+
+def _new_dashboard_backup_path() -> Path:
+    stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+    return _dashboard_backup_dir() / f"hermes-backup-{stamp}-{secrets.token_hex(4)}.zip"
+
+
 @app.post("/api/ops/backup")
 async def run_backup(body: BackupRequest):
     args = ["backup"]
+    archive: Optional[Path] = None
     if body.output:
         args.append(body.output.strip())
+    else:
+        archive = _new_dashboard_backup_path()
+        try:
+            archive.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not create backup directory: {exc}",
+            )
+        args.append(str(archive))
     try:
         proc = _spawn_hermes_action(args, "backup")
     except Exception as exc:
         _log.exception("Failed to spawn backup")
         raise HTTPException(status_code=500, detail=f"Failed to run backup: {exc}")
-    return {"ok": True, "pid": proc.pid, "name": "backup"}
+    response = {"ok": True, "pid": proc.pid, "name": "backup"}
+    if archive is not None:
+        response["archive"] = str(archive)
+    return response
+
+
+@app.get("/api/ops/backup/download")
+async def download_dashboard_backup(archive: str):
+    try:
+        backup_dir = _dashboard_backup_dir().expanduser().resolve(strict=False)
+        target = Path(archive).expanduser().resolve(strict=True)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Backup not found")
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=400, detail="Invalid backup path")
+
+    if not _path_is_under(backup_dir, target):
+        raise HTTPException(status_code=403, detail="Backup is outside the dashboard backup directory")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Backup not found")
+
+    return FileResponse(
+        path=str(target),
+        media_type="application/zip",
+        filename=target.name,
+        content_disposition_type="attachment",
+    )
 
 
 class ImportRequest(BaseModel):
@@ -9672,6 +9896,94 @@ async def run_import(body: ImportRequest):
         _log.exception("Failed to spawn import")
         raise HTTPException(status_code=500, detail=f"Failed to run import: {exc}")
     return {"ok": True, "pid": proc.pid, "name": "import"}
+
+
+def _safe_backup_upload_name(filename: str | None) -> str:
+    name = Path(filename or "backup.zip").name.strip()
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip(".-")
+    if not name:
+        name = "backup.zip"
+    if not name.lower().endswith(".zip"):
+        name = f"{name}.zip"
+    return name
+
+
+@app.post("/api/ops/import-upload")
+async def run_import_upload(
+    file: UploadFile = File(...),
+    force: bool = Form(False),
+):
+    staging_dir = _dashboard_backup_dir()
+    try:
+        staging_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not create import staging directory: {exc}",
+        )
+
+    safe_name = _safe_backup_upload_name(file.filename)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    target = staging_dir / f"dashboard-import-{stamp}-{secrets.token_hex(4)}-{safe_name}"
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".upload",
+        dir=str(staging_dir),
+    )
+    tmp_path = Path(tmp_name)
+    total = 0
+    renamed = False
+    try:
+        with os.fdopen(tmp_fd, "wb") as out:
+            while True:
+                chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _MANAGED_FILE_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail="Archive is too large")
+                out.write(chunk)
+        os.replace(tmp_path, target)
+        renamed = True
+    except HTTPException:
+        raise
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail="Import staging directory is not writable",
+        )
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not write uploaded archive: {exc}",
+        )
+    finally:
+        if not renamed:
+            tmp_path.unlink(missing_ok=True)
+        await file.close()
+
+    if not zipfile.is_zipfile(target):
+        target.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded archive is not a valid zip file",
+        )
+
+    args = ["import", str(target)]
+    if force:
+        args.append("--force")
+    try:
+        proc = _spawn_hermes_action(args, "import")
+    except Exception as exc:
+        _log.exception("Failed to spawn import")
+        raise HTTPException(status_code=500, detail=f"Failed to run import: {exc}")
+    return {
+        "ok": True,
+        "pid": proc.pid,
+        "name": "import",
+        "archive": str(target),
+        "uploaded_bytes": total,
+    }
 
 
 @app.get("/api/ops/hooks")
@@ -10565,7 +10877,9 @@ def _disable_unselected_skills(profile_dir: Path, keep: List[str]) -> int:
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
     try:
-        return {"profiles": [_profile_to_dict(p) for p in profiles_mod.list_profiles()]}
+        loop = asyncio.get_running_loop()
+        profiles = await loop.run_in_executor(None, profiles_mod.list_profiles)
+        return {"profiles": [_profile_to_dict(p) for p in profiles]}
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
         return {"profiles": _fallback_profile_dicts(profiles_mod)}
@@ -13225,16 +13539,41 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
 
 @app.get("/api/dashboard/plugins")
 async def get_dashboard_plugins():
-    """Return discovered dashboard plugins (excludes user-hidden ones)."""
+    """Return discovered dashboard plugins (excludes user-hidden and non-enabled ones)."""
     plugins = _get_dashboard_plugins()
     # Read user's hidden plugins list from config.
     config = load_config()
     hidden: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
-    # Strip internal fields before sending to frontend and filter out hidden.
+    # Gate: only serve user plugins that are in plugins.enabled and not
+    # in plugins.disabled.  This prevents the frontend from loading JS/CSS
+    # from plugins the user has not explicitly activated.  (#46435)
+    try:
+        from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
+        enabled_set = _get_enabled_set()
+        disabled_set = _get_disabled_set()
+    except Exception:
+        enabled_set = set()
+        disabled_set = set()
+
+    def _is_active(p: dict) -> bool:
+        name = p.get("name", "")
+        if name in hidden:
+            return False
+        if p.get("source") == "user":
+            if name in disabled_set:
+                return False
+            if name not in enabled_set:
+                return False
+        elif p.get("source") == "bundled":
+            if name in disabled_set:
+                return False
+        return True
+
+    # Strip internal fields before sending to frontend.
     return [
         {k: v for k, v in p.items() if not k.startswith("_")}
         for p in plugins
-        if p["name"] not in hidden
+        if _is_active(p)
     ]
 
 
@@ -13531,11 +13870,30 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     allowlist, anyone on the loopback port can curl the ``.py`` source
     of a private third-party plugin. Reject everything outside the
     browser-asset set.
+
+    User plugins must be in plugins.enabled before their assets are
+    served. (#46435, GHSA-mcfc-hp25-cjv7)
     """
     plugins = _get_dashboard_plugins()
     plugin = next((p for p in plugins if p["name"] == plugin_name), None)
     if not plugin:
         raise HTTPException(status_code=404, detail="Plugin not found")
+
+    # Gate: user plugins must be enabled to serve assets;
+    # bundled plugins must not be explicitly disabled.
+    try:
+        from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
+        enabled_set = _get_enabled_set()
+        disabled_set = _get_disabled_set()
+    except Exception:
+        enabled_set = set()
+        disabled_set = set()
+    if plugin.get("source") == "user":
+        if plugin_name in disabled_set or plugin_name not in enabled_set:
+            raise HTTPException(status_code=404, detail="Plugin not found")
+    elif plugin.get("source") == "bundled":
+        if plugin_name in disabled_set:
+            raise HTTPException(status_code=404, detail="Plugin not found")
 
     base = Path(plugin["_dir"])
     target = (base / file_path).resolve()
@@ -13596,11 +13954,52 @@ def _mount_plugin_api_routes():
     opens a malicious repo; they can extend the dashboard UI via
     static JS/CSS but their Python ``api`` file is never auto-imported
     by the web server.  See GHSA-5qr3-c538-wm9j (#29156).
+
+    Additionally, user plugins must be explicitly enabled via the
+    ``plugins.enabled`` allow-list in config.yaml before their backend
+    code is imported. Without this gate, an installed-but-not-enabled
+    plugin's Python code would execute at dashboard startup — a code
+    execution vector that bypasses the user's intent. (#46435,
+    GHSA-mcfc-hp25-cjv7)
     """
+    # Load the enabled/disabled sets once for the loop.
+    try:
+        from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
+        enabled_set = _get_enabled_set()
+        disabled_set = _get_disabled_set()
+    except Exception:
+        enabled_set = set()
+        disabled_set = set()
+
     for plugin in _get_dashboard_plugins():
         api_file_name = plugin.get("_api_file")
         if not api_file_name:
             continue
+        plugin_name = plugin.get("name", "")
+        # Gate: user plugins must be in plugins.enabled and not in
+        # plugins.disabled before we import their Python code.
+        # Bundled plugins are trusted (they ship with the release) but
+        # still respect an explicit disable.
+        if plugin.get("source") == "user":
+            if plugin_name in disabled_set:
+                _log.debug(
+                    "Plugin %s: skipping API mount (explicitly disabled)",
+                    plugin_name,
+                )
+                continue
+            if plugin_name not in enabled_set:
+                _log.debug(
+                    "Plugin %s: skipping API mount (not in plugins.enabled)",
+                    plugin_name,
+                )
+                continue
+        elif plugin.get("source") == "bundled":
+            if plugin_name in disabled_set:
+                _log.debug(
+                    "Plugin %s: skipping API mount (explicitly disabled)",
+                    plugin_name,
+                )
+                continue
         if plugin.get("source") == "project":
             _log.warning(
                 "Plugin %s: ignoring backend api=%s (project plugins may "
@@ -13879,6 +14278,15 @@ def start_server(
     # For explicit non-zero ports, if the port is taken uvicorn catches
     # OSError inside create_server() and exits with a clear error — no
     # separate preflight probe needed.
+    # Loopback binds are the Desktop case: a single local client, no reverse
+    # proxy in front. A GIL-heavy agent turn can stall the event loop past 20s,
+    # and uvicorn's ws keepalive ping runs on that same starved loop — so a
+    # 20s ping timeout kills an otherwise-healthy local connection over a
+    # recoverable stall (QW-1). Give loopback a longer 60s timeout / 30s
+    # interval to ride out those stalls. Non-loopback binds sit behind a
+    # Cloudflare Tunnel (idle timeout ~100s), so keep them at 20/20 to detect
+    # half-open connections promptly and stay under the tunnel's idle window.
+    _is_loopback = host in ("127.0.0.1", "localhost", "::1")
     config = uvicorn.Config(
         app, host=host, port=port, log_level="warning",
         # proxy_headers defaults to False so _ws_client_is_allowed sees
@@ -13892,9 +14300,9 @@ def start_server(
         # Detect half-open WS connections (reverse-proxy 524, dropped
         # tunnels) within ~20-40s so WebSocketDisconnect fires the
         # disconnect→reap path.  20s stays under Cloudflare Tunnel's idle
-        # timeout, keeping it warm.
-        ws_ping_interval=20.0,
-        ws_ping_timeout=20.0,
+        # timeout, keeping it warm.  Loopback gets a longer window (see above).
+        ws_ping_interval=30.0 if _is_loopback else 20.0,
+        ws_ping_timeout=60.0 if _is_loopback else 20.0,
     )
     server = uvicorn.Server(config)
 
@@ -13929,6 +14337,35 @@ def start_server(
                 install_loop_noise_filter(asyncio.get_running_loop())
             except Exception as exc:  # pragma: no cover - best-effort
                 _log.debug("loop noise filter install skipped: %s", exc)
+
+            # ── Loop heartbeat watchdog (CF-1) ───────────────────────────
+            # Confirm the GIL-pressure hypothesis in production. Re-arm a 2s
+            # tick and measure the drift between when it *should* fire and
+            # when it actually does: a healthy loop drifts ~0, but a turn that
+            # holds the GIL blocks the loop and the next tick fires late by the
+            # stall duration. We log that so a stalled-loop WS drop is
+            # diagnosable from the gateway log. Uses loop.time() (monotonic)
+            # for drift, and call_later (not a task) so it dies with the loop —
+            # nothing to cancel on shutdown.
+            _hb_interval = 2.0
+            _hb_stall_threshold = 5.0
+            _hb_loop = asyncio.get_running_loop()
+
+            def _loop_heartbeat(expected: float) -> None:
+                now = _hb_loop.time()
+                drift = now - expected
+                if drift > _hb_stall_threshold:
+                    _log.warning(
+                        "event loop stalled %.1fs (GIL pressure suspected)",
+                        drift,
+                    )
+                _hb_loop.call_later(
+                    _hb_interval, _loop_heartbeat, now + _hb_interval
+                )
+
+            _hb_loop.call_later(
+                _hb_interval, _loop_heartbeat, _hb_loop.time() + _hb_interval
+            )
 
             await server.main_loop()
             if server.started:

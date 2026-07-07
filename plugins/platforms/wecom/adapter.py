@@ -1688,6 +1688,12 @@ async def _standalone_send(
     succeed when cron runs separately from the gateway. Opens an ephemeral
     WeComAdapter, connects, sends, and disconnects. Replaces the legacy
     _send_wecom helper.
+
+    Supports optional media_files: list of (path, is_voice) tuples emitted by
+    ``BasePlatformAdapter.extract_media``. Each file is uploaded via the
+    aibot_upload_media_* protocol and delivered as a native attachment after
+    any text body. force_document is accepted for interface symmetry but
+    ignored — WeCom picks the media type from the file extension itself.
     """
     if not check_wecom_requirements():
         return {"error": "WeCom requirements not met. Need aiohttp + WECOM_BOT_ID/SECRET."}
@@ -1697,14 +1703,36 @@ async def _standalone_send(
         if not connected:
             return {"error": f"WeCom: failed to connect - {getattr(adapter, 'fatal_error_message', None) or 'unknown error'}"}
         try:
-            result = await adapter.send(chat_id, message)
-            if not result.success:
-                return {"error": f"WeCom send failed: {result.error}"}
+            last_result = None
+            if message and message.strip():
+                last_result = await adapter.send(chat_id, message)
+                if not last_result.success:
+                    return {"error": f"WeCom send failed: {last_result.error}"}
+            if media_files:
+                import os as _os
+                for entry in media_files:
+                    # entry is (path, is_voice) — is_voice is a hint we ignore
+                    # for WeCom (its aibot pipeline handles voice via the same
+                    # upload flow, driven by file extension).
+                    if isinstance(entry, (tuple, list)):
+                        media_path = entry[0]
+                    else:
+                        media_path = entry
+                    media_result = await adapter._send_media_source(
+                        chat_id=chat_id,
+                        media_source=media_path,
+                        file_name=_os.path.basename(media_path),
+                    )
+                    if not media_result.success:
+                        return {"error": f"WeCom media send failed ({media_path}): {media_result.error}"}
+                    last_result = media_result
+            if last_result is None:
+                return {"error": "WeCom send failed: neither text nor media provided"}
             return {
                 "success": True,
                 "platform": "wecom",
                 "chat_id": chat_id,
-                "message_id": result.message_id,
+                "message_id": last_result.message_id,
             }
         finally:
             await adapter.disconnect()

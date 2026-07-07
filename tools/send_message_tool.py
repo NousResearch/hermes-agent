@@ -932,11 +932,38 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # WeCom: like WhatsApp, native media attachments require going through the
+    # plugin's standalone_sender_fn (which uploads via aibot_upload_media_*).
+    # If we fell through to the text-only path below, media_files would be
+    # dropped. Route media + text together here. #wecom-media-2026-07
+    if platform == Platform.WECOM and media_files:
+        from gateway.platform_registry import platform_registry as _pr_wc
+        from hermes_cli.plugins import discover_plugins as _dp_wc
+        _dp_wc()
+        _wc_entry = _pr_wc.get("wecom")
+        if _wc_entry is None or _wc_entry.standalone_sender_fn is None:
+            return {"error": "WeCom plugin not registered or missing standalone_sender_fn"}
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _wc_entry.standalone_sender_fn(
+                pconfig,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else None,
+                thread_id=thread_id,
+                force_document=force_document,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and wecom; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -944,7 +971,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and wecom"
         )
 
     last_result = None

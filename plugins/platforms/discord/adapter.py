@@ -2506,7 +2506,9 @@ class DiscordAdapter(BasePlatformAdapter):
                                         self.name, resp.status, image_url[:80],
                                     )
                                     continue
-                                data = await resp.read()
+                                data = await _read_response_bytes_bounded(
+                                    resp, _DISCORD_IMAGE_DOWNLOAD_MAX_BYTES
+                                )
                                 ct = resp.headers.get("content-type", "image/png")
                                 ext = "png"
                                 if "jpeg" in ct or "jpg" in ct:
@@ -3594,7 +3596,9 @@ class DiscordAdapter(BasePlatformAdapter):
                     if resp.status != 200:
                         raise Exception(f"Failed to download image: HTTP {resp.status}")
 
-                    image_data = await resp.read()
+                    image_data = await _read_response_bytes_bounded(
+                        resp, _DISCORD_IMAGE_DOWNLOAD_MAX_BYTES
+                    )
 
                     # Determine filename from URL or content type
                     content_type = resp.headers.get("content-type", "image/png")
@@ -3673,7 +3677,9 @@ class DiscordAdapter(BasePlatformAdapter):
                     if resp.status != 200:
                         raise Exception(f"Failed to download animation: HTTP {resp.status}")
 
-                    animation_data = await resp.read()
+                    animation_data = await _read_response_bytes_bounded(
+                        resp, _DISCORD_IMAGE_DOWNLOAD_MAX_BYTES
+                    )
 
                     import io
                     file = discord.File(io.BytesIO(animation_data), filename="animation.gif")
@@ -5988,7 +5994,9 @@ class DiscordAdapter(BasePlatformAdapter):
             ) as resp:
                 if resp.status != 200:
                     raise Exception(f"HTTP {resp.status}")
-                return await resp.read()
+                return await _read_response_bytes_bounded(
+                    resp, _DISCORD_ATTACHMENT_DOWNLOAD_MAX_BYTES
+                )
 
     async def _handle_message(self, message: DiscordMessage, role_authorized: bool = False) -> None:
         """Handle incoming Discord messages."""
@@ -7633,10 +7641,23 @@ if DISCORD_AVAILABLE:
 _DISCORD_CHANNEL_TYPE_PROBE_CACHE: Dict[str, bool] = {}
 _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES = 1 * 1024 * 1024
 _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES = 8 * 1024
+_DISCORD_IMAGE_DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024  # generous limit for images/animations
+_DISCORD_ATTACHMENT_DOWNLOAD_MAX_BYTES = 100 * 1024 * 1024  # generous for file attachments
 
 
 def _remember_channel_is_forum(chat_id: str, is_forum: bool) -> None:
     _DISCORD_CHANNEL_TYPE_PROBE_CACHE[str(chat_id)] = bool(is_forum)
+
+
+async def _read_response_bytes_bounded(resp: Any, limit_bytes: int) -> bytes:
+    """Read at most *limit_bytes* from an aiohttp response, raising on overflow."""
+    data = await resp.content.read(limit_bytes + 1)
+    if len(data) > limit_bytes:
+        resp.close()
+        raise ValueError(
+            f"Response body exceeded {limit_bytes} bytes ({len(data)} bytes read)"
+        )
+    return data
 
 
 def _probe_is_forum_cached(chat_id: str) -> Optional[bool]:

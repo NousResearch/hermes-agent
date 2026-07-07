@@ -2153,12 +2153,14 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 def text_to_speech_tool(
     text: str,
     output_path: Optional[str] = None,
+    provider_override: Optional[str] = None,
 ) -> str:
     """
     Convert text to speech audio.
 
-    Reads provider/voice config from ~/.hermes/config.yaml (tts: section).
-    The model sends text; the user configures voice and provider.
+    Reads provider/voice config from ~/.hermes/config.yaml (tts: section),
+    unless an internal caller passes provider_override. The model sends text;
+    the user configures voice and provider.
 
     On messaging platforms, the returned MEDIA:<path> tag is intercepted
     by the send pipeline and delivered as a native voice message.
@@ -2167,6 +2169,8 @@ def text_to_speech_tool(
     Args:
         text: The text to convert to speech.
         output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
+        provider_override: Optional internal provider override for system-owned
+            call sites that must not mutate global tts.provider.
 
     Returns:
         str: JSON result with success, file_path, and optionally MEDIA tag.
@@ -2175,7 +2179,8 @@ def text_to_speech_tool(
         return tool_error("Text is required", success=False)
 
     tts_config = _load_tts_config()
-    provider = _get_provider(tts_config)
+    override = str(provider_override).lower().strip() if provider_override else ""
+    provider = override or _get_provider(tts_config)
 
     # User-declared command provider (type: command under tts.providers.<name>)
     # resolves BEFORE the built-in dispatch. Built-in names short-circuit here

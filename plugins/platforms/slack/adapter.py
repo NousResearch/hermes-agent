@@ -1623,6 +1623,19 @@ class SlackAdapter(BasePlatformAdapter):
         tokens_file = get_hermes_home() / "slack_tokens.json"
         if tokens_file.exists():
             try:
+                # Warn if the token file is world- or group-readable — it
+                # contains plaintext bot tokens for all saved workspaces.
+                import stat as _stat
+
+                mode = tokens_file.stat().st_mode
+                if mode & (_stat.S_IRGRP | _stat.S_IROTH):
+                    logger.warning(
+                        "[Slack] %s is group/world-readable (mode 0%o). "
+                        "Run: chmod 600 %s",
+                        tokens_file.name,
+                        _stat.S_IMODE(mode),
+                        tokens_file,
+                    )
                 saved = json.loads(tokens_file.read_text(encoding="utf-8"))
                 for team_id, entry in saved.items():
                     tok = entry.get("token", "") if isinstance(entry, dict) else ""

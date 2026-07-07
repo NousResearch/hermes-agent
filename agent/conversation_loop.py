@@ -3147,16 +3147,13 @@ def run_conversation(
                     FailoverReason.timeout,
                     FailoverReason.overloaded,
                 }
-                # Z.AI Coding Plan GLM-5.2 signals server overload as HTTP 429
-                # code 1305 ("temporarily overloaded"). classify_api_error routes
-                # that to `overloaded` (not `rate_limit`) so the credential pool
-                # isn't burned on a valid key — but `overloaded` is excluded from
-                # `is_rate_limited`, which is exactly what gates the adaptive Z.AI
-                # backoff below. Detect the overload 429 directly so its adaptive
-                # long-backoff schedule still runs, and raise the retry ceiling so
-                # the long tier (30/60/90/120s) is actually reachable: the default
-                # ceiling equals the short-retry threshold, so the loop otherwise
-                # gives up after a few quick retries and the long tier is dead code.
+                # Z.AI Coding Plan GLM-5.2 overload 429s classify as
+                # `overloaded` (to spare the credential pool), but `overloaded`
+                # is excluded from `is_rate_limited` — the gate for the adaptive
+                # Z.AI backoff below. Detect the overload directly so its
+                # long-backoff schedule runs, and raise the retry ceiling so the
+                # long tier (30/60/90/120s) is reachable. See
+                # zai_coding_overload_retry_ceiling() for the ceiling rationale.
                 _is_zai_coding_overload = is_zai_coding_overload_error(
                     base_url=str(_base), model=_model, error=api_error
                 )

@@ -10,7 +10,7 @@ source beside sibling sessions.
 
 SHARED ON-DISK FORMAT CONTRACT (must match the script writer byte-for-byte):
     path:  $HERMES_HOME/state/topic-recent-posts/<platform>/<chat_id>/<thread_id>.json
-    shape: {"posts": [{"role", "text", "timestamp", "label", "source"}, ...]}
+    shape: {"posts": [{"role", "text", "timestamp", "label", "source", "context_text"?}, ...]}
 
 Read-only and defensive: returns ``[]`` on any error; never raises. Paths are
 resolved at CALL time (not import) so a relocated ``HERMES_HOME`` in tests is
@@ -80,12 +80,14 @@ def read_recent_bot_posts(
         text = row.get("text")
         if not isinstance(text, str) or not text.strip():
             continue
-        out.append(
-            {
-                "label": row.get("label") or "bot",
-                "role": row.get("role") or "assistant",
-                "text": text,
-                "timestamp": row.get("timestamp"),
-            }
-        )
+        item = {
+            "label": row.get("label") or "bot",
+            "role": row.get("role") or "assistant",
+            "text": text,
+            "timestamp": row.get("timestamp"),
+        }
+        context_text = row.get("context_text")
+        if isinstance(context_text, str) and context_text.strip():
+            item["context_text"] = context_text.strip()
+        out.append(item)
     return out

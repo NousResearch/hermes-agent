@@ -121,6 +121,47 @@ def test_dedup_across_log_and_session(temp_home):
     assert block.count("deploy finished") == 1
 
 
+def test_dedup_preserves_log_context_text(temp_home):
+    now = time.time()
+    _seed_session(temp_home, session_id="S1", chat_id="42", thread_id="7",
+                  user_id="a", user_name="Alice",
+                  messages=[{"role": "assistant", "content": "idea card", "timestamp": now - 50}])
+    _write_log(temp_home, "42", "7", [
+        {"role": "assistant", "text": "idea card", "context_text": "SOURCE PACKET",
+         "timestamp": now - 50, "label": "yt-disc-idea", "source": "bot-api"},
+    ])
+    block = topic_backfill.build_topic_backfill(
+        platform="telegram", chat_id="42", thread_id="7",
+        exclude_session_id="NEW", max_messages=15, max_age_hours=24)
+    assert block is not None
+    assert block.count("idea card") == 1
+    assert "SOURCE PACKET" in block
+
+
+def test_dedup_context_timestamp_participates_in_tail_cap(temp_home):
+    """A duplicate log row with context must not stay in an old slot and get capped away."""
+    now = time.time()
+    _seed_session(temp_home, session_id="S1", chat_id="42", thread_id="7",
+                  user_id="a", user_name="Alice",
+                  messages=[
+                      {"role": "assistant", "content": "idea card", "timestamp": now - 100},
+                      {"role": "assistant", "content": "middle one", "timestamp": now - 20},
+                      {"role": "assistant", "content": "middle two", "timestamp": now - 10},
+                  ])
+    _write_log(temp_home, "42", "7", [
+        {"role": "assistant", "text": "idea card", "context_text": "SOURCE PACKET",
+         "timestamp": now - 1, "label": "yt-disc-idea", "source": "bot-api"},
+    ])
+    block = topic_backfill.build_topic_backfill(
+        platform="telegram", chat_id="42", thread_id="7",
+        exclude_session_id="NEW", max_messages=2, max_age_hours=24)
+    assert block is not None
+    assert "SOURCE PACKET" in block
+    assert "idea card" in block
+    assert "middle two" in block
+    assert "middle one" not in block
+
+
 # (c) cache-prefix stability / single user turn  (d) role alternation
 def test_single_user_turn_and_alternation(temp_home):
     now = time.time()

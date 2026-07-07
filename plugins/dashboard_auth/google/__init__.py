@@ -180,12 +180,11 @@ class GoogleOAuthDashboardAuthProvider(DashboardAuthProvider):
         except httpx.RequestError as exc:
             raise ProviderError(f"Google token endpoint unreachable: {exc}") from exc
 
-        tokens = self._parse_token_response(response)
-        new_access_token = tokens.get("access_token")
-        if not new_access_token:
-            raise RefreshExpiredError("Google refresh response missing access_token")
-
         try:
+            tokens = self._parse_token_response(response)
+            new_access_token = tokens.get("access_token")
+            if not new_access_token:
+                raise RefreshExpiredError("Google refresh response missing access_token")
             claims = self._verify_access_token(new_access_token)
             return self._claims_to_session(
                 claims=claims,

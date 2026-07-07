@@ -1,16 +1,67 @@
 import { FitAddon } from '@xterm/addon-fit'
+import { SerializeAddon } from '@xterm/addon-serialize'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 
 import { triggerHaptic } from '@/lib/haptics'
+import { $filePreviewTarget, $previewTarget } from '@/store/preview'
+import { useTheme } from '@/themes/context'
 
-import { isAddSelectionShortcut, terminalSelectionAnchor, terminalSelectionLabel, terminalTheme } from './selection'
+import { $terminalInjection } from '../store'
+
+import { makeTerminalReader, registerTerminalReader } from './buffer'
+import {
+  isAddSelectionShortcut,
+  resolveSurfaceColor,
+  terminalSelectionAnchor,
+  terminalSelectionLabel,
+  terminalTheme
+} from './selection'
+import { closeTerminal, updateTerminalReviveBuffer } from './terminals'
+
+// How many scrollback lines to serialize for relaunch restore. Mirrors VS Code's
+// terminal.integrated.persistentSessionScrollback default; the store caps the
+// resulting string so a long line-wrapped buffer can't blow the storage budget.
+const PERSISTENT_SESSION_SCROLLBACK = 200
+
+// Leading-edge throttle window for capturing history. The first output after an
+// idle gap persists almost immediately (so `cmd; quit` is on disk before the
+// renderer tears down), then at most once per window while output streams.
+const SNAPSHOT_THROTTLE_MS = 750
+
+// True once the page/app is tearing down (Cmd+Q, Alt+F4, window close, reload).
+// App quit kills the PTYs from the main process, which fires onExit in the
+// renderer — but React skips effect cleanups on teardown, so the per-instance
+// `disposed` flag never flips. Without this guard those teardown exits would call
+// closeTerminal() and wipe the persisted terminal list right before relaunch
+// reads it. A real `exit`/Ctrl-D still closes the tab (flag stays false).
+let appTearingDown = false
+
+if (typeof window !== 'undefined') {
+  const markTearingDown = () => {
+    appTearingDown = true
+  }
+
+  window.addEventListener('pagehide', markTearingDown)
+  window.addEventListener('beforeunload', markTearingDown)
+}
 
 type TerminalStatus = 'closed' | 'open' | 'starting'
+
+// ⌘/Ctrl+L is a global shortcut, so a text selection in the file preview pane
+// lands in this handler with no xterm selection. Label those with the previewed
+// file's name instead of the shell, so the composer ref reads as a file quote
+// rather than a bogus "zsh:N lines".
+function previewSelectionLabel(): string {
+  const target = $filePreviewTarget.get() ?? $previewTarget.get()
+  const source = target?.path || target?.url || ''
+
+  return source.split(/[\\/]/).filter(Boolean).pop() || target?.label?.trim() || ''
+}
 
 const HERMES_PATHS_MIME = 'application/x-hermes-paths'
 
@@ -43,6 +94,14 @@ function readEscapeSequence(data: string, index: number) {
     }
   }
 
+  // Character-set and other short ESC forms are three bytes (e.g. ESC ( B).
+  // Treating only ESC+( as a sequence leaves the final selector ("B") as
+  // printable text, which disarms the initial prompt-gap stripper before it can
+  // eat the shell's leading newline.
+  if (['(', ')', '*', '+', '-', '.', '/'].includes(kind) && index + 2 < data.length) {
+    return data.slice(index, index + 3)
+  }
+
   return data.slice(index, Math.min(index + 2, data.length))
 }
 
@@ -64,10 +123,29 @@ function stripEscapeSequences(data: string) {
   return text
 }
 
-function isStartupSpacer(data: string) {
-  const text = stripEscapeSequences(data).replace(/[\s\r\n]/g, '')
+// Keep only the ANSI escape sequences from a chunk, dropping printable text. Lets
+// us apply control codes (e.g. a clear-screen) while discarding boot spacers and
+// zsh's reverse-video "%" partial-line marker.
+function keepEscapeSequences(data: string) {
+  let index = 0
+  let out = ''
 
-  return text === '' || text === '%'
+  while (index < data.length) {
+    if (data.charCodeAt(index) === 0x1b) {
+      const sequence = readEscapeSequence(data, index)
+
+      if (sequence) {
+        out += sequence
+        index += sequence.length
+
+        continue
+      }
+    }
+
+    index += 1
+  }
+
+  return out
 }
 
 function stripInitialPromptGap(data: string) {
@@ -90,9 +168,57 @@ function stripInitialPromptGap(data: string) {
   return prefix
 }
 
+// Trim the shell's trailing idle prompt from a serialized snapshot before it's
+// persisted. Without it, the saved buffer ends in the old prompt, so the next
+// launch replays it directly above the fresh shell's prompt ("double bar"). The
+// prompt is the short block after the last blank line (starship's add_newline
+// gap); only a short tail is dropped, so real command output is never trimmed and
+// configs without that blank line simply keep the historical prompt (no loss).
+function cleanReviveSnapshot(serialized: string): string {
+  const visible = (line: string) => stripEscapeSequences(line).replace(/[\s%]/g, '')
+  const lines = serialized.split(/\r?\n/)
+
+  while (lines.length && visible(lines[lines.length - 1]) === '') {
+    lines.pop()
+  }
+
+  let lastBlank = -1
+
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (visible(lines[i]) === '') {
+      lastBlank = i
+
+      break
+    }
+  }
+
+  // A prompt is a short block; a long tail after the blank is real output, leave it.
+  if (lastBlank >= 0 && lines.length - 1 - lastBlank <= 3) {
+    lines.length = lastBlank
+  }
+
+  return lines.join('\r\n')
+}
+
 interface UseTerminalSessionOptions {
+  /** Renderer-side terminal id (the tab handle), used to key the agent reader. */
+  id: string
   cwd: string
+  /** Only the active tab is visible, owns the agent reader, and runs injections. */
+  active: boolean
   onAddSelectionToChat: (text: string, label?: string) => void
+  /** Serialized scrollback from the previous session, replayed once on mount. */
+  reviveBuffer?: string
+  /** Reports the resolved shell name once the PTY is live (for the tab label). */
+  onShell?: (shell: string) => void
+}
+
+// Bind the palette to the live skin surface so the terminal blends with the app
+// (and the contrast clamp has a real background to work against).
+function withSurface(theme: ReturnType<typeof terminalTheme>) {
+  const surface = resolveSurfaceColor(theme.background ?? '#ffffff')
+
+  return { ...theme, background: surface, cursorAccent: surface }
 }
 
 function transferHasDropCandidates(t: DataTransfer): boolean {
@@ -183,14 +309,41 @@ function quotePathForShell(path: string, shellName: string): string {
   return `'${path.replace(/'/g, "'\\''")}'`
 }
 
-export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSessionOptions) {
+export function useTerminalSession({
+  id,
+  cwd,
+  active,
+  onAddSelectionToChat,
+  reviveBuffer,
+  onShell
+}: UseTerminalSessionOptions) {
+  // Key off renderedMode (the painted surface type), not resolvedMode (the
+  // clicked switch) — a skin can keep a light surface in "dark" mode, and we
+  // must match the surface or the ANSI palette inverts against it. themeName
+  // re-resolves the canvas surface on skin switches (same mode, new tint).
+  const { renderedMode, theme, themeName } = useTheme()
+  // Adopt the skin's ANSI palette when it ships one (imported VS Code themes do),
+  // matched to the painted variant; built-in skins carry none, so the terminal
+  // keeps its VS Code defaults. withSurface still owns the background, so this
+  // never touches transparency.
+  const ansiPalette = renderedMode === 'dark' ? (theme.darkTerminal ?? theme.terminal) : theme.terminal
+  const activeTheme = useMemo(() => terminalTheme(renderedMode, ansiPalette), [renderedMode, ansiPalette])
+  const initialThemeRef = useRef(activeTheme)
   const hostRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
+  const webglRef = useRef<WebglAddon | null>(null)
   const sessionIdRef = useRef<string | null>(null)
+  // Snapshot the revive buffer once: live snapshots feed updateTerminalReviveBuffer
+  // and would otherwise re-arm replay on every store-driven re-render.
+  const initialReviveBufferRef = useRef(reviveBuffer)
   const shellNameRef = useRef('shell')
   const selectionLabelRef = useRef('')
   const selectionRef = useRef('')
   const onAddSelectionToChatRef = useRef(onAddSelectionToChat)
+  const onShellRef = useRef(onShell)
+  // Re-fit on activation: a tab hidden via display:none has a 0×0 host, so its
+  // last fit is stale by the time it's shown again.
+  const fitRef = useRef<(() => void) | null>(null)
   const [status, setStatus] = useState<TerminalStatus>('starting')
   const [selection, setSelection] = useState('')
   const [selectionStyle, setSelectionStyle] = useState<CSSProperties | null>(null)
@@ -198,20 +351,32 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
 
   useEffect(() => {
     onAddSelectionToChatRef.current = onAddSelectionToChat
-  }, [onAddSelectionToChat])
+    onShellRef.current = onShell
+  }, [onAddSelectionToChat, onShell])
+
+  // Live selection at call time. A redraw-heavy TUI (spinners, clocks) outruns
+  // onSelectionChange, so trust xterm directly — fall back to the native
+  // selection — rather than the cached ref / React state.
+  const readSelection = useCallback(
+    () => termRef.current?.getSelection() || window.getSelection()?.toString() || '',
+    []
+  )
 
   const addSelectionToChat = useCallback(() => {
-    const selectedText = selectionRef.current || termRef.current?.getSelection() || ''
-
-    const label =
-      selectionLabelRef.current ||
-      (termRef.current ? terminalSelectionLabel(termRef.current, shellNameRef.current, selectedText) : 'selection')
-
+    const termSelection = (termRef.current?.getSelection() || selectionRef.current).trim()
+    const selectedText = termSelection || window.getSelection()?.toString() || ''
     const trimmed = selectedText.trim()
 
     if (!trimmed) {
       return
     }
+
+    // Terminal selection → shell-anchored label; anything else came from the
+    // preview pane sharing this global shortcut → label it with the file.
+    const label = termSelection
+      ? selectionLabelRef.current ||
+        (termRef.current ? terminalSelectionLabel(termRef.current, shellNameRef.current, selectedText) : 'selection')
+      : previewSelectionLabel() || 'selection'
 
     onAddSelectionToChatRef.current(trimmed, label)
     termRef.current?.clearSelection()
@@ -222,13 +387,12 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     triggerHaptic('selection')
   }, [])
 
+  // Always listen — gating on the React selection state misses selections the
+  // TUI redraw races. Only swallow ⌘/Ctrl+L when there's text to send, else it
+  // must reach the shell as clear-screen.
   useEffect(() => {
-    if (!selection.trim()) {
-      return
-    }
-
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!isAddSelectionShortcut(event)) {
+      if (!isAddSelectionShortcut(event) || !readSelection().trim()) {
         return
       }
 
@@ -240,7 +404,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     window.addEventListener('keydown', onKeyDown, { capture: true })
 
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
-  }, [addSelectionToChat, selection])
+  }, [addSelectionToChat, readSelection])
 
   useEffect(() => {
     const host = hostRef.current
@@ -258,36 +422,102 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
 
     const term = new Terminal({
       allowProposedApi: true,
-      allowTransparency: true,
+      // Opaque canvas = WebGL's crisp fast-path. allowTransparency instead bakes
+      // glyphs as grayscale-alpha for compositing over a see-through canvas, which
+      // reads soft on every platform; VS Code keeps it off and our surface
+      // (--ui-bg-chrome) is opaque anyway, so withSurface paints it solid.
+      allowTransparency: false,
       convertEol: true,
       cursorBlink: true,
-      fontFamily: "'SF Mono', 'Menlo', 'Cascadia Code', 'JetBrains Mono', monospace",
+      fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
       fontSize: 11,
+      // VS Code's terminal renders 'normal'/'bold' (400/700); we were using Medium
+      // (500) as the base, which reads a touch heavy at this size.
+      fontWeight: 'normal',
+      fontWeightBold: 'bold',
+      letterSpacing: 0,
       lineHeight: 1.12,
+      // Full-screen TUIs (hermes --tui, vim) grab the mouse, so a plain drag
+      // can't select — ⌥-drag (macOS) / Shift-drag (else) forces a native
+      // selection over mouse-mode apps, which ⌘/Ctrl+L then sends to chat.
+      macOptionClickForcesSelection: true,
       macOptionIsMeta: true,
+      // VS Code/Cursor's secret sauce: terminal.integrated.minimumContrastRatio
+      // defaults to 4.5 there. xterm defaults to 1 (off), which paints the raw
+      // saturated ANSI palette — vivid green/cyan on white reads as candy.
+      // Clamping to 4.5:1 darkens/lightens foregrounds against the background
+      // at render time, matching the muted ink-like look of their terminal.
+      minimumContrastRatio: 4.5,
       scrollback: 1000,
-      theme: terminalTheme()
+      theme: withSurface(initialThemeRef.current)
     })
 
     const fit = new FitAddon()
+    const serialize = new SerializeAddon()
 
     termRef.current = term
     term.loadAddon(fit)
+    term.loadAddon(serialize)
     term.loadAddon(new Unicode11Addon())
     term.loadAddon(new WebLinksAddon())
     term.unicode.activeVersion = '11'
-    term.open(host)
-    term.focus()
 
-    // WebGL renderer matches the dashboard ChatPage path; xterm's default DOM
-    // renderer paints SGR via CSS classes that visibly mute against our skins.
-    try {
-      const webgl = new WebglAddon()
-      webgl.onContextLoss(() => webgl.dispose())
-      term.loadAddon(webgl)
-    } catch (err) {
-      console.warn('[hermes-terminal] WebGL unavailable; falling back to DOM', err)
+    // Replay last session's scrollback before the fresh shell boots. The process
+    // is NOT revived — a new shell starts one line below the restored history.
+    // Stripping the boot gap still applies to the live shell output that follows,
+    // so the fresh prompt lands flush under the restored block.
+    const initialReviveBuffer = initialReviveBufferRef.current
+
+    if (initialReviveBuffer) {
+      term.write(initialReviveBuffer)
+      term.write('\r\n')
     }
+
+    // Capture the buffer on a leading-edge throttle and persist synchronously via
+    // the store. No unload hook: by the time the user quits, a recent snapshot is
+    // already on disk (the prior beforeunload-based attempt lost the last output).
+    let snapshotTimer = 0
+    let lastSnapshotAt = 0
+
+    const persistSnapshot = () => {
+      if (disposed) {
+        return
+      }
+
+      lastSnapshotAt = Date.now()
+
+      try {
+        const snapshot = serialize.serialize({ scrollback: PERSISTENT_SESSION_SCROLLBACK })
+        updateTerminalReviveBuffer(id, cleanReviveSnapshot(snapshot))
+      } catch {
+        // Best-effort restore: never let serialization break a live terminal.
+      }
+    }
+
+    const scheduleSnapshot = () => {
+      if (snapshotTimer) {
+        return
+      }
+
+      const elapsed = Date.now() - lastSnapshotAt
+
+      if (elapsed >= SNAPSHOT_THROTTLE_MS) {
+        persistSnapshot()
+
+        return
+      }
+
+      snapshotTimer = window.setTimeout(() => {
+        snapshotTimer = 0
+        persistSnapshot()
+      }, SNAPSHOT_THROTTLE_MS - elapsed)
+    }
+
+    cleanup.push(() => {
+      if (snapshotTimer) {
+        window.clearTimeout(snapshotTimer)
+      }
+    })
 
     const onDragOver = (e: DragEvent) => {
       if (!e.dataTransfer || !transferHasDropCandidates(e.dataTransfer)) {
@@ -328,6 +558,37 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       host.removeEventListener('drop', onDrop)
     })
 
+    // While armed, strip leading blank rows so the first prompt lands at the
+    // very top (no starship `add_newline` gap). Do this only on renderer output:
+    // never inject Ctrl-L or other cleanup keystrokes into the user's shell.
+    let stripLeading = true
+
+    const armedWrite = (data: string) => {
+      if (!stripLeading) {
+        term.write(data)
+
+        return
+      }
+
+      const next = stripInitialPromptGap(data)
+      const visible = stripEscapeSequences(next).replace(/[\s%]/g, '')
+
+      if (!visible) {
+        // Spacer / lone clear-screen / zsh `%` marker: apply control codes but
+        // drop the blank text and stay armed so the prompt still lands at top.
+        const controls = keepEscapeSequences(next)
+
+        if (controls) {
+          term.write(controls)
+        }
+
+        return
+      }
+
+      stripLeading = false
+      term.write(next)
+    }
+
     const fitAndResize = () => {
       if (disposed || !host.isConnected || host.clientWidth <= 0 || host.clientHeight <= 0) {
         return
@@ -346,6 +607,8 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
         void terminalApi.resize(id, { cols: term.cols, rows: term.rows })
       }
     }
+
+    fitRef.current = fitAndResize
 
     // Coalesce ResizeObserver bursts through rAF — running fit.fit()
     // synchronously while sibling panes are mid-transition (e.g. file browser
@@ -396,87 +659,102 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
 
     cleanup.push(() => selectionDisposable.dispose())
 
-    term.attachCustomKeyEventHandler(event => {
-      if (event.type !== 'keydown') {
-        return true
-      }
+    const startSession = () =>
+      void terminalApi
+        .start({ cols: term.cols, cwd, rows: term.rows })
+        .then(session => {
+          if (disposed) {
+            void terminalApi.dispose(session.id)
 
-      if (isAddSelectionShortcut(event) && term.hasSelection()) {
-        event.preventDefault()
-        addSelectionToChat()
+            return
+          }
 
-        return false
-      }
+          sessionIdRef.current = session.id
+          lastSentSize = { cols: term.cols, rows: term.rows }
+          shellNameRef.current = session.shell || 'shell'
+          setShellName(session.shell || 'shell')
+          onShellRef.current?.(session.shell || 'shell')
 
-      return true
-    })
+          const initial = term.hasSelection() ? term.getSelection() : ''
+          selectionRef.current = initial
+          selectionLabelRef.current = initial ? terminalSelectionLabel(term, shellNameRef.current, initial) : ''
 
-    fitAndResize()
+          setStatus('open')
 
-    void terminalApi
-      .start({ cols: term.cols, cwd, rows: term.rows })
-      .then(session => {
-        if (disposed) {
-          void terminalApi.dispose(session.id)
+          cleanup.push(
+            terminalApi.onData(session.id, data => {
+              armedWrite(data)
+              scheduleSnapshot()
+            }),
+            terminalApi.onExit(session.id, () => {
+              // Shell exited (`exit` / Ctrl-D / crash) — drop the tab like a real
+              // terminal. closeTerminal hides the pane when it's the last one.
+              // Skip if we're tearing down (cleanup disposes the PTY) OR the app
+              // is quitting/reloading: on quit the main process kills every PTY,
+              // firing this exit, but React skips the cleanup so `disposed` stays
+              // false — running closeTerminal here would wipe the persisted tabs
+              // right before relaunch restores them.
+              if (!disposed && !appTearingDown) {
+                closeTerminal(id)
+              }
+            })
+          )
 
-          return
-        }
-
-        sessionIdRef.current = session.id
-        lastSentSize = { cols: term.cols, rows: term.rows }
-        shellNameRef.current = session.shell || 'shell'
-        setShellName(session.shell || 'shell')
-
-        if (term.hasSelection()) {
-          const currentSelection = term.getSelection()
-          selectionRef.current = currentSelection
-          selectionLabelRef.current = terminalSelectionLabel(term, shellNameRef.current, currentSelection)
-        } else {
-          selectionRef.current = ''
-          selectionLabelRef.current = ''
-        }
-
-        setStatus('open')
-        let wrotePromptContent = false
-
-        cleanup.push(
-          terminalApi.onData(session.id, data => {
-            if (wrotePromptContent) {
-              term.write(data)
-
-              return
-            }
-
-            if (isStartupSpacer(data)) {
-              return
-            }
-
-            const next = stripInitialPromptGap(data)
-
-            if (next) {
-              wrotePromptContent = true
-              term.write(next)
-            }
-          }),
-          terminalApi.onExit(session.id, sessionExit => {
-            const { code, signal } = sessionExit
-            setStatus('closed')
-            term.write(`\r\n[terminal exited${signal ? `: ${signal}` : code !== null ? `: ${code}` : ''}]\r\n`)
+          window.requestAnimationFrame(() => {
+            fitAndResize()
+            term.clearSelection() // drop any selection painted over transient boot rows
+            term.focus()
           })
-        )
-        window.requestAnimationFrame(() => {
-          fitAndResize()
-          term.focus()
         })
-      })
-      .catch(error => {
-        setStatus('closed')
-        term.write(`Terminal failed to start: ${error instanceof Error ? error.message : String(error)}\r\n`)
-      })
+        .catch(error => {
+          setStatus('closed')
+          term.write(`Terminal failed to start: ${error instanceof Error ? error.message : String(error)}\r\n`)
+        })
+
+    // Open + fit + start only once webfonts settle. Fitting with fallback metrics
+    // picks the wrong row count, the shell boots at that size, then the real font
+    // loads -> refit -> SIGWINCH -> the shell reprints its prompt lower, leaving
+    // stale blank rows (and a stray selection) above it.
+    const mount = () => {
+      if (disposed || !host.isConnected) {
+        return
+      }
+
+      term.open(host)
+      term.focus()
+
+      // WebGL renderer matches the dashboard ChatPage path; xterm's default DOM
+      // renderer paints SGR via CSS classes that visibly mute against our skins.
+      try {
+        const webgl = new WebglAddon()
+        webgl.onContextLoss(() => {
+          webgl.dispose()
+          webglRef.current = null
+        })
+        term.loadAddon(webgl)
+        webglRef.current = webgl
+      } catch (err) {
+        console.warn('[hermes-terminal] WebGL unavailable; falling back to DOM', err)
+      }
+
+      fitAndResize()
+      startSession()
+    }
+
+    // fonts.ready settles only already-requested faces; the regular (400),
+    // bold (700) and italic aren't asked for until styled output paints (past
+    // atlas init), so warm them up front — otherwise the WebGL atlas bakes a
+    // fallback face and the terminal renders thin until a repaint.
+    const warm = document.fonts?.load
+      ? Promise.allSettled(['400', '700', 'italic 400'].map(v => document.fonts.load(`${v} 11px 'JetBrains Mono'`)))
+      : Promise.resolve()
+
+    void warm.then(mount, mount)
 
     return () => {
       disposed = true
       cleanup.forEach(run => run())
+      fitRef.current = null
 
       const id = sessionIdRef.current
       sessionIdRef.current = null
@@ -487,11 +765,92 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
 
       term.dispose()
       termRef.current = null
+      webglRef.current = null
       shellNameRef.current = 'shell'
       selectionRef.current = ''
       selectionLabelRef.current = ''
     }
-  }, [addSelectionToChat, cwd])
+    // `id` is stable for the instance's life (keyed by tab id), so listing it
+    // doesn't re-create the shell — it just satisfies the deps check for the
+    // closeTerminal(id) call in onExit.
+  }, [addSelectionToChat, cwd, id])
+
+  useEffect(() => {
+    const term = termRef.current
+
+    if (!term) {
+      return
+    }
+
+    // Re-resolve the surface in a rAF: ThemeProvider's applyTheme repaints the
+    // CSS vars in a sibling effect that runs after this one, so reading now
+    // would lag a mode behind. By the next frame the vars are current.
+    const raf = requestAnimationFrame(() => {
+      term.options.theme = withSurface(activeTheme)
+      // The WebGL renderer caches glyph colors in a texture atlas, so a
+      // light/dark switch leaves already-drawn cells stale until the atlas is
+      // cleared. No-op for the DOM fallback.
+      webglRef.current?.clearTextureAtlas()
+    })
+
+    return () => cancelAnimationFrame(raf)
+  }, [activeTheme, themeName])
+
+  // Expose this terminal's buffer to the agent's `read_terminal` tool, keyed by
+  // id. The tab selection (setActiveTerminalId) decides which one it reads, so
+  // every live terminal stays registered regardless of visibility.
+  useEffect(() => {
+    if (status !== 'open') {
+      return
+    }
+
+    const term = termRef.current
+
+    return term ? registerTerminalReader(id, makeTerminalReader(term)) : undefined
+  }, [id, status])
+
+  // On (re)activation: a WebGL terminal doesn't paint while visibility:hidden, so
+  // it reveals a stale/garbled frame. Refit, rebuild the glyph atlas, and force a
+  // full redraw against the live buffer, then focus.
+  useEffect(() => {
+    if (!active || status !== 'open') {
+      return
+    }
+
+    const frame = requestAnimationFrame(() => {
+      const term = termRef.current
+
+      fitRef.current?.()
+      webglRef.current?.clearTextureAtlas()
+      term?.refresh(0, term.rows - 1)
+      term?.focus()
+    })
+
+    return () => cancelAnimationFrame(frame)
+  }, [active, status])
+
+  // Flush a queued command (e.g. a provider-disconnect) into the live session.
+  // Only the active tab runs it (so a broadcast doesn't fan out to every shell);
+  // the subscribe fires immediately, so a command set before this pane mounted
+  // runs as soon as the session is ready. Cleared after writing so a later
+  // remount can't replay a stale command.
+  useEffect(() => {
+    if (!active || status !== 'open') {
+      return
+    }
+
+    return $terminalInjection.subscribe(command => {
+      const sessionId = sessionIdRef.current
+
+      if (!command || !sessionId) {
+        return
+      }
+
+      void window.hermesDesktop?.terminal?.write(sessionId, `${command}\r`)
+      $terminalInjection.set(null)
+      termRef.current?.focus()
+    })
+  }, [active, status])
 
   return {
     addSelectionToChat,

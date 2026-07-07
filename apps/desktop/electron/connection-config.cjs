@@ -131,6 +131,74 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps = {}) {
   return buildGatewayWsUrl(baseUrl, token)
 }
 
+// Normalize a profile name to a connection scope key, or null for the global
+// (default) connection. Shared by the resolver and the IPC layer.
+function connectionScopeKey(profile) {
+  return String(profile ?? '').trim() || null
+}
+
+// Coerce a remote auth mode to one of the two supported values ('token' default).
+function normAuthMode(mode) {
+  return mode === 'oauth' ? 'oauth' : 'token'
+}
+
+/**
+ * Select a profile's explicit remote override from a connection config, or null
+ * when it has none (so the caller falls back to env → global remote → local).
+ *
+ * The config may carry a `profiles` map keyed by name; an entry counts as an
+ * override only with `mode === 'remote'` and a non-empty `url`. Pure: `token`
+ * is the raw stored secret; main.cjs decrypts it. Returns
+ * `{ url, authMode, token } | null`.
+ */
+function profileRemoteOverride(config, profile) {
+  const key = connectionScopeKey(profile)
+  const entry = key ? config?.profiles?.[key] : null
+  if (!entry || typeof entry !== 'object' || entry.mode !== 'remote') {
+    return null
+  }
+
+  const url = String(entry.url || '').trim()
+  if (!url) {
+    return null
+  }
+
+  return { url, authMode: normAuthMode(entry.authMode), token: entry.token }
+}
+
+/**
+ * In global-remote mode one backend serves every Desktop profile, so REST calls
+ * that are scoped by renderer-side `request.profile` must carry that scope as a
+ * query parameter. Local pooled backends and per-profile remote overrides do not
+ * need this: they already run against a backend scoped to the target profile.
+ */
+function pathWithGlobalRemoteProfile(path, profile, opts = {}) {
+  const scopedProfile = connectionScopeKey(profile)
+  if (!scopedProfile || !opts.globalRemote || opts.profileRemoteOverride) {
+    return path
+  }
+
+  const rawPath = String(path || '')
+  if (!rawPath) {
+    return path
+  }
+
+  let parsed
+  try {
+    parsed = new URL(rawPath, 'http://hermes.local')
+  } catch {
+    return path
+  }
+
+  if (parsed.searchParams.has('profile')) {
+    return path
+  }
+
+  parsed.searchParams.set('profile', scopedProfile)
+
+  return `${parsed.pathname}${parsed.search}${parsed.hash}`
+}
+
 function tokenPreview(value) {
   const raw = String(value || '')
 
@@ -193,12 +261,7 @@ function cookiesHaveSession(cookies) {
  */
 function cookiesHaveLiveSession(cookies) {
   if (!Array.isArray(cookies)) return false
-  return cookies.some(
-    c =>
-      c &&
-      c.value &&
-      (AT_COOKIE_VARIANTS.includes(c.name) || RT_COOKIE_VARIANTS.includes(c.name))
-  )
+  return cookies.some(c => c && c.value && (AT_COOKIE_VARIANTS.includes(c.name) || RT_COOKIE_VARIANTS.includes(c.name)))
 }
 
 module.exports = {
@@ -207,9 +270,13 @@ module.exports = {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,
+  normAuthMode,
   normalizeRemoteBaseUrl,
+  pathWithGlobalRemoteProfile,
+  profileRemoteOverride,
   resolveAuthMode,
   resolveTestWsUrl,
   tokenPreview

@@ -743,6 +743,48 @@ def _read_dm_role_auth_guild() -> Optional[int]:
     return guild_id if guild_id > 0 else None
 
 
+# Default timeout for Discord interactive button views (exec approval, slash
+# confirm, update prompt, clarify choice). Used when the user has not set
+# ``approvals.discord_prompt_timeout`` in config.yaml. 300s (5 min) matches
+# the previous hardcoded value. Bounded to a sane range — Discord
+# interaction tokens expire from the API's side at ~15 minutes, so 900s is
+# the practical ceiling.
+_DISCORD_PROMPT_TIMEOUT_DEFAULT = 300
+_DISCORD_PROMPT_TIMEOUT_MIN = 30
+_DISCORD_PROMPT_TIMEOUT_MAX = 900
+
+
+def _read_discord_prompt_timeout() -> int:
+    """Return the timeout (in seconds) for Discord button views.
+
+    Reads ``approvals.discord_prompt_timeout`` from config.yaml. Falls back
+    to the historical 300s default for any missing / malformed value, and
+    clamps the result to ``[_DISCORD_PROMPT_TIMEOUT_MIN,
+    _DISCORD_PROMPT_TIMEOUT_MAX]`` so a typo can't accidentally make
+    interactive prompts disappear (too short) or outlive Discord's own
+    15-minute interaction-token expiry (too long).
+    """
+    raw: Any = None
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config() or {}
+        approvals_cfg = cfg.get("approvals", {}) or {}
+        raw = approvals_cfg.get("discord_prompt_timeout")
+    except Exception:
+        return _DISCORD_PROMPT_TIMEOUT_DEFAULT
+    if raw is None or raw == "":
+        return _DISCORD_PROMPT_TIMEOUT_DEFAULT
+    try:
+        seconds = int(raw)
+    except (TypeError, ValueError):
+        return _DISCORD_PROMPT_TIMEOUT_DEFAULT
+    if seconds < _DISCORD_PROMPT_TIMEOUT_MIN:
+        return _DISCORD_PROMPT_TIMEOUT_MIN
+    if seconds > _DISCORD_PROMPT_TIMEOUT_MAX:
+        return _DISCORD_PROMPT_TIMEOUT_MAX
+    return seconds
+
+
 class DiscordAdapter(BasePlatformAdapter):
     """
     Discord bot adapter.
@@ -5336,6 +5378,29 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return None
 
+    def _self_contained_prompt_content(
+        self, header: str, body: str, *, code_block: bool = False, tail: str = ""
+    ) -> str:
+        """Build plain message content that mirrors an embed's payload.
+
+        Discord embeds can be invisible or visually separated from the
+        component row on some clients (notably web/mobile), so interactive
+        prompts must carry their payload in plain ``content`` next to the
+        buttons. The embed stays as progressive enhancement.
+        """
+        body = str(body or "")
+        if code_block:
+            prefix = f"{header}\n```bash\n"
+            suffix = f"\n```{tail}"
+        else:
+            prefix = f"{header}\n\n"
+            suffix = tail
+        truncated_suffix = "\n... [truncated]"
+        budget = max(0, self.MAX_MESSAGE_LENGTH - len(prefix) - len(suffix))
+        if len(body) > budget:
+            body = body[: max(0, budget - len(truncated_suffix))] + truncated_suffix
+        return f"{prefix}{body}{suffix}"
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -5360,15 +5425,44 @@ class DiscordAdapter(BasePlatformAdapter):
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
 
-            # Discord embed description limit is 4096; show full command up to that
-            max_desc = 4088
-            cmd_display = command if len(command) <= max_desc else command[: max_desc - 3] + "..."
+            # Keep the approval request self-contained in plain message content.
+            # Discord embeds can be invisible or visually separated from the
+            # component row on some clients (notably web/mobile), so the actual
+            # command and reason must be visible in the same content block as
+            # the approval buttons.
+            reason_budget = 300
+            reason_display = str(description or "dangerous command")
+            if len(reason_display) > reason_budget:
+                reason_display = reason_display[: reason_budget - 15] + "... [truncated]"
+
+            prompt_prefix = (
+                "⚠️ **Command Approval Required**\n\n"
+                "Do you want Hermes to run this command?\n\n"
+                "**Requested command:**\n```bash\n"
+            )
+            prompt_tail = f"\n```\n**Reason:** {reason_display}"
+            truncated_suffix = "\n... [truncated]"
+            command_budget = max(0, self.MAX_MESSAGE_LENGTH - len(prompt_prefix) - len(prompt_tail))
+            content_cmd_display = str(command or "")
+            if len(content_cmd_display) > command_budget:
+                content_cmd_display = (
+                    content_cmd_display[: max(0, command_budget - len(truncated_suffix))]
+                    + truncated_suffix
+                )
+            content = f"{prompt_prefix}{content_cmd_display}{prompt_tail}"
+
+            # Preserve the richer embed path and its larger description budget
+            # for clients where embeds render correctly.
+            max_embed_desc = 4088
+            embed_cmd_display = str(command or "")
+            if len(embed_cmd_display) > max_embed_desc:
+                embed_cmd_display = embed_cmd_display[: max_embed_desc - 3] + "..."
             embed = discord.Embed(
                 title="⚠️ Command Approval Required",
-                description=f"```\n{cmd_display}\n```",
+                description=f"```\n{embed_cmd_display}\n```",
                 color=discord.Color.orange(),
             )
-            embed.add_field(name="Reason", value=description, inline=False)
+            embed.add_field(name="Reason", value=reason_display, inline=False)
 
             require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(
                 getattr(self.config, "extra", None)
@@ -5381,7 +5475,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 admin_user_ids=admin_user_ids,
             )
 
-            msg = await channel.send(embed=embed, view=view)
+            msg = await channel.send(content=content, embed=embed, view=view)
             view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))
 
@@ -5413,6 +5507,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 description=body,
                 color=discord.Color.orange(),
             )
+            # Mirror the payload in plain content — embeds are invisible on
+            # some clients (see send_exec_approval).
+            content = self._self_contained_prompt_content(
+                f"**{title or 'Confirm'}**", message
+            )
 
             view = SlashConfirmView(
                 session_key=session_key,
@@ -5421,7 +5520,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_role_ids=self._allowed_role_ids,
             )
 
-            msg = await channel.send(embed=embed, view=view)
+            msg = await channel.send(content=content, embed=embed, view=view)
             view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
@@ -5535,7 +5634,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 view = None
 
-            msg = await channel.send(embed=embed, view=view) if view else await channel.send(embed=embed)
+            # Mirror the question in plain content — embeds are invisible on
+            # some clients (see send_exec_approval).
+            clarify_tail = (
+                "\n\nPick one below, or click ✏️ Other to type a custom answer."
+                if clean_choices
+                else "\n\nReply in this channel with your answer."
+            )
+            content = self._self_contained_prompt_content(
+                "❓ **Hermes needs your input**", str(question or "").strip(),
+                tail=clarify_tail,
+            )
+            msg = await channel.send(content=content, embed=embed, view=view) if view else await channel.send(content=content, embed=embed)
             if view:
                 view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))
@@ -5572,7 +5682,12 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
             )
-            msg = await channel.send(embed=embed, view=view)
+            # Mirror the prompt in plain content — embeds are invisible on
+            # some clients (see send_exec_approval).
+            content = self._self_contained_prompt_content(
+                "⚕ **Update Needs Your Input**", f"{prompt}{default_hint}"
+            )
+            msg = await channel.send(content=content, embed=embed, view=view)
             view._message = msg  # store for on_timeout expiration editing
             if _metadata_marks_nonconversational(metadata):
                 self._nonconversational_messages.mark_many([str(msg.id)])
@@ -6543,7 +6658,7 @@ def _define_discord_view_classes() -> None:
             require_admin: bool = False,
             admin_user_ids: Optional[set] = None,
         ):
-            super().__init__(timeout=300)  # 5-minute timeout
+            super().__init__(timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
@@ -6697,7 +6812,7 @@ def _define_discord_view_classes() -> None:
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
         ):
-            super().__init__(timeout=300)
+            super().__init__(timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
             self.confirm_id = confirm_id
             self.allowed_user_ids = allowed_user_ids
@@ -6802,7 +6917,7 @@ def _define_discord_view_classes() -> None:
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
         ):
-            super().__init__(timeout=300)
+            super().__init__(timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
@@ -7235,7 +7350,7 @@ def _define_discord_view_classes() -> None:
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
         ):
-            super().__init__(timeout=300)  # 5-minute timeout
+            super().__init__(timeout=_read_discord_prompt_timeout())
             self.choices = list(choices)[:24]
             self.clarify_id = clarify_id
             self.allowed_user_ids = allowed_user_ids

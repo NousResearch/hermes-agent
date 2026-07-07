@@ -556,6 +556,11 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     try:
         return str(identifier_path.resolve().relative_to(primary_root.resolve()))
     except Exception:
+        logger.debug(
+            "Skill identifier %r is an absolute path outside trusted skills "
+            "roots — passing through unchanged (skill_view will reject it)",
+            raw_identifier,
+        )
         return raw_identifier
 
 

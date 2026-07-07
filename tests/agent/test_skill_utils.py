@@ -339,7 +339,7 @@ class TestNormalizeSkillLookupName:
     def test_relative_path_unchanged(self, tmp_path, monkeypatch):
         from agent.skill_utils import normalize_skill_lookup_name
 
-        monkeypatch.setattr("agent.skill_utils.get_skills_dir", lambda: tmp_path / "skills")
+        # Relative identifiers early-return before any root lookup.
         assert normalize_skill_lookup_name("foo/bar") == "foo/bar"
 
     def test_absolute_under_skills_dir_becomes_relative(self, tmp_path, monkeypatch):

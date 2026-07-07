@@ -23,10 +23,10 @@ def test_sessions_export_md_writes_single_session(monkeypatch, tmp_path, capsys)
             }
 
         def delete_session(self, *args, **kwargs):
-            raise AssertionError("export-md must not delete sessions")
+            raise AssertionError("markdown export must not delete sessions")
 
         def prune_sessions(self, *args, **kwargs):
-            raise AssertionError("export-md must not prune sessions")
+            raise AssertionError("markdown export must not prune sessions")
 
         def close(self):
             captured["closed"] = True
@@ -38,10 +38,11 @@ def test_sessions_export_md_writes_single_session(monkeypatch, tmp_path, capsys)
         [
             "hermes",
             "sessions",
-            "export-md",
+            "export",
+            "--format",
+            "md",
             "--session-id",
             "20260706_123456",
-            "--output",
             str(tmp_path),
         ],
     )
@@ -87,10 +88,11 @@ def test_sessions_export_md_reports_unknown_session(monkeypatch, tmp_path, capsy
         [
             "hermes",
             "sessions",
-            "export-md",
+            "export",
+            "--format",
+            "md",
             "--session-id",
             "missing",
-            "--output",
             str(output_dir),
         ],
     )
@@ -123,13 +125,12 @@ def test_sessions_export_md_supports_qmd_format(monkeypatch, tmp_path, capsys):
         [
             "hermes",
             "sessions",
-            "export-md",
+            "export",
             "--session-id",
             "s1",
-            "--output",
-            str(tmp_path),
             "--format",
             "qmd",
+            str(tmp_path),
         ],
     )
 
@@ -137,6 +138,48 @@ def test_sessions_export_md_supports_qmd_format(monkeypatch, tmp_path, capsys):
 
     assert len(list(tmp_path.glob("*.qmd"))) == 1
     assert "Exported 1 session" in capsys.readouterr().out
+
+
+def test_sessions_export_md_rejects_stdout_target(monkeypatch, tmp_path, capsys):
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    class FakeDB:
+        def resolve_session_id(self, session_id):
+            raise AssertionError("md export to stdout must be refused before DB access")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "sessions", "export", "--format", "md", "--session-id", "s1", "-"],
+    )
+
+    main_mod.main()
+
+    assert "only supported with --format jsonl" in capsys.readouterr().out
+
+
+def test_sessions_export_jsonl_requires_output_path(monkeypatch, capsys):
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    class FakeDB:
+        def export_all(self, **kwargs):
+            raise AssertionError("jsonl export without an output path must be refused")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(sys, "argv", ["hermes", "sessions", "export"])
+
+    main_mod.main()
+
+    assert "requires an output path" in capsys.readouterr().out
 
 
 def test_sessions_export_md_bulk_dry_run_lists_candidates(monkeypatch, tmp_path, capsys):
@@ -158,14 +201,15 @@ def test_sessions_export_md_bulk_dry_run_lists_candidates(monkeypatch, tmp_path,
         [
             "hermes",
             "sessions",
-            "export-md",
+            "export",
+            "--format",
+            "md",
             "--older-than",
             "30",
             "--source",
             "cron",
-            "--output",
-            str(tmp_path),
             "--dry-run",
+            str(tmp_path),
         ],
     )
 
@@ -193,7 +237,7 @@ def test_sessions_export_md_bulk_requires_filter(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["hermes", "sessions", "export-md", "--output", str(tmp_path)],
+        ["hermes", "sessions", "export", "--format", "md", str(tmp_path)],
     )
 
     main_mod.main()
@@ -222,13 +266,14 @@ def test_sessions_export_md_bulk_writes_manifest(monkeypatch, tmp_path, capsys):
         [
             "hermes",
             "sessions",
-            "export-md",
+            "export",
+            "--format",
+            "md",
             "--older-than",
             "90",
-            "--output",
-            str(tmp_path),
             "--lineage",
             "logical",
+            str(tmp_path),
         ],
     )
 
@@ -257,12 +302,13 @@ def test_sessions_export_md_delete_after_verified_requires_yes(monkeypatch, tmp_
         [
             "hermes",
             "sessions",
-            "export-md",
+            "export",
+            "--format",
+            "md",
             "--session-id",
             "s1",
-            "--output",
-            str(tmp_path),
             "--delete-after-verified",
+            str(tmp_path),
         ],
     )
 
@@ -298,13 +344,14 @@ def test_sessions_export_md_delete_after_verified_deletes_after_file_check(monke
         [
             "hermes",
             "sessions",
-            "export-md",
+            "export",
+            "--format",
+            "md",
             "--session-id",
             "s1",
-            "--output",
-            str(tmp_path),
             "--delete-after-verified",
             "--yes",
+            str(tmp_path),
         ],
     )
 

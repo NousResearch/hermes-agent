@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-EXPORTER_VERSION = "hermes sessions export-md v1"
+EXPORTER_VERSION = "hermes sessions export (md/qmd) v1"
 _SHA_LINE_RE = re.compile(r"- SHA256 of exported body: `([0-9a-f]{64})`")
 
 

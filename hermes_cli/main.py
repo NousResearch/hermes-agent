@@ -13434,46 +13434,54 @@ def main():
     )
 
     sessions_export = sessions_subparsers.add_parser(
-        "export", help="Export sessions to a JSONL file"
+        "export", help="Export sessions to JSONL, Markdown, or QMD"
     )
     sessions_export.add_argument(
-        "output", help="Output JSONL file path (use - for stdout)"
+        "output",
+        nargs="?",
+        help=(
+            "Output path. JSONL: file path (use - for stdout, required). "
+            "md/qmd: output directory (default: <hermes home>/session-exports)"
+        ),
+    )
+    sessions_export.add_argument(
+        "--format",
+        choices=["jsonl", "md", "qmd"],
+        default="jsonl",
+        help="Export format (default: jsonl)",
     )
     sessions_export.add_argument("--source", help="Filter by source")
-    sessions_export.add_argument("--session-id", help="Export a specific session")
-
-    sessions_export_md = sessions_subparsers.add_parser(
-        "export-md",
-        help="Export sessions to Markdown/QMD files",
-    )
-    sessions_export_md.add_argument(
+    sessions_export.add_argument(
         "--session-id", help="Session ID or unique prefix to export"
     )
-    sessions_export_md.add_argument(
-        "--older-than", type=int, help="Bulk-export ended sessions older than N days"
+    sessions_export.add_argument(
+        "--older-than",
+        type=int,
+        help="md/qmd only: bulk-export ended sessions older than N days",
     )
-    sessions_export_md.add_argument("--source", help="Filter bulk export by source")
-    sessions_export_md.add_argument(
-        "--dry-run", action="store_true", help="Preview matching sessions without writing files"
+    sessions_export.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="md/qmd only: preview matching sessions without writing files",
     )
-    sessions_export_md.add_argument(
-        "--lineage", choices=["single", "logical"], default="single", help="Export one row or compression lineage"
+    sessions_export.add_argument(
+        "--lineage",
+        choices=["single", "logical"],
+        default="single",
+        help="md/qmd only: export one row or its compression lineage",
     )
-    sessions_export_md.add_argument(
-        "--delete-after-verified", action="store_true", help="After verified single-session export, delete that session"
+    sessions_export.add_argument(
+        "--delete-after-verified",
+        action="store_true",
+        help="md/qmd only: after verified single-session export, delete that session",
     )
-    sessions_export_md.add_argument(
+    sessions_export.add_argument(
         "--yes", "-y", action="store_true", help="Required with --delete-after-verified"
     )
-    sessions_export_md.add_argument(
-        "--output",
-        help="Output directory (default: ~/.hermes/session-exports)",
-    )
-    sessions_export_md.add_argument(
-        "--format", choices=["md", "qmd"], default="md", help="Export format"
-    )
-    sessions_export_md.add_argument(
-        "--force", action="store_true", help="Overwrite an existing export file"
+    sessions_export.add_argument(
+        "--force",
+        action="store_true",
+        help="md/qmd only: overwrite an existing export file",
     )
 
     sessions_delete = sessions_subparsers.add_parser(
@@ -13751,42 +13759,51 @@ def main():
                     print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
 
         elif action == "export":
-            if args.session_id:
-                resolved_session_id = db.resolve_session_id(args.session_id)
-                if not resolved_session_id:
-                    print(f"Session '{args.session_id}' not found.")
+            if args.format == "jsonl":
+                if not args.output:
+                    print("JSONL export requires an output path (use - for stdout).")
                     return
-                data = db.export_session(resolved_session_id)
-                if not data:
-                    print(f"Session '{args.session_id}' not found.")
-                    return
-                line = _json.dumps(data, ensure_ascii=False) + "\n"
-                if args.output == "-":
+                if args.session_id:
+                    resolved_session_id = db.resolve_session_id(args.session_id)
+                    if not resolved_session_id:
+                        print(f"Session '{args.session_id}' not found.")
+                        return
+                    data = db.export_session(resolved_session_id)
+                    if not data:
+                        print(f"Session '{args.session_id}' not found.")
+                        return
+                    line = _json.dumps(data, ensure_ascii=False) + "\n"
+                    if args.output == "-":
 
-                    sys.stdout.write(line)
+                        sys.stdout.write(line)
+                    else:
+                        with open(args.output, "w", encoding="utf-8") as f:
+                            f.write(line)
+                        print(f"Exported 1 session to {args.output}")
                 else:
-                    with open(args.output, "w", encoding="utf-8") as f:
-                        f.write(line)
-                    print(f"Exported 1 session to {args.output}")
-            else:
-                sessions = db.export_all(source=args.source)
-                if args.output == "-":
+                    sessions = db.export_all(source=args.source)
+                    if args.output == "-":
 
-                    for s in sessions:
-                        sys.stdout.write(_json.dumps(s, ensure_ascii=False) + "\n")
-                else:
-                    with open(args.output, "w", encoding="utf-8") as f:
                         for s in sessions:
-                            f.write(_json.dumps(s, ensure_ascii=False) + "\n")
-                    print(f"Exported {len(sessions)} sessions to {args.output}")
+                            sys.stdout.write(_json.dumps(s, ensure_ascii=False) + "\n")
+                    else:
+                        with open(args.output, "w", encoding="utf-8") as f:
+                            for s in sessions:
+                                f.write(_json.dumps(s, ensure_ascii=False) + "\n")
+                        print(f"Exported {len(sessions)} sessions to {args.output}")
+                return
 
-        elif action == "export-md":
+            # Markdown / QMD export
             from hermes_cli.session_export_md import (
                 append_manifest_entry,
                 verify_export_file,
                 write_session_markdown,
             )
 
+            if args.output == "-":
+                print("Markdown/QMD export writes files; stdout (-) is only supported with --format jsonl.")
+                db.close()
+                return
             output_dir = Path(args.output).expanduser() if args.output else get_hermes_home() / "session-exports"
 
             def _export_one(session_id: str):

@@ -18135,7 +18135,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "conversation context (possible FTS write corruption)",
                         session_key, len(agent_history), len(_selected),
                     )
-                    agent_history = _selected
+                    # The live in-memory history bypassed the replay-cleanup
+                    # pass inside _build_gateway_agent_history — re-apply the
+                    # stale-confirmation expiry (#59607) so a dangerous
+                    # confirmation can't slip through this path either.
+                    # Idempotent; messages without timestamps are untouched.
+                    agent_history = _strip_stale_dangerous_confirmations(
+                        _selected, now=time.time()
+                    )
             
             # Collect MEDIA paths already in history so we can exclude them
             # from the current turn's extraction. This is compression-safe:

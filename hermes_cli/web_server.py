@@ -11507,18 +11507,15 @@ def _profile_scope(profile: Optional[str]):
     1. ``load_config``/``save_config`` resolve ``get_hermes_home()`` at call
        time — the context-local override from ``set_hermes_home_override``
        reaches them (same pattern as ``_write_profile_model``).
-    2. ``tools.skills_tool`` and ``tools.skill_manager_tool`` bind
-       ``SKILLS_DIR`` at import time, so the override CANNOT reach them.
-       Like ``_call_cron_for_profile`` does for cron's module globals,
-       temporarily retarget both under a lock and restore them
-       immediately after.
+    2. ``tools.skills_tool`` and ``tools.skill_manager_tool`` resolve
+       ``SKILLS_DIR`` at call time via ``_skills_dir()`` (#60180), so the
+       ``set_hermes_home_override`` above is sufficient — no module-global
+       patching is needed.  The lock serializes concurrent skills-list
+       calls that may compete for the override.
 
     ``profile`` of None/""/"current" means "the dashboard's own profile" —
-    config resolution is untouched, but the skill-module globals are still
-    retargeted to the *current* ``get_hermes_home()`` so writes land in the
-    live home even when the import-time binding is stale (e.g. the process
-    imported the modules before a HERMES_HOME override, or under test
-    isolation).
+    config resolution is untouched; skills resolution uses the current
+    ``get_hermes_home()`` via ``_skills_dir()`` (#60180).
     """
     requested = (profile or "").strip()
 
@@ -11527,8 +11524,6 @@ def _profile_scope(profile: Optional[str]):
         set_hermes_home_override,
         reset_hermes_home_override,
     )
-    from tools import skills_tool as _skills_tool
-    from tools import skill_manager_tool as _skill_mgr
 
     token = None
     if not requested or requested.lower() == "current":
@@ -11538,21 +11533,9 @@ def _profile_scope(profile: Optional[str]):
         token = set_hermes_home_override(str(profile_dir))
 
     with _SKILLS_PROFILE_LOCK:
-        old_home = _skills_tool.HERMES_HOME
-        old_skills_dir = _skills_tool.SKILLS_DIR
-        old_mgr_home = _skill_mgr.HERMES_HOME
-        old_mgr_skills_dir = _skill_mgr.SKILLS_DIR
-        _skills_tool.HERMES_HOME = profile_dir
-        _skills_tool.SKILLS_DIR = profile_dir / "skills"
-        _skill_mgr.HERMES_HOME = profile_dir
-        _skill_mgr.SKILLS_DIR = profile_dir / "skills"
         try:
             yield profile_dir if token is not None else None
         finally:
-            _skills_tool.HERMES_HOME = old_home
-            _skills_tool.SKILLS_DIR = old_skills_dir
-            _skill_mgr.HERMES_HOME = old_mgr_home
-            _skill_mgr.SKILLS_DIR = old_mgr_skills_dir
             if token is not None:
                 reset_hermes_home_override(token)
 
@@ -11562,13 +11545,10 @@ def _config_profile_scope(profile: Optional[str]):
     """Await-safe, config-only profile scope for handlers that ``await``.
 
     Unlike ``_profile_scope`` this touches ONLY the context-local
-    ``set_hermes_home_override`` contextvar — it does NOT swap the
-    process-global ``skills_tool``/``skill_manager`` module attributes.
-    Those globals are shared across all event-loop tasks, so holding them
-    across an ``await`` lets a concurrent skills request restore THIS
-    request's profile dir on its ``finally`` (cross-contamination). The
-    contextvar override is task-local and survives an ``await`` cleanly,
-    which is all endpoints that resolve ``get_hermes_home()`` at call time
+    ``set_hermes_home_override`` contextvar — it does NOT swap
+    process-global module attributes.  Since ``_skills_dir()`` resolves
+    at call time (#60180), the contextvar override alone is sufficient
+    for all endpoints that resolve ``get_hermes_home()`` at call time.
     (config, env, gateway status) actually need.
 
     None/""/"current" means the dashboard's own profile — no override.

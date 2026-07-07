@@ -33,6 +33,7 @@ import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
+import { waitForHermesReady } from './backend-health'
 import { canImportHermesCli, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure } from './backend-start-failure'
@@ -4554,21 +4555,11 @@ function closePreviewWatchers() {
 }
 
 async function waitForHermes(baseUrl, token) {
-  const deadline = Date.now() + 45_000
-  let lastError = null
-
-  while (Date.now() < deadline) {
-    try {
-      await fetchJson(`${baseUrl}/api/status`, token)
-
-      return
-    } catch (error) {
-      lastError = error
-      await new Promise(resolve => setTimeout(resolve, 500))
-    }
-  }
-
-  throw new Error(`Hermes backend did not become ready: ${lastError?.message || 'timeout'}`)
+  return waitForHermesReady(baseUrl, {
+    token,
+    fetchPublicJson,
+    fetchJson
+  })
 }
 
 function getWindowButtonPosition() {

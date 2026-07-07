@@ -474,6 +474,45 @@ class TestBuildSkillsSystemPrompt:
         full = build_skills_system_prompt()
         assert "Write threads" in full
 
+    def test_compact_index_style_omits_descriptions(self, monkeypatch, tmp_path):
+        """When skills.index_style is 'compact', every skill name stays
+        visible but descriptions are omitted from the index."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        for cat, name, desc in (
+            ("devops", "deploy", "Deploy stuff"),
+            ("social-media", "poster", "Post things"),
+        ):
+            d = tmp_path / "skills" / cat / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {desc}\n---\n"
+            )
+
+        # Full (default) mode — descriptions visible
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        full_result = build_skills_system_prompt()
+        assert "deploy" in full_result
+        assert "Deploy stuff" in full_result
+        assert "poster" in full_result
+        assert "Post things" in full_result
+
+        # Compact mode — descriptions hidden, names visible
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        from unittest.mock import patch as u_patch
+        with u_patch(
+            "hermes_cli.config.load_config",
+            return_value={"skills": {"index_style": "compact"}},
+        ):
+            compact_result = build_skills_system_prompt()
+
+        assert "deploy" in compact_result
+        assert "poster" in compact_result
+        assert "Deploy stuff" not in compact_result
+        assert "Post things" not in compact_result
+        assert "skill_view" in compact_result
+
     def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should not appear on Linux."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

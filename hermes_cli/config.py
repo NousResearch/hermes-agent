@@ -2270,6 +2270,14 @@ DEFAULT_CONFIG = {
         #                     never crammed into a chat bubble), apply with
         #                     /skills approve <id> or drop with /skills reject <id>.
         "write_approval": False,
+        # Skill index style in the system prompt.  Controls how much detail
+        # the skills index block includes in the system prompt:
+        #   "full" (default) — every skill name + 60-char description (~6K tokens)
+        #   "compact"        — skill names only, descriptions omitted (~1.5K tokens).
+        #                      Every skill stays visible and loadable via
+        #                      skill_view(name).  Use this to cut ~4.5K tokens
+        #                      from every turn when you have a large skill library.
+        "index_style": "full",
     },
 
     # Curator — background skill maintenance.

@@ -1455,6 +1455,15 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names(_platform_hint or None)
+    # ── Index style ────────────────────────────────────────────────────
+    # "full" (default) — every skill name + description (~6K tokens).
+    # "compact"        — names only, descriptions omitted (~1.5K tokens).
+    _index_style: str = "full"
+    try:
+        from hermes_cli.config import load_config
+        _index_style = (load_config().get("skills", {}) or {}).get("index_style", "full") or "full"
+    except Exception:
+        pass
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -1463,6 +1472,7 @@ def build_skills_system_prompt(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        _index_style,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1611,12 +1621,26 @@ def build_skills_system_prompt(
     )
 
     hidden_note = ""
+    compact_note = ""
+    if _index_style == "compact":
+        compact_note = (
+            "\n(Descriptions are omitted — every skill name above is "
+            "loadable with skill_view(name)."
+        )
     if demoted:
         hidden_note = (
             "\n(Categories marked [names only] are outside the current coding "
             "context, so their descriptions are omitted — the skills work "
-            "normally and load with skill_view(name) as usual.)"
+            "normally and load with skill_view(name) as usual."
         )
+    if compact_note and demoted:
+        # Merge notes — they say the same thing in slightly different contexts
+        hidden_note = (
+            "\n(Non-coding skill categories are shown names-only here. "
+            "Every skill is loadable with skill_view(name) as usual.)"
+        )
+    elif compact_note:
+        hidden_note = compact_note
 
     if not skills_by_category:
         result = ""
@@ -1631,14 +1655,17 @@ def build_skills_system_prompt(
                 continue
             cat_desc = category_descriptions.get(category, "")
             if cat_desc:
-                index_lines.append(f"  {category}: {cat_desc}")
+                if _index_style == "compact":
+                    index_lines.append(f"  {category}:")
+                else:
+                    index_lines.append(f"  {category}: {cat_desc}")
             else:
                 index_lines.append(f"  {category}:")
             for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
                 if name in seen:
                     continue
                 seen.add(name)
-                if desc:
+                if desc and _index_style != "compact":
                     index_lines.append(f"    - {name}: {desc}")
                 else:
                     index_lines.append(f"    - {name}")

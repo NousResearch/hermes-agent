@@ -3167,7 +3167,10 @@ def _current_profile_name() -> str:
 # Monotonic GUI<->backend contract version. The desktop app refuses to drive a
 # backend reporting less than its required value (or none at all — a pre-GUI
 # checkout), surfacing a one-click "update to align" prompt instead of failing
-# cryptically downstream. Bump whenever the desktop's backend contract changes.
+# cryptically downstream. The desktop also warns in the reverse direction: a
+# backend reporting MORE than the GUI's required value means the GUI build
+# predates this backend (e.g. a long-running app across a backend update) and
+# should be updated. Bump whenever the desktop's backend contract changes.
 # v2: adds the file.attach RPC (remote-gateway non-image file upload).
 DESKTOP_BACKEND_CONTRACT = 2
 

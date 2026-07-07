@@ -5,7 +5,7 @@ import pytest
 
 class TestSkillUtilsProfileAware:
     def test_normalize_uses_skills_dir_not_module_constant(self, monkeypatch, tmp_path):
-        """normalize_skill_identifier should use _skills_dir(), not SKILLS_DIR."""
+        """normalize_skill_lookup_name should use _skills_dir(), not SKILLS_DIR."""
         profile_a = tmp_path / "profile_a"
         profile_b = tmp_path / "profile_b"
         (profile_a / "skills").mkdir(parents=True)
@@ -21,8 +21,8 @@ class TestSkillUtilsProfileAware:
             lambda: profile_b / "skills",
         )
 
-        from agent.skill_utils import normalize_skill_identifier
+        from agent.skill_utils import normalize_skill_lookup_name
 
-        result = normalize_skill_identifier("test-skill")
+        result = normalize_skill_lookup_name("test-skill")
         # Should use profile_b (from _skills_dir()), not profile_a (stale SKILLS_DIR)
         assert result is not None

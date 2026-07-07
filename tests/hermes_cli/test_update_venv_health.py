@@ -59,7 +59,9 @@ def test_venv_health_missing_venv_unhealthy_with_interrupted_marker(tmp_path):
     assert "venv python missing" in detail
 
 
-def _fake_venv_python(tmp_path, *, windows: bool = False):
+def _fake_venv_python(tmp_path, *, windows: bool | None = None):
+    if windows is None:
+        windows = cli_main._is_windows()
     bin_dir = tmp_path / "venv" / ("Scripts" if windows else "bin")
     bin_dir.mkdir(parents=True)
     py = bin_dir / ("python.exe" if windows else "python")
@@ -83,6 +85,29 @@ def test_venv_health_reports_missing_imports(tmp_path):
 
     assert healthy is False
     assert "annotated_doc" in detail
+
+
+def test_venv_health_reports_broken_pyyaml_namespace(tmp_path):
+    """An importable-but-empty PyYAML namespace package is unhealthy."""
+    _fake_venv_python(tmp_path)
+
+    fake = SimpleNamespace(
+        returncode=0,
+        stdout=(
+            "yaml: missing __file__\n"
+            "yaml: missing __version__\n"
+            "yaml: missing SafeDumper\n"
+        ),
+        stderr="",
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
+        cli_main.subprocess, "run", return_value=fake
+    ):
+        healthy, detail = cli_main._venv_core_imports_healthy()
+
+    assert healthy is False
+    assert "missing __file__" in detail
+    assert "missing SafeDumper" in detail
 
 
 def test_venv_health_healthy_when_probe_clean(tmp_path):

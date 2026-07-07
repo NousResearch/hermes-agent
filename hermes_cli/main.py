@@ -65,6 +65,60 @@ import os
 import sys
 
 
+def _primary_command_early(argv: "list[str] | None" = None) -> str | None:
+    """Return the first non-option command without importing argparse/config."""
+    if argv is None:
+        argv = sys.argv[1:]
+
+    value_flags = {
+        "-p", "--profile",
+        "-z", "--oneshot",
+        "-m", "--model",
+        "--provider",
+        "-t", "--toolsets",
+        "-r", "--resume",
+        "-s", "--skills",
+        "--usage-file",
+    }
+    optional_value_flags = {"-c", "--continue"}
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--":
+            return argv[i + 1] if i + 1 < len(argv) else None
+        if arg.startswith("--profile="):
+            i += 1
+            continue
+        if "=" not in arg and arg in value_flags and i + 1 < len(argv):
+            i += 2
+            continue
+        if (
+            "=" not in arg
+            and arg in optional_value_flags
+            and i + 1 < len(argv)
+            and not argv[i + 1].startswith("-")
+        ):
+            i += 2
+            continue
+        if arg.startswith("-"):
+            i += 1
+            continue
+        return arg
+    return None
+
+
+def _windows_update_import_minimal() -> bool:
+    """True while Windows `hermes update` must avoid target-venv imports.
+
+    Windows keeps native extensions (`*.pyd`) mapped while their importing
+    process is alive. The update command mutates the same venv it runs from, so
+    importing PyYAML/config before `uv pip install -e .[all]` can lock
+    `yaml/_yaml*.pyd` and strand the install half-updated. Keep startup on this
+    path dependency-light until the dependency sync has completed.
+    """
+    return sys.platform == "win32" and _primary_command_early() == "update"
+
+
 def _set_process_title() -> None:
     """Set the process title to 'hermes' so tools like 'ps', 'top', and
     'htop' show the app name instead of 'python3.xx'.
@@ -152,6 +206,8 @@ def _wants_tui_early(argv: "list[str] | None" = None) -> bool:
     """
     if argv is None:
         argv = sys.argv[1:]
+    if sys.platform == "win32" and _primary_command_early(argv) == "update":
+        return False
     if "--cli" in argv:
         return False
     if os.environ.get("HERMES_TUI") == "1" or "--tui" in argv:
@@ -514,10 +570,12 @@ _apply_profile_override()
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-from hermes_cli.config import get_hermes_home
-from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_constants import get_hermes_home
 
-load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
+if not _windows_update_import_minimal():
+    from hermes_cli.env_loader import load_hermes_dotenv
+
+    load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 
 # Bridge security.redact_secrets from config.yaml → HERMES_REDACT_SECRETS env
 # var BEFORE hermes_logging imports agent.redact (which snapshots the flag at
@@ -530,6 +588,8 @@ load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 # `load_config()` was doing a full deep-merge for one boolean lookup).
 _FORCE_IPV4_EARLY = False
 try:
+    if _windows_update_import_minimal():
+        raise RuntimeError("skip config yaml during Windows update pre-sync")
     import yaml as _yaml_early
 
     _cfg_path = get_hermes_home() / "config.yaml"
@@ -567,6 +627,8 @@ except Exception:
 # Dashboard entrypoints bootstrap with GUI mode so gui.log is always present
 # during GUI testing, including pre-dispatch startup failures.
 try:
+    if _windows_update_import_minimal():
+        raise RuntimeError("skip logging setup during Windows update pre-sync")
     from hermes_logging import setup_logging as _setup_logging
 
     _setup_logging(
@@ -601,28 +663,29 @@ from hermes_cli import __version__, __release_date__
 # Provider model-selection wizard flows extracted to hermes_cli/model_setup_flows.py
 # (god-file decomposition Phase 2). Re-imported here so select_provider_and_model and
 # existing test monkeypatches (hermes_cli.main._model_flow_*) keep resolving unchanged.
-from hermes_cli.model_setup_flows import (
-    _prompt_auth_credentials_choice,
-    _model_flow_openrouter,
-    _model_flow_nous,
-    _model_flow_openai_codex,
-    _model_flow_xai_oauth,
-    _model_flow_qwen_oauth,
-    _model_flow_minimax_oauth,
-    _model_flow_custom,
-    _model_flow_azure_foundry,
-    _model_flow_named_custom,
-    _model_flow_copilot,
-    _model_flow_copilot_acp,
-    _model_flow_kimi,
-    _model_flow_stepfun,
-    _model_flow_bedrock_api_key,
-    _model_flow_bedrock,
-    _model_flow_vertex,
-    _model_flow_api_key_provider,
-    _model_flow_anthropic,
-    _model_flow_moa,
-)
+if not _windows_update_import_minimal():
+    from hermes_cli.model_setup_flows import (
+        _prompt_auth_credentials_choice,
+        _model_flow_openrouter,
+        _model_flow_nous,
+        _model_flow_openai_codex,
+        _model_flow_xai_oauth,
+        _model_flow_qwen_oauth,
+        _model_flow_minimax_oauth,
+        _model_flow_custom,
+        _model_flow_azure_foundry,
+        _model_flow_named_custom,
+        _model_flow_copilot,
+        _model_flow_copilot_acp,
+        _model_flow_kimi,
+        _model_flow_stepfun,
+        _model_flow_bedrock_api_key,
+        _model_flow_bedrock,
+        _model_flow_vertex,
+        _model_flow_api_key_provider,
+        _model_flow_anthropic,
+        _model_flow_moa,
+    )
 logger = logging.getLogger(__name__)
 
 
@@ -8634,15 +8697,17 @@ def _run_pre_update_backup(args) -> None:
 
     force_backup = bool(getattr(args, "backup", False))
 
-    try:
-        from hermes_cli.config import load_config
+    cfg = {}
+    if not _windows_update_import_minimal():
+        try:
+            from hermes_cli.config import load_config
 
-        cfg = load_config()
-    except Exception as exc:
-        logging.getLogger(__name__).debug(
-            "Could not load config for pre-update backup: %s", exc
-        )
-        cfg = {}
+            cfg = load_config()
+        except Exception as exc:
+            logging.getLogger(__name__).debug(
+                "Could not load config for pre-update backup: %s", exc
+            )
+            cfg = {}
 
     updates_cfg = cfg.get("updates", {}) if isinstance(cfg, dict) else {}
     # The default config ships with ``pre_update_backup: false`` (see
@@ -8811,8 +8876,10 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
         return True, ""
 
     # Core web/serve imports plus their newest transitive deps. Import (not
-    # just metadata) — a package can have intact dist-info but a missing
-    # module after an interrupted uninstall/install cycle.
+    # just metadata) because a package can have intact dist-info but a missing
+    # module after an interrupted uninstall/install cycle. PyYAML needs an
+    # attribute-level probe too: a failed Windows replace can leave `yaml` as an
+    # empty namespace package with no __file__, __version__, or SafeDumper.
     check = (
         "import importlib\n"
         "mods = ['fastapi', 'uvicorn', 'pydantic', 'openai', 'yaml']\n"
@@ -8820,6 +8887,16 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
         "for m in mods:\n"
         "    try: importlib.import_module(m)\n"
         "    except Exception as e: missing.append(f'{m}: {e}')\n"
+        "try:\n"
+        "    import yaml\n"
+        "    if not getattr(yaml, '__file__', None):\n"
+        "        missing.append('yaml: missing __file__')\n"
+        "    if not getattr(yaml, '__version__', None):\n"
+        "        missing.append('yaml: missing __version__')\n"
+        "    if not hasattr(yaml, 'SafeDumper'):\n"
+        "        missing.append('yaml: missing SafeDumper')\n"
+        "except Exception as e:\n"
+        "    missing.append(f'yaml: {e}')\n"
         "print('\\n'.join(missing))\n"
     )
     try:
@@ -9252,26 +9329,30 @@ def cmd_update(args):
     runs the update, then restores stdio on the way out (even on
     ``sys.exit`` or unhandled exceptions).
     """
-    from hermes_cli.config import (
-        detect_install_method,
-        format_docker_update_message,
-        is_managed,
-        managed_error,
+    minimal_windows_git_update = (
+        _windows_update_import_minimal() and (PROJECT_ROOT / ".git").exists()
     )
+    if not minimal_windows_git_update:
+        from hermes_cli.config import (
+            detect_install_method,
+            format_docker_update_message,
+            is_managed,
+            managed_error,
+        )
 
-    if is_managed():
-        managed_error("update Hermes Agent")
-        return
+        if is_managed():
+            managed_error("update Hermes Agent")
+            return
 
-    # Docker users can't ``git pull`` — the image excludes ``.git`` from
-    # the build context.  Bail with a friendly explanation pointing at
-    # ``docker pull`` BEFORE any of the apply-path / check-path branches
-    # below get a chance to error out with misleading "Not a git
-    # repository" text.  See format_docker_update_message() for the full
-    # rationale and tag-pinning / config-persistence notes.
-    if detect_install_method(PROJECT_ROOT) == "docker":
-        print(format_docker_update_message())
-        sys.exit(1)
+        # Docker users can't ``git pull`` — the image excludes ``.git`` from
+        # the build context.  Bail with a friendly explanation pointing at
+        # ``docker pull`` BEFORE any of the apply-path / check-path branches
+        # below get a chance to error out with misleading "Not a git
+        # repository" text.  See format_docker_update_message() for the full
+        # rationale and tag-pinning / config-persistence notes.
+        if detect_install_method(PROJECT_ROOT) == "docker":
+            print(format_docker_update_message())
+            sys.exit(1)
 
     if getattr(args, "check", False):
         # --check honors --branch so the "any new commits?" answer matches
@@ -9378,7 +9459,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         or not (sys.stdin.isatty() and sys.stdout.isatty())
     )
     discard_local_changes = False
-    if _non_interactive_update:
+    if _non_interactive_update and not _windows_update_import_minimal():
         try:
             from hermes_cli.config import load_config
 
@@ -9410,7 +9491,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # always roll back to the exact state they had before this update.
     _run_pre_update_backup(args)
 
-    _windows_gateway_resume = _pause_windows_gateways_for_update()
+    _windows_gateway_resume = (
+        None if _windows_update_import_minimal() else _pause_windows_gateways_for_update()
+    )
     if _windows_gateway_resume:
         import atexit as _atexit
 
@@ -9700,15 +9783,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # belt-and-suspenders insurance and gives the user something to
         # restore from via `/snapshot list` / `/snapshot restore <id>`.
         pre_update_snapshot_id = None
-        try:
-            from hermes_cli.backup import create_quick_snapshot
+        if not _windows_update_import_minimal():
+            try:
+                from hermes_cli.backup import create_quick_snapshot
 
-            pre_update_snapshot_id = create_quick_snapshot(label="pre-update", keep=1)
-            if pre_update_snapshot_id:
-                print(f"  ✓ Pre-update snapshot: {pre_update_snapshot_id}")
-        except Exception as exc:
-            # Never let a snapshot failure block an update.
-            logger.debug("Pre-update snapshot failed: %s", exc)
+                pre_update_snapshot_id = create_quick_snapshot(label="pre-update", keep=1)
+                if pre_update_snapshot_id:
+                    print(f"  ✓ Pre-update snapshot: {pre_update_snapshot_id}")
+            except Exception as exc:
+                # Never let a snapshot failure block an update.
+                logger.debug("Pre-update snapshot failed: %s", exc)
 
         print("→ Pulling updates...")
         update_succeeded = False

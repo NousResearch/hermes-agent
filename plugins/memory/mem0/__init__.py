@@ -103,6 +103,88 @@ def _load_config() -> dict:
     return config
 
 
+def _resolve_placeholder(value: str, hermes_home: str) -> str:
+    """Resolve a ``***FROM_ENV_XXX***`` placeholder to the actual env value.
+
+    Checks the profile's .env file first via python-dotenv, then the
+    process environment.  Returns the original string if no resolution
+    is possible.
+    """
+    if not isinstance(value, str) or not value.startswith("***"):
+        return value
+    try:
+        from dotenv import dotenv_values
+        from pathlib import Path
+
+        env_path = Path(hermes_home) / ".env"
+        env_vals = dotenv_values(str(env_path)) if env_path.exists() else {}
+    except Exception:
+        env_vals = {}
+
+    # Strip ***FROM_ENV_ prefix and trailing ***
+    var_name = value.removeprefix("***FROM_ENV_").removesuffix("***")
+
+    resolved = (
+        env_vals.get(var_name, "")
+        or os.environ.get(var_name, "")
+        or env_vals.get("OPENAI_API_KEY", "")
+        or os.environ.get("OPENAI_API_KEY", "")
+    )
+    return resolved or value
+
+
+def _build_oss_config_from_flat(cfg: dict) -> dict:
+    """Convert a flat mem0.json (llm_provider/embedder_provider/vector_store_config
+    at top level) into the nested dict OSSBackend expects.
+
+    Also resolves **FROM_ENV_** placeholders in API-key fields.
+    """
+    from hermes_constants import get_hermes_home as _get_home
+
+    hermes_home = str(_get_home())
+
+    # --- LLM ---
+    llm_provider = cfg.get("llm_provider", "openai")
+    llm_config = dict(cfg.get("llm_config", {}))
+    if llm_config.get("api_key", "").startswith("***"):
+        llm_config["api_key"] = _resolve_placeholder(
+            llm_config["api_key"], hermes_home
+        )
+
+    # --- Embedder ---
+    embedder_provider = cfg.get("embedder_provider", "openai")
+    embedder_config = dict(cfg.get("embedder_config", {}))
+    if embedder_config.get("api_key", "").startswith("***"):
+        embedder_config["api_key"] = _resolve_placeholder(
+            embedder_config["api_key"], hermes_home
+        )
+
+    # --- Vector store ---
+    vs_raw = dict(cfg.get("vector_store_config", {}))
+    vs_config = dict(vs_raw.get("config", {}))
+    vs_provider = vs_raw.get("provider", "qdrant")
+    if "path" in vs_config:
+        vs_config["path"] = os.path.expanduser(vs_config["path"])
+
+    # Infer embedding dims from model name if not set
+    if "embedding_model_dims" not in vs_config:
+        model = embedder_config.get("model", "")
+        try:
+            from ._oss_providers import KNOWN_DIMS
+
+            dims = KNOWN_DIMS.get(model)
+            if dims:
+                vs_config["embedding_model_dims"] = dims
+        except Exception:
+            pass
+
+    return {
+        "llm": {"provider": llm_provider, "config": llm_config},
+        "embedder": {"provider": embedder_provider, "config": embedder_config},
+        "vector_store": {"provider": vs_provider, "config": vs_config},
+    }
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas
 # ---------------------------------------------------------------------------
@@ -238,7 +320,11 @@ class Mem0MemoryProvider(MemoryProvider):
         cfg = _load_config()
         mode = cfg.get("mode", "platform")
         if mode == "oss":
-            return bool(cfg.get("oss", {}).get("vector_store"))
+            # Supports both nested (cfg["oss"]["vector_store"]) and
+            # flat (cfg["vector_store_config"]) mem0.json formats.
+            if cfg.get("oss", {}).get("vector_store"):
+                return True
+            return bool(cfg.get("vector_store_config", {}).get("provider"))
         return bool(cfg.get("api_key"))
 
     def save_config(self, values, hermes_home):
@@ -287,7 +373,15 @@ class Mem0MemoryProvider(MemoryProvider):
         try:
             if self._mode == "oss":
                 from ._backend import OSSBackend
-                return OSSBackend(self._config.get("oss", {}))
+                from ._oss_providers import KNOWN_DIMS
+
+                oss_cfg = dict(self._config.get("oss", {}))
+                if not oss_cfg.get("vector_store"):
+                    # Profile uses flat mem0.json format (llm_provider,
+                    # embedder_provider, vector_store_config at top level).
+                    # Build the nested oss dict expected by OSSBackend.
+                    oss_cfg = _build_oss_config_from_flat(self._config)
+                return OSSBackend(oss_cfg)
             from ._backend import PlatformBackend
             return PlatformBackend(self._api_key)
         except Exception as e:
@@ -383,6 +477,9 @@ class Mem0MemoryProvider(MemoryProvider):
         return (
             "# Mem0 Memory\n"
             f"Active. Mode: {mode_label}. User: {self._user_id}.\n"
+            "IMPORTANT: Use ONLY mem0_search/mem0_list/mem0_add/mem0_update/mem0_delete for memory. "
+            "Do NOT use the built-in `memory` tool - that writes to flat files "
+            "which are not used in this setup. Mem0 stores all memory in its own backend.\n"
             "You have persistent memory of this user from past conversations. "
             "ALWAYS call mem0_search before answering anything that could depend "
             "on prior context (the user's preferences, facts, history, people, "

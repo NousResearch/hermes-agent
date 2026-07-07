@@ -1946,6 +1946,13 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         LLM can report the problem to the user.
     """
     scripts_dir = _get_hermes_home() / "scripts"
+    # Path.mkdir(exist_ok=True) does NOT handle broken symlinks: it raises
+    # FileExistsError [Errno 17] because lexists() is True while exists() is
+    # False. Common cause: scripts_dir was symlinked to a directory that has
+    # since been moved or deleted. Unlink any broken symlink before mkdir so
+    # we do not surface misleading "File exists" errors for every cron job.
+    if scripts_dir.is_symlink() and not scripts_dir.exists():
+        scripts_dir.unlink()
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
 

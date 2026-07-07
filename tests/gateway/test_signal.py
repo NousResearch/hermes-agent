@@ -1066,6 +1066,7 @@ class TestSignalStreamingCapabilities:
 
         assert adapter.SUPPORTS_MESSAGE_EDITING is True
         assert adapter.SUPPORTS_STREAMING_EDITS is False
+        assert adapter.SUPPORTS_PROGRESS_EDITS is False
 
     def test_gateway_streaming_capability_uses_narrow_flag(self, monkeypatch):
         from gateway.run import _adapter_supports_streaming_edits
@@ -1074,8 +1075,15 @@ class TestSignalStreamingCapabilities:
 
         assert _adapter_supports_streaming_edits(adapter) is False
 
+    def test_gateway_progress_capability_uses_narrow_flag(self, monkeypatch):
+        from gateway.run import _adapter_supports_progress_edits
+
+        adapter = _make_signal_adapter(monkeypatch)
+
+        assert _adapter_supports_progress_edits(adapter) is False
+
     def test_streaming_capability_falls_back_to_message_editing(self):
-        from gateway.run import _adapter_supports_streaming_edits
+        from gateway.run import _adapter_supports_progress_edits, _adapter_supports_streaming_edits
 
         class EditableAdapter:
             SUPPORTS_MESSAGE_EDITING = True
@@ -1085,6 +1093,8 @@ class TestSignalStreamingCapabilities:
 
         assert _adapter_supports_streaming_edits(EditableAdapter()) is True
         assert _adapter_supports_streaming_edits(NonEditableAdapter()) is False
+        assert _adapter_supports_progress_edits(EditableAdapter()) is True
+        assert _adapter_supports_progress_edits(NonEditableAdapter()) is False
 
 
 class TestSignalSendReturnsMessageId:

@@ -2293,11 +2293,17 @@ class BasePlatformAdapter(ABC):
     # be mutated later.
     SUPPORTS_MESSAGE_EDITING: bool = True
 
-    # Whether edit-based high-frequency response streaming/tool-progress is
-    # safe.  Defaults to SUPPORTS_MESSAGE_EDITING via gateway.run's helper; set
-    # explicitly when a platform can handle operator/user-requested edits but
-    # should not be driven by the stream consumer cadence.
+    # Whether edit-based high-frequency response streaming is safe.  Defaults
+    # to SUPPORTS_MESSAGE_EDITING via gateway.run's helper; set explicitly when
+    # a platform can handle operator/user-requested edits but should not be
+    # driven by the stream consumer cadence.
     SUPPORTS_STREAMING_EDITS: Optional[bool] = None
+
+    # Whether edit-based tool/thinking progress bubbles are safe.  Defaults to
+    # the streaming-edit capability via gateway.run's helper; adapters can set
+    # this separately if token streaming and progress bubbles have different
+    # platform costs.
+    SUPPORTS_PROGRESS_EDITS: Optional[bool] = None
 
     # Whether this adapter's ``send()`` splits long content into multiple
     # messages via ``truncate_message()``.  When True, the delivery router

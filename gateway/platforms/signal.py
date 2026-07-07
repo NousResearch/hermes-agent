@@ -254,6 +254,7 @@ class SignalAdapter(BasePlatformAdapter):
     # are safe while stream-consumer cadence remains too noisy.
     SUPPORTS_MESSAGE_EDITING = True
     SUPPORTS_STREAMING_EDITS = False
+    SUPPORTS_PROGRESS_EDITS = False
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SIGNAL)

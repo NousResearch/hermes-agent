@@ -122,6 +122,37 @@ class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
         raise AssertionError("non-editable adapters should not receive edit_message calls")
 
 
+class NoProgressEditCaptureAdapter(ProgressCaptureAdapter):
+    """Adapter that supports explicit edits but opts out of progress edits."""
+
+    SUPPORTS_MESSAGE_EDITING = True
+    SUPPORTS_STREAMING_EDITS = False
+
+    def __init__(self):
+        super().__init__(platform=Platform.SIGNAL)
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id="progress-1")
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        return SendResult(success=True, message_id="progress-2")
+
+
 class FakeAgent:
     def __init__(self, **kwargs):
         # Capture anything passed via kwargs (older code path) but don't
@@ -268,6 +299,47 @@ def _make_runner(adapter):
         stt_enabled=False,
     )
     return runner
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_respects_streaming_edit_capability(monkeypatch, tmp_path):
+    """Adapters that opt out of streaming/progress edits must stay quiet.
+
+    Signal exposes explicit timestamp-based ``edit_message()`` for user/operator
+    edits, but high-frequency progress edits are noisy and timestamp-chained.
+    The progress sender should therefore honor the same narrow capability gate
+    as token streaming instead of checking only whether ``edit_message`` exists.
+    """
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
+
+    adapter = NoProgressEditCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(platform=Platform.SIGNAL, chat_id="+15551234567", chat_type="dm")
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-signal-no-progress-edits",
+        session_key="agent:main:signal:dm:+15551234567",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+    assert adapter.edits == []
 
 
 @pytest.mark.asyncio

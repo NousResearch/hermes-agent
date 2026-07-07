@@ -10369,20 +10369,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
-            # Always inject the reply-to pointer — even when the quoted text
-            # already appears in history. The prefix isn't deduplication, it's
-            # disambiguation: it tells the agent *which* prior message the user
-            # is referencing. History can contain the same or similar text
-            # multiple times, and without an explicit pointer the agent has to
-            # guess (or answer for both subjects). Token overhead is minimal.
+            # Inject reply context as a structured system-level note rather than
+            # a plain text prefix. The model is much more likely to respect a
+            # directive block with explicit framing than a bare "[Replying to:]"
+            # prefix buried in the user message.
             reply_snippet = event.reply_to_text[:500]
             if getattr(event, "reply_to_is_own_message", False):
                 message_text = (
-                    f'[Replying to your previous message: "{reply_snippet}"]\n\n'
+                    f'[System Note: You are being prompted about your own previous message]\n'
+                    f'[Your previous message: "{reply_snippet}"]\n'
+                    f'[Prioritize this message as the primary context for your response.]\n\n'
                     f"{message_text}"
                 )
             else:
-                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+                message_text = (
+                    f'[System Note: The user is replying to the following message from the conversation]\n'
+                    f'[Replied message: "{reply_snippet}"]\n'
+                    f'[Prioritize this message as the primary context for your response.]\n\n'
+                    f'{message_text}'
+                )
 
         if "@" in message_text:
             try:

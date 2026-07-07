@@ -7780,6 +7780,35 @@ def show_config():
     from hermes_cli.auth import get_anthropic_key
     anthropic_value = get_anthropic_key()
     print(f"  {'Anthropic':<14} {redact_key(anthropic_value)}")
+
+    # OAuth-backed providers — check credential_pool for access_tokens
+    # (auth.json), not just env vars (#20675).
+    _oauth_providers = [
+        ("nous", "Nous Portal"),
+        ("openai-codex", "OpenAI Codex"),
+        ("copilot", "GitHub Copilot"),
+        ("anthropic", "Anthropic (OAuth)"),
+        ("xai-oauth", "xAI (OAuth)"),
+    ]
+    _oauth_statuses: list[tuple[str, str]] = []
+    try:
+        from agent.credential_pool import load_pool
+        for provider_id, display_name in _oauth_providers:
+            try:
+                pool = load_pool(provider_id)
+                if pool and pool.has_credentials():
+                    _oauth_statuses.append((display_name, "OAuth token"))
+                else:
+                    _oauth_statuses.append((display_name, "not set"))
+            except Exception:
+                _oauth_statuses.append((display_name, "not set"))
+    except Exception:
+        pass
+    if _oauth_statuses:
+        print()
+        print(color("  OAuth Tokens (credential pool)", Colors.CYAN))
+        for display_name, status in _oauth_statuses:
+            print(f"  {display_name:<14} {status}")
     
     # Model settings
     print()

@@ -6104,25 +6104,29 @@ def _build_call_kwargs(
         kwargs["temperature"] = temperature
 
     if max_tokens is not None:
-        # We do NOT cap output by default. Most chat-completions providers treat
-        # an omitted max_tokens as "use the model's max output", which is what we
-        # want for auxiliary tasks (compression summaries, titles, vision, etc.) —
-        # an explicit cap only risks truncating a summary or 400-ing on providers
-        # that reject the parameter outright (e.g. GitHub Copilot / newer OpenAI
-        # GPT-5 models require max_completion_tokens, not max_tokens; ZAI vision
-        # models reject it entirely with error 1210). Omitting it sidesteps all of
-        # those wire-format quirks at once.
+        # When the caller explicitly provides a max_tokens, forward it using
+        # the provider/model-correct wire field (max_tokens vs
+        # max_completion_tokens) via auxiliary_max_tokens_param. This is
+        # used by MoA reference_max_tokens and by auxiliary callers that
+        # pass an explicit cap (e.g. title_generation max_tokens=500).
         #
-        # The one exception is the Anthropic Messages wire (MiniMax and any
-        # ``/anthropic`` endpoint reached through the OpenAI SDK wrapper), where
-        # max_tokens is a MANDATORY field — omitting it is a hard 400. Keep it only
-        # there.
+        # When max_tokens is None (the default for most auxiliary tasks), no
+        # cap is sent — most providers treat an omitted max_tokens as "use the
+        # model's max output", which is what we want for compression summaries,
+        # titles, vision, etc. Omitting also sidesteps providers that reject the
+        # parameter outright (GitHub Copilot, ZAI vision error 1210, etc.).
         #
-        # NVIDIA NIM (integrate.api.nvidia.com and local NIM endpoints) is a
-        # second exception: some models—notably minimaxai/minimax-m3—return HTTP
-        # 200 with an empty choices[] payload when max_tokens is omitted. The main
-        # NVIDIA chat path already sends an output cap via the provider profile;
-        # preserve it on the auxiliary path too.
+        # The exception is the Anthropic Messages wire (MiniMax and any
+        # /anthropic endpoint), where max_tokens is MANDATORY — omitting it is
+        # a hard 400. auxiliary_max_tokens_param returns {"max_tokens": value}
+        # for those providers, which is correct.
+        #
+        # NVIDIA NIM: some models return HTTP 200 with empty choices[] when
+        # max_tokens is omitted. The main chat path sends a cap via the
+        # provider profile; preserve it here too.
+        #
+        # If a provider rejects the param, the retry logic below catches the
+        # error and strips max_tokens/max_completion_tokens before retrying.
         _effective_base = base_url or (
             _current_custom_base_url() if provider == "custom" else ""
         )
@@ -6131,11 +6135,18 @@ def _build_call_kwargs(
             _provider_norm in {"nvidia", "nvidia-nim", "nim", "build-nvidia", "nemotron"}
             or base_url_host_matches(_effective_base, "integrate.api.nvidia.com")
         )
-        if (
-            _is_anthropic_compat_endpoint(provider, _effective_base)
-            or _is_nvidia_nim
-        ):
+        _is_anthropic_compat = _is_anthropic_compat_endpoint(provider, _effective_base)
+        if _is_anthropic_compat or _is_nvidia_nim:
+            # These require max_tokens on the wire (Anthropic-compat mandates
+            # it; NIM needs it to avoid empty responses).
             kwargs["max_tokens"] = max_tokens
+        else:
+            # Use the model-aware helper to pick max_tokens vs
+            # max_completion_tokens. The retry logic below handles any
+            # provider that rejects the param by stripping and retrying.
+            kwargs.update(
+                auxiliary_max_tokens_param(max_tokens, model=model)
+            )
 
     if tools:
         # Defensive dedup: providers like Google Vertex, Azure, and Bedrock

@@ -276,28 +276,27 @@ class TestResolveTaskProviderModel:
 
 
 class TestBuildCallKwargsMaxTokens:
-    """_build_call_kwargs should not cap output by default (#34530).
+    """_build_call_kwargs forwards max_tokens when explicitly provided.
 
-    Most chat-completions providers treat an omitted max_tokens as "use the
-    model max", which is what we want for auxiliary tasks. An explicit cap only
-    risks truncation or a wire-format 400 (GitHub Copilot / GPT-5 reject
-    max_tokens; ZAI vision rejects it entirely). The Anthropic Messages wire is
-    the one exception — max_tokens is a mandatory field there.
+    An explicit max_tokens is forwarded using the provider/model-correct wire
+    field (max_tokens vs max_completion_tokens) via auxiliary_max_tokens_param.
+    When max_tokens is None (the default), no cap is sent — most providers
+    treat an omitted max_tokens as "use the model max", which is what we want
+    for auxiliary tasks. The Anthropic Messages wire is the exception —
+    max_tokens is a mandatory field there. If a provider rejects the param,
+    the retry logic in call_llm strips it and retries.
     """
 
     @pytest.mark.parametrize(
         "provider,model,base_url",
         [
-            ("copilot", "gpt-5.4", "https://api.githubcopilot.com"),
-            ("copilot", "gpt-5.5", "https://api.githubcopilot.com"),
-            ("custom", "gpt-5", "https://api.openai.com/v1"),
             ("openrouter", "anthropic/claude-sonnet-4.6", "https://openrouter.ai/api/v1"),
             ("nous", "hermes-4", "https://inference-api.nousresearch.com/v1"),
             ("custom", "qwen", "http://localhost:8080/v1"),
             ("zai", "glm-4v-flash", "https://open.bigmodel.cn/api/paas/v4"),
         ],
     )
-    def test_omits_max_tokens_for_openai_compatible(self, provider, model, base_url):
+    def test_forwards_max_tokens_for_standard_models(self, provider, model, base_url):
         from agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
@@ -306,6 +305,42 @@ class TestBuildCallKwargsMaxTokens:
             messages=[{"role": "user", "content": "hi"}],
             max_tokens=1234,
             base_url=base_url,
+        )
+        assert kwargs.get("max_tokens") == 1234
+        assert "max_completion_tokens" not in kwargs
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url",
+        [
+            ("copilot", "gpt-5.4", "https://api.githubcopilot.com"),
+            ("copilot", "gpt-5.5", "https://api.githubcopilot.com"),
+            ("custom", "gpt-5", "https://api.openai.com/v1"),
+        ],
+    )
+    def test_uses_max_completion_tokens_for_newer_openai_models(self, provider, model, base_url):
+        """GPT-5+ / o-series models require max_completion_tokens, not max_tokens."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1234,
+            base_url=base_url,
+        )
+        assert kwargs.get("max_completion_tokens") == 1234
+        assert "max_tokens" not in kwargs
+
+    def test_omits_max_tokens_when_none(self):
+        """When max_tokens is None (default), no cap is sent."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="openrouter",
+            model="anthropic/claude-sonnet-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=None,
+            base_url="https://openrouter.ai/api/v1",
         )
         assert "max_tokens" not in kwargs
         assert "max_completion_tokens" not in kwargs

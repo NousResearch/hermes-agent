@@ -241,6 +241,24 @@ TOOLSETS = {
         "tools": ["execute_code"],
         "includes": []
     },
+
+    "code_graph": {
+        "description": (
+            "Optional read-only repository code graph tools: index into the "
+            "Hermes profile cache, search symbols, inspect neighbors, and "
+            "estimate impact. Off by default; enable via `hermes tools`."
+        ),
+        "tools": [
+            "code_graph_index",
+            "code_graph_status",
+            "code_graph_search",
+            "code_graph_symbol",
+            "code_graph_neighbors",
+            "code_graph_impact",
+            "code_graph_context",
+        ],
+        "includes": [],
+    },
     
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",

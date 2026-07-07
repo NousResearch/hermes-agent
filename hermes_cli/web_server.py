@@ -2252,6 +2252,136 @@ async def git_branch_switch_route(body: GitBranchSwitchBody):
     return await _git_op(_web_git.branch_switch, _git_path(body.path), body.branch)
 
 
+# Host TCP ports each port-binding gateway platform listens on, as
+# ``platform-name -> (config port key, adapter default)``.  Mirrors
+# ``_PORT_BINDING_PLATFORM_VALUES`` in gateway/run.py and each adapter's
+# DEFAULT_PORT / DEFAULT_WEBHOOK_PORT constant.  Used only for the dashboard's
+# gateway-topology readout — best-effort display data, not a bind source.
+_PORT_BINDING_PLATFORM_PORTS: Dict[str, Tuple[str, int]] = {
+    "webhook": ("port", 8644),
+    "api_server": ("port", 8642),
+    "msgraph_webhook": ("port", 8646),
+    "feishu": ("webhook_port", 8765),
+    "wecom_callback": ("port", 8645),
+    "bluebubbles": ("webhook_port", 8645),
+    "sms": ("webhook_port", 8080),
+    "whatsapp_cloud": ("webhook_port", 8090),
+    "line": ("port", 8646),
+}
+
+# Platform states that mean the adapter is NOT serving its port right now.
+_PLATFORM_DEAD_STATES = frozenset({"fatal", "disconnected", "stopped"})
+
+
+def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> Dict[str, int]:
+    """Best-effort map of ``platform -> host TCP port`` for one profile's gateway.
+
+    Reads the platforms the running gateway reported in its
+    ``gateway_state.json`` and resolves each port-binding platform's port from
+    the profile's ``config.yaml`` (top-level ``platforms:`` wins over
+    ``gateway.platforms:``, matching ``load_gateway_config`` precedence),
+    falling back to the adapter default.  Display-only: env-var port overrides
+    (e.g. ``WEBHOOK_PORT`` in that profile's .env) are not resolved here.
+    """
+    platforms = (runtime or {}).get("platforms") or {}
+    active = [
+        name for name, state in platforms.items()
+        if name in _PORT_BINDING_PLATFORM_PORTS
+        and isinstance(state, dict)
+        and state.get("state") not in _PLATFORM_DEAD_STATES
+    ]
+    if not active:
+        return {}
+
+    blocks: Dict[str, dict] = {}
+    try:
+        with open(profile_home / "config.yaml", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        gateway_cfg = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
+        # gateway.platforms first, top-level platforms second — later wins,
+        # matching the precedence in gateway.config.load_gateway_config().
+        for src in ((gateway_cfg or {}).get("platforms"), cfg.get("platforms")):
+            if not isinstance(src, dict):
+                continue
+            for plat_name, plat_block in src.items():
+                if isinstance(plat_block, dict):
+                    blocks.setdefault(plat_name, {}).update(plat_block)
+    except Exception:
+        blocks = {}
+
+    ports: Dict[str, int] = {}
+    for name in active:
+        port_key, default_port = _PORT_BINDING_PLATFORM_PORTS[name]
+        block = blocks.get(name) or {}
+        extra = block.get("extra") if isinstance(block.get("extra"), dict) else {}
+        raw = block.get(port_key, (extra or {}).get(port_key, default_port))
+        try:
+            ports[name] = int(raw)
+        except (TypeError, ValueError):
+            ports[name] = default_port
+    return ports
+
+
+def _collect_profile_gateway_topology() -> Dict[str, Any]:
+    """Enumerate profiles and the gateways serving them for ``/api/status``.
+
+    Returns ``{"profiles": [...], "gateway_mode": ..., "gateways": [...]}``:
+
+    * ``profiles`` — every profile on the host (default + named), from
+      ``profiles_to_serve(True)`` (the cheap enumeration chokepoint — no
+      per-profile config reads or skill counts).
+    * ``gateways`` — one entry per profile with a LIVE gateway process:
+      ``{"profile", "ports", "served_profiles"?}``.  Liveness reuses
+      ``_check_gateway_running`` so this agrees with the profiles sidebar.
+    * ``gateway_mode`` — ``"multiplex"`` when the default gateway serves
+      multiple profiles (gateway.multiplex_profiles), ``"single"`` for one
+      live gateway, ``"multiple"`` for independent per-profile gateways,
+      ``"none"`` when nothing is running.
+    """
+    try:
+        from hermes_cli.profiles import _check_gateway_running, profiles_to_serve
+        from gateway.status import read_runtime_status
+        homes = profiles_to_serve(True)
+    except Exception:
+        _log.debug("profile/gateway topology enumeration failed", exc_info=True)
+        return {"profiles": [], "gateway_mode": "unknown", "gateways": []}
+
+    profile_names = [name for name, _home in homes]
+    gateways: List[Dict[str, Any]] = []
+    multiplex = False
+    for name, home in homes:
+        try:
+            if not _check_gateway_running(home):
+                continue
+        except Exception:
+            continue
+        try:
+            runtime = read_runtime_status(home / "gateway_state.json")
+        except Exception:
+            runtime = None
+        served = [str(p) for p in ((runtime or {}).get("served_profiles") or [])]
+        if name == "default" and len(served) > 1:
+            multiplex = True
+        entry: Dict[str, Any] = {
+            "profile": name,
+            "ports": _profile_platform_ports(home, runtime),
+        }
+        if served:
+            entry["served_profiles"] = served
+        gateways.append(entry)
+
+    if multiplex:
+        mode = "multiplex"
+    elif len(gateways) > 1:
+        mode = "multiple"
+    elif len(gateways) == 1:
+        mode = "single"
+    else:
+        mode = "none"
+
+    return {"profiles": profile_names, "gateway_mode": mode, "gateways": gateways}
+
+
 @app.get("/api/status")
 async def get_status(profile: Optional[str] = None):
     status_scope = None
@@ -2456,12 +2586,23 @@ async def get_status(profile: Optional[str] = None):
         # dashboard is local-only and the caller is already inside the trust
         # envelope — the same loopback/gated split ``should_require_auth`` draws.
         if not auth_required:
+            # Profile + gateway topology: which profiles exist, whether one
+            # multiplexed gateway or several per-profile gateways serve them,
+            # and which host ports the live gateways' port-binding platforms
+            # listen on.  Enumerating profiles walks the filesystem and probes
+            # the process table, so keep it off the event loop.
+            topology = await asyncio.get_running_loop().run_in_executor(
+                None, _collect_profile_gateway_topology
+            )
             status.update({
                 "hermes_home": str(get_hermes_home()),
                 "config_path": str(get_config_path()),
                 "env_path": str(get_env_path()),
                 "gateway_pid": gateway_pid,
                 "gateway_health_url": _GATEWAY_HEALTH_URL,
+                "profiles": topology["profiles"],
+                "gateway_mode": topology["gateway_mode"],
+                "gateways": topology["gateways"],
             })
 
         return status

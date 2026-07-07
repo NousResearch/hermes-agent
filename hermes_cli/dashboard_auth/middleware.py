@@ -185,6 +185,27 @@ def _auto_sso_response(request: Request) -> Response | None:
     from hermes_cli.dashboard_auth.prefix import prefix_from_request
 
     provider = providers[0]
+    if getattr(provider, "supports_password", False):
+        # Password-capable providers do not need the OAuth redirect entry
+        # point. Send the browser to the unified login page instead so the
+        # credential form can render without hitting the unimplemented
+        # start_login flow.
+        prefix = prefix_from_request(request)
+        next_param = _safe_next_target(request)
+        resp = RedirectResponse(
+            url=(
+                f"{prefix}/login?next={next_param}"
+                if next_param
+                else f"{prefix}/login"
+            ),
+            status_code=302,
+        )
+        from hermes_cli.dashboard_auth.cookies import detect_https
+        set_sso_attempt_cookie(
+            resp, use_https=detect_https(request), prefix=prefix
+        )
+        return resp
+
     prefix = prefix_from_request(request)
     next_param = _safe_next_target(request)
     from urllib.parse import quote

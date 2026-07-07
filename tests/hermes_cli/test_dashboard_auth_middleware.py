@@ -593,3 +593,87 @@ def test_unverifiable_token_with_reachable_providers_redirects(_gated_state):
     r = client.get("/api/auth/me")
     assert r.status_code == 401
     assert "unreachable" not in r.text.lower()
+
+
+class _PasswordOnlyProvider(StubAuthProvider):
+    """A password-capable provider: same provider flags as the bundled basic plugin."""
+
+    name = "password-only"
+    display_name = "Password Only"
+    supports_password = True
+    supports_session = True
+
+    def complete_password_login(self, *, username: str, password: str) -> "Session":
+        from hermes_cli.dashboard_auth.base import InvalidCredentialsError, Session
+        import time
+
+        if username != "admin" or password != "hunter2":
+            raise InvalidCredentialsError("bad creds")
+        exp = int(time.time()) + 3600
+        return Session(
+            user_id="admin",
+            email="",
+            display_name="admin",
+            org_id="",
+            provider=self.name,
+            expires_at=exp,
+            access_token="testpw.at." + "0" * 60,
+            refresh_token="testpw.rt." + "0" * 60,
+        )
+
+
+def _complete_password_login(client, username="admin", password="hunter2"):
+    r = client.post(
+        "/auth/password-login",
+        json={
+            "provider": "password-only",
+            "username": username,
+            "password": password,
+            "next": "",
+        },
+    )
+    assert r.status_code == 200, r.text
+    return r.json()["next"]
+
+
+def test_password_only_provider_auto_ss_redirects_to_login(_gated_state):
+    """An unauthenticated browser load must not auto-redirect to /auth/login
+    for a password-capable provider; it should land on /login so the
+    credential form can render."""
+    register_provider(_PasswordOnlyProvider())
+    client = _gated_state()
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"] in ("/login", "/login?next=%2F")
+
+
+def test_password_only_provider_login_form_renders(_gated_state):
+    register_provider(_PasswordOnlyProvider())
+    client = _gated_state()
+    r = client.get("/login")
+    assert r.status_code == 200
+    assert "Sign in with Password Only" in r.text
+    assert "/auth/password-login" in r.text
+    assert "/auth/login?provider=password-only" not in r.text
+
+
+def test_password_only_provider_successful_login_returns_ok(_gated_state):
+    """POST /auth/password-login returns ok and sets session cookies."""
+    register_provider(_PasswordOnlyProvider())
+    client = _gated_state()
+    r = client.post(
+        "/auth/password-login",
+        json={
+            "provider": "password-only",
+            "username": "admin",
+            "password": "hunter2",
+            "next": "",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert any(
+        cookie.lower().startswith("hermes_session_at=")
+        for cookie in client.cookies
+    )

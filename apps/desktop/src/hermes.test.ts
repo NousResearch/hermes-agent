@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  deleteSession,
   getCronJobs,
   getGlobalModelInfo,
   getGlobalModelOptions,
@@ -153,5 +154,17 @@ describe('Hermes REST session helpers', () => {
         path: '/api/model/options?refresh=1&include_unconfigured=1'
       })
     )
+  })
+
+  it('tags session deletes for Electron routing and backend profile lookup', async () => {
+    api.mockResolvedValue({ ok: true })
+
+    await deleteSession('session-1', 'default')
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/sessions/session-1?profile=default',
+      profile: 'default',
+      method: 'DELETE'
+    })
   })
 })

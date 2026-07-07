@@ -952,6 +952,82 @@ def test_rate_limit_exit_requeues_without_counting_failure(
         assert "crashed" not in outcomes
 
 
+def test_detect_crashed_workers_reclassifies_clean_exit_via_worker_log(
+    kanban_home, monkeypatch, tmp_path,
+):
+    """When a ``-q`` worker exits rc=0 despite hitting a rate-limit wall,
+    ``detect_crashed_workers`` should inspect the worker log tail and
+    reclassify the exit as ``rate_limited`` instead of ``protocol_violation``
+    (#55445)."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(_kb, "worker_logs_dir", lambda board=None: tmp_path)
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="rl-log", assignee="a")
+        pid = 80000
+        conn.execute(
+            "UPDATE tasks SET status='running', worker_pid=?, "
+            "claim_lock=? WHERE id=?",
+            (pid, f"{host}:w0", tid),
+        )
+        conn.commit()
+        # Worker exited cleanly (rc=0) — no exit code mapping for rate limit.
+        _kb._record_worker_exit(pid, _exited_status(0))
+        # But the worker log shows the actual rate-limit error.
+        log_path = tmp_path / f"{tid}.log"
+        log_path.write_text(
+            "Error: 429 Too Many Requests — quota exhausted for today\n"
+        )
+
+        crashed = kb.detect_crashed_workers(conn)
+        assert tid not in crashed, "rate-limited log should prevent crash"
+        rl = getattr(_kb.detect_crashed_workers, "_last_rate_limited", [])
+        assert tid in rl, "should be reclassified as rate_limited"
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready", (
+            f"should requeue ready, got {task.status}"
+        )
+        assert task.consecutive_failures == 0
+
+
+def test_detect_crashed_workers_protocol_violation_when_no_rate_limit_in_log(
+    kanban_home, monkeypatch, tmp_path,
+):
+    """When a ``-q`` worker exits rc=0 and the log shows NO rate-limit
+    patterns, the original protocol-violation classification is preserved."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(_kb, "worker_logs_dir", lambda board=None: tmp_path)
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="pv", assignee="a")
+        pid = 90000
+        conn.execute(
+            "UPDATE tasks SET status='running', worker_pid=?, "
+            "claim_lock=? WHERE id=?",
+            (pid, f"{host}:w0", tid),
+        )
+        conn.commit()
+        _kb._record_worker_exit(pid, _exited_status(0))
+        # Log shows normal output — no rate-limit pattern.
+        log_path = tmp_path / f"{tid}.log"
+        log_path.write_text("Hello from the agent.\n")
+
+        crashed = kb.detect_crashed_workers(conn)
+        assert tid in crashed, "should remain protocol_violation"
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked", (
+            f"protocol_violation should block, got {task.status}"
+        )
+
+
 def test_real_crash_still_counts_and_trips_breaker(kanban_home, monkeypatch):
     """Sanity: a genuine non-zero crash (not the sentinel) still increments
     the failure counter and trips the breaker — the rate-limit carve-out is

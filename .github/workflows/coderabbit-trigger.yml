@@ -1,0 +1,30 @@
+name: Request CodeRabbit Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  request-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Request CodeRabbit and Gemini reviews
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+            try {
+              await github.rest.pulls.requestReviewers({
+                owner,
+                repo,
+                pull_number: prNumber,
+                reviewers: ['coderabbitai', 'google-gemini'],
+              });
+              core.info('Review requested from coderabbitai and google-gemini');
+            } catch (e) {
+              core.warning('Could not request reviewers: ' + e.message);
+            }

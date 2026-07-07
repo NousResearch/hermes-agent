@@ -1,16 +1,28 @@
 language: "en-US"
-tone_instructions: "Be concise. Flag correctness issues and security problems. Skip style nitpicks."
+tone_instructions: "Be concise and direct. Flag security issues like exposed API keys, missing .gitignore entries, and hardcoded credentials. Flag data loss risks. Skip style nitpicks."
 reviews:
-  profile: "chill"
+  profile: "assertive"
   auto_review:
     enabled: true
-    drafts: false
-    base_branches: ["main"]
+    drafts: true
+    base_branches: ["main", "master"]
   path_filters:
-    - "!*.lock"
-    - "!node_modules/**"
-    - "!dist/**"
-    - "!__pycache__/**"
-    - "!*.pyc"
+    - "!**/*.lock"
+    - "!**/venv/**"
+    - "!**/node_modules/**"
+    - "!**/frameworks/**"
+    - "!**/dist/**"
+    - "!**/build/**"
+    - "!**/__pycache__/**"
+    - "!**/*.pyc"
+  finishing_touches:
+    docstrings:
+      enabled: false
+  review_status: true
+  poem: false
+  collapse_walkthrough: false
+  sequence_diagrams: false
 chat:
   auto_reply: true
+knowledge_base:
+  opt_out: false

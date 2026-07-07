@@ -150,6 +150,130 @@
     });
   }
 
+  function inputFieldsForSpec(spec) {
+    function kindForInputValue(value) {
+      function kindForLiteral(literal) {
+        if (typeof literal === "boolean") return "boolean";
+        if (typeof literal === "number") return "number";
+        if (literal && typeof literal === "object") return "json";
+        return "text";
+      }
+      if (Array.isArray(value)) return "json";
+      if (value && typeof value === "object") {
+        const type = String(value.kind || value.type || "").toLowerCase();
+        if (type === "integer") return "integer";
+        if (["number", "float"].indexOf(type) !== -1) return "number";
+        if (["boolean", "bool"].indexOf(type) !== -1) return "boolean";
+        if (["object", "array"].indexOf(type) !== -1) return "json";
+        if (type === "string" || type === "text") return "text";
+        if (value.default !== undefined) return kindForLiteral(value.default);
+        if (value.example !== undefined) return kindForLiteral(value.example);
+        return "json";
+      }
+      return kindForLiteral(value);
+    }
+    function triggerInputObject(trigger) {
+      const rawInput = trigger && trigger.input;
+      if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) return {};
+      if (rawInput.type === "object") {
+        if (rawInput.properties && typeof rawInput.properties === "object" && !Array.isArray(rawInput.properties)) return rawInput.properties;
+        const schemaMetadataKeys = { type: true, required: true, additionalProperties: true, description: true, title: true, $schema: true };
+        if (Object.keys(rawInput).every(function (key) { return schemaMetadataKeys[key]; })) return {};
+      }
+      return rawInput;
+    }
+    const triggers = asArray(spec && spec.triggers);
+    const manualTrigger = triggers.find(function (trigger) {
+      if (!trigger || typeof trigger !== "object") return false;
+      return String(trigger.type || trigger.trigger_type || "") === "manual" && Object.keys(triggerInputObject(trigger)).length;
+    });
+    const inputTrigger = manualTrigger || triggers.find(function (trigger) { return Object.keys(triggerInputObject(trigger)).length; });
+    const triggerInput = inputTrigger ? triggerInputObject(inputTrigger) : {};
+    const keys = Object.keys(triggerInput);
+    if (keys.length) return keys.map(function (key) { return { name: key, kind: kindForInputValue(triggerInput[key]) }; });
+    const found = Object.create(null);
+    function addFallbackInputField(key) {
+      const rawKey = String(key || "");
+      const parts = rawKey.split(".");
+      const name = parts[0].replace(/\[.*$/, "");
+      if (!name) return;
+      const kind = parts.length > 1 || rawKey.indexOf("[") !== -1 ? "json" : "text";
+      if (kind === "json" || !found[name]) found[name] = kind;
+    }
+    const text = JSON.stringify(spec || {});
+    text.replace(/\$\{\s*input\.([a-zA-Z0-9_\-.\[\]]+)\s*\}/g, function (_, key) {
+      addFallbackInputField(key);
+      return "";
+    });
+    text.replace(/\$\.input\.([a-zA-Z0-9_\-.\[\]]+)/g, function (_, key) {
+      addFallbackInputField(key);
+      return "";
+    });
+    return Object.keys(found).sort().map(function (name) { return { name: name, kind: found[name] }; });
+  }
+
+  function inputObjectForFields(fields, values) {
+    const input = {};
+    asArray(fields).forEach(function (field) {
+      const name = field && field.name;
+      if (!name) return;
+      const raw = values && values[name];
+      if (raw === undefined || raw === null || raw === "") return;
+      if (field.kind === "number" || field.kind === "integer") {
+        const errorKind = field.kind === "integer" ? "integer" : "number";
+        const trimmed = String(raw).trim();
+        if (!trimmed) return;
+        if (field.kind === "integer" && !/^-?\d+(?:[eE][+-]?\d+)?$/.test(trimmed)) throw new Error("Invalid integer for input field " + name);
+        if (field.kind !== "integer" && !/^-?(?:\d+|\d*\.\d+)(?:[eE][+-]?\d+)?$/.test(trimmed)) throw new Error("Invalid number for input field " + name);
+        const numberValue = Number(trimmed);
+        if (!Number.isFinite(numberValue)) throw new Error("Invalid " + errorKind + " for input field " + name);
+        if (numberValue === 0 && /[1-9]/.test(trimmed.replace(/[eE].*$/, ""))) throw new Error("Invalid " + errorKind + " for input field " + name);
+        if (field.kind === "integer") {
+          if (!Number.isInteger(numberValue) || !Number.isSafeInteger(numberValue)) throw new Error("Invalid integer for input field " + name);
+        } else {
+          const fractionMatch = trimmed.match(/\.(\d+)(?:[eE][+-]?\d+)?$/);
+          if (fractionMatch && /[1-9]/.test(fractionMatch[1]) && Number.isInteger(numberValue) && Math.abs(numberValue) >= Number.MAX_SAFE_INTEGER / 10) throw new Error("Invalid number for input field " + name);
+          if (Number.isInteger(numberValue) && !Number.isSafeInteger(numberValue)) throw new Error("Invalid number for input field " + name);
+        }
+        input[name] = numberValue;
+        return;
+      }
+      if (field.kind === "boolean") {
+        if (typeof raw === "boolean") {
+          input[name] = raw;
+          return;
+        }
+        const trimmed = String(raw).trim();
+        if (!trimmed) return;
+        if (trimmed === "true") {
+          input[name] = true;
+          return;
+        }
+        if (trimmed === "false") {
+          input[name] = false;
+          return;
+        }
+        throw new Error("Invalid boolean for input field " + name);
+      }
+      if (field.kind === "json") {
+        if (raw && typeof raw === "object") {
+          input[name] = raw;
+          return;
+        }
+        const trimmed = String(raw).trim();
+        if (!trimmed) return;
+        try {
+          input[name] = JSON.parse(trimmed);
+        } catch (err) {
+          throw new Error("Invalid JSON for input field " + name);
+        }
+        return;
+      }
+      input[name] = raw;
+    });
+    return input;
+  }
+
   function statusClass(status) {
     return "hermes-workflows-badge " + (status === false ? "is-off" : "is-on");
   }
@@ -395,6 +519,12 @@
     const stateRunInputText = useState("{}");
     const runInputText = stateRunInputText[0];
     const setRunInputText = stateRunInputText[1];
+    const stateInputFieldValues = useState({});
+    const inputFieldValues = stateInputFieldValues[0];
+    const setInputFieldValues = stateInputFieldValues[1];
+    const stateShowAdvancedInputJson = useState(false);
+    const showAdvancedInputJson = stateShowAdvancedInputJson[0];
+    const setShowAdvancedInputJson = stateShowAdvancedInputJson[1];
     const stateEvents = useState([]);
     const events = stateEvents[0];
     const setEvents = stateEvents[1];
@@ -431,6 +561,18 @@
       return parseJsonObject(editorText) || draftSpec || null;
     }
 
+    function workflowIdForSpec(spec) {
+      return spec && String(spec.workflow_id || spec.id || "");
+    }
+
+    function runInputSpec() {
+      const selectedId = selectedDefinition && String(selectedDefinition.workflow_id || selectedDefinition.id || "");
+      if (selectedDefinition && selectedId === String(runWorkflowId || "")) return selectedDefinition.spec || null;
+      const spec = activeSpec();
+      if (spec && workflowIdForSpec(spec) === String(runWorkflowId || "")) return spec;
+      return null;
+    }
+
     function selectNodeForInspector(node) {
       setSelectedNode(node);
       setNodeJson(jsonBlock(node));
@@ -460,6 +602,9 @@
         const definition = res.definition || null;
         setSelectedDefinition(definition);
         setDraftSpec(definition && definition.spec ? definition.spec : null);
+        setInputFieldValues({});
+        setShowAdvancedInputJson(false);
+        setRunInputText("{}");
         setDraftResult(null);
         setRefineText("");
         if (definition && definition.spec) updateEditorText(specToEditorText(definition.spec));
@@ -579,12 +724,23 @@
         setError("Choose a workflow before running it.");
         return;
       }
+      let input = {};
+      try {
+        if (showAdvancedInputJson) {
+          input = JSON.parse(runInputText || "{}");
+        } else {
+          input = inputObjectForFields(inputFieldsForSpec(runInputSpec()), inputFieldValues);
+        }
+      } catch (err) {
+        fail(err);
+        return;
+      }
       setRunning(true);
       setError("");
       api("/definitions/" + encodeURIComponent(workflowId) + "/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input_json: runInputText }),
+        body: JSON.stringify({ input: input }),
       }).then(function (res) {
         const execution = res.execution || {};
         const executionId = execution.execution_id;
@@ -617,6 +773,9 @@
           setNodeJson("");
           setNodeMessage("");
           setDraftSpec(draft.spec);
+          setInputFieldValues({});
+          setShowAdvancedInputJson(false);
+          setRunInputText("{}");
           updateEditorText(specToEditorText(draft.spec));
         }
         setStatus("Drafted workflow from goal. Review the plan before deploy.");
@@ -648,6 +807,9 @@
         setNodeJson("");
         setNodeMessage("");
         setDraftSpec(draft.spec);
+        setInputFieldValues({});
+        setShowAdvancedInputJson(false);
+        setRunInputText("{}");
         updateEditorText(specToEditorText(draft.spec));
         setRefineText("");
         setStatus("Refined workflow draft.");
@@ -662,6 +824,9 @@
         updateEditorText(String(reader.result || ""));
         setStatus("Import YAML loaded " + safeString(file.name));
         setDraftResult(null);
+        setInputFieldValues({});
+        setShowAdvancedInputJson(false);
+        setRunInputText("{}");
         setSelectedDefinition(null);
         setNodeJson("");
         setNodeMessage("");
@@ -914,7 +1079,13 @@
         h("textarea", {
           className: "hermes-workflows-editor",
           value: editorText,
-          onChange: function (event) { setDraftResult(null); updateEditorText(event.target.value); },
+          onChange: function (event) {
+            setDraftResult(null);
+            setInputFieldValues({});
+            setShowAdvancedInputJson(false);
+            setRunInputText("{}");
+            updateEditorText(event.target.value);
+          },
         }),
         h("div", { className: "hermes-workflows-row" },
           h("button", { type: "button", disabled: validating, onClick: validateDefinition }, validating ? "Validating…" : "Validate"),
@@ -950,6 +1121,77 @@
             h("div", { className: "hermes-workflows-meta" }, safeString(id) + " · v" + safeString(definition.version))
           );
         }) : h("p", { className: "hermes-workflows-muted" }, "No workflow definitions deployed yet.")
+      );
+    }
+
+    function renderRunInputForm() {
+      const spec = runInputSpec();
+      const fields = inputFieldsForSpec(spec);
+      return h(Card, { className: "hermes-workflows-panel hermes-workflows-run-form" },
+        h("h2", null, "Run test"),
+        h("form", { className: "hermes-workflows-stack", onSubmit: runWorkflow },
+          h("label", null,
+            h("span", { className: "hermes-workflows-muted" }, "Workflow id"),
+            definitions.length ? h("select", {
+              value: runWorkflowId,
+              onChange: function (event) {
+                setRunWorkflowId(event.target.value);
+                loadDefinition(event.target.value).catch(fail);
+              },
+            }, definitions.map(function (definition) {
+              const id = definition.workflow_id || definition.id;
+              return h("option", { key: id, value: id }, id);
+            })) : h("input", {
+              value: runWorkflowId,
+              onChange: function (event) { setRunWorkflowId(event.target.value); },
+              placeholder: "workflow_id",
+            })
+          ),
+          fields.length && !showAdvancedInputJson ? fields.map(function (field) {
+            const value = inputFieldValues[field.name] === undefined ? "" : inputFieldValues[field.name];
+            const onChange = function (event) {
+              const next = Object.assign({}, inputFieldValues);
+              next[field.name] = event.target.value;
+              setInputFieldValues(next);
+            };
+            const control = field.kind === "boolean" ? h("select", {
+              value: value,
+              onChange: onChange,
+            },
+              h("option", { value: "" }, ""),
+              h("option", { value: "true" }, "true"),
+              h("option", { value: "false" }, "false")
+            ) : field.kind === "json" ? h("textarea", {
+              className: "hermes-workflows-run-input",
+              placeholder: "{} or []",
+              value: value,
+              onChange: onChange,
+            }) : h("input", {
+              type: field.kind === "number" || field.kind === "integer" ? "number" : "text",
+              step: field.kind === "number" ? "any" : field.kind === "integer" ? "1" : undefined,
+              value: value,
+              onChange: onChange,
+            });
+            return h("label", { key: field.name },
+              h("span", { className: "hermes-workflows-muted" }, field.name),
+              control
+            );
+          }) : null,
+          !fields.length && !showAdvancedInputJson ? h("p", { className: "hermes-workflows-muted" }, "No input fields detected; this test run will send an empty input object.") : null,
+          h("button", {
+            type: "button",
+            onClick: function () { setShowAdvancedInputJson(!showAdvancedInputJson); },
+          }, showAdvancedInputJson ? "Hide Advanced input JSON" : "Advanced input JSON"),
+          showAdvancedInputJson ? h("label", null,
+            h("span", { className: "hermes-workflows-muted" }, "Input JSON"),
+            h("textarea", {
+              className: "hermes-workflows-run-input",
+              value: runInputText,
+              onChange: function (event) { setRunInputText(event.target.value); },
+            })
+          ) : null,
+          h("button", { type: "submit", disabled: running, className: "hermes-workflows-primary" }, running ? "Running…" : "Run workflow")
+        )
       );
     }
 
@@ -1194,37 +1436,7 @@
             h("h2", null, "Workflow list"),
             renderDefinitionList()
           ),
-          h(Card, { className: "hermes-workflows-panel hermes-workflows-run-form" },
-            h("h2", null, "Manual run form"),
-            h("form", { className: "hermes-workflows-stack", onSubmit: runWorkflow },
-              h("label", null,
-                h("span", { className: "hermes-workflows-muted" }, "Workflow id"),
-                definitions.length ? h("select", {
-                  value: runWorkflowId,
-                  onChange: function (event) {
-                    setRunWorkflowId(event.target.value);
-                    loadDefinition(event.target.value).catch(fail);
-                  },
-                }, definitions.map(function (definition) {
-                  const id = definition.workflow_id || definition.id;
-                  return h("option", { key: id, value: id }, id);
-                })) : h("input", {
-                  value: runWorkflowId,
-                  onChange: function (event) { setRunWorkflowId(event.target.value); },
-                  placeholder: "workflow_id",
-                })
-              ),
-              h("label", null,
-                h("span", { className: "hermes-workflows-muted" }, "Input JSON"),
-                h("textarea", {
-                  className: "hermes-workflows-run-input",
-                  value: runInputText,
-                  onChange: function (event) { setRunInputText(event.target.value); },
-                })
-              ),
-              h("button", { type: "submit", disabled: running, className: "hermes-workflows-primary" }, running ? "Running…" : "Run workflow")
-            )
-          ),
+          renderRunInputForm(),
           h(Card, { className: "hermes-workflows-panel" },
             h("h2", null, "Execution list"),
             renderExecutions()

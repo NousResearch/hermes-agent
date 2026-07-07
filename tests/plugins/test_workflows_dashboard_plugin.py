@@ -397,19 +397,24 @@ def test_dashboard_bundle_is_syntax_valid_when_node_is_available():
     assert result.returncode == 0, result.stderr or result.stdout
 
 
-def _run_node_summary_rows(spec):
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node is not installed")
+def _dashboard_helper_js() -> str:
     bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
     start = bundle.index("function asArray")
     end = bundle.index("function statusClass", start)
-    helper_js = bundle[start:end]
+    return bundle[start:end]
+
+
+def _run_dashboard_function(function_name: str, args):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
     script = (
-        helper_js
-        + "\nconst spec = "
-        + json.dumps(spec)
-        + ";\nconsole.log(JSON.stringify(nodeSummaryRows(spec)));\n"
+        _dashboard_helper_js()
+        + "\nconst args = "
+        + json.dumps(args)
+        + ";\nconsole.log(JSON.stringify("
+        + function_name
+        + ".apply(null, args)));\n"
     )
     result = subprocess.run(
         [node, "-e", script],
@@ -419,6 +424,42 @@ def _run_node_summary_rows(spec):
     )
     assert result.returncode == 0, result.stderr or result.stdout
     return json.loads(result.stdout)
+
+
+def _run_dashboard_function_error(function_name: str, args) -> str:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    script = (
+        _dashboard_helper_js()
+        + "\nconst args = "
+        + json.dumps(args)
+        + ";\ntry {\n"
+        + "  console.log(JSON.stringify({ ok: true, value: "
+        + function_name
+        + ".apply(null, args) }));\n"
+        + "} catch (err) {\n"
+        + "  console.log(JSON.stringify({ ok: false, error: String((err && err.message) || err) }));\n"
+        + "  process.exitCode = 1;\n"
+        + "}\n"
+    )
+    result = subprocess.run(
+        [node, "-e", script],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0, result.stdout
+    body = json.loads(result.stdout)
+    return body["error"]
+
+
+def _run_node_summary_rows(spec):
+    return _run_dashboard_function("nodeSummaryRows", [spec])
+
+
+def _run_node_input_fields_for_spec(spec):
+    return _run_dashboard_function("inputFieldsForSpec", [spec])
 
 
 def test_dashboard_node_summary_rows_handles_real_workflow_shapes():
@@ -456,6 +497,265 @@ def test_dashboard_node_summary_rows_handles_real_workflow_shapes():
     assert high["objective"] == "Review output"
 
 
+def test_dashboard_input_fields_for_spec_uses_trigger_input_and_templates():
+    assert _run_node_input_fields_for_spec(
+        {"triggers": [{"input": {"topic": "", "count": 0}}]}
+    ) == [{"name": "topic", "kind": "text"}, {"name": "count", "kind": "number"}]
+
+    assert _run_node_input_fields_for_spec(
+        {"nodes": {"start": {"prompt": "Summarize ${ input.topic }"}}}
+    ) == [{"name": "topic", "kind": "text"}]
+
+
+def test_dashboard_input_fields_detects_jsonpath_input_references():
+    assert _run_node_input_fields_for_spec(
+        {
+            "nodes": {
+                "route": {
+                    "type": "switch",
+                    "cases": [
+                        {"path": "$.input.side", "equals": "left", "then": "left"},
+                        {
+                            "condition": {"path": "$.input.min_score", "gte": 10},
+                            "then": "high",
+                        },
+                    ],
+                }
+            }
+        }
+    ) == [{"name": "min_score", "kind": "text"}, {"name": "side", "kind": "text"}]
+
+
+def test_dashboard_input_fields_mark_nested_input_references_as_json():
+    assert _run_node_input_fields_for_spec(
+        {
+            "nodes": {
+                "start": {"prompt": "Use ${ input.user.name } and ${ input.topic }"}
+            },
+            "edges": [{"from": "start", "to": "done", "condition": "$.input.user.age"}],
+        }
+    ) == [{"name": "topic", "kind": "text"}, {"name": "user", "kind": "json"}]
+
+
+def test_dashboard_input_fields_mark_array_index_paths_as_json():
+    assert _run_node_input_fields_for_spec(
+        {
+            "nodes": {"start": {"prompt": "Use ${ input.items[0].name }"}},
+            "edges": [{"from": "start", "to": "done", "condition": "$.input.users[0].age"}],
+        }
+    ) == [{"name": "items", "kind": "json"}, {"name": "users", "kind": "json"}]
+
+
+def test_dashboard_input_fields_prefers_manual_trigger_input():
+    assert _run_node_input_fields_for_spec(
+        {
+            "triggers": [
+                {"type": "schedule", "input": {"cron": ""}},
+                {"type": "manual", "input": {"topic": "", "count": 0}},
+            ]
+        }
+    ) == [{"name": "topic", "kind": "text"}, {"name": "count", "kind": "number"}]
+
+
+def test_dashboard_input_fields_ignores_malformed_triggers_before_manual_input():
+    assert _run_node_input_fields_for_spec(
+        {
+            "triggers": [
+                None,
+                "bad",
+                {"type": "manual", "input": {"amount": {"type": "float"}}},
+            ]
+        }
+    ) == [{"name": "amount", "kind": "number"}]
+
+
+def test_dashboard_input_fields_treats_properties_as_field_unless_schema_object():
+    assert _run_node_input_fields_for_spec(
+        {"triggers": [{"type": "manual", "input": {"properties": "literal", "topic": ""}}]}
+    ) == [{"name": "properties", "kind": "text"}, {"name": "topic", "kind": "text"}]
+
+    assert _run_node_input_fields_for_spec(
+        {
+            "triggers": [
+                {
+                    "type": "manual",
+                    "input": {"type": "object", "properties": {"amount": {"type": "number"}}},
+                }
+            ]
+        }
+    ) == [{"name": "amount", "kind": "number"}]
+
+
+def test_dashboard_input_fields_ignores_incomplete_object_schema_metadata():
+    assert (
+        _run_node_input_fields_for_spec(
+            {
+                "triggers": [
+                    {
+                        "type": "manual",
+                        "input": {
+                            "type": "object",
+                            "required": ["topic"],
+                            "additionalProperties": False,
+                        },
+                    }
+                ]
+            }
+        )
+        == []
+    )
+
+
+def test_dashboard_input_fields_keeps_plain_input_field_named_type():
+    assert _run_node_input_fields_for_spec(
+        {"triggers": [{"type": "manual", "input": {"type": "object", "topic": ""}}]}
+    ) == [{"name": "type", "kind": "text"}, {"name": "topic", "kind": "text"}]
+
+
+def test_dashboard_input_fields_treats_literal_numbers_as_number_not_integer():
+    assert _run_node_input_fields_for_spec(
+        {"triggers": [{"type": "manual", "input": {"threshold": 1}}]}
+    ) == [{"name": "threshold", "kind": "number"}]
+
+    assert _run_dashboard_function(
+        "inputObjectForFields",
+        [[{"name": "threshold", "kind": "number"}], {"threshold": "1.5"}],
+    ) == {"threshold": 1.5}
+
+
+def test_dashboard_input_fields_preserves_integer_boolean_and_json_kinds():
+    assert _run_node_input_fields_for_spec(
+        {
+            "triggers": [
+                {
+                    "type": "manual",
+                    "input": {
+                        "type": "object",
+                        "properties": {
+                            "count": {"type": "integer"},
+                            "enabled": {"type": "boolean"},
+                            "payload": {"type": "object"},
+                            "tags": {"type": "array"},
+                        },
+                    },
+                }
+            ]
+        }
+    ) == [
+        {"name": "count", "kind": "integer"},
+        {"name": "enabled", "kind": "boolean"},
+        {"name": "payload", "kind": "json"},
+        {"name": "tags", "kind": "json"},
+    ]
+
+
+def test_dashboard_input_object_for_fields_filters_stale_values_and_converts_numbers():
+    result = _run_dashboard_function(
+        "inputObjectForFields",
+        [
+            [
+                {"name": "topic", "kind": "text"},
+                {"name": "count", "kind": "number"},
+                {"name": "blank_count", "kind": "number"},
+                {"name": "space_count", "kind": "number"},
+            ],
+            {
+                "topic": "release",
+                "count": "3",
+                "blank_count": "",
+                "space_count": "   ",
+                "stale": "do-not-send",
+            },
+        ],
+    )
+
+    assert result == {"topic": "release", "count": 3}
+
+    assert _run_dashboard_function(
+        "inputObjectForFields",
+        [[{"name": "count", "kind": "number"}], {"count": "1.5"}],
+    ) == {"count": 1.5}
+
+    assert _run_dashboard_function(
+        "inputObjectForFields",
+        [[{"name": "count", "kind": "number"}], {"count": "0.0"}],
+    ) == {"count": 0}
+
+
+def test_dashboard_input_object_for_fields_preserves_typed_values():
+    assert _run_dashboard_function(
+        "inputObjectForFields",
+        [
+            [
+                {"name": "count", "kind": "integer"},
+                {"name": "enabled", "kind": "boolean"},
+                {"name": "payload", "kind": "json"},
+            ],
+            {"count": "2", "enabled": "false", "payload": '{"ok":true}'},
+        ],
+    ) == {"count": 2, "enabled": False, "payload": {"ok": True}}
+
+
+def test_dashboard_input_object_for_nested_json_fallback_field_submits_object():
+    assert _run_dashboard_function(
+        "inputObjectForFields",
+        [[{"name": "user", "kind": "json"}], {"user": '{"name":"Alice"}'}],
+    ) == {"user": {"name": "Alice"}}
+
+
+def test_dashboard_input_object_for_fields_rejects_invalid_or_non_finite_numbers():
+    for raw in ["abc", "0x10", "0b10", "1e309", "NaN", "Infinity", "9007199254740993"]:
+        error = _run_dashboard_function_error(
+            "inputObjectForFields",
+            [[{"name": "count", "kind": "number"}], {"count": raw}],
+        )
+        assert "Invalid number for input field count" in error
+
+    error = _run_dashboard_function_error(
+        "inputObjectForFields",
+        [[{"name": "count", "kind": "number"}], {"count": "1e-1000"}],
+    )
+    assert "Invalid number for input field count" in error
+
+    error = _run_dashboard_function_error(
+        "inputObjectForFields",
+        [[{"name": "count", "kind": "integer"}], {"count": "1e-1000"}],
+    )
+    assert "Invalid integer for input field count" in error
+
+
+def test_dashboard_input_object_for_fields_rejects_invalid_typed_values():
+    error = _run_dashboard_function_error(
+        "inputObjectForFields",
+        [[{"name": "count", "kind": "integer"}], {"count": "1.5"}],
+    )
+    assert "Invalid integer for input field count" in error
+
+    error = _run_dashboard_function_error(
+        "inputObjectForFields",
+        [[{"name": "count", "kind": "integer"}], {"count": "9007199254740991.1"}],
+    )
+    assert "Invalid integer for input field count" in error
+
+    error = _run_dashboard_function_error(
+        "inputObjectForFields",
+        [[{"name": "count", "kind": "number"}], {"count": "9007199254740991.1"}],
+    )
+    assert "Invalid number for input field count" in error
+
+    error = _run_dashboard_function_error(
+        "inputObjectForFields",
+        [[{"name": "enabled", "kind": "boolean"}], {"enabled": "maybe"}],
+    )
+    assert "Invalid boolean" in error
+
+    error = _run_dashboard_function_error(
+        "inputObjectForFields",
+        [[{"name": "payload", "kind": "json"}], {"payload": "not-json"}],
+    )
+    assert "Invalid JSON" in error
+
+
 def test_dashboard_bundle_registers_plugin_without_build_scaffolding():
     bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
     assert "window.__HERMES_PLUGIN_SDK__" in bundle
@@ -465,6 +765,86 @@ def test_dashboard_bundle_registers_plugin_without_build_scaffolding():
         line.lstrip().startswith(("import ", "export ")) for line in bundle.splitlines()
     )
     assert "__webpack_require__" not in bundle
+
+
+def test_dashboard_bundle_uses_generated_input_form_for_runs():
+    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+
+    assert "Run test" in bundle
+    assert "Advanced input JSON" in bundle
+    assert "renderRunInputForm" in bundle
+    assert "inputFieldValues" in bundle
+    assert "Manual run form" not in bundle
+
+
+def test_dashboard_run_workflow_uses_form_values_unless_advanced_json():
+    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    run_pos = bundle.index("function runWorkflow")
+    run_body = bundle[run_pos : bundle.index("function draftFromGoal", run_pos)]
+    render_pos = bundle.index("function renderRunInputForm")
+    render_body = bundle[render_pos : bundle.index("function renderExecutions", render_pos)]
+
+    assert "function runInputSpec" in bundle
+    assert "showAdvancedInputJson" in run_body
+    assert "inputFieldValues" in run_body
+    assert 'JSON.parse(runInputText || "{}")' in run_body
+    assert "inputFieldsForSpec(runInputSpec())" in run_body
+    assert "body: JSON.stringify({ input: input })" in run_body
+    assert "input_json" not in run_body
+    assert "inputFieldsForSpec(spec)" in render_body or "runInputSpec()" in render_body
+    assert 'field.kind === "integer"' in render_body
+    assert 'field.kind === "boolean"' in render_body
+    assert 'field.kind === "json"' in render_body
+    assert 'step: field.kind === "number" ? "any" : field.kind === "integer" ? "1" : undefined' in render_body
+
+
+def test_dashboard_bundle_clears_run_input_values_when_active_spec_changes():
+    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    load_pos = bundle.index("function loadDefinition")
+    load_body = bundle[load_pos : bundle.index("function loadEvents", load_pos)]
+    draft_pos = bundle.index("function draftFromGoal")
+    draft_body = bundle[draft_pos : bundle.index("function refineWorkflow", draft_pos)]
+    refine_pos = bundle.index("function refineWorkflow")
+    refine_body = bundle[refine_pos : bundle.index("function importDefinitionFile", refine_pos)]
+    import_pos = bundle.index("function importDefinitionFile")
+    import_body = bundle[import_pos : bundle.index("function exportYAML", import_pos)]
+
+    def assert_resets_advanced_input_state(body):
+        reset_pos = body.index("setInputFieldValues({})")
+        assert "setShowAdvancedInputJson(false)" in body
+        assert "setRunInputText(\"{}\")" in body
+        assert reset_pos < body.index("setShowAdvancedInputJson(false)")
+        assert reset_pos < body.index("setRunInputText(\"{}\")")
+
+    assert load_body.index("setDraftSpec(") < load_body.index("setInputFieldValues({})")
+    assert draft_body.index("if (draft.spec)") < draft_body.index("setInputFieldValues({})")
+    assert refine_body.index("if (!draft.spec)") < refine_body.index("setInputFieldValues({})")
+    assert import_body.index("reader.onload = function") < import_body.index(
+        "setInputFieldValues({})"
+    )
+    for body in (load_body, draft_body, refine_body, import_body):
+        assert_resets_advanced_input_state(body)
+
+
+def test_dashboard_bundle_clears_run_input_values_when_advanced_yaml_changes():
+    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    advanced = bundle[
+        bundle.index("function renderAdvancedYaml") : bundle.index(
+            "function renderDefinitionList"
+        )
+    ]
+    change = advanced[
+        advanced.index("onChange: function") : advanced.index(
+            "}),", advanced.index("onChange: function")
+        )
+    ]
+
+    for marker in [
+        "setInputFieldValues({})",
+        "setShowAdvancedInputJson(false)",
+        'setRunInputText("{}")',
+    ]:
+        assert marker in change
 
 
 def test_dashboard_bundle_is_prompt_first_not_yaml_first():
@@ -739,7 +1119,7 @@ def test_dashboard_bundle_contains_workflow_mvp_api_and_ui_markers():
     for marker in [
         "Workflow list",
         "Advanced YAML",
-        "Manual run form",
+        "Run test",
         "Execution list",
         "Execution detail timeline",
         "Visual workflow editor",
@@ -1061,7 +1441,7 @@ def test_dashboard_bundle_clears_draft_metadata_when_selecting_or_importing_defi
     advanced_end = bundle.index("function renderDefinitionList", advanced_pos)
     advanced_body = bundle[advanced_pos:advanced_end]
     textarea_pos = advanced_body.index("onChange: function")
-    textarea_block = advanced_body[textarea_pos:textarea_pos + 200]
+    textarea_block = advanced_body[textarea_pos : advanced_body.index("}),", textarea_pos)]
     assert "setDraftResult(null)" in textarea_block
     update_pos = textarea_block.index("updateEditorText(event.target.value)")
     clear_pos = textarea_block.index("setDraftResult(null)")

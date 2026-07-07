@@ -47,7 +47,7 @@ the split is enforced by a real capability boundary, not a style preference:
 |---|---|---|
 | Use for | DETERMINISTIC fan-out — fetch N URLs, parse N files, run N shell commands, template N outputs | LLM-JUDGMENT fan-out — classify, review, decide, write, refute, audit per item |
 | The script holds | the loop + branching + intermediate vars (real Python) | n/a — you call it once with a `tasks=[...]` array; each task is its own isolated agent |
-| Tools available inside | `web_search, web_extract, read_file, write_file, search_files, terminal, patch` ONLY (the `SANDBOX_ALLOWED_TOOLS` set) | configured child toolsets, subject to delegate restrictions (leaf children are stripped of `delegate_task`, `clarify`, `memory`, `send_message`, `execute_code` — see `DELEGATE_BLOCKED_TOOLS`) |
+| Tools available inside | `web_search, web_extract, read_file, write_file, search_files, terminal, patch` ONLY (the `SANDBOX_ALLOWED_TOOLS` set) | full toolsets per child (configurable) |
 | Can it call `delegate_task`? | **NO.** `delegate_task` is NOT in `SANDBOX_ALLOWED_TOOLS`. Do not write a script that imports it — it will fail. | itself, if `role='orchestrator'` and `max_spawn_depth>=2` |
 | Concurrency | you control it in Python (`ThreadPoolExecutor`, batches) | `delegation.max_concurrent_children` (default 3; raise in config.yaml) |
 | Cost shape | cheap — most steps are tool calls, no per-item LLM unless you call `web_search`/aux | one model call tree PER child task — multiplies linearly, can be very expensive |
@@ -81,11 +81,7 @@ So a "workflow" in Hermes is one of:
    path would time out or when the user must be able to walk away.
 
 Never promise "background, resumable, hundreds of agents over days" from a plain
-`delegate_task` call. For a durable multi-agent workflow *graph*, the kanban
-swarm is the right fit. For simpler durable/out-of-turn cases there are lighter
-options too: a `cronjob` one-shot or scheduled job, or a managed
-`terminal(background=True, notify_on_complete=True)` process — both survive the
-turn without standing up a full task graph.
+`delegate_task` call. That is the kanban path or nothing.
 
 ## Workflow recipe (foreground)
 
@@ -94,28 +90,19 @@ turn without standing up a full task graph.
    (else it's serial, not fan-out — see when_not_to_use).
 2. **Deterministic pre-pass (Layer A).** In one `execute_code` script, gather the
    manifest: list the files, extract the candidate sites, fetch the raw sources,
-   compute anything regex/parse can compute. Write a manifest to a **unique
-   per-run** directory — `/tmp/wf_<name>_<uuid>/manifest.jsonl` (one unit per
-   line), never a bare `/tmp/wf_<name>/` that a prior interrupted run could have
-   left stale outputs in. This is the "plan in code." Print the unit count and
-   the run dir, and stop.
+   compute anything regex/parse can compute. Write a manifest to
+   `/tmp/wf_<name>/manifest.jsonl` (one unit per line). This is the "plan in
+   code." Print a count and stop.
 3. **Size the fan-out** against `delegate-task-output-patterns`: chunk so each
    child handles ~8-12 mechanical file edits OR ~2000-3000 lines of reading OR
-   ~50-70KB of corpus. Look at the LARGEST unit, not the average. One
-   `delegate_task(tasks=[...])` call is bounded by
-   `delegation.max_concurrent_children` (default 3) — it does NOT queue hundreds
-   of tasks internally. For larger fan-out, issue bounded waves yourself (loop:
-   one batch, collect, next batch) or have the user raise the config
-   intentionally.
+   ~50-70KB of corpus. Look at the LARGEST unit, not the average.
 4. **LLM-judgment fan-out (Layer B).** Issue ONE `delegate_task` with a `tasks=[]`
    array, one task per chunk. Each task: reads its slice from the manifest,
-   emits delimiter-separated lines to `/tmp/wf_<name>_<uuid>/out_<i>.csv`, prints a
+   emits delimiter-separated lines to `/tmp/wf_<name>/out_<i>.csv`, prints a
    status word, stops. Do NOT depend on the `summary` field for content.
-5. **Synthesize on the parent.** Read the out_*.csv files yourself — verify the
-   file count and freshness (each was written this run) so a stale or missing
-   output from an interrupted child isn't silently read as success — then merge
-   and present. The cross-cutting "whole picture" step stays on the parent — only
-   the per-unit work fanned out.
+5. **Synthesize on the parent.** Read the out_*.csv files yourself, merge,
+   present. The cross-cutting "whole picture" step stays on the parent — only the
+   per-unit work fanned out.
 
 ## The novel mechanic worth building: adversarial convergence
 
@@ -168,14 +155,9 @@ inherent, not a bug. Two real multipliers:
 - **Each Layer-B child is a full agent tree.** 20 children ≈ 20× the model calls.
   `delegation.max_concurrent_children` only bounds *concurrency*, not *total*.
 - **Hermes aux/subagent model defaults to main-model-first.** Children inherit
-  the parent's (often expensive reasoning) model. `delegate_task` does NOT expose
-  a per-task `model` or `profile` field — its per-task keys are
-  `{goal, context, toolsets, role}`. To run the fan-out cheaper you either route
-  delegation globally via `delegation` config (model/provider applied to all
-  children), or — for genuinely model/profile-scoped work — use cron, the kanban
-  swarm, or a separate Hermes process. The cleanest lever for mechanical fan-out
-  is still Layer A: do the deterministic part in a script with no per-item LLM at
-  all.
+  the parent's (often expensive reasoning) model unless you pin a cheaper one.
+  For mechanical fan-out, pass a cheaper model per task if the config supports it,
+  or do the deterministic part in Layer A (no per-item LLM at all).
 
 Always: start on a SCOPED slice (one directory, 20 records, 10 endpoints), prove
 the recipe end-to-end, report the token cost, THEN offer to run it at full scale.

@@ -1761,10 +1761,12 @@ class MCPServerTask:
         finally:
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
-                    t.cancel()
                     try:
+                        t.cancel()
                         await t
-                    except (asyncio.CancelledError, Exception):
+                    except (asyncio.CancelledError, RuntimeError):
+                        pass
+                    except Exception:
                         pass
 
         if self._shutdown_event.is_set():
@@ -1797,10 +1799,12 @@ class MCPServerTask:
         finally:
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
-                    t.cancel()
                     try:
+                        t.cancel()
                         await t
-                    except (asyncio.CancelledError, Exception):
+                    except (asyncio.CancelledError, RuntimeError):
+                        pass
+                    except Exception:
                         pass
         if self._shutdown_event.is_set():
             return "shutdown"

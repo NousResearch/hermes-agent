@@ -1447,6 +1447,7 @@ AUTHOR_MAP = {
     "nicsequenzy@gmail.com": "polnikale",  # PR #35717 (discover Playwright headless_shell browser)
     "wasdhkzk@gmail.com": "whyhkzk",  # PR #32407 (sandbox-mirror inner-container guard; commits authored as whyhkzk + zhukun)
     "leonard@sellem.me": "leonardsellem",  # PR #37405 (desktop WS origin guard on remote/Tailscale binds)
+    "baris@writeme.com": "isair",  # PR #39758 (warn when snapshotting/backing up an already-malformed SQLite DB)
 }
 
 

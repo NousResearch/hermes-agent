@@ -40,6 +40,7 @@ export interface ThemeBrand {
   prompt: string
   welcome: string
   goodbye: string
+  tagline: string
   tool: string
   helpHeader: string
 }
@@ -239,6 +240,7 @@ const BRAND: ThemeBrand = {
   prompt: '❯',
   welcome: 'Type your message or /help for commands.',
   goodbye: 'Goodbye! ⚕',
+  tagline: 'Nous Research · Messenger of the Digital Gods',
   tool: '┊',
   helpHeader: '(^_^)? Commands'
 }
@@ -580,6 +582,7 @@ export function fromSkin(
         prompt: cleanPromptSymbol(branding.prompt_symbol, d.brand.prompt),
         welcome: branding.welcome ?? d.brand.welcome,
         goodbye: branding.goodbye ?? d.brand.goodbye,
+        tagline: branding.tagline ?? d.brand.tagline,
         tool: toolPrefix || d.brand.tool,
         helpHeader: branding.help_header ?? (helpHeader || d.brand.helpHeader)
       },

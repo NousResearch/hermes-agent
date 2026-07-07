@@ -46,6 +46,7 @@ describe('DEFAULT_THEME', () => {
     expect(DEFAULT_THEME.brand.name).toBe('Hermes Agent')
     expect(DEFAULT_THEME.brand.prompt).toBe('❯')
     expect(DEFAULT_THEME.brand.tool).toBe('┊')
+    expect(DEFAULT_THEME.brand.tagline).toBe('Nous Research · Messenger of the Digital Gods')
   })
 
   it('has color palette', async () => {
@@ -242,10 +243,11 @@ describe('fromSkin', () => {
 
   it('overrides branding', async () => {
     const { fromSkin } = await importThemeWithCleanEnv()
-    const { brand } = fromSkin({}, { agent_name: 'TestBot', prompt_symbol: '$' })
+    const { brand } = fromSkin({}, { agent_name: 'TestBot', prompt_symbol: '$', tagline: 'Custom subtitle' })
 
     expect(brand.name).toBe('TestBot')
     expect(brand.prompt).toBe('$')
+    expect(brand.tagline).toBe('Custom subtitle')
   })
 
   it('normalizes skin prompt symbols to trimmed single-line text', async () => {

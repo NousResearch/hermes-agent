@@ -70,6 +70,33 @@ def test_build_welcome_banner_uses_normalized_toolset_names():
     assert "web_tools:" not in output
 
 
+def test_build_welcome_banner_uses_skin_tagline():
+    """The classic/Rich banner reads branding.tagline instead of hardcoding Nous Research."""
+    with (
+        patch.object(model_tools, "check_tool_availability", return_value=(["web"], [])),
+        patch.object(banner, "get_available_skills", return_value={}),
+        patch.object(banner, "get_update_result", return_value=None),
+        patch.object(tools.mcp_tool, "get_mcp_status", return_value=[]),
+        patch.object(
+            banner,
+            "_skin_branding",
+            side_effect=lambda key, fallback="": "Custom subtitle" if key == "tagline" else fallback,
+        ),
+    ):
+        console = Console(record=True, force_terminal=False, color_system=None, width=160)
+        banner.build_welcome_banner(
+            console=console,
+            model="anthropic/test-model",
+            cwd="/tmp/project",
+            tools=[{"function": {"name": "read_file"}}],
+            get_toolset_for_tool=lambda n: "file",
+        )
+
+    output = console.export_text()
+    assert "Custom subtitle" in output
+    assert "Nous Research" not in output
+
+
 def test_build_welcome_banner_title_is_hyperlinked_to_release():
     """Panel title (version label) is wrapped in an OSC-8 hyperlink to the GitHub release."""
     import io

@@ -432,13 +432,51 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     # Google Gemini
     (
         "google",
+        "gemini-3.5-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.50"),
+        output_cost_per_million=Decimal("9.00"),
+        cache_read_cost_per_million=Decimal("0.15"),
+        cache_write_cost_per_million=Decimal("1.50"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-07-07",
+    ),
+    (
+        "google",
+        "gemini-3.1-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("12.00"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        cache_write_cost_per_million=Decimal("2.00"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-07-07",
+    ),
+    (
+        "google",
+        "gemini-3.1-flash-lite",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.25"),
+        output_cost_per_million=Decimal("1.50"),
+        cache_read_cost_per_million=Decimal("0.025"),
+        cache_write_cost_per_million=Decimal("0.25"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-07-07",
+    ),
+    (
+        "google",
         "gemini-2.5-pro",
     ): PricingEntry(
         input_cost_per_million=Decimal("1.25"),
         output_cost_per_million=Decimal("10.00"),
+        cache_read_cost_per_million=Decimal("0.125"),
+        cache_write_cost_per_million=Decimal("1.25"),
         source="official_docs_snapshot",
         source_url="https://ai.google.dev/pricing",
-        pricing_version="google-pricing-2026-03-16",
+        pricing_version="google-pricing-2026-07-07",
     ),
     (
         "google",
@@ -446,9 +484,11 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     ): PricingEntry(
         input_cost_per_million=Decimal("0.15"),
         output_cost_per_million=Decimal("0.60"),
+        cache_read_cost_per_million=Decimal("0.015"),
+        cache_write_cost_per_million=Decimal("0.15"),
         source="official_docs_snapshot",
         source_url="https://ai.google.dev/pricing",
-        pricing_version="google-pricing-2026-03-16",
+        pricing_version="google-pricing-2026-07-07",
     ),
     (
         "google",
@@ -456,9 +496,11 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     ): PricingEntry(
         input_cost_per_million=Decimal("0.10"),
         output_cost_per_million=Decimal("0.40"),
+        cache_read_cost_per_million=Decimal("0.01"),
+        cache_write_cost_per_million=Decimal("0.10"),
         source="official_docs_snapshot",
         source_url="https://ai.google.dev/pricing",
-        pricing_version="google-pricing-2026-03-16",
+        pricing_version="google-pricing-2026-07-07",
     ),
     # AWS Bedrock — pricing per the Bedrock pricing page.
     # Bedrock charges the same per-token rates as the model provider but
@@ -606,11 +648,15 @@ def resolve_billing_route(
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"minimax", "minimax-cn"}:
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
-    # Vertex AI hosts the same Gemini models as Google AI Studio; price them
-    # off the gemini official-docs snapshot. Strip the "google/" vendor prefix
-    # the OpenAI-compat endpoint requires so the pricing key matches.
-    if provider_name == "vertex" or base_url_host_matches(base_url or "", "aiplatform.googleapis.com"):
-        return BillingRoute(provider="gemini", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    # Google AI Studio (Gemini) and Vertex AI host the same Gemini models.
+    # Price them off the official docs snapshot (keys start with provider='google').
+    # Support both 'google' and 'gemini' and 'vertex' as provider names.
+    if (
+        provider_name in {"google", "gemini", "vertex"}
+        or base_url_host_matches(base_url or "", "aiplatform.googleapis.com")
+        or base_url_host_matches(base_url or "", "generativelanguage.googleapis.com")
+    ):
+        return BillingRoute(provider="google", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and "localhost" in base):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")

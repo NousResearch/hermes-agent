@@ -2249,6 +2249,33 @@ This compaction should PRIORITISE preserving all information related to the focu
             if not self.quiet_mode:
                 logger.info("Compression sanitizer: removed %d orphaned tool result(s)", len(orphaned_results))
 
+        # 1b. Dedup duplicate tool_call_ids — keep only the last occurrence.
+        # After compression or SMR summarisation, a single tool_call_id can
+        # appear in multiple tool messages (e.g. the original result survives
+        # in the tail while the summary re-inserts a back-reference).  Strict
+        # providers (DeepSeek) reject this with HTTP 400 "Duplicate value for
+        # 'tool_call_id'" (#58327).
+        seen_call_ids: set = set()
+        deduped_count = 0
+        deduped = []
+        for m in reversed(messages):
+            if m.get("role") == "tool":
+                cid = m.get("tool_call_id")
+                if cid and cid in seen_call_ids:
+                    deduped_count += 1
+                    continue
+                if cid:
+                    seen_call_ids.add(cid)
+            deduped.append(m)
+        if deduped_count:
+            messages = list(reversed(deduped))
+            if not self.quiet_mode:
+                logger.info(
+                    "Compression sanitizer: removed %d duplicate tool result(s) "
+                    "(same tool_call_id)",
+                    deduped_count,
+                )
+
         # 2. Strip orphaned tool_calls from assistant messages whose results
         #    were dropped.  Stripping is preferred over inserting stub results
         #    because stubs can be dropped by downstream repair_message_sequence

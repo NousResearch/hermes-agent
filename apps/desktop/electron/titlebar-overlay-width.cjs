@@ -1,6 +1,9 @@
 'use strict'
 
 const OVERLAY_FALLBACK_WIDTH = 144
+// Transparent WCO — renderer chrome shows through. rgba(0,0,0,0) can fall back
+// to GetFrameColor() on some Electron builds; rgba(1,0,0,0) is the escape hatch.
+const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
 
 /**
  * Static pre-layout reservation (px) for the right-side native window-controls
@@ -40,4 +43,42 @@ function macTitleBarOverlayHeight({ darwinMajor = 0, titlebarHeight = 0 } = {}) 
   return darwinMajor >= MACOS_TAHOE_DARWIN_MAJOR ? 0 : titlebarHeight
 }
 
-module.exports = { MACOS_TAHOE_DARWIN_MAJOR, OVERLAY_FALLBACK_WIDTH, macTitleBarOverlayHeight, nativeOverlayWidth }
+/**
+ * Options to pass to BrowserWindow `titleBarOverlay`.
+ *
+ * WSLg needs the Electron overlay just like native Windows and plain Linux.
+ * Disabling it while using `titleBarStyle: "hidden"` leaves a frameless window
+ * with no visible min/max/close buttons on common WSLg builds.
+ *
+ * @param {{ isMac?: boolean, isWindows?: boolean, isWsl?: boolean, darwinMajor?: number, titlebarHeight?: number, symbolColor?: string }} opts
+ */
+function titleBarOverlayOptions({
+  isMac = false,
+  isWindows = false,
+  isWsl = false,
+  darwinMajor = 0,
+  titlebarHeight = 0,
+  symbolColor = '#242424'
+} = {}) {
+  void isWindows
+  void isWsl
+
+  if (isMac) {
+    return { height: macTitleBarOverlayHeight({ darwinMajor, titlebarHeight }) }
+  }
+
+  return {
+    color: TITLEBAR_OVERLAY_COLOR,
+    height: titlebarHeight,
+    symbolColor
+  }
+}
+
+module.exports = {
+  MACOS_TAHOE_DARWIN_MAJOR,
+  OVERLAY_FALLBACK_WIDTH,
+  TITLEBAR_OVERLAY_COLOR,
+  macTitleBarOverlayHeight,
+  nativeOverlayWidth,
+  titleBarOverlayOptions
+}

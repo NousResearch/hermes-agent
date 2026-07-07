@@ -52,7 +52,7 @@ const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readWslWindowsClipboardImage } = require('./wsl-clipboard-image.cjs')
 const {
   nativeOverlayWidth: computeNativeOverlayWidth,
-  macTitleBarOverlayHeight
+  titleBarOverlayOptions
 } = require('./titlebar-overlay-width.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { readLiveUpdateMarker, writeUpdateMarker } = require('./update-marker.cjs')
@@ -537,41 +537,22 @@ function getWindowBackgroundColor() {
   return nativeTheme.shouldUseDarkColors ? '#111111' : '#f7f7f7'
 }
 
-// Transparent WCO — renderer chrome shows through. rgba(0,0,0,0) can fall back
-// to GetFrameColor() on some Electron builds; rgba(1,0,0,0) is the escape hatch.
-const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
-
 function getTitleBarOverlayOptions() {
-  if (IS_MAC) {
-    // Tahoe (Darwin 25+) misplaces the traffic lights when the overlay has a
-    // nonzero height (electron#49183); 0 there keeps them at the configured
-    // inset. See macTitleBarOverlayHeight.
-    return { height: macTitleBarOverlayHeight({ darwinMajor: DARWIN_MAJOR, titlebarHeight: TITLEBAR_HEIGHT }) }
-  }
-
-  // WSLg paints WCO via the RDP host's own min/max/close, so requesting
-  // an Electron overlay there just leaves a dead gap. Plain Linux (KDE,
-  // GNOME) can use the native overlay — let it through.
-  if (!IS_WINDOWS && IS_WSL) {
-    return false
-  }
-
-  return {
-    color: TITLEBAR_OVERLAY_COLOR,
-    height: TITLEBAR_HEIGHT,
+  return titleBarOverlayOptions({
+    isMac: IS_MAC,
+    darwinMajor: DARWIN_MAJOR,
+    titlebarHeight: TITLEBAR_HEIGHT,
     symbolColor:
       rendererTitleBarTheme && isHexColor(rendererTitleBarTheme.foreground)
         ? rendererTitleBarTheme.foreground
         : nativeTheme.shouldUseDarkColors
           ? '#f7f7f7'
           : '#242424'
-  }
+  })
 }
 
 // Push refreshed overlay options to a live window after a theme/appearance
-// change. No-op only on plain (non-WSL) Linux, where getTitleBarOverlayOptions()
-// returns false; the try/catch additionally guards builds where
-// setTitleBarOverlay isn't supported.
+// change. The try/catch guards builds where setTitleBarOverlay isn't supported.
 function applyTitleBarOverlay(win) {
   const options = getTitleBarOverlayOptions()
   if (!options || typeof options !== 'object') {

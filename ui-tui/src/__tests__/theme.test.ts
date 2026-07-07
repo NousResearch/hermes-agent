@@ -34,6 +34,31 @@ async function importThemeWithCleanEnv() {
   return importThemeWithEnv()
 }
 
+function hexRgb(hex: string): [number, number, number] {
+  const normalized = hex.replace(/^#/, '')
+
+  return [
+    Number.parseInt(normalized.slice(0, 2), 16),
+    Number.parseInt(normalized.slice(2, 4), 16),
+    Number.parseInt(normalized.slice(4, 6), 16)
+  ]
+}
+
+function hslSaturation(hex: string): number {
+  const [red, green, blue] = hexRgb(hex).map(channel => channel / 255)
+  const max = Math.max(red, green, blue)
+  const min = Math.min(red, green, blue)
+
+  if (max === min) {
+    return 0
+  }
+
+  const lightness = (max + min) / 2
+  const delta = max - min
+
+  return lightness > 0.5 ? delta / (2 - max - min) : delta / (max + min)
+}
+
 afterEach(() => {
   vi.unstubAllEnvs()
   vi.resetModules()
@@ -64,6 +89,20 @@ describe('LIGHT_THEME', () => {
     expect(LIGHT_THEME.color.accent).not.toBe('#FFBF00')
     expect(LIGHT_THEME.color.muted).not.toBe('#B8860B')
     expect(LIGHT_THEME.color.statusWarn).not.toBe('#FFD700')
+  })
+
+  it('uses neutral dark foregrounds for readable assistant text on light terminals', async () => {
+    const { LIGHT_THEME } = await importThemeWithCleanEnv()
+
+    for (const color of [
+      LIGHT_THEME.color.text,
+      LIGHT_THEME.color.muted,
+      LIGHT_THEME.color.label,
+      LIGHT_THEME.color.sessionLabel,
+      LIGHT_THEME.color.sessionBorder
+    ]) {
+      expect(hslSaturation(color)).toBeLessThan(0.35)
+    }
   })
 
   it('keeps the same shape as DARK_THEME', async () => {

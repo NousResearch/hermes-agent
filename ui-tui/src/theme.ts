@@ -301,37 +301,36 @@ export const DARK_THEME: Theme = {
   bannerHero: ''
 }
 
-// Light-terminal palette: darker golds/ambers that stay legible on white
-// backgrounds. Same shape as DARK_THEME so `fromSkin` still layers on top
-// cleanly (#11300).
+// Light-terminal palette: neutral dark foregrounds with restrained amber
+// accents. Same shape as DARK_THEME so `fromSkin` still layers on top cleanly.
 export const LIGHT_THEME: Theme = {
   color: {
-    primary: '#8B6914',
-    accent: '#A0651C',
-    border: '#7A4F1F',
-    text: '#3D2F13',
-    muted: '#7A5A0F',
-    completionBg: '#F5F5F5',
-    completionCurrentBg: mix('#F5F5F5', '#A0651C', 0.25),
-    completionMetaBg: '#F5F5F5',
-    completionMetaCurrentBg: mix('#F5F5F5', '#A0651C', 0.25),
+    primary: '#6F4E00',
+    accent: '#8A4F12',
+    border: '#6B4A1F',
+    text: '#1F2933',
+    muted: '#52616B',
+    completionBg: '#FAFAF7',
+    completionCurrentBg: mix('#FAFAF7', '#6F8FB7', 0.26),
+    completionMetaBg: '#FAFAF7',
+    completionMetaCurrentBg: mix('#FAFAF7', '#D4A64C', 0.24),
 
-    label: '#7A5A0F',
+    label: '#5B6472',
     ok: '#2E7D32',
     error: '#C62828',
     warn: '#E65100',
 
-    prompt: '#2B2014',
-    sessionLabel: '#7A5A0F',
-    sessionBorder: '#7A5A0F',
+    prompt: '#1F2933',
+    sessionLabel: '#5B6472',
+    sessionBorder: '#5B6472',
 
-    statusBg: '#F5F5F5',
-    statusFg: '#333333',
+    statusBg: '#FAFAF7',
+    statusFg: '#1F2933',
     statusGood: '#2E7D32',
-    statusWarn: '#8B6914',
+    statusWarn: '#6F4E00',
     statusBad: '#D84315',
     statusCritical: '#B71C1C',
-    selectionBg: '#D4E4F7',
+    selectionBg: '#DCEAF7',
 
     diffAdded: 'rgb(200,240,200)',
     diffRemoved: 'rgb(240,200,200)',

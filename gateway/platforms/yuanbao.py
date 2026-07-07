@@ -4853,20 +4853,32 @@ class MessageSender:
         reply_to: Optional[str] = None,
     ) -> dict:
         """Send group text message, auto-converting @nickname to TIMCustomElem."""
-        msg_body = self._build_msg_body_with_mentions(text, group_code)
+        msg_body = await self._build_msg_body_with_mentions(text, group_code)
         return await self.send_group_msg_body(group_code, msg_body, reply_to)
 
     # @mention pattern: (whitespace or start) + @ + nickname + (whitespace or end)
     _AT_USER_RE = re.compile(r'(?:(?<=\s)|(?<=^))@(\S+?)(?=\s|$)', re.MULTILINE)
 
-    def _build_msg_body_with_mentions(self, text: str, group_code: str) -> list:
+    async def _build_msg_body_with_mentions(self, text: str, group_code: str) -> list:
         """Parse @nickname patterns and build mixed TIMTextElem + TIMCustomElem msg_body."""
+        # Try cache first
         cached = self._adapter._member_cache.get(group_code)
+        members: list = []
         if cached:
             ts, member_list = cached
-            members = member_list if (time.time() - ts < self._adapter.MEMBER_CACHE_TTL_S) else []
-        else:
-            members = []
+            if time.time() - ts < self._adapter.MEMBER_CACHE_TTL_S:
+                members = member_list
+
+        # Cache empty or stale — refresh from server
+        if not members:
+            await self._adapter._group_query.get_group_member_list_raw(group_code)
+            cached = self._adapter._member_cache.get(group_code)
+            if cached:
+                ts, member_list = cached
+                if time.time() - ts < self._adapter.MEMBER_CACHE_TTL_S:
+                    members = member_list
+
+        # Still no data after refresh — fall back to plain text
         if not members:
             return [{"msg_type": "TIMTextElem", "msg_content": {"text": text}}]
 

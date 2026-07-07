@@ -1291,8 +1291,28 @@ class PluginManager:
             self._plugins.clear()
             self._hooks.clear()
             self._middleware.clear()
+            # Deregister plugin-owned tools and platforms from the
+            # global registries BEFORE clearing the tracking sets.
+            # Without this, re-discovery would hit registry conflicts
+            # (same name + different toolset -> silently rejected).
+            _plugin_tools = list(self._plugin_tool_names)
             self._plugin_tool_names.clear()
+            for _name in _plugin_tools:
+                try:
+                    from tools.registry import registry as _tr
+                    _tr.deregister(_name)
+                except Exception:
+                    pass
+            _plugin_platforms = list(self._plugin_platform_names)
             self._plugin_platform_names.clear()
+            for _name in _plugin_platforms:
+                try:
+                    from gateway.platform_registry import (
+                        platform_registry as _pr,
+                    )
+                    _pr.unregister(_name)
+                except Exception:
+                    pass
             self._cli_commands.clear()
             self._plugin_commands.clear()
             self._plugin_skills.clear()

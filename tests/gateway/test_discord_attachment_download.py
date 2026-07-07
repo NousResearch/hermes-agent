@@ -286,6 +286,8 @@ class TestCacheDiscordDocument:
         resp = AsyncMock()
         resp.status = 200
         resp.read = AsyncMock(return_value=_PDF_BYTES)
+        resp.content = MagicMock()
+        resp.content.read = AsyncMock(return_value=_PDF_BYTES)
         resp.__aenter__ = AsyncMock(return_value=resp)
         resp.__aexit__ = AsyncMock(return_value=False)
 

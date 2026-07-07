@@ -39,6 +39,20 @@ _SECRET_SOURCES: dict[str, str] = {}
 _APPLIED_HOMES: set[str] = set()
 
 
+def _stderr_note(message: str) -> None:
+    """Best-effort diagnostic to stderr.
+
+    Daemon/cron processes can end up with an orphaned stderr pipe (reader
+    gone); a plain print() then raises BrokenPipeError and aborts whatever
+    triggered the dotenv load (2026-07-07 midnight cron failures). Env
+    loading must never fail over a diagnostic message.
+    """
+    try:
+        print(message, file=sys.stderr)
+    except OSError:
+        pass
+
+
 def get_secret_source(env_var: str) -> str | None:
     """Return the label of the secret source that supplied ``env_var``, if any.
 
@@ -126,20 +140,18 @@ def _sanitize_loaded_credentials() -> None:
         _WARNED_KEYS.add(key)
         stripped = len(value) - len(cleaned)
         detail = _format_offending_chars(value) or "non-printable"
-        print(
+        _stderr_note(
             f"  Warning: {key} contained {stripped} non-ASCII character"
             f"{'s' if stripped != 1 else ''} ({detail}) — stripped so the "
-            f"key can be sent as an HTTP header.",
-            file=sys.stderr,
+            f"key can be sent as an HTTP header."
         )
-        print(
+        _stderr_note(
             "  This usually means the key was copy-pasted from a PDF, "
             "rich-text editor, or web page that substituted lookalike\n"
             "  Unicode glyphs for ASCII letters. If authentication fails "
             "(e.g. \"API key not valid\"), re-copy the key from the\n"
             "  provider's dashboard and run `hermes setup` (or edit the "
-            ".env file in a plain-text editor).",
-            file=sys.stderr,
+            ".env file in a plain-text editor)."
         )
 
 
@@ -338,22 +350,15 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         # came from BSM rather than .env.
         for name in result.applied:
             _SECRET_SOURCES[name] = "bitwarden"
-        print(
+        _stderr_note(
             f"  Bitwarden Secrets Manager: applied {len(result.applied)} "
             f"secret{'s' if len(result.applied) != 1 else ''} "
-            f"({', '.join(sorted(result.applied))})",
-            file=sys.stderr,
+            f"({', '.join(sorted(result.applied))})"
         )
     if result.error:
-        print(
-            f"  Bitwarden Secrets Manager: {result.error}",
-            file=sys.stderr,
-        )
+        _stderr_note(f"  Bitwarden Secrets Manager: {result.error}")
     for warn in result.warnings:
-        print(
-            f"  Bitwarden Secrets Manager: {warn}",
-            file=sys.stderr,
-        )
+        _stderr_note(f"  Bitwarden Secrets Manager: {warn}")
 
 
 def _load_secrets_config(home_path: Path) -> dict:

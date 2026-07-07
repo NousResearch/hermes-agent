@@ -55,6 +55,28 @@ def _http_500(message: str = "workflow assistant failed") -> HTTPException:
     return HTTPException(status_code=500, detail=message)
 
 
+def _assistant_validation_http() -> HTTPException:
+    return HTTPException(
+        status_code=400,
+        detail={
+            "code": "workflow_assistant_validation_error",
+            "message": "Workflow assistant returned a draft that failed validation.",
+            "hint": "Revise the request, use a template, or switch to Advanced YAML.",
+        },
+    )
+
+
+def _assistant_runtime_http() -> HTTPException:
+    return HTTPException(
+        status_code=502,
+        detail={
+            "code": "workflow_assistant_runtime_error",
+            "message": "Workflow assistant failed before returning a valid draft.",
+            "hint": "Check workflow assistant provider/model configuration, then retry or use Advanced YAML.",
+        },
+    )
+
+
 async def _read_body(request: Request) -> Any:
     raw = await request.body()
     if not raw or not raw.strip():
@@ -305,11 +327,14 @@ def draft_definition(req: WorkflowDraftRequest) -> dict[str, Any]:
         result = workflows_assistant.draft_workflow_with_default_runner(req.goal)
     except HTTPException:
         raise
-    except (workflows_assistant.AssistantValidationError, ValueError, ValidationError) as exc:
+    except workflows_assistant.AssistantValidationError as exc:
+        logger.info("workflow draft validation failed: %s", exc)
+        raise _assistant_validation_http() from exc
+    except (ValueError, ValidationError) as exc:
         raise _http_400(exc) from exc
     except Exception as exc:
-        logger.exception("workflow draft failed")
-        raise _http_500() from exc
+        logger.exception("workflow draft runtime failed: %s", type(exc).__name__)
+        raise _assistant_runtime_http() from exc
     return {"draft": result.to_dict()}
 
 
@@ -333,11 +358,14 @@ def refine_definition(req: WorkflowRefineRequest) -> dict[str, Any]:
         raise _http_404(exc) from exc
     except HTTPException:
         raise
+    except workflows_assistant.AssistantValidationError as exc:
+        logger.info("workflow refine validation failed: %s", exc)
+        raise _assistant_validation_http() from exc
     except (ValueError, ValidationError) as exc:
         raise _http_400(exc) from exc
     except Exception as exc:
-        logger.exception("workflow refine failed")
-        raise _http_500() from exc
+        logger.exception("workflow refine runtime failed: %s", type(exc).__name__)
+        raise _assistant_runtime_http() from exc
     return {"draft": result.to_dict()}
 
 

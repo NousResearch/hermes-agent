@@ -341,10 +341,31 @@ def test_definition_draft_endpoint_redacts_unexpected_runtime_errors(client, mon
 
     r = client.post("/api/plugins/workflows/definitions/draft", json={"goal": "Build demo"})
 
-    assert r.status_code == 500
-    assert r.json()["detail"] == "workflow assistant failed"
+    assert r.status_code == 502
+    detail = r.json()["detail"]
+    assert detail["code"] == "workflow_assistant_runtime_error"
+    assert "Check workflow assistant provider/model configuration" in detail["hint"]
     assert "secret" not in r.text
     assert "abc123" not in r.text
+
+
+def test_definition_draft_endpoint_returns_validation_hint(client, monkeypatch):
+    import hermes_dashboard_plugin_workflows_test as plugin
+
+    def fake_draft(goal):
+        raise plugin.workflows_assistant.AssistantValidationError(
+            "assistant draft failed validation (invalid JSON)"
+        )
+
+    monkeypatch.setattr(plugin.workflows_assistant, "draft_workflow_with_default_runner", fake_draft)
+
+    r = client.post("/api/plugins/workflows/definitions/draft", json={"goal": "draft this"})
+
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert detail["code"] == "workflow_assistant_validation_error"
+    assert "Advanced YAML" in detail["hint"]
+    assert "draft this" not in r.text
 
 
 def test_definition_refine_endpoint_uses_existing_spec(client, monkeypatch):
@@ -429,10 +450,34 @@ def test_definition_refine_endpoint_redacts_unexpected_runtime_errors(client, mo
         json={"spec": PASS_SPEC, "instruction": "Rename it"},
     )
 
-    assert r.status_code == 500
-    assert r.json()["detail"] == "workflow assistant failed"
+    assert r.status_code == 502
+    detail = r.json()["detail"]
+    assert detail["code"] == "workflow_assistant_runtime_error"
+    assert "Check workflow assistant provider/model configuration" in detail["hint"]
     assert "secret" not in r.text
     assert "abc123" not in r.text
+
+
+def test_definition_refine_endpoint_returns_validation_hint(client, monkeypatch):
+    import hermes_dashboard_plugin_workflows_test as plugin
+
+    def fake_refine(spec, instruction):
+        raise plugin.workflows_assistant.AssistantValidationError(
+            "assistant draft failed validation (unsupported workflow primitive)"
+        )
+
+    monkeypatch.setattr(plugin.workflows_assistant, "refine_workflow_with_default_runner", fake_refine)
+
+    r = client.post(
+        "/api/plugins/workflows/definitions/refine",
+        json={"spec": PASS_SPEC, "instruction": "Rename it"},
+    )
+
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert detail["code"] == "workflow_assistant_validation_error"
+    assert "Advanced YAML" in detail["hint"]
+    assert "Rename it" not in r.text
 
 
 def test_manifest_points_to_plugin_api():

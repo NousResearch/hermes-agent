@@ -29,6 +29,7 @@ from agent.prompt_builder import (
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
+    HERMES_AGENT_HELP_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
@@ -53,6 +54,15 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_help_guidance_avoids_zai_waf_blocked_literal(self):
+        # Z.AI's coding-plan WAF (api.z.ai) rejects any request whose SYSTEM
+        # prompt contains the exact literal "You run on Hermes Agent", with a
+        # misleading HTTP 429 / code 1305 "temporarily overloaded" response
+        # (#47685, #53002, #56816 — the blocked-literal set drifts over time).
+        # Keep the identity statement, avoid the currently blocked literal.
+        assert "You run on Hermes Agent" not in HERMES_AGENT_HELP_GUIDANCE
+        assert "Hermes Agent (by Nous Research)" in HERMES_AGENT_HELP_GUIDANCE
 
 
 # =========================================================================

@@ -72,6 +72,10 @@ def _make_runner(session_db, adapter=None):
     runner._evict_cached_agent = MagicMock()
     runner._release_running_agent_state = MagicMock()
     runner._session_key_for_source = lambda src: build_session_key(src)
+    # Owner guard + origin resolution — permissive by default; tests override.
+    runner._resume_target_allowed = AsyncMock(return_value=True)
+    runner._gateway_session_origin_for_id = lambda sid: None
+    runner._resume_row_visible = AsyncMock(return_value=True)
     return runner
 
 
@@ -234,22 +238,22 @@ class TestBranchDiscordThread:
 
 class TestMergeCommand:
 
-    def _runner_with_summary(self, session_db, adapter, summary="BRANCH SUMMARY BODY"):
+    def _runner_with_summary(self, session_db, adapter=None, summary="SUMMARY BODY"):
         runner = _make_runner(session_db, adapter)
-        # Stub the summarizer so we don't hit a live LLM.
         fake = MagicMock()
         fake._generate_summary = MagicMock(return_value=summary)
         runner._build_merge_summarizer = lambda: fake
         return runner
 
+    # --- Thread form: /merge (no arg) inside a branched Discord thread --------
+
     @pytest.mark.asyncio
-    async def test_merge_folds_summary_into_parent_and_archives(self, session_db):
+    async def test_merge_thread_folds_into_parent_and_archives(self, session_db):
         adapter = MagicMock()
         adapter.send = AsyncMock()
         adapter.archive_thread = AsyncMock(return_value=True)
         runner = self._runner_with_summary(session_db, adapter)
 
-        # Parent session + branch session (branch links to parent).
         _seed_session(session_db, "parent_sess", title="Parent Work")
         _seed_session(session_db, "branch_sess", title="Explore X", parent="parent_sess")
 
@@ -263,7 +267,6 @@ class TestMergeCommand:
             {"role": "user", "content": "explore this"},
             {"role": "assistant", "content": "explored"},
         ]
-        # Parent is live in the store (reverse lookup for eviction).
         parent_src = _discord_source(chat_type="group", chat_id="parent_chan")
         runner.session_store.lookup_by_session_id.return_value = _entry(
             build_session_key(parent_src), "parent_sess", parent_src
@@ -271,36 +274,29 @@ class TestMergeCommand:
 
         result = await runner._handle_merge_command(_event("/merge", source))
 
-        # The parent transcript now has exactly one appended user-role fold.
+        # Exactly one labeled thread-fold into the PARENT transcript.
         parent_msgs = session_db.get_messages_as_conversation("parent_sess")
         folds = [m for m in parent_msgs
                  if m.get("role") == "user"
                  and "BRANCHED THREAD MERGED" in str(m.get("content", ""))]
         assert len(folds) == 1
-        assert "BRANCH SUMMARY BODY" in folds[0]["content"]
+        assert "SUMMARY BODY" in folds[0]["content"]
 
-        # A note was posted to the PARENT channel (not the thread).
+        # Note posted to the PARENT channel; thread archived; confirm says so.
         adapter.send.assert_awaited()
-        note_target = adapter.send.await_args.args[0]
-        assert note_target == "parent_chan"
-
-        # The thread was archived, and the confirmation says so.
+        assert adapter.send.await_args.args[0] == "parent_chan"
         adapter.archive_thread.assert_awaited_once()
-        assert "archived" in result.lower() or "merged" in result.lower()
-
-        # Parent's cached agent was evicted so the fold is live next turn.
+        assert "archived" in result.lower()
         runner._evict_cached_agent.assert_called()
 
     @pytest.mark.asyncio
-    async def test_merge_uses_branched_from_marker_when_no_parent_col(self, session_db):
-        """A branch may carry its parent only in model_config._branched_from."""
+    async def test_merge_thread_uses_branched_from_marker(self, session_db):
         adapter = MagicMock()
         adapter.send = AsyncMock()
         adapter.archive_thread = AsyncMock(return_value=True)
         runner = self._runner_with_summary(session_db, adapter)
 
         _seed_session(session_db, "parent_sess", title="Parent Work")
-        # No parent_session_id column — only the marker.
         _seed_session(session_db, "branch_sess", title="Explore",
                       model_config={"_branched_from": "parent_sess"})
 
@@ -310,9 +306,7 @@ class TestMergeCommand:
         )
         current = _entry(build_session_key(source), "branch_sess", source)
         runner.session_store.get_or_create_session.return_value = current
-        runner.session_store.load_transcript.return_value = [
-            {"role": "user", "content": "x"},
-        ]
+        runner.session_store.load_transcript.return_value = [{"role": "user", "content": "x"}]
         runner.session_store.lookup_by_session_id.return_value = None
 
         await runner._handle_merge_command(_event("/merge", source))
@@ -320,65 +314,166 @@ class TestMergeCommand:
         assert any("BRANCHED THREAD MERGED" in str(m.get("content", ""))
                    for m in parent_msgs)
 
+    # --- Named form: /merge <name>, any platform -----------------------------
+
     @pytest.mark.asyncio
-    async def test_merge_noop_non_discord(self, session_db):
+    async def test_merge_named_folds_into_target_any_platform(self, session_db):
+        """/merge <title> on Telegram folds this session's summary into the named one."""
         runner = self._runner_with_summary(session_db, adapter=None)
+
+        _seed_session(session_db, "target_sess", title="Target Convo")
+        _seed_session(session_db, "current_sess", title="Here")
+
         source = SessionSource(
             platform=Platform.TELEGRAM, user_id="u", chat_id="c",
-            user_name="t", chat_type="group", thread_id="th",
+            user_name="t", chat_type="dm",
         )
-        result = await runner._handle_merge_command(_event("/merge", source))
-        assert "discord" in result.lower()
-
-    @pytest.mark.asyncio
-    async def test_merge_noop_not_a_thread(self, session_db):
-        adapter = MagicMock()
-        runner = self._runner_with_summary(session_db, adapter)
-        source = _discord_source(chat_type="group", chat_id="chan")
-        result = await runner._handle_merge_command(_event("/merge", source))
-        assert "thread" in result.lower()
-
-    @pytest.mark.asyncio
-    async def test_merge_noop_not_a_branch(self, session_db):
-        adapter = MagicMock()
-        runner = self._runner_with_summary(session_db, adapter)
-        # A thread whose session has NO parent link.
-        _seed_session(session_db, "orphan_sess", title="Lonely")
-        source = _discord_source(
-            chat_type="thread", chat_id="t3", thread_id="t3",
-            parent_chat_id="chan",
-        )
-        current = _entry(build_session_key(source), "orphan_sess", source)
+        current = _entry(build_session_key(source), "current_sess", source)
         runner.session_store.get_or_create_session.return_value = current
+        runner.session_store.load_transcript.return_value = [
+            {"role": "user", "content": "some work here"},
+            {"role": "assistant", "content": "done"},
+        ]
+        runner.session_store.lookup_by_session_id.return_value = None
+
+        result = await runner._handle_merge_command(_event("/merge Target Convo", source))
+
+        target_msgs = session_db.get_messages_as_conversation("target_sess")
+        folds = [m for m in target_msgs
+                 if m.get("role") == "user"
+                 and "MERGED SESSION" in str(m.get("content", ""))]
+        assert len(folds) == 1
+        assert "SUMMARY BODY" in folds[0]["content"]
+        assert "merged into" in result.lower()
+        # current session's transcript is NOT mutated (read-only).
+        cur_msgs = session_db.get_messages_as_conversation("current_sess")
+        assert not any("MERGED SESSION" in str(m.get("content", "")) for m in cur_msgs)
+
+    @pytest.mark.asyncio
+    async def test_merge_named_writes_md_record(self, session_db, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        runner = self._runner_with_summary(session_db, adapter=None)
+        _seed_session(session_db, "target_sess", title="Target")
+        _seed_session(session_db, "current_sess", title="Source Here")
+        source = SessionSource(platform=Platform.TELEGRAM, user_id="u", chat_id="c",
+                               user_name="t", chat_type="dm")
+        current = _entry(build_session_key(source), "current_sess", source)
+        runner.session_store.get_or_create_session.return_value = current
+        runner.session_store.load_transcript.return_value = [{"role": "user", "content": "x"}]
+        runner.session_store.lookup_by_session_id.return_value = None
+
+        result = await runner._handle_merge_command(_event("/merge Target", source))
+
+        merges_dir = tmp_path / ".hermes" / "merges"
+        files = list(merges_dir.glob("*.md"))
+        assert len(files) == 1
+        body = files[0].read_text()
+        assert "SUMMARY BODY" in body and "Target" in body
+        assert "full record" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_merge_named_blocked_cross_owner(self, session_db):
+        """Owner guard: refuse merging into a session you don't own."""
+        runner = self._runner_with_summary(session_db, adapter=None)
+        runner._resume_target_allowed = AsyncMock(return_value=False)  # not owner
+
+        _seed_session(session_db, "target_sess", title="Someone Elses")
+        _seed_session(session_db, "current_sess", title="Here")
+        source = SessionSource(platform=Platform.TELEGRAM, user_id="u", chat_id="c",
+                               user_name="t", chat_type="dm")
+        current = _entry(build_session_key(source), "current_sess", source)
+        runner.session_store.get_or_create_session.return_value = current
+
+        result = await runner._handle_merge_command(_event("/merge Someone Elses", source))
+        # Nothing folded; blocked message returned.
+        target_msgs = session_db.get_messages_as_conversation("target_sess")
+        assert not any("MERGED SESSION" in str(m.get("content", "")) for m in target_msgs)
+        assert "own" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_merge_named_not_found(self, session_db):
+        runner = self._runner_with_summary(session_db, adapter=None)
+        _seed_session(session_db, "current_sess", title="Here")
+        source = SessionSource(platform=Platform.TELEGRAM, user_id="u", chat_id="c",
+                               user_name="t", chat_type="dm")
+        current = _entry(build_session_key(source), "current_sess", source)
+        runner.session_store.get_or_create_session.return_value = current
+        result = await runner._handle_merge_command(_event("/merge NoSuchName", source))
+        assert "no session" in result.lower() or "matching" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_merge_same_session_refused(self, session_db):
+        runner = self._runner_with_summary(session_db, adapter=None)
+        _seed_session(session_db, "current_sess", title="Here")
+        source = SessionSource(platform=Platform.TELEGRAM, user_id="u", chat_id="c",
+                               user_name="t", chat_type="dm")
+        current = _entry(build_session_key(source), "current_sess", source)
+        runner.session_store.get_or_create_session.return_value = current
+        # Resolve the name to the SAME id as current.
+        result = await runner._handle_merge_command(_event("/merge current_sess", source))
+        assert "already in" in result.lower() or "different target" in result.lower()
+
+    # --- No-arg, not a branched thread → list mergeable sessions -------------
+
+    @pytest.mark.asyncio
+    async def test_merge_no_arg_lists_mergeable_sessions(self, session_db):
+        runner = self._runner_with_summary(session_db, adapter=None)
+        _seed_session(session_db, "current_sess", title="Here")
+        _seed_session(session_db, "other_a", title="Alpha")
+        _seed_session(session_db, "other_b", title="Beta")
+        source = SessionSource(platform=Platform.TELEGRAM, user_id="u", chat_id="c",
+                               user_name="t", chat_type="dm")
+        current = _entry(build_session_key(source), "current_sess", source)
+        runner.session_store.get_or_create_session.return_value = current
+
         result = await runner._handle_merge_command(_event("/merge", source))
-        assert "branch" in result.lower()
+        # Lists titled sessions; does NOT fold anything.
+        assert "merge into" in result.lower() or "Alpha" in result or "Beta" in result
+        assert "MERGED SESSION" not in result
 
     @pytest.mark.asyncio
     async def test_merge_no_summary_does_not_fold(self, session_db):
-        adapter = MagicMock()
-        adapter.send = AsyncMock()
-        adapter.archive_thread = AsyncMock(return_value=True)
-        # Summarizer returns None → nothing folded.
-        runner = self._runner_with_summary(session_db, adapter, summary=None)
-
-        _seed_session(session_db, "parent_sess", title="Parent")
-        _seed_session(session_db, "branch_sess", title="Explore", parent="parent_sess")
-        source = _discord_source(
-            chat_type="thread", chat_id="t4", thread_id="t4",
-            parent_chat_id="chan",
-        )
-        current = _entry(build_session_key(source), "branch_sess", source)
+        runner = self._runner_with_summary(session_db, adapter=None, summary=None)
+        _seed_session(session_db, "target_sess", title="Target")
+        _seed_session(session_db, "current_sess", title="Here")
+        source = SessionSource(platform=Platform.TELEGRAM, user_id="u", chat_id="c",
+                               user_name="t", chat_type="dm")
+        current = _entry(build_session_key(source), "current_sess", source)
         runner.session_store.get_or_create_session.return_value = current
-        runner.session_store.load_transcript.return_value = [
-            {"role": "user", "content": "x"},
-        ]
+        runner.session_store.load_transcript.return_value = [{"role": "user", "content": "x"}]
 
-        result = await runner._handle_merge_command(_event("/merge", source))
-        parent_msgs = session_db.get_messages_as_conversation("parent_sess")
-        assert not any("BRANCHED THREAD MERGED" in str(m.get("content", ""))
-                       for m in parent_msgs)
-        adapter.archive_thread.assert_not_awaited()
+        result = await runner._handle_merge_command(_event("/merge Target", source))
+        target_msgs = session_db.get_messages_as_conversation("target_sess")
+        assert not any("MERGED SESSION" in str(m.get("content", "")) for m in target_msgs)
         assert "summary" in result.lower() or "nothing" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_merge_purges_old_records(self, session_db, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        import os as _os, time as _time
+        runner = self._runner_with_summary(session_db, adapter=None)
+        merges_dir = tmp_path / ".hermes" / "merges"
+        merges_dir.mkdir(parents=True)
+        # An old record (40 days) + a fresh one.
+        old = merges_dir / "old.md"
+        old.write_text("stale")
+        old_time = _time.time() - 40 * 86400
+        _os.utime(old, (old_time, old_time))
+        fresh = merges_dir / "fresh.md"
+        fresh.write_text("recent")
+
+        _seed_session(session_db, "target_sess", title="Target")
+        _seed_session(session_db, "current_sess", title="Here")
+        source = SessionSource(platform=Platform.TELEGRAM, user_id="u", chat_id="c",
+                               user_name="t", chat_type="dm")
+        current = _entry(build_session_key(source), "current_sess", source)
+        runner.session_store.get_or_create_session.return_value = current
+        runner.session_store.load_transcript.return_value = [{"role": "user", "content": "x"}]
+        runner.session_store.lookup_by_session_id.return_value = None
+
+        await runner._handle_merge_command(_event("/merge Target", source))
+        assert not old.exists()   # 40-day-old record purged
+        assert fresh.exists()     # fresh record kept
 
 
 class TestMergeCommandDef:
@@ -389,3 +484,4 @@ class TestMergeCommandDef:
         assert merge is not None
         assert merge.gateway_only is True
         assert merge.category == "Session"
+        assert merge.args_hint == "[name]"

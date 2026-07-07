@@ -88,8 +88,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<platform>", cli_only=True),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
-    CommandDef("merge", "Merge a branched Discord thread back into its parent session", "Session",
-               gateway_only=True),
+    CommandDef("merge", "Merge a summary of this session into another session (branched thread, or a named session)", "Session",
+               gateway_only=True, args_hint="[name]"),
     CommandDef("compress", "Compress conversation context (add 'here [N]' to keep recent N turns; --preview shows what would happen)", "Session",
                aliases=("compact",), args_hint="[here [N] | focus topic | --preview|--dry-run]"),
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
@@ -1165,7 +1165,10 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+#   - merge: niche session-management command (fold this session's summary into
+#     another); reached via /hermes merge on Slack so it doesn't displace a
+#     higher-frequency native slash at the 50-command cap. Native everywhere else.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "merge"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

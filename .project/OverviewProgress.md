@@ -2,17 +2,18 @@
 > อ่านตามลำดับ: plan.md (plan_id: GRD) → decisions.md → hermes-standard/REQUIREMENTS.md (บัญชีความต้องการ 66 ข้อ)
 
 # Overview & Progress — Hermes Agent
-อัปเดตล่าสุด: 2026-07-07 · branch งาน: `feature/plan-guardrails` (แตกจาก main `5aa135e7f`) · ป้าย: [fact] เว้นแต่ระบุ
+อัปเดตล่าสุด: 2026-07-08 (คืน Use Continue) · branch งาน: `feature/plan-guardrails` (แตกจาก main `5aa135e7f`) · ป้าย: [fact] เว้นแต่ระบุ
 
 ## สถานะล่าสุด
-- **แผนใหม่ plan_id: GRD "ระบบกันแผนหาย กัน AI ทำงานมั่ว" อนุมัติแล้ว 2026-07-07** — Fable สอบสวนจาก log จริง 3 สาย เจอต้นตอ 6 ข้อ (รายละเอียดใน plan.md + decisions.md) · เจ้าของอนุมัติ 4 เฟสรวดเดียว · Codex เขียน + Claude ตรวจ + gate-run ตัดสิน [fact]
+- **แผน GRD ทำครบทั้ง 4 เฟสแล้ว รอเจ้าของกด merge PR เดียว** — P1 สัญญางานผูกแผน (plan-anchor + relay-call บังคับ + กฎ re-anchor ใน vault) · P2 memory-audit ตัวเทียบความจำ · P3 ด่านกัน stash กวาดงานคนอื่น · P4 ล้างความจำเก่า — ทุกชิ้นผ่านผู้ตรวจต่างค่าย + เทสต์ scoped เขียว (154 เคสรวม: 64 relay + 10 memory-audit + 80 guards) [fact]
+- ตัวเขียนโค้ดจริงของรอบนี้: **Grok เป็นหลัก** (Codex ชนโควต้าตั้งแต่ใบแรก) · ใบแก้สุดท้าย Gemini · ผู้ตรวจ = Claude ทุกใบ [fact]
+- **ชุดเทสต์เต็ม repo แดงอยู่ก่อนแล้ว**: `pytest -q` ที่ฐาน main = 683 failed / 24,193 passed (จุดตกอยู่ใน tests/cli, tests/gateway ที่งาน GRD ไม่ได้แตะ) — gate-run จดเป็นแถวแรกใน `.hermes/ledger/` แล้ว · เป็นงานซ่อมแยกรอบ [fact]
 - PR #15 (แก้ auth ปลอมใน relay-call) merge เข้า main แล้ว — main HEAD = `5aa135e7f` [fact]
-- แผนเก่า "Hermes ใช้งานจริงทั้งระบบ": P0-P1 เสร็จ merged (PR #12) · งานค้าง P2-P6 เดิมถูกดูดเข้า GRD-P5..P9 ไม่มีอะไรหาย [fact]
-- สาย JARVIS v2: เปลือกเสียงใช้ได้จริง · แผน 8 เฟสอนุมัติแล้วที่ `.project/FeatureSpec-jarvis-voice.md` · รอเจ้าของทดสอบ P0 แล้วเปิดแชตใหม่ส่ง Use AI Relay [fact]
+- สาย JARVIS v2: รอเจ้าของทดสอบเสียง P0 แล้วเปิดแชตใหม่ส่ง Use AI Relay [fact]
 
 ## งานถัดไป
-1. เดินแผน GRD-P1 → P3 ผ่านสายพาน relay (Codex เขียน · Claude ตรวจ · gate-run ตัดสิน) → จบเป็น 1 PR ให้เจ้าของกด merge
-2. GRD-P5 Monitor Hub เริ่มเมื่อ GRD-P1..P4 verified + เจ้าของสั่ง
+1. **เจ้าของ: ตรวจ + กด merge PR แผน GRD** (branch `feature/plan-guardrails` · 5 commit)
+2. GRD-P5 Monitor Hub เริ่มเมื่อ PR merge + เจ้าของสั่ง
 3. GRD-P6..P8 รอเจ้าของส่ง "ปัญหาชุดสุดท้าย" ก่อนล็อกดีไซน์
 
 ## ข้อห้าม/กติกาล็อก
@@ -24,7 +25,9 @@
 - สมองแผน GRD = Fable ตามคำสั่งเจ้าของ 2026-07-07 (ข้อยกเว้นจากกติกา relay v2.7 ที่ปกติใช้ Opus) · Codex/Claude เขียน-ตรวจสลับค่ายผ่าน relay-call · **verified = มีแถว gate-run เท่านั้น**
 
 ## งานค้าง/ส่งต่อ
-- รอเจ้าของ: ส่งปัญหาชุดสุดท้าย (ปลดล็อก GRD-P6..P8) · rotate GitLab token (ค้างจาก 2026-07-04) · สั่ง commit ไฟล์ JARVIS untracked (`scripts/jarvis-voice/` — ระวัง `.venv-gemini` ต้องใส่ .gitignore ก่อน) · กด merge PR แผน GRD เมื่อพร้อม
+- รอเจ้าของ: **กด merge PR แผน GRD** · ส่งปัญหาชุดสุดท้าย (ปลดล็อก GRD-P6..P8) · rotate GitLab token (ค้างจาก 2026-07-04) · สั่ง commit ไฟล์ JARVIS untracked (`scripts/jarvis-voice/` — ระวัง `.venv-gemini` ต้องใส่ .gitignore ก่อน) · ติดตั้ง memory-audit รายสัปดาห์ (ถ้าต้องการ): `(crontab -l 2>/dev/null; echo '0 9 * * 1 cd "/Users/rattanasak/Documents/Viber Project/Tech Tools/Hermes Agent" && ./venv/bin/python scripts/memory-audit/memory_audit.py >> ~/.claude/ai-fail-stats/memory-audit.log 2>&1') | crontab -`
+- **งานซ่อมแยกรอบ (ใหม่ 2026-07-08): ชุดเทสต์เต็ม repo แดง 683 เคสที่ฐาน main** — ทำให้ gate-run ตัดสิน pass ไม่ได้ทั้ง repo · ควรไล่ซ่อมหรือกำหนด gate ย่อยที่เขียวได้จริง (เสนอดูดเข้า GRD-P8)
+- โควต้า AI คืน 2026-07-08: Codex + Grok ชนโควต้าทั้งคู่ช่วงดึก · Gemini crash ตอนจบแต่เขียนไฟล์สำเร็จ — เช็กโควต้าก่อนเริ่มงานใหญ่รอบถัดไป
 - claimed (ยังไม่ตรวจ): iptables :3010 ไม่ persistent ข้าม reboot · webhook pr-review ลงแค่ project เด็กฝึก 527
 - ด่านกันลบโฟลเดอร์ทั้งก้อน (phase-013): **โค้ด+เทสต์เข้า main แล้ว (`f9fb0827f`) [fact — แก้ความจำเก่าที่จดว่ายังค้าง]** · ที่ยังค้างจริง = ยืนยันว่า VPS runtime รันโค้ดรุ่นที่มีด่านนี้ (ยัง unverified)
 - feature ค้างจากตารางรีวิว Hermes 2026-07-03: F3-F8

@@ -181,6 +181,13 @@ const SOURCE_CONFIG: Record<
     border: "rgba(250, 204, 21, 0.2)",
     icon: "\u{26A1}",
   },
+  Git: {
+    label: "Git",
+    color: "#94a3b8",
+    bg: "rgba(148, 163, 184, 0.08)",
+    border: "rgba(148, 163, 184, 0.2)",
+    icon: "\u{2756}",
+  },
   GitHub: {
     label: "GitHub",
     color: "#94a3b8",
@@ -226,6 +233,7 @@ const SOURCE_ORDER = [
   "Claude Marketplace",
   "VoltAgent",
   "Well-Known",
+  "Git",
   "GitHub",
   "gstack",
   "MiniMax",

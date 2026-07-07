@@ -527,6 +527,7 @@ hermes skills install skills-sh/vercel-labs/json-render/json-render-react --forc
 hermes skills install well-known:https://mintlify.com/docs/.well-known/skills/mintlify
 hermes skills install https://sharethis.chat/SKILL.md              # Direct URL (+ referenced support files)
 hermes skills install https://example.com/SKILL.md --name my-skill # Override name when frontmatter has none
+hermes skills install add https://gitlab.com/skills-repo.git:skills/k8s # Add skill in git repository
 hermes skills list --source hub                   # List hub-installed skills
 hermes skills check                               # Check installed hub skills for upstream updates
 hermes skills update                              # Reinstall hub skills with upstream changes when needed
@@ -537,6 +538,7 @@ hermes skills reset google-workspace --restore    # Also restore the bundled ver
 hermes skills publish skills/my-skill --to github --repo owner/repo
 hermes skills snapshot export setup.json          # Export skill config
 hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
+hermes skills tap add https://gitlab.com/skills-repo.git # Add a custom Git source (https)
 ```
 
 ### Supported hub sources
@@ -547,6 +549,7 @@ hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 | `skills-sh` | `skills-sh/vercel-labs/agent-skills/vercel-react-best-practices` | Searchable via `hermes skills search <query> --source skills-sh`. Hermes resolves alias-style skills when the skills.sh slug differs from the repo folder. |
 | `well-known` | `well-known:https://mintlify.com/docs/.well-known/skills/mintlify` | Skills served directly from `/.well-known/skills/index.json` on a website. Search using the site or docs URL. |
 | `url` | `https://sharethis.chat/SKILL.md` | Direct HTTP(S) URL to `SKILL.md` plus explicitly referenced support files. Name resolution: frontmatter → URL slug → interactive prompt → `--name` flag. |
+| `git` | `https://gitlab.com/skill-repo.git` | Direct Git repo installs and custom taps. |
 | `github` | `openai/skills/k8s` | Direct GitHub repo/path installs and custom taps. |
 | `clawhub`, `lobehub`, `browse-sh` | Source-specific identifiers | Community or marketplace integrations. |
 
@@ -596,9 +599,40 @@ hermes skills inspect well-known:https://mintlify.com/docs/.well-known/skills/mi
 hermes skills install well-known:https://mintlify.com/docs/.well-known/skills/mintlify
 ```
 
-#### 4. Direct GitHub skills (`github`)
+#### 4. Direct Git repo skills (`git`)
 
-Hermes can install directly from GitHub repositories and GitHub-based taps. This is useful when you already know the repo/path or want to add your own custom source repo.
+Hermes can install directly from public or private Git repositories. This is useful when you already know the repository path, want to use your own repository, or need to install from a Git host such as GitHub, GitLab, Gitea, or another self-hosted Git service.
+
+- Example:
+
+```bash
+hermes skills tap add https://github.com/openai/skills.git
+hermes skills search k8s --source git
+hermes skills install https://github.com/openai/skills.git:skills/k8s
+```
+
+**Category groupings (`skills.sh.json`).** A Git tap may ship a
+`skills.sh.json` file at its repo root following the
+[skills.sh schema](https://skills.sh/schemas/skills.sh.schema.json). Its
+`groupings` (each with a `title` and a list of skill names) are read at index
+time and become the category labels shown in the
+[Skills Hub](https://hermes-agent.nousresearch.com/docs) page — instead of a
+tag-derived guess. This is generic: any tap that ships the file gets real
+categorization, no Hermes-side changes required.
+
+```json
+{
+  "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+  "groupings": [
+    { "title": "Inference AI", "skills": ["dynamo-recipe-runner", "dynamo-router-sla"] },
+    { "title": "Decision Optimization", "skills": ["cuopt-developer", "cuopt-install"] }
+  ]
+}
+```
+
+#### 5. Direct GitHub skills (`github`)
+
+Hermes can install directly from GitHub repositories and GitHub-based taps. By default, tap paths resolve to GitHub, allowing you to install from a known GitHub repository or tap path without specifying a full URL.
 
 Default taps (browsable without any setup):
 - [openai/skills](https://github.com/openai/skills)
@@ -633,14 +667,14 @@ categorization, no Hermes-side changes required.
 }
 ```
 
-#### 5. ClawHub (`clawhub`)
+#### 6. ClawHub (`clawhub`)
 
 A third-party skills marketplace integrated as a community source.
 
 - Site: [clawhub.ai](https://clawhub.ai/)
 - Hermes source id: `clawhub`
 
-#### 6. Claude marketplace-style repos (`claude-marketplace`)
+#### 7. Claude marketplace-style repos (`claude-marketplace`)
 
 Hermes supports marketplace repos that publish Claude-compatible plugin/marketplace manifests.
 
@@ -650,7 +684,7 @@ Known integrated sources include:
 
 Hermes source id: `claude-marketplace`
 
-#### 7. LobeHub (`lobehub`)
+#### 8. LobeHub (`lobehub`)
 
 Hermes can search and convert agent entries from LobeHub's public catalog into installable Hermes skills.
 
@@ -659,7 +693,7 @@ Hermes can search and convert agent entries from LobeHub's public catalog into i
 - Backing repo: [lobehub/lobe-chat-agents](https://github.com/lobehub/lobe-chat-agents)
 - Hermes source id: `lobehub`
 
-#### 8. browse.sh (`browse-sh`)
+#### 9. browse.sh (`browse-sh`)
 
 Hermes integrates with [browse.sh](https://browse.sh), Browserbase's catalog of 200+ site-specific browser-automation SKILL.md files (Airbnb, Amazon, arXiv, 12306.cn, Etsy, Xero, and many more). Each skill describes how to drive one website end-to-end and is suitable for use with Hermes' browser tools and any browser-automation skills you already have installed.
 
@@ -676,7 +710,7 @@ hermes skills install browse-sh/airbnb.com/search-listings-ddgioa
 
 Identifiers use the form `browse-sh/<hostname>/<task-id>` and match the slug exposed by the browse.sh catalog. Content is resolved through the per-skill detail endpoint (`/api/skills/<slug>` → `skillMdUrl`), not through the catalog's GitHub `sourceUrl`.
 
-#### 9. Direct URL (`url`)
+#### 10. Direct URL (`url`)
 
 Install `SKILL.md` directly from any HTTP(S) URL — useful when an author hosts a skill on their own site (no hub listing, no GitHub path to type). Hermes also fetches explicitly referenced files under `references/`, `templates/`, `scripts/`, `assets/`, and `examples/`, then scans and installs the complete bundle.
 

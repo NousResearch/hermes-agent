@@ -12635,6 +12635,7 @@ _SKILL_HUB_SOURCE_LABELS = {
     "skills-sh": "skills.sh",
     "well-known": "Well-Known",
     "url": "Direct URL",
+    "git": "Git",
     "github": "GitHub",
     "clawhub": "ClawHub",
     "claude-marketplace": "Claude Marketplace",

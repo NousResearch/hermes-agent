@@ -7495,13 +7495,13 @@ def test_make_agent_waits_for_shared_mcp_discovery(monkeypatch):
     monkeypatch.setattr(
         mcp_startup,
         "wait_for_mcp_discovery",
-        lambda timeout=0.75: waited.append(timeout),
+        lambda timeout=None: waited.append(timeout),
     )
 
     with patch("run_agent.AIAgent"):
         server._make_agent("sid1", "key1")
 
-    assert waited == [0.75]
+    assert waited == [None]
 
 
 def test_make_agent_nested_max_turns_takes_priority(monkeypatch):

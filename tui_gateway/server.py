@@ -4346,7 +4346,7 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
     The agent snapshots ``agent.tools`` once at build time and never re-reads
     the registry (run_agent/agent_init). ``_make_agent`` briefly joins the
     background MCP discovery thread (``wait_for_mcp_discovery``, bounded by the
-    ``mcp_discovery_timeout`` config value, default 1.5s) so
+    ``mcp_discovery_timeout`` config value, default 15s) so
     already-spawning servers land in that snapshot — but a server that takes
     longer than the bound to connect (common for an HTTP MCP server on first
     connect) lands *after* the agent is built. Its tools are then absent from

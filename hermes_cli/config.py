@@ -1343,19 +1343,12 @@ DEFAULT_CONFIG = {
     "file_read_max_chars": 100_000,
 
     # Seconds to wait at agent-build time for in-flight MCP server discovery
-    # to finish before the agent snapshots its tool list.  MCP discovery runs
-    # in a background thread so a slow/dead server can't freeze startup; this
-    # bounds how long the first agent build blocks on it.  The wait returns
-    # the INSTANT discovery completes, so users with no MCP servers (the common
-    # case) or fast servers pay ~0s regardless of this value — the bound is
-    # only reached when a server is genuinely still connecting.  The old 0.75s
-    # default was a touch short for HTTP/OAuth servers on a cold connect; a
-    # modest bump lets more of them land in the FIRST turn's snapshot.  This is
-    # only a turn-1 latency/UX knob: a server that misses this window is still
-    # picked up automatically on the next turn by the between-turns refresh
-    # (see agent/turn_context.py), so correctness never depends on it.  Keep it
-    # small so a slow/dead server adds little to first-response latency.
-    "mcp_discovery_timeout": 1.5,
+    # to finish before the agent snapshots its tool list. For one-shot and
+    # first-only turns this is a correctness bound: tools discovered after the
+    # snapshot cannot be used on that only turn. ``thread.join(timeout)`` returns
+    # as soon as discovery completes, so reachable servers only wait for their
+    # real handshake time while unavailable servers remain bounded.
+    "mcp_discovery_timeout": 15.0,
 
     # Tool-output truncation thresholds. When terminal output or a
     # single read_file page exceeds these limits, Hermes truncates the

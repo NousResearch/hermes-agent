@@ -228,7 +228,7 @@ def wait_for_mcp_discovery(timeout: "float | None" = None) -> None:
 
         bound = _resolve_discovery_timeout(timeout)
     except Exception:
-        bound = timeout if timeout is not None else 0.75
+        bound = timeout if timeout is not None else 15.0
     thread.join(timeout=bound)
 
 

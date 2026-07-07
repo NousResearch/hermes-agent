@@ -384,6 +384,13 @@ def _run_agent(
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
 
+    from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
+
+    ensure_mcp_discovery_before_agent_build(
+        logger=logging.getLogger(__name__),
+        thread_name="oneshot-mcp-discovery",
+    )
+
     agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),

@@ -39,3 +39,16 @@ def test_cronjob_schema_required_array_unchanged():
     from tools.cronjob_tools import CRONJOB_SCHEMA
 
     assert CRONJOB_SCHEMA["parameters"]["required"] == ["action"]
+
+
+def test_cronjob_schema_exposes_artifact_expectations_contract():
+    from tools.cronjob_tools import CRONJOB_SCHEMA
+
+    prop = CRONJOB_SCHEMA["parameters"]["properties"]["artifact_expectations"]
+    desc = prop["description"]
+    assert prop["type"] == "array"
+    assert "required_for_delivery" in desc
+    assert "warn_only" in desc
+    assert "path/glob" in desc
+    assert "vault:" in desc
+    assert "hermes:" in desc

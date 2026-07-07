@@ -790,6 +790,67 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
+def _validate_artifact_pattern_ref(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("artifact expectation path/glob cannot be empty")
+    if text.startswith("vault:"):
+        rel = Path(text[len("vault:"):].lstrip("/"))
+        prefix = "vault"
+    elif text.startswith("hermes:"):
+        rel = Path(text[len("hermes:"):].lstrip("/"))
+        prefix = "hermes"
+    else:
+        raise ValueError("artifact expectation path/glob must start with vault: or hermes:")
+    if rel.is_absolute() or ".." in rel.parts:
+        raise ValueError(f"artifact expectation escapes {prefix}: {text!r}")
+    return text
+
+
+def _normalize_artifact_expectations(expectations: Any) -> Optional[List[Dict[str, Any]]]:
+    if expectations in (None, "", False):
+        return None
+    if not isinstance(expectations, list):
+        raise ValueError("artifact_expectations must be a list")
+
+    normalized: List[Dict[str, Any]] = []
+    for index, raw in enumerate(expectations, start=1):
+        if isinstance(raw, str):
+            item: Dict[str, Any] = {"path": raw}
+        elif isinstance(raw, dict):
+            item = dict(raw)
+        else:
+            raise ValueError(
+                f"artifact_expectations[{index}] must be a string or object"
+            )
+
+        has_path = bool(str(item.get("path") or "").strip())
+        has_glob = bool(str(item.get("glob") or "").strip())
+        if has_path == has_glob:
+            raise ValueError(
+                f"artifact_expectations[{index}] must set exactly one of path or glob"
+            )
+
+        if has_path:
+            item["path"] = _validate_artifact_pattern_ref(item["path"])
+            item.pop("glob", None)
+        else:
+            item["glob"] = _validate_artifact_pattern_ref(item["glob"])
+            item.pop("path", None)
+
+        mode = str(item.get("mode") or "").strip()
+        if not mode:
+            mode = "warn_only" if item.pop("warn_only", False) else "required_for_delivery"
+        if mode not in {"required_for_delivery", "warn_only"}:
+            raise ValueError(
+                f"artifact_expectations[{index}] mode must be required_for_delivery or warn_only"
+            )
+        item["mode"] = mode
+        normalized.append(item)
+
+    return normalized or None
+
+
 def _resolve_default_model_snapshot() -> Optional[str]:
     """Resolve the global default model the same way the cron ticker does.
 
@@ -907,6 +968,7 @@ def create_job(
     base_url: Optional[str] = None,
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
+    artifact_expectations: Optional[List[Any]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
@@ -938,6 +1000,11 @@ def create_job(
         context_from: Optional job ID (or list of job IDs) whose most recent output
                       is injected into the prompt as context before each run.
                       Useful for chaining cron jobs: job A finds data, job B processes it.
+        artifact_expectations: Optional list of file/glob expectations to verify
+                      after a successful run. Each entry may be a string path
+                      or an object with exactly one of ``path``/``glob`` and
+                      optional ``mode`` (``required_for_delivery`` or
+                      ``warn_only``). Paths must use ``vault:`` or ``hermes:``.
         enabled_toolsets: Optional list of toolset names to restrict the agent to.
                           When set, only tools from these toolsets are loaded, reducing
                           token overhead. When omitted, all default tools are loaded.
@@ -987,6 +1054,7 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_artifact_expectations = _normalize_artifact_expectations(artifact_expectations)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -1055,6 +1123,7 @@ def create_job(
         "script": normalized_script,
         "no_agent": normalized_no_agent,
         "context_from": context_from,
+        "artifact_expectations": normalized_artifact_expectations,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {
@@ -1171,6 +1240,11 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+
+            if "artifact_expectations" in updates:
+                updates["artifact_expectations"] = _normalize_artifact_expectations(
+                    updates["artifact_expectations"]
+                )
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
@@ -1611,6 +1685,8 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
 
     for job in jobs:
         if not job.get("enabled", True):
+            continue
+        if job.get("state") == "paused":
             continue
 
         # Cross-process running-claim guard (#59229): if another scheduler

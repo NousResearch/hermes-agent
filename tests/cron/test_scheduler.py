@@ -8,7 +8,20 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
+from cron.scheduler import (
+    _build_job_prompt,
+    _deliver_result,
+    _lint_cron_delivery_response,
+    _merge_mcp_into_per_job_toolsets,
+    _recover_deliverable_cron_response,
+    _resolve_cron_enabled_toolsets,
+    _resolve_delivery_target,
+    _resolve_origin,
+    _send_media_via_adapter,
+    _verify_cron_artifact_expectations,
+    run_job,
+    SILENT_MARKER,
+)
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -954,6 +967,341 @@ class TestDeliverResultErrorReturns:
         result = _deliver_result(job, "Output.")
         assert result is not None
         assert "no delivery target" in result
+
+
+class TestCronDeliveryQualityLint:
+    def test_exact_silent_marker_is_silent(self):
+        assert _lint_cron_delivery_response("[SILENT]") == ("silent", None)
+
+    def test_decorated_silent_marker_is_blocked(self):
+        status, reason = _lint_cron_delivery_response("[SILENT] - nothing new")
+        assert status == "block"
+        assert "decorated" in reason
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "**Step E done — signals archived**\n\nGood morning",
+            "**Step E is complete**\n\nGood morning",
+            "All five steps complete. Final briefing:\n\nGood morning",
+            "Final output below.\n\nGood morning",
+            "Humanizer loaded\n\nGood morning",
+            "Draft:\n\nGood morning",
+            "AI-tell audit:\n\nGood morning",
+            "Final version\n\nGood morning",
+            "Now I have all the source material. Let me compose both drafts.",
+            "Now I have the full picture. Let me compose the evening review.",
+            "Now producing the final Telegram briefing.",
+            "Now let me compile the final audit summary.",
+            "Let me apply the humanizer before final.",
+            "Humanizer final pass (internal): no issues.",
+            "Final (humanized): ready.",
+            "Reply with the following:",
+            "Here's the draft for Byron.",
+            "Here's the Telegram relay.",
+            "Report is complete.",
+            "[TEAM-IDENTITY] You are Friedrich Nietzsche.",
+            "BYRON DIRECTIVES (read FIRST):\n1. Read state.",
+            "SELF-IMPROVEMENT (read SECOND):\n1. Read audit flags.",
+            "ABSOLUTE RULES:\n1. Hard cap.",
+            "ARTIFACT AND DELIVERY HYGIENE:\n- Verify files.",
+            "DO NOT:\n- Deliver to Telegram.",
+            "SKILL USE AND IMPROVEMENT LOOP:\n- Run humanizer.",
+            "Good brief\n\n## Response\n\nSecond response",
+            "⚠️ File-mutation verifier: 1 file was NOT modified.",
+        ],
+    )
+    def test_observed_delivery_leaks_are_blocked(self, content):
+        status, reason = _lint_cron_delivery_response(content)
+        assert status == "block"
+        assert reason
+
+    def test_recovers_clean_briefing_after_workbench_preface(self):
+        content = (
+            "All five steps complete. Final checklist verified. "
+            "Now producing the Telegram summary.\n\n"
+            "Good morning — here's your AI briefing:\n\n"
+            "Useful item.\n\n"
+            "Skills used: ai-research"
+        )
+
+        recovered, note = _recover_deliverable_cron_response(content)
+
+        assert note
+        assert recovered.startswith("Good morning")
+        assert "All five steps complete" not in recovered
+        assert _lint_cron_delivery_response(recovered) == ("pass", None)
+
+    def test_recovers_pm_report_after_workbench_preface(self):
+        content = (
+            "Now I have the full picture. Let me compose the noon check-in.\n\n"
+            "**Status: blocked-by-system.**\n\n"
+            "**Adjustment.** Retry directly if the worker stays blocked.\n\n"
+            "Skills used: project-manager, ce-plan, evidence-led-output"
+        )
+
+        recovered, note = _recover_deliverable_cron_response(content)
+
+        assert note
+        assert recovered.startswith("**Status:")
+        assert "full picture" not in recovered
+        assert _lint_cron_delivery_response(recovered) == ("pass", None)
+
+    def test_no_agent_ordinary_script_output_passes(self):
+        assert _lint_cron_delivery_response(
+            "RAM 92% on host",
+            no_agent=True,
+        ) == ("pass", None)
+
+    def test_no_agent_markdown_response_heading_passes(self):
+        assert _lint_cron_delivery_response(
+            "## Response time\n\nAPI responded in 120ms",
+            no_agent=True,
+        ) == ("pass", None)
+
+    def test_no_agent_script_output_can_discuss_silence_marker(self):
+        assert _lint_cron_delivery_response(
+            "Healthcheck failed: expected exact [SILENT] output was missing.",
+            no_agent=True,
+        ) == ("pass", None)
+
+    def test_no_agent_prompt_tail_still_blocks(self):
+        status, reason = _lint_cron_delivery_response(
+            "[TEAM-IDENTITY] You are a prompt tail.",
+            no_agent=True,
+        )
+        assert status == "block"
+        assert reason == "prompt tail leaked into response"
+
+    def _job(self):
+        return {
+            "id": "job1",
+            "name": "quality-job",
+            "prompt": "run",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+            "enabled": True,
+            "schedule": {"kind": "interval", "minutes": 5},
+            "repeat": None,
+        }
+
+    def test_tick_blocks_contaminated_successful_output_before_delivery(self, tmp_path):
+        job = self._job()
+        contaminated = "Now I have all the source material. Let me compose both drafts."
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.claim_dispatch", return_value=True), \
+             patch("cron.scheduler.mark_job_run") as mock_mark, \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md") as mock_save, \
+             patch("cron.scheduler.run_job", return_value=(True, "# output\n\n## Response\n\n" + contaminated, contaminated, None)), \
+             patch("cron.scheduler._deliver_result") as mock_deliver:
+            from cron.scheduler import tick
+
+            assert tick(verbose=False) == 1
+
+        mock_deliver.assert_not_called()
+        saved_output = mock_save.call_args.args[1]
+        assert "## Delivery Quality Gate" in saved_output
+        assert "delivery quality gate blocked output" in mock_mark.call_args.kwargs["delivery_error"]
+        assert mock_mark.call_args.args[1] is True
+
+    def test_tick_recovers_prefaced_but_clean_briefing(self, tmp_path):
+        job = self._job()
+        contaminated = (
+            "All five steps complete. Final checklist verified. "
+            "Now producing the Telegram summary.\n\n"
+            "Good morning — here's your AI briefing:\n\n"
+            "Useful item.\n\n"
+            "Skills used: ai-research"
+        )
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.claim_dispatch", return_value=True), \
+             patch("cron.scheduler.mark_job_run") as mock_mark, \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md") as mock_save, \
+             patch("cron.scheduler.run_job", return_value=(True, "# output\n\n## Response\n\n" + contaminated, contaminated, None)), \
+             patch("cron.scheduler._deliver_result", return_value=None) as mock_deliver:
+            from cron.scheduler import tick
+
+            assert tick(verbose=False) == 1
+
+        mock_deliver.assert_called_once()
+        delivered = mock_deliver.call_args.args[1]
+        assert delivered.startswith("Good morning")
+        assert "All five steps complete" not in delivered
+        saved_output = mock_save.call_args.args[1]
+        assert "All five steps complete" not in saved_output.split("## Response", 1)[1]
+        assert mock_mark.call_args.kwargs["delivery_error"] is None
+
+    def test_tick_delivers_clean_successful_output(self, tmp_path):
+        job = self._job()
+        clean = "**Evening Review — Saturday, June 6**\n\nObserved: work moved."
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.claim_dispatch", return_value=True), \
+             patch("cron.scheduler.mark_job_run") as mock_mark, \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output\n\n## Response\n\n" + clean, clean, None)), \
+             patch("cron.scheduler._deliver_result", return_value=None) as mock_deliver:
+            from cron.scheduler import tick
+
+            assert tick(verbose=False) == 1
+
+        mock_deliver.assert_called_once()
+        assert mock_mark.call_args.kwargs["delivery_error"] is None
+
+    def test_tick_treats_decorated_silent_as_quality_failure(self, tmp_path):
+        job = self._job()
+        content = "[SILENT] - no vault signal today"
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.claim_dispatch", return_value=True), \
+             patch("cron.scheduler.mark_job_run") as mock_mark, \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", content, None)), \
+             patch("cron.scheduler._deliver_result") as mock_deliver:
+            from cron.scheduler import tick
+
+            assert tick(verbose=False) == 1
+
+        mock_deliver.assert_not_called()
+        assert "decorated [SILENT]" in mock_mark.call_args.kwargs["delivery_error"]
+
+
+class TestCronArtifactExpectations:
+    def _job(self, artifact_expectations):
+        return {
+            "id": "artifact-job",
+            "name": "artifact-job",
+            "prompt": "run",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+            "enabled": True,
+            "schedule": {"kind": "interval", "minutes": 5},
+            "repeat": None,
+            "artifact_expectations": artifact_expectations,
+        }
+
+    def test_fresh_expected_artifact_passes(self, tmp_path):
+        artifact = tmp_path / "2026-06-07-digest.md"
+        artifact.write_text("digest", encoding="utf-8")
+        started_at = MagicMock()
+        started_at.strftime.return_value = "2026-06-07"
+        started_at.timestamp.return_value = artifact.stat().st_mtime - 1
+
+        with patch("cron.scheduler._hermes_home", tmp_path):
+            failures, warnings = _verify_cron_artifact_expectations(
+                self._job([
+                    {"path": "hermes:{date}-digest.md", "mode": "required_for_delivery"}
+                ]),
+                started_at,
+            )
+
+        assert failures == []
+        assert warnings == []
+
+    def test_missing_required_artifact_blocks_delivery(self, tmp_path):
+        job = self._job([
+            {"path": "hermes:{date}-missing.md", "mode": "required_for_delivery"}
+        ])
+        clean = "Saved the digest."
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.claim_dispatch", return_value=True), \
+             patch("cron.scheduler.mark_job_run") as mock_mark, \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md") as mock_save, \
+             patch("cron.scheduler.run_job", return_value=(True, "# output\n\n## Response\n\n" + clean, clean, None)), \
+             patch("cron.scheduler._deliver_result") as mock_deliver:
+            from cron.scheduler import tick
+
+            assert tick(verbose=False) == 1
+
+        mock_deliver.assert_not_called()
+        saved_output = mock_save.call_args.args[1]
+        assert "## Artifact Expectation Gate" in saved_output
+        assert "expected artifact missing" in saved_output
+        assert "artifact expectation gate blocked output" in mock_mark.call_args.kwargs["delivery_error"]
+        assert mock_mark.call_args.args[1] is True
+
+    def test_warn_only_artifact_expectation_does_not_block_delivery(self, tmp_path):
+        job = self._job([
+            {"glob": "hermes:drafts/{date}-*.md", "mode": "warn_only"}
+        ])
+        clean = "Draft reviewed."
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.claim_dispatch", return_value=True), \
+             patch("cron.scheduler.mark_job_run") as mock_mark, \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md") as mock_save, \
+             patch("cron.scheduler.run_job", return_value=(True, "# output\n\n## Response\n\n" + clean, clean, None)), \
+             patch("cron.scheduler._deliver_result", return_value=None) as mock_deliver:
+            from cron.scheduler import tick
+
+            assert tick(verbose=False) == 1
+
+        mock_deliver.assert_called_once()
+        saved_output = mock_save.call_args.args[1]
+        assert "## Artifact Expectation Warning" in saved_output
+        assert mock_mark.call_args.kwargs["delivery_error"] is None
+
+    def test_invalid_artifact_mode_fails_closed(self):
+        job = self._job([
+            {"path": "hermes:{date}-digest.md", "mode": "required"}
+        ])
+        started_at = MagicMock()
+        started_at.strftime.return_value = "2026-06-07"
+        started_at.timestamp.return_value = 1000
+
+        failures, warnings = _verify_cron_artifact_expectations(job, started_at)
+
+        assert warnings == []
+        assert failures == ["expectation #1 has invalid mode: 'required'"]
+
+    def test_raw_absolute_artifact_path_fails_closed(self, tmp_path):
+        job = self._job([
+            {"path": str(tmp_path / "digest.md"), "mode": "required_for_delivery"}
+        ])
+        started_at = MagicMock()
+        started_at.strftime.return_value = "2026-06-07"
+        started_at.timestamp.return_value = 1000
+
+        failures, warnings = _verify_cron_artifact_expectations(job, started_at)
+
+        assert warnings == []
+        assert "vault: or hermes:" in failures[0]
+
+    def test_failed_job_delivers_concise_alert_not_raw_error(self, tmp_path):
+        job = self._job([])
+        raw_error = "[TEAM-IDENTITY] leaked prompt tail from stderr"
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.claim_dispatch", return_value=True), \
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler.run_job", return_value=(False, "# output\n" + raw_error, "", raw_error)), \
+             patch("cron.scheduler._deliver_result", return_value=None) as mock_deliver:
+            from cron.scheduler import tick
+
+            assert tick(verbose=False) == 1
+
+        delivered = mock_deliver.call_args.args[1]
+        assert "failed" in delivered
+        assert "Details were saved" in delivered
+        assert "[TEAM-IDENTITY]" not in delivered
 
 
 class TestRunJobSessionPersistence:
@@ -2496,18 +2844,18 @@ class TestSilentDelivery:
                 tick(verbose=False)
             deliver_mock.assert_not_called()
 
-    def test_report_quoting_marker_mid_sentence_still_delivers(self):
-        """A genuine report that merely mentions the token mid-sentence must
-        be delivered — the old substring check wrongly swallowed it."""
+    def test_report_quoting_marker_mid_sentence_is_quality_blocked(self):
+        """Agent content that mentions the delivery sentinel is held for review."""
         response = "I considered staying [SILENT] but here is the summary: 3 items merged."
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
-             patch("cron.scheduler.mark_job_run"):
+             patch("cron.scheduler.mark_job_run") as mark_mock:
             from cron.scheduler import tick
             tick(verbose=False)
-        deliver_mock.assert_called_once()
+        deliver_mock.assert_not_called()
+        assert "decorated [SILENT]" in mark_mock.call_args.kwargs["delivery_error"]
 
     def test_is_cron_silence_response_contract(self):
         """Direct behavior contract for the cron silence matcher."""
@@ -2549,7 +2897,10 @@ class TestSilentDelivery:
             save_mock.return_value = "/tmp/out.md"
             from cron.scheduler import tick
             tick(verbose=False)
-        save_mock.assert_called_once_with("monitor-job", "# full output")
+        save_mock.assert_called_once()
+        assert save_mock.call_args.args[0] == "monitor-job"
+        assert save_mock.call_args.args[1].startswith("# full output")
+        assert "## Runtime" in save_mock.call_args.args[1]
         deliver_mock.assert_not_called()
 
     def test_whitespace_only_response_is_marked_failed_not_delivered(self):

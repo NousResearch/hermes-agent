@@ -102,6 +102,135 @@ class TestBuildJobPromptContextFrom:
         assert "Today's top story: AI is everywhere." in prompt
         assert f"Output from job '{job_a['id']}'" in prompt
 
+    def test_injects_output_from_custom_safe_job_id(self, cron_env):
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        source_job_id = "pmexec20260602"
+        output_dir = OUTPUT_DIR / source_job_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "2026-06-03_09-33-53.md").write_text(
+            "Morning PM plan context", encoding="utf-8"
+        )
+
+        job_b = create_job(
+            prompt="Noon check-in",
+            schedule="every 2h",
+            context_from=source_job_id,
+        )
+
+        prompt = _build_job_prompt(job_b)
+        assert "Morning PM plan context" in prompt
+        assert "Output from job 'pmexec20260602'" in prompt
+
+    def test_injects_final_response_section_from_saved_cron_doc(self, cron_env):
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job_a = create_job(prompt="Research", schedule="every 1h")
+        output_dir = OUTPUT_DIR / job_a["id"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "2026-06-07_10-00-00.md").write_text(
+            "# Cron Job: Research\n\n"
+            "## Prompt\n\n"
+            "Internal prompt instructions that should not become context.\n\n"
+            "## Response\n\n"
+            "Final answer: change the launch plan.",
+            encoding="utf-8",
+        )
+
+        job_b = create_job(
+            prompt="Use the prior answer",
+            schedule="every 2h",
+            context_from=job_a["id"],
+        )
+
+        prompt = _build_job_prompt(job_b)
+        assert "Final answer: change the launch plan." in prompt
+        assert "Internal prompt instructions" not in prompt
+        assert "Context extracted from the preceding job's final response." in prompt
+
+    def test_trims_scheduler_runtime_from_extracted_response_context(self, cron_env):
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job_a = create_job(prompt="Research", schedule="every 1h")
+        output_dir = OUTPUT_DIR / job_a["id"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "2026-06-07_10-30-00.md").write_text(
+            "# Cron Job: Research\n\n"
+            "## Prompt\n\n"
+            "Internal prompt instructions.\n\n"
+            "## Response\n\n"
+            "Final answer only.\n\n"
+            "## Runtime\n\n"
+            "Elapsed seconds: 12.3\n",
+            encoding="utf-8",
+        )
+
+        job_b = create_job(
+            prompt="Use the prior answer",
+            schedule="every 2h",
+            context_from=job_a["id"],
+        )
+
+        prompt = _build_job_prompt(job_b)
+        assert "Final answer only." in prompt
+        assert "Elapsed seconds" not in prompt
+        assert "## Runtime" not in prompt
+
+    def test_injects_last_response_section_when_transcript_has_multiple(self, cron_env):
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job_a = create_job(prompt="Research", schedule="every 1h")
+        output_dir = OUTPUT_DIR / job_a["id"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "2026-06-07_11-00-00.md").write_text(
+            "# Cron Job: Research\n\n"
+            "## Response\n\n"
+            "Earlier draft.\n\n"
+            "## Response\n\n"
+            "Final answer wins.",
+            encoding="utf-8",
+        )
+
+        job_b = create_job(
+            prompt="Use the prior answer",
+            schedule="every 2h",
+            context_from=job_a["id"],
+        )
+
+        prompt = _build_job_prompt(job_b)
+        assert "Final answer wins." in prompt
+        assert "Earlier draft" not in prompt
+
+    def test_skips_delivery_quality_gated_output(self, cron_env):
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job_a = create_job(prompt="Research", schedule="every 1h")
+        output_dir = OUTPUT_DIR / job_a["id"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "2026-06-07_12-00-00.md").write_text(
+            "# Cron Job: Research\n\n"
+            "## Response\n\n"
+            "This should not become context.\n\n"
+            "## Delivery Quality Gate\n\n"
+            "External delivery blocked: prompt tail leaked into response\n",
+            encoding="utf-8",
+        )
+
+        job_b = create_job(
+            prompt="Use only safe prior context",
+            schedule="every 2h",
+            context_from=job_a["id"],
+        )
+
+        prompt = _build_job_prompt(job_b)
+        assert "This should not become context." not in prompt
+        assert "Use only safe prior context" in prompt
+
     def test_uses_most_recent_output(self, cron_env):
         from cron.jobs import create_job, OUTPUT_DIR
         from cron.scheduler import _build_job_prompt
@@ -418,3 +547,83 @@ class TestUpdateContextFrom:
         reloaded = get_job(job_b["id"])
         assert reloaded["prompt"] == "Summarize v2"
         assert reloaded["context_from"] == [job_a["id"]]
+
+
+class TestArtifactExpectationsToolContract:
+    def test_create_lists_and_clears_artifact_expectations(self, cron_env):
+        from tools.cronjob_tools import cronjob
+        import json
+
+        expectation = {
+            "path": "vault:sources/{date}-ai-research-digest.md",
+            "mode": "required_for_delivery",
+        }
+        created = json.loads(cronjob(
+            action="create",
+            prompt="Research",
+            schedule="every 1h",
+            deliver="local",
+            artifact_expectations=[expectation],
+        ))
+        assert created["success"] is True
+        assert created["job"]["artifact_expectations"] == [expectation]
+
+        listing = json.loads(cronjob(action="list", include_disabled=True))
+        listed = next(job for job in listing["jobs"] if job["job_id"] == created["job_id"])
+        assert listed["artifact_expectations"] == [expectation]
+
+        cleared = json.loads(cronjob(
+            action="update",
+            job_id=created["job_id"],
+            artifact_expectations=[],
+        ))
+        assert cleared["success"] is True
+        assert "artifact_expectations" not in cleared["job"]
+
+    def test_update_rejects_invalid_artifact_expectation_mode(self, cron_env):
+        from cron.jobs import create_job
+        from tools.cronjob_tools import cronjob
+        import json
+
+        job = create_job(prompt="Research", schedule="every 1h", deliver="local")
+
+        result = json.loads(cronjob(
+            action="update",
+            job_id=job["id"],
+            artifact_expectations=[
+                {"path": "vault:sources/{date}.md", "mode": "required"}
+            ],
+        ))
+
+        assert result["success"] is False
+        assert "required_for_delivery" in result["error"]
+
+    def test_create_rejects_artifact_expectation_with_path_and_glob(self, cron_env):
+        from tools.cronjob_tools import cronjob
+        import json
+
+        result = json.loads(cronjob(
+            action="create",
+            prompt="Research",
+            schedule="every 1h",
+            deliver="local",
+            artifact_expectations=[
+                {"path": "vault:sources/{date}.md", "glob": "vault:sources/*.md"}
+            ],
+        ))
+
+        assert result["success"] is False
+        assert "exactly one of path or glob" in result["error"]
+
+    def test_direct_create_job_rejects_unprefixed_artifact_path(self, cron_env):
+        from cron.jobs import create_job
+
+        with pytest.raises(ValueError, match="vault: or hermes:"):
+            create_job(
+                prompt="Research",
+                schedule="every 1h",
+                deliver="local",
+                artifact_expectations=[
+                    {"path": "/Users/byron/.hermes/.env", "mode": "required_for_delivery"}
+                ],
+            )

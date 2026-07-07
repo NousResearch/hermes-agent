@@ -12,6 +12,7 @@ import asyncio
 import atexit
 import concurrent.futures
 import contextvars
+import glob
 import json
 import logging
 import os
@@ -20,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -57,6 +59,19 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     job_name = job.get("name") or job.get("id") or "cron job"
     text = (error or "unknown error").strip()
     lower = text.lower()
+
+    if re.search(
+        r"(?m)^\s*(?:\[TEAM-IDENTITY\]|BYRON DIRECTIVES \(read FIRST\):|"
+        r"SELF-IMPROVEMENT \(read (?:FIRST|SECOND)\):|YOUR SOURCES \(read in this order\):|"
+        r"ABSOLUTE RULES:|ARTIFACT AND DELIVERY HYGIENE:|QUALITY GATES|DO NOT:|"
+        r"SKILL USE AND IMPROVEMENT LOOP:|WHAT YOU DO:|YOUR PROCEDURE:|"
+        r"SIGNAL FILE FORMAT|FINAL OUTPUT)",
+        text,
+    ):
+        return (
+            f"⚠️ Cron '{job_name}' failed. "
+            "Details were saved in cron output."
+        )
 
     # Provider/API failures are the common noisy path. Keep these short.
     if "429" in text or "rate limit" in lower or "usage limit" in lower:
@@ -287,6 +302,223 @@ def _is_cron_silence_response(text: str) -> bool:
     if upper.startswith("[SILENT]"):
         return True
     return False
+
+
+_SAFE_CONTEXT_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_CRON_RESPONSE_HEADING_RE = re.compile(r"(?m)^## Response\s*$")
+_CRON_RESPONSE_TRAILING_SECTION_RE = re.compile(
+    r"(?m)^## (?:Runtime|Delivery Quality Gate|Artifact Expectation Gate|Artifact Expectation Warning)\s*$"
+)
+
+
+def _is_safe_context_job_id(job_id: object) -> bool:
+    """Return True for cron output directory names that cannot traverse paths."""
+    return isinstance(job_id, str) and bool(_SAFE_CONTEXT_JOB_ID_RE.fullmatch(job_id))
+
+
+def _extract_cron_response_context(output_doc: str) -> tuple[str, bool]:
+    """Return the final-response section from a saved cron markdown document."""
+    text = (output_doc or "").strip()
+    matches = list(_CRON_RESPONSE_HEADING_RE.finditer(text))
+    if not matches:
+        return text, False
+    response = text[matches[-1].end():]
+    trailing_section = _CRON_RESPONSE_TRAILING_SECTION_RE.search(response)
+    if trailing_section:
+        response = response[:trailing_section.start()]
+    return response.strip(), True
+
+
+def _replace_cron_response_context(output_doc: str, response: str) -> str:
+    """Replace the final ``## Response`` section in a saved cron document."""
+    text = output_doc or ""
+    matches = list(_CRON_RESPONSE_HEADING_RE.finditer(text))
+    if not matches:
+        return text
+    head = text[:matches[-1].end()].rstrip()
+    return f"{head}\n\n{(response or '').strip()}\n"
+
+
+_CRON_DELIVERY_BLOCK_PATTERNS: tuple[tuple[str, str, str], ...] = (
+    (r"(?im)^\s*\*{0,2}Step\s+[A-Z]\b.*\b(?:done|complete|is complete)\b", "visible step-progress text", "workbench"),
+    (r"(?i)Final checklist(?: verification)?", "visible checklist text", "workbench"),
+    (r"(?i)All (?:five )?(?:checklist )?boxes ticked", "visible checklist text", "workbench"),
+    (r"(?i)All five steps complete", "visible completion claim", "workbench"),
+    (r"(?i)Final output below", "visible workbench text", "workbench"),
+    (r"(?i)\bNow applying humanizer\b", "visible workbench text", "workbench"),
+    (r"(?im)^\s*Humanizer loaded\b", "visible workbench text", "workbench"),
+    (r"(?im)^\s*Draft:\s*$", "visible internal draft text", "internal_audit"),
+    (r"(?im)^\s*AI-tell audit:\s*$", "visible internal audit text", "internal_audit"),
+    (r"(?im)^\s*Final version\b", "visible internal audit text", "internal_audit"),
+    (r"(?i)\bNow the morning briefing\b", "visible workbench text", "workbench"),
+    (r"(?i)\bNow crafting\b", "visible workbench text", "workbench"),
+    (r"(?i)\bNow producing\b", "visible workbench text", "workbench"),
+    (r"(?i)\bNow let me compile\b", "visible workbench text", "workbench"),
+    (r"(?i)\bLet me draft\b", "visible workbench text", "workbench"),
+    (r"(?i)\bLet me compose\b", "visible workbench text", "workbench"),
+    (r"(?i)\bLet me apply (?:the )?humanizer\b", "visible workbench text", "workbench"),
+    (r"(?i)\bNow I have all the source material\b", "visible workbench text", "workbench"),
+    (r"(?i)\bNow I have the full picture\b", "visible workbench text", "workbench"),
+    (r"(?i)\bReply with\b", "visible workbench text", "workbench"),
+    (r"(?i)\bHere's the draft\b", "visible workbench text", "workbench"),
+    (r"(?i)\bHere's the Telegram relay\b", "visible workbench text", "workbench"),
+    (r"(?i)\bReport is complete\b", "visible completion claim", "workbench"),
+    (r"(?i)\bFinal \(humanized\)", "visible internal audit text", "internal_audit"),
+    (r"(?i)\bHumanizer final pass \(internal\)", "visible internal audit text", "internal_audit"),
+    (r"(?i)\bHumanizer self-audit\b", "visible internal audit text", "internal_audit"),
+    (r"(?i)\bDraft \(AI pattern scan\)", "visible internal audit text", "internal_audit"),
+    (r"(?i)What makes .*AI generated", "visible internal audit text", "internal_audit"),
+    (r"(?m)^\s*\[TEAM-IDENTITY\]", "prompt tail leaked into response", "prompt_tail"),
+    (r"(?m)^\s*BYRON DIRECTIVES \(read FIRST\):", "prompt tail leaked into response", "prompt_tail"),
+    (r"(?m)^\s*SELF-IMPROVEMENT \(read (?:FIRST|SECOND)\):", "prompt tail leaked into response", "prompt_tail"),
+    (r"(?m)^\s*YOUR SOURCES \(read in this order\):", "prompt tail leaked into response", "prompt_tail"),
+    (r"(?m)^\s*ABSOLUTE RULES:", "prompt tail leaked into response", "prompt_tail"),
+    (r"(?m)^\s*ARTIFACT AND DELIVERY HYGIENE:", "prompt tail leaked into response", "prompt_tail"),
+    (r"(?m)^\s*QUALITY GATES", "prompt tail leaked into response", "prompt_tail"),
+    (r"(?m)^\s*DO NOT:", "prompt tail leaked into response", "prompt_tail"),
+    (r"(?m)^\s*SKILL USE AND IMPROVEMENT LOOP:", "prompt tail leaked into response", "prompt_tail"),
+    (r"(?m)^\s*WHAT YOU DO:", "prompt tail leaked into response", "prompt_tail"),
+    (r"(?m)^\s*YOUR PROCEDURE:", "prompt tail leaked into response", "prompt_tail"),
+    (r"(?m)^\s*SIGNAL FILE FORMAT", "prompt tail leaked into response", "prompt_tail"),
+    (r"(?m)^\s*FINAL OUTPUT", "prompt tail leaked into response", "prompt_tail"),
+    (r"(?m)^## Response\s*$", "duplicate response marker in final response", "duplicate_response"),
+    (r"(?i)File-mutation verifier", "file-mutation verifier warning leaked", "file_verifier"),
+)
+_NO_AGENT_DELIVERY_BLOCK_CATEGORIES = frozenset({"prompt_tail", "file_verifier"})
+_RECOVERABLE_CRON_RESPONSE_START_RE = re.compile(
+    r"(?m)^(Good morning\b|\[SILENT\]\s*$|"
+    r"(?:\*\*)?(?:Executive read|Objective|Task changes|Decision/ask|"
+    r"Default if no answer|Status|Adjustment|Observed|Learned|"
+    r"Tomorrow objective|Task changes/feed-forward)(?:\*\*)?[:.])"
+)
+
+
+def _recover_deliverable_cron_response(content: str) -> tuple[str, Optional[str]]:
+    """Extract a clean deliverable body from a response with workbench preface."""
+    text = (content or "").strip()
+    if not text:
+        return text, None
+
+    matches = list(_RECOVERABLE_CRON_RESPONSE_START_RE.finditer(text))
+    for match in matches:
+        candidate = text[match.start():].strip()
+        status, reason = _lint_cron_delivery_response(candidate)
+        if status in {"pass", "silent"}:
+            return candidate, "recovered deliverable response after workbench preface"
+        logger.debug("Rejected recovered cron response candidate: %s", reason)
+    return text, None
+
+
+def _lint_cron_delivery_response(content: str, *, no_agent: bool = False) -> tuple[str, Optional[str]]:
+    """Classify final cron content before external delivery."""
+    text = (content or "").strip()
+    if not text:
+        return "pass", None
+
+    normalized = " ".join(text.upper().split())
+    if normalized in _CRON_SILENCE_TOKENS:
+        return "silent", None
+    if not no_agent and _is_cron_silence_response(text):
+        return "block", "decorated [SILENT] marker"
+    if not no_agent and SILENT_MARKER in text.upper():
+        return "block", "decorated [SILENT] marker"
+
+    patterns = _CRON_DELIVERY_BLOCK_PATTERNS
+    if no_agent:
+        patterns = tuple(
+            item for item in patterns
+            if item[2] in _NO_AGENT_DELIVERY_BLOCK_CATEGORIES
+        )
+    for pattern, reason, _category in patterns:
+        if re.search(pattern, text):
+            return "block", reason
+    return "pass", None
+
+
+def _append_delivery_gate_note(output: str, reason: str) -> str:
+    note = (
+        "\n\n## Delivery Quality Gate\n\n"
+        f"External delivery blocked: {reason}\n"
+    )
+    return (output or "").rstrip() + note
+
+
+def _append_artifact_expectation_note(output: str, messages: list[str], *, blocked: bool) -> str:
+    title = "Artifact Expectation Gate" if blocked else "Artifact Expectation Warning"
+    status = "External delivery blocked" if blocked else "Artifact expectation warning"
+    body = "\n".join(f"- {message}" for message in messages)
+    return (output or "").rstrip() + f"\n\n## {title}\n\n{status}:\n{body}\n"
+
+
+def _render_artifact_pattern(pattern: str, run_started_at) -> str:
+    text = str(pattern or "").strip()
+    run_date = run_started_at.strftime("%Y-%m-%d") if run_started_at else _hermes_now().strftime("%Y-%m-%d")
+    text = text.replace("{date}", run_date)
+
+    if text.startswith("vault:"):
+        rel = Path(text[len("vault:"):].lstrip("/"))
+        if rel.is_absolute() or ".." in rel.parts:
+            raise ValueError(f"artifact path escapes vault prefix: {pattern}")
+        return str(Path.home() / "Documents" / "Obsidian Vault" / rel)
+    if text.startswith("hermes:"):
+        rel = Path(text[len("hermes:"):].lstrip("/"))
+        if rel.is_absolute() or ".." in rel.parts:
+            raise ValueError(f"artifact path escapes hermes prefix: {pattern}")
+        return str(_get_hermes_home() / rel)
+    raise ValueError(f"artifact path must use vault: or hermes: prefix: {pattern}")
+
+
+def _is_fresh_artifact(path: Path, run_started_at, *, tolerance_seconds: int = 300) -> bool:
+    try:
+        if not path.exists():
+            return False
+        if run_started_at is None:
+            return True
+        return path.stat().st_mtime >= (run_started_at.timestamp() - tolerance_seconds)
+    except OSError:
+        return False
+
+
+def _verify_cron_artifact_expectations(job: dict, run_started_at) -> tuple[list[str], list[str]]:
+    """Return (required_failures, warnings) for configured artifact expectations."""
+    expectations = job.get("artifact_expectations") or []
+    if not isinstance(expectations, list):
+        return [], [f"artifact_expectations must be a list, got {type(expectations).__name__}"]
+
+    required_failures: list[str] = []
+    warnings: list[str] = []
+    for index, expectation in enumerate(expectations, start=1):
+        if isinstance(expectation, str):
+            expectation = {"path": expectation}
+        if not isinstance(expectation, dict):
+            warnings.append(f"expectation #{index} ignored: expected object, got {type(expectation).__name__}")
+            continue
+
+        mode = str(expectation.get("mode") or "required_for_delivery").strip()
+        if mode not in {"required_for_delivery", "warn_only"}:
+            required_failures.append(f"expectation #{index} has invalid mode: {mode!r}")
+            continue
+        destination = required_failures if mode == "required_for_delivery" else warnings
+        raw_pattern = expectation.get("glob") or expectation.get("path")
+        if not raw_pattern:
+            destination.append(f"expectation #{index} missing path/glob")
+            continue
+
+        try:
+            rendered = _render_artifact_pattern(str(raw_pattern), run_started_at)
+        except ValueError as exc:
+            destination.append(str(exc))
+            continue
+        is_glob = "glob" in expectation
+        matches = [Path(p) for p in glob.glob(rendered)] if is_glob else [Path(rendered)]
+        fresh_matches = [p for p in matches if _is_fresh_artifact(p, run_started_at)]
+
+        if not matches or not any(p.exists() for p in matches):
+            destination.append(f"expected artifact missing: {rendered}")
+        elif not fresh_matches:
+            destination.append(f"expected artifact not updated during this run: {rendered}")
+
+    return required_failures, warnings
 
 # ---------------------------------------------------------------------------
 # Persistent thread pool for parallel cron jobs.
@@ -2121,8 +2353,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         if isinstance(context_from, str):
             context_from = [context_from]
         for source_job_id in context_from:
-            # Guard against path traversal — valid job IDs are 12-char hex strings
-            if not source_job_id or not all(c in "0123456789abcdef" for c in source_job_id):
+            # Guard against path traversal before touching the output tree.
+            if not _is_safe_context_job_id(source_job_id):
                 logger.warning(
                     "context_from: skipping invalid job_id %r for job_id=%r name=%r%s",
                     source_job_id,
@@ -2142,16 +2374,32 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 )
                 if not output_files:
                     continue  # silent skip — no output yet
-                latest_output = output_files[0].read_text(encoding="utf-8").strip()
+                latest_doc = output_files[0].read_text(encoding="utf-8").strip()
+                if (
+                    "## Delivery Quality Gate" in latest_doc
+                    or "## Artifact Expectation Gate" in latest_doc
+                ):
+                    logger.info(
+                        "context_from: skipping gated output for job %r",
+                        source_job_id,
+                    )
+                    continue
+                latest_output, extracted_response = _extract_cron_response_context(latest_doc)
                 # Truncate to 8K characters to avoid prompt bloat
                 _MAX_CONTEXT_CHARS = 8000
                 if len(latest_output) > _MAX_CONTEXT_CHARS:
                     latest_output = latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]"
                 if latest_output:
+                    context_label = "final response" if extracted_response else "most recent output"
+                    extraction_note = (
+                        "Context extracted from the preceding job's final response.\n\n"
+                        if extracted_response else ""
+                    )
                     prompt = (
                         f"## Output from job '{source_job_id}'\n"
-                        "The following is the most recent output from a preceding "
+                        f"The following is the {context_label} from a preceding "
                         "cron job. Use it as context for your analysis.\n\n"
+                        f"{extraction_note}"
                         f"```\n{latest_output}\n```\n\n"
                         f"{prompt}"
                     )
@@ -3279,6 +3527,8 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 job.get("name", job["id"]),
             )
             return True  # not an error — already handled/removed
+        run_started_at = _hermes_now()
+        run_started_monotonic = time.monotonic()
 
         # Run the job under the profile's secret scope. get_secret() fails
         # closed outside a scope once profile isolation is in play (multiple
@@ -3328,27 +3578,69 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # swallow the error and leak the agent's subprocesses/clients (#10200).
         delivery_error = None
         try:
-            output_file = save_job_output(job["id"], output)
-            if verbose:
-                logger.info("Output saved to: %s", output_file)
-
             # Deliver the final response to the origin/target chat.
-            # If the agent responded with [SILENT], skip delivery (but
-            # output is already saved above).  Failed jobs always deliver.
+            # If the agent produced a silent response, skip delivery (but save
+            # the output). Failed jobs always deliver a compact operator alert.
             deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
             # Treat whitespace-only final responses the same as empty
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.
             should_deliver = bool(deliver_content.strip())
-            # Cron silence suppression — see _is_cron_silence_response.  Replaces the
-            # old `SILENT_MARKER in ...upper()` substring check, which both leaked
-            # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
-            # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
-            # #46917).  Keeps the intentional bracketed-prefix / trailing-line
-            # tolerance the cron contract relies on.
-            if should_deliver and success and _is_cron_silence_response(deliver_content):
-                logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-                should_deliver = False
+            if should_deliver and success:
+                lint_status, lint_reason = _lint_cron_delivery_response(
+                    deliver_content,
+                    no_agent=bool(job.get("no_agent")),
+                )
+                if lint_status == "block" and not job.get("no_agent"):
+                    recovered_content, recovery_note = _recover_deliverable_cron_response(deliver_content)
+                    if recovery_note and recovered_content != deliver_content:
+                        deliver_content = recovered_content
+                        final_response = recovered_content
+                        output = _replace_cron_response_context(output, recovered_content)
+                        lint_status, lint_reason = _lint_cron_delivery_response(deliver_content)
+                        logger.info("Job '%s': %s", job["id"], recovery_note)
+                if lint_status == "silent":
+                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                    should_deliver = False
+                elif lint_status == "block":
+                    delivery_error = f"delivery quality gate blocked output: {lint_reason}"
+                    output = _append_delivery_gate_note(output, delivery_error)
+                    should_deliver = False
+                    logger.warning("Job '%s': %s", job["id"], delivery_error)
+
+            if success:
+                artifact_failures, artifact_warnings = _verify_cron_artifact_expectations(
+                    job,
+                    run_started_at,
+                )
+                if artifact_failures:
+                    delivery_error = "artifact expectation gate blocked output: " + "; ".join(artifact_failures)
+                    output = _append_artifact_expectation_note(output, artifact_failures, blocked=True)
+                    should_deliver = False
+                    logger.warning("Job '%s': %s", job["id"], delivery_error)
+                if artifact_warnings:
+                    output = _append_artifact_expectation_note(output, artifact_warnings, blocked=False)
+                    logger.warning(
+                        "Job '%s': artifact expectation warning(s): %s",
+                        job["id"],
+                        "; ".join(artifact_warnings),
+                    )
+
+            elapsed_seconds = time.monotonic() - run_started_monotonic
+            output = (
+                f"{output.rstrip()}\n\n"
+                "## Runtime\n\n"
+                f"Elapsed seconds: {elapsed_seconds:.1f}\n"
+            )
+            logger.info(
+                "Job '%s' elapsed %.1fs",
+                job.get("name", job["id"]),
+                elapsed_seconds,
+            )
+
+            output_file = save_job_output(job["id"], output)
+            if verbose:
+                logger.info("Output saved to: %s", output_file)
 
             if should_deliver:
                 try:

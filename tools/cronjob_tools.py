@@ -598,6 +598,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("artifact_expectations"):
+        result["artifact_expectations"] = job["artifact_expectations"]
     return result
 
 
@@ -663,6 +665,7 @@ def cronjob(
     reason: Optional[str] = None,
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
+    artifact_expectations: Optional[List[Union[str, Dict[str, Any]]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
@@ -736,6 +739,7 @@ def cronjob(
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
                 script=_normalize_optional_job_value(script),
                 context_from=context_from,
+                artifact_expectations=artifact_expectations,
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
@@ -909,6 +913,8 @@ def cronjob(
                                 success=False,
                             )
                 updates["context_from"] = refs or None
+            if artifact_expectations is not None:
+                updates["artifact_expectations"] = artifact_expectations or None
             if enabled_toolsets is not None:
                 updates["enabled_toolsets"] = enabled_toolsets or None
             if attach_to_session is not None:
@@ -1054,13 +1060,40 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "items": {"type": "string"},
                 "description": (
                     "Optional job ID or list of job IDs whose most recent completed output is "
-                    "injected into the prompt as context before each run. "
+                    "injected into the prompt as context before each run. Gated outputs are skipped, "
+                    "and markdown cron documents contribute only their final ## Response section. "
                     "Use this to chain cron jobs: job A collects data, job B processes it. "
                     "Each entry must be a valid job ID (from cronjob action='list'). "
                     "Note: injects the most recent completed output — does not wait for "
                     "upstream jobs running in the same tick. "
                     "On update, pass an empty array to clear."
                 ),
+            },
+            "artifact_expectations": {
+                "type": "array",
+                "description": (
+                    "Optional artifact contract checked after a successful run and before delivery. "
+                    "Entries may be strings or objects with exactly one of path/glob, using vault: "
+                    "or hermes: prefixes and optional {date}. Add mode='warn_only' for non-blocking "
+                    "checks; the default mode is mode='required_for_delivery', which blocks external "
+                    "delivery when the artifact is missing or stale. On update, pass an empty array to clear."
+                ),
+                "items": {
+                    "oneOf": [
+                        {"type": "string"},
+                        {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "glob": {"type": "string"},
+                                "mode": {
+                                    "type": "string",
+                                    "enum": ["required_for_delivery", "warn_only"],
+                                },
+                            },
+                        },
+                    ],
+                },
             },
             "enabled_toolsets": {
                 "type": "array",
@@ -1127,9 +1160,11 @@ registry.register(
         reason=args.get("reason"),
         script=args.get("script"),
         context_from=args.get("context_from"),
+        artifact_expectations=args.get("artifact_expectations"),
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        attach_to_session=args.get("attach_to_session"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

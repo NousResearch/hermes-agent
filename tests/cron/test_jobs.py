@@ -434,6 +434,17 @@ class TestPauseResumeJob:
         assert paused["state"] == "paused"
         assert paused["paused_reason"] == "user paused"
 
+    def test_paused_state_is_not_due_even_if_enabled_true(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 7, 7, 9, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = create_job(prompt="Pause me", schedule="every 1h")
+        job["enabled"] = True
+        job["state"] = "paused"
+        job["next_run_at"] = (now - timedelta(minutes=1)).isoformat()
+        save_jobs([job])
+
+        assert get_due_jobs() == []
+
     def test_resume_reenables_job(self, tmp_cron_dir):
         job = create_job(prompt="Resume me", schedule="every 1h")
         pause_job(job["id"], reason="user paused")

@@ -85,10 +85,6 @@ function bootstrapCacheDir(hermesHome) {
   return path.join(hermesHome, 'bootstrap-cache')
 }
 
-// The install.sh / install.ps1 that ships inside the already-installed agent
-// checkout under ~/.hermes/hermes-agent. Used as a last-resort fallback when
-// the pinned commit can't be fetched from GitHub (e.g. a locally-built desktop
-// app stamped to an unpushed HEAD).
 function installedAgentInstallScript(hermesHome) {
   if (!hermesHome) return null
   const candidate = path.join(hermesHome, 'hermes-agent', 'scripts', installScriptName())
@@ -97,6 +93,15 @@ function installedAgentInstallScript(hermesHome) {
     return candidate
   } catch {
     return null
+  }
+}
+
+function hasExistingGitCheckout(activeRoot) {
+  if (!activeRoot) return false
+  try {
+    return fs.existsSync(path.join(activeRoot, '.git'))
+  } catch {
+    return false
   }
 }
 
@@ -451,12 +456,13 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
 // Manifest + stage dispatch
 // ---------------------------------------------------------------------------
 
-// Build the install.ps1 pin args (-Commit / -Branch) from the install-stamp
-// so the repository stage clones the exact SHA the .exe was tested with
-// instead of falling back to install.ps1's default ($Branch = "main").
-function buildPinArgs(installStamp) {
+// Build the installer branch/pin args from the install stamp. The commit pin
+// is fresh-install only: once a managed checkout already exists, bootstrap is
+// a repair/update path and must not let an old packaged app detach the checkout
+// back to the commit baked into that app.
+function buildPinArgs(installStamp, { pinCommit = true } = {}) {
   const args = []
-  if (installStamp && installStamp.commit) {
+  if (pinCommit && installStamp && installStamp.commit) {
     args.push('-Commit', installStamp.commit)
   }
   if (installStamp && installStamp.branch) {
@@ -465,22 +471,22 @@ function buildPinArgs(installStamp) {
   return args
 }
 
-function buildPosixPinArgs({ installStamp, activeRoot, hermesHome }) {
+function buildPosixPinArgs({ installStamp, activeRoot, hermesHome, pinCommit = true }) {
   const args = ['--dir', activeRoot, '--hermes-home', hermesHome]
   if (installStamp && installStamp.branch) {
     args.push('--branch', installStamp.branch)
   }
-  if (installStamp && installStamp.commit) {
+  if (pinCommit && installStamp && installStamp.commit) {
     args.push('--commit', installStamp.commit)
   }
   return args
 }
 
-async function fetchManifest({ scriptPath, installerKind, emit, hermesHome, activeRoot, installStamp }) {
+async function fetchManifest({ scriptPath, installerKind, emit, hermesHome, activeRoot, installStamp, pinCommit }) {
   const isPosix = installerKind === 'posix'
   const args = isPosix
-    ? ['--manifest', ...buildPosixPinArgs({ installStamp, activeRoot, hermesHome })]
-    : ['-Manifest', ...buildPinArgs(installStamp)]
+    ? ['--manifest', ...buildPosixPinArgs({ installStamp, activeRoot, hermesHome, pinCommit })]
+    : ['-Manifest', ...buildPinArgs(installStamp, { pinCommit })]
   const result = await (isPosix ? spawnBash : spawnPowerShell)(scriptPath, args, {
     emit,
     stageName: '__manifest__',
@@ -528,7 +534,17 @@ function parseStageResult(stdout) {
   return null
 }
 
-async function runStage({ scriptPath, installerKind, stage, emit, hermesHome, activeRoot, abortSignal, installStamp }) {
+async function runStage({
+  scriptPath,
+  installerKind,
+  stage,
+  emit,
+  hermesHome,
+  activeRoot,
+  abortSignal,
+  installStamp,
+  pinCommit
+}) {
   const startedAt = Date.now()
   emit({ type: 'stage', name: stage.name, state: 'running' })
 
@@ -539,9 +555,9 @@ async function runStage({ scriptPath, installerKind, stage, emit, hermesHome, ac
         stage.name,
         '--non-interactive',
         '--json',
-        ...buildPosixPinArgs({ installStamp, activeRoot, hermesHome })
+        ...buildPosixPinArgs({ installStamp, activeRoot, hermesHome, pinCommit })
       ]
-    : ['-Stage', stage.name, '-NonInteractive', '-Json', ...buildPinArgs(installStamp)]
+    : ['-Stage', stage.name, '-NonInteractive', '-Json', ...buildPinArgs(installStamp, { pinCommit })]
   const result = await (isPosix ? spawnBash : spawnPowerShell)(scriptPath, args, {
     emit,
     stageName: stage.name,
@@ -664,8 +680,25 @@ async function runBootstrap(opts) {
   })
 
   try {
+    const existingCheckout = hasExistingGitCheckout(activeRoot)
+    const pinCommit = !existingCheckout
+
+    if (existingCheckout && installStamp && installStamp.commit) {
+      emit({
+        type: 'log',
+        line:
+          `[bootstrap] existing checkout detected at ${activeRoot}; ` +
+          `not pinning to packaged install stamp ${installStamp.commit.slice(0, 12)}`
+      })
+    }
+
     // 1. Resolve the platform installer.
-    const scriptInfo = await resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit })
+    const scriptInfo = await resolveInstallScript({
+      installStamp,
+      sourceRepoRoot,
+      hermesHome,
+      emit
+    })
     const installerKind = scriptInfo.kind || 'powershell'
 
     // 2. Fetch manifest
@@ -675,7 +708,8 @@ async function runBootstrap(opts) {
       emit,
       hermesHome,
       activeRoot,
-      installStamp
+      installStamp,
+      pinCommit
     })
     emit({
       type: 'manifest',
@@ -700,7 +734,8 @@ async function runBootstrap(opts) {
         hermesHome,
         activeRoot,
         abortSignal,
-        installStamp
+        installStamp,
+        pinCommit
       })
       if (ev.state === 'failed') {
         emit({ type: 'failed', stage: stage.name, error: ev.error || 'stage failed' })
@@ -732,6 +767,9 @@ module.exports = {
   runBootstrap,
   // Exposed for testability
   parseStageResult,
+  buildPinArgs,
+  buildPosixPinArgs,
+  hasExistingGitCheckout,
   resolveLocalInstallScript,
   resolveInstallScript,
   installedAgentInstallScript,

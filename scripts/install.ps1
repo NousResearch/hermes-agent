@@ -3463,7 +3463,17 @@ function Stage-Repository       { Install-Repository }
 function Stage-Venv             { Resolve-UvCmd; Install-Venv }
 function Stage-Dependencies     { Resolve-UvCmd; Install-Dependencies }
 function Stage-NodeDeps         { Install-NodeDeps }
-function Stage-Desktop          { Install-Desktop }
+function Stage-Desktop          {
+    try {
+        Install-Desktop
+    } catch {
+        $err = "$_"
+        Write-Warn "Desktop app could not be built: $err"
+        Write-Warn "Hermes CLI install will continue; the desktop app can be rebuilt later."
+        Write-Info "  Manual retry: cd `"$InstallDir`"; npm install; cd apps\desktop; npm run pack"
+        $script:_StageSkippedReason = "Desktop app could not be built: $err. Hermes CLI install will continue; retry manually with npm install and npm run pack."
+    }
+}
 function Stage-Path             { Set-PathVariable }
 function Stage-ConfigTemplates  { Copy-ConfigTemplates }
 function Stage-PlatformSdks     { Resolve-UvCmd; Install-PlatformSdks }
@@ -3625,6 +3635,11 @@ function Main {
 # All branches funnel through one try/catch so errors don't kill an `irm |
 # iex` PowerShell session, and so failures in stage-driver mode produce a
 # structured JSON error frame instead of a bare exception.
+
+# Dot-sourcing is the supported library seam for executing installer helpers
+# in isolation. Loading the script this way defines functions and stage data
+# without starting an installation.
+if ($MyInvocation.InvocationName -eq ".") { return }
 
 try {
     if ($Ensure -ne "") {

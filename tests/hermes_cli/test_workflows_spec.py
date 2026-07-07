@@ -68,6 +68,36 @@ def test_switch_requires_default_or_exhaustive_edges():
         validate_graph(spec)
 
 
+def test_workflow_requires_at_least_one_entry_node():
+    raw = _minimal_spec()
+    raw["nodes"] = {
+        "first": {"type": "pass"},
+        "second": {"type": "pass"},
+    }
+    raw["edges"] = [
+        {"from": "first", "to": "second"},
+        {"from": "second", "to": "first"},
+    ]
+    spec = WorkflowSpec.model_validate(raw)
+    with pytest.raises(ValueError, match="at least one entry node"):
+        validate_graph(spec)
+
+
+def test_switch_case_requires_matching_outgoing_edge():
+    raw = _minimal_spec()
+    raw["nodes"] = {
+        "route": {
+            "type": "switch",
+            "cases": [{"name": "approved", "when": {"op": "eq", "left": 1, "right": 1}}],
+        },
+        "done": {"type": "pass"},
+    }
+    raw["edges"] = [{"from": "route.aproved", "to": "done"}]
+    spec = WorkflowSpec.model_validate(raw)
+    with pytest.raises(ValueError, match="switch case route.approved requires matching outgoing edge"):
+        validate_graph(spec)
+
+
 def test_bad_workflow_id_rejected():
     raw = _minimal_spec()
     raw["id"] = "Bad ID With Spaces"

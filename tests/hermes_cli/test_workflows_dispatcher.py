@@ -745,6 +745,97 @@ def test_agent_task_resumes_from_summary_only_plain_text_completion(tmp_path, mo
     assert json.loads(ask["output_json"]) == {"result": "plain handoff"}
 
 
+def test_agent_task_contract_failure_blocks_sibling_agent_tasks(tmp_path, monkeypatch):
+    spec = WorkflowSpec.model_validate({
+        "id": "contract_sibling_demo",
+        "name": "Contract Sibling Demo",
+        "version": 1,
+        "triggers": [{"type": "manual", "id": "manual"}],
+        "nodes": {
+            "first": {
+                "type": "agent_task",
+                "profile": "worker",
+                "prompt": "Return JSON",
+                "result_contract": {"status": "ok|failed"},
+            },
+            "second": {
+                "type": "agent_task",
+                "profile": "worker",
+                "prompt": "Keep working unless workflow stops",
+            },
+        },
+    })
+    exec_id = _start_agent_spec_execution(tmp_path, monkeypatch, spec)
+
+    assert workflows_dispatcher.tick(limit=1, now=100) == 1
+    first = _node_runs(exec_id, "first")[0]
+    second = _node_runs(exec_id, "second")[0]
+    with kb.connect() as kconn:
+        kconn.execute(
+            """
+            UPDATE tasks
+               SET status = 'running', claim_lock = 'worker-lock',
+                   claim_expires = 999, worker_pid = NULL
+             WHERE id = ?
+            """,
+            (second["kanban_task_id"],),
+        )
+        assert kb.complete_task(kconn, first["kanban_task_id"], result=json.dumps({"status": "maybe"}))
+
+    assert workflows_dispatcher.tick(limit=1, now=101) == 0
+
+    first = _node_runs(exec_id, "first")[0]
+    second = _node_runs(exec_id, "second")[0]
+    with wfdb.connect() as conn:
+        execution = wfdb.get_execution(conn, exec_id)
+    with kb.connect() as kconn:
+        sibling_task = kb.get_task(kconn, second["kanban_task_id"])
+        reclaimed_event = kconn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'reclaimed' ORDER BY id DESC LIMIT 1",
+            (second["kanban_task_id"],),
+        ).fetchone()
+
+    assert execution.status == "blocked"
+    assert first["status"] == "blocked"
+    assert second["status"] == "blocked"
+    assert sibling_task is not None
+    assert sibling_task.status == "blocked"
+    assert reclaimed_event is not None
+
+
+def test_agent_task_resumes_from_original_kanban_board_after_current_board_changes(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.create_board("workflow-board")
+    kb.create_board("other-board")
+    kb.set_current_board("workflow-board")
+    wfdb.init_db()
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, _agent_spec(), created_by="test")
+        exec_id = wfdb.start_execution(
+            conn, "agent_demo", input_data={"task": "hello"}, trigger_type="manual"
+        )
+
+    assert workflows_dispatcher.tick(limit=1, now=100) == 1
+    ask = _node_runs(exec_id, "ask")[0]
+    task_id = ask["kanban_task_id"]
+    assert ask["kanban_board"] == "workflow-board"
+    kb.set_current_board("other-board")
+    with kb.connect(board="workflow-board") as kconn:
+        assert kb.complete_task(kconn, task_id, result=json.dumps({"answer": "from original board"}))
+
+    assert workflows_dispatcher.tick(limit=1, now=101) == 1
+
+    with wfdb.connect() as conn:
+        execution = wfdb.get_execution(conn, exec_id)
+    ask = _node_runs(exec_id, "ask")[0]
+    assert execution.status == "succeeded"
+    assert ask["status"] == "succeeded"
+    assert execution.context["node"]["done"]["output"] == {"agent": "from original board"}
+
+
 def test_agent_task_blocks_when_output_missing_required_contract_key(tmp_path, monkeypatch):
     spec = WorkflowSpec.model_validate({
         "id": "contract_agent_demo",

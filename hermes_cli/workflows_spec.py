@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -123,6 +124,8 @@ def validate_graph(spec: WorkflowSpec) -> None:
 
     node_ids = set(spec.nodes)
     outgoing_sources: set[str] = set()
+    edge_sources: set[str] = set()
+    incoming_targets: set[str] = set()
 
     for edge in spec.edges:
         source_base = edge.from_
@@ -141,6 +144,8 @@ def validate_graph(spec: WorkflowSpec) -> None:
         if edge.to not in node_ids:
             raise ValueError(f"unknown edge target: {edge.to}")
         outgoing_sources.add(source_base)
+        edge_sources.add(edge.from_)
+        incoming_targets.add(edge.to)
 
     for node_id, node in spec.nodes.items():
         if node.catch is not None:
@@ -148,14 +153,29 @@ def validate_graph(spec: WorkflowSpec) -> None:
                 raise ValueError(f"node {node_id} cannot catch itself")
             if node.catch not in node_ids:
                 raise ValueError(f"unknown catch target for node {node_id}: {node.catch}")
+            incoming_targets.add(node.catch)
         if node.type == "switch":
             if node.default is not None:
                 if node.default not in node_ids:
                     raise ValueError(f"unknown switch default target: {node.default}")
+                incoming_targets.add(node.default)
             elif node_id not in outgoing_sources:
                 raise ValueError(f"switch node {node_id} must define outgoing edges or default")
+            for case in node.cases:
+                if not isinstance(case, Mapping):
+                    raise ValueError(f"switch case for node {node_id} must be a mapping")
+                name = case.get("name")
+                if not isinstance(name, str) or not name:
+                    raise ValueError(f"switch case for node {node_id} requires name")
+                if f"{node_id}.{name}" not in edge_sources:
+                    raise ValueError(
+                        f"switch case {node_id}.{name} requires matching outgoing edge"
+                    )
         if node.type == "agent_task":
             if not str(node.profile or "").strip():
                 raise ValueError(f"agent_task node {node_id} requires a non-blank profile")
             if _blank_prompt(node.prompt):
                 raise ValueError(f"agent_task node {node_id} requires a non-empty prompt")
+
+    if not any(node_id not in incoming_targets for node_id in node_ids):
+        raise ValueError("workflow must define at least one entry node")

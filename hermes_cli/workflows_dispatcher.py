@@ -199,8 +199,9 @@ def _create_or_get_agent_task(
     node_id: str,
     node: Any,
     context: dict[str, Any],
-) -> str:
-    with kb.connect_closing() as kconn:
+) -> tuple[str, str]:
+    board = kb.get_current_board()
+    with kb.connect_closing(board=board) as kconn:
         task_id = kb.create_task(
             kconn,
             title=(node.title or f"{spec.name}: {node_id}").strip(),
@@ -218,7 +219,7 @@ def _create_or_get_agent_task(
             model_override=node.model_override,
             idempotency_key=f"workflow:{execution_id}:{node_id}",
         )
-        return task_id
+        return task_id, board
 
 
 def _parse_agent_result(raw: str | None) -> Any:
@@ -305,6 +306,7 @@ def _block_agent_node(
     except (TypeError, ValueError):
         context = {"node": {}}
     context["error"] = error
+    sibling_refs: list[dict[str, Any]] = []
     with wfdb.write_txn(conn):
         updated = conn.execute(
             """
@@ -324,14 +326,33 @@ def _block_agent_node(
                 """,
                 (_json_dumps(context), now, row["execution_id"]),
             )
+            sibling_refs = _linked_waiting_kanban_task_refs(conn, row["execution_id"])
+            if sibling_refs:
+                sibling_ids = [ref["node_run_id"] for ref in sibling_refs]
+                placeholders = ", ".join("?" for _ in sibling_ids)
+                conn.execute(
+                    f"""
+                    UPDATE workflow_node_runs
+                       SET status = 'blocked', error = ?, completed_at = ?, wait_until = NULL
+                     WHERE id IN ({placeholders})
+                    """,
+                    (_json_dumps(error), now, *sibling_ids),
+                )
             _append_event(conn, row["execution_id"], "execution_blocked", error, now)
+    if sibling_refs:
+        wfdb.block_linked_kanban_tasks(
+            [(ref["task_id"], ref["kanban_board"]) for ref in sibling_refs],
+            execution_id=row["execution_id"],
+            source="agent_task_block",
+            reason=f"workflow execution {row['execution_id']} blocked by node {row['node_id']}",
+        )
 
 
 def _resume_completed_agent_tasks(conn: sqlite3.Connection, *, now: int) -> None:
     rows = conn.execute(
         """
-        SELECT nr.id, nr.execution_id, nr.node_id, nr.kanban_task_id, ex.context_json,
-               ex.workflow_id, ex.version
+        SELECT nr.id, nr.execution_id, nr.node_id, nr.kanban_task_id, nr.kanban_board,
+               ex.context_json, ex.workflow_id, ex.version
           FROM workflow_node_runs nr
           JOIN workflow_executions ex ON ex.execution_id = nr.execution_id
          WHERE nr.status = 'waiting'
@@ -343,8 +364,8 @@ def _resume_completed_agent_tasks(conn: sqlite3.Connection, *, now: int) -> None
     if not rows:
         return
 
-    with kb.connect_closing() as kconn:
-        for row in rows:
+    for row in rows:
+        with kb.connect_closing(board=row["kanban_board"]) as kconn:
             task = kb.get_task(kconn, row["kanban_task_id"])
             if task is None:
                 continue
@@ -449,9 +470,10 @@ def _persist_waiting_nodes(
         else:
             wait_until = None
         kanban_task_id = None
+        kanban_board = None
         if spec is not None and node is not None and node.type == "agent_task":
             try:
-                kanban_task_id = _create_or_get_agent_task(
+                kanban_task_id, kanban_board = _create_or_get_agent_task(
                     execution_id=execution_id,
                     spec=spec,
                     node_id=node_id,
@@ -462,7 +484,7 @@ def _persist_waiting_nodes(
                 raise _AgentTaskMaterializationError(node_id, str(exc)) from exc
         exists = conn.execute(
             """
-            SELECT id, kanban_task_id FROM workflow_node_runs
+            SELECT id, kanban_task_id, kanban_board FROM workflow_node_runs
              WHERE execution_id = ? AND node_id = ? AND status = 'waiting'
             """,
             (execution_id, node_id),
@@ -471,15 +493,15 @@ def _persist_waiting_nodes(
             conn.execute(
                 """
                 INSERT INTO workflow_node_runs (
-                    execution_id, node_id, status, started_at, wait_until, kanban_task_id
-                ) VALUES (?, ?, 'waiting', ?, ?, ?)
+                    execution_id, node_id, status, started_at, wait_until, kanban_task_id, kanban_board
+                ) VALUES (?, ?, 'waiting', ?, ?, ?, ?)
                 """,
-                (execution_id, node_id, now, wait_until, kanban_task_id),
+                (execution_id, node_id, now, wait_until, kanban_task_id, kanban_board),
             )
-        elif kanban_task_id and not exists["kanban_task_id"]:
+        elif kanban_task_id and (not exists["kanban_task_id"] or not exists["kanban_board"]):
             conn.execute(
-                "UPDATE workflow_node_runs SET kanban_task_id = ? WHERE id = ?",
-                (kanban_task_id, exists["id"]),
+                "UPDATE workflow_node_runs SET kanban_task_id = ?, kanban_board = ? WHERE id = ?",
+                (kanban_task_id, kanban_board, exists["id"]),
             )
 
 
@@ -499,12 +521,16 @@ def _context_with_error(context: dict[str, Any], error: dict[str, Any]) -> dict[
     return updated
 
 
-def _linked_waiting_kanban_task_ids(conn: sqlite3.Connection, execution_id: str) -> list[str]:
+def _linked_waiting_kanban_task_refs(conn: sqlite3.Connection, execution_id: str) -> list[dict[str, Any]]:
     return [
-        row["kanban_task_id"]
+        {
+            "node_run_id": row["id"],
+            "task_id": row["kanban_task_id"],
+            "kanban_board": row["kanban_board"],
+        }
         for row in conn.execute(
             """
-            SELECT DISTINCT kanban_task_id
+            SELECT id, kanban_task_id, kanban_board
               FROM workflow_node_runs
              WHERE execution_id = ?
                AND status = 'waiting'
@@ -535,24 +561,23 @@ def _materialization_failure_result(
         error=error,
         now=now,
     )
-    linked_task_ids = _linked_waiting_kanban_task_ids(conn, execution_id)
+    linked_task_refs = _linked_waiting_kanban_task_refs(conn, execution_id)
     wfdb.block_linked_kanban_tasks(
-        linked_task_ids,
+        [(ref["task_id"], ref["kanban_board"]) for ref in linked_task_refs],
         execution_id=execution_id,
         source="agent_task_materialization",
         reason=f"workflow execution {execution_id} failed to create agent task {exc.node_id}: {exc}",
     )
-    if linked_task_ids:
-        placeholders = ", ".join("?" for _ in linked_task_ids)
+    if linked_task_refs:
+        linked_node_run_ids = [ref["node_run_id"] for ref in linked_task_refs]
+        placeholders = ", ".join("?" for _ in linked_node_run_ids)
         conn.execute(
             f"""
             UPDATE workflow_node_runs
                SET status = 'blocked', error = ?, completed_at = ?, wait_until = NULL
-             WHERE execution_id = ?
-               AND status = 'waiting'
-               AND kanban_task_id IN ({placeholders})
+             WHERE id IN ({placeholders})
             """,
-            (_json_dumps(error), now, execution_id, *linked_task_ids),
+            (_json_dumps(error), now, *linked_node_run_ids),
         )
     return EngineResult(
         status="failed",

@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS workflow_node_runs (
     completed_at  INTEGER,
     wait_until    INTEGER,
     kanban_task_id TEXT,
+    kanban_board   TEXT,
     FOREIGN KEY (execution_id) REFERENCES workflow_executions(execution_id)
 );
 
@@ -169,6 +170,8 @@ def init_db(db_path: Path | None = None) -> None:
                 conn.execute("ALTER TABLE workflow_node_runs ADD COLUMN wait_until INTEGER")
             if "kanban_task_id" not in columns:
                 conn.execute("ALTER TABLE workflow_node_runs ADD COLUMN kanban_task_id TEXT")
+            if "kanban_board" not in columns:
+                conn.execute("ALTER TABLE workflow_node_runs ADD COLUMN kanban_board TEXT")
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_workflow_node_runs_kanban_task
                     ON workflow_node_runs(kanban_task_id)
@@ -504,6 +507,7 @@ def list_node_runs(conn: sqlite3.Connection, execution_id: str) -> list[dict[str
                 "completed_at": row["completed_at"],
                 "wait_until": row["wait_until"],
                 "kanban_task_id": row["kanban_task_id"],
+                "kanban_board": row["kanban_board"],
             }
         )
 
@@ -525,6 +529,7 @@ def list_node_runs(conn: sqlite3.Connection, execution_id: str) -> list[dict[str
                     "completed_at": event_info["created_at"],
                     "wait_until": None,
                     "kanban_task_id": None,
+                    "kanban_board": None,
                 }
             )
 
@@ -539,19 +544,38 @@ def list_node_runs(conn: sqlite3.Connection, execution_id: str) -> list[dict[str
     return result
 
 
+def _kanban_task_refs(task_refs: list[Any]) -> list[tuple[str, str | None]]:
+    refs: list[tuple[str, str | None]] = []
+    for ref in task_refs:
+        task_id: Any
+        board: Any = None
+        if isinstance(ref, dict):
+            task_id = ref.get("task_id") or ref.get("kanban_task_id")
+            board = ref.get("board") or ref.get("kanban_board")
+        elif isinstance(ref, (tuple, list)):
+            task_id = ref[0] if ref else None
+            board = ref[1] if len(ref) > 1 else None
+        else:
+            task_id = ref
+        if task_id:
+            refs.append((str(task_id), str(board) if board else None))
+    return refs
+
+
 def block_linked_kanban_tasks(
-    task_ids: list[str],
+    task_ids: list[Any],
     *,
     execution_id: str,
     source: str,
     reason: str | None = None,
 ) -> None:
-    if not task_ids:
+    refs = _kanban_task_refs(task_ids)
+    if not refs:
         return
 
     reason = reason or f"workflow execution {execution_id} cancelled by {source}"
-    with kb.connect_closing() as kconn:
-        for task_id in task_ids:
+    for task_id, board in refs:
+        with kb.connect_closing(board=board) as kconn:
             task = kb.get_task(kconn, task_id)
             if task is None:
                 continue
@@ -573,13 +597,13 @@ def cancel_execution(
     now = int(time.time())
     terminal_statuses = tuple(sorted(_TERMINAL_EXECUTION_STATUSES))
     placeholders = ", ".join("?" for _ in terminal_statuses)
-    linked_task_ids: list[str] = []
+    linked_task_refs: list[tuple[str, str | None]] = []
     with write_txn(conn):
-        linked_task_ids = [
-            row["kanban_task_id"]
+        linked_task_refs = [
+            (row["kanban_task_id"], row["kanban_board"])
             for row in conn.execute(
                 """
-                SELECT DISTINCT kanban_task_id
+                SELECT DISTINCT kanban_task_id, kanban_board
                   FROM workflow_node_runs
                  WHERE execution_id = ?
                    AND kanban_task_id IS NOT NULL
@@ -602,7 +626,7 @@ def cancel_execution(
             append_event(conn, execution_id, "execution_cancelled", {"source": source})
 
     if cancelled:
-        block_linked_kanban_tasks(linked_task_ids, execution_id=execution_id, source=source)
+        block_linked_kanban_tasks(linked_task_refs, execution_id=execution_id, source=source)
 
     return get_execution(conn, execution_id), cancelled
 

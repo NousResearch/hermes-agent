@@ -878,7 +878,11 @@ def judge_goal(
         return "continue", "empty response (nothing to evaluate)", False, None
 
     try:
-        from agent.auxiliary_client import get_auxiliary_extra_body, get_text_auxiliary_client
+        from agent.auxiliary_client import (
+            auxiliary_max_tokens_param,
+            get_auxiliary_extra_body,
+            get_text_auxiliary_client,
+        )
     except Exception as exc:
         logger.debug("goal judge: auxiliary client import failed: %s", exc)
         return "continue", "auxiliary client unavailable", False, None
@@ -942,7 +946,9 @@ def judge_goal(
                 {"role": "user", "content": prompt},
             ],
             temperature=0,
-            max_tokens=_goal_judge_max_tokens(),
+            **auxiliary_max_tokens_param(
+                _goal_judge_max_tokens(), model=model
+            ),
             timeout=timeout,
             extra_body=get_auxiliary_extra_body() or None,
         )
@@ -999,7 +1005,11 @@ def draft_contract(objective: str, *, timeout: float = DEFAULT_JUDGE_TIMEOUT) ->
         return None
 
     try:
-        from agent.auxiliary_client import get_auxiliary_extra_body, get_text_auxiliary_client
+        from agent.auxiliary_client import (
+            auxiliary_max_tokens_param,
+            get_auxiliary_extra_body,
+            get_text_auxiliary_client,
+        )
     except Exception as exc:
         logger.debug("goal draft: auxiliary client import failed: %s", exc)
         return None
@@ -1021,7 +1031,9 @@ def draft_contract(objective: str, *, timeout: float = DEFAULT_JUDGE_TIMEOUT) ->
                 {"role": "user", "content": f"Objective:\n{_truncate(objective, 4000)}"},
             ],
             temperature=0,
-            max_tokens=_goal_judge_max_tokens(),
+            **auxiliary_max_tokens_param(
+                _goal_judge_max_tokens(), model=model
+            ),
             timeout=timeout,
             extra_body=get_auxiliary_extra_body() or None,
         )

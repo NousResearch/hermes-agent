@@ -163,7 +163,7 @@ RUN npm install --prefer-offline --no-audit && \
 # so Docker users can use these providers without requiring runtime
 # lazy-install access to PyPI (often blocked in containerized envs).
 #
-# The hindsight memory provider runtime (hindsight-all) is baked in
+# The hindsight memory provider runtime packages are baked in
 # for the same reason: it lazy-installs into /opt/hermes/.venv at first
 # use, which lives inside the (immutable) image layer rather than the
 # mounted /opt/data volume, so it is lost on every container recreate /

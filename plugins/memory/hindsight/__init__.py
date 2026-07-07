@@ -53,9 +53,22 @@ logger = logging.getLogger(__name__)
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
 # Keep in sync with tools/lazy_deps.py ("memory.hindsight") and plugin.yaml.
-_MIN_ALL_VERSION = "0.7.2"
-_HINDSIGHT_DEPENDENCY = f"hindsight-all=={_MIN_ALL_VERSION}"
-_HINDSIGHT_DISTRIBUTION = "hindsight-all"
+_MIN_RUNTIME_VERSION = "0.7.2"
+_HINDSIGHT_CLIENT_DEPENDENCY = f"hindsight-client=={_MIN_RUNTIME_VERSION}"
+_HINDSIGHT_EMBED_DEPENDENCY = f"hindsight-embed=={_MIN_RUNTIME_VERSION}"
+_HINDSIGHT_API_DEPENDENCY = (
+    f"hindsight-api-slim[embedded-db]=={_MIN_RUNTIME_VERSION}"
+)
+_HINDSIGHT_DEPENDENCIES = (
+    _HINDSIGHT_CLIENT_DEPENDENCY,
+    _HINDSIGHT_EMBED_DEPENDENCY,
+    _HINDSIGHT_API_DEPENDENCY,
+)
+_HINDSIGHT_DISTRIBUTIONS = (
+    "hindsight-client",
+    "hindsight-embed",
+    "hindsight-api-slim",
+)
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
@@ -135,15 +148,16 @@ def _check_local_runtime() -> tuple[bool, str | None]:
     a broken local memory backend.
     """
     try:
-        importlib.import_module("hindsight")
+        importlib.import_module("hindsight_client")
+        importlib.import_module("hindsight_api.main")
         importlib.import_module("hindsight_embed.daemon_embed_manager")
         return True, None
     except Exception as exc:
         return False, str(exc)
 
 
-def _ensure_cloud_client_dependency() -> None:
-    """Install the Hindsight cloud client lazily before importing it."""
+def _ensure_hindsight_dependencies() -> None:
+    """Install the Hindsight runtime dependencies lazily before importing them."""
     try:
         from tools.lazy_deps import ensure as _lazy_ensure
         _lazy_ensure("memory.hindsight", prompt=False)
@@ -151,6 +165,88 @@ def _ensure_cloud_client_dependency() -> None:
         pass
     except Exception as exc:
         raise ImportError(str(exc)) from exc
+
+
+class _EmbeddedHindsightClient:
+    """Small local wrapper around hindsight-client plus hindsight-embed."""
+
+    def __init__(
+        self,
+        *,
+        profile: str,
+        llm_provider: str,
+        llm_api_key: str,
+        llm_model: str,
+        llm_base_url: str | None = None,
+        idle_timeout: int = 0,
+    ):
+        from hindsight_client import Hindsight
+        from hindsight_embed import get_embed_manager
+
+        self.profile = profile
+        self._client = None
+        self._manager = get_embed_manager()
+        self._hindsight_cls = Hindsight
+        self._lock = threading.Lock()
+        self._started = False
+        self._closed = False
+        self._config = {
+            "HINDSIGHT_API_LLM_PROVIDER": llm_provider,
+            "HINDSIGHT_API_LLM_API_KEY": llm_api_key,
+            "HINDSIGHT_API_LLM_MODEL": llm_model,
+            "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT": str(idle_timeout),
+        }
+        if llm_base_url:
+            self._config["HINDSIGHT_API_LLM_BASE_URL"] = llm_base_url
+
+    def _ensure_started(self):
+        if (
+            self._started
+            and self._client is not None
+            and self._manager.is_running(self.profile)
+        ):
+            return
+
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Cannot use Hindsight embedded client after close")
+            if (
+                self._started
+                and self._client is not None
+                and self._manager.is_running(self.profile)
+            ):
+                return
+            if self._client is not None:
+                try:
+                    self._client.close()
+                except Exception:
+                    logger.debug("Error closing stale Hindsight client", exc_info=True)
+                self._client = None
+            if not self._manager.ensure_running(self._config, self.profile):
+                raise RuntimeError(
+                    f"Failed to start Hindsight daemon for profile '{self.profile}'"
+                )
+            self._client = self._hindsight_cls(
+                base_url=self._manager.get_url(self.profile)
+            )
+            self._started = True
+
+    def __getattr__(self, name: str):
+        self._ensure_started()
+        return getattr(self._client, name)
+
+    @property
+    def url(self) -> str:
+        self._ensure_started()
+        return self._manager.get_url(self.profile)
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        if self._client is not None:
+            self._client.close()
+            self._client = None
 
 
 # ---------------------------------------------------------------------------
@@ -795,14 +891,14 @@ class HindsightMemoryProvider(MemoryProvider):
         env_writes: dict = {}
 
         # Step 2: Install/upgrade deps for selected mode
-        cloud_dep = _HINDSIGHT_DEPENDENCY
-        local_dep = _HINDSIGHT_DEPENDENCY
+        cloud_deps = [_HINDSIGHT_CLIENT_DEPENDENCY]
+        local_deps = list(_HINDSIGHT_DEPENDENCIES)
         if mode == "local_embedded":
-            deps_to_install = [local_dep]
+            deps_to_install = local_deps
         elif mode == "local_external":
-            deps_to_install = [cloud_dep]
+            deps_to_install = cloud_deps
         else:
-            deps_to_install = [cloud_dep]
+            deps_to_install = cloud_deps
 
         llm_provider = ""
         if mode == "local_embedded":
@@ -1024,18 +1120,10 @@ class HindsightMemoryProvider(MemoryProvider):
                         + (f": {reason}" if reason else "")
                     )
                 try:
-                    hindsight_mod = importlib.import_module("hindsight")
+                    importlib.import_module("hindsight_client")
+                    importlib.import_module("hindsight_embed.daemon_embed_manager")
                 except ImportError:
-                    try:
-                        from tools.lazy_deps import ensure as _lazy_ensure
-                        _lazy_ensure("memory.hindsight", prompt=False)
-                    except ImportError:
-                        pass
-                    except Exception as _e:
-                        raise ImportError(str(_e))
-                    hindsight_mod = importlib.import_module("hindsight")
-                HindsightEmbedded = hindsight_mod.HindsightEmbedded
-                HindsightEmbedded.__del__ = lambda self: None
+                    _ensure_hindsight_dependencies()
                 llm_provider = self._config.get("llm_provider", "")
                 if llm_provider in {"openai_compatible", "openrouter"}:
                     llm_provider = "openai"
@@ -1057,9 +1145,9 @@ class HindsightMemoryProvider(MemoryProvider):
                 )
                 self._idle_timeout = idle_timeout
                 kwargs["idle_timeout"] = idle_timeout
-                self._client = HindsightEmbedded(**kwargs)
+                self._client = _EmbeddedHindsightClient(**kwargs)
             else:
-                _ensure_cloud_client_dependency()
+                _ensure_hindsight_dependencies()
                 from hindsight_client import Hindsight
                 timeout = self._timeout or _DEFAULT_TIMEOUT
                 kwargs = {"base_url": self._api_url, "timeout": float(timeout)}
@@ -1223,10 +1311,20 @@ class HindsightMemoryProvider(MemoryProvider):
         try:
             from importlib.metadata import version as pkg_version
             from packaging.version import Version
-            installed = pkg_version(_HINDSIGHT_DISTRIBUTION)
-            if Version(installed) < Version(_MIN_ALL_VERSION):
-                logger.warning("%s %s is outdated (need >=%s), attempting upgrade...",
-                               _HINDSIGHT_DISTRIBUTION, installed, _MIN_ALL_VERSION)
+            outdated = []
+            for distribution in _HINDSIGHT_DISTRIBUTIONS:
+                installed = pkg_version(distribution)
+                if Version(installed) < Version(_MIN_RUNTIME_VERSION):
+                    outdated.append((distribution, installed))
+            if outdated:
+                outdated_text = ", ".join(
+                    f"{distribution} {installed}"
+                    for distribution, installed in outdated
+                )
+                logger.warning(
+                    "Hindsight runtime is outdated (%s), attempting upgrade...",
+                    outdated_text,
+                )
                 import shutil
                 import subprocess
                 import sys
@@ -1235,16 +1333,24 @@ class HindsightMemoryProvider(MemoryProvider):
                     try:
                         subprocess.run(
                             [uv_path, "pip", "install", "--python", sys.executable,
-                             "--quiet", "--upgrade", _HINDSIGHT_DEPENDENCY],
+                             "--quiet", "--upgrade", *_HINDSIGHT_DEPENDENCIES],
                             check=True, timeout=120, capture_output=True,
                             stdin=subprocess.DEVNULL,
                         )
-                        logger.info("%s upgraded to >=%s", _HINDSIGHT_DISTRIBUTION, _MIN_ALL_VERSION)
+                        logger.info(
+                            "Hindsight runtime upgraded to >=%s",
+                            _MIN_RUNTIME_VERSION,
+                        )
                     except Exception as e:
-                        logger.warning("Auto-upgrade failed: %s. Run: uv pip install '%s'",
-                                       e, _HINDSIGHT_DEPENDENCY)
+                        quoted = " ".join(f"'{dep}'" for dep in _HINDSIGHT_DEPENDENCIES)
+                        logger.warning(
+                            "Auto-upgrade failed: %s. Run: uv pip install %s",
+                            e,
+                            quoted,
+                        )
                 else:
-                    logger.warning("uv not found. Run: pip install '%s'", _HINDSIGHT_DEPENDENCY)
+                    quoted = " ".join(f"'{dep}'" for dep in _HINDSIGHT_DEPENDENCIES)
+                    logger.warning("uv not found. Run: pip install %s", quoted)
         except Exception:
             pass  # packaging not available or other issue — proceed anyway
 
@@ -1364,7 +1470,7 @@ class HindsightMemoryProvider(MemoryProvider):
         _client_version = "unknown"
         try:
             from importlib.metadata import version as pkg_version
-            _client_version = pkg_version(_HINDSIGHT_DISTRIBUTION)
+            _client_version = pkg_version(_HINDSIGHT_DISTRIBUTIONS[0])
         except Exception:
             pass
         logger.info("Hindsight initialized: mode=%s, api_url=%s, bank=%s, budget=%s, memory_mode=%s, prefetch_method=%s, client=%s",

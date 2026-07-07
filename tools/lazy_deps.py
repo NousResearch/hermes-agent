@@ -140,7 +140,11 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.0.1",),
-    "memory.hindsight": ("hindsight-all==0.7.2",),
+    "memory.hindsight": (
+        "hindsight-client==0.7.2",
+        "hindsight-embed==0.7.2",
+        "hindsight-api-slim[embedded-db]==0.7.2",
+    ),
     # supermemory + mem0 are opt-in cloud memory providers with their own
     # SDKs. On the published Docker image the agent venv is sealed
     # (HERMES_DISABLE_LAZY_INSTALLS=1) and lazy installs are redirected to the

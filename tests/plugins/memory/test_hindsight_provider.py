@@ -6,6 +6,7 @@ turn counting, tags), and schema completeness.
 """
 
 import json
+import importlib
 import os
 import re
 import stat
@@ -24,8 +25,11 @@ from plugins.memory.hindsight import (
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
-    _HINDSIGHT_DEPENDENCY,
-    _HINDSIGHT_DISTRIBUTION,
+    _HINDSIGHT_API_DEPENDENCY,
+    _HINDSIGHT_CLIENT_DEPENDENCY,
+    _HINDSIGHT_DEPENDENCIES,
+    _HINDSIGHT_DISTRIBUTIONS,
+    _HINDSIGHT_EMBED_DEPENDENCY,
     _load_config,
     _build_embedded_profile_env,
     _normalize_observation_scopes,
@@ -273,21 +277,28 @@ def test_hindsight_dependency_metadata_installs_embedded_runtime():
     )
     manifest_deps = manifest["pip_dependencies"]
 
-    assert hindsight_extra == ["hindsight-all==0.7.2"]
+    assert hindsight_extra == list(_HINDSIGHT_DEPENDENCIES)
     assert manifest_deps == hindsight_extra
     assert LAZY_DEPS["memory.hindsight"] == tuple(hindsight_extra)
-    assert _HINDSIGHT_DEPENDENCY == hindsight_extra[0]
-    assert _HINDSIGHT_DISTRIBUTION == "hindsight-all"
+    assert _HINDSIGHT_CLIENT_DEPENDENCY == hindsight_extra[0]
+    assert _HINDSIGHT_EMBED_DEPENDENCY == hindsight_extra[1]
+    assert _HINDSIGHT_API_DEPENDENCY == hindsight_extra[2]
+    assert _HINDSIGHT_DISTRIBUTIONS == (
+        "hindsight-client",
+        "hindsight-embed",
+        "hindsight-api-slim",
+    )
     assert "hindsight-client==0.6.1" not in hindsight_extra
     assert "hindsight-client==0.6.1" not in manifest_deps
 
     lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
     packages = {package["name"]: package for package in lock["package"]}
-    hindsight_all_deps = {
+    api_deps = {
         dep["name"]
-        for dep in packages["hindsight-all"]["dependencies"]
+        for dep in packages["hindsight-api-slim"]["dependencies"]
     }
-    assert "hindsight-client" in hindsight_all_deps
+    assert "litellm" in api_deps
+    assert "torch" not in api_deps
 
 
 # ---------------------------------------------------------------------------
@@ -460,10 +471,24 @@ class TestConfig:
             def __init__(self, **kwargs):
                 captured.update(kwargs)
 
-        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+        real_import_module = importlib.import_module
+
+        def fake_import_module(name, package=None):
+            if name in {"hindsight_client", "hindsight_embed.daemon_embed_manager"}:
+                return SimpleNamespace()
+            return real_import_module(name, package)
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.importlib.import_module",
+            fake_import_module,
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._EmbeddedHindsightClient",
+            FakeHindsightEmbedded,
+        )
         monkeypatch.setattr(
             "tools.lazy_deps.ensure",
-            lambda *args, **kwargs: pytest.fail("lazy install should be skipped when hindsight is already importable"),
+            lambda *args, **kwargs: pytest.fail("lazy install should be skipped when the embedded runtime is already importable"),
         )
         monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
 

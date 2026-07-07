@@ -144,4 +144,4 @@ Available in `hybrid` and `tools` memory modes:
 
 ## Dependency Version
 
-Requires `hindsight-all == 0.7.2` for the bundled embedded mode so the Hindsight runtime and embedded daemon modules are available.
+Requires `hindsight-client == 0.7.2`, `hindsight-embed == 0.7.2`, and `hindsight-api-slim[embedded-db] == 0.7.2` for the bundled embedded mode so the Hindsight runtime and embedded daemon modules are available.

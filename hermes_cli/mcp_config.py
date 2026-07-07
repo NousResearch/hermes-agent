@@ -85,6 +85,36 @@ def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
     return servers
 
 
+def _is_oauth_mcp_server(cfg: Any) -> bool:
+    return isinstance(cfg, dict) and cfg.get("auth") == "oauth" and bool(cfg.get("url"))
+
+
+def _mcp_oauth_endpoint(cfg: Any) -> str:
+    if not isinstance(cfg, dict):
+        return ""
+    return str(cfg.get("url") or "")
+
+
+def _cleanup_mcp_oauth_state_if_needed(
+    name: str,
+    old_config: Any,
+    new_config: Any,
+) -> None:
+    """Drop cached OAuth state when a server no longer uses that OAuth endpoint."""
+    if not _is_oauth_mcp_server(old_config):
+        return
+    if _is_oauth_mcp_server(new_config) and (
+        _mcp_oauth_endpoint(old_config) == _mcp_oauth_endpoint(new_config)
+    ):
+        return
+    try:
+        from tools.mcp_oauth_manager import get_manager
+
+        get_manager().remove(name)
+    except Exception:
+        logger.debug("MCP OAuth cleanup skipped for %s", name, exc_info=True)
+
+
 def _save_mcp_server(name: str, server_config: dict) -> bool:
     """Add or update a server entry in config.yaml.
 
@@ -99,8 +129,11 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
         _warning(f"Server '{name}' was NOT saved due to suspicious configuration.")
         return False
     config = load_config()
-    config.setdefault("mcp_servers", {})[name] = server_config
+    servers = config.setdefault("mcp_servers", {})
+    old_config = servers.get(name)
+    servers[name] = server_config
     save_config(config)
+    _cleanup_mcp_oauth_state_if_needed(name, old_config, server_config)
     return True
 
 
@@ -110,10 +143,12 @@ def _remove_mcp_server(name: str) -> bool:
     servers = config.get("mcp_servers", {})
     if name not in servers:
         return False
+    old_config = servers.get(name)
     del servers[name]
     if not servers:
         config.pop("mcp_servers", None)
     save_config(config)
+    _cleanup_mcp_oauth_state_if_needed(name, old_config, None)
     return True
 
 
@@ -142,11 +177,14 @@ def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
         return False, issues
 
     config = load_config()
+    old_servers = _get_mcp_servers(config)
     if servers:
         config["mcp_servers"] = dict(servers)
     else:
         config.pop("mcp_servers", None)
     save_config(config)
+    for name, old_cfg in old_servers.items():
+        _cleanup_mcp_oauth_state_if_needed(name, old_cfg, servers.get(name))
     return True, []
 
 

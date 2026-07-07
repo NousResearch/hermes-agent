@@ -174,6 +174,60 @@ class TestMcpRemove:
         cmd_mcp_remove(_make_args(name="oauth-srv"))
         assert not token_file.exists()
 
+    def test_save_switch_from_oauth_to_headers_cleans_oauth_state(self, tmp_path):
+        """Changing auth away from OAuth must drop stale token/client cache."""
+        from hermes_cli.mcp_config import _save_mcp_server
+
+        _save_mcp_server(
+            "cloudflare",
+            {"url": "https://mcp.cloudflare.com/mcp", "auth": "oauth"},
+        )
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        for suffix in (".json", ".client.json", ".meta.json"):
+            (token_dir / f"cloudflare{suffix}").write_text("{}")
+
+        _save_mcp_server(
+            "cloudflare",
+            {
+                "url": "https://mcp.cloudflare.com/mcp",
+                "headers": {"Authorization": "Bearer ${MCP_CLOUDFLARE_API_KEY}"},
+            },
+        )
+
+        assert not any(token_dir.iterdir())
+
+    def test_replace_switch_from_oauth_to_headers_cleans_oauth_state(self, tmp_path):
+        """Dashboard/editor whole-map saves must also evict stale OAuth cache."""
+        _seed_config(
+            tmp_path,
+            {
+                "cloudflare": {
+                    "url": "https://mcp.cloudflare.com/mcp",
+                    "auth": "oauth",
+                }
+            },
+        )
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        for suffix in (".json", ".client.json", ".meta.json"):
+            (token_dir / f"cloudflare{suffix}").write_text("{}")
+
+        from hermes_cli.mcp_config import _replace_mcp_servers
+
+        ok, issues = _replace_mcp_servers(
+            {
+                "cloudflare": {
+                    "url": "https://mcp.cloudflare.com/mcp",
+                    "headers": {"Authorization": "Bearer ${MCP_CLOUDFLARE_API_KEY}"},
+                }
+            }
+        )
+
+        assert ok is True
+        assert issues == []
+        assert not any(token_dir.iterdir())
+
 
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_add

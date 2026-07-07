@@ -8,6 +8,120 @@ from agent.account_usage import (
 )
 
 
+# ── Anthropic utilization parsing ──────────────────────────────────────
+# The Anthropic OAuth usage API returns `utilization` as a 0-100 percentage,
+# NOT a 0-1 fraction. A value of 1.0 means 1% used, not 100%. The heuristic
+# `float(util) * 100 if float(util) <= 1 else float(util)` was wrong — it
+# multiplied 1.0 (meaning 1%) by 100, producing 100%. These tests guard the
+# fix (utilization is used directly as a percentage).
+
+
+class _AnthropicResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._payload
+
+
+class _AnthropicClient:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def get(self, url, headers=None):
+        return _AnthropicResponse(self._payload)
+
+
+def _anthropic_payload(utilization):
+    """Build a minimal Anthropic usage payload with the given five_hour utilization."""
+    return {
+        "five_hour": {
+            "utilization": utilization,
+            "resets_at": "2026-06-30T01:19:59Z",
+        },
+        "seven_day": {
+            "utilization": 50.0,
+            "resets_at": "2026-07-05T08:59:59Z",
+        },
+    }
+
+
+def test_anthropic_utilization_low_value_is_percent_not_fraction(monkeypatch):
+    """utilization=1.0 means 1% used, not 100% (regression: was rendered as 100%)."""
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_anthropic_token",
+        lambda: "sk-ant-oauth-test-token",
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._is_oauth_token",
+        lambda token: True,
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _AnthropicClient(_anthropic_payload(1.0)),
+    )
+
+    snapshot = fetch_account_usage("anthropic")
+    assert snapshot is not None
+    session_window = next(w for w in snapshot.windows if w.label == "Current session")
+    assert session_window.used_percent == 1.0, (
+        f"1.0 utilization should be 1% not {session_window.used_percent}%"
+    )
+
+
+def test_anthropic_utilization_zero_is_zero(monkeypatch):
+    """utilization=0.0 means 0% used (edge case: 0 <= 1 so old heuristic would give 0*100=0, coincidentally correct)."""
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_anthropic_token",
+        lambda: "sk-ant-oauth-test-token",
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._is_oauth_token",
+        lambda token: True,
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _AnthropicClient(_anthropic_payload(0.0)),
+    )
+
+    snapshot = fetch_account_usage("anthropic")
+    assert snapshot is not None
+    session_window = next(w for w in snapshot.windows if w.label == "Current session")
+    assert session_window.used_percent == 0.0
+
+
+def test_anthropic_utilization_high_value_still_percent(monkeypatch):
+    """utilization=85.0 means 85% used (not 8500%)."""
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_anthropic_token",
+        lambda: "sk-ant-oauth-test-token",
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._is_oauth_token",
+        lambda token: True,
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _AnthropicClient(_anthropic_payload(85.0)),
+    )
+
+    snapshot = fetch_account_usage("anthropic")
+    assert snapshot is not None
+    session_window = next(w for w in snapshot.windows if w.label == "Current session")
+    assert session_window.used_percent == 85.0
+
+
 class _Response:
     def __init__(self, payload, status_code=200):
         self._payload = payload

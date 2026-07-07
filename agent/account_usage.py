@@ -518,7 +518,9 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
         util = window.get("utilization")
         if util is None:
             continue
-        used = float(util) * 100 if float(util) <= 1 else float(util)
+        # API returns utilization as a 0-100 percentage (e.g. 19.0 = 19%).
+        # Values ≤ 1 are small percentages (1.0 = 1%), NOT fractions (1.0 ≠ 100%).
+        used = float(util)
         windows.append(
             AccountUsageWindow(
                 label=label,

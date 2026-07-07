@@ -13,16 +13,7 @@ load-bearing assertion — that the raw refresh token never appears in that outp
 import hashlib
 import logging
 
-import hermes_cli.auth as auth
 from hermes_cli.auth import AuthError, _quarantine_nous_oauth_state
-
-
-# Sanity guard: make sure we are exercising THIS worktree's module and not the
-# editable-installed main checkout that shares the venv.
-def test_module_resolves_to_this_worktree():
-    assert "worktrees/bootstrap-h2-logging" in auth.__file__, (
-        f"auth module resolved to unexpected path: {auth.__file__}"
-    )
 
 
 # A distinctive, obviously-fake refresh token so the redaction assertion is

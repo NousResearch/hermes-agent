@@ -2695,6 +2695,94 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         pass
 
 
+def _endpoint_cache_key(base_url: str) -> str:
+    """Cache key for a custom/user endpoint's discovered model catalog.
+
+    Prefixed ``endpoint:`` so it can never collide with a provider slug in
+    the same ``provider_models_cache.json``.
+    """
+    return "endpoint:" + str(base_url or "").strip().rstrip("/").lower()
+
+
+def _endpoint_credential_fingerprint(
+    api_key: Optional[str], headers: Optional[dict[str, str]]
+) -> str:
+    """Fingerprint the credentials a ``/models`` probe would send.
+
+    Mirrors :func:`_credential_fingerprint`'s role for built-in providers:
+    rotating the endpoint's api_key (or auth-bearing extra headers)
+    invalidates the cached entry. blake2b for the same CodeQL rationale.
+    """
+    import hashlib
+
+    parts = [str(api_key or "")]
+    for name in sorted(headers or {}):
+        parts.append(f"{name}={headers[name]}")
+    blob = "|".join(parts).encode("utf-8", errors="replace")
+    return hashlib.blake2b(blob, digest_size=8).hexdigest()
+
+
+def cached_fetch_api_models(
+    api_key: Optional[str],
+    base_url: Optional[str],
+    *,
+    headers: Optional[dict[str, str]] = None,
+    api_mode: Optional[str] = None,
+    probe: bool = True,
+    ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL,
+) -> list[str]:
+    """Disk-cached wrapper around :func:`fetch_api_models` for custom /
+    user-defined OpenAI-compatible endpoints.
+
+    Entries share ``provider_models_cache.json`` with the built-in
+    providers (keyed ``endpoint:<base_url>`` + credential fingerprint), so
+    ``clear_provider_models_cache()`` — the ``/model --refresh`` path —
+    busts them the same way.
+
+    ``probe=False`` is a cache-only read that never touches the network:
+    GUI picker opens use it so a catalog discovered by an earlier probing
+    open still renders in full, while a slow/offline endpoint can't block
+    the dialog. Always returns a list; empty when nothing is known.
+    """
+    if not str(base_url or "").strip():
+        return []
+    key = _endpoint_cache_key(base_url)
+    fp = _endpoint_credential_fingerprint(api_key, headers)
+    cache = _load_provider_models_cache()
+    entry = cache.get(key)
+    now = time.time()
+
+    entry_usable = (
+        isinstance(entry, dict)
+        and entry.get("fp") == fp
+        and isinstance(entry.get("models"), list)
+        and entry["models"]
+    )
+    if entry_usable and (now - float(entry.get("at", 0))) < ttl_seconds:
+        return list(entry["models"])
+
+    if not probe:
+        # Cache-only mode: a stale same-credential entry beats nothing,
+        # matching cached_provider_model_ids' flaky-network fallback.
+        return list(entry["models"]) if entry_usable else []
+
+    # Forward api_mode only when set — callers (and their contract tests)
+    # rely on the bare fetch_api_models(api_key, base_url, headers=...) shape.
+    fetch_kwargs: dict = {"headers": headers}
+    if api_mode:
+        fetch_kwargs["api_mode"] = api_mode
+    try:
+        live = fetch_api_models(api_key, base_url, **fetch_kwargs)
+    except Exception:
+        live = None
+    if live:
+        cache[key] = {"fp": fp, "at": now, "models": list(live)}
+        _save_provider_models_cache(cache)
+        return list(live)
+
+    return list(entry["models"]) if entry_usable else []
+
+
 def _fetch_anthropic_models(
     timeout: float = 5.0,
     *,

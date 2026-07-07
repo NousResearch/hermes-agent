@@ -2021,16 +2021,22 @@ def list_authenticated_providers(
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
             has_explicit_models = bool(models_list)
-            should_probe = probe_custom_providers and bool(api_url) and discover and (
+            allow_discovery = bool(api_url) and discover and (
                 bool(api_key) or not has_explicit_models
             )
-            if should_probe:
+            if allow_discovery:
+                # probe_custom_providers only gates the NETWORK: with it
+                # false (GUI picker opens), cached_fetch_api_models does a
+                # cache-only read, so a catalog discovered by an earlier
+                # probing open still renders in full instead of collapsing
+                # back to the single default_model.
                 try:
-                    from hermes_cli.models import fetch_api_models
-                    live_models = fetch_api_models(
+                    from hermes_cli.models import cached_fetch_api_models
+                    live_models = cached_fetch_api_models(
                         api_key,
                         api_url,
                         headers=_extra_headers_from_config(ep_cfg) or None,
+                        probe=probe_custom_providers,
                     )
                     if live_models:
                         models_list = live_models
@@ -2275,20 +2281,22 @@ def list_authenticated_providers(
             #   api_key is present. This supports endpoints that expose a
             #   full aggregator catalog via /models but only serve a subset
             #   (parity with section 3's user ``providers:`` behaviour).
-            should_probe = (
-                probe_custom_providers
-                and bool(api_url)
+            allow_discovery = (
+                bool(api_url)
                 and (bool(api_key) or not grp["models"])
                 and grp.get("discover_models", True)
             )
-            if should_probe:
+            if allow_discovery:
+                # Same cache-read-vs-probe split as section 3: with
+                # probe_custom_providers false this is a cache-only read.
                 try:
-                    from hermes_cli.models import fetch_api_models
+                    from hermes_cli.models import cached_fetch_api_models
 
-                    live_models = fetch_api_models(
+                    live_models = cached_fetch_api_models(
                         api_key,
                         api_url,
                         headers=grp.get("extra_headers") or None,
+                        probe=probe_custom_providers,
                     )
                     if live_models:
                         grp["models"] = live_models

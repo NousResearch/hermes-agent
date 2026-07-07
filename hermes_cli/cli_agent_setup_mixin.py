@@ -15,6 +15,7 @@ loaded) so this module never imports ``cli`` at import time -> no import cycle.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -37,7 +38,7 @@ class CLIAgentSetupMixin:
         from cli import _hermes_home, logger
         from hermes_cli.config import cfg_get
 
-        file_path = sys.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
+        file_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
         if not file_path:
             cfg = hermes_cli.config.load_config()
             file_path = str(cfg.get("prefill_messages_file", "") or "")

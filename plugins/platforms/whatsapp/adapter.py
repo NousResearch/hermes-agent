@@ -638,6 +638,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_env["HERMES_AUDIO_CACHE_DIR"] = str(_get_audio_dir())
             bridge_env["HERMES_DOCUMENT_CACHE_DIR"] = str(_get_doc_dir())
 
+            # Hide the console window on Windows. Without CREATE_NO_WINDOW the
+            # long-lived Node bridge pops a visible black console; start_new_session
+            # is a no-op on Windows so it does not suppress the window. Returns 0
+            # on POSIX (harmless). Output still flows to bridge_log_fh.
+            from hermes_cli._subprocess_compat import windows_hide_flags
+
             self._bridge_process = subprocess.Popen(
                 [
                     find_node_executable("node") or "node",
@@ -649,6 +655,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 stdout=bridge_log_fh,
                 stderr=bridge_log_fh,
                 start_new_session=True,
+                creationflags=windows_hide_flags(),
                 env=bridge_env,
             )
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)

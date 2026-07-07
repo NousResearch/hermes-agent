@@ -1782,52 +1782,28 @@ class TestConfigNormalizationDoesNotOverwriteUserValues:
         assert _explicit_config_paths({"memory": {}, "display": {}}) == set()
 
 
-class TestCodexNativeCompactionConfig:
-    """Codex-native compaction stays opt-in without mutating existing configs."""
+class TestCodexAppServerAutoConfig:
+    """codex_app_server_auto ships a default and survives migration untouched."""
 
     def _write(self, tmp_path, body):
         (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
 
-    def test_default_config_keeps_codex_native_compaction_opt_in(self):
-        assert DEFAULT_CONFIG["compression"]["codex_native_compaction"] is False
+    def test_default_config_has_native_mode(self):
+        assert DEFAULT_CONFIG["compression"]["codex_app_server_auto"] == "native"
         assert DEFAULT_CONFIG["compression"]["codex_gpt55_autoraise"] is True
 
-    def test_migration_does_not_write_codex_native_compaction_default(self, tmp_path):
+    def test_preserves_existing_codex_app_server_auto_value(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             self._write(
                 tmp_path,
                 "_config_version: 31\n"
                 "compression:\n"
-                "  threshold: 0.5\n"
-                "  codex_gpt55_autoraise: false\n",
+                "  codex_app_server_auto: hermes\n",
             )
 
-            result = migrate_config(interactive=False, quiet=True)
+            migrate_config(interactive=False, quiet=True)
 
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
-            assert raw["compression"]["codex_gpt55_autoraise"] is False
-            assert "codex_native_compaction" not in raw["compression"]
-            assert raw["compression"]["threshold"] == 0.5
-            assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
-            assert (
-                "compression.codex_native_compaction=false"
-                not in result["config_added"]
-            )
+            assert raw["compression"]["codex_app_server_auto"] == "hermes"
 
-    def test_preserves_existing_codex_native_compaction_value(self, tmp_path):
-        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            self._write(
-                tmp_path,
-                "_config_version: 31\n"
-                "compression:\n"
-                "  codex_native_compaction: true\n",
-            )
 
-            result = migrate_config(interactive=False, quiet=True)
-
-            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
-            assert raw["compression"]["codex_native_compaction"] is True
-            assert (
-                "compression.codex_native_compaction=false"
-                not in result["config_added"]
-            )

@@ -244,6 +244,36 @@
   padding-left: 0.75rem;
 }
 
+.hermes-workflows .hermes-workflows-checklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.hermes-workflows .hermes-workflows-checklist-item {
+  align-items: center;
+  display: flex;
+  gap: 0.45rem;
+  padding: 0.25rem 0;
+}
+
+.hermes-workflows .hermes-workflows-checklist-item.is-ok {
+  color: color-mix(in srgb, #22c55e 75%, var(--color-foreground));
+}
+
+.hermes-workflows .hermes-workflows-checklist-item.is-fail,
+.hermes-workflows .hermes-workflows-dispatcher-readiness.is-warning {
+  color: var(--color-destructive, var(--color-primary));
+}
+
+.hermes-workflows .hermes-workflows-dispatcher-readiness.is-unknown {
+  color: var(--color-muted-foreground);
+}
+
+.hermes-workflows .hermes-workflows-checklist-mark {
+  font-weight: 700;
+}
+
 .hermes-workflows .hermes-workflows-draft-table-wrap {
   overflow-x: auto;
 }

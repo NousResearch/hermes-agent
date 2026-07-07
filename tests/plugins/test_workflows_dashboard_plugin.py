@@ -397,11 +397,79 @@ def test_dashboard_bundle_is_syntax_valid_when_node_is_available():
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+def test_dashboard_bundle_contains_validation_checklist_and_dispatcher_banner():
+    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+
+    assert "Validation checklist" in bundle
+    assert "No unsupported nodes (implemented today)" in bundle
+    assert "No unsupported triggers (implemented today)" in bundle
+    assert "implemented dashboard/dispatcher readiness" in bundle
+    assert "Implemented triggers today" in bundle
+    assert "Implemented node types today" in bundle
+    assert "Dispatcher readiness" in bundle
+    assert "workflow.dispatch_in_gateway" in bundle
+    assert "renderValidationChecklist" in bundle
+    assert "loadWorkflowStatus" in bundle
+
+
+def test_dashboard_validation_checklist_waits_for_parsed_spec_before_showing_failures():
+    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    render_body = bundle[
+        bundle.index("function renderValidationChecklist") : bundle.index(
+            "function renderDispatcherReadiness"
+        )
+    ]
+
+    assert "Validate Advanced YAML to update the checklist" in render_body
+    assert "if (!spec)" in render_body
+
+
+def test_dashboard_initial_load_refreshes_workflow_status_without_waiting_for_it():
+    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    load_status_start = bundle.index("function loadWorkflowStatus")
+    load_status_end = bundle.index("function loadWorkflowCapabilities", load_status_start)
+    load_status = bundle[load_status_start:load_status_end]
+    load_capabilities_start = bundle.index("function loadWorkflowCapabilities")
+    load_capabilities_end = bundle.index("function refresh", load_capabilities_start)
+    load_capabilities = bundle[load_capabilities_start:load_capabilities_end]
+    refresh_start = bundle.index("function refresh(")
+    refresh_end = bundle.index("useEffect(function () {", refresh_start)
+    refresh_body = bundle[refresh_start:refresh_end]
+    promise_all_start = refresh_body.index("Promise.all(")
+    promise_all_body = refresh_body[
+        promise_all_start : refresh_body.index("])", promise_all_start) + 2
+    ]
+    effect_end = bundle.index("}, []);", refresh_end)
+    effect_body = bundle[refresh_end:effect_end]
+
+    assert "setWorkflowStatus(null)" in load_status
+    assert 'api("/capabilities")' in load_capabilities
+    assert "setWorkflowCapabilities(null)" in load_capabilities
+    assert "loadWorkflowStatus();" in refresh_body
+    assert "loadWorkflowCapabilities();" in refresh_body
+    assert "Promise.all([loadDefinitions(), loadExecutions(preferExecutionId)])" in refresh_body
+    assert "loadWorkflowStatus" not in promise_all_body
+    assert "loadWorkflowCapabilities" not in promise_all_body
+    assert "refresh(initialExecutionId);" in effect_body
+
+
+def test_dashboard_dispatcher_readiness_handles_unknown_status_separately():
+    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    render_start = bundle.index("function renderDispatcherReadiness(")
+    render_end = bundle.index("function renderAdvancedYaml", render_start)
+    render_body = bundle[render_start:render_end]
+
+    assert "Dispatcher readiness unavailable" in bundle or "Dispatcher readiness unknown" in bundle
+    assert 'typeof dispatcher.dispatch_in_gateway === "boolean"' in render_body
+
+
 def _dashboard_helper_js() -> str:
     bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    kind_start = bundle.index("const NODE_KIND_LIST")
+    kind_end = bundle.index("const EXAMPLE_DEFINITION", kind_start)
     start = bundle.index("function asArray")
     end = bundle.index("function statusClass", start)
-    return bundle[start:end]
+    return bundle[kind_start:kind_end] + "\n" + bundle[start:end]
 
 
 def _run_dashboard_function(function_name: str, args):
@@ -460,6 +528,339 @@ def _run_node_summary_rows(spec):
 
 def _run_node_input_fields_for_spec(spec):
     return _run_dashboard_function("inputFieldsForSpec", [spec])
+
+
+def _run_validation_checklist(spec, capabilities=None):
+    args = [spec]
+    if capabilities is not None:
+        args.append(capabilities)
+    return _run_dashboard_function("validationChecklist", args)
+
+
+def test_dashboard_validation_checklist_accepts_minimal_valid_spec():
+    checklist = _run_validation_checklist(
+        {"id": "ok", "name": "OK", "version": 1, "nodes": {"start": {"type": "pass"}}}
+    )
+
+    assert all(item["ok"] for item in checklist)
+
+
+def test_dashboard_validation_checklist_rejects_invalid_workflow_id_and_non_string_types():
+    bad_specs = [
+        {"id": "Bad ID", "name": "Bad", "version": 1, "nodes": {"start": {"type": "pass"}}},
+        {"id": "bad", "name": {}, "version": 1, "nodes": {"start": {"type": "pass"}}},
+        {
+            "id": "bad",
+            "name": "Bad",
+            "version": 1,
+            "triggers": [{"type": ["manual"]}],
+            "nodes": {"start": {"type": "pass"}},
+        },
+        {
+            "id": "bad",
+            "name": "Bad",
+            "version": 1,
+            "triggers": [{"type": "manual "}],
+            "nodes": {"start": {"type": "pass"}},
+        },
+        {"id": "bad", "name": "Bad", "version": 1, "nodes": {"start": {"type": ["pass"]}}},
+        {"id": "bad", "name": "Bad", "version": 1, "nodes": {"start": {"type": "pass "}}},
+        {
+            "id": "bad",
+            "name": "Bad",
+            "version": 1,
+            "nodes": {"review": {"type": ["agent_task"], "profile": "worker", "prompt": "Do it"}},
+        },
+        {
+            "id": "bad",
+            "name": "Bad",
+            "version": 1,
+            "nodes": {"review": {"type": "agent_task ", "profile": "worker", "prompt": "Do it"}},
+        },
+    ]
+
+    for spec in bad_specs:
+        checklist = _run_validation_checklist(spec)
+        assert not all(item["ok"] for item in checklist)
+
+    checklist = _run_validation_checklist(bad_specs[0])
+    assert next(item for item in checklist if item["label"] == "Workflow id set")["ok"] is False
+
+    checklist = _run_validation_checklist(bad_specs[1])
+    assert next(item for item in checklist if item["label"] == "Workflow name set")["ok"] is False
+
+    for spec in bad_specs[2:4]:
+        checklist = _run_validation_checklist(spec)
+        assert next(
+            item
+            for item in checklist
+            if item["label"] == "No unsupported triggers (implemented today)"
+        )["ok"] is False
+
+    for spec in bad_specs[4:]:
+        checklist = _run_validation_checklist(spec)
+        assert next(
+            item
+            for item in checklist
+            if item["label"] == "No unsupported nodes (implemented today)"
+        )["ok"] is False
+
+
+def test_dashboard_validation_checklist_requires_name_version_and_known_node_type():
+    checklist = _run_validation_checklist({"id": "bad", "nodes": {"x": {"type": "bogus"}}})
+
+    assert next(item for item in checklist if item["label"] == "Workflow name set")["ok"] is False
+    assert next(item for item in checklist if item["label"] == "Version set")["ok"] is False
+    assert next(
+        item for item in checklist if item["label"] == "No unsupported nodes (implemented today)"
+    )["ok"] is False
+
+
+def test_dashboard_validation_checklist_flags_version_trigger_and_edges():
+    checklist = _run_validation_checklist(
+        {
+            "id": "bad",
+            "name": "Bad",
+            "version": 0,
+            "triggers": [{"type": "webhook"}],
+            "nodes": {"start": {"type": "pass"}},
+            "edges": [{"from": "missing", "to": "start"}],
+        }
+    )
+
+    assert next(item for item in checklist if item["label"] == "Version set")["ok"] is False
+    assert next(
+        item
+        for item in checklist
+        if item["label"] == "No unsupported triggers (implemented today)"
+    )["ok"] is False
+    assert next(item for item in checklist if item["label"] == "Edges refer to known nodes")["ok"] is False
+
+
+def test_dashboard_validation_checklist_flags_backend_graph_rule_failures():
+    bad_specs = [
+        {
+            "id": "bad",
+            "name": "Bad",
+            "version": 1,
+            "triggers": [{"type": "schedule"}],
+            "nodes": {"start": {"type": "pass"}},
+        },
+        {
+            "id": "bad",
+            "name": "Bad",
+            "version": 1,
+            "triggers": [{"type": "schedule", "cron": ["* * * * *"]}],
+            "nodes": {"start": {"type": "pass"}},
+        },
+        {"id": "bad", "name": "Bad", "version": 1, "nodes": {"route": {"type": "switch"}}},
+        {
+            "id": "bad",
+            "name": "Bad",
+            "version": 1,
+            "nodes": {"route": {"type": "switch", "default": "missing"}},
+        },
+        {
+            "id": "bad",
+            "name": "Bad",
+            "version": 1,
+            "nodes": {"start": {"type": "pass", "catch": "start"}},
+        },
+        {
+            "id": "bad",
+            "name": "Bad",
+            "version": 1,
+            "nodes": {"start": {"type": "pass", "catch": "missing"}},
+        },
+    ]
+    for spec in bad_specs:
+        checklist = _run_validation_checklist(spec)
+        assert next(item for item in checklist if item["label"] == "Graph rules pass")["ok"] is False
+
+
+def test_dashboard_validation_checklist_accepts_backend_graph_rules():
+    good_specs = [
+        {
+            "id": "ok",
+            "name": "OK",
+            "version": 1,
+            "triggers": [{"type": "schedule", "cron": "* * * * *"}],
+            "nodes": {"start": {"type": "pass"}},
+        },
+        {
+            "id": "ok",
+            "name": "OK",
+            "version": 1,
+            "nodes": {"route": {"type": "switch"}, "done": {"type": "pass"}},
+            "edges": [{"from": "route.case1", "to": "done"}],
+        },
+    ]
+    for spec in good_specs:
+        checklist = _run_validation_checklist(spec)
+        assert next(item for item in checklist if item["label"] == "Graph rules pass")["ok"] is True
+
+
+def test_dashboard_validation_checklist_rejects_invalid_spec_shapes_not_aliases():
+    invalid_specs = [
+        {
+            "id": "bad",
+            "name": "Bad",
+            "version": 1,
+            "triggers": [{"trigger_type": "manual"}],
+            "nodes": {"start": {"type": "pass"}},
+        },
+        {
+            "id": "bad",
+            "name": "Bad",
+            "version": 1,
+            "nodes": {"start": {"type": "pass"}, "done": {"type": "pass"}},
+            "edges": [{"source": "start", "target": "done"}],
+        },
+        {
+            "id": "bad",
+            "name": "Bad",
+            "version": 1,
+            "nodes": {"start": {"type": "pass"}, "done": {"type": "pass"}},
+            "edges": [{"from": "start", "to": "done.port"}],
+        },
+        {"id": "bad", "name": "Bad", "version": 1, "nodes": {"Bad ID": {"type": "pass"}}},
+    ]
+    for spec in invalid_specs:
+        checklist = _run_validation_checklist(spec)
+        assert not all(item["ok"] for item in checklist)
+
+    checklist = _run_validation_checklist(invalid_specs[0])
+    assert next(
+        item
+        for item in checklist
+        if item["label"] == "No unsupported triggers (implemented today)"
+    )["ok"] is False
+
+    checklist = _run_validation_checklist(invalid_specs[1])
+    assert next(item for item in checklist if item["label"] == "Edges refer to known nodes")["ok"] is False
+
+    checklist = _run_validation_checklist(invalid_specs[3])
+    assert next(item for item in checklist if item["label"] == "Node ids are valid")["ok"] is False
+
+
+def test_dashboard_validation_checklist_accepts_valid_switch_branch_edge():
+    checklist = _run_validation_checklist(
+        {
+            "id": "ok",
+            "name": "OK",
+            "version": 1,
+            "nodes": {
+                "route": {"type": "switch", "default": "done"},
+                "done": {"type": "pass"},
+            },
+            "edges": [{"from": "route.case1", "to": "done"}],
+        }
+    )
+
+    assert next(item for item in checklist if item["label"] == "Edges refer to known nodes")["ok"] is True
+
+
+def test_dashboard_validation_checklist_uses_loaded_capabilities():
+    caps = {
+        "triggers": {"implemented": ["manual", "webhook"]},
+        "nodes": {"implemented": ["pass", "send_message"]},
+    }
+    checklist = _run_dashboard_function(
+        "validationChecklist",
+        [
+            {
+                "id": "ok",
+                "name": "OK",
+                "version": 1,
+                "triggers": [{"type": "webhook"}],
+                "nodes": {"send": {"type": "send_message"}},
+            },
+            caps,
+        ],
+    )
+
+    assert next(
+        item
+        for item in checklist
+        if item["label"] == "No unsupported triggers (implemented today)"
+    )["ok"] is True
+    assert next(
+        item
+        for item in checklist
+        if item["label"] == "No unsupported nodes (implemented today)"
+    )["ok"] is True
+
+
+def test_dashboard_validation_checklist_flags_unsupported_nodes():
+    for node_type in ["send_message", "subworkflow"]:
+        checklist = _run_validation_checklist(
+            {"id": "bad", "nodes": {"send": {"type": node_type}}}
+        )
+
+        unsupported = next(
+            item
+            for item in checklist
+            if item["label"] == "No unsupported nodes (implemented today)"
+        )
+        assert unsupported["ok"] is False
+
+
+def test_dashboard_validation_checklist_rejects_invalid_node_shapes_and_types():
+    checklist = _run_validation_checklist(
+        {"id": "bad", "name": "Bad", "version": 1, "nodes": [{"type": "pass"}]}
+    )
+    assert next(item for item in checklist if item["label"] == "Node definitions are objects")["ok"] is False
+
+    for node in [{}, {"type": "trigger"}, {"type": "bogus"}]:
+        checklist = _run_validation_checklist(
+            {"id": "bad", "name": "Bad", "version": 1, "nodes": {"x": node}}
+        )
+        assert next(
+            item
+            for item in checklist
+            if item["label"] == "No unsupported nodes (implemented today)"
+        )["ok"] is False
+
+
+def test_dashboard_validation_checklist_flags_agent_cells_missing_profile_or_prompt():
+    checklist = _run_validation_checklist(
+        {"id": "bad", "nodes": {"review": {"type": "agent_task", "profile": ""}}}
+    )
+
+    agent = next(item for item in checklist if item["label"] == "Agent cells have profile and prompt")
+    assert agent["ok"] is False
+
+
+def test_dashboard_validation_checklist_rejects_non_string_agent_profile():
+    checklist = _run_validation_checklist(
+        {
+            "id": "bad",
+            "name": "Bad",
+            "version": 1,
+            "nodes": {
+                "a": {"type": "agent_task", "profile": {}, "prompt": "Do it"}
+            },
+        }
+    )
+
+    assert next(item for item in checklist if "Agent cells" in item["label"])["ok"] is False
+
+
+def test_dashboard_validation_checklist_rejects_blank_or_empty_agent_prompts():
+    for prompt in ["   ", [], {}]:
+        checklist = _run_validation_checklist(
+            {
+                "id": "bad",
+                "name": "Bad",
+                "version": 1,
+                "nodes": {
+                    "a": {"type": "agent_task", "profile": "worker", "prompt": prompt}
+                },
+            }
+        )
+
+        agent = next(item for item in checklist if item["label"] == "Agent cells have profile and prompt")
+        assert agent["ok"] is False
 
 
 def test_dashboard_node_summary_rows_handles_real_workflow_shapes():

@@ -23,6 +23,8 @@
   const API = "/api/plugins/workflows";
   const DEFINITIONS_API = "/api/plugins/workflows/definitions";
   const NODE_KIND_LIST = ["trigger", "pass", "switch", "agent_task", "wait", "parallel", "join", "fail"];
+  const FALLBACK_IMPLEMENTED_TRIGGER_TYPES = ["manual", "schedule"];
+  const FALLBACK_IMPLEMENTED_NODE_TYPES = ["pass", "switch", "agent_task", "wait", "parallel", "join", "fail"];
   const EXAMPLE_DEFINITION = [
     "id: dashboard_demo",
     "name: Dashboard Demo",
@@ -274,6 +276,196 @@
     return input;
   }
 
+  function hasPromptValue(prompt) {
+    if (typeof prompt === "string") return !!prompt.trim();
+    if (Array.isArray(prompt)) return prompt.length > 0;
+    if (prompt && typeof prompt === "object") return Object.keys(prompt).length > 0;
+    return !!prompt;
+  }
+
+  function hasProfileValue(profile) {
+    return typeof profile === "string" && !!profile.trim();
+  }
+
+  function checklistNodeValues(spec) {
+    const nodes = spec && spec.nodes;
+    if (Array.isArray(nodes)) return [];
+    if (nodes && typeof nodes === "object") return Object.keys(nodes).map(function (id) { return nodes[id] && typeof nodes[id] === "object" ? nodes[id] : {}; });
+    return [];
+  }
+
+  function checklistNodesShapeValid(spec) {
+    const nodes = spec && spec.nodes;
+    if (Array.isArray(nodes)) return false;
+    if (nodes && typeof nodes === "object") return Object.keys(nodes).every(function (id) {
+      const node = nodes[id];
+      return node && typeof node === "object" && !Array.isArray(node);
+    });
+    return false;
+  }
+
+  function checklistNodeIdsValid(spec) {
+    const nodes = spec && spec.nodes;
+    if (!nodes || typeof nodes !== "object" || Array.isArray(nodes)) return false;
+    return Object.keys(nodes).every(function (id) { return /^[a-z][a-z0-9_-]{0,63}$/.test(id); });
+  }
+
+  function checklistWorkflowIdValid(value) {
+    return typeof value === "string" && /^[a-z][a-z0-9_-]{0,63}$/.test(value);
+  }
+
+  function hasStringValue(value) {
+    return typeof value === "string" && !!value.trim();
+  }
+
+  function implementedTriggerTypesFromCapabilities(capabilities) {
+    const values = capabilities && capabilities.triggers && capabilities.triggers.implemented;
+    return Array.isArray(values) && values.length ? values : FALLBACK_IMPLEMENTED_TRIGGER_TYPES;
+  }
+
+  function implementedNodeTypesFromCapabilities(capabilities) {
+    const values = capabilities && capabilities.nodes && capabilities.nodes.implemented;
+    return Array.isArray(values) && values.length ? values : FALLBACK_IMPLEMENTED_NODE_TYPES;
+  }
+
+  function checklistVersionValid(version) {
+    if (typeof version === "boolean" || Array.isArray(version)) return false;
+    const value = Number(String(version).trim());
+    return Number.isInteger(value) && value >= 1;
+  }
+
+  function checklistTriggersImplemented(spec, capabilities) {
+    if (!spec || !Object.prototype.hasOwnProperty.call(spec, "triggers")) return true;
+    const triggers = spec.triggers;
+    if (!Array.isArray(triggers)) return false;
+    const implementedTriggers = implementedTriggerTypesFromCapabilities(capabilities);
+    return triggers.every(function (trigger) {
+      if (!trigger || typeof trigger !== "object" || Array.isArray(trigger)) return false;
+      if (typeof trigger.type !== "string") return false;
+      return implementedTriggers.indexOf(trigger.type) !== -1;
+    });
+  }
+
+  function checklistNodesImplemented(nodes, capabilities) {
+    const implementedNodes = implementedNodeTypesFromCapabilities(capabilities);
+    return !nodes.some(function (node) {
+      if (!node || typeof node !== "object" || Array.isArray(node)) return true;
+      if (typeof node.type !== "string") return true;
+      return implementedNodes.indexOf(node.type) === -1;
+    });
+  }
+
+  function checklistEdgesReferToKnownNodes(spec) {
+    if (!spec || !Object.prototype.hasOwnProperty.call(spec, "edges")) return true;
+    const edges = spec.edges;
+    if (!Array.isArray(edges)) return false;
+    if (!edges.length) return true;
+    if (!checklistNodesShapeValid(spec) || !checklistNodeIdsValid(spec)) return false;
+    const nodes = spec.nodes;
+    function hasNode(id) {
+      return Object.prototype.hasOwnProperty.call(nodes, id);
+    }
+    return edges.every(function (edge) {
+      if (!edge || typeof edge !== "object" || Array.isArray(edge)) return false;
+      const hasFrom = Object.prototype.hasOwnProperty.call(edge, "from");
+      const hasFromAlias = Object.prototype.hasOwnProperty.call(edge, "from_");
+      if (!hasFrom && !hasFromAlias) return false;
+      if (!Object.prototype.hasOwnProperty.call(edge, "to")) return false;
+      const source = String((hasFrom ? edge.from : edge.from_) || "").trim();
+      const target = String(edge.to || "").trim();
+      if (!source || !target || target.indexOf(".") !== -1 || !hasNode(target)) return false;
+      let sourceBase = source;
+      let branch = null;
+      const dotIndex = source.indexOf(".");
+      if (dotIndex !== -1) {
+        sourceBase = source.slice(0, dotIndex);
+        branch = source.slice(dotIndex + 1);
+      }
+      if (!sourceBase || !hasNode(sourceBase)) return false;
+      const sourceType = nodes[sourceBase] && nodes[sourceBase].type;
+      if (typeof sourceType !== "string") return false;
+      if (branch === null) return sourceType !== "parallel";
+      return !!branch && (sourceType === "switch" || sourceType === "parallel");
+    });
+  }
+
+  function checklistGraphRulesValid(spec) {
+    if (!spec || typeof spec !== "object" || Array.isArray(spec)) return false;
+
+    const triggers = Object.prototype.hasOwnProperty.call(spec, "triggers") ? spec.triggers : [];
+    if (!Array.isArray(triggers)) return false;
+    for (let index = 0; index < triggers.length; index += 1) {
+      const trigger = triggers[index];
+      if (!trigger || typeof trigger !== "object" || Array.isArray(trigger)) return false;
+      if (typeof trigger.type !== "string") return false;
+      if (trigger.type === "schedule" && !hasStringValue(trigger.cron) && !hasStringValue(trigger.schedule) && !hasStringValue(trigger.expr)) return false;
+    }
+
+    if (!checklistNodesShapeValid(spec) || !checklistNodeIdsValid(spec)) return false;
+    const nodes = spec.nodes;
+    function hasNode(id) {
+      return Object.prototype.hasOwnProperty.call(nodes, id);
+    }
+
+    const edges = Object.prototype.hasOwnProperty.call(spec, "edges") ? spec.edges : [];
+    if (!Array.isArray(edges)) return false;
+    const outgoingSources = {};
+    for (let index = 0; index < edges.length; index += 1) {
+      const edge = edges[index];
+      if (!edge || typeof edge !== "object" || Array.isArray(edge)) return false;
+      const hasFrom = Object.prototype.hasOwnProperty.call(edge, "from");
+      const hasFromAlias = Object.prototype.hasOwnProperty.call(edge, "from_");
+      if (!hasFrom && !hasFromAlias) return false;
+      if (!Object.prototype.hasOwnProperty.call(edge, "to")) return false;
+      const source = hasFrom ? edge.from : edge.from_;
+      if (typeof source !== "string" || typeof edge.to !== "string") return false;
+      let sourceBase = source;
+      let branch = null;
+      const dotIndex = source.indexOf(".");
+      if (dotIndex !== -1) {
+        sourceBase = source.slice(0, dotIndex);
+        branch = source.slice(dotIndex + 1);
+      }
+      if (!hasNode(sourceBase) || !hasNode(edge.to)) return false;
+      const sourceType = nodes[sourceBase].type;
+      if (typeof sourceType !== "string") return false;
+      if (branch === null && sourceType === "parallel") return false;
+      if (branch !== null && (!branch || (sourceType !== "switch" && sourceType !== "parallel"))) return false;
+      outgoingSources[sourceBase] = true;
+    }
+
+    return Object.keys(nodes).every(function (nodeId) {
+      const node = nodes[nodeId];
+      if (node.catch !== null && node.catch !== undefined) {
+        if (typeof node.catch !== "string" || node.catch === nodeId || !hasNode(node.catch)) return false;
+      }
+      if (node.type === "switch") {
+        if (node.default !== null && node.default !== undefined) {
+          return typeof node.default === "string" && hasNode(node.default);
+        }
+        return !!outgoingSources[nodeId];
+      }
+      return true;
+    });
+  }
+
+  function validationChecklist(spec, capabilities) {
+    const safeNodes = checklistNodeValues(spec);
+    return [
+      { label: "Workflow id set", ok: checklistWorkflowIdValid(spec && spec.id) },
+      { label: "Workflow name set", ok: hasStringValue(spec && spec.name) },
+      { label: "Version set", ok: checklistVersionValid(spec && spec.version) },
+      { label: "At least one node", ok: safeNodes.length > 0 },
+      { label: "Node definitions are objects", ok: checklistNodesShapeValid(spec) },
+      { label: "Node ids are valid", ok: checklistNodeIdsValid(spec) },
+      { label: "No unsupported triggers (implemented today)", ok: checklistTriggersImplemented(spec, capabilities) },
+      { label: "No unsupported nodes (implemented today)", ok: checklistNodesImplemented(safeNodes, capabilities) },
+      { label: "Edges refer to known nodes", ok: checklistEdgesReferToKnownNodes(spec) },
+      { label: "Graph rules pass", ok: checklistGraphRulesValid(spec) },
+      { label: "Agent cells have profile and prompt", ok: !safeNodes.some(function (node) { return node.type === "agent_task" && (!hasProfileValue(node.profile) || !hasPromptValue(node.prompt)); }) },
+    ];
+  }
+
   function statusClass(status) {
     return "hermes-workflows-badge " + (status === false ? "is-off" : "is-on");
   }
@@ -435,6 +627,12 @@
     const stateExecutions = useState([]);
     const executions = stateExecutions[0];
     const setExecutions = stateExecutions[1];
+    const stateWorkflowStatus = useState(null);
+    const workflowStatus = stateWorkflowStatus[0];
+    const setWorkflowStatus = stateWorkflowStatus[1];
+    const stateWorkflowCapabilities = useState(null);
+    const workflowCapabilities = stateWorkflowCapabilities[0];
+    const setWorkflowCapabilities = stateWorkflowCapabilities[1];
     const stateSelectedDefinition = useState(null);
     const selectedDefinition = stateSelectedDefinition[0];
     const setSelectedDefinition = stateSelectedDefinition[1];
@@ -561,6 +759,10 @@
       return parseJsonObject(editorText) || draftSpec || null;
     }
 
+    function checklistSpec() {
+      return parseJsonObject(editorText) || draftSpec || null;
+    }
+
     function workflowIdForSpec(spec) {
       return spec && String(spec.workflow_id || spec.id || "");
     }
@@ -667,9 +869,23 @@
       });
     }
 
+    function loadWorkflowStatus() {
+      return api("/status").then(setWorkflowStatus).catch(function () {
+        setWorkflowStatus(null);
+      });
+    }
+
+    function loadWorkflowCapabilities() {
+      return api("/capabilities").then(setWorkflowCapabilities).catch(function () {
+        setWorkflowCapabilities(null);
+      });
+    }
+
     function refresh(preferExecutionId) {
       setLoading(true);
       setError("");
+      loadWorkflowStatus();
+      loadWorkflowCapabilities();
       return Promise.all([loadDefinitions(), loadExecutions(preferExecutionId)])
         .catch(fail)
         .finally(function () { setLoading(false); });
@@ -1072,6 +1288,52 @@
       );
     }
 
+    function renderValidationChecklist() {
+      const spec = checklistSpec();
+      if (!spec) {
+        return h(Card, { className: "hermes-workflows-panel hermes-workflows-validation-checklist" },
+          h("h2", null, "Validation checklist"),
+          h("p", { className: "hermes-workflows-muted" }, "Validate Advanced YAML to update the checklist.")
+        );
+      }
+      const implementedTriggers = implementedTriggerTypesFromCapabilities(workflowCapabilities);
+      const implementedNodes = implementedNodeTypesFromCapabilities(workflowCapabilities);
+      const items = validationChecklist(spec, workflowCapabilities);
+      return h(Card, { className: "hermes-workflows-panel hermes-workflows-validation-checklist" },
+        h("h2", null, "Validation checklist"),
+        h("p", { className: "hermes-workflows-muted" }, "This checklist checks implemented dashboard/dispatcher readiness, not every declared WorkflowSpec primitive."),
+        h("ul", { className: "hermes-workflows-checklist" }, items.map(function (item) {
+          return h("li", { key: item.label, className: "hermes-workflows-checklist-item " + (item.ok ? "is-ok" : "is-fail") },
+            h("span", { className: "hermes-workflows-checklist-mark", "aria-hidden": "true" }, item.ok ? "✓" : "!"),
+            h("span", null, item.label)
+          );
+        })),
+        h("p", { className: "hermes-workflows-muted" }, "Implemented triggers today: " + implementedTriggers.join(", ") + "."),
+        h("p", { className: "hermes-workflows-muted" }, "Implemented node types today: " + implementedNodes.join(", ") + ".")
+      );
+    }
+
+    function renderDispatcherReadiness() {
+      const dispatcher = workflowStatus && workflowStatus.dispatcher ? workflowStatus.dispatcher : {};
+      const statusKnown = dispatcher.status_available !== false && typeof dispatcher.dispatch_in_gateway === "boolean";
+      const ready = statusKnown && dispatcher.dispatch_in_gateway === true;
+      const tick = dispatcher.tick_interval_seconds;
+      const className = "hermes-workflows-panel hermes-workflows-dispatcher-readiness " + (statusKnown ? (ready ? "is-ready" : "is-warning") : "is-unknown");
+      if (!statusKnown) {
+        return h(Card, { className: className },
+          h("h2", null, "Dispatcher readiness"),
+          h("p", null, "Dispatcher readiness unavailable."),
+          h("p", { className: "hermes-workflows-muted" }, "Status endpoint did not report dispatcher readiness.")
+        );
+      }
+      const warning = dispatcher.warning || "Set workflow.dispatch_in_gateway: true to let the gateway advance runs; fallback: hermes workflow tick.";
+      return h(Card, { className: className },
+        h("h2", null, "Dispatcher readiness"),
+        ready ? h("p", null, "Ready: gateway dispatcher is advancing workflow runs.") : h("p", null, safeString(warning)),
+        ready ? h("p", { className: "hermes-workflows-muted" }, "Tick interval: " + safeString(tick) + "s") : h("p", { className: "hermes-workflows-muted" }, "Enable workflow.dispatch_in_gateway or run hermes workflow tick manually.")
+      );
+    }
+
     function renderAdvancedYaml() {
       if (!showAdvancedYaml) return null;
       return h(Card, { className: "hermes-workflows-panel" },
@@ -1430,6 +1692,8 @@
       status ? h("div", { className: "hermes-workflows-banner" }, status) : null,
       renderGoalBuilder(),
       renderDraftReview(),
+      renderValidationChecklist(),
+      renderDispatcherReadiness(),
       h("div", { className: "hermes-workflows-grid" },
         h("div", { className: "hermes-workflows-stack" },
           h(Card, { className: "hermes-workflows-panel" },

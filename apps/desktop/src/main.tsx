@@ -10,6 +10,7 @@ import { HashRouter } from 'react-router-dom'
 import App from './app'
 import { ErrorBoundary } from './components/error-boundary'
 import { HapticsProvider } from './components/haptics-provider'
+import { reactRootErrorOptions } from './components/react-root-error-logging'
 import { I18nProvider } from './i18n'
 import { installClipboardShim } from './lib/clipboard'
 import { queryClient } from './lib/query-client'
@@ -32,7 +33,7 @@ if (import.meta.env.MODE !== 'production') {
 if (new URLSearchParams(window.location.search).get('win') === 'overlay') {
   void import('./app/pet-overlay/overlay-root').then(({ mountPetOverlay }) => mountPetOverlay())
 } else {
-  createRoot(document.getElementById('root')!).render(
+  createRoot(document.getElementById('root')!, reactRootErrorOptions()).render(
     <StrictMode>
       <ErrorBoundary label="root">
         <QueryClientProvider client={queryClient}>

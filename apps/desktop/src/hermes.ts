@@ -725,6 +725,7 @@ export function grantComputerUsePermissions(): Promise<ActionResponse> {
 
 export function getMessagingPlatforms(): Promise<MessagingPlatformsResponse> {
   return window.hermesDesktop.api<MessagingPlatformsResponse>({
+    ...profileScoped(),
     path: '/api/messaging/platforms'
   })
 }
@@ -734,6 +735,7 @@ export function updateMessagingPlatform(
   body: MessagingPlatformUpdate
 ): Promise<{ ok: boolean; platform: string }> {
   return window.hermesDesktop.api<{ ok: boolean; platform: string }>({
+    ...profileScoped(),
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}`,
     method: 'PUT',
     body
@@ -742,13 +744,21 @@ export function updateMessagingPlatform(
 
 export function testMessagingPlatform(platformId: string): Promise<MessagingPlatformTestResponse> {
   return window.hermesDesktop.api<MessagingPlatformTestResponse>({
+    ...profileScoped(),
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}/test`,
     method: 'POST'
   })
 }
 
+// Cron routes must be profile-scoped like config/env/skills: the backend
+// defaults POST /api/cron/jobs to profile "default" (a job created while a
+// non-default profile is active would silently land in the wrong profile) and
+// per-job routes resolve the owning profile by job-id scan, which mismatches
+// on id collisions. Unscoped (primary profile active) GET keeps the backend's
+// profile="all" default, so single-profile users see the same list as before.
 export function getCronJobs(): Promise<CronJob[]> {
   return window.hermesDesktop.api<CronJob[]>({
+    ...profileScoped(),
     path: '/api/cron/jobs',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
@@ -756,12 +766,14 @@ export function getCronJobs(): Promise<CronJob[]> {
 
 export function getCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`
   })
 }
 
 export async function getCronJobRuns(jobId: string, limit = 20): Promise<SessionInfo[]> {
   const { runs } = await window.hermesDesktop.api<{ runs: SessionInfo[] }>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/runs?limit=${limit}`
   })
 
@@ -770,6 +782,7 @@ export async function getCronJobRuns(jobId: string, limit = 20): Promise<Session
 
 export function createCronJob(body: CronJobCreatePayload): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
+    ...profileScoped(),
     path: '/api/cron/jobs',
     method: 'POST',
     body
@@ -778,6 +791,7 @@ export function createCronJob(body: CronJobCreatePayload): Promise<CronJob> {
 
 export function updateCronJob(jobId: string, updates: CronJobUpdates): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`,
     method: 'PUT',
     body: { updates }
@@ -786,6 +800,7 @@ export function updateCronJob(jobId: string, updates: CronJobUpdates): Promise<C
 
 export function pauseCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/pause`,
     method: 'POST'
   })
@@ -793,6 +808,7 @@ export function pauseCronJob(jobId: string): Promise<CronJob> {
 
 export function resumeCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/resume`,
     method: 'POST'
   })
@@ -800,6 +816,7 @@ export function resumeCronJob(jobId: string): Promise<CronJob> {
 
 export function triggerCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/trigger`,
     method: 'POST'
   })
@@ -807,6 +824,7 @@ export function triggerCronJob(jobId: string): Promise<CronJob> {
 
 export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`,
     method: 'DELETE'
   })

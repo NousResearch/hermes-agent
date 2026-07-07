@@ -11,6 +11,7 @@ import yaml
 
 from hermes_cli import workflows_assistant, workflows_db as wfdb
 from hermes_cli.config import load_config
+from hermes_cli.workflows_capabilities import require_implemented_primitives
 from hermes_cli.workflows_spec import WorkflowSpec, validate_graph
 from tools.registry import registry, tool_error, tool_result
 
@@ -91,6 +92,7 @@ def _spec_from_object(value: Any) -> WorkflowSpec:
         raise ValueError("spec must be an object")
     spec = WorkflowSpec.model_validate(value)
     validate_graph(spec)
+    require_implemented_primitives(spec)
     return spec
 
 

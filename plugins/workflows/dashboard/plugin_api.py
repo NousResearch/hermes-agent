@@ -17,7 +17,10 @@ from hermes_cli import workflows_assistant
 from hermes_cli import workflows_db as wfdb
 from hermes_cli import workflows_dispatcher
 from hermes_cli.config import load_config
-from hermes_cli.workflows_capabilities import workflow_capabilities
+from hermes_cli.workflows_capabilities import (
+    require_implemented_primitives,
+    workflow_capabilities,
+)
 from hermes_cli.workflows_spec import WorkflowSpec, validate_graph
 from utils import is_truthy_value
 
@@ -81,6 +84,7 @@ def _load_spec_from_payload(payload: Any) -> WorkflowSpec:
     raw = _yaml_or_object(payload, what="workflow spec")
     spec = WorkflowSpec.model_validate(raw)
     validate_graph(spec)
+    require_implemented_primitives(spec)
     return spec
 
 
@@ -315,6 +319,7 @@ def refine_definition(req: WorkflowRefineRequest) -> dict[str, Any]:
         if req.spec is not None:
             spec = WorkflowSpec.model_validate(req.spec)
             validate_graph(spec)
+            require_implemented_primitives(spec)
         elif req.workflow_id:
             with _connect_initialized() as conn:
                 record = _definition_record(conn, req.workflow_id, req.version)

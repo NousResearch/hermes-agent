@@ -27,6 +27,14 @@ PASS_SPEC = {
     "nodes": {"start": {"type": "pass", "output": {"ok": True}}},
 }
 
+UNSUPPORTED_SPEC = {
+    "id": "unsupported_dashboard_demo",
+    "name": "Unsupported Dashboard Demo",
+    "version": 1,
+    "triggers": [{"type": "manual", "id": "manual"}],
+    "nodes": {"start": {"type": "send_message", "output": {"text": "hi"}}},
+}
+
 WAIT_SPEC = {
     "id": "dashboard_wait",
     "name": "Dashboard Wait",
@@ -1719,6 +1727,20 @@ def test_validate_deploy_list_show_roundtrip(client):
     assert shown["workflow_id"] == "dashboard_demo"
     assert shown["version"] == 1
     _assert_pass_spec(shown["spec"])
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/plugins/workflows/definitions/validate",
+        "/api/plugins/workflows/definitions/deploy",
+    ],
+)
+def test_definition_validate_and_deploy_reject_unsupported_primitives(client, path):
+    response = client.post(path, json={"spec": UNSUPPORTED_SPEC})
+
+    assert response.status_code == 400
+    assert "unsupported node type: send_message on node start" in str(response.json()["detail"])
 
 
 def test_deploy_endpoint_returns_deployed_version_not_latest(client):

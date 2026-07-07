@@ -195,6 +195,24 @@ def test_workflow_validate_accepts_definition_object(_isolated_workflow_home):
     assert payload["workflow_id"] == "validate_object_demo"
 
 
+def test_workflow_validate_rejects_unsupported_primitives(_isolated_workflow_home):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    from tools.registry import registry
+
+    definition = {
+        "id": "validate_unsupported_demo",
+        "name": "Validate Unsupported Demo",
+        "version": 1,
+        "triggers": [{"type": "manual"}],
+        "nodes": {"start": {"type": "send_message", "output": {"text": "hi"}}},
+    }
+
+    payload = json.loads(registry.dispatch("workflow_validate", {"definition": definition}))
+
+    assert "error" in payload
+    assert "unsupported node type: send_message on node start" in payload["error"]
+
+
 def test_workflow_draft_tool_returns_validated_spec(_isolated_workflow_home, monkeypatch):
     _enable_workflow_toolset(_isolated_workflow_home)
     import tools.workflow_tools as workflow_tools
@@ -370,6 +388,24 @@ def test_workflow_deploy_accepts_definition_object(_isolated_workflow_home):
 
     assert "error" not in payload
     assert payload["workflow_id"] == "deploy_object_demo"
+
+
+def test_workflow_deploy_rejects_unsupported_primitives(_isolated_workflow_home):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    from tools.registry import registry
+
+    definition = {
+        "id": "deploy_unsupported_demo",
+        "name": "Deploy Unsupported Demo",
+        "version": 1,
+        "triggers": [{"type": "manual"}],
+        "nodes": {"start": {"type": "send_message", "output": {"text": "hi"}}},
+    }
+
+    payload = json.loads(registry.dispatch("workflow_deploy", {"definition": definition}))
+
+    assert "error" in payload
+    assert "unsupported node type: send_message on node start" in payload["error"]
 
 
 def test_workflow_deploy_returns_deployed_version_not_latest(_isolated_workflow_home):

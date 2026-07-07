@@ -42,13 +42,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import ThreadPoolExecutor, Future, wait, FIRST_COMPLETED
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Set
 
 
 # Default test discovery roots.
@@ -591,6 +592,49 @@ def _slice_files(
     return target
 
 
+# Global state for signal handling.
+_running_futures: Set[Future] = set()
+_original_sigint_handler = None
+_original_sigterm_handler = None
+_shutdown_requested = False
+_main_lock = threading.Lock()
+
+
+def _handle_shutdown_signal(signum, frame):
+    """Handle SIGTERM/SIGINT: wait for in-flight tests, then exit cleanly."""
+    global _shutdown_requested
+    with _main_lock:
+        if _shutdown_requested:
+            return
+        _shutdown_requested = True
+
+    sig_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+    print(f"\n\nReceived {sig_name}, waiting for in-flight tests to complete...", flush=True)
+
+    if _running_futures:
+        done, _ = wait(_running_futures, timeout=None)
+        print(f"  {len(done)} test(s) completed after signal.", flush=True)
+
+    print(f"\nExiting after {sig_name} (caught by harness).", flush=True)
+    sys.exit(1)
+
+
+def _install_signal_handlers():
+    """Install SIGTERM/SIGINT handlers."""
+    global _original_sigint_handler, _original_sigterm_handler
+    _original_sigint_handler = signal.getsignal(signal.SIGINT)
+    _original_sigterm_handler = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+    signal.signal(signal.SIGINT, _handle_shutdown_signal)
+
+
+def _restore_signal_handlers():
+    """Restore original signal handlers."""
+    if _original_sigint_handler is not None:
+        signal.signal(signal.SIGINT, _original_sigint_handler)
+    if _original_sigterm_handler is not None:
+        signal.signal(signal.SIGTERM, _original_sigterm_handler)
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -821,6 +865,7 @@ def main() -> int:
     failures: List[Tuple[Path, str, Dict[str, int]]] = []
     file_times: List[Tuple[Path, float]] = []  # (file, subprocess_wall) for distribution
     started = time.monotonic()
+    _install_signal_handlers()
     files_done = 0
     tests_done = 0
     pass_count = 0
@@ -880,11 +925,17 @@ def main() -> int:
             )
             fut.add_done_callback(lambda f, file=file, t0=t0: _on_done(file, t0, f))
             futures.append(fut)
+            _running_futures.add(fut)
         # Block until everything's done. ThreadPoolExecutor.__exit__ waits
         # for all submitted work, but doing it explicitly here makes the
         # control flow obvious.
         for fut in futures:
-            fut.result() if fut.exception() is None else None
+            if not _shutdown_requested:
+                fut.result() if fut.exception() is None else None
+
+    # Clean up signal handlers and future tracking
+    _running_futures.clear()
+    _restore_signal_handlers()
 
     elapsed = time.monotonic() - started
     print()

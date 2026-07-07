@@ -597,6 +597,17 @@ def interruptible_api_call(agent, api_kwargs: dict):
             except Exception:
                 pass
             raise InterruptedError("Agent interrupted during API call")
+    # Worker thread exited before the poll loop's next iteration could check
+    # the interrupt flag. Codex Responses turns route through this function
+    # (_call() → agent._run_codex_stream() → _consume_codex_event_stream()),
+    # whose own interrupt_check() breaks the SSE loop and returns a PARTIAL
+    # response without raising — result["response"] is populated with
+    # error=None and the in-loop raise above never fires. Re-check here so
+    # /stop is not silently swallowed on the Codex Responses path — mirrors
+    # the post-worker guard already applied to the Bedrock and main
+    # streaming loops. (#59999 area)
+    if agent._interrupt_requested:
+        raise InterruptedError("Agent interrupted during API call (post-worker)")
     if result["error"] is not None:
         raise result["error"]
     return result["response"]

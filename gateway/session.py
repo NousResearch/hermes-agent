@@ -2484,6 +2484,19 @@ class SessionStore:
 
         return entries
 
+    def list_session_items(self) -> List[tuple[str, SessionEntry]]:
+        """Return a lock-protected snapshot of session keys and entries."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            return list(self._entries.items())
+
+    def has_dangling_tool_call_tail(self, session_id: str) -> bool:
+        """Return whether the persisted session ends in an unanswered tool call."""
+        db = self._db
+        if db is None:
+            return False
+        return db.has_dangling_tool_call_tail(session_id)
+
     def lookup_by_session_id(self, session_id: str) -> Optional[SessionEntry]:
         """Return the active session entry for a persisted session ID, if any."""
         if not session_id:

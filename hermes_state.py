@@ -915,6 +915,8 @@ CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_session_active_id
+    ON messages(session_id, active, id);
 CREATE INDEX IF NOT EXISTS idx_messages_active_null
     ON messages(active) WHERE active IS NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key
@@ -4501,6 +4503,46 @@ class SessionDB:
             return cursor.rowcount
 
         return self._execute_write(_do)
+
+    def has_dangling_tool_call_tail(self, session_id: str) -> bool:
+        """Check whether a session's last active message is an unanswered ``assistant(tool_calls)``.
+
+        This is the DB-level signature of a **wedged session** (#58891): the
+        assistant emitted a ``tool_calls`` block that was persisted, but no
+        matching ``tool`` result row was ever written — and no subsequent
+        ``user`` message exists to trigger a natural resume turn.  The gateway
+        process is still alive (so ``resume_pending`` was never set by the
+        restart watchdog), yet the session is silently stuck because nothing
+        wakes it.
+
+        The check mirrors the in-memory ``strip_dangling_tool_call_tail()``
+        predicate in ``agent/replay_cleanup.py``: the last active message must
+        be ``role='assistant'`` with a non-empty ``tool_calls`` payload.  Being
+        the last message guarantees there is no ``tool`` or ``user`` row after
+        it (otherwise it would not be last).
+
+        Returns ``True`` when the dangling tail is present, ``False`` for an
+        empty session, a session whose last message is any other role, or a
+        session whose last assistant message has no ``tool_calls``.
+        """
+        with self._lock:
+            conn = self._conn
+            if conn is None:
+                return False
+            cursor = conn.execute(
+                "SELECT role, tool_calls FROM messages "
+                "WHERE session_id = ? AND active = 1 "
+                "ORDER BY id DESC LIMIT 1",
+                (session_id,),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return False
+        role = row["role"] if isinstance(row, sqlite3.Row) else row[0]
+        tool_calls = (
+            row["tool_calls"] if isinstance(row, sqlite3.Row) else row[1]
+        )
+        return role == "assistant" and bool(tool_calls)
 
     def get_messages(
         self,

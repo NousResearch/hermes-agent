@@ -467,3 +467,66 @@ async def test_image_file_still_sets_photo_type():
 
     assert dispatched, "_handle_chat_item did not dispatch any event"
     assert dispatched[0].message_type == MessageType.PHOTO
+
+
+# ---------------------------------------------------------------------------
+# Received-file path resolution (SIMPLEX_FILES_FOLDER)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_relative_file_path_resolved_against_files_folder(monkeypatch, tmp_path):
+    """The daemon reports paths relative to its --files-folder; the adapter
+    must hand the gateway an absolute path it can actually open."""
+    from gateway.config import PlatformConfig
+
+    monkeypatch.setenv("SIMPLEX_FILES_FOLDER", str(tmp_path))
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = _capture
+    await adapter._handle_chat_item(_make_file_chat_item("pic.jpg", "pic.jpg"))
+
+    assert dispatched, "_handle_chat_item did not dispatch any event"
+    assert dispatched[0].media_urls == [str(tmp_path / "pic.jpg")]
+
+
+@pytest.mark.asyncio
+async def test_absolute_file_path_not_rewritten(monkeypatch, tmp_path):
+    from gateway.config import PlatformConfig
+
+    monkeypatch.setenv("SIMPLEX_FILES_FOLDER", str(tmp_path))
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = _capture
+    await adapter._handle_chat_item(_make_file_chat_item("/srv/pic.jpg", "pic.jpg"))
+
+    assert dispatched[0].media_urls == ["/srv/pic.jpg"]
+
+
+@pytest.mark.asyncio
+async def test_relative_file_path_without_base_unchanged(monkeypatch):
+    """No SIMPLEX_FILES_FOLDER configured — pass the path through as before."""
+    from gateway.config import PlatformConfig
+
+    monkeypatch.delenv("SIMPLEX_FILES_FOLDER", raising=False)
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = _capture
+    await adapter._handle_chat_item(_make_file_chat_item("pic.jpg", "pic.jpg"))
+
+    assert dispatched[0].media_urls == ["pic.jpg"]

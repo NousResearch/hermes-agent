@@ -3601,6 +3601,23 @@ async def get_action_status(name: str, lines: int = 200):
     }
 
 
+_SESSION_LIST_OMITTED_FIELDS = ("system_prompt", "model_config")
+
+
+def _trim_session_list_payload(session: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop heavy/internal fields from session-list rows before JSON encoding.
+
+    ``SessionDB.list_sessions_rich()`` returns the full ``sessions`` row for
+    CLI/internal consumers, including the cached system prompt.  Desktop only
+    needs list metadata; serializing 40-50 full prompts turns every sidebar
+    refresh into multi-megabyte JSON and can starve the single uvicorn event
+    loop while the renderer retries timed-out requests.
+    """
+    for key in _SESSION_LIST_OMITTED_FIELDS:
+        session.pop(key, None)
+    return session
+
+
 @app.get("/api/sessions")
 async def get_sessions(
     limit: int = 20,
@@ -3671,6 +3688,7 @@ async def get_sessions(
             )
             now = time.time()
             for s in sessions:
+                _trim_session_list_payload(s)
                 s["is_active"] = (
                     s.get("ended_at") is None
                     and (now - s.get("last_active", s.get("started_at", 0))) < 300
@@ -3783,6 +3801,7 @@ def get_profiles_sessions(
             total += profile_total
             profile_totals[name] = profile_total
             for s in rows:
+                _trim_session_list_payload(s)
                 s["profile"] = name
                 s["is_default_profile"] = name == "default"
                 s["is_active"] = (

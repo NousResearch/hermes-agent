@@ -677,6 +677,32 @@ class TestWebServerEndpoints:
         assert captured["list"] == 3
         assert captured["count"] == 3
 
+    def test_get_sessions_omits_heavy_internal_prompt_fields(self):
+        """The Desktop sidebar list must not serialize full cached prompts.
+
+        Real profiles can have 40-50 visible rows with ~40KB cached system
+        prompts each; returning those made every refresh multi-megabyte JSON.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="heavy-list-row",
+                source="cli",
+                system_prompt="prompt" * 10_000,
+                model_config={"large": "config" * 10_000},
+            )
+            db.append_message(session_id="heavy-list-row", role="user", content="hi")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions?limit=20&min_messages=0")
+        assert resp.status_code == 200
+        row = next(s for s in resp.json()["sessions"] if s["id"] == "heavy-list-row")
+        assert "system_prompt" not in row
+        assert "model_config" not in row
+
     def test_rename_session_updates_title(self):
         """PATCH /api/sessions/{id} renames a session (regression: the route
         was missing entirely, so the desktop rename dialog got a 405)."""
@@ -768,7 +794,12 @@ class TestWebServerEndpoints:
 
         db = SessionDB()
         try:
-            db.create_session(session_id="agg-me", source="cli")
+            db.create_session(
+                session_id="agg-me",
+                source="cli",
+                system_prompt="prompt" * 10_000,
+                model_config={"large": "config" * 10_000},
+            )
             db.append_message(session_id="agg-me", role="user", content="hi")
         finally:
             db.close()
@@ -779,6 +810,8 @@ class TestWebServerEndpoints:
         row = next(s for s in data["sessions"] if s["id"] == "agg-me")
         assert row["profile"] == "default"
         assert row["is_default_profile"] is True
+        assert "system_prompt" not in row
+        assert "model_config" not in row
         assert isinstance(data.get("errors"), list)
 
     def test_profiles_sessions_rejects_unknown_archived_value(self):

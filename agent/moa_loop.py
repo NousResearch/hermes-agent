@@ -270,11 +270,23 @@ def _run_reference(
         # (their caching is automatic; markers are ignored harmlessly, but we
         # only decorate when the policy says the route honors them).
         messages = _maybe_apply_moa_cache_control(messages, runtime)
+        extra_headers = None
+        if str(runtime.get("provider") or "").strip().lower() == "copilot":
+            # Copilot Pro/Pro+ gates some premium chat models on request
+            # attribution. The main agent marks the first API request of a
+            # user turn as ``x-initiator: user``; MoA reference fan-out is also
+            # directly serving the user's current turn, not a background agent
+            # task, so mirror that header here. Without it, Claude/Gemini
+            # Copilot advisors can be rejected as unavailable to the
+            # ``copilot-language-server`` integrator even though standalone
+            # Copilot calls work.
+            extra_headers = {"x-initiator": "user"}
         response = call_llm(
             task="moa_reference",
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            extra_headers=extra_headers,
             **runtime,
         )
         usage = CanonicalUsage()

@@ -6275,6 +6275,7 @@ def call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    extra_headers: Optional[Dict[str, str]] = None,
     api_mode: str = None,
     stream: bool = False,
     stream_options: dict = None,
@@ -6298,6 +6299,9 @@ def call_llm(
         tools: Tool definitions (for function calling).
         timeout: Request timeout in seconds (None = read from auxiliary.{task}.timeout config).
         extra_body: Additional request body fields.
+        extra_headers: Additional per-request HTTP headers. These override
+            client-level defaults for providers that gate capabilities on
+            request attribution (for example Copilot's ``x-initiator``).
         stream: When True, return the raw SDK streaming iterator instead of a
             validated complete response. The caller is responsible for consuming
             chunks (and for any fallback). Used by the MoA aggregator so its
@@ -6403,6 +6407,8 @@ def call_llm(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         base_url=_base_info or resolved_base_url)
+    if extra_headers:
+        kwargs["extra_headers"] = dict(extra_headers)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     _client_base = str(getattr(client, "base_url", "") or "")

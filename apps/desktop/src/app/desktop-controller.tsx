@@ -46,7 +46,7 @@ import {
   setPetOverlaySubmitHandler
 } from '../store/pet-overlay'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
-import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '../store/profile'
+import { $activeGatewayProfile, $profileScope, refreshActiveProfile } from '../store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '../store/projects'
 import { $reviewOpen, REVIEW_PANE_ID } from '../store/review'
 import {
@@ -112,6 +112,7 @@ import { useHermesConfig } from './session/hooks/use-hermes-config'
 import { useMessageStream } from './session/hooks/use-message-stream'
 import { useModelControls } from './session/hooks/use-model-controls'
 import { usePreviewRouting } from './session/hooks/use-preview-routing'
+import { useProfileSessionRestore } from './session/hooks/use-profile-session-restore'
 import { usePromptActions } from './session/hooks/use-prompt-actions'
 import { useRouteResume } from './session/hooks/use-route-resume'
 import { useSessionActions } from './session/hooks/use-session-actions'
@@ -636,19 +637,12 @@ export function DesktopController() {
     toggleSelectedPin
   })
 
-  // A profile switch/create drops to a fresh new-session draft so the previously
-  // open session doesn't bleed across contexts. Skip the initial value.
-  const freshSessionRequest = useStore($freshSessionRequest)
-  const lastFreshRef = useRef(freshSessionRequest)
-
-  useEffect(() => {
-    if (freshSessionRequest === lastFreshRef.current) {
-      return
-    }
-
-    lastFreshRef.current = freshSessionRequest
-    startFreshSessionDraft()
-  }, [freshSessionRequest, startFreshSessionDraft])
+  useProfileSessionRestore({
+    resumeSession,
+    selectedStoredSessionId,
+    selectedStoredSessionIdRef,
+    startFreshSessionDraft
+  })
 
   // Swapping the live gateway to another profile must re-pull that profile's
   // global model + active-profile pill. Both are nanostores, so the blanket

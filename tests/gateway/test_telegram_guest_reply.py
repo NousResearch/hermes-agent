@@ -210,3 +210,51 @@ async def test_guest_allowlisted_caller_via_env_passes(monkeypatch):
         await adapter._handle_guest_message_update(update, MagicMock())
 
     mock_should.assert_called_once()  # real gate allowed the env-allowlisted caller
+
+
+# ---------------------------------------------------------------------------
+# Session isolation per guest caller — different callers in the same chat must
+# not share a session (context bleed). Post-gate the caller is authorized, so
+# stamping the real caller id makes guest sessions key like group sessions.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_guest_session_isolated_per_caller(monkeypatch):
+    from types import SimpleNamespace
+    from gateway.session import SessionSource, build_session_key
+    from gateway.config import Platform
+
+    adapter = _make_adapter()
+    adapter._bot.username = "testbot"
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "999")
+
+    update, _ = _make_guest_update(caller_id="999", chat_id="42")
+    msg = _fake_guest_msg(chat_id="42")
+
+    src = SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="group", user_id=None)
+    ev = SimpleNamespace(source=src, text="hi", channel_prompt=None)
+    captured = {}
+
+    with patch.object(_tg_adapter_mod.Message, "de_json", return_value=msg), \
+         patch.object(adapter, "_build_message_event", return_value=ev), \
+         patch.object(adapter, "_should_process_message", return_value=True), \
+         patch.object(adapter, "_apply_telegram_group_observe_attribution", side_effect=lambda e: e), \
+         patch.object(adapter, "_enqueue_text_event", side_effect=lambda e: captured.update(event=e)):
+        await adapter._handle_guest_message_update(update, MagicMock())
+
+    # The real guest caller id is stamped onto the source...
+    assert captured["event"].source.user_id == "999"
+    # ...so the session key isolates per caller within the chat.
+    key = build_session_key(captured["event"].source, group_sessions_per_user=True)
+    assert key.endswith(":42:999")
+
+    # Two different callers in the same chat get distinct sessions (no bleed).
+    k_a = build_session_key(
+        SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="group", user_id="999"),
+        group_sessions_per_user=True,
+    )
+    k_b = build_session_key(
+        SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="group", user_id="888"),
+        group_sessions_per_user=True,
+    )
+    assert k_a != k_b

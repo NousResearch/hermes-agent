@@ -7906,6 +7906,24 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
 
+        # Isolate the session per guest caller. build_session_key groups group
+        # participants by user_id, but a guest message carries no from_user
+        # (_build_message_event leaves user_id unset), so without this every
+        # guest turn in a chat collapses onto one shared, chat-keyed session and
+        # a previous caller's context bleeds into the next caller's turn. The
+        # real caller lives in guest_bot_caller_user (captured as
+        # _guest_caller_id at the auth gate above). Stamping it makes guest
+        # sessions key exactly like ordinary group sessions — per-caller when
+        # group_sessions_per_user is on (the default), shared only if the
+        # operator deliberately turned that off. Post-gate the caller is an
+        # authorized user, so this needs no guest-specific isolation branch in
+        # session.py; it just gives the existing group keying the id it lacked.
+        if _guest_caller_id:
+            event.source.user_id = _guest_caller_id
+            _guest_caller_name = _guest_caller.get("first_name") or _guest_caller.get("username")
+            if _guest_caller_name and not getattr(event.source, "user_name", None):
+                event.source.user_name = _guest_caller_name
+
         # Inject delivery constraint so the LLM knows direct Bot API calls to this
         # chat will fail (bot is not a member).
         _guest_delivery_note = (

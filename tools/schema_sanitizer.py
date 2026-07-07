@@ -228,7 +228,11 @@ def strip_nullable_unions(
     return stripped
 
 
-def _sanitize_node(node: Any, path: str) -> Any:
+# Maximum recursion depth for schema sanitizer to prevent infinite
+# recursion on circular references (Hermes maintenance fleet Bug-Hunt fix).
+_MAX_SANITIZE_DEPTH = 50
+
+def _sanitize_node(node: Any, path: str, _depth: int = 0, _seen: set | None = None) -> Any:
     """Recursively sanitize a JSON-Schema fragment.
 
     - Replaces bare-string schema values ("object", "string", ...) with
@@ -241,6 +245,28 @@ def _sanitize_node(node: Any, path: str) -> Any:
     - Recurses into ``properties``, ``items``, ``additionalProperties``,
       ``anyOf``, ``oneOf``, ``allOf``, and ``$defs`` / ``definitions``.
     """
+    # Guard against infinite recursion on circular references or deeply nested
+    # schemas (Hermes maintenance fleet Bug-Hunt P0-1 fix).
+    if _depth > _MAX_SANITIZE_DEPTH:
+        logger.warning(
+            "schema_sanitizer[%s]: max recursion depth %d exceeded; "
+            "returning empty object schema as safety fallback",
+            path, _MAX_SANITIZE_DEPTH,
+        )
+        return {"type": "object", "properties": {}}
+    if _seen is None:
+        _seen = set()
+    node_id = id(node) if isinstance(node, (dict, list)) else None
+    if node_id is not None:
+        if node_id in _seen:
+            logger.warning(
+                "schema_sanitizer[%s]: circular reference detected; "
+                "returning empty object schema as safety fallback",
+                path,
+            )
+            return {"type": "object", "properties": {}}
+        _seen.add(node_id)
+
     # Malformed: the schema position holds a bare string like "object".
     if isinstance(node, str):
         if node in {"object", "string", "number", "integer", "boolean", "array", "null"}:
@@ -263,7 +289,7 @@ def _sanitize_node(node: Any, path: str) -> Any:
         return {"type": "object", "properties": {}}
 
     if isinstance(node, list):
-        return [_sanitize_node(item, f"{path}[{i}]") for i, item in enumerate(node)]
+        return [_sanitize_node(item, f"{path}[{i}]", _depth + 1, _seen) for i, item in enumerate(node)]
 
     if not isinstance(node, dict):
         return node
@@ -307,7 +333,7 @@ def _sanitize_node(node: Any, path: str) -> Any:
 
         if key in {"properties", "$defs", "definitions"} and isinstance(value, dict):
             out[key] = {
-                sub_k: _sanitize_node(sub_v, f"{path}.{key}.{sub_k}")
+                sub_k: _sanitize_node(sub_v, f"{path}.{key}.{sub_k}", _depth + 1, _seen)
                 for sub_k, sub_v in value.items()
             }
         elif key in {"items", "additionalProperties"}:
@@ -317,10 +343,10 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 # but we preserve rather than drop.
                 out[key] = value
             else:
-                out[key] = _sanitize_node(value, f"{path}.{key}")
+                out[key] = _sanitize_node(value, f"{path}.{key}", _depth + 1, _seen)
         elif key in {"anyOf", "oneOf", "allOf"} and isinstance(value, list):
             out[key] = [
-                _sanitize_node(item, f"{path}.{key}[{i}]")
+                _sanitize_node(item, f"{path}.{key}[{i}]", _depth + 1, _seen)
                 for i, item in enumerate(value)
             ]
         elif key in {"required", "enum", "examples"}:
@@ -333,7 +359,7 @@ def _sanitize_node(node: Any, path: str) -> Any:
             # them with {"type": "object"} dicts. Pass through unchanged.
             out[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
         else:
-            out[key] = _sanitize_node(value, f"{path}.{key}") if isinstance(value, (dict, list)) else value
+            out[key] = _sanitize_node(value, f"{path}.{key}", _depth + 1, _seen) if isinstance(value, (dict, list)) else value
 
     # Object nodes without properties: inject empty properties dict.
     # llama.cpp's grammar generator can't constrain a free-form object.

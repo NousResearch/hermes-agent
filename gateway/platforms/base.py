@@ -1851,6 +1851,95 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
         return
 
 
+# --- Inline slash-command promotion for the WhatsApp owner-reply flow (opt-in) ---
+#
+# Hermes recognizes slash commands only at the START of a message
+# (MessageEvent.is_command == text.startswith("/")). In the WhatsApp "owner
+# reply" flow (fromOwner, 1:1) the owner often types a command in the MIDDLE of
+# a sentence addressed to a contact. When WHATSAPP_INLINE_COMMANDS is enabled we
+# find the FIRST *isolated* token that resolves to a KNOWN gateway command
+# (built-in OR plugin-registered) and rewrite event.text so it starts with that
+# command. Everything downstream (access checks, command:<name> hooks, the
+# if/elif router, get_command_args' dash-fix) is reused verbatim.
+#
+# Safety:
+#   * Opt-in. Default OFF => byte-identical behavior to stock Hermes.
+#   * WhatsApp + 1:1 + fromOwner only. Groups and other platforms untouched.
+#   * Only rewrites when the token resolves to a real command => "see
+#     /home/user/x", a URL, or "/unknownword" never trigger.
+#   * The token must be ISOLATED (start-or-whitespace before, whitespace-or-end
+#     after) so "/status" inside "http://h/status" is never matched.
+#   * Command names never contain "/" (regex charclass excludes it), matching
+#     MessageEvent.get_command's path rejection.
+
+# Keep in sync with plugins/platforms/whatsapp/adapter.py:_OWNER_REPLY_PREFIX.
+# base.py must not import from the WhatsApp plugin (layering/cycle), so we copy
+# the literal here; test_whatsapp_inline_commands asserts they stay equal.
+_OWNER_REPLY_PREFIX = "[owner reply] "
+
+# An ISOLATED slash-command token. (?:^|(?<=\s)) = at string start or right
+# after whitespace; (?=\s|$) = followed by whitespace or end. The "@bot" mention
+# suffix (dropped, as get_command does) is consumed so it stays out of the args.
+_INLINE_COMMAND_TOKEN = re.compile(r"(?:^|(?<=\s))/([A-Za-z0-9][A-Za-z0-9_-]*)(?:@\S+)?(?=\s|$)")
+
+
+def _inline_commands_enabled() -> bool:
+    return os.getenv("WHATSAPP_INLINE_COMMANDS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def coerce_inline_owner_command(event: "MessageEvent") -> None:
+    """Promote a known inline slash command to the front of a WhatsApp owner-reply.
+
+    Opt-in via WHATSAPP_INLINE_COMMANDS. No-op unless the event is a WhatsApp
+    1:1 owner-reply TEXT message containing a *known* isolated slash command.
+    Mutates event.text in place (mirrors coerce_plaintext_gateway_command) and,
+    when it rewrites, drops the "[owner reply] " marker so get_command() sees the
+    slash at index 0 (the marker's signal lives on in metadata).
+    """
+    try:
+        if event is None or event.message_type != MessageType.TEXT:
+            return
+        if not _inline_commands_enabled():
+            return
+        source = getattr(event, "source", None)
+        platform = getattr(source, "platform", None)
+        # Platform gate: WhatsApp only (compare by value to tolerate dynamic members).
+        if getattr(platform, "value", platform) != Platform.WHATSAPP.value:
+            return
+        if getattr(source, "chat_type", None) != "dm":
+            return
+        metadata = getattr(event, "metadata", None) or {}
+        # Strict identity: only the exact boolean True (set by the adapter for a
+        # genuine fromOwner event) qualifies. A truthy non-bool (e.g. the string
+        # "false") must NOT slip a non-owner through this privilege gate.
+        if metadata.get("whatsapp_from_owner") is not True:
+            return
+        # Lazy import (base.py already imports hermes_cli.commands lazily elsewhere;
+        # avoids import cycles and forcing plugin discovery at module import).
+        try:
+            from hermes_cli.commands import is_gateway_known_command
+        except Exception:
+            return  # registry unavailable -> safest is no rewrite
+        text = event.text or ""
+        # Remove the owner-reply marker (if present) so we scan the real body.
+        body = text[len(_OWNER_REPLY_PREFIX):] if text.startswith(_OWNER_REPLY_PREFIX) else text
+        # Scan the ORIGINAL body (no dash-normalization) so match spans line up.
+        # Promote the FIRST isolated token whose name is a known command — even
+        # if it is already at the start (that path still drops the prefix).
+        for m in _INLINE_COMMAND_TOKEN.finditer(body):
+            name = m.group(1).lower()
+            if not is_gateway_known_command(name):
+                continue
+            before = body[:m.start()].strip()
+            after = body[m.end():].strip()
+            remainder = " ".join(p for p in (before, after) if p)
+            event.text = (f"/{name} {remainder}").rstrip()
+            return
+        return  # no known inline command: leave event.text untouched
+    except Exception:
+        return
+
+
 @dataclass
 class SendResult:
     """Result of sending a message."""
@@ -4594,6 +4683,7 @@ class BasePlatformAdapter(ABC):
             return
 
         coerce_plaintext_gateway_command(event)
+        coerce_inline_owner_command(event)
 
         # Rewrite ``event.source.thread_id`` via the installed recovery hook
         # (Telegram DM topic mode) so the session key, guard checks, and

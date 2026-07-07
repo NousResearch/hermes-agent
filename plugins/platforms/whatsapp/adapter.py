@@ -1280,15 +1280,48 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
 
+    def _can_batch_text_events(self, existing: MessageEvent, event: MessageEvent) -> bool:
+        """Only batch chunks with the same owner-reply attribution.
+
+        The merged batch keeps the FIRST chunk's metadata/source, and in a DM
+        the batch key is chat-scoped — so without this boundary an owner-typed
+        chunk and a contact chunk arriving inside the same debounce window
+        would merge, and the combined text would inherit
+        ``whatsapp_from_owner`` from whichever chunk came first. That would
+        let a contact's text ride under the owner marker (or silently drop
+        the owner's own marker). Mirrors the sender-attribution rule of
+        ``_can_merge_text_debounce_events`` in gateway/platforms/base.py.
+        """
+        existing_owner = (getattr(existing, "metadata", None) or {}).get(
+            "whatsapp_from_owner"
+        ) is True
+        event_owner = (getattr(event, "metadata", None) or {}).get(
+            "whatsapp_from_owner"
+        ) is True
+        return existing_owner == event_owner
+
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer.
 
         When WhatsApp delivers rapid-fire messages (e.g. forwarded
         batches), this concatenates them and waits for a short quiet
-        period before dispatching the combined message.
+        period before dispatching the combined message. Chunks with a
+        different owner-reply attribution never merge: the buffered burst
+        is dispatched as-is and the new chunk starts a fresh batch (see
+        ``_can_batch_text_events``).
         """
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
+        if existing is not None and not self._can_batch_text_events(existing, event):
+            # Preserve sender attribution: dispatch the buffered burst now;
+            # the new sender starts a fresh debounce batch.
+            prior_task = self._pending_text_batch_tasks.pop(key, None)
+            if prior_task and not prior_task.done():
+                prior_task.cancel()
+            flushed = self._pending_text_batches.pop(key, None)
+            if flushed is not None:
+                asyncio.create_task(self.handle_message(flushed))
+            existing = None
         chunk_len = len(event.text or "")
         if existing is None:
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
@@ -1728,6 +1761,8 @@ def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:
         os.environ["WHATSAPP_FREE_RESPONSE_CHATS"] = str(frc)
     if "dm_policy" in whatsapp_cfg and not os.getenv("WHATSAPP_DM_POLICY"):
         os.environ["WHATSAPP_DM_POLICY"] = str(whatsapp_cfg["dm_policy"]).lower()
+    if "inline_commands" in whatsapp_cfg and not os.getenv("WHATSAPP_INLINE_COMMANDS"):
+        os.environ["WHATSAPP_INLINE_COMMANDS"] = str(whatsapp_cfg["inline_commands"]).lower()
     af = whatsapp_cfg.get("allow_from")
     if af is not None and not os.getenv("WHATSAPP_ALLOWED_USERS"):
         if isinstance(af, list):

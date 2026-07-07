@@ -46,6 +46,11 @@ const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPortAnnouncement } = require('./backend-ready.cjs')
 const { dashboardFallbackArgs, sourceDeclaresServe } = require('./backend-command.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
+const {
+  certificateDisplayName,
+  chooseClientCertificate,
+  filtersFromEnv
+} = require('./client-certificate-selection.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
 const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
@@ -3351,14 +3356,41 @@ function fetchJson(url, token, options = {}) {
   })
 }
 
-function fetchPublicJson(url, options = {}) {
-  // Credential-free JSON GET/POST for public gateway endpoints
-  // (``/api/status``, ``/api/auth/providers``). Unlike ``fetchJson`` it sends
-  // NO ``X-Hermes-Session-Token`` header — used by the auth-mode probe before
-  // any credentials exist, and any time we must not leak a token to an
-  // endpoint that doesn't need one.
+function clientRequestHeader(headers, name) {
+  if (!headers) return ''
+  return String(headers[name] || headers[name.toLowerCase()] || headers[name.toUpperCase()] || '')
+}
+
+function parseJsonResponseBody(url, statusCode, headers, text) {
+  if (statusCode >= 400) {
+    const err = new Error(`${statusCode}: ${text || ''}`)
+    err.statusCode = statusCode
+    throw err
+  }
+  if (!text) return null
+
+  const looksHtml = /^\s*<(?:!doctype|html)/i.test(text)
+  const contentType = clientRequestHeader(headers, 'content-type')
+  if (looksHtml || contentType.includes('text/html')) {
+    throw new Error(
+      `Expected JSON from ${url} but got HTML (status ${statusCode}). ` +
+        'The endpoint is likely missing on the Hermes backend or intercepted by an auth proxy.'
+    )
+  }
+  try {
+    return JSON.parse(text)
+  } catch {
+    throw new Error(`Invalid JSON from ${url} (status ${statusCode}): ${text.slice(0, 200)}`)
+  }
+}
+
+function fetchJsonViaElectronSession(url, options = {}, targetSession = session.defaultSession, useSessionCookies = false) {
   return new Promise((resolve, reject) => {
-    const body = options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body))
+    const sess = targetSession || session.defaultSession
+    if (!sess) {
+      reject(new Error('Electron session is unavailable.'))
+      return
+    }
     let parsed
     try {
       parsed = new URL(url)
@@ -3366,63 +3398,71 @@ function fetchPublicJson(url, options = {}) {
       reject(new Error(`Invalid URL: ${error.message}`))
       return
     }
-    const client = parsed.protocol === 'https:' ? https : http
-    const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
       return
     }
 
-    const req = client.request(
-      parsed,
-      {
-        method: options.method || 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(body ? { 'Content-Length': String(body.length) } : {})
-        }
-      },
-      res => {
-        const chunks = []
-        res.on('data', chunk => chunks.push(chunk))
-        res.on('end', () => {
-          const text = Buffer.concat(chunks).toString('utf8')
-          if ((res.statusCode || 500) >= 400) {
-            reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
-            return
-          }
-          if (!text) {
-            resolve(null)
-            return
-          }
-          const looksHtml = /^\s*<(?:!doctype|html)/i.test(text)
-          const contentType = String(res.headers['content-type'] || '')
-          if (looksHtml || contentType.includes('text/html')) {
-            reject(
-              new Error(
-                `Expected JSON from ${url} but got HTML (status ${res.statusCode}). ` +
-                  'The endpoint is likely missing on the Hermes backend.'
-              )
-            )
-            return
-          }
-          try {
-            resolve(JSON.parse(text))
-          } catch {
-            reject(new Error(`Invalid JSON from ${url} (status ${res.statusCode}): ${text.slice(0, 200)}`))
-          }
-        })
-      }
-    )
-
-    req.on('error', reject)
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+    rememberClientCertificateHost(url)
+    const body = serializeJsonBody(options.body)
+    const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+    const request = electronNet.request({
+      method: options.method || 'GET',
+      url,
+      session: sess,
+      useSessionCookies,
+      redirect: 'follow'
     })
-    if (body) req.write(body)
-    req.end()
+    setJsonRequestHeaders(request)
+
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      try {
+        request.abort()
+      } catch {
+        // already finished
+      }
+      reject(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+    }, timeoutMs)
+
+    request.on('response', res => {
+      const chunks = []
+      res.on('data', chunk => chunks.push(Buffer.from(chunk)))
+      res.on('end', () => {
+        if (timedOut) return
+        clearTimeout(timer)
+        const text = Buffer.concat(chunks).toString('utf8')
+        try {
+          resolve(parseJsonResponseBody(url, res.statusCode || 500, res.headers || {}, text))
+        } catch (error) {
+          reject(error)
+        }
+      })
+    })
+    request.on('error', error => {
+      if (timedOut) return
+      clearTimeout(timer)
+      reject(error)
+    })
+    if (body) request.write(body)
+    request.end()
   })
+}
+
+function fetchPublicJson(url, options = {}) {
+  // Credential-free JSON GET/POST for public gateway endpoints
+  // (``/api/status``, ``/api/auth/providers``). Unlike ``fetchJson`` it sends
+  // NO ``X-Hermes-Session-Token`` header - used by the auth-mode probe before
+  // any credentials exist, and any time we must not leak a token to an
+  // endpoint that doesn't need one.
+  //
+  // This intentionally uses Electron's network stack rather than Node's
+  // `https.request`: reverse proxies such as Cloudflare Access can request a
+  // TLS client certificate before they return the public JSON endpoint, and
+  // Chromium/Electron owns the platform certificate store + certificate
+  // selection flow used by the login window and WebSocket path.
+  return fetchJsonViaElectronSession(url, options, session.defaultSession, false)
 }
 
 function mimeTypeForPath(filePath) {
@@ -4346,6 +4386,88 @@ function isAudioCapturePermission(permission, details) {
   return mediaTypes.includes('audio') && !mediaTypes.includes('video')
 }
 
+
+const clientCertificateSelectorSessions = new WeakSet()
+const clientCertificateHostnames = new Set()
+const clientCertificateSelectedHostnames = new Set()
+
+function configuredClientCertificateHosts() {
+  return String(process.env.HERMES_DESKTOP_CLIENT_CERT_HOSTS || '')
+    .split(',')
+    .map(host => host.trim().toLowerCase())
+    .filter(Boolean)
+}
+
+function rememberClientCertificateHost(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl)
+    if (parsed.protocol === 'https:' && parsed.hostname) {
+      clientCertificateHostnames.add(parsed.hostname.toLowerCase())
+    }
+  } catch {
+    // Ignore invalid URLs here; callers surface URL errors separately.
+  }
+}
+
+function rememberSelectedClientCertificateHost(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl)
+    if (parsed.protocol === 'https:' && parsed.hostname) {
+      clientCertificateSelectedHostnames.add(parsed.hostname.toLowerCase())
+    }
+  } catch {
+    // Ignore invalid URLs here; callers surface URL errors separately.
+  }
+}
+
+function hasSelectedClientCertificateForHost(rawUrl) {
+  try {
+    const hostname = new URL(rawUrl).hostname.toLowerCase()
+    return clientCertificateSelectedHostnames.has(hostname)
+  } catch {
+    return false
+  }
+}
+
+function isClientCertificateHostAllowed(rawUrl) {
+  let hostname = ''
+  try {
+    hostname = new URL(rawUrl).hostname.toLowerCase()
+  } catch {
+    return false
+  }
+  if (!hostname) return false
+  const allowed = new Set([...clientCertificateHostnames, ...configuredClientCertificateHosts()])
+  return [...allowed].some(host => hostname === host || hostname.endsWith(`.${host}`))
+}
+
+function installClientCertificateSelector(targetSession = session.defaultSession) {
+  if (!targetSession || typeof targetSession.on !== 'function' || clientCertificateSelectorSessions.has(targetSession)) {
+    return
+  }
+  clientCertificateSelectorSessions.add(targetSession)
+
+  targetSession.on('select-client-certificate', (event, _webContents, url, list, callback) => {
+    if (!isClientCertificateHostAllowed(url)) {
+      return
+    }
+
+    const selected = chooseClientCertificate(list, filtersFromEnv())
+    if (!selected) {
+      rememberLog(
+        `Client certificate requested for ${url}, but Desktop did not auto-select one ` +
+          `(candidates=${Array.isArray(list) ? list.length : 0}).`
+      )
+      return
+    }
+
+    event.preventDefault()
+    rememberSelectedClientCertificateHost(url)
+    rememberLog(`Selected client certificate for ${url}: ${certificateDisplayName(selected)}`)
+    callback(selected)
+  })
+}
+
 function installMediaPermissions() {
   // Async request handler: the prompt-style path (most platforms).
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
@@ -4405,6 +4527,7 @@ const OAUTH_SESSION_PARTITION = 'persist:hermes-remote-oauth'
 function getOauthSession() {
   if (oauthSession || !app.isReady()) return oauthSession
   oauthSession = session.fromPartition(OAUTH_SESSION_PARTITION)
+  installClientCertificateSelector(oauthSession)
   return oauthSession
 }
 
@@ -4546,6 +4669,7 @@ function openOauthLoginWindow(baseUrl) {
     // login, which is a valid authenticated page that sets the cookies. We
     // only care that the cookie jar is populated.
     const loginUrl = `${normalizeRemoteBaseUrl(baseUrl)}/login`
+    rememberClientCertificateHost(loginUrl)
     win.loadURL(loginUrl).catch(error => {
       finish(error instanceof Error ? error : new Error(String(error)))
     })
@@ -4556,85 +4680,11 @@ function openOauthLoginWindow(baseUrl) {
 // session cookie is attached automatically by Electron's net stack. Used for
 // authed REST against a gated gateway, including minting WS tickets.
 function fetchJsonViaOauthSession(url, options = {}) {
-  return new Promise((resolve, reject) => {
-    const sess = getOauthSession()
-    if (!sess) {
-      reject(new Error('OAuth session partition is unavailable.'))
-      return
-    }
-    let parsed
-    try {
-      parsed = new URL(url)
-    } catch (error) {
-      reject(new Error(`Invalid URL: ${error.message}`))
-      return
-    }
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
-      return
-    }
-    const body = serializeJsonBody(options.body)
-    const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-
-    const request = electronNet.request({
-      method: options.method || 'GET',
-      url,
-      session: sess,
-      useSessionCookies: true,
-      redirect: 'follow'
-    })
-    setJsonRequestHeaders(request)
-
-    let timedOut = false
-    const timer = setTimeout(() => {
-      timedOut = true
-      try {
-        request.abort()
-      } catch {
-        // already finished
-      }
-      reject(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
-    }, timeoutMs)
-
-    request.on('response', res => {
-      const chunks = []
-      res.on('data', chunk => chunks.push(Buffer.from(chunk)))
-      res.on('end', () => {
-        if (timedOut) return
-        clearTimeout(timer)
-        const text = Buffer.concat(chunks).toString('utf8')
-        const statusCode = res.statusCode || 500
-        if (statusCode >= 400) {
-          const err = new Error(`${statusCode}: ${text || ''}`)
-          err.statusCode = statusCode
-          reject(err)
-          return
-        }
-        if (!text) {
-          resolve(null)
-          return
-        }
-        const looksHtml = /^\s*<(?:!doctype|html)/i.test(text)
-        const contentType = String(res.headers['content-type'] || res.headers['Content-Type'] || '')
-        if (looksHtml || contentType.includes('text/html')) {
-          reject(new Error(`Expected JSON from ${url} but got HTML (status ${statusCode}).`))
-          return
-        }
-        try {
-          resolve(JSON.parse(text))
-        } catch {
-          reject(new Error(`Invalid JSON from ${url} (status ${statusCode}): ${text.slice(0, 200)}`))
-        }
-      })
-    })
-    request.on('error', error => {
-      if (timedOut) return
-      clearTimeout(timer)
-      reject(error)
-    })
-    if (body) request.write(body)
-    request.end()
-  })
+  const sess = getOauthSession()
+  if (!sess) {
+    return Promise.reject(new Error('OAuth session partition is unavailable.'))
+  }
+  return fetchJsonViaElectronSession(url, options, sess, true)
 }
 
 // Mint a single-use WS ticket for a gated gateway. Returns the ticket string.
@@ -5144,7 +5194,7 @@ async function testDesktopConnectionConfig(input = {}) {
     token = remote.token
     authMode = normAuthMode(remote.authMode)
   }
-  const status = await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: 8_000 })
+  const status = await fetchPublicJson(`${baseUrl}/api/status`, { timeoutMs: 8_000 })
 
   // The HTTP status check above proves the backend is reachable, but the chat
   // surface only works once the renderer's live WebSocket to ``/api/ws``
@@ -5158,12 +5208,20 @@ async function testDesktopConnectionConfig(input = {}) {
   // older Electron/Node never fails the test spuriously); Electron's main
   // process ships a global WebSocket on every supported version.
   if (wsUrl && typeof globalThis.WebSocket === 'function') {
-    const probe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
-    if (!probe.ok) {
-      throw new Error(
-        `Reached the gateway over HTTP, but the live WebSocket (/api/ws) connection failed: ${probe.reason} ` +
-          'The HTTP check can pass while the WebSocket is blocked by a proxy, firewall, or gateway auth/origin guard.'
+    if (hasSelectedClientCertificateForHost(baseUrl)) {
+      rememberLog(
+        'Skipping main-process WebSocket probe for an mTLS remote gateway; ' +
+          'the renderer WebSocket uses Electron session client-certificate selection, ' +
+          'but Node WebSocket cannot use the platform certificate store.'
       )
+    } else {
+      const probe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
+      if (!probe.ok) {
+        throw new Error(
+          `Reached the gateway over HTTP, but the live WebSocket (/api/ws) connection failed: ${probe.reason} ` +
+            'The HTTP check can pass while the WebSocket is blocked by a proxy, firewall, or gateway auth/origin guard.'
+        )
+      }
     }
   }
 
@@ -7614,6 +7672,7 @@ app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
   }
   installMediaPermissions()
+  installClientCertificateSelector()
   registerMediaProtocol()
   installEmbedReferer()
   registerDeepLinkProtocol()

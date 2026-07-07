@@ -4151,6 +4151,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pass
         return max_restarts, window_seconds
 
+    def _restart_loop_home_channel_notifications_suppressed(self) -> bool:
+        """Return True when lifecycle home-channel broadcasts should be muted.
+
+        The restart-loop guard was originally scoped to auto-resume only: once
+        it tripped, the gateway stopped replaying the restart-interrupted turn
+        but every supervisor-driven SIGTERM could still notify the configured
+        home channel. Reuse the same persisted breaker state here so a detected
+        respawn loop cannot keep sending operator lifecycle pings indefinitely.
+        """
+        try:
+            from gateway import restart_loop_guard as _rlg
+
+            max_restarts, window_seconds = self._restart_loop_guard_config()
+            return _rlg.is_restart_loop_tripped(max_restarts, window_seconds)
+        except Exception as exc:  # noqa: BLE001 — notification suppression must fail open
+            logger.debug("restart-loop notification suppression check skipped: %s", exc)
+            return False
+
     def _scale_to_zero_should_arm(self) -> bool:
         """Whether to start the idle watcher (D1/D11/§3.4(1))."""
         from gateway.relay import relay_wake_url
@@ -5729,6 +5747,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Never let the suppression check block the shutdown broadcast —
             # fail toward the louder, more-visible behaviour.
             logger.debug("drain_notification_suppressed check failed: %s", e)
+
+        if self._restart_loop_home_channel_notifications_suppressed():
+            logger.info(
+                "Home-channel shutdown broadcast suppressed by restart-loop breaker"
+            )
+            return
 
         # Snapshot adapters up front: adapter.send() can hit a fatal error
         # path that pops the adapter from self.adapters (see _handle_fatal

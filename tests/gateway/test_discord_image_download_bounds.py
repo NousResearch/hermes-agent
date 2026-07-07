@@ -5,6 +5,7 @@ resource-limiting pattern to image/animation/attachment downloads
 in the Discord adapter that were left unbounded.
 """
 
+import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -34,7 +35,7 @@ class TestReadResponseBytesBounded:
         resp.content = MagicMock()
         resp.content.read = AsyncMock(return_value=b"x" * 100)
 
-        result = pytest.run_sync(
+        result = asyncio.run(
             _read_response_bytes_bounded(resp, 200)
         )
         assert result == b"x" * 100
@@ -47,7 +48,7 @@ class TestReadResponseBytesBounded:
         resp.close = MagicMock()
 
         with pytest.raises(ValueError, match="exceeded 100 bytes"):
-            pytest.run_sync(
+            asyncio.run(
                 _read_response_bytes_bounded(resp, 100)
             )
         resp.close.assert_called_once()
@@ -57,7 +58,7 @@ class TestReadResponseBytesBounded:
         resp.content = MagicMock()
         resp.content.read = AsyncMock(return_value=b"x" * 100)
 
-        result = pytest.run_sync(
+        result = asyncio.run(
             _read_response_bytes_bounded(resp, 100)
         )
         assert result == b"x" * 100

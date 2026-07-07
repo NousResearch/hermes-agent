@@ -1393,6 +1393,16 @@ DEFAULT_CONFIG = {
                                       # session_search and recoverable, not deleted.
                                       # Default False during rollout; will flip on
                                       # after live validation.
+        "processing": {
+            # Max concurrent async LLM calls from auxiliary_client.async_call_llm.
+            # When context compression fires, it can spawn many parallel
+            # summarisation calls; without a cap these exhaust rate-limited
+            # providers (e.g. ZAI's 7-slot limit → instant 429 cascade →
+            # gateway crash). Default 3 is safe for most providers. Set to a
+            # higher value for providers with generous rate limits, or to 1
+            # for strict single-call-at-a-time behaviour.
+            "max_concurrent_requests": 3,
+        },
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).

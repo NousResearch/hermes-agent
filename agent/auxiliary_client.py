@@ -40,6 +40,7 @@ Payment / credit exhaustion fallback:
   their OpenRouter balance but has Codex OAuth or another provider available.
 """
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -2916,6 +2917,66 @@ def _transient_retry_count() -> int:
         return max(0, min(n, 6))
     except Exception:
         return _DEFAULT_TRANSIENT_RETRIES
+
+
+# ---------------------------------------------------------------------------
+# Concurrency limit for async_call_llm
+# ---------------------------------------------------------------------------
+#
+# When context compression fires, it can spawn many parallel async LLM calls
+# (one per summarisation chunk). Without a cap, these exhaust rate-limited
+# providers — e.g. ZAI's 7-concurrent-slot limit produced 43 instant 429s
+# that cascaded through every fallback provider and crashed the gateway.
+#
+# The semaphore is lazily initialised from ``compression.processing.
+# max_concurrent_requests`` in config.yaml (default 3) so the limit can be
+# tuned per deployment without a code change.
+_DEFAULT_ASYNC_CONCURRENCY = 3
+_async_concurrency_sem: Optional[asyncio.Semaphore] = None
+
+
+def _get_async_concurrency_limit() -> int:
+    """Read the max concurrent async LLM calls from config.
+
+    Reads ``compression.processing.max_concurrent_requests`` (default 3).
+    Clamped to a minimum of 1. Best-effort: any config-read failure returns
+    the default.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        val = cfg_get(
+            load_config(),
+            "compression", "processing", "max_concurrent_requests",
+        )
+        if val is None:
+            return _DEFAULT_ASYNC_CONCURRENCY
+        n = int(val)
+        return max(1, n)
+    except Exception:
+        return _DEFAULT_ASYNC_CONCURRENCY
+
+
+def _get_async_semaphore() -> asyncio.Semaphore:
+    """Return the module-level async concurrency semaphore.
+
+    Lazily initialises on first call so the config value is read at most
+    once per process lifetime. Callers that need to pick up a config change
+    can call :func:`_reset_async_semaphore` (used by tests).
+    """
+    global _async_concurrency_sem
+    if _async_concurrency_sem is None:
+        _async_concurrency_sem = asyncio.Semaphore(_get_async_concurrency_limit())
+    return _async_concurrency_sem
+
+
+def _reset_async_semaphore() -> None:
+    """Clear the cached semaphore so the next call re-reads config.
+
+    Primarily for tests that change the config value between cases.
+    """
+    global _async_concurrency_sem
+    _async_concurrency_sem = None
 
 
 def _is_auth_error(exc: Exception) -> bool:
@@ -6930,7 +6991,46 @@ async def async_call_llm(
     """Centralized asynchronous LLM call.
 
     Same as call_llm() but async. See call_llm() for full documentation.
+
+    Wraps the implementation in a concurrency-limiting semaphore so that
+    burst callers (e.g. context compression spawning many parallel
+    summarisation chunks) cannot exhaust rate-limited providers. The limit
+    is read from ``compression.processing.max_concurrent_requests`` in
+    config.yaml (default 3).
     """
+    async with _get_async_semaphore():
+        return await _async_call_llm_impl(
+            task=task,
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            main_runtime=main_runtime,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tools,
+            timeout=timeout,
+            extra_body=extra_body,
+        )
+
+
+async def _async_call_llm_impl(
+    task: str = None,
+    *,
+    provider: str = None,
+    model: str = None,
+    base_url: str = None,
+    api_key: str = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
+    messages: list,
+    temperature: Optional[float] = None,
+    max_tokens: int = None,
+    tools: list = None,
+    timeout: float = None,
+    extra_body: dict = None,
+) -> Any:
+    """Implementation of :func:`async_call_llm` (without the semaphore wrapper)."""
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
     effective_extra_body = _get_task_extra_body(task)

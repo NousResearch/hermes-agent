@@ -23,6 +23,7 @@ _jitter_lock = threading.Lock()
 # cap interactive-friendly: a simple TUI message should fail visibly in minutes,
 # not sit silent for 20+ minutes.
 _ZAI_CODING_OVERLOAD_LONG_BACKOFF = (30.0, 60.0, 90.0, 120.0)
+_NVIDIA_NIM_RATE_LIMIT_BACKOFF = (15.0, 30.0, 60.0, 120.0)
 
 # Number of initial short retries before the adaptive long-backoff tier kicks
 # in. Shared by ``adaptive_rate_limit_backoff`` (which walks the long table
@@ -105,6 +106,28 @@ def is_zai_coding_overload_error(*, base_url: str | None, model: str | None, err
     )
 
 
+def is_nvidia_nim_rate_limit_error(*, base_url: str | None, error: Any) -> bool:
+    """Return True for NVIDIA NIM endpoint 429s.
+
+    NVIDIA NIM can return a terse ``{"status":429,"title":"Too Many Requests"}``
+    body without a Retry-After header. Retrying after the generic 2s backoff
+    tends to create retry storms across concurrent workers, so use a wider
+    provider-specific window while keeping ordinary non-NVIDIA 429s unchanged.
+    """
+    base = (base_url or "").rstrip("/").lower()
+    status = getattr(error, "status_code", None)
+    text = _error_text(error)
+    return (
+        "integrate.api.nvidia.com/v1" in base
+        and (
+            status == 429
+            or "too many requests" in text
+            or '"status":429' in text
+            or "'status': 429" in text
+        )
+    )
+
+
 def adaptive_rate_limit_backoff(
     attempt: int,
     *,
@@ -125,16 +148,22 @@ def adaptive_rate_limit_backoff(
     Returns ``(wait_seconds, reason_label)`` where ``reason_label`` is suitable
     for status/log decoration when a provider-specific policy fired.
     """
-    if not is_zai_coding_overload_error(base_url=base_url, model=model, error=error):
-        return default_wait, None
-    if attempt <= short_attempts:
-        return default_wait, "zai_coding_overload_short"
+    if is_zai_coding_overload_error(base_url=base_url, model=model, error=error):
+        if attempt <= short_attempts:
+            return default_wait, "zai_coding_overload_short"
 
-    idx = min(attempt - short_attempts - 1, len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) - 1)
-    base_delay = _ZAI_CODING_OVERLOAD_LONG_BACKOFF[idx]
-    # A smaller jitter ratio keeps long waits readable while still avoiding
-    # synchronized retry storms across concurrent Hermes sessions.
-    return jittered_backoff(1, base_delay=base_delay, max_delay=base_delay, jitter_ratio=0.2), "zai_coding_overload_long"
+        idx = min(attempt - short_attempts - 1, len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) - 1)
+        base_delay = _ZAI_CODING_OVERLOAD_LONG_BACKOFF[idx]
+        # A smaller jitter ratio keeps long waits readable while still avoiding
+        # synchronized retry storms across concurrent Hermes sessions.
+        return jittered_backoff(1, base_delay=base_delay, max_delay=base_delay, jitter_ratio=0.2), "zai_coding_overload_long"
+
+    if is_nvidia_nim_rate_limit_error(base_url=base_url, error=error):
+        idx = min(max(attempt, 1) - 1, len(_NVIDIA_NIM_RATE_LIMIT_BACKOFF) - 1)
+        base_delay = _NVIDIA_NIM_RATE_LIMIT_BACKOFF[idx]
+        return jittered_backoff(1, base_delay=base_delay, max_delay=base_delay, jitter_ratio=0.2), "nvidia_nim_rate_limit"
+
+    return default_wait, None
 
 
 def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS) -> int:

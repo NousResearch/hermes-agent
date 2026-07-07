@@ -253,6 +253,27 @@ def _child_process_main(params, event_queue, result_queue, interrupt_event) -> N
                 emit("_thinking", text)
 
         factory = _resolve_agent_factory(params.get("agent_factory"))
+        # Collect extra params (non-constructor keys) so test stub factories
+        # can receive test configuration across the spawn boundary.
+        _constructor_keys = {
+            "base_url", "api_key", "model", "provider", "api_mode",
+            "acp_command", "acp_args", "max_iterations", "max_tokens",
+            "reasoning_config", "prefill_messages", "fallback_model",
+            "enabled_toolsets", "ephemeral_system_prompt", "session_id",
+            "parent_session_id", "providers_allowed", "providers_ignored",
+            "providers_order", "provider_sort", "openrouter_min_coding_score",
+        }
+        _extra = {
+            k: v for k, v in params.items()
+            if k not in _constructor_keys and not k.startswith("_")
+        }
+        # _test_config starts with _ but is needed by stub factories
+        _extra["_test_config"] = params.get("_test_config")
+        _extra["goal"] = goal
+        _extra["role"] = params.get("role", "leaf")
+        _extra["subagent_id"] = params.get("subagent_id")
+        _extra["parent_subagent_id"] = params.get("parent_subagent_id")
+        _extra["parent_turn_id"] = params.get("parent_turn_id")
         agent = factory(
             base_url=params.get("base_url"),
             api_key=params.get("api_key"),
@@ -285,6 +306,7 @@ def _child_process_main(params, event_queue, result_queue, interrupt_event) -> N
             openrouter_min_coding_score=params.get("openrouter_min_coding_score"),
             tool_progress_callback=emit,
             iteration_budget=None,  # fresh budget per subagent
+            **_extra,
         )
         agent._delegate_depth = params.get("child_depth", 1)
         agent._delegate_role = params.get("role", "leaf")

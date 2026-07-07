@@ -25,6 +25,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -38,7 +39,7 @@ import zipfile
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -150,6 +151,31 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     provider.start(stop_event, interval=interval)
 
 
+def _watch_parent_death(
+    initial_ppid: int,
+    on_parent_death: Callable[[], None],
+    stop_event: "threading.Event",
+    poll_interval: float = 10.0,
+    getppid: Callable[[], int] = os.getppid,
+) -> None:
+    """Poll until the parent process dies (ppid changes — a reparent to
+    launchd/init), then invoke on_parent_death. Desktop-spawned backends
+    (HERMES_DESKTOP=1) must not outlive the Electron app that owns them:
+    an orphaned backend keeps a live cron ticker and dead stdout/stderr
+    pipes (BUILD-188/BUILD-190 midnight cron failures).
+    """
+    if initial_ppid <= 1:
+        # Already init-parented (or ppid unknown) — nothing meaningful to
+        # watch, and this also guards launchd-managed edge cases where a
+        # reparent-to-1 signal would never fire.
+        return
+
+    while not stop_event.wait(poll_interval):
+        if getppid() != initial_ppid:
+            on_parent_death()
+            return
+
+
 def _warm_gateway_module() -> None:
     try:
         import hermes_cli.gateway  # noqa: F401
@@ -190,6 +216,13 @@ async def _lifespan(app: "FastAPI"):
     # dashboard` is unaffected — it relies on its own gateway.
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
+    # Desktop-spawned backends also must not outlive the Electron app: if
+    # Electron crashes or is force-quit, cleanup (SIGTERM from the app) never
+    # runs, and the orphaned backend keeps its cron ticker alive with dead
+    # stdout/stderr pipes (BUILD-188/BUILD-190). Watch for the reparent to
+    # launchd/init and self-terminate shortly after.
+    watchdog_stop: "threading.Event | None" = None
+    watchdog_thread: "threading.Thread | None" = None
     if os.getenv("HERMES_DESKTOP") == "1":
         cron_stop = threading.Event()
         cron_thread = threading.Thread(
@@ -200,11 +233,29 @@ async def _lifespan(app: "FastAPI"):
         )
         cron_thread.start()
 
+        def _on_parent_death() -> None:
+            _log.info(
+                "Desktop parent process died (ppid changed); shutting down "
+                "orphaned backend"
+            )
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        watchdog_stop = threading.Event()
+        watchdog_thread = threading.Thread(
+            target=_watch_parent_death,
+            args=(os.getppid(), _on_parent_death, watchdog_stop),
+            daemon=True,
+            name="desktop-parent-watchdog",
+        )
+        watchdog_thread.start()
+
     try:
         yield
     finally:
         if cron_stop is not None:
             cron_stop.set()
+        if watchdog_stop is not None:
+            watchdog_stop.set()
 
 
 def _get_event_state(app: "FastAPI"):

@@ -100,6 +100,11 @@ try {
     .slice(0, 16);
 } catch {}
 const PAIR_ONLY = args.includes('--pair-only');
+// Opt-in: when --pair-phone=<E.164> is supplied AND the session is not yet
+// registered, request an 8-char pairing code from Baileys instead of
+// displaying a QR. Phone is sanitised to digits-only so "+972 55 921 1263",
+// "+972559211263", "972559211263" all normalise to the form Baileys wants.
+const PAIR_PHONE = getArg('pair-phone', '').replace(/^\+/, '').replace(/\D/g, '');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
@@ -362,6 +367,7 @@ let connectionState = 'disconnected';
 
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
+  const isFirstTimePairing = !state.creds.registered;
   const { version } = await fetchLatestBaileysVersion();
 
   sock = makeWASocket({
@@ -383,9 +389,31 @@ async function startSocket() {
 
   sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
 
+    // Phone-number pairing (opt-in via --pair-phone). Requests an 8-char code from
+  // Baileys that the operator types into the phone in
+  // WhatsApp → Settings → Linked Devices → "Link with phone number".
+  if (PAIR_PHONE && isFirstTimePairing) {
+    setTimeout(async () => {
+      try {
+        const code = await sock.requestPairingCode(PAIR_PHONE);
+        const formatted = code.match(/.{1,4}/g).join('-');
+        console.log(`\n📱 Pairing code: ${formatted}`);
+        console.log('Enter on phone within ~60s: WhatsApp → Settings → Linked Devices → Link with phone number');
+      } catch (err) {
+        console.error('Pairing code request failed:', err.message);
+      }
+    }, 3000);
+  }
+
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
 
+    if (qr && PAIR_PHONE) {
+      // Suppress QR display when phone-pairing is requested. The pairing
+      // code path below handles auth; the QR event still fires because
+      // Baileys emits both paths until creds are saved.
+      return;
+    }
     if (qr) {
       console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
       qrcode.generate(qr, { small: true });
@@ -999,7 +1027,7 @@ app.get('/health', (req, res) => {
 // Start
 if (PAIR_ONLY) {
   // Pair-only mode: just connect, show QR, save creds, exit. No HTTP server.
-  console.log('📱 WhatsApp pairing mode');
+  console.log(`📱 WhatsApp pairing mode (${PAIR_PHONE ? 'phone-code' : 'QR'})`);
   console.log(`📁 Session: ${SESSION_DIR}`);
   console.log();
   startSocket();

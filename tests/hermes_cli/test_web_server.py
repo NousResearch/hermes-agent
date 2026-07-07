@@ -9424,6 +9424,145 @@ class TestSessionDetailAndMessagesOwnership:
         assert resp.status_code == 404
 
 
+class TestSessionResumeEndpoint:
+    """POST /api/sessions/{id}/resume: writes a gateway/resume_control.py
+    marker rather than mutating any live gateway state directly (see that
+    module's docstring for why) -- admin-tier only, same shape as the other
+    instance-wide mutating actions (_require_dashboard_admin), not the
+    per-row ownership check GET/DELETE use.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.dashboard_auth import (
+            DashboardAuthProvider,
+            LoginStart,
+            TokenPrincipal,
+            clear_providers,
+            register_provider,
+        )
+        from hermes_cli.dashboard_auth import token_auth
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
+        self.home = get_hermes_home()
+
+        class _StubMiniAppProvider(DashboardAuthProvider):
+            name = "telegram-miniapp"
+            display_name = "Test Telegram Mini App"
+            supports_token = True
+
+            def start_login(self, *, redirect_uri):
+                return LoginStart(redirect_url="x", cookie_payload={})
+
+            def complete_login(self, *, code, state, code_verifier, redirect_uri):
+                raise NotImplementedError
+
+            def verify_session(self, *, access_token):
+                return None
+
+            def refresh_session(self, *, refresh_token):
+                raise NotImplementedError
+
+            def revoke_session(self, *, refresh_token):
+                return None
+
+            def verify_token(self, *, token):
+                if token == "own-token":
+                    return TokenPrincipal(
+                        principal="telegram:12345", provider=self.name, scopes=("dashboard:read",)
+                    )
+                if token == "admin-token":
+                    return TokenPrincipal(
+                        principal="telegram:999",
+                        provider=self.name,
+                        scopes=("dashboard:read", "dashboard:admin"),
+                    )
+                return None
+
+        clear_providers()
+        token_auth.clear_token_routes()
+        register_provider(_StubMiniAppProvider())
+        from plugins.dashboard_auth.telegram_miniapp import _SESSION_RESUME_RE
+
+        token_auth.register_token_route(_SESSION_RESUME_RE, match="regex", required=False, methods=("POST",))
+
+        db = hermes_state.SessionDB()
+        try:
+            db.create_session(
+                session_id="20260702_100000_aaaaaaaa",
+                source="telegram",
+                user_id="12345",
+                chat_id="12345",
+                chat_type="dm",
+            )
+            db.append_message(session_id="20260702_100000_aaaaaaaa", role="user", content="hi")
+            db.create_session(
+                session_id="cron_abcdef012345_20260707_093920",
+                source="cron",
+                chat_id="12345",
+                chat_type="dm",
+            )
+        finally:
+            db.close()
+
+        self.client = TestClient(app)
+        self.session_client = TestClient(app)
+        self.session_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+        yield
+
+        clear_providers()
+        token_auth.clear_token_routes()
+
+    def test_non_admin_token_cannot_resume_session(self):
+        resp = self.client.post(
+            "/api/sessions/20260702_100000_aaaaaaaa/resume",
+            headers={"authorization": "Bearer own-token"},
+        )
+        assert resp.status_code == 403
+
+    def test_admin_token_can_resume_own_dm_session(self):
+        resp = self.client.post(
+            "/api/sessions/20260702_100000_aaaaaaaa/resume",
+            headers={"authorization": "Bearer admin-token"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["target_session_id"] == "20260702_100000_aaaaaaaa"
+        assert body["session_key"] == "agent:main:telegram:dm:12345"
+
+        import gateway.resume_control as rc
+        pending = rc.pending_resume_requests(home=self.home)
+        assert pending == {"agent:main:telegram:dm:12345": "20260702_100000_aaaaaaaa"}
+
+    def test_cookie_caller_can_resume_session(self):
+        resp = self.session_client.post("/api/sessions/20260702_100000_aaaaaaaa/resume")
+        assert resp.status_code == 200
+
+    def test_admin_token_cannot_resume_non_telegram_session(self):
+        resp = self.client.post(
+            "/api/sessions/cron_abcdef012345_20260707_093920/resume",
+            headers={"authorization": "Bearer admin-token"},
+        )
+        assert resp.status_code == 400
+
+    def test_admin_token_resume_nonexistent_session_is_404(self):
+        resp = self.client.post(
+            "/api/sessions/20260702_999999_ffffffff/resume",
+            headers={"authorization": "Bearer admin-token"},
+        )
+        assert resp.status_code == 404
+
+
 class TestMiniAppAdminOnlyMutatingEndpoints:
     """Every new mutating endpoint the Mini App handoff design needs
     (_require_dashboard_admin, hermes_cli/web_server.py): cron

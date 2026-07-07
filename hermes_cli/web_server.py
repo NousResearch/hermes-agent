@@ -11507,6 +11507,93 @@ async def get_session_messages(
     }
 
 
+@app.post("/api/sessions/{session_id}/resume")
+async def resume_session_endpoint(request: Request, session_id: str, profile: Optional[str] = None):
+    """Make ``session_id`` the active session for its own Telegram chat.
+
+    Mini App token route (required=False), admin-tier only — this switches
+    what a LIVE chat continues in, not a per-caller preference, so it's
+    scoped the same as the other instance-wide mutating actions
+    (_require_dashboard_admin), not the per-row ownership check GET/DELETE
+    use.
+
+    The dashboard process cannot safely mutate a running gateway's
+    SessionStore directly (see gateway/resume_control.py's module docstring:
+    its routing table loads once at gateway startup and a live save() would
+    silently clobber a direct external write). Instead this writes a marker
+    (gateway/resume_control.py) that the gateway's own
+    _resume_control_watcher observes and applies in-process, reusing the
+    exact switch mechanics ``/resume`` uses.
+
+    Only ``source == "telegram"`` sessions are resumable this way — the
+    Mini App only ever runs inside Telegram, and "the active session for
+    this chat" is meaningless for a session with no live inbound chat behind
+    it (e.g. a cron run).
+    """
+    _require_dashboard_admin(request)
+    db = _open_session_db_for_profile(profile)
+    try:
+        sid = db.resolve_session_id(session_id)
+        session = db.get_session(sid) if sid else None
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if session.get("source") != "telegram":
+            raise HTTPException(
+                status_code=400,
+                detail="Only Telegram sessions can be resumed this way",
+            )
+        chat_id = session.get("chat_id")
+        if not chat_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Session has no chat_id to resume into",
+            )
+        target_id = db.resolve_resume_session_id(sid)
+    finally:
+        db.close()
+
+    from gateway.config import Platform, load_gateway_config
+    from gateway.resume_control import write_resume_request
+    from gateway.session import SessionSource, build_session_key
+
+    gw_config = load_gateway_config()
+    # Mirrors GatewayRunner._session_key_for_source's fallback path exactly
+    # (used here unconditionally: the dashboard has no live session_store to
+    # prefer over it) -- None unless multiplexing is on, then the active
+    # profile, so a non-multiplexing install produces the identical key a
+    # live gateway would.
+    key_profile = None
+    if getattr(gw_config, "multiplex_profiles", False):
+        key_profile = profile or session.get("profile")
+        if not key_profile:
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                key_profile = get_active_profile_name() or "default"
+            except Exception:
+                key_profile = None
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id=chat_id,
+        chat_type=session.get("chat_type") or "dm",
+        user_id=session.get("user_id"),
+        thread_id=session.get("thread_id"),
+        profile=key_profile,
+    )
+    session_key = build_session_key(
+        source,
+        group_sessions_per_user=gw_config.group_sessions_per_user,
+        thread_sessions_per_user=gw_config.thread_sessions_per_user,
+        profile=key_profile,
+    )
+    principal = "dashboard"
+    token_principal = getattr(request.state, "token_principal", None)
+    if token_principal is not None:
+        principal = f"miniapp:{getattr(token_principal, 'principal', 'admin')}"
+    write_resume_request(session_key, target_id, principal=principal)
+    return {"ok": True, "session_key": session_key, "target_session_id": target_id}
+
+
 @app.delete("/api/sessions/{session_id}")
 async def delete_session_endpoint(request: Request, session_id: str, profile: Optional[str] = None):
     # Mini App token route (required=False), admin-tier only: a non-admin

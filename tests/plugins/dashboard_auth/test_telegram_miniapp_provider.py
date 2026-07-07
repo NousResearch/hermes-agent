@@ -424,3 +424,9 @@ class TestRegisterRoutes:
         assert token_auth.is_token_route_method_allowed("/api/gateway/restart", "POST") is True
         assert token_auth.is_token_route_method_allowed("/api/hermes/update", "POST") is True
         assert token_auth.is_token_route_method_allowed("/api/miniapp/me", "GET") is True
+
+        # Session resume: a distinct sibling path from the existing
+        # PATCH/DELETE session-id registration, POST only.
+        resume_path = "/api/sessions/20260702_143022_a1b2c3d4/resume"
+        assert token_auth.is_token_route_method_allowed(resume_path, "POST") is True
+        assert token_auth.is_token_route_method_allowed(resume_path, "GET") is False

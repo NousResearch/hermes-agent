@@ -395,13 +395,17 @@ class TestRegisterRoutes:
     def test_registers_new_admin_mutating_routes(self, monkeypatch):
         """The admin-tier mutating routes this build adds are all
         dispatch-eligible for exactly their intended method, cron job
-        detail/delete and skill create/edit remain untouched."""
+        detail-edit and skill create/edit remain untouched."""
         self._register(monkeypatch)
 
         cron_run = "/api/cron/jobs/abcdef123456/trigger"
         assert token_auth.is_token_route_method_allowed(cron_run, "POST") is True
-        # NOT a prefix -- job detail GET/PUT/DELETE must stay unregistered.
-        assert token_auth.is_token_route("/api/cron/jobs/abcdef123456") is False
+        # Job delete IS registered (DELETE only) -- job detail-edit (GET/PUT)
+        # is NOT a prefix registration, so it must stay unregistered even
+        # though DELETE on the exact same path shape now is.
+        assert token_auth.is_token_route_method_allowed("/api/cron/jobs/abcdef123456", "DELETE") is True
+        assert token_auth.is_token_route_method_allowed("/api/cron/jobs/abcdef123456", "GET") is False
+        assert token_auth.is_token_route_method_allowed("/api/cron/jobs/abcdef123456", "PUT") is False
         assert token_auth.is_token_route("/api/cron/jobs/abcdef123456/runs") is False
 
         assert token_auth.is_token_route_method_allowed("/api/skills/toggle", "PUT") is True

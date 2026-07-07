@@ -228,7 +228,7 @@ def finalize_turn(
         1 for m in messages
         if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
     )
-    _resp_len = len(final_response) if final_response else 0
+    _resp_len = len(final_response) if final_response and final_response is not None else 0
     _budget_used = agent.iteration_budget.used if agent.iteration_budget else 0
     _budget_max = agent.iteration_budget.max_total if agent.iteration_budget else 0
 

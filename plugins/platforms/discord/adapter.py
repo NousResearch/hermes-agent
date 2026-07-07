@@ -842,6 +842,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_mixers: Dict[int, Any] = {}  # guild_id -> VoiceMixer
         self._ambient_pcm_cache: Optional[bytes] = None  # decoded ambient bed
         self._voice_fx_cfg: Dict[str, Any] = self._load_voice_fx_config()
+        self._playback_timeout: float = self._load_voice_playback_timeout()
         # Track threads where the bot has participated so follow-up messages
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
@@ -2887,8 +2888,33 @@ class DiscordAdapter(BasePlatformAdapter):
             self._voice_text_channels.pop(guild_id, None)
             self._voice_sources.pop(guild_id, None)
 
-    # Maximum seconds to wait for voice playback before giving up
-    PLAYBACK_TIMEOUT = 120
+    # Maximum seconds to wait for voice playback before giving up.  Configurable
+    # via discord.voice_playback_timeout_seconds; the class attr is the fallback
+    # for object.__new__ test doubles and old subclasses.
+    PLAYBACK_TIMEOUT = 300
+
+    def _load_voice_playback_timeout(self) -> float:
+        """Read Discord VC playback timeout from config.yaml.
+
+        This is a behavioural setting, not a secret, so it belongs under
+        ``discord.voice_playback_timeout_seconds``.  Invalid values fall back to
+        the safe default instead of disabling the timeout guard.
+        """
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config() or {}
+            raw = (cfg.get("discord") or {}).get("voice_playback_timeout_seconds")
+            if raw is None:
+                return float(self.PLAYBACK_TIMEOUT)
+            timeout = float(raw)
+            if timeout > 0:
+                return timeout
+        except Exception as e:
+            logger.debug("Could not load discord.voice_playback_timeout_seconds: %s", e)
+        return float(self.PLAYBACK_TIMEOUT)
+
+    def _voice_playback_timeout(self) -> float:
+        return float(getattr(self, "_playback_timeout", self.PLAYBACK_TIMEOUT))
 
     async def play_in_voice_channel(self, guild_id: int, audio_path: str) -> bool:
         """Play an audio file in the connected voice channel.
@@ -2917,9 +2943,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 # replies (mirrors legacy semantics) but the ambient keeps
                 # playing underneath the whole time.
                 wait_start = time.monotonic()
+                playback_timeout = self._voice_playback_timeout()
                 while mixer.speech_active:
-                    if time.monotonic() - wait_start > self.PLAYBACK_TIMEOUT:
-                        logger.warning("Mixer speech playback timed out after %ds", self.PLAYBACK_TIMEOUT)
+                    if time.monotonic() - wait_start > playback_timeout:
+                        logger.warning("Mixer speech playback timed out after %ds", playback_timeout)
                         mixer.stop_speech()
                         break
                     await asyncio.sleep(0.05)
@@ -2936,8 +2963,9 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             # Wait for current playback to finish (with timeout)
             wait_start = time.monotonic()
+            playback_timeout = self._voice_playback_timeout()
             while vc.is_playing():
-                if time.monotonic() - wait_start > self.PLAYBACK_TIMEOUT:
+                if time.monotonic() - wait_start > playback_timeout:
                     logger.warning("Timed out waiting for previous playback to finish")
                     vc.stop()
                     break
@@ -2955,9 +2983,9 @@ class DiscordAdapter(BasePlatformAdapter):
             source = discord.PCMVolumeTransformer(source, volume=1.0)
             vc.play(source, after=_after)
             try:
-                await asyncio.wait_for(done.wait(), timeout=self.PLAYBACK_TIMEOUT)
+                await asyncio.wait_for(done.wait(), timeout=playback_timeout)
             except asyncio.TimeoutError:
-                logger.warning("Voice playback timed out after %ds", self.PLAYBACK_TIMEOUT)
+                logger.warning("Voice playback timed out after %ds", playback_timeout)
                 vc.stop()
             self._reset_voice_timeout(guild_id)
             return True

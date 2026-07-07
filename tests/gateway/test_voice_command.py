@@ -494,6 +494,62 @@ class TestSendVoiceReply:
             "notify": True,
         }
 
+
+    @pytest.mark.asyncio
+    async def test_discord_voice_channel_reply_clamps_spoken_tts_text(self, runner):
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter.is_in_voice_channel = MagicMock(return_value=True)
+        mock_adapter.play_in_voice_channel = AsyncMock()
+        event = _make_event()
+        event.source.platform = Platform.DISCORD
+        event.raw_message = SimpleNamespace(guild_id=999)
+        runner.adapters[event.source.platform] = mock_adapter
+
+        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.mp3"})
+        long_text = "x" * 200
+
+        with patch("gateway.run._load_gateway_config", return_value={"discord": {"voice_reply_max_chars": 40}}), \
+             patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(event, long_text)
+
+        spoken = mock_tts.call_args.kwargs["text"]
+        assert len(spoken) <= 40
+        assert spoken.endswith("text.")
+        mock_adapter.play_in_voice_channel.assert_called_once_with(999, "/tmp/test.mp3")
+        mock_adapter.send_voice.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_discord_non_vc_reply_preserves_existing_tts_cap(self, runner):
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter.is_in_voice_channel = MagicMock(return_value=False)
+        mock_adapter.send_voice = AsyncMock()
+        event = _make_event()
+        event.source.platform = Platform.DISCORD
+        event.raw_message = SimpleNamespace(guild_id=999)
+        runner.adapters[event.source.platform] = mock_adapter
+
+        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.mp3"})
+        long_text = "x" * 200
+
+        with patch("gateway.run._load_gateway_config", return_value={"discord": {"voice_reply_max_chars": 40}}), \
+             patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(event, long_text)
+
+        assert mock_tts.call_args.kwargs["text"] == long_text
+        mock_adapter.send_voice.assert_called_once()
+
     @pytest.mark.asyncio
     async def test_empty_text_after_strip_skips(self, runner):
         event = _make_event()
@@ -2062,8 +2118,8 @@ class TestPlaybackTimeout:
         source = inspect.getsource(DiscordAdapter.play_in_voice_channel)
         assert "wait_for" in source, \
             "play_in_voice_channel must use asyncio.wait_for for timeout"
-        assert "PLAYBACK_TIMEOUT" in source, \
-            "play_in_voice_channel must reference PLAYBACK_TIMEOUT constant"
+        assert "_voice_playback_timeout" in source, \
+            "play_in_voice_channel must use the configurable playback timeout helper"
 
     def test_playback_timeout_constant_exists(self):
         """PLAYBACK_TIMEOUT constant is defined on DiscordAdapter."""

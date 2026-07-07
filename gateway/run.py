@@ -12830,6 +12830,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Return whether inbound voice/STT transcripts should be echoed to chat."""
         return bool(getattr(self.config, "stt_echo_transcripts", True))
 
+    def _discord_voice_reply_max_chars(self) -> int:
+        """Return the spoken-text cap for Discord voice-channel replies.
+
+        The full assistant reply is still delivered as normal text by the
+        gateway.  This cap only limits the companion TTS clip so a long Discord
+        voice-channel turn does not monopolize playback or run into the playback
+        safety timeout.  ``0`` disables this extra clamp and falls back to the
+        provider/input cap applied below.
+        """
+        default = 1200
+        try:
+            cfg = _load_gateway_config() or {}
+            raw = (cfg.get("discord") or {}).get("voice_reply_max_chars", default)
+            value = int(raw)
+        except (TypeError, ValueError):
+            return default
+        return max(0, value)
+
+    @staticmethod
+    def _clamp_spoken_voice_reply(text: str, max_chars: int) -> str:
+        """Clamp TTS text with an audible pointer to the full text reply."""
+        if max_chars <= 0 or len(text) <= max_chars:
+            return text
+        notice = " … I’ll continue in text."
+        if max_chars <= len(notice):
+            return text[:max_chars].rstrip()
+        return text[: max_chars - len(notice)].rstrip() + notice
+
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""
         import uuid as _uuid
@@ -12838,7 +12866,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
+            adapter = self._adapter_for_source(event.source)
+            guild_id = self._get_guild_id(event)
+            playing_in_discord_vc = (
+                event.source.platform == Platform.DISCORD
+                and guild_id
+                and hasattr(adapter, "play_in_voice_channel")
+                and hasattr(adapter, "is_in_voice_channel")
+                and adapter.is_in_voice_channel(guild_id)
+            )
+
             tts_text = _strip_markdown_for_tts(text[:4000])
+            if playing_in_discord_vc:
+                tts_text = self._clamp_spoken_voice_reply(
+                    tts_text, self._discord_voice_reply_max_chars()
+                )
             if not tts_text:
                 return
 
@@ -12866,14 +12908,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
                 return
 
-            adapter = self._adapter_for_source(event.source)
-
-            # If connected to a voice channel, play there instead of sending a file
-            guild_id = self._get_guild_id(event)
-            if (guild_id
-                    and hasattr(adapter, "play_in_voice_channel")
-                    and hasattr(adapter, "is_in_voice_channel")
-                    and adapter.is_in_voice_channel(guild_id)):
+            # If connected to a Discord voice channel, play there instead of sending a file.
+            if playing_in_discord_vc:
                 await adapter.play_in_voice_channel(guild_id, actual_path)
             elif adapter and hasattr(adapter, "send_voice"):
                 reply_anchor = self._reply_anchor_for_event(event)

@@ -152,6 +152,7 @@ def _make_adapter(fx_cfg=None):
         "ambient_gain": 0.18, "duck_gain": 0.06, "speech_gain": 1.0,
         "ack_enabled": True, "ack_phrases": ["One moment."],
     }
+    adapter._playback_timeout = 300
     return adapter
 
 
@@ -262,3 +263,52 @@ class TestPlayAckInVoice:
             ok = await adapter.play_ack_in_voice(111, phrase="Testing one two.")
         assert ok is True
         mixer.play_speech.assert_called_once()
+
+
+class TestVoicePlaybackTimeoutConfig:
+    def test_loads_positive_timeout_from_config(self):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        adapter = object.__new__(DiscordAdapter)
+        with patch("hermes_cli.config.read_raw_config", return_value={
+            "discord": {"voice_playback_timeout_seconds": 240}
+        }):
+            assert adapter._load_voice_playback_timeout() == 240
+
+    def test_invalid_timeout_uses_safe_default(self):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        adapter = object.__new__(DiscordAdapter)
+        with patch("hermes_cli.config.read_raw_config", return_value={
+            "discord": {"voice_playback_timeout_seconds": 0}
+        }):
+            assert adapter._load_voice_playback_timeout() == DiscordAdapter.PLAYBACK_TIMEOUT
+
+    @pytest.mark.asyncio
+    async def test_legacy_playback_timeout_uses_configured_value_and_stops(self):
+        adapter = _make_adapter()
+        adapter._playback_timeout = 7
+        vc = MagicMock()
+        vc.is_connected.return_value = True
+        vc.is_playing.return_value = False
+        adapter._voice_clients[111] = vc
+        adapter._reset_voice_timeout = MagicMock()
+
+        seen = {}
+
+        async def _timeout(coro, *, timeout):
+            seen["timeout"] = timeout
+            if hasattr(coro, "close"):
+                coro.close()
+            raise asyncio.TimeoutError
+
+        import asyncio
+        with patch("plugins.platforms.discord.adapter.discord") as mock_discord, \
+                patch("asyncio.wait_for", _timeout):
+            mock_discord.FFmpegPCMAudio.return_value = MagicMock()
+            mock_discord.PCMVolumeTransformer.return_value = MagicMock()
+            ok = await adapter.play_in_voice_channel(111, "/tmp/x.mp3")
+
+        assert ok is True
+        assert seen["timeout"] == 7
+        vc.stop.assert_called_once()

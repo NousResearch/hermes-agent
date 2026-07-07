@@ -2359,6 +2359,12 @@ DEFAULT_CONFIG = {
         "history_backfill_limit": 50,     # Max number of recent messages to scan when assembling the backfill block
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
+        # Discord voice-channel TTS guardrails. The full assistant response is
+        # still sent as text; voice_reply_max_chars caps only the spoken
+        # companion clip so long replies do not monopolize VC playback. Set 0
+        # to disable this extra clamp. playback timeout remains a safety guard.
+        "voice_reply_max_chars": 1200,
+        "voice_playback_timeout_seconds": 300,
         # Opt-in DM role-based auth (#12136). By default, DISCORD_ALLOWED_ROLES
         # authorizes only guild messages in the role's own guild — DMs require
         # DISCORD_ALLOWED_USERS. Set dm_role_auth_guild to a guild ID to also

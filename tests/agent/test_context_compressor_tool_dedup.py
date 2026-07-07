@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import MagicMock
 
-from agent.context_compressor import CompactionContext
+from agent.context_compressor import ContextCompressor
 
 
 class TestSanitizeDuplicateToolCallIds:
@@ -17,7 +17,7 @@ class TestSanitizeDuplicateToolCallIds:
 
     @pytest.fixture
     def ctx(self):
-        cc = CompactionContext.__new__(CompactionContext)
+        cc = ContextCompressor.__new__(ContextCompressor)
         cc.quiet_mode = False
         return cc
 

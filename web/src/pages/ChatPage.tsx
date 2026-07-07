@@ -805,11 +805,39 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // behave normally.
       // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
       const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
+      // Track partial /reset command input so we can clear the xterm
+      // terminal buffer after the backend resets the PTY session.
+      // When a user types /reset + Enter the backend processes the command
+      // and starts a fresh session, but the frontend xterm.js buffer still
+      // holds the old scrollback content — only a manual page refresh would
+      // otherwise clear it.  We detect the completed command here and call
+      // term.clear() so fresh output renders on a clean canvas.
+      let resetBuffer = "";
+
       onDataDisposable = term.onData((data) => {
         if (ws.readyState !== WebSocket.OPEN) return;
 
         if (SGR_MOUSE_RE.test(data)) {
           return;
+        }
+
+        // Detect /reset command (typed character-by-character or pasted).
+        if (data === "\r" || data === "\n") {
+          if (resetBuffer === "/reset") {
+            // Short delay lets the backend process the reset before we
+            // wipe the visible buffer — avoids erasing the first frame
+            // of fresh output that arrives synchronously.
+            setTimeout(() => termRef.current?.clear(), 50);
+          }
+          resetBuffer = "";
+        } else if (data === "/reset\r" || data === "/reset\n") {
+          // Pasted as a single event (rare but handle it).
+          setTimeout(() => termRef.current?.clear(), 50);
+          resetBuffer = "";
+        } else if (data.length === 1 && resetBuffer.length < 20) {
+          resetBuffer += data;
+        } else {
+          resetBuffer = "";
         }
 
         ws.send(data);

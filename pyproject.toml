@@ -13,11 +13,13 @@ readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's
 # Python from `requires-python`, and an inherited `UV_PYTHON` env var (or a
 # fresh distro whose newest interpreter uv auto-picks) will otherwise select
-# 3.14, where Rust-backed transitives (e.g. pydantic-core) have no cp314
-# wheel yet and fall back to a maturin source build that fails. Capping at
-# <3.14 makes uv refuse 3.14 with a clear error instead of attempting that
-# build. Raise the ceiling once our Rust transitives ship cp314 wheels.
-requires-python = ">=3.11,<3.14"
+# an unsupported Python version, where Rust-backed transitives (e.g.
+# pydantic-core) may lack a compatible wheel and fall back to a maturin
+# source build that fails. Capping the ceiling makes uv refuse the version
+# with a clear error instead of attempting that build.
+# pydantic-core 2.46.4 (via pydantic 2.13.4) now ships cp314 wheels, so
+# the ceiling is raised to <3.15 to support Python 3.14.
+requires-python = ">=3.11,<3.15"
 authors = [{ name = "Nous Research" }]
 license = "MIT"
 license-files = ["LICENSE"]

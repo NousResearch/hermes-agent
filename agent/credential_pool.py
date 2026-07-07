@@ -2266,6 +2266,30 @@ def _prune_stale_seeded_entries(
     return True
 
 
+def _dedupe_active_seeded_entries(
+    entries: List[PooledCredential],
+    active_sources: Set[str],
+) -> bool:
+    """Keep one seeded entry per active source.
+
+    Older pools may already contain duplicate env/config entries. Upsert keeps
+    the first copy fresh; this drops stale twins without touching manual creds.
+    """
+    seen: Set[str] = set()
+    retained: List[PooledCredential] = []
+    changed = False
+    for entry in entries:
+        if entry.source in active_sources and not _is_manual_source(entry.source):
+            if entry.source in seen:
+                changed = True
+                continue
+            seen.add(entry.source)
+        retained.append(entry)
+    if changed:
+        entries[:] = retained
+    return changed
+
+
 def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
     """Seed a custom endpoint pool from custom_providers config and model config."""
     changed = False
@@ -2408,6 +2432,7 @@ def load_pool(provider: str) -> CredentialPool:
             custom_sources,
             prune_env_sources=False,
         )
+        changed |= _dedupe_active_seeded_entries(entries, custom_sources)
     else:
         singleton_changed, singleton_sources = _seed_from_singletons(provider, entries)
         env_changed, env_sources = _seed_from_env(provider, entries)

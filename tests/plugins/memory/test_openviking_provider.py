@@ -81,6 +81,39 @@ def _allow_setup_validation(monkeypatch, *, root_access: bool = False):
     )
 
 
+def test_openviking_provider_config_loader_uses_readonly_config(monkeypatch):
+    import hermes_cli.config as config_mod
+
+    calls = []
+    backing_config = {
+        "memory": {
+            "openviking": {
+                "endpoint": "http://127.0.0.1:19472",
+                "api_key": "test-key",
+            }
+        }
+    }
+
+    def load_config_readonly():
+        calls.append("readonly")
+        return backing_config
+
+    def load_config():
+        raise AssertionError("OpenViking config loader should use readonly config")
+
+    monkeypatch.setattr(config_mod, "load_config_readonly", load_config_readonly)
+    monkeypatch.setattr(config_mod, "load_config", load_config)
+
+    config = openviking_module._load_hermes_openviking_config()
+
+    assert calls == ["readonly"]
+    assert config == {
+        "endpoint": "http://127.0.0.1:19472",
+        "api_key": "test-key",
+    }
+    assert config is not backing_config["memory"]["openviking"]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
 def test_openviking_env_writer_restricts_file_permissions(tmp_path):
     env_path = tmp_path / ".env"

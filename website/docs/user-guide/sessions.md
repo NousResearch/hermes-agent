@@ -303,9 +303,40 @@ hermes sessions export telegram-history.jsonl --source telegram
 
 # Export a single session
 hermes sessions export session.jsonl --session-id 20250305_091523_a1b2c3d4
+
+# Redact API keys/tokens/credentials from the exported content
+hermes sessions export backup.jsonl --redact
 ```
 
 Exported files contain one JSON object per line with full session metadata and all messages.
+
+`export` accepts the same filters as `prune` / `archive` — `--older-than` / `--newer-than` / `--before` / `--after` (durations like `5h`/`2d`/`1w`, bare days, or ISO timestamps), `--source`, `--title`, `--model`, `--provider`, `--cwd`, `--min-messages` / `--max-messages`, `--min-tokens` / `--max-tokens`, `--min-cost` / `--max-cost`, `--min-tool-calls` / `--max-tool-calls`, `--user`, `--chat-id`, `--chat-type`, `--branch`, and `--end-reason`. Add `--dry-run` to preview which sessions match without writing anything. Note: bulk filters match *ended* sessions; unfiltered `export` dumps everything, including active ones.
+
+### Export Sessions to Markdown/QMD
+
+Pass `--format md` or `--format qmd` when you want a readable, file-based archive before hiding or deleting old sessions. Markdown/QMD exports write one file per session into a directory (default: `~/.hermes/session-exports`).
+
+```bash
+# Export one session to Markdown
+hermes sessions export --format md --session-id 20250305_091523_a1b2c3d4
+
+# Export a compression lineage as one logical document
+hermes sessions export --format md --session-id 20250305_091523_a1b2c3d4 --lineage logical
+
+# Preview ended sessions older than 90 days without writing files
+hermes sessions export --format md --older-than 90 --dry-run
+
+# Export ended Telegram sessions older than 2 weeks to QMD files
+hermes sessions export --format qmd --older-than 2w --source telegram
+
+# Export long Claude sessions, secrets redacted
+hermes sessions export --format md --model sonnet --min-messages 50 --redact
+
+# Only after verification, export and delete one explicitly named session
+hermes sessions export --format md --session-id 20250305_091523_a1b2c3d4 --delete-after-verified --yes
+```
+
+Markdown/QMD export writes one `.md` or `.qmd` file per exported session plus a `manifest.jsonl` with the file path, message count, lineage ids, and SHA-256. Bulk export requires at least one filter; a bare bulk export is refused. `--delete-after-verified` is intentionally limited to `--session-id` and requires `--yes`. `--redact` scrubs secrets (API keys, tokens, credentials) from message content and tool output before writing — recommended for any export you plan to share.
 
 ### Delete a Session
 

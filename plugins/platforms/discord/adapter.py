@@ -1626,6 +1626,31 @@ class DiscordAdapter(BasePlatformAdapter):
             return True
         return False
 
+    @staticmethod
+    def _is_discord_unknown_interaction(exc: BaseException) -> bool:
+        """True for Discord's expired interaction token error."""
+        code = getattr(exc, "code", None)
+        if code is None:
+            data = getattr(exc, "data", None)
+            if isinstance(data, dict):
+                code = data.get("code")
+        try:
+            code = int(code)
+        except (TypeError, ValueError):
+            code = None
+
+        status = getattr(exc, "status", None)
+        response = getattr(exc, "response", None)
+        if status is None and response is not None:
+            status = getattr(response, "status", None) or getattr(response, "status_code", None)
+        try:
+            status = int(status)
+        except (TypeError, ValueError):
+            status = None
+
+        message = str(exc).lower()
+        return code == 10062 or (status == 404 and "unknown interaction" in message)
+
     def _command_sync_mutation_interval_seconds(self) -> float:
         return _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS
 
@@ -3951,9 +3976,22 @@ class DiscordAdapter(BasePlatformAdapter):
         if not await self._check_slash_authorization(interaction, command_text):
             return
 
-        await interaction.response.defer(ephemeral=True)
+        deferred_response = False
+        try:
+            await interaction.response.defer(ephemeral=True)
+            deferred_response = True
+        except Exception as e:
+            if not self._is_discord_unknown_interaction(e):
+                raise
+            logger.warning(
+                "[Discord] slash %s: interaction expired before defer. "
+                "Executing command anyway, skipping interaction followup.",
+                command_text,
+            )
         event = self._build_slash_event(interaction, command_text)
         await self.handle_message(event)
+        if not deferred_response:
+            return
         try:
             if followup_msg:
                 await interaction.edit_original_response(content=followup_msg)
@@ -4549,7 +4587,17 @@ class DiscordAdapter(BasePlatformAdapter):
         """Create a Discord thread from a slash command and start a session in it."""
         if not await self._check_slash_authorization(interaction, "/thread"):
             return
-        await interaction.response.defer(ephemeral=True)
+        deferred_response = False
+        try:
+            await interaction.response.defer(ephemeral=True)
+            deferred_response = True
+        except Exception as e:
+            if not self._is_discord_unknown_interaction(e):
+                raise
+            logger.warning(
+                "[Discord] /thread: interaction expired before defer. "
+                "Creating the thread anyway, skipping interaction followups.",
+            )
         result = await self._create_thread(
             interaction,
             name=name,
@@ -4559,7 +4607,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
         if not result.get("success"):
             error = result.get("error", "unknown error")
-            await interaction.followup.send(f"Failed to create thread: {error}", ephemeral=True)
+            if deferred_response:
+                await interaction.followup.send(f"Failed to create thread: {error}", ephemeral=True)
             return
 
         thread_id = result.get("thread_id")
@@ -4567,7 +4616,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
         # Tell the user where the thread is
         link = f"<#{thread_id}>" if thread_id else f"**{thread_name}**"
-        await interaction.followup.send(f"Created thread {link}", ephemeral=True)
+        if deferred_response:
+            await interaction.followup.send(f"Created thread {link}", ephemeral=True)
 
         # Track thread participation so follow-ups don't require @mention
         if thread_id:

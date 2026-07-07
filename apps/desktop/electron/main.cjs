@@ -4120,17 +4120,15 @@ function installPreviewShortcut(window) {
 // survives reloads/restarts) rather than a main-process JSON file. The main
 // process owns setZoomLevel, so we mirror each change into localStorage and
 // read it back on did-finish-load to re-apply after reloads or crash recovery.
-const ZOOM_STORAGE_KEY = 'hermes:desktop:zoomLevel'
-
-function clampZoomLevel(value) {
-  if (!Number.isFinite(value)) return 0
-  return Math.min(Math.max(value, -9), 9)
-}
+const { ZOOM_STORAGE_KEY, clampZoomLevel, percentToZoomLevel, zoomLevelToPercent } = require('./zoom.cjs')
 
 function setAndPersistZoomLevel(window, zoomLevel) {
   if (!window || window.isDestroyed()) return
   const next = clampZoomLevel(zoomLevel)
   window.webContents.setZoomLevel(next)
+  // Keep any open settings UI in sync, including changes made via the
+  // keyboard shortcuts or the View menu.
+  window.webContents.send('hermes:zoom:changed', { level: next, percent: zoomLevelToPercent(next) })
   window.webContents
     .executeJavaScript(
       `try { localStorage.setItem(${JSON.stringify(ZOOM_STORAGE_KEY)}, ${JSON.stringify(String(next))}) } catch {}`
@@ -6109,6 +6107,21 @@ ipcMain.handle('hermes:window:openNewSession', async () => {
   createNewSessionWindow()
 
   return { ok: true }
+})
+
+// --- Text size (zoom) -------------------------------------------------------
+// The settings UI drives the same clamped zoom scale as the Ctrl/Cmd
+// shortcuts and the View menu. Reads and writes target the asking window.
+ipcMain.handle('hermes:zoom:get', event => {
+  const window = BrowserWindow.fromWebContents(event.sender)
+  const level = window && !window.isDestroyed() ? window.webContents.getZoomLevel() : 0
+
+  return { level, percent: zoomLevelToPercent(level) }
+})
+ipcMain.on('hermes:zoom:set-percent', (event, percent) => {
+  const window = BrowserWindow.fromWebContents(event.sender)
+  if (!window || window.isDestroyed()) return
+  setAndPersistZoomLevel(window, percentToZoomLevel(Number(percent)))
 })
 
 // --- Pet overlay (pop-out mascot) -----------------------------------------

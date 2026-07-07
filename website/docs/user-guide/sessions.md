@@ -312,6 +312,32 @@ Exported files contain one JSON object per line with full session metadata and a
 
 `export` accepts the same filters as `prune` / `archive` — `--older-than` / `--newer-than` / `--before` / `--after` (durations like `5h`/`2d`/`1w`, bare days, or ISO timestamps), `--source`, `--title`, `--model`, `--provider`, `--cwd`, `--min-messages` / `--max-messages`, `--min-tokens` / `--max-tokens`, `--min-cost` / `--max-cost`, `--min-tool-calls` / `--max-tool-calls`, `--user`, `--chat-id`, `--chat-type`, `--branch`, and `--end-reason`. Add `--dry-run` to preview which sessions match without writing anything. Note: bulk filters match *ended* sessions; unfiltered `export` dumps everything, including active ones.
 
+### Export Sessions to HTML
+
+`--format html` writes a single self-contained HTML file — no remote dependencies — with styled message bubbles, collapsible tool output, and (for multi-session exports) a sidebar to switch between sessions:
+
+```bash
+# One session as a standalone HTML page
+hermes sessions export --format html --session-id 20250305_091523_a1b2c3d4 transcript.html
+
+# All Telegram sessions from the last week in one file, secrets redacted
+hermes sessions export --format html --newer-than 1w --source telegram --redact archive.html
+```
+
+### Export Only Your Prompts
+
+`--only user-prompts` exports just the prompts you wrote — no assistant replies, tool output, or system context. Useful for building prompt libraries or reviewing what you asked:
+
+```bash
+# One JSONL record per prompt (session id, index, timestamp, text)
+hermes sessions export prompts.jsonl --session-id 20250305_091523_a1b2c3d4 --only user-prompts
+
+# Markdown, straight to stdout
+hermes sessions export - --session-id 20250305_091523_a1b2c3d4 --only user-prompts --format md
+```
+
+Works with `--format jsonl` (default) or `md`, honors the same filters for bulk export, and combines with `--redact`.
+
 ### Export Sessions to Markdown/QMD
 
 Pass `--format md` or `--format qmd` when you want a readable, file-based archive before hiding or deleting old sessions. Markdown/QMD exports write one file per session into a directory (default: `~/.hermes/session-exports`).

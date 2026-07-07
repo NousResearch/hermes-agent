@@ -230,7 +230,7 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
         {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
         {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
         {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
-        {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
+        {"key": "rerank", "description": "Enable reranking for recall", "default": "false", "choices": ["true", "false"]},
     ]
 
     existing_config = {}
@@ -293,6 +293,24 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
         return
 
     provider_config["mode"] = "platform"
+    # Clear any stale self-hosted host: routing checks ``host`` before platform
+    # (see _create_backend), so leaving it would silently keep routing to the
+    # self-hosted server even though the user just chose platform mode. Set it
+    # to "" rather than pop() — save_config merges into the existing mem0.json
+    # (existing.update), so a popped key would survive; an empty value overwrites
+    # it and reads as falsy at routing time.
+    provider_config["host"] = ""
+    # The json-file clear above can't help when the host comes from the
+    # environment: _load_config() seeds ``host`` from MEM0_HOST, and the
+    # docs tell self-hosted users to put MEM0_HOST in ~/.hermes/.env. Warn
+    # so the user knows platform mode won't take effect until it's removed.
+    if os.environ.get("MEM0_HOST", "").strip():
+        print(
+            "\n  ⚠ MEM0_HOST is set in your environment "
+            f"({os.environ['MEM0_HOST']}). It overrides platform mode — "
+            "remove it from ~/.hermes/.env (or unset it) or Hermes will keep "
+            "routing to the self-hosted server."
+        )
 
     from hermes_cli.config import save_config
     config["memory"]["provider"] = "mem0"

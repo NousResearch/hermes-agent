@@ -271,11 +271,93 @@ class TestTiming:
         result = json.loads(todo_tool(store=store))
         assert result["todos"][0]["elapsed_seconds"] == 7.0
 
+    def test_replace_mode_resets_timing_for_reused_ids_without_replay_stamps(self, monkeypatch):
+        """A fresh replace-mode plan must not inherit week-old clocks by id.
+
+        Gateway history hydration replays raw started_at/ended_at stamps; normal
+        model-authored replace calls do not. Reusing generic ids such as
+        "setup" or "phase-a" across task topics must therefore start a fresh
+        clock instead of preserving stale timing from an older plan.
+        """
+        import tools.todo_tool as todo_mod
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(todo_mod.time, "time", lambda: clock["t"])
+        store = TodoStore()
+        store.write([{"id": "setup", "content": "old setup", "status": "in_progress"}])
+
+        clock["t"] = 1000.0 + 183 * 3600
+        store.write([{"id": "setup", "content": "new setup", "status": "in_progress"}], merge=False)
+
+        item = store.read_with_timing()[0]
+        assert item["content"] == "new setup"
+        assert item["started_at"] == clock["t"]
+        assert item["elapsed_seconds"] == 0.0
+
+    def test_model_replace_with_copied_timing_fields_resets_reused_id(self, monkeypatch):
+        """Live todo_tool writes must not trust model-copied timing fields."""
+        import tools.todo_tool as todo_mod
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(todo_mod.time, "time", lambda: clock["t"])
+        store = TodoStore()
+        store.write([{"id": "setup", "content": "old setup", "status": "in_progress"}])
+
+        clock["t"] = 1000.0 + 183 * 3600
+        result = json.loads(todo_tool(
+            todos=[{
+                "id": "setup",
+                "content": "new setup",
+                "status": "in_progress",
+                "started_at": 1000.0,
+                "elapsed_seconds": 183 * 3600,
+            }],
+            merge=False,
+            store=store,
+        ))
+
+        item = result["todos"][0]
+        assert item["content"] == "new setup"
+        assert item["started_at"] == clock["t"]
+        assert item["elapsed_seconds"] == 0.0
+
+    def test_model_replace_with_copied_terminal_timing_resets_reused_id(self, monkeypatch):
+        """Copied terminal spans on different content are model input, not hydration."""
+        import tools.todo_tool as todo_mod
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(todo_mod.time, "time", lambda: clock["t"])
+        store = TodoStore()
+        store.write([{"id": "setup", "content": "old setup", "status": "in_progress"}])
+        clock["t"] = 1005.0
+        store.write([{"id": "setup", "status": "completed"}], merge=True)
+        assert store.elapsed_for("setup") == 5.0
+
+        clock["t"] = 1000.0 + 183 * 3600
+        result = json.loads(todo_tool(
+            todos=[{
+                "id": "setup",
+                "content": "new setup",
+                "status": "completed",
+                "started_at": 1000.0,
+                "ended_at": 1005.0,
+                "elapsed_seconds": 5.0,
+            }],
+            merge=False,
+            store=store,
+        ))
+
+        item = result["todos"][0]
+        assert item["content"] == "new setup"
+        assert "started_at" not in item
+        assert "ended_at" not in item
+        assert item["elapsed_seconds"] is None
+
 
 class TestTimingHydration:
-    """Timing must survive history replay: the gateway recreates the AIAgent
-    (and its TodoStore) per message, then replays the last todo result. The
-    raw started_at/ended_at carried in that result must be adopted, not reset.
+    """Timing across history replay: terminal spans survive, live work restarts.
+
+    The gateway recreates the AIAgent (and its TodoStore) per message, then
+    replays the last todo result. Closed started_at/ended_at spans must be
+    adopted, but in-progress clocks must restart on the new turn so idle time
+    between turns is not rendered as active work.
     """
 
     def test_hydration_round_trip_preserves_frozen_span(self, monkeypatch):
@@ -301,6 +383,27 @@ class TestTimingHydration:
         # The closed span is preserved exactly, not recomputed against now.
         assert fresh.elapsed_for("a") == 6.0
         assert fresh.elapsed_for("b") is None
+
+    def test_hydration_restarts_live_in_progress_items(self, monkeypatch):
+        import tools.todo_tool as todo_mod
+        clock = {"t": 500.0}
+        monkeypatch.setattr(todo_mod.time, "time", lambda: clock["t"])
+        store = TodoStore()
+        live = json.loads(todo_tool(
+            todos=[{"id": "a", "content": "A", "status": "in_progress"}],
+            store=store,
+        ))
+        assert live["todos"][0]["started_at"] == 500.0
+
+        # Fresh store simulates the next gateway turn hydrating from history much
+        # later. An in-progress item was not actively worked during that gap, so
+        # its clock must restart now instead of showing multi-day elapsed time.
+        clock["t"] = 500.0 + 184 * 3600
+        fresh = TodoStore()
+        fresh.write(live["todos"], merge=False)
+        item = fresh.read_with_timing()[0]
+        assert item["started_at"] == clock["t"]
+        assert item["elapsed_seconds"] == 0.0
 
     def test_live_clock_wins_over_replayed(self, monkeypatch):
         import tools.todo_tool as todo_mod

@@ -72,13 +72,25 @@ class TodoStore:
         """
         # Pull any timing carried on the incoming items. Real model calls never
         # include these; they appear only when _hydrate_todo_store replays a
-        # prior todo result back into a fresh store. Adopting them keeps the
-        # clocks running across the gateway's per-message AIAgent recreation.
+        # prior todo result back into a fresh store. Terminal spans are adopted
+        # below; live in-progress spans restart on the new turn so idle time
+        # between gateway turns does not show up as fake work time.
         incoming_timing = self._extract_incoming_timing(todos)
 
         if not merge:
-            # Replace mode: new list entirely
+            # Replace mode: new list entirely. If a fresh model-authored plan
+            # reuses generic ids (setup/phase-a/report) for different work,
+            # reset those clocks even if the model copied timing fields from a
+            # previous result. Terminal hydration on a fresh store is unaffected,
+            # and terminal replay can still be adopted after this clear.
+            previous_by_id = {item["id"]: item for item in self._items}
             self._items = [self._validate(t) for t in self._dedupe_by_id(todos)]
+            for current in self._items:
+                item_id = current["id"]
+                previous = previous_by_id.get(item_id)
+                if previous is not None and previous.get("content") != current.get("content"):
+                    self._timing.pop(item_id, None)
+                    incoming_timing.pop(item_id, None)
         else:
             # Merge mode: update existing items by id, append new ones
             existing = {item["id"]: item for item in self._items}
@@ -162,10 +174,11 @@ class TodoStore:
             new_status = item["status"]
             entry = self._timing.setdefault(item_id, {})
 
-            # Adopt replayed timing for keys we don't already hold (history
-            # replay seeds a fresh store; a live clock always wins over replay).
+            # Adopt replayed timing only for terminal spans. An in-progress item
+            # from history was not actively worked during the gap between gateway
+            # turns, so it starts a fresh live clock below.
             replayed = incoming_timing.get(item_id)
-            if replayed:
+            if replayed and new_status in ("completed", "cancelled"):
                 for key, value in replayed.items():
                     entry.setdefault(key, value)
 
@@ -214,8 +227,9 @@ class TodoStore:
         Each item carries the usual {id, content, status} plus:
           - elapsed_seconds: float wall-clock span, or None if unmeasured.
           - started_at / ended_at: raw epoch stamps when present. These let
-            _hydrate_todo_store replay timing back into a fresh store so the
-            gateway's per-message AIAgent recreation does not reset the clocks.
+            _hydrate_todo_store replay terminal spans into a fresh store. Live
+            in-progress items intentionally restart on hydration so idle time
+            between gateway turns is not counted as work time.
         """
         out: List[Dict[str, Any]] = []
         for item in self._items:

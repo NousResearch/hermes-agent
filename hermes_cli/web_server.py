@@ -11757,12 +11757,20 @@ def _prune_sessions(body: SessionPrune):
 
 @app.get("/api/logs")
 async def get_logs(
+    request: Request,
     file: str = "agent",
     lines: int = 100,
     level: Optional[str] = None,
     component: Optional[str] = None,
     search: Optional[str] = None,
 ):
+    # Mini App token route (required=False), admin-tier only -- this
+    # endpoint predates the Mini App and had no per-handler check at all
+    # (implicitly desktop-only, gated purely by the cookie/session auth
+    # wrapper around every /api/* route). Adding the explicit check here is
+    # a no-op for the desktop operator (scope is None) and is what makes it
+    # safe to register as a Mini App token route.
+    _require_dashboard_admin(request)
     from hermes_cli.logs import _read_tail, LOG_FILES
 
     log_name = LOG_FILES.get(file)

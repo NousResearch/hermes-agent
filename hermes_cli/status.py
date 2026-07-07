@@ -103,8 +103,20 @@ from hermes_constants import is_termux as _is_termux
 
 
 def show_status(args):
-    """Show status of all Hermes Agent components."""
-    deep = getattr(args, 'deep', False)
+    """Show status of all Hermes Agent components or project SESSION_STATE.
+
+    When a filesystem SESSION_STATE.json is present, it is the canonical
+    project-memory status and is printed without probing providers or relying
+    on conversation history.  If no project state exists, keep the historical
+    component-status behavior for backwards compatibility.
+    """
+    try:
+        from hermes_cli.session_state import SessionStateError, command_status
+
+        return command_status(args)
+    except SessionStateError:
+        pass
+
 
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))

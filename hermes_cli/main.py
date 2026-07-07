@@ -278,6 +278,7 @@ from hermes_cli.subcommands.login import build_login_parser
 from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.auth import build_auth_parser
 from hermes_cli.subcommands.status import build_status_parser
+from hermes_cli.subcommands.session_state import build_session_state_parsers
 from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
@@ -4196,10 +4197,38 @@ def cmd_auth(args):
 
 
 def cmd_status(args):
-    """Show status of all components."""
+    """Show status of all components or canonical project state."""
     from hermes_cli.status import show_status
 
-    show_status(args)
+    return show_status(args)
+
+
+def cmd_session_resume(args):
+    """Validate and load canonical SESSION_STATE.json."""
+    from hermes_cli.session_state import command_resume
+
+    return command_resume(args)
+
+
+def cmd_session_checkpoint(args):
+    """Generate SESSION_STATE.json from a passed checkpoint."""
+    from hermes_cli.session_state import command_checkpoint
+
+    return command_checkpoint(args)
+
+
+def cmd_session_next(args):
+    """Advance via SESSION_STATE.next_recommended_prompt."""
+    from hermes_cli.session_state import command_next
+
+    return command_next(args)
+
+
+def cmd_session_gc(args):
+    """Archive obsolete temporary conversation metadata."""
+    from hermes_cli.session_state import command_gc
+
+    return command_gc(args)
 
 
 def cmd_cron(args):
@@ -12272,7 +12301,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
         "project", "proxy",
         "prompt-size",
-        "send", "sessions", "setup",
+        "send", "sessions", "setup", "resume", "next",
         "skills", "slack", "status", "task", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
@@ -13020,6 +13049,17 @@ def main():
     # status command  (parser built in hermes_cli/subcommands/status.py)
     # =========================================================================
     build_status_parser(subparsers, cmd_status=cmd_status)
+
+    # =========================================================================
+    # SESSION_STATE project-memory commands
+    # =========================================================================
+    build_session_state_parsers(
+        subparsers,
+        cmd_resume=cmd_session_resume,
+        cmd_next=cmd_session_next,
+        cmd_checkpoint=cmd_session_checkpoint,
+        cmd_gc=cmd_session_gc,
+    )
 
     # =========================================================================
     # cron command  (parser built in hermes_cli/subcommands/cron.py)
@@ -14701,7 +14741,9 @@ def main():
 
     # Execute the command
     if hasattr(args, "func"):
-        args.func(args)
+        result = args.func(args)
+        if isinstance(result, int) and not isinstance(result, bool):
+            sys.exit(result)
     else:
         parser.print_help()
 

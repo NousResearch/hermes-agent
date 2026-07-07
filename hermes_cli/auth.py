@@ -4860,6 +4860,58 @@ def _quarantine_nous_oauth_state(
     reason: str,
 ) -> None:
     """Keep routing metadata but remove dead OAuth material so it is not replayed."""
+    # Forensic logging BEFORE we clear the token material. A NAS-hosted Fly agent
+    # can take a terminal invalid_grant and get quarantined here silently: the
+    # only downstream signal is a "No access token found" WARNING once the pool
+    # is already empty, which is too late to root-cause. The Fly log drain is
+    # WARNING-only, so this MUST be logger.warning (INFO never reaches the drain).
+    #
+    # Redaction safety: emit ONLY the 12-char SHA-256 hex prefix of the refresh
+    # token (correlates to NAS's refreshTokenHash without leaking the secret) plus
+    # sizes/booleans. NEVER pass a raw token/agent_key into the log call — Hermes
+    # has a known bug class where credential-shaped literals get corrupted in logs.
+    forensic: Dict[str, Any] = {
+        "reason": reason,
+        "error_code": error.code,
+        # No session_id field exists on Nous state; provenance is client_id +
+        # agent_key_id (both non-secret routing identifiers).
+        "client_id": state.get("client_id"),
+        "agent_key_id": state.get("agent_key_id"),
+        "refresh_token_fp": _token_fingerprint(state.get("refresh_token")),
+    }
+
+    # On-disk integrity of the auth store at the moment of quarantine.
+    try:
+        auth_path = _auth_file_path()
+        forensic["auth_json_path"] = str(auth_path)
+        try:
+            st = os.stat(auth_path)
+            forensic["auth_json_size"] = st.st_size
+            forensic["auth_json_mtime"] = st.st_mtime
+            forensic["auth_json_exists"] = True
+        except FileNotFoundError:
+            forensic["auth_json_exists"] = False
+    except Exception as exc:  # pragma: no cover - never let logging break quarantine
+        forensic["auth_json_stat_error"] = repr(exc)
+
+    # Was the token already past its own expiry when it was rejected?
+    already_expired: Optional[bool] = None
+    expires_at_raw = state.get("expires_at")
+    if isinstance(expires_at_raw, str) and expires_at_raw:
+        try:
+            parsed = datetime.fromisoformat(expires_at_raw)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            already_expired = parsed < datetime.now(timezone.utc)
+        except ValueError:
+            already_expired = None
+    forensic["token_already_expired"] = already_expired
+
+    logger.warning(
+        "Nous OAuth state quarantined (terminal auth death): %s",
+        json.dumps(forensic, sort_keys=True, ensure_ascii=False),
+    )
+
     for key in (
         "access_token",
         "refresh_token",

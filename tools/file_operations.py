@@ -317,6 +317,7 @@ class LintResult:
     skipped: bool = False
     output: str = ""
     message: str = ""
+    introduced_errors: Optional[bool] = None
     
     def to_dict(self) -> dict:
         if self.skipped:
@@ -324,6 +325,8 @@ class LintResult:
         result = {"status": "ok" if self.success else "error", "output": self.output}
         if self.message:
             result["message"] = self.message
+        if self.introduced_errors is not None and not self.success:
+            result["introduced_errors"] = self.introduced_errors
         return result
 
 
@@ -1745,17 +1748,20 @@ class ShellFileOperations(FileOperations):
 
         # Hot path: clean post-write syntactically.
         if post.success or post.skipped:
+            post.introduced_errors = False
             return post
 
         # Post-write has syntax errors.  If we have pre-content, run the
         # delta refinement to filter out pre-existing errors.
         if pre_content is None:
+            post.introduced_errors = True
             return post
 
         pre = self._check_lint(path, content=pre_content)
         if pre.success or pre.skipped or not pre.output:
             # Pre-write was clean (or we couldn't lint it) — post errors
             # are all new.  Return the full post output.
+            post.introduced_errors = True
             return post
 
         # Both pre- and post-write had errors.  Compute the set-difference
@@ -1778,6 +1784,7 @@ class ShellFileOperations(FileOperations):
                 success=False,
                 output=post.output,
                 message="Pre-existing lint errors — this edit didn't introduce new ones but the file is still broken.",
+                introduced_errors=False,
             )
 
         return LintResult(
@@ -1785,7 +1792,8 @@ class ShellFileOperations(FileOperations):
             output=(
                 "New lint errors introduced by this edit "
                 "(pre-existing errors filtered out):\n" + "\n".join(post_lines)
-            )
+            ),
+            introduced_errors=True,
         )
 
     def _lsp_local_only(self) -> bool:

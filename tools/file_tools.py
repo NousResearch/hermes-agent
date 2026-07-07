@@ -1675,6 +1675,16 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             result_dict = result.to_dict()
             if stale_warning:
                 result_dict["_warning"] = stale_warning
+            lint = result_dict.get("lint")
+            if (
+                not result_dict.get("error")
+                and isinstance(lint, dict)
+                and lint.get("status") == "error"
+                and lint.get("introduced_errors")
+            ):
+                result_dict["error"] = (
+                    lint.get("message") or f"Invalid syntax introduced while writing {path}"
+                )
             if not result_dict.get("error"):
                 _mark_verification_stale(task_id, [path], session_id=session_id)
             _update_read_timestamp(path, task_id)
@@ -1701,6 +1711,17 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # mismatch is visible in the response instead of silently routing
             # the edit to the wrong checkout.
             result_dict["resolved_path"] = _resolved
+            lint = result_dict.get("lint")
+            if (
+                not result_dict.get("error")
+                and isinstance(lint, dict)
+                and lint.get("status") == "error"
+                and lint.get("introduced_errors")
+            ):
+                result_dict["error"] = (
+                    lint.get("message")
+                    or f"Invalid syntax introduced while writing {_resolved}"
+                )
             if not result_dict.get("error"):
                 result_dict["files_modified"] = [_resolved]
                 _mark_verification_stale(task_id, [_resolved], session_id=session_id)
@@ -1854,8 +1875,21 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             _resolved_modified = [
                 _path_to_resolved.get(_p) or _p for _p in _paths_to_check
             ]
-            # Refresh stored timestamps for all successfully-patched paths so
-            # consecutive edits by this task don't trigger false warnings.
+            lint = result_dict.get("lint")
+            lint_regression = (
+                not result_dict.get("error")
+                and isinstance(lint, dict)
+                and lint.get("status") == "error"
+                and lint.get("introduced_errors")
+            )
+            if lint_regression:
+                result_dict["error"] = (
+                    lint.get("message")
+                    or f"Invalid syntax introduced while patching {(_resolved_modified[0] if _resolved_modified else path)}"
+                )
+                result_dict.pop("files_modified", None)
+                result_dict.pop("files_created", None)
+                result_dict.pop("files_deleted", None)
             if not result_dict.get("error"):
                 result_dict["files_modified"] = _resolved_modified
                 if len(_resolved_modified) == 1:
@@ -1872,6 +1906,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 _reset_patch_failures(task_id, [
                     _r for _r in (_path_to_resolved.get(_p) for _p in _paths_to_check) if _r
                 ])
+            else:
+                if _resolved_modified:
+                    result_dict["resolved_path"] = _resolved_modified[0]
         # Hint when old_string not found — saves iterations where the agent
         # retries with stale content instead of re-reading the file.
         # Suppressed when patch_replace already attached a rich "Did you mean?"

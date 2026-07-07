@@ -419,9 +419,31 @@ class MemoryStore:
                 unique_texts = {e for _, e in matches}
                 if len(unique_texts) > 1:
                     previews = self._previews([e for _, e in matches])
+
+                    # Check if new_content already exists verbatim as an entry —
+                    # if so, the model's natural fallback (add()) creates a
+                    # duplicate with no signal (#60089).
+                    new_already_exists = new_content in [e for _, e in matches]
+
+                    if new_already_exists:
+                        return {
+                            "success": False,
+                            "error": (
+                                f"Multiple entries matched '{old_text}', but the replacement "
+                                f"content already exists as a separate entry. No replace needed — "
+                                f"the fact is already stored. Use 'remove' with old_text matching "
+                                f"the entry you want to delete if you intended to consolidate."
+                            ),
+                            "matches": previews,
+                        }
+
                     return {
                         "success": False,
-                        "error": f"Multiple entries matched '{old_text}'. Be more specific.",
+                        "error": (
+                            f"Multiple entries matched '{old_text}'. Be more specific, or use "
+                            f"a batch 'operations' call with distinct old_text values for each "
+                            f"entry you want to manipulate."
+                        ),
                         "matches": previews,
                     }
                 # All identical -- safe to replace just the first
@@ -555,9 +577,21 @@ class MemoryStore:
                     if not matches:
                         return self._batch_error(target, f"{pos}: no entry matched '{old_text}'.")
                     if len({working[j] for j in matches}) > 1:
+                        # Check if content already exists verbatim in the
+                        # matched entries — prevents silent duplicate (#60089).
+                        content_match = content in [working[j] for j in matches]
+                        if content_match:
+                            return self._batch_error(
+                                target,
+                                f"{pos}: '{old_text}' matched multiple distinct entries, "
+                                f"but the replacement content already exists among them. "
+                                f"Remove the entry you want to delete instead.",
+                            )
                         return self._batch_error(
                             target,
-                            f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.",
+                            f"{pos}: '{old_text}' matched multiple distinct entries -- "
+                            f"be more specific, or break the operation into separate "
+                            f"replace/remove calls with distinct old_text values.",
                         )
                     working[matches[0]] = content
 

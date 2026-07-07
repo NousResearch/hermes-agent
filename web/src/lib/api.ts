@@ -369,9 +369,16 @@ export const api = {
     fetchJSON<SessionInfo>(
       appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
     ),
-  getSessionLatestDescendant: (id: string) =>
+  getSessionLatestDescendant: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionLatestDescendantResponse>(
-      `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
+      appendProfileParam(
+        `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
+        profile,
+      ),
+    ),
+  getSessionOwnerProfile: (id: string) =>
+    fetchJSON<SessionOwnerProfileResponse>(
+      `/api/sessions/${encodeURIComponent(id)}/owner-profile`,
     ),
   deleteSession: (id: string, profile = getManagementProfile()) =>
     fetchJSON<{ ok: boolean }>(
@@ -1686,6 +1693,9 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
+  /** Owning profile for rows returned from profile-scoped/all-profile session APIs. */
+  profile?: string | null;
+  is_default_profile?: boolean;
 }
 
 export interface SessionLatestDescendantResponse {
@@ -1693,6 +1703,10 @@ export interface SessionLatestDescendantResponse {
   session_id: string;
   path: string[];
   changed: boolean;
+}
+
+export interface SessionOwnerProfileResponse {
+  profile: string | null;
 }
 
 export interface PaginatedSessions {

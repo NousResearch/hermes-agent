@@ -216,6 +216,23 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // management profile. Changing it remounts the terminal (key below /
   // effect dep) so the user explicitly starts a fresh scoped session.
   const { profile: scopedProfile } = useProfileScope();
+  const explicitProfileParam = searchParams.get("profile")?.trim() ?? "";
+  const explicitProfileSyncPending = Boolean(
+    explicitProfileParam && explicitProfileParam !== scopedProfile,
+  );
+  const [resumeOwnerLookup, setResumeOwnerLookup] = useState<{
+    sessionId: string;
+    done: boolean;
+  } | null>(null);
+  const ownerProfileLookupPending = Boolean(
+    explicitProfileSyncPending ||
+      (resumeParam &&
+        !scopedProfile &&
+        !explicitProfileParam &&
+        (!resumeOwnerLookup ||
+          resumeOwnerLookup.sessionId !== resumeParam ||
+          !resumeOwnerLookup.done)),
+  );
   const channel = useMemo(
     () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
     [resumeParam, scopedProfile],
@@ -237,6 +254,50 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setTitle(sessionTitle);
     return () => setTitle(null);
   }, [isActive, sessionTitle, setTitle]);
+
+  useEffect(() => {
+    if (!resumeParam || scopedProfile || explicitProfileParam) return;
+
+    let cancelled = false;
+    setResumeOwnerLookup({ sessionId: resumeParam, done: false });
+
+    api
+      .getSessionOwnerProfile(resumeParam)
+      .then((res) => {
+        if (cancelled) return;
+        const owner = res.profile?.trim();
+        if (!owner) return;
+
+        setSearchParams(
+          (prev) => {
+            const next = new URLSearchParams(prev);
+            if (next.get("resume") === resumeParam && !next.get("profile")) {
+              next.set("profile", owner);
+            }
+            return next;
+          },
+          { replace: true },
+        );
+      })
+      .catch(() => {
+        // Best-effort: if owner lookup is unavailable, the PTY server still
+        // performs the same inference before spawning the child.
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setResumeOwnerLookup({ sessionId: resumeParam, done: true });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    explicitProfileParam,
+    resumeParam,
+    scopedProfile,
+    setSearchParams,
+  ]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -264,7 +325,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let cancelled = false;
 
     api
-      .getSessionLatestDescendant(resumeParam)
+      .getSessionLatestDescendant(resumeParam, scopedProfile)
       .then((res) => {
         if (cancelled || !res.session_id || res.session_id === resumeParam) {
           return;
@@ -281,7 +342,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [resumeParam, searchParams, setSearchParams]);
+  }, [resumeParam, scopedProfile, searchParams, setSearchParams]);
 
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 1023px)");
@@ -375,6 +436,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // In gated mode the token is absent by design — api.buildWsUrl() mints
     // a WS ticket instead, so don't bail; let the effect reach that path.
     if (!token && !gated) {
+      return;
+    }
+    if (ownerProfileLookupPending) {
+      setBanner("Resolving session profile…");
       return;
     }
 
@@ -855,7 +920,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, clearReconnectTimer, resumeParam, scopedProfile, reconnectNonce]);
+  }, [
+    channel,
+    clearReconnectTimer,
+    ownerProfileLookupPending,
+    resumeParam,
+    scopedProfile,
+    reconnectNonce,
+  ]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.

@@ -77,6 +77,13 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
     cron: { icon: Clock, color: "text-warning" },
   };
 
+function chatResumePath(session: SessionInfo): string {
+  const params = new URLSearchParams({ resume: session.id });
+  const owner = session.profile?.trim();
+  if (owner) params.set("profile", owner);
+  return `/chat?${params.toString()}`;
+}
+
 /** Render an FTS5 snippet with highlighted matches.
  *  The backend wraps matches in >>> and <<< delimiters. */
 function SnippetHighlight({ snippet }: { snippet: string }) {
@@ -442,7 +449,7 @@ function SessionRow({
           title={t.sessions.resumeInChat}
           onClick={(e) => {
             e.stopPropagation();
-            navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
+            navigate(chatResumePath(session));
           }}
         >
           <Play />

@@ -7861,13 +7861,19 @@ async def cancel_oauth_session(
 
 
 
-def _session_latest_descendant(session_id: str):
+def _profile_for_session_db_lookup(profile: Optional[str]) -> Optional[str]:
+    """Translate dashboard profile sentinels into session-DB lookup scope."""
+    return None if not profile or profile == "current" else profile
+
+
+def _session_latest_descendant(session_id: str, profile: Optional[str] = None):
     """Resolve a session id to the newest child leaf session.
 
     /model may create child sessions. Dashboard refresh should continue the
-    newest child instead of reopening the old parent.
+    newest child instead of reopening the old parent. When ``profile`` is
+    supplied, resolve inside that profile's state DB; otherwise preserve the
+    legacy dashboard-profile lookup.
     """
-    from hermes_state import SessionDB
 
     def row_get(row, key, index):
         if isinstance(row, dict):
@@ -7880,7 +7886,7 @@ def _session_latest_descendant(session_id: str):
             except Exception:
                 return None
 
-    db = SessionDB()
+    db = _open_session_db_for_profile(_profile_for_session_db_lookup(profile))
     try:
         sid = db.resolve_session_id(session_id)
         if not sid or not db.get_session(sid):
@@ -7936,6 +7942,82 @@ def _session_latest_descendant(session_id: str):
         return current, path
     finally:
         db.close()
+
+
+def _infer_profile_for_resume_session(session_id: Optional[str]) -> Optional[str]:
+    """Infer the owning named profile for a dashboard-chat resume target.
+
+    Desktop deep links and older session rows can carry ``resume=<id>`` without
+    ``profile=<name>``. In a multi-profile install that would spawn the PTY
+    under the dashboard/current HERMES_HOME even when the session lives in a
+    different profile, so tools/skills/config resolve from the wrong profile. Look
+    up the session id across local profile DBs and return the unique owner,
+    including the built-in ``default`` profile. Ambiguous/no matches preserve
+    legacy unscoped behavior rather than guessing.
+    """
+    sid = (session_id or "").strip()
+    if not sid:
+        return None
+
+    from hermes_state import SessionDB
+    from hermes_cli import profiles as profiles_mod
+
+    try:
+        infos = profiles_mod.list_profiles()
+        targets: list[tuple[str, Path]] = [(info.name, Path(info.path)) for info in infos]
+    except Exception:
+        _log.debug("resume profile inference: profile inventory failed", exc_info=True)
+        targets = []
+
+    if not any(name == "default" for name, _home in targets):
+        try:
+            targets.insert(0, ("default", profiles_mod.get_profile_dir("default")))
+        except Exception:
+            pass
+
+    matches: list[str] = []
+    seen: set[str] = set()
+    for name, home in targets:
+        if name in seen:
+            continue
+        seen.add(name)
+        db_path = Path(home) / "state.db"
+        if not db_path.exists():
+            continue
+        try:
+            db = SessionDB(db_path=db_path, read_only=True)
+        except Exception:
+            _log.debug(
+                "resume profile inference: could not open %s for %s",
+                db_path,
+                name,
+                exc_info=True,
+            )
+            continue
+        try:
+            resolved = db.resolve_session_id(sid)
+            if resolved and db.get_session(resolved):
+                matches.append(name)
+        except Exception:
+            _log.debug(
+                "resume profile inference: lookup failed for %s in %s",
+                sid,
+                name,
+                exc_info=True,
+            )
+        finally:
+            db.close()
+
+    unique = list(dict.fromkeys(matches))
+    if len(unique) == 1:
+        return unique[0]
+    if len(unique) > 1:
+        _log.warning(
+            "resume profile inference ambiguous for session %s: %s",
+            sid,
+            unique,
+        )
+    return None
 
 
 # CRITICAL — every literal-path route below MUST be declared BEFORE the
@@ -8109,8 +8191,11 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
 
 
 @app.get("/api/sessions/{session_id}/latest-descendant")
-async def get_session_latest_descendant(session_id: str):
-    latest, path = _session_latest_descendant(session_id)
+async def get_session_latest_descendant(
+    session_id: str,
+    profile: Optional[str] = None,
+):
+    latest, path = _session_latest_descendant(session_id, profile=profile)
     if not latest:
         raise HTTPException(status_code=404, detail="Session not found")
     return {
@@ -8119,6 +8204,12 @@ async def get_session_latest_descendant(session_id: str):
         "path": path,
         "changed": bool(path and latest != path[0]),
     }
+
+
+@app.get("/api/sessions/{session_id}/owner-profile")
+async def get_session_owner_profile(session_id: str):
+    return {"profile": _infer_profile_for_resume_session(session_id)}
+
 
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str, profile: Optional[str] = None):
@@ -12857,7 +12948,7 @@ def _resolve_chat_argv(
         env["HERMES_HOME"] = str(profile_dir)
 
     if resume:
-        latest_resume, _latest_path = _session_latest_descendant(resume)
+        latest_resume, _latest_path = _session_latest_descendant(resume, profile=profile)
         if latest_resume:
             resume = latest_resume
         env["HERMES_TUI_RESUME"] = resume
@@ -13731,6 +13822,9 @@ async def pty_ws(ws: WebSocket) -> None:
             _forget_active_session_file(active_session_file)
         elif not resume:
             resume = _read_active_session_file(active_session_file)
+
+    if resume and not profile:
+        profile = _infer_profile_for_resume_session(resume)
 
     resolve_kwargs = {
         "resume": resume,

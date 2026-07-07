@@ -9294,6 +9294,22 @@ class TestSessionDetailAndMessagesOwnership:
                 chat_type="dm",
             )
             db.append_message(session_id="20260702_110000_bbbbbbbb", role="user", content="hi other")
+            # Cron-run shape (cron/scheduler.py's run_job:
+            # "cron_{job_id}_{timestamp}", job_id = uuid4().hex[:12]) --
+            # distinct from the ordinary interactive-session id shape above.
+            # source="cron" so session_row_is_own_dm never matches it for a
+            # non-admin token regardless of chat_id (a scheduled job isn't
+            # "owned" by any one Telegram DM) -- only the admin token and the
+            # cookie-authenticated desktop caller should reach it.
+            db.create_session(
+                session_id="cron_abcdef012345_20260707_093920",
+                source="cron",
+                chat_id="12345",
+                chat_type="dm",
+            )
+            db.append_message(
+                session_id="cron_abcdef012345_20260707_093920", role="user", content="cron run"
+            )
         finally:
             db.close()
 
@@ -9367,6 +9383,42 @@ class TestSessionDetailAndMessagesOwnership:
     def test_own_token_caller_cannot_see_other_users_session_messages(self):
         resp = self.client.get(
             "/api/sessions/20260702_110000_bbbbbbbb/messages",
+            headers={"authorization": "Bearer own-token"},
+        )
+        assert resp.status_code == 404
+
+    # ---- cron-shaped session id (regression: this shape used to fail
+    # _SESSION_ID_RE's fullmatch entirely, falling through to the downstream
+    # cookie gate, which 401'd a Mini App token caller -- surfaced as an
+    # instant, incorrect "session expired" screen for any cron/scheduled
+    # session opened from the Mini App) ----
+
+    def test_admin_token_caller_can_see_cron_session_detail(self):
+        resp = self.client.get(
+            "/api/sessions/cron_abcdef012345_20260707_093920",
+            headers={"authorization": "Bearer admin-token"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["id"] == "cron_abcdef012345_20260707_093920"
+
+    def test_admin_token_caller_can_see_cron_session_messages(self):
+        resp = self.client.get(
+            "/api/sessions/cron_abcdef012345_20260707_093920/messages",
+            headers={"authorization": "Bearer admin-token"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["messages"]
+
+    def test_cookie_caller_can_see_cron_session_detail(self):
+        resp = self.session_client.get("/api/sessions/cron_abcdef012345_20260707_093920")
+        assert resp.status_code == 200
+
+    def test_own_token_caller_cannot_see_cron_session_detail(self):
+        # Not a regression from broadening the id shape: source="cron" never
+        # satisfies session_row_is_own_dm, so this stays 404 for a non-admin
+        # token exactly as it would for any other not-mine session.
+        resp = self.client.get(
+            "/api/sessions/cron_abcdef012345_20260707_093920",
             headers={"authorization": "Bearer own-token"},
         )
         assert resp.status_code == 404

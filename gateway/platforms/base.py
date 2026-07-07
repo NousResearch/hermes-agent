@@ -3622,8 +3622,10 @@ class BasePlatformAdapter(ABC):
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs. The extension
-        # set is the shared MEDIA_DELIVERY_EXTS source of truth (built once into
-        # MEDIA_TAG_CLEANUP_RE) so it can never drift from extract_local_files.
+        # set is MEDIA_DELIVERY_EXTS (built once into MEDIA_TAG_CLEANUP_RE) — the
+        # *outbound* delivery allowlist. Inbound bare-path extraction
+        # (extract_local_files) reuses the same allowlist minus source-code
+        # extensions like ``.py``, which must not be auto-shipped from a message.
         media_pattern = MEDIA_TAG_CLEANUP_RE
         # Mask example/stored MEDIA: paths before scanning so they are never
         # delivered as real attachments:
@@ -3724,7 +3726,11 @@ class BasePlatformAdapter(ABC):
             Tuple of (list of expanded file paths, cleaned text with the
             raw path strings removed).
         """
-        _LOCAL_MEDIA_EXTS = MEDIA_DELIVERY_EXTS
+        # Inbound local-file extraction excludes source-code extensions such as
+        # ``.py``: auto-attaching a script referenced in a message would be a
+        # surprise. Outbound MEDIA: delivery (MEDIA_DELIVERY_EXTS, used by the
+        # MEDIA: tag path above) still allows them — see #42206.
+        _LOCAL_MEDIA_EXTS = tuple(e for e in MEDIA_DELIVERY_EXTS if e != ".py")
         ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_MEDIA_EXTS)
 
         # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png)

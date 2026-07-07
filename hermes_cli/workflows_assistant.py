@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import re
 from typing import Any, Callable
+
+AIAgent = None
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -34,6 +37,18 @@ class WorkflowDraftResult(BaseModel):
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json", by_alias=True)
+
+
+def _agent_class() -> Any:
+    global AIAgent
+    if AIAgent is not None:
+        return AIAgent
+    try:
+        agent_cls = getattr(importlib.import_module("run_agent"), "AIAgent")
+    except Exception as exc:
+        raise AssistantValidationError("Hermes AIAgent runtime is unavailable") from exc
+    AIAgent = agent_cls
+    return agent_cls
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
@@ -144,6 +159,54 @@ def build_refine_prompt(spec: WorkflowSpec, instruction: str) -> str:
     )
 
 
+def _resolve_assistant_runtime() -> dict[str, Any]:
+    from hermes_cli.config import load_config
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    config = load_config()
+    model_cfg = config.get("model") if isinstance(config, dict) else None
+    model = ""
+    if isinstance(model_cfg, dict):
+        model = str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
+    elif isinstance(model_cfg, str):
+        model = model_cfg.strip()
+
+    runtime = dict(resolve_runtime_provider(requested=None, target_model=model or None) or {})
+    runtime_model = str(runtime.get("model") or "").strip()
+    runtime["model"] = runtime_model or model
+
+    return runtime
+
+
+def default_model_runner(prompt: str) -> str:
+    agent_cls = _agent_class()
+
+    runtime = _resolve_assistant_runtime()
+    kwargs = {
+        "model": runtime.get("model", ""),
+        "api_key": runtime.get("api_key"),
+        "base_url": runtime.get("base_url"),
+        "provider": runtime.get("provider"),
+        "api_mode": runtime.get("api_mode"),
+        "acp_command": runtime.get("command"),
+        "acp_args": runtime.get("args"),
+        "credential_pool": runtime.get("credential_pool"),
+        "enabled_toolsets": [],
+        "quiet_mode": True,
+        "skip_context_files": True,
+        "skip_memory": True,
+        "platform": "workflow_assistant",
+        "max_iterations": 3,
+    }
+
+    agent = agent_cls(**kwargs)
+    agent.suppress_status_output = True
+    result = agent.run_conversation(prompt)
+    if isinstance(result, dict) and "final_response" in result:
+        return str(result.get("final_response") or "")
+    return str(result or "")
+
+
 def _call_with_repair(prompt: str, runner: Runner, repair_attempts: int) -> WorkflowDraftResult:
     attempts_left = max(0, repair_attempts)
     attempt_prompt = prompt
@@ -171,6 +234,10 @@ def draft_workflow(goal: str, *, runner: Runner, repair_attempts: int = 1) -> Wo
     return _call_with_repair(build_draft_prompt(goal), runner, repair_attempts)
 
 
+def draft_workflow_with_default_runner(goal: str) -> WorkflowDraftResult:
+    return draft_workflow(goal, runner=default_model_runner)
+
+
 def refine_workflow(
     spec: WorkflowSpec,
     instruction: str,
@@ -181,3 +248,7 @@ def refine_workflow(
     if not str(instruction or "").strip():
         raise AssistantValidationError("refine instruction is required")
     return _call_with_repair(build_refine_prompt(spec, instruction), runner, repair_attempts)
+
+
+def refine_workflow_with_default_runner(spec: WorkflowSpec, instruction: str) -> WorkflowDraftResult:
+    return refine_workflow(spec, instruction, runner=default_model_runner)

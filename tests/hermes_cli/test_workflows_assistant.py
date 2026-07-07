@@ -175,3 +175,113 @@ def test_draft_prompt_uses_valid_empty_edges_example():
 
     assert '"edges": []' in prompt
     assert "next_node_id" not in prompt
+
+
+def test_default_runner_uses_agent_runtime_adapter(monkeypatch):
+    from hermes_cli import workflows_assistant as wa
+
+    calls = []
+    agents = []
+    pool = object()
+
+    class FakeAgent:
+        def __init__(
+            self,
+            *,
+            model,
+            api_key,
+            base_url,
+            provider,
+            api_mode,
+            acp_command,
+            acp_args,
+            credential_pool,
+            enabled_toolsets,
+            quiet_mode,
+            skip_context_files,
+            skip_memory,
+            platform,
+            max_iterations,
+        ):
+            kwargs = locals().copy()
+            kwargs.pop("self")
+            calls.append(("init", kwargs))
+            agents.append(self)
+
+        def run_conversation(self, prompt):
+            calls.append(("run", prompt))
+            return json.dumps(_valid_payload())
+
+    monkeypatch.setattr(wa, "AIAgent", FakeAgent)
+    monkeypatch.setattr(
+        wa,
+        "_resolve_assistant_runtime",
+        lambda: {"model": "fake", "provider": "fake", "credential_pool": pool},
+    )
+
+    result = wa.draft_workflow_with_default_runner("Build a demo workflow")
+
+    assert result.spec.id == "code_review_flow"
+    assert calls[0][0] == "init"
+    assert calls[0][1]["credential_pool"] is pool
+    assert calls[0][1]["enabled_toolsets"] == []
+    assert calls[0][1]["skip_memory"] is True
+    assert getattr(agents[0], "suppress_status_output", None) is True
+    assert calls[1][0] == "run"
+
+
+def test_resolve_assistant_runtime_does_not_load_missing_credential_pool(monkeypatch):
+    from hermes_cli import workflows_assistant as wa
+
+    calls = []
+
+    def fake_resolve_runtime_provider(*, requested, target_model):
+        calls.append(("resolve", requested, target_model))
+        return {
+            "model": "runtime-model",
+            "provider": "openai",
+            "api_key": "runtime-key",
+            "base_url": "https://example.invalid/v1",
+            "api_mode": "chat_completions",
+        }
+
+    def fake_load_pool(provider):
+        calls.append(("load_pool", provider))
+        raise AssertionError(f"load_pool should not be called for {provider}")
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"default": "cfg-model"}})
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve_runtime_provider)
+    monkeypatch.setattr("agent.credential_pool.load_pool", fake_load_pool)
+
+    runtime = wa._resolve_assistant_runtime()
+
+    assert runtime["model"] == "runtime-model"
+    assert runtime["provider"] == "openai"
+    assert "credential_pool" not in runtime
+    assert calls == [("resolve", None, "cfg-model")]
+
+
+def test_resolve_assistant_runtime_preserves_resolver_credential_pool(monkeypatch):
+    from hermes_cli import workflows_assistant as wa
+
+    pool = object()
+    pool_calls = []
+
+    def fake_resolve_runtime_provider(*, requested, target_model):
+        assert requested is None
+        assert target_model == "cfg-model"
+        return {"model": "runtime-model", "provider": "openai", "credential_pool": pool}
+
+    def fake_load_pool(provider):
+        pool_calls.append(provider)
+        raise AssertionError(f"load_pool should not be called for {provider}")
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"default": "cfg-model"}})
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve_runtime_provider)
+    monkeypatch.setattr("agent.credential_pool.load_pool", fake_load_pool)
+
+    runtime = wa._resolve_assistant_runtime()
+
+    assert runtime["credential_pool"] is pool
+    assert runtime["model"] == "runtime-model"
+    assert pool_calls == []

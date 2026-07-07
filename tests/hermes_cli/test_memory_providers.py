@@ -27,9 +27,7 @@ def test_hindsight_mode_gating_is_expressed_as_select_options():
 
     mode = next(field for field in provider.fields if field.key == "mode")
     assert mode.kind == KIND_SELECT
-    assert mode.allowed_values() == {"cloud", "local_external"}
-    # local_embedded is intentionally unsupported on desktop.
-    assert "local_embedded" not in mode.allowed_values()
+    assert mode.allowed_values() == {"cloud", "local_external", "local_embedded"}
 
 
 def test_api_key_is_a_secret_bound_to_env():

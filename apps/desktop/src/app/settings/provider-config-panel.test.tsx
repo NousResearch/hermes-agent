@@ -28,7 +28,12 @@ function hindsightSchema(overrides: Partial<MemoryProviderConfig['fields'][numbe
       is_set: true,
       options: [
         { value: 'cloud', label: 'Cloud', description: 'Hindsight Cloud API (lightweight, just needs an API key)' },
-        { value: 'local_external', label: 'Local External', description: 'Connect to an existing Hindsight instance' }
+        { value: 'local_external', label: 'Local External', description: 'Connect to an existing Hindsight instance' },
+        {
+          value: 'local_embedded',
+          label: 'Local Embedded',
+          description: 'Run a managed local Hindsight daemon with embedded PostgreSQL'
+        }
       ]
     },
     {
@@ -135,6 +140,29 @@ describe('ProviderConfigPanel', () => {
         api_key: '',
         api_url: 'http://localhost:8888',
         bank_id: 'ben-bank',
+        recall_budget: 'mid'
+      })
+    )
+  })
+
+  it('preserves local embedded mode when it is already configured', async () => {
+    getMemoryProviderConfig.mockResolvedValue(hindsightSchema([{ value: 'local_embedded' }]))
+
+    await renderPanel()
+
+    expect(await screen.findByText('Local Embedded')).toBeTruthy()
+    expect(
+      screen.getAllByText('Run a managed local Hindsight daemon with embedded PostgreSQL').length
+    ).toBeGreaterThan(0)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(saveMemoryProviderConfig).toHaveBeenCalledWith('hindsight', {
+        mode: 'local_embedded',
+        api_key: '',
+        api_url: 'https://api.hindsight.vectorize.io',
+        bank_id: 'hermes',
         recall_budget: 'mid'
       })
     )

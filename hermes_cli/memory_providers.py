@@ -95,6 +95,11 @@ HINDSIGHT = MemoryProvider(
                     "Local External",
                     "Connect to an existing Hindsight instance",
                 ),
+                ProviderFieldOption(
+                    "local_embedded",
+                    "Local Embedded",
+                    "Run a managed local Hindsight daemon with embedded PostgreSQL",
+                ),
             ),
         ),
         ProviderField(

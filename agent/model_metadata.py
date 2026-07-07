@@ -1915,8 +1915,28 @@ def get_model_context_length(
     7. Local server query (before hardcoded defaults for local endpoints)
     8. Hardcoded defaults (broad family patterns, longest-key-first)
     9. Default fallback (256K)"""
-    # 0. Explicit config override — user knows best
+    # 0. Explicit config override — user knows best.
+    # However, for local providers (Ollama, vLLM, llama.cpp), the provider
+    # may silently clamp the effective context below the configured value
+    # (e.g. Ollama clamps num_ctx to the GGUF's native context).  When the
+    # real window is smaller than the config, the compressor's threshold
+    # math uses the inflated config value and can never trigger — causing
+    # permanent context-shift with multi-minute latency (#60103).  Probe
+    # the real window and cap at min(config, probed) so compression works.
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
+        if base_url and is_local_endpoint(base_url):
+            try:
+                probed = _query_local_context_length(model, base_url, api_key=api_key)
+                if probed and probed > 0 and probed < config_context_length:
+                    logger.warning(
+                        "Configured context_length %d exceeds local provider's "
+                        "real window %d for %s@%s — using provider value to "
+                        "ensure compression triggers correctly (#60103)",
+                        config_context_length, probed, model, base_url,
+                    )
+                    return probed
+            except Exception:
+                pass  # probe failure — use the config value as-is
         return config_context_length
 
     # 0a. MoA virtual provider — ``model`` is a preset name, not a real model,

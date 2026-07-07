@@ -20,6 +20,7 @@ function seedValues(config: MemoryProviderConfig): Record<string, string> {
 
 export function ProviderConfigPanel({ provider }: { provider: string }) {
   const [config, setConfig] = useState<MemoryProviderConfig | null>(null)
+  const [loadError, setLoadError] = useState<null | string>(null)
   const [values, setValues] = useState<Record<string, string>>({})
   const [expanded, setExpanded] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -31,9 +32,10 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
       const next = await getMemoryProviderConfig(provider)
       setConfig(next)
       setValues(seedValues(next))
+      setLoadError(null)
     } catch (err) {
-      notifyError(err, 'Memory provider settings failed to load')
       setConfig(null)
+      setLoadError(err instanceof Error ? err.message : 'Memory provider settings failed to load')
     }
   }, [provider])
 
@@ -86,6 +88,18 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
   }
 
   if (!config) {
+    if (loadError) {
+      return (
+        <div className="flex items-center justify-between gap-3 py-2">
+          <span className="text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
+            Memory provider settings failed to load: {loadError}
+          </span>
+          <Button onClick={() => void refresh()} size="sm" type="button" variant="secondary">
+            Retry
+          </Button>
+        </div>
+      )
+    }
     return <LoadingState label="Loading memory provider settings..." />
   }
 
@@ -119,7 +133,7 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
       </div>
 
       {expanded && (
-        <div className="ml-1.5 border-l-2 border-(--ui-accent-secondary)/25 bg-(--ui-bg-card) pb-4 pl-4 pr-4">
+        <div className="ml-1.5 border-l-2 border-(--ui-accent-secondary)/25 bg-(--ui-bg-quinary) pb-4 pl-4 pr-4">
           {inlineFields.map(field => (
             <div className="border-b border-border/40 last:border-b-0" key={field.key}>
               <ListRow

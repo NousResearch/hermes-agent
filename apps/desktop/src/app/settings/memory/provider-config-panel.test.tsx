@@ -180,6 +180,18 @@ describe('ProviderConfigPanel', () => {
     )
   })
 
+  it('shows an inline error with retry when the load fails, then recovers', async () => {
+    getMemoryProviderConfig.mockRejectedValueOnce(new Error('Timed out connecting to Hermes backend'))
+
+    await renderPanel()
+
+    expect(await screen.findByText(/Timed out connecting/)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+
+    expect(await screen.findByDisplayValue('myws')).toBeTruthy()
+  })
+
   it('renders nothing for a provider with no declared config surface', async () => {
     getMemoryProviderConfig.mockResolvedValue({ name: 'builtin', label: 'builtin', docs_url: '', fields: [] })
 

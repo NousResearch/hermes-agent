@@ -333,6 +333,211 @@ def github_add_issue_comment_tool(repository: str, issue_number: int, body: str)
         return tool_error(str(e))
 
 
+def github_create_issue_tool(
+    repository: str,
+    title: str,
+    body: str = "",
+    labels: Optional[List[str]] = None,
+    assignees: Optional[List[str]] = None,
+) -> str:
+    """Create a new issue in a GitHub repository."""
+    try:
+        owner, repo = parse_owner_repo(repository)
+        path = f"/repos/{owner}/{repo}/issues"
+        json_payload: Dict[str, Any] = {"title": title}
+        if body:
+            json_payload["body"] = body
+        if labels:
+            json_payload["labels"] = labels
+        if assignees:
+            json_payload["assignees"] = assignees
+
+        res_str = github_api_request("POST", path, json_body=json_payload)
+        res_data = json.loads(res_str)
+
+        if not res_data.get("success"):
+            return res_str
+        if not res_data.get("ok"):
+            return tool_error(get_github_error_message(res_data), status=res_data.get("status"))
+
+        issue = res_data.get("json")
+        if not isinstance(issue, dict):
+            return tool_error("Invalid response payload from GitHub API")
+
+        formatted = {
+            "number": issue.get("number"),
+            "title": issue.get("title"),
+            "state": issue.get("state"),
+            "html_url": issue.get("html_url"),
+            "body": issue.get("body"),
+            "labels": [label.get("name") for label in issue.get("labels") or [] if isinstance(label, dict)],
+            "assignees": [assignee.get("login") for assignee in issue.get("assignees") or [] if isinstance(assignee, dict)],
+        }
+        return tool_result(formatted)
+    except Exception as e:
+        logger.exception("github_create_issue_tool failed")
+        return tool_error(str(e))
+
+
+def github_add_pull_request_review_comment_tool(
+    repository: str,
+    pull_number: int,
+    body: str,
+    commit_id: str,
+    path: str,
+    line: int,
+    side: str = "RIGHT",
+) -> str:
+    """Add an inline review comment to a pull request in a GitHub repository."""
+    try:
+        owner, repo = parse_owner_repo(repository)
+        api_path = f"/repos/{owner}/{repo}/pulls/{pull_number}/comments"
+        json_payload: Dict[str, Any] = {
+            "body": body,
+            "commit_id": commit_id,
+            "path": path,
+            "line": line,
+        }
+        if side:
+            json_payload["side"] = side
+
+        res_str = github_api_request("POST", api_path, json_body=json_payload)
+        res_data = json.loads(res_str)
+
+        if not res_data.get("success"):
+            return res_str
+        if not res_data.get("ok"):
+            return tool_error(get_github_error_message(res_data), status=res_data.get("status"))
+
+        comment = res_data.get("json")
+        if not isinstance(comment, dict):
+            return tool_error("Invalid response payload from GitHub API")
+
+        formatted = {
+            "id": comment.get("id"),
+            "html_url": comment.get("html_url"),
+            "body": comment.get("body"),
+            "path": comment.get("path"),
+            "line": comment.get("line"),
+            "side": comment.get("side"),
+            "author": comment.get("user", {}).get("login") if isinstance(comment.get("user"), dict) else None,
+            "created_at": comment.get("created_at"),
+        }
+        return tool_result(formatted)
+    except Exception as e:
+        logger.exception("github_add_pull_request_review_comment_tool failed")
+        return tool_error(str(e))
+
+
+def github_list_workflow_runs_tool(
+    repository: str,
+    per_page: int = 30,
+    status: Optional[str] = None,
+) -> str:
+    """List GitHub Actions workflow runs for a repository."""
+    try:
+        owner, repo = parse_owner_repo(repository)
+        api_path = f"/repos/{owner}/{repo}/actions/runs"
+        query: Dict[str, Any] = {"per_page": per_page}
+        if status:
+            query["status"] = status
+
+        res_str = github_api_request("GET", api_path, query=query)
+        res_data = json.loads(res_str)
+
+        if not res_data.get("success"):
+            return res_str
+        if not res_data.get("ok"):
+            return tool_error(get_github_error_message(res_data), status=res_data.get("status"))
+
+        payload = res_data.get("json")
+        if not isinstance(payload, dict):
+            return tool_error("Invalid response payload from GitHub API")
+        runs = payload.get("workflow_runs")
+        if not isinstance(runs, list):
+            return tool_error("Invalid response payload from GitHub API")
+
+        formatted = []
+        for run in runs:
+            if not isinstance(run, dict):
+                continue
+            formatted.append({
+                "id": run.get("id"),
+                "name": run.get("name"),
+                "display_title": run.get("display_title"),
+                "status": run.get("status"),
+                "conclusion": run.get("conclusion"),
+                "event": run.get("event"),
+                "head_branch": run.get("head_branch"),
+                "html_url": run.get("html_url"),
+                "created_at": run.get("created_at"),
+            })
+        return tool_result(formatted)
+    except Exception as e:
+        logger.exception("github_list_workflow_runs_tool failed")
+        return tool_error(str(e))
+
+
+def github_get_workflow_run_tool(repository: str, run_id: int) -> str:
+    """Get detailed information for a GitHub Actions workflow run."""
+    try:
+        owner, repo = parse_owner_repo(repository)
+        api_path = f"/repos/{owner}/{repo}/actions/runs/{run_id}"
+        res_str = github_api_request("GET", api_path)
+        res_data = json.loads(res_str)
+
+        if not res_data.get("success"):
+            return res_str
+        if not res_data.get("ok"):
+            return tool_error(get_github_error_message(res_data), status=res_data.get("status"))
+
+        run = res_data.get("json")
+        if not isinstance(run, dict):
+            return tool_error("Invalid response payload from GitHub API")
+
+        formatted = {
+            "id": run.get("id"),
+            "name": run.get("name"),
+            "display_title": run.get("display_title"),
+            "status": run.get("status"),
+            "conclusion": run.get("conclusion"),
+            "event": run.get("event"),
+            "head_branch": run.get("head_branch"),
+            "head_sha": run.get("head_sha"),
+            "html_url": run.get("html_url"),
+            "created_at": run.get("created_at"),
+            "updated_at": run.get("updated_at"),
+            "run_attempt": run.get("run_attempt"),
+        }
+        return tool_result(formatted)
+    except Exception as e:
+        logger.exception("github_get_workflow_run_tool failed")
+        return tool_error(str(e))
+
+
+def github_rerun_workflow_tool(repository: str, run_id: int) -> str:
+    """Trigger a rerun for a GitHub Actions workflow run."""
+    try:
+        owner, repo = parse_owner_repo(repository)
+        api_path = f"/repos/{owner}/{repo}/actions/runs/{run_id}/rerun"
+        res_str = github_api_request("POST", api_path)
+        res_data = json.loads(res_str)
+
+        if not res_data.get("success"):
+            return res_str
+        if not res_data.get("ok"):
+            return tool_error(get_github_error_message(res_data), status=res_data.get("status"))
+
+        return tool_result({
+            "accepted": True,
+            "repository": f"{owner}/{repo}",
+            "run_id": run_id,
+        })
+    except Exception as e:
+        logger.exception("github_rerun_workflow_tool failed")
+        return tool_error(str(e))
+
+
 # -----------------------------------------------------------------------------------------------------------
 # Schemas & Handlers for Registry
 # ---------------------------------------------------------------------------
@@ -450,6 +655,143 @@ GITHUB_ADD_ISSUE_COMMENT_SCHEMA = {
     },
 }
 
+GITHUB_CREATE_ISSUE_SCHEMA = {
+    "name": "github_create_issue",
+    "description": "Create a new issue in a GitHub repository.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "repository": {
+                "type": "string",
+                "description": "Repository identifier, either in 'owner/repo' format or as a full GitHub URL.",
+            },
+            "title": {
+                "type": "string",
+                "description": "Title for the new issue.",
+            },
+            "body": {
+                "type": "string",
+                "description": "Issue body in Markdown.",
+                "default": "",
+            },
+            "labels": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional label names to apply.",
+            },
+            "assignees": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional GitHub usernames to assign.",
+            },
+        },
+        "required": ["repository", "title"],
+    },
+}
+
+GITHUB_ADD_PULL_REQUEST_REVIEW_COMMENT_SCHEMA = {
+    "name": "github_add_pull_request_review_comment",
+    "description": "Add an inline review comment to a pull request in a GitHub repository.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "repository": {
+                "type": "string",
+                "description": "Repository identifier, either in 'owner/repo' format or as a full GitHub URL.",
+            },
+            "pull_number": {
+                "type": "integer",
+                "description": "Pull request number to comment on.",
+            },
+            "body": {
+                "type": "string",
+                "description": "Review comment body in Markdown.",
+            },
+            "commit_id": {
+                "type": "string",
+                "description": "Commit SHA the inline comment should attach to.",
+            },
+            "path": {
+                "type": "string",
+                "description": "Repository-relative file path for the inline comment.",
+            },
+            "line": {
+                "type": "integer",
+                "description": "Line number on the diff to attach the comment to.",
+            },
+            "side": {
+                "type": "string",
+                "description": "Diff side for the comment.",
+                "enum": ["LEFT", "RIGHT"],
+                "default": "RIGHT",
+            },
+        },
+        "required": ["repository", "pull_number", "body", "commit_id", "path", "line"],
+    },
+}
+
+GITHUB_LIST_WORKFLOW_RUNS_SCHEMA = {
+    "name": "github_list_workflow_runs",
+    "description": "List GitHub Actions workflow runs for a repository.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "repository": {
+                "type": "string",
+                "description": "Repository identifier, either in 'owner/repo' format or as a full GitHub URL.",
+            },
+            "per_page": {
+                "type": "integer",
+                "description": "Number of workflow runs to return (max 100, default 30).",
+                "default": 30,
+            },
+            "status": {
+                "type": "string",
+                "description": "Optional workflow run status/conclusion filter.",
+            },
+        },
+        "required": ["repository"],
+    },
+}
+
+GITHUB_GET_WORKFLOW_RUN_SCHEMA = {
+    "name": "github_get_workflow_run",
+    "description": "Get detailed information for a GitHub Actions workflow run.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "repository": {
+                "type": "string",
+                "description": "Repository identifier, either in 'owner/repo' format or as a full GitHub URL.",
+            },
+            "run_id": {
+                "type": "integer",
+                "description": "Workflow run ID.",
+            },
+        },
+        "required": ["repository", "run_id"],
+    },
+}
+
+GITHUB_RERUN_WORKFLOW_SCHEMA = {
+    "name": "github_rerun_workflow",
+    "description": "Trigger a rerun for a GitHub Actions workflow run.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "repository": {
+                "type": "string",
+                "description": "Repository identifier, either in 'owner/repo' format or as a full GitHub URL.",
+            },
+            "run_id": {
+                "type": "integer",
+                "description": "Workflow run ID to rerun.",
+            },
+        },
+        "required": ["repository", "run_id"],
+    },
+}
+
 
 def _handle_github_get_issue(args: dict, **kwargs) -> str:
     return github_get_issue_tool(
@@ -486,6 +828,50 @@ def _handle_github_add_issue_comment(args: dict, **kwargs) -> str:
         repository=args.get("repository", ""),
         issue_number=int(args.get("issue_number")),
         body=args.get("body", ""),
+    )
+
+
+def _handle_github_create_issue(args: dict, **kwargs) -> str:
+    return github_create_issue_tool(
+        repository=args.get("repository", ""),
+        title=args.get("title", ""),
+        body=args.get("body", ""),
+        labels=args.get("labels"),
+        assignees=args.get("assignees"),
+    )
+
+
+def _handle_github_add_pull_request_review_comment(args: dict, **kwargs) -> str:
+    return github_add_pull_request_review_comment_tool(
+        repository=args.get("repository", ""),
+        pull_number=int(args.get("pull_number")),
+        body=args.get("body", ""),
+        commit_id=args.get("commit_id", ""),
+        path=args.get("path", ""),
+        line=int(args.get("line")),
+        side=args.get("side", "RIGHT"),
+    )
+
+
+def _handle_github_list_workflow_runs(args: dict, **kwargs) -> str:
+    return github_list_workflow_runs_tool(
+        repository=args.get("repository", ""),
+        per_page=int(args.get("per_page", 30)),
+        status=args.get("status"),
+    )
+
+
+def _handle_github_get_workflow_run(args: dict, **kwargs) -> str:
+    return github_get_workflow_run_tool(
+        repository=args.get("repository", ""),
+        run_id=int(args.get("run_id")),
+    )
+
+
+def _handle_github_rerun_workflow(args: dict, **kwargs) -> str:
+    return github_rerun_workflow_tool(
+        repository=args.get("repository", ""),
+        run_id=int(args.get("run_id")),
     )
 
 
@@ -535,6 +921,56 @@ registry.register(
     toolset="github",
     schema=GITHUB_ADD_ISSUE_COMMENT_SCHEMA,
     handler=_handle_github_add_issue_comment,
+    check_fn=check_github_requirements,
+    requires_env=[GITHUB_TOKEN_ENV_VAR],
+    emoji="🐙",
+)
+
+registry.register(
+    name="github_create_issue",
+    toolset="github",
+    schema=GITHUB_CREATE_ISSUE_SCHEMA,
+    handler=_handle_github_create_issue,
+    check_fn=check_github_requirements,
+    requires_env=[GITHUB_TOKEN_ENV_VAR],
+    emoji="🐙",
+)
+
+registry.register(
+    name="github_add_pull_request_review_comment",
+    toolset="github",
+    schema=GITHUB_ADD_PULL_REQUEST_REVIEW_COMMENT_SCHEMA,
+    handler=_handle_github_add_pull_request_review_comment,
+    check_fn=check_github_requirements,
+    requires_env=[GITHUB_TOKEN_ENV_VAR],
+    emoji="🐙",
+)
+
+registry.register(
+    name="github_list_workflow_runs",
+    toolset="github",
+    schema=GITHUB_LIST_WORKFLOW_RUNS_SCHEMA,
+    handler=_handle_github_list_workflow_runs,
+    check_fn=check_github_requirements,
+    requires_env=[GITHUB_TOKEN_ENV_VAR],
+    emoji="🐙",
+)
+
+registry.register(
+    name="github_get_workflow_run",
+    toolset="github",
+    schema=GITHUB_GET_WORKFLOW_RUN_SCHEMA,
+    handler=_handle_github_get_workflow_run,
+    check_fn=check_github_requirements,
+    requires_env=[GITHUB_TOKEN_ENV_VAR],
+    emoji="🐙",
+)
+
+registry.register(
+    name="github_rerun_workflow",
+    toolset="github",
+    schema=GITHUB_RERUN_WORKFLOW_SCHEMA,
+    handler=_handle_github_rerun_workflow,
     check_fn=check_github_requirements,
     requires_env=[GITHUB_TOKEN_ENV_VAR],
     emoji="🐙",

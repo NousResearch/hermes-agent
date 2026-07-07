@@ -106,17 +106,22 @@ TOOLSETS = {
     },
     
     "github": {
-        "description": "Native GitHub operations (get/list issues, pull requests, and comments)",
+        "description": "Native GitHub operations (issues, pull requests, comments, issue creation, PR review comments, and workflow runs)",
         "tools": [
             "github_get_issue",
             "github_list_issues",
             "github_get_pull_request",
             "github_list_pull_requests",
-            "github_add_issue_comment"
+            "github_add_issue_comment",
+            "github_create_issue",
+            "github_add_pull_request_review_comment",
+            "github_list_workflow_runs",
+            "github_get_workflow_run",
+            "github_rerun_workflow"
         ],
         "includes": []
     },
-    
+
     "search": {
         "description": "Web search only (no content extraction/scraping)",
         "tools": ["web_search"],

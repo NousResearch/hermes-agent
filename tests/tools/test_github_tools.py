@@ -14,6 +14,11 @@ from tools.github_tools import (
     github_get_pull_request_tool,
     github_list_pull_requests_tool,
     github_add_issue_comment_tool,
+    github_create_issue_tool,
+    github_add_pull_request_review_comment_tool,
+    github_list_workflow_runs_tool,
+    github_get_workflow_run_tool,
+    github_rerun_workflow_tool,
 )
 
 
@@ -324,3 +329,326 @@ def test_github_add_issue_comment_failed_http_request(mock_api_req):
     
     assert "error" in res
     assert "Connection timed out" in res["error"]
+
+
+@patch("tools.github_tools.github_api_request")
+def test_github_create_issue_success(mock_api_req):
+    mock_api_req.return_value = json.dumps({
+        "success": True,
+        "ok": True,
+        "status": 201,
+        "json": {
+            "number": 73,
+            "title": "Add workflow retries",
+            "state": "open",
+            "html_url": "https://github.com/octocat/hello-world/issues/73",
+            "body": "Please add retries to CI.",
+            "labels": [{"name": "enhancement"}, {"name": "ci"}],
+            "assignees": [{"login": "alice"}, {"login": "bob"}],
+            "extra_ignored_field": "noise",
+        },
+    })
+
+    res_str = github_create_issue_tool(
+        "octocat/hello-world",
+        "Add workflow retries",
+        body="Please add retries to CI.",
+        labels=["enhancement", "ci"],
+        assignees=["alice", "bob"],
+    )
+    data = json.loads(res_str)
+
+    assert "error" not in data
+    assert data["number"] == 73
+    assert data["title"] == "Add workflow retries"
+    assert data["state"] == "open"
+    assert data["html_url"] == "https://github.com/octocat/hello-world/issues/73"
+    assert data["body"] == "Please add retries to CI."
+    assert data["labels"] == ["enhancement", "ci"]
+    assert data["assignees"] == ["alice", "bob"]
+    assert "extra_ignored_field" not in data
+
+    mock_api_req.assert_called_once_with(
+        "POST",
+        "/repos/octocat/hello-world/issues",
+        json_body={
+            "title": "Add workflow retries",
+            "body": "Please add retries to CI.",
+            "labels": ["enhancement", "ci"],
+            "assignees": ["alice", "bob"],
+        },
+    )
+
+
+def test_github_create_issue_invalid_repo():
+    res_str = github_create_issue_tool("invalidrepo", "hello")
+    res = json.loads(res_str)
+    assert "error" in res
+    assert "Invalid repository identifier" in res["error"]
+
+
+@patch("tools.github_tools.github_api_request")
+def test_github_create_issue_non_200_response(mock_api_req):
+    mock_api_req.return_value = json.dumps({
+        "success": True,
+        "ok": False,
+        "status": 422,
+        "json": {"message": "Validation Failed"},
+    })
+
+    res_str = github_create_issue_tool("owner/repo", "hello")
+    res = json.loads(res_str)
+
+    assert "error" in res
+    assert "GitHub API error (422): Validation Failed" in res["error"]
+
+
+@patch("tools.github_tools.github_api_request")
+def test_github_create_issue_failed_http_request(mock_api_req):
+    mock_api_req.return_value = json.dumps({
+        "success": False,
+        "error": "Connection timed out",
+        "error_type": "ConnectTimeout",
+    })
+
+    res_str = github_create_issue_tool("owner/repo", "hello")
+    res = json.loads(res_str)
+
+    assert "error" in res
+    assert "Connection timed out" in res["error"]
+
+
+@patch("tools.github_tools.github_api_request")
+def test_github_add_pull_request_review_comment_success(mock_api_req):
+    mock_api_req.return_value = json.dumps({
+        "success": True,
+        "ok": True,
+        "status": 201,
+        "json": {
+            "id": 555,
+            "html_url": "https://github.com/octocat/hello-world/pull/12#discussion_r555",
+            "body": "Please rename this variable.",
+            "path": "tools/github_tools.py",
+            "line": 137,
+            "side": "RIGHT",
+            "created_at": "2026-07-07T10:00:00Z",
+            "user": {"login": "octocat"},
+            "extra_ignored_field": "noise",
+        },
+    })
+
+    res_str = github_add_pull_request_review_comment_tool(
+        "octocat/hello-world",
+        12,
+        body="Please rename this variable.",
+        commit_id="abc123",
+        path="tools/github_tools.py",
+        line=137,
+        side="RIGHT",
+    )
+    data = json.loads(res_str)
+
+    assert "error" not in data
+    assert data["id"] == 555
+    assert data["html_url"] == "https://github.com/octocat/hello-world/pull/12#discussion_r555"
+    assert data["body"] == "Please rename this variable."
+    assert data["path"] == "tools/github_tools.py"
+    assert data["line"] == 137
+    assert data["side"] == "RIGHT"
+    assert data["author"] == "octocat"
+    assert data["created_at"] == "2026-07-07T10:00:00Z"
+    assert "extra_ignored_field" not in data
+
+    mock_api_req.assert_called_once_with(
+        "POST",
+        "/repos/octocat/hello-world/pulls/12/comments",
+        json_body={
+            "body": "Please rename this variable.",
+            "commit_id": "abc123",
+            "path": "tools/github_tools.py",
+            "line": 137,
+            "side": "RIGHT",
+        },
+    )
+
+
+def test_github_add_pull_request_review_comment_invalid_repo():
+    res_str = github_add_pull_request_review_comment_tool(
+        "invalidrepo",
+        12,
+        body="hello",
+        commit_id="abc123",
+        path="tools/github_tools.py",
+        line=137,
+    )
+    res = json.loads(res_str)
+    assert "error" in res
+    assert "Invalid repository identifier" in res["error"]
+
+
+@patch("tools.github_tools.github_api_request")
+def test_github_add_pull_request_review_comment_non_200_response(mock_api_req):
+    mock_api_req.return_value = json.dumps({
+        "success": True,
+        "ok": False,
+        "status": 422,
+        "json": {"message": "Validation Failed"},
+    })
+
+    res_str = github_add_pull_request_review_comment_tool(
+        "owner/repo",
+        12,
+        body="hello",
+        commit_id="abc123",
+        path="tools/github_tools.py",
+        line=137,
+    )
+    res = json.loads(res_str)
+
+    assert "error" in res
+    assert "GitHub API error (422): Validation Failed" in res["error"]
+
+
+@patch("tools.github_tools.github_api_request")
+def test_github_add_pull_request_review_comment_failed_http_request(mock_api_req):
+    mock_api_req.return_value = json.dumps({
+        "success": False,
+        "error": "Connection timed out",
+        "error_type": "ConnectTimeout",
+    })
+
+    res_str = github_add_pull_request_review_comment_tool(
+        "owner/repo",
+        12,
+        body="hello",
+        commit_id="abc123",
+        path="tools/github_tools.py",
+        line=137,
+    )
+    res = json.loads(res_str)
+
+    assert "error" in res
+    assert "Connection timed out" in res["error"]
+
+
+@patch("tools.github_tools.github_api_request")
+def test_github_list_workflow_runs_success(mock_api_req):
+    mock_api_req.return_value = json.dumps({
+        "success": True,
+        "ok": True,
+        "status": 200,
+        "json": {
+            "workflow_runs": [
+                {
+                    "id": 1001,
+                    "name": "CI",
+                    "display_title": "Run tests",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "event": "push",
+                    "head_branch": "main",
+                    "html_url": "https://github.com/octocat/hello-world/actions/runs/1001",
+                    "created_at": "2026-07-07T10:30:00Z",
+                }
+            ]
+        },
+    })
+
+    res_str = github_list_workflow_runs_tool("octocat/hello-world", per_page=10, status="completed")
+    data = json.loads(res_str)
+
+    assert isinstance(data, list)
+    assert len(data) == 1
+    assert data[0]["id"] == 1001
+    assert data[0]["name"] == "CI"
+    assert data[0]["display_title"] == "Run tests"
+    assert data[0]["status"] == "completed"
+    assert data[0]["conclusion"] == "success"
+    assert data[0]["event"] == "push"
+    assert data[0]["head_branch"] == "main"
+
+    mock_api_req.assert_called_once_with(
+        "GET",
+        "/repos/octocat/hello-world/actions/runs",
+        query={"per_page": 10, "status": "completed"},
+    )
+
+
+@patch("tools.github_tools.github_api_request")
+def test_github_get_workflow_run_success(mock_api_req):
+    mock_api_req.return_value = json.dumps({
+        "success": True,
+        "ok": True,
+        "status": 200,
+        "json": {
+            "id": 1001,
+            "name": "CI",
+            "display_title": "Run tests",
+            "status": "completed",
+            "conclusion": "failure",
+            "event": "pull_request",
+            "head_branch": "feature/github-tools",
+            "head_sha": "deadbeef",
+            "html_url": "https://github.com/octocat/hello-world/actions/runs/1001",
+            "created_at": "2026-07-07T10:30:00Z",
+            "updated_at": "2026-07-07T10:35:00Z",
+            "run_attempt": 2,
+        },
+    })
+
+    res_str = github_get_workflow_run_tool("octocat/hello-world", 1001)
+    data = json.loads(res_str)
+
+    assert data["id"] == 1001
+    assert data["name"] == "CI"
+    assert data["display_title"] == "Run tests"
+    assert data["status"] == "completed"
+    assert data["conclusion"] == "failure"
+    assert data["head_branch"] == "feature/github-tools"
+    assert data["head_sha"] == "deadbeef"
+    assert data["run_attempt"] == 2
+
+    mock_api_req.assert_called_once_with(
+        "GET",
+        "/repos/octocat/hello-world/actions/runs/1001",
+    )
+
+
+@patch("tools.github_tools.github_api_request")
+def test_github_rerun_workflow_success(mock_api_req):
+    mock_api_req.return_value = json.dumps({
+        "success": True,
+        "ok": True,
+        "status": 201,
+        "json": None,
+    })
+
+    res_str = github_rerun_workflow_tool("octocat/hello-world", 1001)
+    data = json.loads(res_str)
+
+    assert data["accepted"] is True
+    assert data["run_id"] == 1001
+    assert data["repository"] == "octocat/hello-world"
+
+    mock_api_req.assert_called_once_with(
+        "POST",
+        "/repos/octocat/hello-world/actions/runs/1001/rerun",
+    )
+
+
+@patch("tools.github_tools.github_api_request")
+def test_github_workflow_tools_failures(mock_api_req):
+    mock_api_req.return_value = json.dumps({
+        "success": True,
+        "ok": False,
+        "status": 404,
+        "json": {"message": "Not Found"},
+    })
+
+    list_res = json.loads(github_list_workflow_runs_tool("owner/repo"))
+    get_res = json.loads(github_get_workflow_run_tool("owner/repo", 1001))
+    rerun_res = json.loads(github_rerun_workflow_tool("owner/repo", 1001))
+
+    assert "GitHub API error (404): Not Found" in list_res["error"]
+    assert "GitHub API error (404): Not Found" in get_res["error"]
+    assert "GitHub API error (404): Not Found" in rerun_res["error"]

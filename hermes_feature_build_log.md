@@ -156,3 +156,47 @@
 - **Status:** Completed
 - **Details:** Committed the changes with message `feat: add github_add_issue_comment tool`. Commit hash: `c7621d48385afb1a2feb690248ce646024a5f08e`.
 
+## Step D1: Inspect Branch, GitHub Module, Tests, and Toolset Wiring
+- **Status:** Completed
+- **Details:** Re-checked repo state on `main`, confirmed the native GitHub implementation lived in `tools/github_tools.py`, reviewed `tests/tools/test_github_tools.py`, and verified the opt-in `github` toolset wiring in `toolsets.py` before expanding scope.
+
+## Step D2: Save Repo-Local Expansion Plan
+- **Status:** Completed
+- **Details:** Wrote the workflow expansion plan to `C:\Users\ralle\projects\Hermes\.hermes\plans\2026-07-07_103747-github-workflow-expansion.md`, documenting architecture, implementation order, verification commands, and exit criteria.
+
+## Step D3: Add github_create_issue
+- **Status:** Completed
+- **Details:** Added `github_create_issue_tool` with compact response shaping, schema/handler/registry wiring, and inclusion in the `github` toolset. The tool POSTs to `/repos/{owner}/{repo}/issues` and supports `title`, optional `body`, `labels`, and `assignees`.
+
+## Step D4: Add github_add_pull_request_review_comment
+- **Status:** Completed
+- **Details:** Added `github_add_pull_request_review_comment_tool` for inline PR feedback via `/repos/{owner}/{repo}/pulls/{pull_number}/comments`, supporting `body`, `commit_id`, `path`, `line`, and optional `side`, with compact returned metadata for agents.
+
+## Step D5: Add github_list_workflow_runs
+- **Status:** Completed
+- **Details:** Added `github_list_workflow_runs_tool` for GitHub Actions inspection via `/repos/{owner}/{repo}/actions/runs`, including optional `status` filtering and compact workflow-run summaries.
+
+## Step D6: Add github_get_workflow_run
+- **Status:** Completed
+- **Details:** Added `github_get_workflow_run_tool` for detailed GitHub Actions run inspection via `/repos/{owner}/{repo}/actions/runs/{run_id}` returning branch, SHA, status, conclusion, timestamps, and run attempt.
+
+## Step D7: Add github_rerun_workflow
+- **Status:** Completed
+- **Details:** Added `github_rerun_workflow_tool` for Actions reruns via `/repos/{owner}/{repo}/actions/runs/{run_id}/rerun`, returning an acknowledgement payload with `accepted`, `repository`, and `run_id` when the API accepts the rerun.
+
+## Step D8: Add Mocked Tests for New Workflow Tools
+- **Status:** Completed
+- **Details:** Extended `tests/tools/test_github_tools.py` with deterministic mocked coverage for create-issue success/failure cases, PR review comment success/failure cases, workflow-run listing and detail shaping, and workflow rerun success/error handling.
+
+## Step D9: Run Focused GitHub Verification
+- **Status:** Completed
+- **Details:** Ran `python -m py_compile tools/github_tools.py tests/tools/test_github_tools.py toolsets.py` successfully, then ran `uv run --extra dev pytest tests/tools/test_github_tools.py -v --tb=short`. Result: **26 passed**.
+
+## Step D10: Run Combined Regression Suite
+- **Status:** Completed
+- **Details:** Ran `uv run --extra dev pytest tests/tools/test_http_request_tool.py tests/tools/test_github_tools.py tests/tools/test_url_safety.py tests/tools/test_web_tools_config.py tests/tools/test_tool_search.py -v --tb=short`. Result: **252 passed**, **8 warnings**, **0 failures**.
+
+## Step D11: Review Diff for Cleanliness
+- **Status:** Completed
+- **Details:** Reviewed `git diff` and confirmed the change set is limited to `tools/github_tools.py`, `tests/tools/test_github_tools.py`, and `toolsets.py`, plus the saved plan file. No debug code or unrelated file edits were introduced.
+

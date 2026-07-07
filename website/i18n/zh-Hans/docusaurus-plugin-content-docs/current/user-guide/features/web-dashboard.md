@@ -198,7 +198,9 @@ Web Dashboard 暴露了一个供前端使用的 REST API。你也可以直接调
 
 ### GET /api/status
 
-返回 agent 版本、gateway 状态、平台状态和活跃会话数。
+返回 agent 版本、gateway 状态、平台状态、活跃会话数，以及供 hosted-agent 健康检查使用的
+`nous_session_valid`（`valid`、`terminal` 或 `unknown`），用于区分终止性的 Nous 凭据故障和仍在运行的 gateway。
+如果客户端可能连接旧版 agent，应将缺失值或无法识别的值视为 `unknown`。
 
 ### GET /api/sessions
 

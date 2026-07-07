@@ -304,9 +304,28 @@ function appendProfileParam(url: string, profile?: string): string {
   return `${url}${url.includes("?") ? "&" : "?"}profile=${encodeURIComponent(profile)}`;
 }
 
+type NousSessionValidity = "valid" | "terminal" | "unknown";
+type RawStatusResponse = Omit<StatusResponse, "nous_session_valid"> & {
+  nous_session_valid?: unknown;
+};
+
+function normalizeNousSessionValidity(value: unknown): NousSessionValidity {
+  return value === "valid" || value === "terminal" || value === "unknown"
+    ? value
+    : "unknown";
+}
+
+function normalizeStatusResponse(status: RawStatusResponse): StatusResponse {
+  return {
+    ...status,
+    nous_session_valid: normalizeNousSessionValidity(status.nous_session_valid),
+  };
+}
+
 export const api = {
   buildWsUrl,
-  getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getStatus: () =>
+    fetchJSON<RawStatusResponse>("/api/status").then(normalizeStatusResponse),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
@@ -1793,6 +1812,12 @@ export interface StatusResponse {
   /** False when the dashboard is running in a hosted/managed layout where
    * updates are handled by the outer launcher instead of ``hermes update``. */
   can_update_hermes?: boolean;
+  /** Nous bootstrap-session validity for hosted-agent health sweeps.
+   * ``terminal`` means the local auth store has a relogin-required Nous failure;
+   * ``valid`` means usable credentials are present; ``unknown`` means
+   * indeterminate, transient/non-terminal auth state, or a missing/unrecognized
+   * value normalized at the API boundary. */
+  nous_session_valid?: NousSessionValidity;
   config_path: string;
   config_version: number;
   env_path: string;

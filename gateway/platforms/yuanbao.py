@@ -4861,6 +4861,10 @@ class MessageSender:
 
     async def _build_msg_body_with_mentions(self, text: str, group_code: str) -> list:
         """Parse @nickname patterns and build mixed TIMTextElem + TIMCustomElem msg_body."""
+        # Fast path: no @-mention in text, return as-is
+        if "@" not in text:
+            return [{"msg_type": "TIMTextElem", "msg_content": {"text": text}}]
+
         # Try cache first
         cached = self._adapter._member_cache.get(group_code)
         members: list = []

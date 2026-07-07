@@ -2082,6 +2082,16 @@ def _launch_tui(
         env["HERMES_TUI_TOOL_PROGRESS"] = "off"
     if accept_hooks:
         env["HERMES_ACCEPT_HOOKS"] = "1"
+
+    # Bridge display.tui_vim_mode config to env var for TUI
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        display_cfg = cfg.get("display", {})
+        if display_cfg.get("tui_vim_mode"):
+            env["HERMES_TUI_VIM_MODE"] = "1"
+    except Exception:
+        pass  # Fail silently, vim mode just won't be enabled from config
     # Guarantee a generous V8 heap for the TUI. Default node cap is ~1.5–4GB
     # depending on version and can fatal-OOM on long sessions with large
     # transcripts / reasoning blobs. We target 8GB on an unconstrained host,

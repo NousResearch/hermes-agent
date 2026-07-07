@@ -16,7 +16,7 @@ import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
-import { patchUiState } from '../../uiStore.js'
+import { getUiState, patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
@@ -426,6 +426,17 @@ export const sessionCommands: SlashCommand[] = [
           ctx.transcript.sys(`indicator → ${r.value}`)
         })
       )
+    }
+  },
+
+  {
+    help: 'toggle vim mode for input (hjkl navigation, d/c/y operators)',
+    name: 'vim',
+    run: (arg, ctx) => {
+      const current = getUiState().viModeEnabled
+      const next = arg.toLowerCase() === 'on' ? true : arg.toLowerCase() === 'off' ? false : !current
+      patchUiState({ viModeEnabled: next })
+      ctx.transcript.sys(`vim mode ${next ? 'on' : 'off'}`)
     }
   },
 

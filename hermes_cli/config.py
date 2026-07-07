@@ -1769,6 +1769,11 @@ DEFAULT_CONFIG = {
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
+        # Enable vim/vi keybindings in the TUI input area. When true, the input
+        # starts in insert mode but supports Escape to enter normal mode with
+        # vim-style navigation (h/j/k/l, w/b/e) and editing (d/c/y operators,
+        # dd, x, etc.). Override per-session via HERMES_TUI_VIM_MODE env var.
+        "tui_vim_mode": False,
         # Seconds between prompt_toolkit redraws in the classic CLI when idle.
         # Default 1.0 keeps the wall-clock status-bar read-outs (idle-since-
         # last-turn) ticking and keeps the bottom chrome alive during idle —

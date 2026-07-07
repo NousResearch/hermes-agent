@@ -73,3 +73,8 @@ export const INLINE_MODE = inlineOverride ?? TERMUX_TUI_MODE
 // Live FPS counter overlay, fed by ink's onFrame (real render rate, not a
 // synthetic timer).
 export const SHOW_FPS = truthy(process.env.HERMES_TUI_FPS)
+
+// Vim/vi mode for the text input. When enabled, the composer starts in insert
+// mode but supports Escape to enter normal mode with vim-style navigation and
+// editing commands (h/j/k/l, w/b/e, d/c/y operators, etc.).
+export const VIM_MODE = truthy(process.env.HERMES_TUI_VIM_MODE)

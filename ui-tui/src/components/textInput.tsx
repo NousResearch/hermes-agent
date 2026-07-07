@@ -1,8 +1,9 @@
 import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
-import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { type MutableRefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
+import { VIM_MODE } from '../config/env.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
 import {
@@ -14,6 +15,13 @@ import {
   type ParsedVoiceRecordKey
 } from '../lib/platform.js'
 import { isTermuxTuiMode } from '../lib/termux.js'
+import {
+  initialViState,
+  processViKey,
+  viModeIndicator,
+  type ViModeType,
+  type ViState
+} from '../lib/viMode.js'
 
 type InkExt = typeof Ink & {
   stringWidth: (s: string) => number
@@ -461,14 +469,17 @@ export function TextInput({
   onChange,
   onPaste,
   onSubmit,
+  onViModeChange,
   mask,
   mouseApiRef,
+  viModeEnabled = VIM_MODE,
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
   focus = true
 }: TextInputProps) {
   const [cur, setCur] = useState(value.length)
   const [sel, setSel] = useState<null | { end: number; start: number }>(null)
+  const [viState, setViState] = useState<ViState>(initialViState)
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
   const { stdout } = useStdout()
@@ -492,9 +503,22 @@ export function TextInput({
   const cbChange = useRef(onChange)
   const cbSubmit = useRef(onSubmit)
   const cbPaste = useRef(onPaste)
+  const cbViModeChange = useRef(onViModeChange)
   cbChange.current = onChange
   cbSubmit.current = onSubmit
   cbPaste.current = onPaste
+  cbViModeChange.current = onViModeChange
+
+  // Ref for vim state to avoid stale closures in useInput
+  const viStateRef = useRef(viState)
+  viStateRef.current = viState
+
+  // Notify parent of vim mode changes
+  useEffect(() => {
+    if (viModeEnabled && cbViModeChange.current) {
+      cbViModeChange.current(viState.mode)
+    }
+  }, [viModeEnabled, viState.mode])
 
   const raw = self.current ? vRef.current : value
   const display = mask ? raw.replace(/[^\n]/g, mask[0] ?? '*') : raw
@@ -931,9 +955,121 @@ export function TextInput({
       // follow-up on #19835). The pass-through predicate is a no-op for
       // ordinary typing and plain paste when voice is unbound to 'v'.
       if (shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey)) {
+        // In vim normal mode, Escape should NOT pass through - it's just a no-op
+        if (viModeEnabled && k.escape && viStateRef.current.mode === 'normal') {
+          return
+        }
         flushKeyBurst()
 
         return
+      }
+
+      // Vim mode key processing
+      if (viModeEnabled) {
+        const viEvent = {
+          input: inp,
+          key: {
+            ctrl: k.ctrl,
+            shift: k.shift,
+            meta: k.meta,
+            escape: k.escape,
+            backspace: k.backspace,
+            delete: k.delete,
+            return: k.return,
+            upArrow: k.upArrow,
+            downArrow: k.downArrow,
+            leftArrow: k.leftArrow,
+            rightArrow: k.rightArrow
+          }
+        }
+
+        const { action, newState } = processViKey(viStateRef.current, vRef.current, curRef.current, viEvent)
+        setViState(newState)
+
+        // Handle vim action
+        switch (action.type) {
+          case 'passthrough':
+            // Let default handler process this key
+            break
+
+          case 'none':
+            // Key consumed but no action needed
+            return
+
+          case 'cursor':
+            if (action.cursor !== undefined) {
+              clearSel()
+              setCur(action.cursor)
+              curRef.current = action.cursor
+            }
+            return
+
+          case 'insert':
+            if (action.cursor !== undefined) {
+              clearSel()
+              setCur(action.cursor)
+              curRef.current = action.cursor
+            }
+            if (action.text) {
+              // Insert text (e.g., newline for o/O commands)
+              const c = curRef.current
+              const v = vRef.current
+              const newValue = v.slice(0, c) + action.text + v.slice(c)
+              const newCursor = c + (action.text === '\n' && inp === 'O' ? 0 : action.text.length)
+              commit(newValue, newCursor)
+            }
+            return
+
+          case 'delete':
+            if (action.deleteRange) {
+              const { start, end } = action.deleteRange
+              const newValue = vRef.current.slice(0, start) + vRef.current.slice(end)
+              commit(newValue, action.cursor ?? start)
+            }
+            return
+
+          case 'change':
+            if (action.deleteRange) {
+              const { start, end } = action.deleteRange
+              const newValue = vRef.current.slice(0, start) + vRef.current.slice(end)
+              commit(newValue, action.cursor ?? start)
+            }
+            return
+
+          case 'yank':
+            // Text is stored in viState.register, nothing else to do
+            return
+
+          case 'paste':
+            if (action.text && action.cursor !== undefined) {
+              const c = action.cursor
+              const v = vRef.current
+              const newValue = v.slice(0, c) + action.text + v.slice(c)
+              commit(newValue, c + action.text.length)
+            }
+            return
+
+          case 'replace':
+            if (action.deleteRange && action.text !== undefined) {
+              const { start, end } = action.deleteRange
+              const newValue = vRef.current.slice(0, start) + action.text + vRef.current.slice(end)
+              commit(newValue, start)
+            }
+            return
+
+          case 'undo':
+            swap(undo, redo)
+            return
+
+          case 'redo':
+            swap(redo, undo)
+            return
+
+          case 'submit':
+            flushKeyBurst()
+            cbSubmit.current?.(vRef.current)
+            return
+        }
       }
 
       if (
@@ -1308,8 +1444,12 @@ interface TextInputProps {
     e: PasteEvent
   ) => { cursor: number; value: string } | Promise<{ cursor: number; value: string } | null> | null
   onSubmit?: (v: string) => void
+  /** Callback to report vim mode changes to parent (for mode indicator display) */
+  onViModeChange?: (mode: ViModeType) => void
   placeholder?: string
   value: string
+  /** Override vim mode enable (default: reads from HERMES_TUI_VIM_MODE env) */
+  viModeEnabled?: boolean
   voiceRecordKey?: ParsedVoiceRecordKey
 }
 
@@ -1360,3 +1500,6 @@ export interface TextInputMouseApi {
   end: () => void
   startAtBeginning: () => void
 }
+
+// Re-export vim mode utilities for parent components
+export { viModeIndicator, type ViModeType } from '../lib/viMode.js'

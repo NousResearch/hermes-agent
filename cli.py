@@ -60,6 +60,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.application import Application
+from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl, ConditionalContainer, WindowAlign
 from prompt_toolkit.layout.processors import Processor, Transformation, PasswordProcessor, ConditionalProcessor
 from prompt_toolkit.filters import Condition
@@ -14942,10 +14943,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         )
 
         # Create the application
+        # Check for vim mode from config (display.tui_vim_mode works for both CLI and TUI)
+        _vim_mode = CLI_CONFIG.get("display", {}).get("tui_vim_mode", False)
+        _editing_mode = EditingMode.VI if _vim_mode else EditingMode.EMACS
         app = Application(
             layout=layout,
             key_bindings=kb,
             style=style,
+            editing_mode=_editing_mode,
             full_screen=False,
             mouse_support=False,
             **({"output": _cpr_disabled_output} if _cpr_disabled_output is not None else {}),

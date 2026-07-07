@@ -1,6 +1,6 @@
 import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { Fragment, memo, useEffect, useMemo, useRef } from 'react'
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
@@ -31,7 +31,7 @@ import { MessageLine } from './messageLine.js'
 import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
-import { TextInput, type TextInputMouseApi } from './textInput.js'
+import { TextInput, type TextInputMouseApi, viModeIndicator, type ViModeType } from './textInput.js'
 
 // Box geometry, kept here so the transcript's reservation math matches the
 // rendered overlay exactly.
@@ -265,6 +265,7 @@ const ComposerPane = memo(function ComposerPane({
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'>) {
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
+  const [viMode, setViMode] = useState<ViModeType>('insert')
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
 
   const promptText = composerPromptText(
@@ -409,11 +410,26 @@ const ComposerPane = memo(function ComposerPane({
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
+                  onViModeChange={setViMode}
                   placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
                   value={composer.input}
+                  viModeEnabled={ui.viModeEnabled}
                   voiceRecordKey={composer.voiceRecordKey}
                 />
               </Box>
+
+              {/* Vim mode indicator */}
+              {ui.viModeEnabled && (
+                <Box marginLeft={1}>
+                  <Text
+                    backgroundColor={viMode === 'normal' ? ui.theme.color.label : ui.theme.color.ok}
+                    bold
+                    color={ui.theme.color.statusBg}
+                  >
+                    {' '}{viModeIndicator(viMode)}{' '}
+                  </Text>
+                </Box>
+              )}
 
               <Box position="absolute" right={0}>
                 <GoodVibesHeart t={ui.theme} tick={status.goodVibesTick} />

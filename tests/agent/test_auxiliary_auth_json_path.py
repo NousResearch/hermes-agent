@@ -1,5 +1,6 @@
 """Tests for profile-aware path resolution in auxiliary client (#60241)."""
 
+import importlib
 import pytest
 from pathlib import Path
 
@@ -24,14 +25,15 @@ class TestAuthJsonPath:
         assert path_a.name == "auth.json"
 
         # Switch profile
+        import agent.auxiliary_client as aux_mod
+
+        importlib.reload(aux_mod)
+        # Re-apply monkeypatch after reload (reload re-executes the import
+        # from hermes_cli.config, which overwrites the module-level name)
         monkeypatch.setattr(
             "agent.auxiliary_client.get_hermes_home",
             lambda: profile_b,
         )
-        import importlib
-        import agent.auxiliary_client as aux_mod
-
-        importlib.reload(aux_mod)
         path_b = aux_mod._auth_json_path()
         assert str(profile_b) in str(path_b)
         assert path_a != path_b

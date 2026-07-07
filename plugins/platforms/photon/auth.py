@@ -40,7 +40,9 @@ import json
 import logging
 import os
 import re
+import stat
 import time
+import uuid
 from base64 import b64encode
 from dataclasses import dataclass
 from pathlib import Path
@@ -109,14 +111,31 @@ def _load_auth() -> Dict[str, Any]:
 def _save_auth(data: Dict[str, Any]) -> None:
     path = _auth_json_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2, sort_keys=True)
+    # Per-process random temp suffix avoids collisions between concurrent
+    # writers and stale leftovers from a crashed prior write.
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+    # Create with 0o600 atomically via os.open(O_EXCL) + fdopen: the old
+    # open() → write → chmod() sequence left a window where the bearer
+    # token sat world-readable at process umask (typically 0o644), and the
+    # predictable temp name could be pre-planted (symlink attack). Mirrors
+    # hermes_cli/auth.py:_save_auth_store (#19673, #21148).
+    fd = os.open(
+        str(tmp),
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        stat.S_IRUSR | stat.S_IWUSR,
+    )
     try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        pass
-    tmp.replace(path)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp.replace(path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def load_photon_token() -> Optional[str]:

@@ -10,9 +10,17 @@ provider would keep short-circuiting forever:
 
 - ``switch_model()``   (user-initiated /model swap)
 - ``try_activate_fallback()``  (automatic provider fallback)
+- ``restore_primary_runtime()``  (turn-start restore back to the primary)
+
+The non-streaming sibling ``interruptible_api_call`` shares the same
+breaker (guard at entry, bump on stale_call_kill, reset on success) —
+quiet-mode / subagent sessions take that path and had the identical
+infinite stale-retry class.
 """
 
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from run_agent import AIAgent
 
@@ -145,3 +153,64 @@ def test_fallback_exhaustion_keeps_stale_streak():
 
     assert agent._try_activate_fallback() is False
     assert agent._consecutive_stale_streams == 7
+
+
+def test_restore_primary_runtime_resets_stale_streak():
+    """Turn-start restore back to the primary is the third provider-swap
+    path: the streak measured the fallback we're leaving, so the restored
+    primary must get a fresh attempt instead of an instant short-circuit."""
+    fbs = [{"provider": "openai", "model": "gpt-4o"}]
+    agent = _make_fallback_agent(fallback_model=fbs)
+
+    with patch(
+        "agent.auxiliary_client.resolve_provider_client",
+        return_value=(_mock_client(), "resolved"),
+    ):
+        assert agent._try_activate_fallback() is True
+
+    # Streak accumulated while wedged on the FALLBACK provider.
+    agent._consecutive_stale_streams = 7
+
+    with patch("run_agent.OpenAI", return_value=MagicMock()):
+        assert agent._restore_primary_runtime() is True
+
+    assert agent._consecutive_stale_streams == 0
+
+
+def test_no_fallback_restore_noop_keeps_stale_streak():
+    """When no fallback was activated, restore is a no-op (returns False)
+    and must NOT clear the streak — the session never left the wedged
+    primary, so the breaker's cross-turn latch has to survive turn starts."""
+    agent = _make_fallback_agent(fallback_model=[])
+    agent._consecutive_stale_streams = 7
+
+    assert agent._restore_primary_runtime() is False
+    assert agent._consecutive_stale_streams == 7
+
+
+class TestNonStreamingSibling:
+    """interruptible_api_call carries the same breaker (#58962)."""
+
+    def test_non_streaming_short_circuits_at_threshold(self, monkeypatch):
+        monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "3")
+        agent = _make_fallback_agent(fallback_model=[])
+        agent._consecutive_stale_streams = 3
+
+        with pytest.raises(RuntimeError, match="unresponsive"):
+            agent._interruptible_api_call({})
+
+        # The client is never touched on the short-circuit path.
+        agent.client.chat.completions.create.assert_not_called()
+        assert agent._consecutive_stale_streams == 3
+
+    def test_non_streaming_success_resets_streak(self, monkeypatch):
+        monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "3")
+        agent = _make_fallback_agent(fallback_model=[])
+        agent._consecutive_stale_streams = 2  # below threshold
+        agent.client.chat.completions.create.return_value = MagicMock(
+            name="resp", choices=[MagicMock()]
+        )
+
+        resp = agent._interruptible_api_call({"model": "m", "messages": []})
+        assert resp is not None
+        assert agent._consecutive_stale_streams == 0

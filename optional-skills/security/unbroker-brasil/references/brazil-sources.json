@@ -1,0 +1,57 @@
+{
+  "version": "1.0.0",
+  "jurisdiction": "BR",
+  "source_classes": [
+    {
+      "id": "search_engines",
+      "name": "Search engines and cached snippets",
+      "examples": ["Google", "Bing", "SearXNG"],
+      "action": "remove at source first, then request de-indexing/outdated-content removal",
+      "state_hint": "indirect_exposure until source or search result disappears"
+    },
+    {
+      "id": "people_phone_directories",
+      "name": "Phone/address and people directories",
+      "examples": ["Telelistas-like directories", "local phone/address lookups", "reverse-phone pages"],
+      "action": "direct opt-out form or LGPD e-mail to privacy/support/DPO",
+      "state_hint": "found when page exposes subject identifiers"
+    },
+    {
+      "id": "legal_mirrors",
+      "name": "Legal/court/publication mirrors",
+      "examples": ["Jusbrasil", "Escavador", "Diario Oficial mirrors"],
+      "action": "mirror suppression/de-indexing; official record correction is human/legal task",
+      "state_hint": "indirect_exposure for snippets or mirrors; human_task_queued for official correction"
+    },
+    {
+      "id": "cnpj_business_mirrors",
+      "name": "CNPJ/MEI/business registry mirrors",
+      "examples": ["CNPJ directories", "Receita-sourced mirrors", "partner/company pages"],
+      "action": "request correction/suppression of stale/private fields from mirror; official Receita changes are user/legal task",
+      "state_hint": "found if private phone/address/e-mail is exposed beyond official need"
+    },
+    {
+      "id": "profile_social_mirrors",
+      "name": "Social/profile/user aggregation mirrors",
+      "examples": ["username aggregators", "cached profile mirrors", "forum profile mirrors"],
+      "action": "remove/change original account when user controls it; then mirror removal/de-indexing",
+      "state_hint": "found or indirect_exposure depending on match strength"
+    },
+    {
+      "id": "leak_indicators",
+      "name": "Leak/paste/breach indicators",
+      "examples": ["paste mirrors", "breach teaser pages", "indexed leaked snippets"],
+      "action": "do not download; request host removal and search de-indexing",
+      "state_hint": "indirect_exposure unless current public page directly exposes data"
+    }
+  ],
+  "priority_sites": [
+    {"id": "jusbrasil", "domain": "jusbrasil.com.br", "class": "legal_mirrors"},
+    {"id": "escavador", "domain": "escavador.com", "class": "legal_mirrors"},
+    {"id": "telelistas", "domain": "telelistas.net", "class": "people_phone_directories"},
+    {"id": "reclame_aqui", "domain": "reclameaqui.com.br", "class": "profile_social_mirrors"},
+    {"id": "cnpj_biz", "domain": "cnpj.biz", "class": "cnpj_business_mirrors"},
+    {"id": "casadosdados", "domain": "casadosdados.com.br", "class": "cnpj_business_mirrors"},
+    {"id": "empresascnpj", "domain": "empresascnpj.com", "class": "cnpj_business_mirrors"}
+  ]
+}

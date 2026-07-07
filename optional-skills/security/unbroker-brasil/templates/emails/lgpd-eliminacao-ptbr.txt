@@ -1,0 +1,31 @@
+Assunto: Solicitação LGPD de eliminação/bloqueio de dados pessoais
+
+Olá,
+
+Sou {{subject_name}} e estou exercendo meus direitos de titular previstos na Lei Geral de Proteção de Dados (Lei nº 13.709/2018), especialmente os direitos do art. 18.
+
+Identifiquei dados pessoais meus publicados, indexados ou tratados por este serviço na(s) seguinte(s) URL(s):
+
+{{listing_urls}}
+
+Dados visíveis relacionados a mim:
+{{visible_fields}}
+
+Solicito:
+
+1. confirmação sobre o tratamento dos meus dados pessoais;
+2. eliminação, anonimização ou bloqueio dos dados pessoais desnecessários, excessivos, desatualizados ou tratados sem base legal aplicável;
+3. remoção da página pública ou aplicação de noindex/de-indexação quando aplicável;
+4. confirmação por e-mail após a conclusão;
+5. informação sobre compartilhamento com terceiros, quando aplicável.
+
+Para identificação mínima deste pedido, informo apenas os dados necessários:
+Nome: {{subject_name}}
+E-mail para resposta: {{contact_email}}
+Localidade, se necessária para localizar o registro: {{location}}
+
+Não autorizo o uso destes dados para novas finalidades além do atendimento desta solicitação.
+
+Obrigado.
+
+{{subject_name}}

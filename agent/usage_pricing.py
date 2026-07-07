@@ -112,6 +112,23 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openrouter.ai/anthropic/claude-opus-4.8-fast",
         pricing_version="anthropic-pricing-2026-05",
     ),
+    # ── Anthropic Claude Sonnet 5 ────────────────────────────────────────
+    # Launched 2026-06-30. Introductory pricing ($2/$10 per MTok) runs
+    # through 2026-08-31, after which it reverts to $3/$15 (matching
+    # Sonnet 4.6). Update this entry when the intro window closes.
+    # Source: https://platform.claude.com/docs/en/about-claude/pricing
+    (
+        "anthropic",
+        "claude-sonnet-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("10.00"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        cache_write_cost_per_million=Decimal("2.50"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-06-intro",
+    ),
     # ── Anthropic Claude 4.7 ─────────────────────────────────────────────
     # Opus 4.5/4.6/4.7 share $5/$25 pricing (new tokenizer, up to 35% more
     # tokens for the same text).

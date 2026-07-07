@@ -319,11 +319,37 @@ def _run_agent(
                 if detected:
                     effective_provider, effective_model = detected
 
-    runtime = resolve_runtime_provider(
-        requested=effective_provider,
-        target_model=effective_model or None,
-        explicit_base_url=explicit_base_url_from_alias,
-    )
+    # Read the effective fallback chain from profile config so oneshot workers
+    # honour the same merge semantics as interactive CLI and gateway sessions.
+    _fb = get_fallback_chain(cfg)
+
+    from hermes_cli.auth import AuthError
+
+    try:
+        runtime = resolve_runtime_provider(
+            requested=effective_provider,
+            target_model=effective_model or None,
+            explicit_base_url=explicit_base_url_from_alias,
+        )
+    except AuthError:
+        runtime = None
+        for fb_entry in _fb:
+            fb_provider = (fb_entry.get("provider") or "").strip()
+            fb_model = (fb_entry.get("model") or "").strip()
+            if not fb_provider or not fb_model:
+                continue
+            try:
+                runtime = resolve_runtime_provider(
+                    requested=fb_provider,
+                    target_model=fb_model or None,
+                )
+                effective_provider = fb_provider
+                effective_model = fb_model
+                break
+            except AuthError:
+                continue
+        if runtime is None:
+            raise  # re-raise the original AuthError
 
     # Pull in explicit toolsets when provided; otherwise use whatever the user
     # has enabled for "cli". sorted() gives stable ordering for config-derived
@@ -333,9 +359,6 @@ def _run_agent(
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
     session_db = _create_session_db_for_oneshot()
-    # Read the effective fallback chain from profile config so oneshot workers
-    # honour the same merge semantics as interactive CLI and gateway sessions.
-    _fb = get_fallback_chain(cfg)
 
     agent = AIAgent(
         api_key=runtime.get("api_key"),

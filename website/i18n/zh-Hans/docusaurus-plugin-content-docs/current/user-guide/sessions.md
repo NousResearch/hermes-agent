@@ -289,6 +289,32 @@ hermes sessions export backup.jsonl --redact
 
 `export` 接受与 `prune` / `archive` 相同的过滤器 — `--older-than` / `--newer-than` / `--before` / `--after`（时长如 `5h`/`2d`/`1w`、纯数字天数或 ISO 时间戳）、`--source`、`--title`、`--model`、`--provider`、`--cwd`、`--min-messages` / `--max-messages`、`--min-tokens` / `--max-tokens`、`--min-cost` / `--max-cost`、`--min-tool-calls` / `--max-tool-calls`、`--user`、`--chat-id`、`--chat-type`、`--branch` 和 `--end-reason`。加 `--dry-run` 可预览匹配的 session 而不写入任何内容。注意：带过滤器的批量导出只匹配*已结束*的 session；不带过滤器的 `export` 会导出所有 session（包括活跃的）。
 
+### 导出 Session 为 HTML
+
+`--format html` 生成一个完全独立的 HTML 文件 — 无远程依赖 — 带样式化的消息气泡、可折叠的工具输出，多 session 导出时还带侧边栏导航：
+
+```bash
+# 将一个 session 导出为独立 HTML 页面
+hermes sessions export --format html --session-id 20250305_091523_a1b2c3d4 transcript.html
+
+# 将最近一周的所有 Telegram session 导出到一个文件，并脱敏
+hermes sessions export --format html --newer-than 1w --source telegram --redact archive.html
+```
+
+### 只导出你的 Prompt
+
+`--only user-prompts` 只导出你写的 prompt — 不含助手回复、工具输出或系统上下文。适合构建 prompt 库或回顾你问过什么：
+
+```bash
+# 每个 prompt 一条 JSONL 记录（session id、序号、时间戳、文本）
+hermes sessions export prompts.jsonl --session-id 20250305_091523_a1b2c3d4 --only user-prompts
+
+# Markdown 格式，直接输出到 stdout
+hermes sessions export - --session-id 20250305_091523_a1b2c3d4 --only user-prompts --format md
+```
+
+支持 `--format jsonl`（默认）或 `md`，批量导出时同样支持全部过滤器，也可与 `--redact` 组合。
+
 ### 导出 Session 为 Markdown/QMD
 
 当你想在隐藏或删除旧 session 之前保留一份可读的文件归档时，传入 `--format md` 或 `--format qmd`。Markdown/QMD 导出会为每个 session 写入一个文件到目录中（默认：`~/.hermes/session-exports`）。

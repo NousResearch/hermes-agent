@@ -14,6 +14,10 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from utils import safe_json_loads
+from agent.decision_policy import (
+    MUTATING_TOOL_NAMES as DECISION_POLICY_MUTATING_TOOL_NAMES,
+    READ_ONLY_TOOL_NAMES as DECISION_POLICY_READ_ONLY_TOOL_NAMES,
+)
 from agent.tool_result_classification import file_mutation_result_landed
 
 
@@ -36,7 +40,7 @@ IDEMPOTENT_TOOL_NAMES = frozenset(
         "mcp_filesystem_get_file_info",
         "mcp_filesystem_search_files",
     }
-)
+) | DECISION_POLICY_READ_ONLY_TOOL_NAMES
 
 MUTATING_TOOL_NAMES = frozenset(
     {
@@ -57,7 +61,7 @@ MUTATING_TOOL_NAMES = frozenset(
         "delegate_task",
         "process",
     }
-)
+) | DECISION_POLICY_MUTATING_TOOL_NAMES
 
 
 @dataclass(frozen=True)

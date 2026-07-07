@@ -2116,6 +2116,32 @@ def terminal_tool(
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
 
+        # Continue-until-fork doctrine: terminal commands that cross a finite
+        # decision boundary stop before environment creation/execution and are
+        # delivered as final-response packets by the agent loop.
+        try:
+            from agent.decision_packet import decision_packet_terminal_result
+            from agent.decision_policy import evaluate_terminal_command
+
+            try:
+                policy_decision = evaluate_terminal_command(
+                    command,
+                    env_type=env_type,
+                    cwd=workdir or cwd,
+                    task_id=task_id or effective_task_id,
+                )
+            except Exception as exc:
+                # Fail closed: an unclassifiable terminal command stops rather
+                # than executing unchecked.
+                logger.debug("decision policy terminal preflight failed: %s", exc, exc_info=True)
+                from agent.decision_policy import fail_closed_result
+
+                policy_decision = fail_closed_result(f"terminal command: {command}", detail=str(exc))
+            if policy_decision.needs_chad:
+                return decision_packet_terminal_result(policy_decision.packet)
+        except Exception as exc:
+            logger.debug("decision policy terminal preflight import failed: %s", exc, exc_info=True)
+
         # Reject foreground commands where the model explicitly requests
         # a timeout above FOREGROUND_MAX_TIMEOUT — nudge it toward background.
         if not background and timeout and timeout > FOREGROUND_MAX_TIMEOUT:
@@ -2284,6 +2310,23 @@ def terminal_tool(
                 has_host_access=_docker_has_host_access(config),
             )
             if not approval["approved"]:
+                if approval.get("status") == "needs_chad" and approval.get("decision_packet"):
+                    from agent.decision_packet import DecisionPacket, decision_packet_terminal_result
+
+                    packet_data = approval.get("decision_packet") or {}
+                    packet = DecisionPacket(
+                        reason=str(packet_data.get("reason") or approval.get("description") or ""),
+                        proposed_action=str(packet_data.get("proposed_action") or ""),
+                        why_this_is_a_fork=str(packet_data.get("why_this_is_a_fork") or ""),
+                        safest_default=str(packet_data.get("safest_default") or ""),
+                        options=[
+                            str(option)
+                            for option in packet_data.get("options", [])
+                            if isinstance(option, str)
+                        ],
+                        evidence_summary=str(packet_data.get("evidence_summary") or ""),
+                    )
+                    return decision_packet_terminal_result(packet)
                 # Check if this is an approval_required (gateway ask mode)
                 if approval.get("status") == "pending_approval":
                     return json.dumps({

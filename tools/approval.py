@@ -2291,6 +2291,38 @@ def check_all_command_guards(command: str, env_type: str,
     such a session is no longer isolated, so it goes through the normal flow
     instead of the container fast-path.
     """
+    # Continue-until-fork doctrine: finite user-decision forks are not approval
+    # prompts. They stop the turn with a structured packet so the caller can
+    # deliver it as final_response instead of waiting on an approval UI.
+    try:
+        from agent.decision_policy import evaluate_terminal_command
+
+        # Destructive-FS/redirect commands are owned by this layer's existing
+        # interactive approval flow; the doctrine gates them at the turn-halt
+        # preflights instead, so we don't preempt that flow here.
+        policy_decision = evaluate_terminal_command(
+            command, env_type=env_type, include_destructive_fs=False
+        )
+    except Exception as exc:
+        # Fail closed: a terminal command whose classifier raised must not be
+        # auto-approved. Emit a NEEDS_CHAD packet instead of continuing.
+        logger.debug("decision policy terminal check failed: %s", exc, exc_info=True)
+        try:
+            from agent.decision_policy import fail_closed_result
+
+            policy_decision = fail_closed_result(f"terminal command: {command}", detail=str(exc))
+        except Exception:
+            policy_decision = None
+    if policy_decision is not None and policy_decision.needs_chad:
+        packet = policy_decision.packet
+        return {
+            "approved": False,
+            "status": "needs_chad",
+            "decision_packet": packet.to_dict(),
+            "message": packet.to_text(),
+            "description": packet.reason,
+        }
+
     # Skip isolated container backends for both checks. Docker stops skipping
     # once host paths are bind-mounted into the sandbox.
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):

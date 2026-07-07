@@ -428,6 +428,8 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    if getattr(agent, "_decision_policy_halt_packet", None) is not None:
+        result["decision_packet"] = agent._decision_policy_halt_packet.to_dict()
     # Surface any post-loop cleanup failures so the caller can distinguish a
     # clean turn from one whose trajectory/session/resource teardown raised
     # (the response is still returned either way — #8049).

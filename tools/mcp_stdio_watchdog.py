@@ -138,6 +138,19 @@ def main(argv: list[str] | None = None) -> int:
         start_new_session=True,
     )
 
+    # Because the real server lives in its OWN process group (above), the
+    # parent's graceful-shutdown killpg of *our* group no longer reaches it.
+    # Forward SIGTERM/SIGINT to the child's group so graceful teardown
+    # (`_kill_orphaned_mcp_children`, shutdown sweeps) still kills a wedged
+    # server that ignores stdin EOF — otherwise the watchdog wrap would
+    # invert the bug it fixes.
+    def _forward_shutdown(signum, frame):  # noqa: ARG001
+        _terminate_process_group(proc)
+        sys.exit(128 + signum)
+
+    signal.signal(signal.SIGTERM, _forward_shutdown)
+    signal.signal(signal.SIGINT, _forward_shutdown)
+
     watchdog = threading.Thread(
         target=_watchdog_loop,
         args=(proc, args.ppid, args.create_time),

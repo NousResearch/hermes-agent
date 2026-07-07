@@ -4967,7 +4967,7 @@ class SessionDB:
         """List ended sessions that match read-only export filters.
 
         This helper intentionally does not delete, archive, or mutate rows. It
-        backs `hermes sessions export-md` bulk exports.
+        backs `hermes sessions export --format md/qmd` bulk exports.
         """
         clauses = ["ended_at IS NOT NULL"]
         params: list[Any] = []

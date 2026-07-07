@@ -309,26 +309,26 @@ Exported files contain one JSON object per line with full session metadata and a
 
 ### Export Sessions to Markdown/QMD
 
-Use Markdown/QMD export when you want a readable, file-based archive before hiding or deleting old sessions.
+Pass `--format md` or `--format qmd` when you want a readable, file-based archive before hiding or deleting old sessions. Markdown/QMD exports write one file per session into a directory (default: `~/.hermes/session-exports`).
 
 ```bash
 # Export one session to Markdown
-hermes sessions export-md --session-id 20250305_091523_a1b2c3d4
+hermes sessions export --format md --session-id 20250305_091523_a1b2c3d4
 
 # Export a compression lineage as one logical document
-hermes sessions export-md --session-id 20250305_091523_a1b2c3d4 --lineage logical
+hermes sessions export --format md --session-id 20250305_091523_a1b2c3d4 --lineage logical
 
 # Preview ended sessions older than 90 days without writing files
-hermes sessions export-md --older-than 90 --dry-run
+hermes sessions export --format md --older-than 90 --dry-run
 
 # Export ended Telegram sessions older than 30 days to QMD files
-hermes sessions export-md --older-than 30 --source telegram --format qmd
+hermes sessions export --format qmd --older-than 30 --source telegram
 
 # Only after verification, export and delete one explicitly named session
-hermes sessions export-md --session-id 20250305_091523_a1b2c3d4 --delete-after-verified --yes
+hermes sessions export --format md --session-id 20250305_091523_a1b2c3d4 --delete-after-verified --yes
 ```
 
-`export-md` writes one `.md` or `.qmd` file per exported session plus a `manifest.jsonl` with the file path, message count, lineage ids, and SHA-256. Bulk export requires a filter such as `--older-than` or `--source`; a bare bulk export is refused. `--delete-after-verified` is intentionally limited to `--session-id` and requires `--yes`.
+Markdown/QMD export writes one `.md` or `.qmd` file per exported session plus a `manifest.jsonl` with the file path, message count, lineage ids, and SHA-256. Bulk export requires a filter such as `--older-than` or `--source`; a bare bulk export is refused. `--delete-after-verified` is intentionally limited to `--session-id` and requires `--yes`.
 
 ### Delete a Session
 

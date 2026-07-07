@@ -3230,6 +3230,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # -- Voice mode persistence ------------------------------------------
 
     _VOICE_MODE_PATH = _hermes_home / "gateway_voice_mode.json"
+    _VOICE_CONTEXT_DIR = _hermes_home / "state" / "voice_context"
 
     def _voice_key(self, platform: Platform, chat_id: str) -> str:
         """Return a platform-namespaced key for voice mode state."""
@@ -3244,7 +3245,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not isinstance(data, dict):
             return {}
 
-        valid_modes = {"off", "voice_only", "all"}
+        valid_modes = {"off", "voice_only", "all", "context"}
         result = {}
         for chat_id, mode in data.items():
             if mode not in valid_modes:
@@ -3308,7 +3309,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Populates three fields from config + ``self._voice_mode``:
           - ``_auto_tts_default``: global default from ``voice.auto_tts``
           - ``_auto_tts_enabled_chats``: chats with mode ``voice_only``/``all``
-          - ``_auto_tts_disabled_chats``: chats with mode ``off``
+          - ``_auto_tts_disabled_chats``: chats with mode ``off``/``context``
         """
         platform = getattr(adapter, "platform", None)
         if not isinstance(platform, Platform):
@@ -3337,7 +3338,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             disabled_chats.clear()
             disabled_chats.update(
                 key[len(prefix):] for key, mode in self._voice_mode.items()
-                if mode == "off" and key.startswith(prefix)
+                if mode in {"off", "context"} and key.startswith(prefix)
             )
         if isinstance(enabled_chats, set):
             enabled_chats.clear()
@@ -12656,9 +12657,129 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return raw.guild.id
         return None
 
+    @staticmethod
+    def _coerce_config_id_set(raw: Any) -> set[str]:
+        """Normalize config id values from list/scalar/comma string to strings."""
+        if raw is None:
+            return set()
+        if isinstance(raw, (list, tuple, set)):
+            values = raw
+        else:
+            values = re.split(r"[\s,]+", str(raw))
+        return {str(v).strip() for v in values if str(v).strip()}
 
-    async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
-        """Join the user's current Discord voice channel."""
+    def _load_discord_voice_context_config(self) -> Dict[str, Any]:
+        """Read the bounded Discord voice-context listener config.
+
+        This is intentionally config.yaml-only behavioral state. Secrets stay
+        in .env; channel/category ids and retention choices are not secrets.
+        """
+        cfg: Dict[str, Any] = {}
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+        except Exception as exc:
+            logger.debug("Could not load discord.voice_context config: %s", exc)
+
+        voice_cfg = ((cfg.get("discord") or {}).get("voice_context") or {})
+        if not isinstance(voice_cfg, dict):
+            voice_cfg = {}
+        allowed_channel_ids = self._coerce_config_id_set(
+            voice_cfg.get("allowed_channel_ids")
+            or voice_cfg.get("allowed_voice_channel_ids")
+        )
+        allowed_category_ids = self._coerce_config_id_set(
+            voice_cfg.get("allowed_category_ids")
+            or voice_cfg.get("category_id")
+        )
+        return {
+            "enabled": bool(voice_cfg.get("enabled", False)),
+            "allowed_channel_ids": allowed_channel_ids,
+            "allowed_category_ids": allowed_category_ids,
+            "echo_transcripts": bool(voice_cfg.get("echo_transcripts", False)),
+        }
+
+    def _discord_voice_context_channel_allowed(
+        self, voice_channel: Any, config: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """Return True only for explicitly configured context-listen channels."""
+        cfg = config if config is not None else self._load_discord_voice_context_config()
+        if not cfg.get("enabled"):
+            return False
+        channel_id = str(getattr(voice_channel, "id", "")).strip()
+        category_id = str(getattr(voice_channel, "category_id", "") or "").strip()
+        allowed_channels = set(cfg.get("allowed_channel_ids") or set())
+        allowed_categories = set(cfg.get("allowed_category_ids") or set())
+        if channel_id and channel_id in allowed_channels:
+            return True
+        if category_id and category_id in allowed_categories:
+            return True
+        return False
+
+    def _voice_context_log_path(self, guild_id: int, voice_channel_id: str) -> Path:
+        stamp = datetime.utcnow().strftime("%Y%m%d")
+        safe_channel_id = re.sub(r"[^0-9A-Za-z_-]", "_", str(voice_channel_id or "unknown"))
+        return Path(self._VOICE_CONTEXT_DIR) / f"discord_g{guild_id}_vc{safe_channel_id}_{stamp}.jsonl"
+
+    def _record_voice_context_transcript(
+        self,
+        *,
+        guild_id: int,
+        text_channel_id: int,
+        user_id: int,
+        transcript: str,
+        adapter: Any,
+    ) -> None:
+        """Append a bounded transcript event for later summarization."""
+        voice_channel_id = ""
+        voice_channel_name = ""
+        try:
+            vc = getattr(adapter, "_voice_clients", {}).get(guild_id)
+            channel = getattr(vc, "channel", None)
+            voice_channel_id = str(getattr(channel, "id", "") or "")
+            voice_channel_name = str(getattr(channel, "name", "") or "")
+        except Exception:
+            pass
+
+        record = {
+            "type": "discord_voice_context.transcript",
+            "timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "guild_id": str(guild_id),
+            "voice_channel_id": voice_channel_id,
+            "voice_channel_name": voice_channel_name,
+            "text_channel_id": str(text_channel_id),
+            "user_id": str(user_id),
+            "transcript": transcript[:4000],
+            "raw_audio_retained": False,
+        }
+        path = self._voice_context_log_path(guild_id, voice_channel_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    async def _handle_voice_channel_context_join(
+        self, event: MessageEvent, target_channel_id: Optional[str] = None
+    ) -> str:
+        """Join a Discord voice channel in listen-only context mode."""
+        return await self._handle_voice_channel_join(
+            event,
+            reply_mode="context",
+            target_channel_id=target_channel_id,
+        )
+
+    async def _handle_voice_channel_join(
+        self,
+        event: MessageEvent,
+        *,
+        reply_mode: str = "all",
+        target_channel_id: Optional[str] = None,
+    ) -> str:
+        """Join a Discord voice channel.
+
+        ``reply_mode="all"`` is the interactive voice mode.  ``"context"`` is
+        listen-only: STT transcripts are persisted for later summarization but
+        are not routed into the agent as user prompts.
+        """
         adapter = self._adapter_for_source(event.source)
         if not hasattr(adapter, "join_voice_channel"):
             return "Voice channels are not supported on this platform."
@@ -12667,11 +12788,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not guild_id:
             return "This command only works in a Discord server."
 
-        voice_channel = await adapter.get_user_voice_channel(
-            guild_id, event.source.user_id
-        )
+        if target_channel_id:
+            if not hasattr(adapter, "get_voice_channel_by_id"):
+                return "This Discord adapter cannot join a voice channel by ID."
+            voice_channel = await adapter.get_voice_channel_by_id(
+                guild_id, target_channel_id
+            )
+        else:
+            voice_channel = await adapter.get_user_voice_channel(
+                guild_id, event.source.user_id
+            )
         if not voice_channel:
+            if target_channel_id:
+                return "I could not find that voice channel in this Discord server."
             return "You need to be in a voice channel first."
+
+        context_cfg: Dict[str, Any] = {}
+        if reply_mode == "context":
+            context_cfg = self._load_discord_voice_context_config()
+            if not self._discord_voice_context_channel_allowed(voice_channel, context_cfg):
+                return (
+                    "Voice context listening is disabled or this voice channel "
+                    "is not in discord.voice_context.allowed_channel_ids / "
+                    "allowed_category_ids."
+                )
 
         # Wire callbacks BEFORE join so voice input arriving immediately
         # after connection is not lost.
@@ -12703,8 +12843,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
             if hasattr(adapter, "_voice_sources"):
                 adapter._voice_sources[guild_id] = event.source.to_dict()
-            self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "all"
+            voice_key = self._voice_key(event.source.platform, event.source.chat_id)
+            self._voice_mode[voice_key] = reply_mode
             self._save_voice_modes()
+            if reply_mode == "context":
+                self._set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=True)
+                return (
+                    f"Joined voice channel **{voice_channel.name}** in context mode.\n"
+                    "I will listen for team context, write bounded private transcripts "
+                    "for later summarization, and I will not answer each utterance. "
+                    "Raw audio is not retained. Use /voice leave to disconnect."
+                )
             self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
             return (
                 f"Joined voice channel **{voice_channel.name}**.\n"
@@ -12832,6 +12981,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 user_id,
                 transcript[:100],
             )
+            return
+
+        voice_key = self._voice_key(Platform.DISCORD, str(text_ch_id))
+        voice_mode = self._voice_mode.get(voice_key, "off")
+        if voice_mode == "context":
+            try:
+                await asyncio.to_thread(
+                    self._record_voice_context_transcript,
+                    guild_id=guild_id,
+                    text_channel_id=text_ch_id,
+                    user_id=user_id,
+                    transcript=transcript,
+                    adapter=adapter,
+                )
+            except Exception as exc:
+                logger.warning("Failed to record Discord voice context transcript: %s", exc)
+
+            context_cfg = self._load_discord_voice_context_config()
+            if context_cfg.get("echo_transcripts"):
+                try:
+                    channel = adapter._client.get_channel(text_ch_id)
+                    if channel:
+                        safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
+                        await channel.send(f"**[Voice context]** <@{user_id}>: {safe_text}")
+                except Exception:
+                    pass
             return
 
         # Show transcript in text channel (after auth, with mention sanitization)

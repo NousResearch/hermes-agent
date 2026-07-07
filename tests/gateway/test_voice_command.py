@@ -117,6 +117,19 @@ class TestHandleVoiceCommand:
         assert runner._voice_mode["telegram:123"] == "all"
 
     @pytest.mark.asyncio
+    async def test_voice_context_dispatches_optional_channel_id(self, runner):
+        event = _make_event("/voice context 1282930260911984660")
+        runner._handle_voice_channel_context_join = AsyncMock(return_value="ok")
+
+        result = await runner._handle_voice_command(event)
+
+        assert result == "ok"
+        runner._handle_voice_channel_context_join.assert_called_once_with(
+            event,
+            target_channel_id="1282930260911984660",
+        )
+
+    @pytest.mark.asyncio
     async def test_voice_status_off(self, runner):
         event = _make_event("/voice status")
         result = await runner._handle_voice_command(event)
@@ -847,6 +860,67 @@ class TestVoiceChannelCommands:
         assert mock_adapter._voice_sources[111]["chat_type"] == "group"
 
     @pytest.mark.asyncio
+    async def test_context_join_by_id_sets_context_mode_without_tts(self, runner):
+        """Context mode joins an allowlisted channel and does not enable auto-TTS."""
+        mock_channel = MagicMock()
+        mock_channel.id = 1282930260911984660
+        mock_channel.category_id = 1282725267571347549
+        mock_channel.name = "daily-team"
+        mock_adapter = AsyncMock()
+        mock_adapter.join_voice_channel = AsyncMock(return_value=True)
+        mock_adapter.get_voice_channel_by_id = AsyncMock(return_value=mock_channel)
+        mock_adapter._voice_text_channels = {}
+        mock_adapter._voice_sources = {}
+        mock_adapter._voice_input_callback = None
+        mock_adapter._auto_tts_disabled_chats = set()
+        event = self._make_discord_event()
+        event.source.chat_type = "group"
+        event.source.chat_name = "Hermes Server / #control"
+        runner.adapters[event.source.platform] = mock_adapter
+        runner._load_discord_voice_context_config = lambda: {
+            "enabled": True,
+            "allowed_channel_ids": {"1282930260911984660"},
+            "allowed_category_ids": set(),
+            "echo_transcripts": False,
+        }
+
+        result = await runner._handle_voice_channel_context_join(
+            event,
+            target_channel_id="1282930260911984660",
+        )
+
+        assert "context mode" in result.lower()
+        assert runner._voice_mode["discord:123"] == "context"
+        assert mock_adapter._voice_text_channels[111] == 123
+        assert mock_adapter._auto_tts_disabled_chats == {"123"}
+
+    @pytest.mark.asyncio
+    async def test_context_join_blocks_unallowlisted_channel(self, runner):
+        mock_channel = MagicMock()
+        mock_channel.id = 999
+        mock_channel.category_id = 888
+        mock_channel.name = "random"
+        mock_adapter = AsyncMock()
+        mock_adapter.join_voice_channel = AsyncMock(return_value=True)
+        mock_adapter.get_voice_channel_by_id = AsyncMock(return_value=mock_channel)
+        event = self._make_discord_event()
+        runner.adapters[event.source.platform] = mock_adapter
+        runner._load_discord_voice_context_config = lambda: {
+            "enabled": True,
+            "allowed_channel_ids": {"1282930260911984660"},
+            "allowed_category_ids": set(),
+            "echo_transcripts": False,
+        }
+
+        result = await runner._handle_voice_channel_context_join(
+            event,
+            target_channel_id="999",
+        )
+
+        assert "not in discord.voice_context" in result
+        mock_adapter.join_voice_channel.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_join_failure(self, runner):
         """Failed join returns permissions error."""
         mock_channel = MagicMock()
@@ -1013,6 +1087,40 @@ class TestVoiceChannelCommands:
         msg = mock_channel.send.call_args[0][0]
         assert "Test transcript" in msg
         assert "42" in msg  # user_id in mention
+
+    @pytest.mark.asyncio
+    async def test_input_context_mode_records_without_dispatch(self, runner, tmp_path):
+        """Context-mode transcripts are persisted but not routed to the agent."""
+        from gateway.config import Platform
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_adapter._voice_clients = {
+            111: SimpleNamespace(
+                channel=SimpleNamespace(id=1282930260911984660, name="daily-team")
+            )
+        }
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=AsyncMock())
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        runner._voice_mode["discord:123"] = "context"
+        runner._VOICE_CONTEXT_DIR = tmp_path / "voice_context"
+        runner._load_discord_voice_context_config = lambda: {
+            "enabled": True,
+            "allowed_channel_ids": {"1282930260911984660"},
+            "allowed_category_ids": set(),
+            "echo_transcripts": False,
+        }
+
+        await runner._handle_voice_channel_input(111, 42, "team context note")
+
+        mock_adapter.handle_message.assert_not_called()
+        log_files = list((tmp_path / "voice_context").glob("*.jsonl"))
+        assert len(log_files) == 1
+        record = json.loads(log_files[0].read_text().splitlines()[0])
+        assert record["transcript"] == "team context note"
+        assert record["raw_audio_retained"] is False
 
     @pytest.mark.asyncio
     async def test_input_suppresses_duplicate_transcript(self, runner):

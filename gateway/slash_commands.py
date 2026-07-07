@@ -2444,6 +2444,8 @@ class GatewaySlashCommandsMixin:
 
         adapter = self.adapters.get(platform)
 
+        tokens = args.split()
+
         if args in {"on", "enable"}:
             self._voice_mode[voice_key] = "voice_only"
             self._save_voice_modes()
@@ -2462,6 +2464,16 @@ class GatewaySlashCommandsMixin:
             if adapter:
                 self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
             return t("gateway.voice.tts_enabled")
+        elif tokens and tokens[0] in {"context", "listen"}:
+            target_channel_id = None
+            if len(tokens) > 1:
+                match = re.search(r"\d{10,25}", tokens[1])
+                if match:
+                    target_channel_id = match.group(0)
+            return await self._handle_voice_channel_context_join(
+                event,
+                target_channel_id=target_channel_id,
+            )
         elif args in {"channel", "join"}:
             return await self._handle_voice_channel_join(event)
         elif args == "leave":
@@ -2472,6 +2484,7 @@ class GatewaySlashCommandsMixin:
                 "off": t("gateway.voice.label_off"),
                 "voice_only": t("gateway.voice.label_voice_only"),
                 "all": t("gateway.voice.label_all"),
+                "context": "context listener",
             }
             # Append voice channel info if connected
             adapter = self.adapters.get(event.source.platform)

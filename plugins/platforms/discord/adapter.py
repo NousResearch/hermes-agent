@@ -3020,6 +3020,28 @@ class DiscordAdapter(BasePlatformAdapter):
             return None
         return member.voice.channel
 
+    async def get_voice_channel_by_id(self, guild_id: int, channel_id: str):
+        """Return a voice channel by exact ID within *guild_id*, or None."""
+        if not self._client:
+            return None
+        try:
+            target_id = int(str(channel_id).strip())
+        except (TypeError, ValueError):
+            return None
+        guild = self._client.get_guild(guild_id)
+        if not guild:
+            return None
+        channel = guild.get_channel(target_id)
+        if channel is None:
+            channel = self._client.get_channel(target_id)
+        if channel is None:
+            return None
+        if getattr(getattr(channel, "guild", None), "id", guild_id) != guild_id:
+            return None
+        if not hasattr(channel, "connect"):
+            return None
+        return channel
+
     def _reset_voice_timeout(self, guild_id: int) -> None:
         """Reset the auto-disconnect inactivity timer."""
         task = self._voice_timeout_tasks.pop(guild_id, None)

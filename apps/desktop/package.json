@@ -204,7 +204,9 @@
         "CFBundleExecutable": "Hermes",
         "CFBundleName": "Hermes",
         "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
-        "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations."
+        "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations.",
+        "NSContactsUsageDescription": "Hermes needs access to your contacts to read and update contact information via Apple Contacts.",
+        "NSAppleEventsUsageDescription": "Hermes uses Apple Events to write notes to your contacts."
       },
       "gatekeeperAssess": false,
       "hardenedRuntime": true,

@@ -25,7 +25,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
+import { ArrowDown, Copy, Loader2, PanelRight, RotateCcw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
@@ -141,6 +141,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // is a dependency of the connect effect, so a fresh PTY spawns in place.
   const [sessionEnded, setSessionEnded] = useState(false);
   const [reconnectNonce, setReconnectNonce] = useState(0);
+  // Boot/reconnect skeleton. The PTY child takes a beat to spawn and Ink's
+  // first paint doesn't arrive until it does — before this the pane was just
+  // blank black, which reads as "broken". `connecting` gates a lightweight
+  // overlay: true from mount until ws.onopen, and flipped back on during a
+  // reconnect so the user gets feedback instead of a frozen transcript.
+  const [connecting, setConnecting] = useState(true);
+  // Scroll-to-bottom pill. With 5000 lines of scrollback there was no way to
+  // jump back to the live tail once you'd scrolled up; the pill appears only
+  // when the viewport is parked above the bottom.
+  const [scrolledUp, setScrolledUp] = useState(false);
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
@@ -155,6 +165,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setBanner(null);
     setReconnectNonce((n) => n + 1);
   }, [clearReconnectTimer]);
+  const scrollChatToBottom = useCallback(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.scrollToBottom();
+    setScrolledUp(false);
+    term.focus();
+  }, []);
   const startFreshDashboardChat = useCallback(() => {
     const next = new URLSearchParams(searchParams);
 
@@ -526,6 +543,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.loadAddon(unicode11);
     term.unicode.activeVersion = "11";
 
+    // Scroll-to-bottom pill state. xterm fires onScroll with the top line of
+    // the viewport; we're at the live tail when that equals the max scroll
+    // offset (buffer length − viewport rows). A 1-line slack absorbs the
+    // off-by-one during active output so the pill doesn't flicker mid-stream.
+    const scrollDisposable = term.onScroll(() => {
+      const buf = term.buffer.active;
+      const maxScroll = Math.max(0, buf.length - term.rows);
+      setScrolledUp(buf.viewportY < maxScroll - 1);
+    });
+
     term.loadAddon(new WebLinksAddon());
 
     term.open(host);
@@ -666,6 +693,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       reconnectAttemptRef.current = attempt;
       const delayMs = Math.min(250 * 2 ** (attempt - 1), 3000);
       setSessionEnded(false);
+      setConnecting(true);
       setBanner(
         `Chat connection interrupted (code ${code}). Reconnecting…`,
       );
@@ -693,6 +721,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       reconnectAttemptRef.current = 0;
       setBanner(null);
       setSessionEnded(false);
+      setConnecting(false);
       // Send the initial RESIZE immediately so Ink has *a* size to lay
       // out against on its first paint.  The double-rAF block above will
       // follow up with the authoritative measurement — at worst Ink
@@ -827,6 +856,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return () => {
       unmounting = true;
       syncMetricsRef.current = null;
+      scrollDisposable.dispose();
       onDataDisposable?.dispose();
       onResizeDisposable?.dispose();
       if (metricsDebounce) clearTimeout(metricsDebounce);
@@ -1037,6 +1067,52 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             ref={hostRef}
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
+
+          {/* Boot/reconnect skeleton. Shown only on the initial connect (no
+              banner yet); reconnect and error states carry their own banner,
+              so gating on !banner keeps this from double-messaging. */}
+          {connecting && !sessionEnded && !banner && (
+            <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-3">
+              <Loader2
+                className="h-5 w-5 animate-spin"
+                style={{ color: terminalFg }}
+                aria-hidden
+              />
+              <div
+                className="text-xs tracking-wide opacity-70"
+                style={{ color: terminalFg }}
+                role="status"
+              >
+                Connecting…
+              </div>
+            </div>
+          )}
+
+          {/* Scroll-to-bottom pill. Appears only when the viewport is parked
+              above the live tail; clicking snaps back to the newest output. */}
+          {scrolledUp && !sessionEnded && (
+            <Button
+              ghost
+              onClick={scrollChatToBottom}
+              title="Jump to latest"
+              aria-label="Scroll to latest output"
+              className={cn(
+                "absolute left-1/2 z-10 -translate-x-1/2",
+                "normal-case tracking-normal font-normal",
+                "rounded-full border border-current/30",
+                "bg-black/30 backdrop-blur-sm",
+                "opacity-80 hover:opacity-100 hover:border-current/60",
+                "transition-opacity duration-150",
+                "bottom-12 px-2.5 py-1 text-xs sm:bottom-14",
+              )}
+              style={{ color: terminalFg }}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <ArrowDown className="h-3 w-3 shrink-0" />
+                <span className="tracking-wide">latest</span>
+              </span>
+            </Button>
+          )}
 
           {/* NS-504: the agent process exited (e.g. `/exit` or a new session).
               Offer an in-place restart so the user never has to refresh the

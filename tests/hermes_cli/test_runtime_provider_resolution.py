@@ -260,6 +260,123 @@ def test_resolve_runtime_provider_codex(monkeypatch):
     assert resolved["requested_provider"] == "openai-codex"
 
 
+def test_resolve_runtime_provider_copilot_explicit_key_uses_target_model_for_api_mode(monkeypatch):
+    """MoA/delegation-style Copilot slots must derive api_mode from the slot model.
+
+    Regression: when the main persisted model was a GPT-5/Codex-family model,
+    resolving a Copilot slot for Claude/Gemini still looked at model.default and
+    incorrectly selected the Responses API. The explicit target model must win.
+    """
+    seen = {}
+
+    def _fake_copilot_mode(model_id, *, catalog=None, api_key=None):
+        seen["model_id"] = model_id
+        seen["api_key"] = api_key
+        return "chat_completions"
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "copilot")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "openai-codex", "default": "gpt-5.5"},
+    )
+    monkeypatch.setattr("hermes_cli.models.copilot_model_api_mode", _fake_copilot_mode)
+
+    resolved = rp.resolve_runtime_provider(
+        requested="copilot",
+        explicit_api_key="copilot-token",
+        target_model="claude-sonnet-4.6",
+    )
+
+    assert resolved["provider"] == "copilot"
+    assert resolved["api_mode"] == "chat_completions"
+    assert seen == {"model_id": "claude-sonnet-4.6", "api_key": "copilot-token"}
+
+
+def test_resolve_runtime_provider_copilot_pool_uses_target_model_for_api_mode(monkeypatch):
+    """Credential-pool Copilot resolution also needs target_model to avoid stale defaults."""
+
+    class _Entry:
+        runtime_api_key = "pool-copilot-token"
+        access_token = "pool-copilot-token"
+        source = "manual"
+        base_url = "https://api.githubcopilot.com"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    seen = {}
+
+    def _fake_copilot_mode(model_id, *, catalog=None, api_key=None):
+        seen["model_id"] = model_id
+        seen["api_key"] = api_key
+        return "chat_completions"
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "copilot")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "openai-codex", "default": "gpt-5.5"},
+    )
+    monkeypatch.setattr("hermes_cli.models.copilot_model_api_mode", _fake_copilot_mode)
+
+    resolved = rp.resolve_runtime_provider(
+        requested="copilot",
+        target_model="gemini-2.5-pro",
+    )
+
+    assert resolved["provider"] == "copilot"
+    assert resolved["api_mode"] == "chat_completions"
+    assert seen == {"model_id": "gemini-2.5-pro", "api_key": "pool-copilot-token"}
+
+
+def test_resolve_runtime_provider_copilot_env_creds_uses_target_model_for_api_mode(monkeypatch):
+    """The non-pool env/auth-store Copilot path must also honor target_model."""
+
+    class _Pool:
+        def has_credentials(self):
+            return False
+
+    seen = {}
+
+    def _fake_copilot_mode(model_id, *, catalog=None, api_key=None):
+        seen["model_id"] = model_id
+        seen["api_key"] = api_key
+        return "chat_completions"
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "copilot")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {
+            "api_key": "env-copilot-token",
+            "base_url": "https://api.githubcopilot.com",
+            "source": "env",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "openai-codex", "default": "gpt-5.5"},
+    )
+    monkeypatch.setattr("hermes_cli.models.copilot_model_api_mode", _fake_copilot_mode)
+
+    resolved = rp.resolve_runtime_provider(
+        requested="copilot",
+        target_model="claude-sonnet-4.6",
+    )
+
+    assert resolved["provider"] == "copilot"
+    assert resolved["api_mode"] == "chat_completions"
+    assert seen == {"model_id": "claude-sonnet-4.6", "api_key": "env-copilot-token"}
+
+
 def test_resolve_runtime_provider_qwen_oauth(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
     monkeypatch.setattr(

@@ -891,9 +891,9 @@ def _is_local_openviking_url(value: str) -> bool:
 
 def _load_hermes_openviking_config() -> dict:
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config_readonly
 
-        config = load_config()
+        config = load_config_readonly()
         memory_config = config.get("memory", {}) if isinstance(config, dict) else {}
         provider_config = memory_config.get("openviking", {}) if isinstance(memory_config, dict) else {}
         return dict(provider_config) if isinstance(provider_config, dict) else {}

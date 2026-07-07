@@ -7167,6 +7167,73 @@ class TestValidateProviderCredential:
         )
         assert captured["headers"] is None
 
+    def test_local_endpoint_rejects_metadata_url_without_network_call(self, monkeypatch):
+        class _Client:
+            def __init__(self, *a, **k):
+                raise AssertionError("metadata endpoints must not be probed")
+
+        monkeypatch.setattr("httpx.Client", _Client)
+
+        data = self.client.post(
+            "/api/providers/validate",
+            json={
+                "key": "OPENAI_BASE_URL",
+                "value": "http://169.254.169.254/latest/meta-data",
+            },
+        ).json()
+
+        assert data["ok"] is False
+        assert data["reachable"] is False
+        assert "metadata" in data["message"].lower()
+
+    def test_remote_endpoint_rejects_private_provider_url(self):
+        from hermes_cli.web_server import _provider_probe_block_reason
+
+        reason = _provider_probe_block_reason(
+            "http://127.0.0.1:8000/v1/models",
+            strict_private=True,
+        )
+
+        assert reason is not None
+        assert "private" in reason.lower()
+
+    def test_local_endpoint_rejects_non_http_scheme_without_network_call(self, monkeypatch):
+        class _Client:
+            def __init__(self, *a, **k):
+                raise AssertionError("non-http endpoints must not be probed")
+
+        monkeypatch.setattr("httpx.Client", _Client)
+
+        data = self.client.post(
+            "/api/providers/validate",
+            json={"key": "OPENAI_BASE_URL", "value": "file:///etc/passwd"},
+        ).json()
+
+        assert data["ok"] is False
+        assert data["reachable"] is True
+        assert "http" in data["message"].lower()
+
+    def test_custom_base_url_change_without_key_clears_endpoint_key(self):
+        from hermes_cli.web_server import _apply_main_model_assignment
+
+        model_cfg = {
+            "provider": "custom",
+            "default": "old-model",
+            "base_url": "https://old.example.com/v1",
+            "api_key": "sk-old-endpoint",
+        }
+
+        updated = _apply_main_model_assignment(
+            model_cfg,
+            "custom",
+            "new-model",
+            "https://new.example.com/v1",
+            "",
+        )
+
+        assert updated["base_url"] == "https://new.example.com/v1"
+        assert "api_key" not in updated
+
 
 class TestDesktopCronTicker:
     """The dashboard backend fires cron jobs itself only when desktop-spawned."""

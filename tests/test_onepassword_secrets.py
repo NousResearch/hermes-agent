@@ -41,6 +41,8 @@ def _clean_op_env(monkeypatch):
             monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)
     monkeypatch.delenv("OP_ACCOUNT", raising=False)
+    monkeypatch.delenv("OP_CONNECT_HOST", raising=False)
+    monkeypatch.delenv("OP_CONNECT_TOKEN", raising=False)
     yield
 
 
@@ -321,6 +323,35 @@ def test_session_change_invalidates_cache(monkeypatch, tmp_path):
     # Switch identity.
     monkeypatch.delenv("OP_SESSION_acctA", raising=False)
     monkeypatch.setenv("OP_SESSION_acctB", "sessB")
+    op._CACHE.clear()
+    op.fetch_onepassword_secrets(
+        references={"K": "op://V/I/F"}, cache_ttl_seconds=300,
+        binary=fake_op, home_path=tmp_path,
+    )
+    assert calls["n"] == 2  # cache key changed → refetch
+
+
+def test_connect_credential_change_invalidates_cache(monkeypatch, tmp_path):
+    """A different 1Password Connect identity must not reuse a cached value."""
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    calls = {"n": 0}
+
+    def fake_run(*a, **k):
+        calls["n"] += 1
+        return _ok("v")
+
+    monkeypatch.setattr(op.subprocess, "run", fake_run)
+    op._reset_cache_for_tests(tmp_path)
+
+    monkeypatch.setenv("OP_CONNECT_HOST", "https://connect.example.com")
+    monkeypatch.setenv("OP_CONNECT_TOKEN", "tokenA")
+    op.fetch_onepassword_secrets(
+        references={"K": "op://V/I/F"}, cache_ttl_seconds=300,
+        binary=fake_op, home_path=tmp_path,
+    )
+    # Rotate the Connect token → new identity.
+    monkeypatch.setenv("OP_CONNECT_TOKEN", "tokenB")
     op._CACHE.clear()
     op.fetch_onepassword_secrets(
         references={"K": "op://V/I/F"}, cache_ttl_seconds=300,

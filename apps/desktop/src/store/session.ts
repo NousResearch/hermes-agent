@@ -4,6 +4,7 @@ import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { emitDesktopDiagnostic } from '@/lib/desktop-diagnostics'
 import {
   persistBoolean,
   persistString,
@@ -420,6 +421,13 @@ function armSessionWatchdog(sessionId: string) {
     // away or the session genuinely finished, the timer is a no-op.
     if ($workingSessionIds.get().includes(sessionId)) {
       setWorkingSessionIds(current => current.filter(id => id !== sessionId))
+      emitDesktopDiagnostic({
+        component: 'session',
+        event: 'watchdog.cleared',
+        message: 'Session was cleared after the stream watchdog elapsed',
+        severity: 'warn',
+        details: { sessionId, timeoutMs: SESSION_WATCHDOG_TIMEOUT_MS }
+      })
     }
 
     for (const listener of sessionWatchdogListeners) {

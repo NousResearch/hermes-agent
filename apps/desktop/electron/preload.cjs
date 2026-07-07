@@ -83,6 +83,11 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   revealLogs: () => ipcRenderer.invoke('hermes:logs:reveal'),
   getRecentLogs: () => ipcRenderer.invoke('hermes:logs:recent'),
+  diagnostics: {
+    recent: limit => ipcRenderer.invoke('hermes:diagnostics:recent', limit),
+    event: payload => ipcRenderer.invoke('hermes:diagnostics:event', payload),
+    heartbeat: payload => ipcRenderer.invoke('hermes:diagnostics:heartbeat', payload)
+  },
   readDir: dirPath => ipcRenderer.invoke('hermes:fs:readDir', dirPath),
   gitRoot: startPath => ipcRenderer.invoke('hermes:fs:gitRoot', startPath),
   revealPath: targetPath => ipcRenderer.invoke('hermes:fs:reveal', targetPath),

@@ -46,6 +46,8 @@ import type { ClientSessionState } from '../../../types'
 
 import { hasSessionInfoStatePatch, sessionInfoStatePatch, SUBAGENT_EVENT_TYPES, toTodoPayload } from './utils'
 
+const MESSAGE_COMPLETE_ERROR_STATUS = 'error'
+
 interface GatewayEventDeps {
   activeSessionIdRef: MutableRefObject<string | null>
   compactedTurnRef: MutableRefObject<Set<string>>
@@ -317,9 +319,43 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         flushQueuedDeltas(sessionId)
 
+        const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
+        const completionStatus = typeof payload?.status === 'string' ? payload.status : ''
+
+        if (completionStatus === MESSAGE_COMPLETE_ERROR_STATUS) {
+          const errorMessage = finalText || payload?.message || 'Hermes reported an error'
+
+          failAssistantMessage(sessionId, errorMessage)
+
+          if (isActiveEvent) {
+            setTurnStartedAt(null)
+            setPetActivity({ reasoning: false, toolRunning: false })
+            flashPetActivity({ error: true })
+          }
+
+          dispatchNativeNotification({
+            body: errorMessage,
+            kind: 'turnError',
+            sessionId,
+            title: translateNow('notifications.native.turnErrorTitle')
+          })
+
+          notify({
+            id: `gateway-error:${errorMessage}`,
+            kind: 'error',
+            title: 'Hermes error',
+            message: errorMessage
+          })
+
+          if (payload?.usage) {
+            setCurrentUsage(current => ({ ...current, ...payload.usage }))
+          }
+
+          return
+        }
+
         playCompletionSound()
 
-        const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
         completeAssistantMessage(sessionId, finalText)
 
         if (isActiveEvent) {

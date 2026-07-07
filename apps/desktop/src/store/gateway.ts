@@ -2,6 +2,7 @@ import { type ConnectionState, type GatewayEvent, resolveGatewayWsUrl } from '@h
 import { atom } from 'nanostores'
 
 import { HermesGateway } from '@/hermes'
+import { emitDesktopDiagnostic } from '@/lib/desktop-diagnostics'
 import { setGatewayState } from '@/store/session'
 
 // ── Multi-profile gateway routing ──────────────────────────────────────────
@@ -52,6 +53,7 @@ interface Secondary {
   offState: () => void
   reconnectTimer: ReturnType<typeof setTimeout> | null
   reconnectAttempt: number
+  lastReportedReconnectAttempt: number
   reconnecting: boolean
   // While true the entry auto-reconnects on drop; pruning flips it off so a
   // deliberate close doesn't trigger the backoff loop.
@@ -139,7 +141,18 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
   try {
     await openSecondary(entry)
     entry.reconnectAttempt = 0
+    entry.lastReportedReconnectAttempt = 0
   } catch {
+    if (entry.reconnectAttempt >= 3 && entry.lastReportedReconnectAttempt !== entry.reconnectAttempt) {
+      entry.lastReportedReconnectAttempt = entry.reconnectAttempt
+      emitDesktopDiagnostic({
+        component: 'gateway',
+        event: 'secondary.reconnect.failure',
+        message: 'Secondary gateway reconnect is still failing',
+        severity: 'warn',
+        details: { attempt: entry.reconnectAttempt, profile: entry.profile }
+      })
+    }
     // Transport failure → fall through to the backoff below.
   } finally {
     entry.reconnecting = false
@@ -160,6 +173,7 @@ function createSecondary(profile: string): Secondary {
     offState: () => {},
     reconnectTimer: null,
     reconnectAttempt: 0,
+    lastReportedReconnectAttempt: 0,
     reconnecting: false,
     wantOpen: true
   }
@@ -170,6 +184,7 @@ function createSecondary(profile: string): Secondary {
 
     if (state === 'open') {
       entry.reconnectAttempt = 0
+      entry.lastReportedReconnectAttempt = 0
       clearTimer(entry)
     } else if ((state === 'closed' || state === 'error') && entry.wantOpen) {
       scheduleReconnect(entry)

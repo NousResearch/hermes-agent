@@ -96,6 +96,11 @@ declare global {
       }
       revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
+      diagnostics?: {
+        recent: (limit?: number) => Promise<{ path: string; events: DesktopDiagnosticEvent[] }>
+        event: (payload: DesktopDiagnosticInput) => Promise<{ ok: boolean; event: DesktopDiagnosticEvent }>
+        heartbeat: (payload?: Record<string, unknown>) => Promise<{ ok: boolean; at: number }>
+      }
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
       // Reveal a path in the OS file manager (Finder / Explorer).
@@ -210,6 +215,23 @@ export interface DesktopMarketplaceSearchItem {
   publisher: string
   description: string
   installs: number
+}
+
+export type DesktopDiagnosticSeverity = 'debug' | 'info' | 'warn' | 'error' | 'fatal'
+
+export interface DesktopDiagnosticInput {
+  component: string
+  event: string
+  severity?: DesktopDiagnosticSeverity
+  message?: string
+  details?: Record<string, unknown>
+}
+
+export interface DesktopDiagnosticEvent extends DesktopDiagnosticInput {
+  ts: string
+  severity: DesktopDiagnosticSeverity
+  message: string
+  details: Record<string, unknown>
 }
 
 export interface DesktopMarketplaceThemeFile {

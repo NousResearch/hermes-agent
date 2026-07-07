@@ -87,6 +87,7 @@ const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remot
 const { resolveBehindCount, shouldCountCommits } = require('./update-count.cjs')
 const { runRebuildWithRetry } = require('./update-rebuild.cjs')
 const { dirtyUpdateResult, isDirtyStatus } = require('./update-dirty.cjs')
+const { createDiagnosticsRecorder } = require('./diagnostics.cjs')
 const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -390,8 +391,10 @@ const DEFAULT_UPDATE_BRANCH = 'main'
 // errors.log, gateway.log produced by hermes_logging.setup_logging — one log
 // directory per user, regardless of which UI surface produced the line.
 const DESKTOP_LOG_PATH = path.join(HERMES_HOME, 'logs', 'desktop.log')
+const DESKTOP_DIAGNOSTICS_PATH = path.join(HERMES_HOME, 'logs', 'desktop-events.jsonl')
 const DESKTOP_LOG_FLUSH_MS = 120
 const DESKTOP_LOG_BUFFER_MAX_CHARS = 64 * 1024
+const DESKTOP_DIAGNOSTICS_HEARTBEAT_WARN_MS = 30_000
 // Bound desktop.log on disk. It is an append-only forensic log, so a boot loop
 // (version-skew crash -> backend exits instantly -> renderer keeps hitting
 // Retry) appends the full bootstrap transcript every attempt and grows without
@@ -818,11 +821,15 @@ let bootstrapAbortController = null
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
 const hermesLog = []
+const desktopDiagnostics = createDiagnosticsRecorder({ filePath: DESKTOP_DIAGNOSTICS_PATH })
 const previewWatchers = new Map()
 let previewShortcutActive = false
 let desktopLogBuffer = ''
 let desktopLogFlushTimer = null
 let desktopLogFlushPromise = Promise.resolve()
+let lastRendererHeartbeatAt = null
+let rendererHeartbeatMissing = false
+let rendererHeartbeatTimer = null
 let nativeThemeListenerInstalled = false
 let bootProgressState = {
   error: null,
@@ -949,6 +956,92 @@ function rememberLog(chunk) {
   }
 
   scheduleDesktopLogFlush()
+}
+
+function recordDiagnosticEvent(event) {
+  const entry = desktopDiagnostics.record(event)
+  if (entry.severity === 'warn' || entry.severity === 'error' || entry.severity === 'fatal') {
+    rememberLog(`[diagnostics] ${entry.component}.${entry.event}: ${entry.message}`)
+  }
+  return entry
+}
+
+process.on('uncaughtExceptionMonitor', error => {
+  recordDiagnosticEvent({
+    component: 'electron-main',
+    event: 'uncaughtException',
+    message: error?.message || String(error),
+    severity: 'fatal',
+    details: { stack: error?.stack }
+  })
+})
+
+process.on('unhandledRejection', reason => {
+  recordDiagnosticEvent({
+    component: 'electron-main',
+    event: 'unhandledRejection',
+    message: reason?.message || String(reason),
+    severity: 'error',
+    details: { stack: reason?.stack }
+  })
+})
+
+app.on('child-process-gone', (_event, details) => {
+  recordDiagnosticEvent({
+    component: 'electron',
+    event: 'child-process-gone',
+    message: `Electron child process exited: ${details?.type || 'unknown'}`,
+    severity: details?.reason === 'clean-exit' ? 'info' : 'warn',
+    details
+  })
+})
+
+app.on('gpu-process-crashed', (_event, killed) => {
+  recordDiagnosticEvent({
+    component: 'electron',
+    event: 'gpu-process-crashed',
+    message: 'Electron GPU process crashed',
+    severity: 'warn',
+    details: { killed: Boolean(killed) }
+  })
+})
+
+function markRendererHeartbeat(details = {}) {
+  lastRendererHeartbeatAt = Date.now()
+  if (rendererHeartbeatMissing) {
+    rendererHeartbeatMissing = false
+    recordDiagnosticEvent({
+      component: 'renderer',
+      event: 'heartbeat.resumed',
+      message: 'Renderer heartbeat resumed',
+      severity: 'info',
+      details
+    })
+  }
+}
+
+function startRendererHeartbeatMonitor() {
+  if (rendererHeartbeatTimer) return
+  rendererHeartbeatTimer = setInterval(() => {
+    if (!mainWindow || mainWindow.isDestroyed() || lastRendererHeartbeatAt === null) {
+      return
+    }
+
+    const silenceMs = Date.now() - lastRendererHeartbeatAt
+    if (silenceMs < DESKTOP_DIAGNOSTICS_HEARTBEAT_WARN_MS || rendererHeartbeatMissing) {
+      return
+    }
+
+    rendererHeartbeatMissing = true
+    recordDiagnosticEvent({
+      component: 'renderer',
+      event: 'heartbeat.missed',
+      message: 'Renderer heartbeat is missing',
+      severity: 'warn',
+      details: { silenceMs }
+    })
+  }, 10_000)
+  if (typeof rendererHeartbeatTimer.unref === 'function') rendererHeartbeatTimer.unref()
 }
 
 function openExternalUrl(rawUrl) {
@@ -5423,6 +5516,13 @@ async function spawnPoolBackend(profile, entry) {
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
   rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
+  recordDiagnosticEvent({
+    component: 'backend',
+    event: 'spawn',
+    message: `Starting pooled backend for profile ${profile}`,
+    severity: 'info',
+    details: { label: backend.label, profile, cwd: hermesCwd, mode: 'pool' }
+  })
 
   const child = spawn(
     backend.command,
@@ -5461,11 +5561,25 @@ async function spawnPoolBackend(profile, entry) {
   })
   child.once('error', error => {
     rememberLog(`Hermes backend for profile "${profile}" failed to start: ${error.message}`)
+    recordDiagnosticEvent({
+      component: 'backend',
+      event: 'error',
+      message: `Pooled backend failed to start for profile ${profile}: ${error.message}`,
+      severity: 'error',
+      details: { profile, error: error.message, mode: 'pool' }
+    })
     backendPool.delete(profile)
     rejectStart?.(error)
   })
   child.once('exit', (code, signal) => {
     rememberLog(`Hermes backend for profile "${profile}" exited (${signal || code})`)
+    recordDiagnosticEvent({
+      component: 'backend',
+      event: 'exit',
+      message: `Pooled backend exited for profile ${profile}`,
+      severity: ready ? 'warn' : 'error',
+      details: { profile, code, signal, ready, mode: 'pool' }
+    })
     backendPool.delete(profile)
     if (!ready) {
       rejectStart?.(
@@ -5646,6 +5760,13 @@ async function startHermes() {
 
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
     rememberLog(`Starting Hermes backend via ${backend.label}`)
+    recordDiagnosticEvent({
+      component: 'backend',
+      event: 'spawn',
+      message: 'Starting primary backend',
+      severity: 'info',
+      details: { label: backend.label, profile: activeProfile || 'default', cwd: hermesCwd, mode: 'primary' }
+    })
 
     hermesProcess = spawn(
       backend.command,
@@ -5686,6 +5807,13 @@ async function startHermes() {
     })
     hermesProcess.once('error', error => {
       rememberLog(`Hermes backend failed to start: ${error.message}`)
+      recordDiagnosticEvent({
+        component: 'backend',
+        event: 'error',
+        message: `Primary backend failed to start: ${error.message}`,
+        severity: 'error',
+        details: { error: error.message, mode: 'primary' }
+      })
       updateBootProgress(
         {
           error: error.message,
@@ -5702,6 +5830,13 @@ async function startHermes() {
     })
     hermesProcess.once('exit', (code, signal) => {
       rememberLog(`Hermes backend exited (${signal || code})`)
+      recordDiagnosticEvent({
+        component: 'backend',
+        event: 'exit',
+        message: 'Primary backend exited',
+        severity: backendReady ? 'warn' : 'error',
+        details: { code, signal, ready: backendReady, mode: 'primary' }
+      })
       hermesProcess = null
       connectionPromise = null
       sendBackendExit({ code, signal })
@@ -6022,6 +6157,7 @@ function closePetOverlay() {
 }
 
 function createWindow() {
+  startRendererHeartbeatMonitor()
   const icon = getAppIconPath()
   const savedWindowState = readWindowState()
   mainWindow = new BrowserWindow({
@@ -6097,6 +6233,13 @@ function createWindow() {
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     rememberLog(`[renderer] render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`)
+    recordDiagnosticEvent({
+      component: 'renderer',
+      event: 'render-process-gone',
+      message: `Renderer process gone: ${details?.reason || 'unknown'}`,
+      severity: details?.reason === 'clean-exit' ? 'info' : 'error',
+      details
+    })
 
     if (details?.reason === 'crashed' || details?.reason === 'oom') {
       const now = Date.now()
@@ -6106,6 +6249,13 @@ function createWindow() {
         rememberLog(
           `[renderer] suppressing reload: ${rendererReloadTimes.length} crashes within ${RENDERER_RELOAD_WINDOW_MS}ms (likely a crash loop)`
         )
+        recordDiagnosticEvent({
+          component: 'renderer',
+          event: 'crash-loop',
+          message: 'Suppressing renderer reload after repeated crashes',
+          severity: 'fatal',
+          details: { crashes: rendererReloadTimes.length, windowMs: RENDERER_RELOAD_WINDOW_MS }
+        })
 
         return
       }
@@ -6122,7 +6272,24 @@ function createWindow() {
     }
   })
 
-  mainWindow.webContents.on('unresponsive', () => rememberLog('[renderer] webContents became unresponsive'))
+  mainWindow.webContents.on('unresponsive', () => {
+    rememberLog('[renderer] webContents became unresponsive')
+    recordDiagnosticEvent({
+      component: 'renderer',
+      event: 'unresponsive',
+      message: 'Renderer became unresponsive',
+      severity: 'warn'
+    })
+  })
+
+  mainWindow.webContents.on('responsive', () => {
+    recordDiagnosticEvent({
+      component: 'renderer',
+      event: 'responsive',
+      message: 'Renderer became responsive',
+      severity: 'info'
+    })
+  })
 
   // Electron always passes the event first. The canonical (Electron 36+) shape
   // is (event, messageDetails); the deprecated positional shape is
@@ -6138,6 +6305,13 @@ function createWindow() {
     const src = details ? details.sourceUrl : sourceId
     const lineNo = details ? details.lineNumber : line
     rememberLog(`[renderer console] ${text} (${src}:${lineNo})`)
+    recordDiagnosticEvent({
+      component: 'renderer',
+      event: 'console-error',
+      message: text,
+      severity: 'error',
+      details: { source: src, line: lineNo }
+    })
   })
 
   if (DEV_SERVER) {
@@ -6889,6 +7063,21 @@ ipcMain.handle('hermes:logs:reveal', async () => {
 })
 
 ipcMain.handle('hermes:logs:recent', async () => ({ path: DESKTOP_LOG_PATH, lines: hermesLog.slice(-200) }))
+
+ipcMain.handle('hermes:diagnostics:recent', async (_event, limit) => ({
+  path: DESKTOP_DIAGNOSTICS_PATH,
+  events: desktopDiagnostics.recent(Number.isFinite(limit) ? Math.max(1, Math.min(500, limit)) : 200)
+}))
+
+ipcMain.handle('hermes:diagnostics:event', async (_event, payload) => {
+  const entry = recordDiagnosticEvent(payload && typeof payload === 'object' ? payload : {})
+  return { ok: true, event: entry }
+})
+
+ipcMain.handle('hermes:diagnostics:heartbeat', async (_event, payload) => {
+  markRendererHeartbeat(payload && typeof payload === 'object' ? payload : {})
+  return { ok: true, at: lastRendererHeartbeatAt }
+})
 
 function isExecutableFile(filePath) {
   if (!filePath || !path.isAbsolute(filePath)) {

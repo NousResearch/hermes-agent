@@ -521,6 +521,9 @@ def _capture_default_log_snapshots(
         "desktop": _capture_log_snapshot(
             "desktop", tail_lines=errors_lines, redact=redact
         ),
+        "desktop-events": _capture_log_snapshot(
+            "desktop-events", tail_lines=errors_lines, redact=redact
+        ),
     }
 
 
@@ -596,6 +599,9 @@ def collect_debug_report(
     buf.write(f"--- desktop.log (last {errors_lines} lines) ---\n")
     buf.write(log_snapshots["desktop"].tail_text)
     buf.write("\n")
+    buf.write(f"--- desktop-events.jsonl (last {errors_lines} lines) ---\n")
+    buf.write(log_snapshots["desktop-events"].tail_text)
+    buf.write("\n")
 
     return buf.getvalue()
 
@@ -616,7 +622,7 @@ def collect_share_bundle(
     """Collect the debug report + full logs as a label→text mapping.
 
     Returns ``{"report": ..., "agent.log": ..., "gateway.log": ...,
-    "desktop.log": ...}`` where each value is the already-redacted (when
+    "desktop.log": ..., "desktop-events.jsonl": ...}`` where each value is the already-redacted (when
     ``redact`` is True) text that would be uploaded.  Keys for logs that are
     absent/empty are simply omitted.
 
@@ -643,6 +649,7 @@ def collect_share_bundle(
     gateway_log = log_snapshots["gateway"].full_text
     gui_log = log_snapshots["gui"].full_text
     desktop_log = log_snapshots["desktop"].full_text
+    desktop_events_log = log_snapshots["desktop-events"].full_text
 
     # Prepend dump header to each full log so every file is self-contained.
     if agent_log:
@@ -653,6 +660,8 @@ def collect_share_bundle(
         gui_log = dump_text + "\n\n--- full gui.log ---\n" + gui_log
     if desktop_log:
         desktop_log = dump_text + "\n\n--- full desktop.log ---\n" + desktop_log
+    if desktop_events_log:
+        desktop_events_log = dump_text + "\n\n--- full desktop-events.jsonl ---\n" + desktop_events_log
 
     # Visible banner so reviewers know redaction was applied at upload time.
     if redact:
@@ -665,6 +674,8 @@ def collect_share_bundle(
             gui_log = _REDACTION_BANNER + gui_log
         if desktop_log:
             desktop_log = _REDACTION_BANNER + desktop_log
+        if desktop_events_log:
+            desktop_events_log = _REDACTION_BANNER + desktop_events_log
 
     bundle: dict[str, str] = {"report": report}
     if agent_log:
@@ -675,6 +686,8 @@ def collect_share_bundle(
         bundle["gui.log"] = gui_log
     if desktop_log:
         bundle["desktop.log"] = desktop_log
+    if desktop_events_log:
+        bundle["desktop-events.jsonl"] = desktop_events_log
     return bundle
 
 
@@ -757,7 +770,7 @@ def build_debug_share(
     urls["Report"] = upload_to_pastebin(report, expiry_days=expiry)
 
     # 2-5. Full logs (optional — failures are collected, not raised)
-    for label in ("agent.log", "gateway.log", "gui.log", "desktop.log"):
+    for label in ("agent.log", "gateway.log", "gui.log", "desktop.log", "desktop-events.jsonl"):
         content = bundle.get(label)
         if not content:
             continue
@@ -831,6 +844,7 @@ def run_debug_share(args):
             ("FULL gateway.log", "gateway.log"),
             ("FULL gui.log", "gui.log"),
             ("FULL desktop.log", "desktop.log"),
+            ("FULL desktop-events.jsonl", "desktop-events.jsonl"),
         ):
             body = bundle.get(label)
             if body:
@@ -884,7 +898,7 @@ _NOUS_PRIVACY_NOTICE = """\
     NOT a public paste service. The following is included:
   • System info (OS, Python/Hermes version, provider, which API keys are
     configured — NOT the actual keys)
-  • Full agent.log, gateway.log, and desktop.log (up to 512 KB each — likely
+  • Full agent.log, gateway.log, desktop.log, and desktop-events.jsonl (up to 512 KB each — likely
     contains conversation content, tool outputs, and file paths)
 
   • The bundle is viewable only by Nous staff (and allowlisted Discord mods)

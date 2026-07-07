@@ -15,10 +15,11 @@ const SID = 'session-1'
 const todo = (id: string, status: TodoItem['status']): TodoItem => ({ content: `task ${id}`, id, status })
 
 let handleEvent: ((event: RpcEvent) => void) | null = null
+let stateByRuntimeId: Map<string, ClientSessionState>
 
 function Harness() {
   const activeSessionIdRef = useRef<string | null>(SID)
-  const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
+  const sessionStateByRuntimeIdRef = useRef(stateByRuntimeId)
   const queryClientRef = useRef(new QueryClient())
 
   const stream = useMessageStream({
@@ -54,6 +55,7 @@ const complete = () => act(() => handleEvent!({ payload: { text: 'done' }, sessi
 describe('useMessageStream turn-end todo cleanup', () => {
   beforeEach(() => {
     handleEvent = null
+    stateByRuntimeId = new Map()
     clearSessionTodos(SID)
   })
 
@@ -89,5 +91,26 @@ describe('useMessageStream turn-end todo cleanup', () => {
     act(() => handleEvent!({ payload: { message: 'boom' }, session_id: SID, type: 'error' }))
 
     expect($todosBySession.get()[SID]).toBeUndefined()
+  })
+
+  it('treats message.complete with error status as a failed turn', async () => {
+    await mountStream()
+
+    act(() => handleEvent!({ payload: undefined, session_id: SID, type: 'message.start' }))
+    act(() =>
+      handleEvent!({
+        payload: { status: 'error', text: 'Context length exceeded and cannot compress further.' },
+        session_id: SID,
+        type: 'message.complete'
+      })
+    )
+
+    const state = stateByRuntimeId.get(SID)
+
+    expect(state?.busy).toBe(false)
+    expect(state?.awaitingResponse).toBe(false)
+    expect(state?.turnStartedAt).toBeNull()
+    expect(state?.messages.at(-1)?.pending).toBe(false)
+    expect(state?.messages.at(-1)?.error).toBe('Context length exceeded and cannot compress further.')
   })
 })

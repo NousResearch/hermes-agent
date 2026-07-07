@@ -1854,6 +1854,12 @@ def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
     from hermes_cli.auth import is_source_suppressed
     from hermes_cli.auth_commands import auth_remove_command
 
+    # Mock is_provider_explicitly_configured to ensure copilot pool seeding
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_provider_explicitly_configured",
+        lambda pid: pid == "copilot",
+    )
+
     with patch(
         "hermes_cli.copilot_auth.resolve_copilot_token",
         return_value=("ghp_fake", "gh"),

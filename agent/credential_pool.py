@@ -1924,6 +1924,22 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         # Copilot tokens are resolved dynamically via `gh auth token` or
         # env vars (COPILOT_GITHUB_TOKEN / GH_TOKEN).  They don't live in
         # the auth store or credential pool, so we resolve them here.
+        # Only auto-discover copilot credentials when the user has explicitly
+        # configured copilot as their provider. Without this gate, Hermes would
+        # silently read the gh CLI's credential store without user consent.
+        # See issue #60379.
+        try:
+            from hermes_cli.auth import is_provider_explicitly_configured
+            if not is_provider_explicitly_configured("copilot"):
+                logger.debug("Copilot auto-discovery skipped: provider not explicitly configured")
+                return changed, active_sources
+        except ImportError:
+            # If is_provider_explicitly_configured is not available (e.g. during
+            # setup or when auth module is not installed), skip copilot discovery
+            # to avoid unauthorized credential access.
+            logger.debug("Copilot auto-discovery skipped: is_provider_explicitly_configured not available")
+            return changed, active_sources
+
         try:
             from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
             token, source = resolve_copilot_token()

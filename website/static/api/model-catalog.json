@@ -125,6 +125,10 @@
           "description": "auto-routes to cheapest coder meeting openrouter.min_coding_score"
         },
         {
+          "id": "openrouter/free",
+          "description": "free — auto-picks from all free models"
+        },
+        {
           "id": "openrouter/elephant-alpha",
           "description": "free"
         },
@@ -133,11 +137,31 @@
           "description": "free"
         },
         {
-          "id": "poolside/laguna-m.1:free",
+          "id": "cohere/north-mini-code:free",
           "description": "free"
         },
         {
-          "id": "tencent/hy3-preview:free",
+          "id": "google/gemma-4-26b-a4b-it:free",
+          "description": "free"
+        },
+        {
+          "id": "google/gemma-4-31b-it:free",
+          "description": "free"
+        },
+        {
+          "id": "liquid/lfm-2.5-1.2b-thinking:free",
+          "description": "free"
+        },
+        {
+          "id": "meta-llama/llama-3.3-70b-instruct:free",
+          "description": "free"
+        },
+        {
+          "id": "nvidia/nemotron-3-nano-30b-a3b:free",
+          "description": "free"
+        },
+        {
+          "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
           "description": "free"
         },
         {
@@ -146,6 +170,46 @@
         },
         {
           "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+          "description": "free"
+        },
+        {
+          "id": "nvidia/nemotron-nano-12b-v2-vl:free",
+          "description": "free"
+        },
+        {
+          "id": "nvidia/nemotron-nano-9b-v2:free",
+          "description": "free"
+        },
+        {
+          "id": "openai/gpt-oss-120b:free",
+          "description": "free"
+        },
+        {
+          "id": "openai/gpt-oss-20b:free",
+          "description": "free"
+        },
+        {
+          "id": "poolside/laguna-m.1:free",
+          "description": "free"
+        },
+        {
+          "id": "poolside/laguna-xs-2.1:free",
+          "description": "free"
+        },
+        {
+          "id": "poolside/laguna-xs.2:free",
+          "description": "free"
+        },
+        {
+          "id": "qwen/qwen3-coder:free",
+          "description": "free"
+        },
+        {
+          "id": "qwen/qwen3-next-80b-a3b-instruct:free",
+          "description": "free"
+        },
+        {
+          "id": "tencent/hy3-preview:free",
           "description": "free"
         },
         {

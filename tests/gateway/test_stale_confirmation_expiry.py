@@ -189,3 +189,34 @@ def test_strip_stale_dangerous_confirmations_directly():
     assert any("can you force a restart" in (m.get("content") or "") for m in cleaned)
     assert any("Rebooting the host is dangerous" in (m.get("content") or "") for m in cleaned)
     assert any("OK, restarting now" in (m.get("content") or "") for m in cleaned)
+
+def test_redaction_preserves_role_alternation():
+    """Expiry must redact in place, never delete the user message.
+
+    The incident tail is ``user(confirm) → assistant("OK, restarting")``.
+    Deleting the user row would leave two consecutive assistant messages,
+    violating the strict role-alternation invariant providers enforce.
+    """
+    current_time = time.time()
+    history = _make_history_with_confirmation(
+        user_message_at=current_time - 1000,
+        assistant_warning_at=current_time - 999,
+        confirmation_message="confirm forced restart",
+        confirmation_at=current_time - 300,
+        assistant_action_at=current_time - 299,
+    )
+
+    cleaned = _strip_stale_dangerous_confirmations(history, now=current_time)
+
+    # Same message count — nothing deleted.
+    assert len(cleaned) == len(history)
+    # The user slot survives with an expiry sentinel instead of the phrase.
+    redacted = cleaned[2]
+    assert redacted["role"] == "user"
+    assert "confirm forced restart" not in redacted["content"]
+    assert "EXPIRED" in redacted["content"]
+    # No two consecutive same-role messages anywhere.
+    roles = [m["role"] for m in cleaned]
+    assert all(a != b for a, b in zip(roles, roles[1:])), roles
+    # Original history object is not mutated.
+    assert history[2]["content"] == "confirm forced restart"

@@ -1372,17 +1372,21 @@ class TelegramAdapter(BasePlatformAdapter):
         return bool(content and self._RICH_CJK_RE.search(content))
 
     def _needs_rich_rendering(self, content: str) -> bool:
-        """Return True for markdown constructs that the legacy path degrades.
+        """Return True when the rich path is materially better than legacy.
 
-        Keep ordinary replies on the pre-rich MarkdownV2 path so Telegram
-        clients render a consistent font weight/spacing. The rich endpoint is
-        reserved for constructs where raw markdown materially improves output:
-        pipe tables (MarkdownV2 has no table syntax and rewrites them into
-        bullet lists), GFM task lists, collapsible ``<details>`` blocks, and
-        block math.  Adapted from #45995 (@YonganZhang).
+        Keep short ordinary replies on MarkdownV2 for consistent copy/paste.
+        Once a rich opt-in reply exceeds Telegram's 4,096-character legacy cap,
+        use rich delivery to avoid unnecessary chunking up to the 32,768-char
+        rich-message limit. Rich-only constructs (tables, task lists, details,
+        block math) still use rich regardless of length.
         """
         if not content:
             return False
+        if (
+            getattr(self, "_rich_messages_enabled", False)
+            and utf16_len(content) > self.MAX_MESSAGE_LENGTH
+        ):
+            return True
         if any(_TABLE_SEPARATOR_RE.match(line) for line in content.splitlines()):
             return True
         if re.search(r"(?m)^\s*[-*]\s+\[[ xX]\]\s+", content):

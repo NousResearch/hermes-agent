@@ -743,6 +743,48 @@ def _read_dm_role_auth_guild() -> Optional[int]:
     return guild_id if guild_id > 0 else None
 
 
+# Default timeout for Discord interactive button views (exec approval, slash
+# confirm, update prompt, clarify choice). Used when the user has not set
+# ``approvals.discord_prompt_timeout`` in config.yaml. 300s (5 min) matches
+# the previous hardcoded value. Bounded to a sane range — Discord
+# interaction tokens expire from the API's side at ~15 minutes, so 900s is
+# the practical ceiling.
+_DISCORD_PROMPT_TIMEOUT_DEFAULT = 300
+_DISCORD_PROMPT_TIMEOUT_MIN = 30
+_DISCORD_PROMPT_TIMEOUT_MAX = 900
+
+
+def _read_discord_prompt_timeout() -> int:
+    """Return the timeout (in seconds) for Discord button views.
+
+    Reads ``approvals.discord_prompt_timeout`` from config.yaml. Falls back
+    to the historical 300s default for any missing / malformed value, and
+    clamps the result to ``[_DISCORD_PROMPT_TIMEOUT_MIN,
+    _DISCORD_PROMPT_TIMEOUT_MAX]`` so a typo can't accidentally make
+    interactive prompts disappear (too short) or outlive Discord's own
+    15-minute interaction-token expiry (too long).
+    """
+    raw: Any = None
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config() or {}
+        approvals_cfg = cfg.get("approvals", {}) or {}
+        raw = approvals_cfg.get("discord_prompt_timeout")
+    except Exception:
+        return _DISCORD_PROMPT_TIMEOUT_DEFAULT
+    if raw is None or raw == "":
+        return _DISCORD_PROMPT_TIMEOUT_DEFAULT
+    try:
+        seconds = int(raw)
+    except (TypeError, ValueError):
+        return _DISCORD_PROMPT_TIMEOUT_DEFAULT
+    if seconds < _DISCORD_PROMPT_TIMEOUT_MIN:
+        return _DISCORD_PROMPT_TIMEOUT_MIN
+    if seconds > _DISCORD_PROMPT_TIMEOUT_MAX:
+        return _DISCORD_PROMPT_TIMEOUT_MAX
+    return seconds
+
+
 class DiscordAdapter(BasePlatformAdapter):
     """
     Discord bot adapter.
@@ -6594,7 +6636,7 @@ def _define_discord_view_classes() -> None:
             require_admin: bool = False,
             admin_user_ids: Optional[set] = None,
         ):
-            super().__init__(timeout=300)  # 5-minute timeout
+            super().__init__(timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
@@ -6748,7 +6790,7 @@ def _define_discord_view_classes() -> None:
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
         ):
-            super().__init__(timeout=300)
+            super().__init__(timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
             self.confirm_id = confirm_id
             self.allowed_user_ids = allowed_user_ids
@@ -6853,7 +6895,7 @@ def _define_discord_view_classes() -> None:
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
         ):
-            super().__init__(timeout=300)
+            super().__init__(timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
@@ -7286,7 +7328,7 @@ def _define_discord_view_classes() -> None:
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
         ):
-            super().__init__(timeout=300)  # 5-minute timeout
+            super().__init__(timeout=_read_discord_prompt_timeout())
             self.choices = list(choices)[:24]
             self.clarify_id = clarify_id
             self.allowed_user_ids = allowed_user_ids

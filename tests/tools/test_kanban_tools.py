@@ -741,22 +741,26 @@ def _make_goal_mode_worker_env(monkeypatch, tmp_path):
     return goal_task_id
 
 
-def test_block_goal_mode_rejects_missing_kind(monkeypatch, tmp_path):
-    """A goal_mode worker calling kanban_block with no kind must not be able
-    to use it as an unguarded escape from the goal loop (Issue #38696,
-    sibling of the kanban_complete judge gate / Issue #38367)."""
+def test_block_goal_mode_coerces_missing_kind_to_needs_input(monkeypatch, tmp_path):
+    """A goal_mode worker calling kanban_block with no kind gets kind='needs_input'.
+    
+    The tool schema marks ``kind`` as optional, so workers following the
+    schema may omit it.  Before #59764 this was rejected for goal_mode tasks,
+    breaking workers that followed the documented contract.  Now a missing
+    kind is coerced to 'needs_input' so the block succeeds (#59764)."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
 
     tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
     out = kt._handle_block({"reason": "giving up"})
     d = json.loads(out)
-    assert "error" in d
-    assert "goal_mode" in d["error"]
+    assert d.get("ok") is True, f"expected ok, got: {d}"
 
     conn = kb.connect()
     try:
-        assert kb.get_task(conn, tid).status == "running"
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.block_kind == "needs_input"
     finally:
         conn.close()
 

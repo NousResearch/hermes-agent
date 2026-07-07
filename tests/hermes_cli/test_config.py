@@ -1725,3 +1725,30 @@ class TestConfigNormalizationDoesNotOverwriteUserValues:
 
     def test_explicit_config_paths_ignore_empty_sections(self):
         assert _explicit_config_paths({"memory": {}, "display": {}}) == set()
+
+
+class TestCodexAppServerAutoConfig:
+    """codex_app_server_auto ships a default and survives migration untouched."""
+
+    def _write(self, tmp_path, body):
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+
+    def test_default_config_has_native_mode(self):
+        assert DEFAULT_CONFIG["compression"]["codex_app_server_auto"] == "native"
+        assert DEFAULT_CONFIG["compression"]["codex_gpt55_autoraise"] is True
+
+    def test_preserves_existing_codex_app_server_auto_value(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 31\n"
+                "compression:\n"
+                "  codex_app_server_auto: hermes\n",
+            )
+
+            migrate_config(interactive=False, quiet=True)
+
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["compression"]["codex_app_server_auto"] == "hermes"
+
+

@@ -123,6 +123,8 @@ class OSSBackend(Mem0Backend):
             "embedder": oss_config["embedder"],
             "version": "v1.1",
         }
+        if "reranker" in oss_config:
+            config["reranker"] = oss_config["reranker"]
         self._memory = Memory.from_config(config)
 
     @staticmethod
@@ -190,7 +192,7 @@ class OSSBackend(Mem0Backend):
                 pass
 
     def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = True) -> list[dict]:
-        response = self._memory.search(query, filters=filters, top_k=top_k)
+        response = self._memory.search(query, filters=filters, top_k=top_k, rerank=rerank)
         return _unwrap_results(response)
 
     def get_all(self, *, filters: dict, page: int = 1, page_size: int = 100) -> dict:

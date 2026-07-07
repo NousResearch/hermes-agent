@@ -21,12 +21,71 @@ DEFAULT_MOA_AGGREGATOR: dict[str, str] = {
 }
 
 
+def _coerce_float_or_none(value: Any) -> float | None:
+    """Coerce to a float, or None when unset/blank/invalid.
+
+    Used for optional sampling params (reference_temperature /
+    aggregator_temperature) where None means 'don't send the parameter —
+    provider default applies', matching how a single-model Hermes agent
+    never sends temperature unless explicitly configured.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
+
+
+def _coerce_int_or_none(value: Any) -> int | None:
+    """Coerce to a positive int, or None when unset/blank/invalid/non-positive.
+
+    Used for optional caps (e.g. reference_max_tokens) where None means
+    'no cap' — the safe default that preserves prior uncapped behavior.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        try:
+            n = int(float(value))
+        except (TypeError, ValueError):
+            return None
+    return n if n > 0 else None
+
+
+def _coerce_fanout(value: Any) -> str:
+    """Normalize the fan-out cadence; unknown values fall back to default."""
+    mode = str(value or "").strip().lower()
+    return mode if mode in {"per_iteration", "user_turn"} else "per_iteration"
+
+
 def _clean_slot(slot: Any) -> dict[str, str] | None:
     if not isinstance(slot, dict):
         return None
     provider = str(slot.get("provider") or "").strip()
     model = str(slot.get("model") or "").strip()
     if not provider or not model:
+        return None
+    # MoA is a virtual provider whose presets are themselves MoA runs. Allowing
+    # one as a reference or aggregator slot would create a recursive MoA tree
+    # (the runtime guards in moa_loop.py skip references / raise on aggregators,
+    # but that surfaces only mid-turn). Reject it here so it can never be saved:
+    # an invalid slot is dropped, falling back to the preset's defaults.
+    if provider.lower() == "moa":
         return None
     return {"provider": provider, "model": model}
 
@@ -35,9 +94,13 @@ def _default_preset() -> dict[str, Any]:
     return {
         "reference_models": deepcopy(DEFAULT_MOA_REFERENCE_MODELS),
         "aggregator": deepcopy(DEFAULT_MOA_AGGREGATOR),
-        "reference_temperature": 0.6,
-        "aggregator_temperature": 0.4,
+        # None = temperature omitted from API calls (provider default),
+        # matching single-model agent behavior.
+        "reference_temperature": None,
+        "aggregator_temperature": None,
         "max_tokens": 4096,
+        "reference_max_tokens": None,
+        "fanout": "per_iteration",
         "enabled": True,
     }
 
@@ -46,7 +109,13 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
 
-    refs = [_clean_slot(item) for item in raw.get("reference_models") or []]
+    raw_refs = raw.get("reference_models")
+    if not isinstance(raw_refs, list):
+        # A hand-edited scalar / single mapping (or a bad type) must degrade to
+        # defaults instead of crashing the iteration, mirroring the tolerance
+        # for the scalar fields below (reference_temperature / max_tokens).
+        raw_refs = [raw_refs] if isinstance(raw_refs, dict) else []
+    refs = [_clean_slot(item) for item in raw_refs]
     refs = [item for item in refs if item is not None]
     if not refs:
         refs = deepcopy(DEFAULT_MOA_REFERENCE_MODELS)
@@ -57,9 +126,25 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         "enabled": bool(raw.get("enabled", True)),
         "reference_models": refs,
         "aggregator": aggregator,
-        "reference_temperature": float(raw.get("reference_temperature", 0.6) or 0.6),
-        "aggregator_temperature": float(raw.get("aggregator_temperature", 0.4) or 0.4),
-        "max_tokens": int(raw.get("max_tokens", 4096) or 4096),
+        "reference_temperature": _coerce_float_or_none(raw.get("reference_temperature")),
+        "aggregator_temperature": _coerce_float_or_none(raw.get("aggregator_temperature")),
+        "max_tokens": _coerce_int(raw.get("max_tokens"), 4096),
+        # Optional cap on how much each reference ADVISOR may generate per turn.
+        # None (default) = uncapped: advisors write full-length advice, matching
+        # prior behavior so existing presets are unchanged. Set a value (e.g.
+        # 600) to make advisors give concise advice — the dominant MoA latency
+        # is advisor generation (turn latency correlates ~0.88 with output
+        # tokens), and the aggregator only needs the gist of each advisor's
+        # judgement, so capping roughly halves per-turn wall time. Does NOT cap
+        # the acting aggregator (its output is the user-visible answer).
+        "reference_max_tokens": _coerce_int_or_none(raw.get("reference_max_tokens")),
+        # When the reference fan-out runs. "per_iteration" (default) re-runs
+        # the advisors whenever the advisory view changes — i.e. every tool
+        # iteration, so advice tracks live task state. "user_turn" runs the
+        # advisors ONCE per user turn (the original MoA shape): the
+        # aggregator gets their upfront plan-level advice, then acts alone
+        # for the rest of the tool loop.
+        "fanout": _coerce_fanout(raw.get("fanout")),
     }
 
 
@@ -105,6 +190,8 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "reference_temperature": active["reference_temperature"],
         "aggregator_temperature": active["aggregator_temperature"],
         "max_tokens": active["max_tokens"],
+        "reference_max_tokens": active.get("reference_max_tokens"),
+        "fanout": active.get("fanout", "per_iteration"),
         "enabled": active["enabled"],
     }
 
@@ -124,11 +211,26 @@ def resolve_moa_preset(config: Any, name: str | None = None) -> dict[str, Any]:
 
 
 def exact_moa_preset_name(config: Any, text: str) -> str | None:
+    """Return the preset name iff ``text`` exactly matches an *enabled* preset.
+
+    Used by the no-explicit-provider switch path (PATH B in
+    ``hermes_cli/model_switch.py``) to recognize a bare ``/model <preset>``
+    that the user typed without the ``moa:`` prefix. This is an *implicit*
+    match, so it must honor the per-preset ``enabled`` opt-out: a user who set
+    ``enabled: false`` to disable a preset must not have a plain model switch
+    whose name happens to collide with that preset key silently pivot the
+    session onto the MoA virtual provider (issue #55187). Explicit selection
+    via ``--provider moa`` / the model picker does not go through here, so a
+    disabled preset is still reachable when the user explicitly asks for it.
+    """
     wanted = str(text or "").strip()
     if not wanted:
         return None
     cfg = normalize_moa_config(config)
-    return wanted if wanted in cfg["presets"] else None
+    preset = cfg["presets"].get(wanted)
+    if preset is None or not preset.get("enabled", True):
+        return None
+    return wanted
 
 
 def set_active_moa_preset(config: Any, name: str | None) -> dict[str, Any]:
@@ -171,4 +273,4 @@ def build_moa_turn_prompt(user_prompt: str, config: Any = None, preset: str | No
 
 
 def moa_usage() -> str:
-    return "Usage: /moa [preset-name | prompt]  (bare /moa toggles the default preset)"
+    return "Usage: /moa <prompt>  (runs one prompt through the default MoA preset, then restores your model; pick a preset from the model picker to switch for the session)"

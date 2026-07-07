@@ -184,6 +184,15 @@ DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
 # Sessions, model switches, and cron jobs should reject models below this.
 MINIMUM_CONTEXT_LENGTH = 64_000
 
+# Short-lived in-process cache for local-server context probes. Bounds the
+# probe rate when the new local-endpoint live-probe paths (reconcile-on-hit +
+# pre-defaults step 7) resolve the same model several times during one startup
+# (banner, /model switch, compressor update_model). Keyed by (model, base_url);
+# values are (result, monotonic_timestamp). Not persisted to disk — cross-
+# restart freshness is handled by the reconcile logic re-probing after expiry.
+_LOCAL_CTX_PROBE_TTL_SECONDS = 30.0
+_LOCAL_CTX_PROBE_CACHE: Dict[tuple, tuple] = {}
+
 # Thin fallback defaults — only broad model family patterns.
 # These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic
 # all miss. Replaced the previous 80+ entry dict.
@@ -429,6 +438,10 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "inference-api.nousresearch.com": "nous",
     "api.deepseek.com": "deepseek",
     "api.githubcopilot.com": "copilot",
+    # Enterprise Copilot endpoints look like api.enterprise.githubcopilot.com,
+    # api.business.githubcopilot.com, etc.  Match the suffix so context-window
+    # resolution works for enterprise accounts too.
+    ".githubcopilot.com": "copilot",
     "models.github.ai": "copilot",
     # GitHub Models free tier (Azure-hosted prototyping endpoint) — same
     # canonical provider as the Copilot API.  Hard per-request token cap
@@ -478,8 +491,80 @@ def _infer_provider_from_url(base_url: str) -> Optional[str]:
     return None
 
 
+def _lmstudio_server_root(base_url: str) -> str:
+    """Return the LM Studio server root for native ``/api/v1`` endpoints."""
+    root = _normalize_base_url(base_url).rstrip("/")
+    for suffix in ("/api/v1", "/api", "/v1"):
+        if root.endswith(suffix):
+            root = root[: -len(suffix)].rstrip("/")
+            break
+    return root
+
+
 def _is_known_provider_base_url(base_url: str) -> bool:
     return _infer_provider_from_url(base_url) is not None
+
+
+def _skip_persistent_context_cache(base_url: str, provider: str) -> bool:
+    """Return True when the on-disk context cache must not short-circuit probing.
+
+    LM Studio excludes caching because loaded context is transient — the user
+    can reload the model with a different context_length at any time.
+   """
+    return provider == "lmstudio"
+
+
+def _maybe_cache_local_context_length(
+    model: str,
+    base_url: str,
+    length: int,
+) -> None:
+    """Persist a locally probed context length only when it meets Hermes minimum.
+
+    Sub-minimum live windows (e.g. vLLM ``--max-model-len 32768``) are still
+    returned to callers so ``agent_init`` can fail with the existing
+    minimum-context guidance — they must not be normalized into the on-disk cache
+    as if they were valid operating limits.
+    """
+    if length >= MINIMUM_CONTEXT_LENGTH:
+        save_context_length(model, base_url, length)
+
+
+def _reconcile_local_cached_context_length(
+    model: str,
+    base_url: str,
+    cached: int,
+    api_key: str = "",
+) -> int:
+    """Return *cached* unless a live local probe reports a different limit.
+
+    vLLM/Ollama operators can restart with a new ``--max-model-len`` / ``num_ctx``
+    without changing the model id.  When the server is reachable, prefer its
+    reported window over a stale disk entry; when the probe fails (offline tests,
+    network blip), keep the cached value.
+
+    Live probes below :data:`MINIMUM_CONTEXT_LENGTH` invalidate stale cache
+    entries but are not persisted — startup should reject them, not bless a
+    sub-64K window as config.
+    """
+    live_ctx = _query_local_context_length(model, base_url, api_key=api_key)
+    if live_ctx and live_ctx > 0 and live_ctx != cached:
+        if live_ctx < MINIMUM_CONTEXT_LENGTH:
+            logger.info(
+                "Live local probe for %s@%s reports %s (< minimum %s); "
+                "invalidating stale cache — agent init should reject",
+                model, base_url, f"{live_ctx:,}", f"{MINIMUM_CONTEXT_LENGTH:,}",
+            )
+            _invalidate_cached_context_length(model, base_url)
+            return live_ctx
+        logger.info(
+            "Reconciling stale local cache entry %s@%s: %s -> %s (live probe)",
+            model, base_url, f"{cached:,}", f"{live_ctx:,}",
+        )
+        _invalidate_cached_context_length(model, base_url)
+        _maybe_cache_local_context_length(model, base_url, live_ctx)
+        return live_ctx
+    return cached
 
 
 def is_local_endpoint(base_url: str) -> bool:
@@ -549,6 +634,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     server_url = normalized
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
+    lmstudio_url = _lmstudio_server_root(base_url)
 
     headers = _auth_headers(api_key)
 
@@ -556,7 +642,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
         with httpx.Client(timeout=2.0, headers=headers) as client:
             # LM Studio exposes /api/v1/models — check first (most specific)
             try:
-                r = client.get(f"{server_url}/api/v1/models")
+                r = client.get(f"{lmstudio_url}/api/v1/models")
                 if r.status_code == 200:
                     return "lm-studio"
             except Exception:
@@ -774,7 +860,7 @@ def fetch_endpoint_model_metadata(
     if is_local_endpoint(normalized):
         try:
             if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
-                server_url = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized
+                server_url = _lmstudio_server_root(normalized)
                 response = requests.get(
                     server_url.rstrip("/") + "/api/v1/models",
                     headers=headers,
@@ -991,6 +1077,8 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     error_lower = error_msg.lower()
     # Pattern: look for numbers near context-related keywords
     patterns = [
+        r'max_model_len\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM: "max_model_len 32768", "=32768", ": 32768", "(32768)", "is 32768"
+        r'maximum model length\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM alt: "maximum model length 131072", "... is 131072"
         r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
         r'context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})',
         r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',
@@ -1064,9 +1152,28 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         "maximum context length" in error_lower
         and "requested" in error_lower
         and "output tokens" in error_lower
+    ) or (
+        # DashScope / Alibaba Cloud (Qwen) phrasing.  The provider rejects an
+        # over-cap output request with a bounded range whose upper bound IS the
+        # real max-output cap, e.g.
+        #   "Range of max_tokens should be [1, 65536]"
+        # The input itself fits — this is purely an output-cap error, so reduce
+        # max_tokens and retry; do NOT compress.
+        "range of max_tokens should be" in error_lower
     )
     if not is_output_cap_error:
         return None
+
+    # DashScope / Alibaba range form: "Range of max_tokens should be [1, 65536]".
+    # The upper bound is the available output cap.
+    _m_range = re.search(
+        r'range of max_tokens should be\s*\[\s*\d+\s*,\s*(\d+)\s*\]',
+        error_lower,
+    )
+    if _m_range:
+        _cap = int(_m_range.group(1))
+        if _cap >= 1:
+            return _cap
 
     # Extract the available_tokens figure.
     # Anthropic format: "… = available_tokens: 10000"
@@ -1111,7 +1218,88 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         if _available >= 1:
             return _available
 
+    # vLLM style: both the window and the prompt are reported in TOKENS, e.g.
+    #   "This model's maximum context length is 131072 tokens. However, you
+    #    requested 65536 output tokens and your prompt contains at least 65537
+    #    input tokens, for a total of at least 131073 tokens. Please reduce
+    #    the length of the input prompt or the number of requested output
+    #    tokens."
+    # Available output = window - input. When the input alone is at or over
+    # the window this stays None, so the caller correctly falls through to
+    # compression instead of futilely shrinking the output cap.
+    _m_vllm_input = re.search(
+        r'prompt contains (?:at least )?(\d+)\s*input tokens', error_lower
+    )
+    if _m_ctx_tok and _m_vllm_input:
+        _available = int(_m_ctx_tok.group(1)) - int(_m_vllm_input.group(1))
+        if _available >= 1:
+            return _available
+
     return None
+
+
+def is_output_cap_error(error_msg: str) -> bool:
+    """Return True if a 400 is about the OUTPUT cap (max_tokens) being too large.
+
+    This is the broader sibling of :func:`parse_available_output_tokens_from_error`:
+    that function only returns a number when it can extract the available output
+    budget from a *known* provider phrasing.  This one answers the cheaper
+    yes/no question — "is this an output-cap error at all?" — across providers
+    whose exact wording we may not yet parse a number from.
+
+    Why this matters: an output-cap 400 is deterministic (every retry with the
+    same ``max_tokens`` gets the identical rejection).  If such an error is
+    misclassified as a context-overflow it gets routed into the compression
+    loop, the compressor re-issues the call with the same oversized
+    ``max_tokens``, the provider rejects it identically, and the session
+    death-loops until "cannot compress further" (issue #55546, DashScope/Qwen:
+    "Range of max_tokens should be [1, 65536]").  Compression cannot help an
+    output-cap error — the input already fits.
+
+    The signal: the error talks about ``max_tokens`` (or its aliases) as a
+    cap/range/limit, and does NOT talk about the INPUT/prompt/context window
+    being too long.  When both are present we defer to the context-overflow
+    path (a real input overflow can also mention max_tokens).
+    """
+    error_lower = error_msg.lower()
+
+    mentions_output_param = (
+        "max_tokens" in error_lower
+        or "max_output_tokens" in error_lower
+        or "max_completion_tokens" in error_lower
+    )
+    if not mentions_output_param:
+        return False
+
+    # Phrasing that signals the OUTPUT cap specifically is the problem.
+    output_cap_signal = (
+        "range of max_tokens should be" in error_lower      # DashScope / Alibaba
+        or "available_tokens" in error_lower                # Anthropic
+        or "available tokens" in error_lower
+        or ("in the output" in error_lower                  # OpenRouter / Nous
+            and "maximum context length" in error_lower)
+        or ("requested" in error_lower                      # LM Studio / llama.cpp
+            and "output tokens" in error_lower)
+        or "should be" in error_lower                       # generic "max_tokens should be <= N"
+        or "less than or equal" in error_lower
+        or "must be" in error_lower
+    )
+    if not output_cap_signal:
+        return False
+
+    # If the error ALSO clearly describes an oversized INPUT, it is a genuine
+    # context overflow that happens to mention max_tokens — let the
+    # context-overflow path handle it (it can compress the input).
+    input_overflow_signal = (
+        "prompt is too long" in error_lower
+        or "prompt too long" in error_lower
+        or "input is too long" in error_lower
+        or "input token" in error_lower
+        or "prompt length" in error_lower
+        or "prompt contains" in error_lower
+        or "reduce the length" in error_lower
+    )
+    return not input_overflow_signal
 
 
 def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
@@ -1185,6 +1373,56 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
                     return int(value)
     except Exception:
         pass
+    return None
+
+
+def query_ollama_supports_vision(model: str, base_url: str, api_key: str = "") -> Optional[bool]:
+    """Return True/False when Ollama ``/api/show`` reports vision support.
+
+    Uses the ``capabilities`` field on Ollama 0.6.0+ and falls back to
+    ``model_info.*.vision.block_count`` on older servers. Returns None when
+    the server is unreachable, not Ollama, or the model is unknown.
+    """
+    import httpx
+
+    bare_model = _strip_provider_prefix(model)
+    if not bare_model or not base_url:
+        return None
+
+    try:
+        if detect_local_server_type(base_url, api_key=api_key) != "ollama":
+            return None
+    except Exception:
+        return None
+
+    server_url = base_url.rstrip("/")
+    if server_url.endswith("/v1"):
+        server_url = server_url[:-3]
+
+    headers = _auth_headers(api_key)
+
+    try:
+        with httpx.Client(timeout=3.0, headers=headers) as client:
+            resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+    except Exception:
+        return None
+
+    caps = data.get("capabilities")
+    if isinstance(caps, list):
+        if any(str(cap).lower() == "vision" for cap in caps):
+            return True
+        if caps:
+            return False
+
+    model_info = data.get("model_info")
+    if isinstance(model_info, dict):
+        for key in model_info:
+            if "vision.block_count" in str(key).lower():
+                return True
+
     return None
 
 
@@ -1286,6 +1524,40 @@ def _model_name_suggests_grok_4_3(model: str) -> bool:
 
 
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
+    """Query a local server for the model's context length (short-TTL cached).
+
+    The live-probe paths added for local endpoints (reconcile-on-hit and the
+    pre-defaults step-7 probe) can fire this function several times in quick
+    succession during one startup — banner display, ``/model`` switch,
+    compressor ``update_model`` all resolve the same model. Each raw probe
+    issues synchronous ``detect_local_server_type`` + query HTTP calls (bounded
+    by the 3s httpx timeout), so an unreachable/slow local server would pay
+    that cost repeatedly. A tiny in-process TTL cache collapses back-to-back
+    probes for the same (model, base_url) into one network round-trip without
+    persisting anything to disk (freshness across restarts is still handled by
+    the reconcile logic, which probes again once the TTL expires).
+    """
+    import time as _time
+
+    cache_key = (_strip_provider_prefix(model), base_url.rstrip("/"))
+    now = _time.monotonic()
+    cached = _LOCAL_CTX_PROBE_CACHE.get(cache_key)
+    if cached is not None and (now - cached[1]) < _LOCAL_CTX_PROBE_TTL_SECONDS:
+        return cached[0]
+
+    result = _query_local_context_length_uncached(model, base_url, api_key=api_key)
+    # Cache only positive results. A None/failure (server not up yet,
+    # connection refused, timeout) must NOT be memoized — otherwise a probe
+    # that fails during a startup race would suppress a legit retry seconds
+    # later once the server is reachable. Positive-only caching still fully
+    # bounds the hot-path probe rate (a reachable server returns a value and
+    # gets cached); an unreachable one simply re-probes on the next call.
+    if result:
+        _LOCAL_CTX_PROBE_CACHE[cache_key] = (result, now)
+    return result
+
+
+def _query_local_context_length_uncached(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
 
@@ -1297,6 +1569,7 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
     server_url = base_url.rstrip("/")
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
+    lmstudio_url = _lmstudio_server_root(base_url)
 
     headers = _auth_headers(api_key)
 
@@ -1340,7 +1613,7 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
             # Use _model_id_matches for fuzzy matching: LM Studio stores models as
             # "publisher/slug" but users configure only "slug" after "local:" prefix.
             if server_type == "lm-studio":
-                resp = client.get(f"{server_url}/api/v1/models")
+                resp = client.get(f"{lmstudio_url}/api/v1/models")
                 if resp.status_code == 200:
                     data = resp.json()
                     for m in data.get("models", []):
@@ -1639,12 +1912,40 @@ def get_model_context_length(
        e. Ollama native /api/show probe (any base_url, provider-agnostic)
        f. models.dev registry lookup (with :cloud/-cloud suffix fallback)
     6. OpenRouter live API metadata (Kimi-family 32k guard)
-    7. Hardcoded defaults (broad family patterns, longest-key-first)
-    8. Local server query (last resort)
+    7. Local server query (before hardcoded defaults for local endpoints)
+    8. Hardcoded defaults (broad family patterns, longest-key-first)
     9. Default fallback (256K)"""
     # 0. Explicit config override — user knows best
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
+
+    # 0a. MoA virtual provider — ``model`` is a preset name, not a real model,
+    # and ``base_url`` is the local virtual endpoint, so every probe below would
+    # miss and fall through to the 256K default. The aggregator is the acting
+    # model, so resolve the context window from the aggregator slot's real
+    # provider+model instead. References are advisory-only and never bound the
+    # acting context, so they're ignored here.
+    if (provider or "").strip().lower() == "moa":
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.moa_config import resolve_moa_preset
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            preset = resolve_moa_preset(load_config().get("moa") or {}, model)
+            agg = preset.get("aggregator") or {}
+            agg_provider = str(agg.get("provider") or "").strip()
+            agg_model = str(agg.get("model") or "").strip()
+            if agg_model and agg_provider and agg_provider.lower() != "moa":
+                rt = resolve_runtime_provider(requested=agg_provider, target_model=agg_model)
+                return get_model_context_length(
+                    agg_model,
+                    base_url=rt.get("base_url", "") or "",
+                    api_key=rt.get("api_key", "") or "",
+                    provider=agg_provider,
+                )
+        except Exception:
+            logger.debug("MoA aggregator context-length resolution failed", exc_info=True)
+        # Fall through to the generic default if aggregator resolution failed.
 
     # 0b. custom_providers per-model override — check before any probe.
     # This closes the gap where /model switch and display paths used to fall
@@ -1672,7 +1973,7 @@ def get_model_context_length(
     # LM Studio is excluded — its loaded context length is transient (the
     # user can reload the model with a different context_length at any time
     # via /api/v1/models/load), so a stale cached value would mask reloads.
-    if base_url and provider != "lmstudio":
+    if base_url and not _skip_persistent_context_cache(base_url, provider):
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
             # Invalidate stale Codex OAuth cache entries: pre-PR #14935 builds
@@ -1737,6 +2038,10 @@ def get_model_context_length(
                 )
                 # Fall through; step 5b reconciles and overwrites if portal responds.
             else:
+                if is_local_endpoint(base_url):
+                    return _reconcile_local_cached_context_length(
+                        model, base_url, cached, api_key=api_key,
+                    )
                 return cached
 
     # 1b. AWS Bedrock — use static context length table.
@@ -1781,14 +2086,15 @@ def get_model_context_length(
             # 404/405 quickly.  Fall through on failure.
             ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
             if ctx is not None:
-                save_context_length(model, base_url, ctx)
+                if not _skip_persistent_context_cache(base_url, provider):
+                    save_context_length(model, base_url, ctx)
                 return ctx
             # 3. Try querying local server directly
             if is_local_endpoint(base_url):
                 local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
                 if local_ctx and local_ctx > 0:
-                    if provider != "lmstudio":
-                        save_context_length(model, base_url, local_ctx)
+                    if not _skip_persistent_context_cache(base_url, provider):
+                        _maybe_cache_local_context_length(model, base_url, local_ctx)
                     return local_ctx
             logger.info(
                 "Could not detect context length for model %r at %s — "
@@ -1882,20 +2188,29 @@ def get_model_context_length(
         ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if ctx is not None:
             return ctx
-    # 5e. Ollama native /api/show probe — runs for ANY provider with a
-    # base_url, not just ollama-cloud.  Ollama-compatible servers expose
+    # 5e. Ollama native /api/show probe — runs for providers whose base_url
+    # is NOT a known non-Ollama provider.  Ollama-compatible servers expose
     # this endpoint regardless of hostname (local Ollama, Ollama Cloud,
     # custom Ollama hosting).  The OpenAI-compat /v1/models endpoint
     # correctly omits context_length per the OpenAI schema, but /api/show
     # returns the authoritative GGUF model_info.context_length.
-    # For non-Ollama servers (OpenAI, Anthropic, etc.), the POST returns
-    # 404/405 quickly.  Results are cached, so the hit is per-model+URL,
-    # once per hour.
+    # Known hosted providers (OpenRouter, Anthropic, OpenAI, …) are skipped:
+    # they are definitively not Ollama, the POST always 404s, and the result
+    # is never cached for them — so every fresh process used to pay a
+    # ~300ms blocking HTTP round-trip on the first-turn critical path
+    # (measured against openrouter.ai; worse on slow DNS).
     if base_url:
-        ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
-        if ctx is not None:
-            save_context_length(model, base_url, ctx)
-            return ctx
+        _inferred_for_probe = _infer_provider_from_url(base_url)
+        _skip_ollama_probe = (
+            _inferred_for_probe is not None
+            and "ollama" not in _inferred_for_probe
+        )
+        if not _skip_ollama_probe:
+            ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
+            if ctx is not None:
+                if not _skip_persistent_context_cache(base_url, provider):
+                    save_context_length(model, base_url, ctx)
+                return ctx
     # 5f. OpenRouter live /models metadata — authoritative for OpenRouter-routed
     # models. OpenRouter's catalog carries per-model context_length (e.g.
     # anthropic/claude-fable-5 -> 1M) and refreshes as new slugs ship, so it
@@ -1953,7 +2268,15 @@ def get_model_context_length(
             else:
                 return or_ctx
 
-    # 7. (reserved)
+    # 7. Query local server before hardcoded defaults — model names like
+    # ``Hermes-3-Llama-3.1-70B`` substring-match ``llama`` (131072) even when
+    # vLLM is running at a lower ``--max-model-len`` (e.g. 32768 on limited VRAM).
+    if base_url and is_local_endpoint(base_url):
+        local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
+        if local_ctx and local_ctx > 0:
+            if not _skip_persistent_context_cache(base_url, provider):
+                _maybe_cache_local_context_length(model, base_url, local_ctx)
+            return local_ctx
 
     # 8. Hardcoded defaults (fuzzy match — longest key first for specificity)
     # Only check `default_model in model` (is the key a substring of the input).
@@ -1966,16 +2289,37 @@ def get_model_context_length(
         if default_model in model_lower:
             return length
 
-    # 9. Query local server as last resort
-    if base_url and is_local_endpoint(base_url):
-        local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
-        if local_ctx and local_ctx > 0:
-            if provider != "lmstudio":
-                save_context_length(model, base_url, local_ctx)
-            return local_ctx
-
-    # 10. Default fallback — 256K
+    # 9. Default fallback — 256K
     return DEFAULT_FALLBACK_CONTEXT
+
+
+async def get_model_context_length_async(
+    model: str,
+    base_url: str = "",
+    api_key: str = "",
+    config_context_length: int | None = None,
+    provider: str = "",
+    custom_providers: list | None = None,
+) -> int:
+    """Async variant of get_model_context_length.
+
+    Offloads the entire synchronous resolution chain (which contains
+    blocking HTTP calls via ``requests``) to a background thread so it
+    does not freeze the asyncio event loop and cause Discord heartbeat
+    timeouts.
+
+    Shares all logic with the sync version — no code duplication.
+    """
+    import asyncio
+    return await asyncio.to_thread(
+        get_model_context_length,
+        model,
+        base_url=base_url,
+        api_key=api_key,
+        config_context_length=config_context_length,
+        provider=provider,
+        custom_providers=custom_providers,
+    )
 
 
 def estimate_tokens_rough(text: str) -> int:

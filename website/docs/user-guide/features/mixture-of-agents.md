@@ -21,31 +21,31 @@ You can select a preset through the normal model picker surfaces:
 /model review --provider moa
 ```
 
-The Dashboard, TUI, and Desktop model pickers also show a `Mixture of Agents` provider row. Its models are your configured preset names.
+MoA presets are selectable on **every Hermes surface**, because MoA is a normal provider in the model system:
+
+- **CLI / gateway / TUI `/model`** — `/model <preset> --provider moa`, or `/model --provider moa` for the default preset. A bare `/model <preset>` also works when the name exactly matches a configured preset.
+- **`hermes model`** and the **Dashboard model picker** — a `Mixture of Agents` provider row appears with your preset names as its models.
+- **Desktop GUI app** — the model dropdown shows an `MoA presets` section; selecting one (`MoA: <preset>`) switches the active model to that preset. The Desktop settings panel also creates and edits presets.
+
+Configured presets therefore show up wherever you would pick any other model.
 
 ## Slash command shortcut
 
-`/moa` is convenience sugar over model selection:
-
-```bash
-/moa
-```
-
-Switches the current session to the default MoA preset.
-
-```bash
-/moa review
-```
-
-If `review` exactly matches a preset name, switches the current session to provider `moa`, model `review`.
+`/moa` is one-shot convenience sugar. It runs a single prompt through the **default** MoA preset, then restores whatever model you were on:
 
 ```bash
 /moa design and implement a migration plan for this flaky test cluster
 ```
 
-If the text does not exactly match a preset name, Hermes treats it as a one-shot prompt. It temporarily switches to the default MoA preset for that turn, sends the prompt, then restores the previous model afterward.
+Hermes temporarily switches to the default MoA preset for that one turn, sends the prompt, then restores your previous model afterward. The whole argument is the prompt — `/moa` no longer interprets it as a preset name.
 
-Preset matching is exact on purpose. Hermes does not fuzzy-match preset names, so normal prompts cannot accidentally become model switches.
+```bash
+/moa
+```
+
+Bare `/moa` (no prompt) just prints usage.
+
+To **switch** to a MoA preset for the rest of the session, select it from the model picker — MoA presets appear under a `Mixture of Agents` provider in every model-selection surface (see above). `/moa` is deliberately not a model switch, so a normal prompt can never accidentally change your model.
 
 ## How it works in the agent loop
 
@@ -85,8 +85,11 @@ moa:
       aggregator:
         provider: openrouter
         model: anthropic/claude-opus-4.8
-      reference_temperature: 0.6
-      aggregator_temperature: 0.4
+      # Optional: pin sampling temperatures. When omitted (the default),
+      # temperature is NOT sent and each model uses its provider default —
+      # the same behavior as a single-model Hermes agent.
+      # reference_temperature: 0.6
+      # aggregator_temperature: 0.4
       max_tokens: 4096
       enabled: true
 ```
@@ -96,6 +99,38 @@ Default preset:
 - reference: `openai-codex:gpt-5.5`
 - reference: `openrouter:deepseek/deepseek-v4-pro`
 - aggregator / acting model: `openrouter:anthropic/claude-opus-4.8`
+
+### Tuning advisor speed with `reference_max_tokens`
+
+Each turn, MoA runs the reference models (advisors) in parallel and then the
+aggregator acts. Advisor generation is the dominant per-turn latency — turn
+wall time correlates strongly with how many tokens the advisors emit, because
+the turn waits for the slowest advisor to finish writing. By default advisors
+are **uncapped** (`reference_max_tokens` unset), so they may write long,
+essay-length advice.
+
+Set `reference_max_tokens` on a preset to cap advisor output and give concise
+advice instead. The aggregator only needs the gist of each advisor's
+judgement, so a cap (e.g. `600`) measurably cuts per-turn wall time with little
+quality impact. It caps **advisors only** — the acting aggregator's output (the
+user-visible answer) is never capped.
+
+```yaml
+moa:
+  presets:
+    fast:
+      reference_models:
+        - provider: openrouter
+          model: anthropic/claude-opus-4.8
+        - provider: openrouter
+          model: openai/gpt-5.5
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+      reference_max_tokens: 600   # concise advice → faster turns
+```
+
+Leave it unset (or `0`/blank) to keep the prior uncapped behavior.
 
 ## Terminal preset management
 
@@ -117,6 +152,17 @@ On HermesBench, a two-model MoA preset — `claude-opus-4.8` aggregating over a 
 | `openai/gpt-5.5` | 0.7412 |
 
 The MoA configuration beats its strongest component (opus-4.8) by ~6 points, confirming that aggregating a second perspective lifts quality on hard tasks rather than just averaging the two.
+
+## Prompt caching
+
+MoA is built so the **main conversation's prompt cache is never broken**. Selecting a MoA preset is a normal model selection: it does not mutate past context, swap toolsets, or rebuild the system prompt mid-conversation. Your conversation history, system prompt, and tool schema stay byte-stable, so the cached prefix every other model relies on is preserved exactly as it would be for a plain model. Switching to or away from a MoA preset costs the same cache invalidation as any other `/model` switch — no more.
+
+Both internal call types cache normally:
+
+- **Reference models** receive a trimmed, deterministic view of the conversation (system prompt and tool transcript stripped — see the loop above). Because that view is a stable function of the stable history, a reference model's prompt prefix repeats across iterations and caches normally. References are short advisory calls with no tools.
+- **The aggregator** is the acting model. The reference outputs are appended to the *end* of the latest user turn as private guidance. Because that text sits at the tail — below the entire stable prefix (system prompt + prior history) — it does not invalidate any cached prefix: the aggregator gets a cache hit on everything above the injection, and only the freshly appended tail is new. That is exactly how every normal turn behaves, where each new user message is also uncached tail tokens.
+
+So MoA does not sacrifice prompt caching on either call type. Its only real cost is the extra reference calls per iteration — you pay for multiple model perspectives, not for broken caches. The long-lived conversation prefix shared with the rest of Hermes is fully intact.
 
 ## Notes
 

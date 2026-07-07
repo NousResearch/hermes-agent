@@ -12,6 +12,7 @@ import {
   IconBell as Bell,
   IconBookmark as Bookmark,
   IconBookmarkFilled as BookmarkFilled,
+  IconBox as Box,
   IconBrain as Brain,
   IconBug as Bug,
   IconCheck as Check,
@@ -56,6 +57,7 @@ import {
   IconLock as Lock,
   IconLogin as LogIn,
   IconMail as Mail,
+  IconMaximize as Maximize,
   IconMessageCircle as MessageCircle,
   IconMessageQuestion as MessageQuestion,
   IconMessage2 as MessageSquareText,
@@ -90,6 +92,7 @@ import {
   IconSettings2 as Settings2,
   IconAdjustmentsHorizontal as SlidersHorizontal,
   IconSquare as Square,
+  IconChartDots3 as Starmap,
   IconSteeringWheel as SteeringWheel,
   IconPlayerStopFilled as StopFilled,
   IconSun as Sun,
@@ -105,7 +108,9 @@ import {
   IconX as X,
   IconX as XIcon,
   IconBolt as Zap,
-  IconBoltFilled as ZapFilled
+  IconBoltFilled as ZapFilled,
+  IconZoomIn as ZoomIn,
+  IconZoomOut as ZoomOut
 } from '@tabler/icons-react'
 
 export {
@@ -122,6 +127,7 @@ export {
   Bell,
   Bookmark,
   BookmarkFilled,
+  Box,
   Brain,
   Bug,
   Check,
@@ -166,6 +172,7 @@ export {
   Lock,
   LogIn,
   Mail,
+  Maximize,
   MessageCircle,
   MessageQuestion,
   MessageSquareText,
@@ -200,6 +207,7 @@ export {
   Settings2,
   SlidersHorizontal,
   Square,
+  Starmap,
   SteeringWheel,
   StopFilled,
   Sun,
@@ -215,7 +223,25 @@ export {
   X,
   XIcon,
   Zap,
-  ZapFilled
+  ZapFilled,
+  ZoomIn,
+  ZoomOut
 }
 
 export type { Icon as IconComponent } from '@tabler/icons-react'
+
+/**
+ * Named icon-size scale — the single source of truth for SVG icon dimensions,
+ * replacing ad-hoc `h-N w-N` / `size={N}`. Use `<Icon className={iconSize.sm} />`
+ * (Tailwind `size-*` sets w+h and beats the icon's default 24px); compose with
+ * `cn()` for colour/animation classes.
+ */
+export const iconSize = {
+  xs: 'size-3', // 12px
+  sm: 'size-3.5', // 14px
+  md: 'size-4', // 16px
+  lg: 'size-5', // 20px
+  xl: 'size-6' // 24px
+} as const
+
+export type IconSize = keyof typeof iconSize

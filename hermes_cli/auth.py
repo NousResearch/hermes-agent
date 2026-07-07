@@ -5565,6 +5565,25 @@ def resolve_nous_runtime_credentials(
             access_token = state.get("access_token")
             refresh_token = state.get("refresh_token")
 
+            # Recover a missing local access token from the shared Nous OAuth
+            # store before giving up. Sibling profiles that logged in populate
+            # ``~/.hermes/shared/nous_auth.json``; a profile whose own ``auth.json``
+            # has ``access_token=None`` (e.g. after a revoked refresh_token left
+            # only a stale ``last_auth_error``) would otherwise dead-end on every
+            # API call and never consult the shared store — the same partial
+            # outage (#60035) the off-path ``resolve_nous_access_token`` was
+            # already rescuing by merging the shared state first. Mirroring
+            # that non-path behaviour here keeps runtime and off-path auth
+            # paths consistent.
+            if not isinstance(access_token, str) or not access_token:
+                with _nous_shared_store_lock(
+                    timeout_seconds=max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)
+                ):
+                    if _merge_shared_nous_oauth_state(state):
+                        access_token = state.get("access_token")
+                        refresh_token = state.get("refresh_token")
+                        _persist_state("runtime_shared_merge_on_empty_local_token")
+
             if not isinstance(access_token, str) or not access_token:
                 raise AuthError("No access token found for Nous Portal login.",
                                 provider="nous", relogin_required=True)

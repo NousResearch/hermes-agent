@@ -1591,7 +1591,96 @@ def test_refresh_non_reuse_error_keeps_original_description():
 
 # =============================================================================
 # Shared Nous token store — cross-profile persistence (Codex-style auto-import)
-# =============================================================================
+# ==============================================================================
+
+
+def test_resolve_nous_runtime_credentials_recovers_via_shared_store_on_empty_local_token(
+    tmp_path, monkeypatch, shared_store_env
+):
+    """Regression for #60035: when a profile's ``auth.json`` carries
+    ``providers.nous.access_token = None`` (e.g. after a revoked refresh
+    left only a stale ``last_auth_error``), but a sibling profile has
+    populated ``~/.hermes/shared/nous_auth.json`` with a valid token,
+    ``resolve_nous_runtime_credentials`` must consult the shared store
+    before raising — otherwise the runtime dead-ends on every API call
+    while the off-path ``resolve_nous_access_token`` already succeeds.
+    """
+    import hermes_cli.auth as auth_mod
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+
+    shared_token = _invoke_jwt(seconds=3600, scope=auth_mod.DEFAULT_NOUS_SCOPE)
+    shared_refresh = "shared-refresh"
+    fresh_expires = _future_iso(3600)
+
+    # Profile-local auth.json: empty local access_token, valid refresh_token,
+    # stale expires_at. Mirrors the deploy state described in the issue (a
+    # profile whose login was revoked but the refresh session on disk is
+    # still recoverable).
+    auth_store = {
+        "version": 1,
+        "active_provider": "nous",
+        "providers": {
+            "nous": {
+                "portal_base_url": "https://portal.example.com",
+                "inference_base_url": "https://inference.example.com/v1",
+                "client_id": "hermes-cli",
+                "token_type": "Bearer",
+                "scope": auth_mod.DEFAULT_NOUS_SCOPE,
+                "access_token": None,
+                "refresh_token": "stale-local-refresh",
+                "obtained_at": "2026-01-01T00:00:00+00:00",
+                "expires_in": 0,
+                "expires_at": _future_iso(-3600),
+                "agent_key": None,
+                "agent_key_id": None,
+                "agent_key_expires_at": None,
+                "agent_key_expires_in": None,
+                "agent_key_reused": None,
+                "agent_key_obtained_at": None,
+            }
+        },
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(auth_store, indent=2))
+
+    # Shared store: fresher refresh + valid access_token. The merge branch
+    # in resolve_nous_runtime_credentials must promote these into the
+    # local state before raising AuthError.
+    from hermes_cli.auth import _write_shared_nous_state
+
+    _write_shared_nous_state({
+        "access_token": shared_token,
+        "refresh_token": shared_refresh,
+        "expires_in": 3600,
+        "expires_at": fresh_expires,
+        "token_type": "Bearer",
+        "scope": auth_mod.DEFAULT_NOUS_SCOPE,
+        "inference_base_url": "https://inference.example.com/v1",
+        "portal_base_url": "https://portal.example.com",
+        "client_id": "hermes-cli",
+        "obtained_at": "2026-02-01T00:00:00+00:00",
+    })
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Mirror the production hit: fixture wraps _merge_shared_nous_oauth_state
+    # so the merge would refuse to write the right path is taken. Without
+    # the #60035 fix the function raises before reaching that helper.
+    creds = auth_mod.resolve_nous_runtime_credentials()
+
+    # The recovered credentials must be the shared-store token, not
+    # a dead-end AuthError.
+    assert creds["api_key"] == shared_token
+    assert creds["source"] == auth_mod.NOUS_AUTH_PATH_INVOKE_JWT
+
+    # And the local auth.json must now carry the shared token — the
+    # runtime path persists the recovered state so the next call on this
+    # profile is independent of the shared store being present.
+    persisted = json.loads((hermes_home / "auth.json").read_text())
+    persisted_nous = persisted["providers"]["nous"]
+    assert persisted_nous["access_token"] == shared_token
+    assert persisted_nous["refresh_token"] == shared_refresh
 
 
 @pytest.fixture

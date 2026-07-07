@@ -2223,6 +2223,25 @@ def check_all_command_guards(command: str, env_type: str,
     such a session is no longer isolated, so it goes through the normal flow
     instead of the container fast-path.
     """
+    # Continue-until-fork doctrine: finite user-decision forks are not approval
+    # prompts. They stop the turn with a structured packet so the caller can
+    # deliver it as final_response instead of waiting on an approval UI.
+    try:
+        from agent.decision_policy import evaluate_terminal_command
+
+        policy_decision = evaluate_terminal_command(command, env_type=env_type)
+        if policy_decision.needs_chad:
+            packet = policy_decision.packet
+            return {
+                "approved": False,
+                "status": "needs_chad",
+                "decision_packet": packet.to_dict(),
+                "message": packet.to_text(),
+                "description": packet.reason,
+            }
+    except Exception as exc:
+        logger.debug("decision policy terminal check failed: %s", exc, exc_info=True)
+
     # Skip isolated container backends for both checks. Docker stops skipping
     # once host paths are bind-mounted into the sandbox.
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):

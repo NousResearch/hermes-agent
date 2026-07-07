@@ -31,6 +31,11 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.tool_guardrails import ToolGuardrailDecision
+from agent.decision_packet import (
+    decision_packet_tool_result,
+    extract_decision_packet,
+)
+from agent.decision_policy import evaluate_tool_call
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -193,6 +198,67 @@ def _emit_cancelled_terminal_post_tool_call(
         middleware_trace=list(middleware_trace or []),
     )
     return result
+
+
+def _set_agent_decision_policy_halt(agent, packet) -> None:
+    setter = getattr(agent, "_set_decision_policy_halt", None)
+    if callable(setter):
+        setter(packet)
+    elif getattr(agent, "_decision_policy_halt_packet", None) is None:
+        agent._decision_policy_halt_packet = packet
+
+
+def _decision_policy_block_result(
+    agent,
+    *,
+    function_name: str,
+    function_args: dict,
+    effective_task_id: str,
+    tool_call_id: str,
+    middleware_trace: Optional[list[dict[str, Any]]] = None,
+) -> str | None:
+    try:
+        decision = evaluate_tool_call(
+            function_name,
+            function_args,
+            task_id=effective_task_id or "default",
+        )
+    except Exception as exc:
+        logger.debug("decision policy tool preflight failed for %s: %s", function_name, exc, exc_info=True)
+        return None
+    if not decision.needs_chad:
+        return None
+
+    packet = decision.packet
+    _set_agent_decision_policy_halt(agent, packet)
+    result = decision_packet_tool_result(packet)
+    _emit_terminal_post_tool_call(
+        agent,
+        function_name=function_name,
+        function_args=function_args,
+        result=result,
+        effective_task_id=effective_task_id,
+        tool_call_id=tool_call_id,
+        status="blocked",
+        error_type="decision_policy_stop",
+        error_message=packet.reason,
+        middleware_trace=list(middleware_trace or []),
+    )
+    return result
+
+
+def _decision_policy_skipped_result(packet) -> str:
+    return json.dumps(
+        {
+            "status": "skipped",
+            "error": (
+                "Skipped: a previous tool call in this batch hit a finite "
+                "decision fork and produced a NEEDS_CHAD Decision Packet."
+            ),
+            "decision_packet": packet.to_dict(),
+        },
+        ensure_ascii=False,
+    )
 
 
 def _tool_search_scoped_names(agent) -> frozenset:
@@ -414,40 +480,34 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 middleware_trace=list(middleware_trace),
             )
         else:
-            try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                block_message = get_pre_tool_call_block_message(
-                    function_name,
-                    function_args,
-                    task_id=effective_task_id or "",
-                    session_id=getattr(agent, "session_id", "") or "",
-                    tool_call_id=getattr(tool_call, "id", "") or "",
-                    turn_id=getattr(agent, "_current_turn_id", "") or "",
-                    api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                    middleware_trace=list(middleware_trace),
-                )
-            except Exception:
-                block_message = None
-
-            if block_message is not None:
-                block_result = json.dumps({"error": block_message}, ensure_ascii=False)
-                _emit_terminal_post_tool_call(
-                    agent,
-                    function_name=function_name,
-                    function_args=function_args,
-                    result=block_result,
-                    effective_task_id=effective_task_id,
-                    tool_call_id=getattr(tool_call, "id", "") or "",
-                    status="blocked",
-                    error_type="plugin_block",
-                    error_message=block_message,
-                    middleware_trace=list(middleware_trace),
-                )
+            policy_block_result = _decision_policy_block_result(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                middleware_trace=list(middleware_trace),
+            )
+            if policy_block_result is not None:
+                block_result = policy_block_result
             else:
-                guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
-                if not guardrail_decision.allows_execution:
-                    block_result = agent._guardrail_block_result(guardrail_decision)
-                    blocked_by_guardrail = True
+                try:
+                    from hermes_cli.plugins import get_pre_tool_call_block_message
+                    block_message = get_pre_tool_call_block_message(
+                        function_name,
+                        function_args,
+                        task_id=effective_task_id or "",
+                        session_id=getattr(agent, "session_id", "") or "",
+                        tool_call_id=getattr(tool_call, "id", "") or "",
+                        turn_id=getattr(agent, "_current_turn_id", "") or "",
+                        api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                        middleware_trace=list(middleware_trace),
+                    )
+                except Exception:
+                    block_message = None
+
+                if block_message is not None:
+                    block_result = json.dumps({"error": block_message}, ensure_ascii=False)
                     _emit_terminal_post_tool_call(
                         agent,
                         function_name=function_name,
@@ -456,11 +516,27 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         effective_task_id=effective_task_id,
                         tool_call_id=getattr(tool_call, "id", "") or "",
                         status="blocked",
-                        error_type="guardrail_block",
-                        error_message=getattr(guardrail_decision, "message", None) or "Tool blocked by guardrail policy",
+                        error_type="plugin_block",
+                        error_message=block_message,
                         middleware_trace=list(middleware_trace),
                     )
-
+                else:
+                    guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
+                    if not guardrail_decision.allows_execution:
+                        block_result = agent._guardrail_block_result(guardrail_decision)
+                        blocked_by_guardrail = True
+                        _emit_terminal_post_tool_call(
+                            agent,
+                            function_name=function_name,
+                            function_args=function_args,
+                            result=block_result,
+                            effective_task_id=effective_task_id,
+                            tool_call_id=getattr(tool_call, "id", "") or "",
+                            status="blocked",
+                            error_type="guardrail_block",
+                            error_message=getattr(guardrail_decision, "message", None) or "Tool blocked by guardrail policy",
+                            middleware_trace=list(middleware_trace),
+                        )
         # ── Checkpoint preflight (only for tools that will execute) ──
         if block_result is None:
             # Checkpoint for file-mutating tools
@@ -486,6 +562,28 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     pass
 
         parsed_calls.append((tool_call, function_name, function_args, middleware_trace, block_result, blocked_by_guardrail))
+
+    policy_packet = getattr(agent, "_decision_policy_halt_packet", None)
+    if policy_packet is not None:
+        skipped_result = _decision_policy_skipped_result(policy_packet)
+        next_calls = []
+        for tc, name, args, middleware_trace, block_result, blocked_by_guardrail in parsed_calls:
+            if block_result is None:
+                block_result = skipped_result
+                _emit_terminal_post_tool_call(
+                    agent,
+                    function_name=name,
+                    function_args=args,
+                    result=block_result,
+                    effective_task_id=effective_task_id,
+                    tool_call_id=getattr(tc, "id", "") or "",
+                    status="blocked",
+                    error_type="decision_policy_batch_skip",
+                    error_message="Skipped because another tool call needs Chad's decision",
+                    middleware_trace=list(middleware_trace),
+                )
+            next_calls.append((tc, name, args, middleware_trace, block_result, blocked_by_guardrail))
+        parsed_calls = next_calls
 
     # ── Logging / callbacks ──────────────────────────────────────────
     tool_names_str = ", ".join(name for _, name, _, _, _, _ in parsed_calls)
@@ -847,6 +945,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tool_duration = 0.0
         else:
             function_name, function_args, function_result, tool_duration, is_error, blocked, middleware_trace = r
+            _packet_from_result = extract_decision_packet(function_result)
+            if _packet_from_result is not None:
+                _set_agent_decision_policy_halt(agent, _packet_from_result)
 
             if not blocked:
                 function_result = agent._append_guardrail_observation(
@@ -1029,36 +1130,51 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Check plugin hooks for a block directive before executing.
         _block_msg: Optional[str] = None
         _block_error_type = "plugin_block"
+        _policy_block_result: Optional[str] = None
         if _ts_scope_block is not None:
             _block_msg = _ts_scope_block
             _block_error_type = "tool_scope_block"
         else:
-            try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                _block_msg = get_pre_tool_call_block_message(
-                    function_name,
-                    function_args,
-                    task_id=effective_task_id or "",
-                    session_id=getattr(agent, "session_id", "") or "",
-                    tool_call_id=getattr(tool_call, "id", "") or "",
-                    turn_id=getattr(agent, "_current_turn_id", "") or "",
-                    api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                    middleware_trace=list(middleware_trace),
-                )
-            except Exception:
-                pass
+            _policy_block_result = _decision_policy_block_result(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                middleware_trace=list(middleware_trace),
+            )
+            if _policy_block_result is None:
+                try:
+                    from hermes_cli.plugins import get_pre_tool_call_block_message
+                    _block_msg = get_pre_tool_call_block_message(
+                        function_name,
+                        function_args,
+                        task_id=effective_task_id or "",
+                        session_id=getattr(agent, "session_id", "") or "",
+                        tool_call_id=getattr(tool_call, "id", "") or "",
+                        turn_id=getattr(agent, "_current_turn_id", "") or "",
+                        api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                        middleware_trace=list(middleware_trace),
+                    )
+                except Exception:
+                    pass
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
-        if _block_msg is None:
+        if _block_msg is None and _policy_block_result is None:
             guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
             if not guardrail_decision.allows_execution:
                 _guardrail_block_decision = guardrail_decision
 
-        _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
+        _execution_blocked = (
+            _block_msg is not None
+            or _policy_block_result is not None
+            or _guardrail_block_decision is not None
+        )
 
         if _execution_blocked:
-            # Tool blocked by plugin or guardrail policy — skip counters,
-            # callbacks, checkpointing, activity mutation, and real execution.
+            # Tool blocked by plugin, decision policy, or guardrail policy —
+            # skip counters, callbacks, checkpointing, activity mutation, and
+            # real execution.
             pass
         # Reset nudge counters when the relevant tool is actually used
         elif function_name == "memory":
@@ -1131,7 +1247,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         tool_start_time = time.time()
 
-        if _block_msg is not None:
+        if _policy_block_result is not None:
+            # Tool blocked by continue-until-fork policy. The helper already
+            # emitted the blocked post-tool hook with the packet metadata.
+            function_result = _policy_block_result
+            tool_duration = 0.0
+        elif _block_msg is not None:
             # Tool blocked by plugin policy — return error without executing.
             function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
             tool_duration = 0.0
@@ -1491,6 +1612,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Log tool errors to the persistent error log so [error] tags
         # in the UI always have a corresponding detailed entry on disk.
         _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+        _packet_from_result = extract_decision_packet(function_result)
+        if _packet_from_result is not None:
+            _set_agent_decision_policy_halt(agent, _packet_from_result)
         # The agent-runtime tools above (todo, session_search, memory,
         # context-engine, memory-manager, clarify, delegate_task) are
         # dispatched inline — they never reach handle_function_call, so the
@@ -1596,6 +1720,29 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # injection lands as soon as a tool finishes — not after the
         # entire batch.  The model sees it on the next API iteration.
         agent._apply_pending_steer_to_tool_results(messages, 1)
+
+        policy_packet = getattr(agent, "_decision_policy_halt_packet", None)
+        if policy_packet is not None and i < len(assistant_message.tool_calls):
+            remaining = assistant_message.tool_calls[i:]
+            skipped_result = _decision_policy_skipped_result(policy_packet)
+            agent._vprint(
+                f"{agent.log_prefix}⚠️ Decision policy stop: skipping "
+                f"{len(remaining)} remaining tool call(s)",
+                force=True,
+            )
+            for skipped_tc in remaining:
+                skipped_name = skipped_tc.function.name
+                messages.append(make_tool_result_message(
+                    skipped_name,
+                    skipped_result,
+                    skipped_tc.id,
+                ))
+                _flush_session_db_after_tool_progress(
+                    agent,
+                    messages,
+                    stage=f"decision-policy skipped tool result {skipped_name}",
+                )
+            break
 
         if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
             if agent.verbose_logging:

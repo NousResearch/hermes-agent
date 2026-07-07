@@ -4531,6 +4531,22 @@ def run_conversation(
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
+                if getattr(agent, "_decision_policy_halt_packet", None) is not None:
+                    packet = agent._decision_policy_halt_packet
+                    _turn_exit_reason = "decision_policy_halt"
+                    final_response = agent._decision_policy_halt_response(packet)
+                    agent._emit_status("⚠️ Decision Packet emitted: NEEDS_CHAD")
+                    messages.append({"role": "assistant", "content": final_response})
+                    if final_response:
+                        agent._safe_print(f"\n{final_response}\n")
+                        if agent.stream_delta_callback:
+                            try:
+                                agent.stream_delta_callback(final_response)
+                                agent.stream_delta_callback(None)
+                            except Exception:
+                                pass
+                    break
+
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
                     _turn_exit_reason = "guardrail_halt"

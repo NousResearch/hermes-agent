@@ -189,6 +189,7 @@ from agent.tool_guardrails import (
     append_toolguard_guidance,
     toolguard_synthetic_result,
 )
+from agent.decision_packet import DecisionPacket
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
     file_mutation_result_landed,
@@ -5593,6 +5594,14 @@ class AIAgent:
     def _guardrail_block_result(self, decision: ToolGuardrailDecision) -> str:
         self._set_tool_guardrail_halt(decision)
         return toolguard_synthetic_result(decision)
+
+    def _set_decision_policy_halt(self, packet: DecisionPacket) -> None:
+        """Record the first finite-fork decision packet that should stop this turn."""
+        if packet is not None and self._decision_policy_halt_packet is None:
+            self._decision_policy_halt_packet = packet
+
+    def _decision_policy_halt_response(self, packet: DecisionPacket) -> str:
+        return packet.to_text()
 
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls from the assistant message and append results to messages.

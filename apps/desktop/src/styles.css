@@ -164,6 +164,14 @@
     --ui-cyan: #4c7f8c;
     --ui-blue: #0053fd;
     --ui-purple: #9e94d5;
+    --context-usage-system: color-mix(in srgb, var(--ui-base) 55%, transparent);
+    --context-usage-tools: var(--ui-purple);
+    --context-usage-rules: var(--ui-green);
+    --context-usage-skills: var(--ui-yellow);
+    --context-usage-mcp: color-mix(in srgb, var(--ui-red) 72%, var(--ui-purple));
+    --context-usage-subagents: color-mix(in srgb, var(--ui-blue) 70%, var(--ui-cyan));
+    --context-usage-memory: color-mix(in srgb, var(--ui-orange) 80%, var(--ui-yellow));
+    --context-usage-conversation: var(--ui-cyan);
     --ui-bg-chrome: color-mix(
       in srgb,
       var(--theme-background-seed) var(--theme-mix-chrome),
@@ -283,6 +291,16 @@
     --dt-accent-foreground: var(--ui-text-primary);
     --dt-border: var(--ui-stroke-secondary);
     --dt-input: var(--ui-stroke-primary);
+    /* THE single knob for input-field borders: the resting alpha (% of the ring
+       color). Hover doubles it; focus/open go full. 0% = invisible at rest. */
+    --dt-input-border: 7%;
+    /* Knob for input-field background fill: alpha (% of --dt-card) across all
+       states. 100% = fully opaque, lower = translucent over the blurred chrome. */
+    --dt-input-bg: 0%;
+    /* Classic recessed "inset" — a crisp 1px inner shadow at the TOP edge.
+       :root.dark bumps the alpha since a dark card swallows shadow. Removed on
+       focus (the focus border carries the state). */
+    --dt-input-inset: inset 0 1px 1px color-mix(in srgb, #000 10%, transparent);
     --dt-ring: var(--ui-stroke-primary);
     --dt-midground: var(--theme-midground);
     --dt-composer-ring: var(--ui-base);
@@ -331,10 +349,14 @@
     /* Tight gap between tool rows inside a single action group, so a back-to-back
        run still reads as one cohesive sequence. */
     --tool-row-gap: 0.375rem;
+    /* Height of the bounded, auto-scrolling window a long adjacent tool-call run
+       collapses into (see `.tool-group-scroll`). Sized to show a few rows before
+       the scroll + top fade kick in. */
+    --tool-group-scroll-max-h: 6.75rem;
     /* Paragraph spacing — vertical gap between prose paragraphs, both inside a
        markdown block and between consecutive prose parts. Single knob; tweak
        freely. */
-    --paragraph-gap: 0.45rem;
+    --paragraph-gap: 0.7rem;
     --sticky-human-top: 0.23rem;
     --file-tree-row-height: 1.375rem;
 
@@ -405,6 +427,10 @@
     --sidebar-edge-border: color-mix(in srgb, var(--ui-base) 12%, transparent);
     --composer-ring-strength: 1.3;
     --backdrop-invert-mul: 0;
+    /* Dark mode: a dark card needs a stronger black inset to show the recess. */
+    --dt-input-inset: inset 0 1px 1px color-mix(in srgb, #000 38%, transparent);
+    /* Dark needs a lighter resting border than light mode. */
+    --dt-input-border: 4%;
 
     --ui-inline-code-background: color-mix(in srgb, #ffffff 7%, transparent);
     --ui-inline-code-foreground: color-mix(in srgb, #ffffff 88%, transparent);
@@ -471,6 +497,31 @@
   background: repeating-conic-gradient(currentColor 0% 25%, transparent 0% 50%) 0 0 / 0.125rem 0.125rem;
 }
 
+/* Hover-reveal suppression — the shared, declarative escape hatch.
+   A collapsed pane slides in when the pointer dwells on its thin edge trigger.
+   Controls that sit over that edge gutter would drag the panel in by accident.
+   Mark any such region and, while it's hovered, the matching edge trigger(s) go
+   pointer-transparent. Auto-resets on mouse-out, no JS.
+
+   - data-suppress-pane-reveal       → kills BOTH edges (use for small regions
+                                         like the thread timeline).
+   - data-suppress-pane-reveal-side  → kills only the hovered region's OWN side
+                                         (side read from its [data-pane-side]
+                                         pane ancestor), so the opposite sidebar
+                                         stays summonable while you work a pane. */
+[data-pane-shell]:has([data-suppress-pane-reveal]:hover) [data-pane-reveal-trigger] {
+  pointer-events: none;
+}
+
+[data-pane-shell]:has([data-pane-side='left'] [data-suppress-pane-reveal-side]:hover)
+  [data-pane-side='left']
+  [data-pane-reveal-trigger],
+[data-pane-shell]:has([data-pane-side='right'] [data-suppress-pane-reveal-side]:hover)
+  [data-pane-side='right']
+  [data-pane-reveal-trigger] {
+  pointer-events: none;
+}
+
 :root:not([style*='--theme-asset-bg:']) .theme-default-filler {
   display: block;
 }
@@ -502,6 +553,21 @@
   [class*='rounded-full'],
   [class*=':rounded-full'] {
     border-radius: calc(var(--radius-scalar) * 9999rem);
+  }
+}
+
+/* Interactive list-row hover — the sessions-list interaction, shared by every
+   row list (sessions, capabilities, messaging, file trees, timeline): the
+   highlight lands instantly on hover-in and fades out over 100ms on leave. */
+@utility row-hover {
+  cursor: pointer;
+  transition:
+    color 100ms ease-out,
+    background-color 100ms ease-out;
+
+  &:hover {
+    background-color: var(--ui-row-hover-background);
+    transition: none;
   }
 }
 
@@ -661,7 +727,8 @@ button {
 
 [data-slot='dropdown-menu-content'],
 [data-slot='select-content'],
-[data-slot='dialog-content'] {
+[data-slot='dialog-content'],
+[data-slot='thread-timeline-popover'] {
   border-color: var(--ui-stroke-secondary);
   background: color-mix(in srgb, var(--ui-bg-elevated) 96%, transparent);
   box-shadow: var(--shadow-md);
@@ -709,31 +776,49 @@ canvas {
   -webkit-user-drag: none;
 }
 
+/* Tabs render 2-wide on every HTML code surface — the source preview, inline
+   diffs, markdown code blocks, tool output — so indentation matches the editor
+   and the terminal instead of the browser default (8). */
+pre,
+code {
+  tab-size: 2;
+  -moz-tab-size: 2;
+}
+
+/* Arc-style multicolor action surface (static, not animated). Reusable on any
+   Button via className. Unlayered so it beats Tailwind's bg-*/
+text-* variant utilities. */ .btn-arc {
+  background-image: linear-gradient(110deg, #5b6cff 0%, #8b5cf6 28%, #d946ef 58%, #fb7185 82%, #fb923c 100%);
+  color: #fff;
+  border-color: transparent;
+}
+
+.btn-arc:hover:not(:disabled) {
+  filter: brightness(1.08) saturate(1.06);
+}
+
 /* Shared input chrome — mirrors composer hover/focus FX. Unlayered to beat Tailwind utilities. */
+/* Border strength is driven by the single --dt-input-border alpha knob (× the
+   theme's tuned ring color); hover doubles it and focus triples it. Only the
+   border-color animates — animating the translucent background over the window's
+   backdrop-blur flickers (badly on textareas), so the bg fill snaps instead.
+   (:focus is declared after :hover so a focused+hovered field shows focus.) */
 .desktop-input-chrome {
-  --ring-pct: 18%;
-  --ring-fall: var(--dt-input);
-  background: color-mix(in srgb, var(--dt-card) 68%, transparent);
-  border-color: color-mix(
-    in srgb,
-    var(--dt-composer-ring) calc(var(--ring-pct) * var(--composer-ring-strength)),
-    var(--ring-fall)
-  );
-  box-shadow: none;
-  transition:
-    background-color 200ms ease-out,
-    border-color 200ms ease-out;
+  background: color-mix(in srgb, var(--dt-card) var(--dt-input-bg), transparent);
+  border-color: color-mix(in srgb, var(--dt-composer-ring) var(--dt-input-border), transparent);
+  box-shadow: var(--dt-input-inset);
+  transition: border-color 200ms ease-out;
 }
 
 .desktop-input-chrome:hover {
-  --ring-pct: 30%;
-  background: color-mix(in srgb, var(--dt-card) 86%, transparent);
+  border-color: color-mix(in srgb, var(--dt-composer-ring) calc(var(--dt-input-border) * 2), transparent);
 }
 
-.desktop-input-chrome:focus {
-  --ring-pct: 45%;
-  --ring-fall: transparent;
-  background: var(--dt-card);
+/* `[data-state='open']` keeps the trigger looking focused while its dropdown is
+   open — Radix moves focus into the list, so the trigger itself loses :focus. */
+.desktop-input-chrome:focus,
+.desktop-input-chrome[data-state='open'] {
+  border-color: var(--dt-composer-ring);
   box-shadow: none;
   outline: none;
 }
@@ -841,6 +926,14 @@ canvas {
    top-margin (bottom zeroed to avoid doubling), first child reset to flush. */
 [data-slot='aui_assistant-message-content'] .aui-md :where(p) {
   margin-block: var(--paragraph-gap) 0;
+}
+
+/* Headings are section breaks, so they own a larger top gap than prose — a
+   leading `# title` (common in re-entered/delegated turns) no longer butts
+   against the block above. Top-owned + bottom snug; the first-child reset
+   below still flushes a leading heading. */
+[data-slot='aui_assistant-message-content'] .aui-md :where(h1, h2, h3, h4) {
+  margin-block: 1rem 0.25rem;
 }
 
 /* First rendered element of a prose block is flush — the block-level gap above
@@ -1064,12 +1157,6 @@ canvas {
   border-color: var(--ui-stroke-secondary) !important;
 }
 
-/* On focus we don't change the fill — just shift the border ~15% toward the
-   foreground, which darkens it in light mode and lightens it in dark mode. */
-[data-slot='composer-surface']:focus-within {
-  border-color: color-mix(in srgb, var(--ui-stroke-secondary) 85%, var(--dt-foreground)) !important;
-}
-
 [data-slot='composer-fade'] {
   min-height: 2.375rem;
 }
@@ -1235,19 +1322,46 @@ canvas {
   opacity: 1;
 }
 
-/* Syntax-highlighted inline diff (Shiki): strip the theme's own surface +
-   default margins so context lines stay transparent and each changed line owns
-   its tint. `display: grid` on the code puts one `.line` per row and drops the
-   whitespace-only `\n` nodes between them — without it, full-width block lines
-   double up with the literal newlines (phantom blank rows). */
+/* Shiki surfaces in the inline file diff + source preview: strip the theme's
+   own background/margins, and lay each `.line` on its own grid row so the
+   inter-line `\n` text nodes can't double-space full-width rows. Empty lines
+   carry a non-breaking space so blank rows keep their height. */
 [data-slot='file-diff-panel'] .shiki,
-[data-slot='file-diff-panel'] .shiki code {
+[data-slot='file-diff-panel'] .shiki code,
+.preview-source-code .shiki,
+.preview-source-code .shiki code {
   margin: 0;
   background: transparent !important;
 }
 
-[data-slot='file-diff-panel'] .shiki code {
+[data-slot='file-diff-panel'] .shiki code,
+.preview-source-code .shiki code {
   display: grid;
+}
+
+[data-slot='file-diff-panel'] .shiki code .line:empty::before,
+.preview-source-code .shiki code .line:empty::before {
+  content: '\00a0';
+}
+
+/* Inline diff rows keep their utility-class padding; just floor the height. */
+[data-slot='file-diff-panel'] .shiki code .line {
+  min-height: 1.25rem;
+  white-space: pre;
+}
+
+/* Source rows are a fixed editor-height box so source⇄diff toggling never
+   shifts and the gutter stays aligned. */
+.preview-source-code .shiki code {
+  min-width: max-content;
+}
+
+.preview-source-code .shiki code .line {
+  display: block;
+  height: 1.25rem;
+  padding: 0 0.625rem;
+  line-height: 1.25rem;
+  white-space: pre;
 }
 
 /* The github-dark token palette reads candy-bright at our small code size.
@@ -1337,6 +1451,34 @@ canvas {
   mask-image: linear-gradient(to bottom, transparent 0%, black 28%, black 100%);
 }
 
+/* Long adjacent tool-call run collapsed into a fixed, auto-scrolling window.
+   ToolGroupSlot pins the newest call to the bottom (unless the user scrolls
+   up), so a back-to-back run stays compact instead of pushing the reply off
+   screen. A thin scrollbar keeps the affordance discoverable. */
+.tool-group-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ui-stroke-tertiary) transparent;
+}
+
+/* Break out of the fixed window the moment any row inside is expanded: the
+   user is now reading a diff/output, so let it grow to full height instead of
+   peering at it through a ~2-row viewport. Collapsing the row drops it back
+   into the compact, auto-scrolling window. Beats a larger fixed cap since an
+   open row already bounds its own payload with an inner scroll. */
+.tool-group-scroll:has([data-tool-row][data-tool-open]) {
+  max-height: none;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+/* Top gradient — only applied once the user is scrolled down off the top, so
+   the oldest visible call fades up under the fade while the first row stays
+   fully legible when scrolled all the way up. */
+.tool-group-scroll--faded {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 2rem, black 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, black 2rem, black 100%);
+}
+
 @keyframes code-card-stream-enter {
   from {
     opacity: 0.74;
@@ -1424,5 +1566,264 @@ canvas {
 @media (prefers-reduced-motion: reduce) {
   [data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'][data-streaming='true'] {
     animation: none;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Pet egg hatch (Cmd-K → Pets → Generate)                                    */
+/* The incubation wobble + reveal flash/pop give the draft→pet step a         */
+/* Pokémon-style "egg is hatching" beat instead of a bare spinner.            */
+/* -------------------------------------------------------------------------- */
+
+.pet-egg {
+  position: relative;
+  width: 5.5rem;
+  height: 7rem;
+  border-radius: 50% 50% 50% 50% / 62% 62% 38% 38%;
+  background: radial-gradient(
+    120% 90% at 32% 26%,
+    color-mix(in srgb, var(--ui-accent) 14%, #fff) 0%,
+    #f4ecd8 46%,
+    #e4d3ad 100%
+  );
+  box-shadow:
+    inset -0.45rem -0.6rem 1.1rem color-mix(in srgb, #000 16%, transparent),
+    inset 0.35rem 0.4rem 0.7rem color-mix(in srgb, #fff 70%, transparent),
+    0 0.4rem 0.9rem color-mix(in srgb, #000 22%, transparent);
+  transform-origin: 50% 88%;
+  animation: pet-egg-wobble 2.4s ease-in-out infinite;
+}
+
+/* Compact egg (empty-state hero). Children are %-based so they track the size;
+   only the rem box-shadow needs scaling down to stay crisp. */
+.pet-egg--sm {
+  width: 3.25rem;
+  height: 4.1rem;
+  box-shadow:
+    inset -0.28rem -0.38rem 0.7rem color-mix(in srgb, #000 16%, transparent),
+    inset 0.22rem 0.26rem 0.45rem color-mix(in srgb, #fff 70%, transparent),
+    0 0.25rem 0.55rem color-mix(in srgb, #000 22%, transparent);
+}
+
+.pet-egg__shine {
+  position: absolute;
+  top: 14%;
+  left: 22%;
+  width: 28%;
+  height: 22%;
+  border-radius: 50%;
+  background: color-mix(in srgb, #fff 85%, transparent);
+  filter: blur(2px);
+  opacity: 0.85;
+}
+
+.pet-egg__spot {
+  position: absolute;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ui-accent) 70%, #b89b63);
+  opacity: 0.55;
+}
+
+.pet-egg__glow {
+  position: absolute;
+  inset: -35%;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--ui-accent) 55%, transparent) 0%, transparent 62%);
+  animation: pet-egg-glow 2.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.pet-egg-shadow {
+  width: 4.5rem;
+  height: 0.8rem;
+  border-radius: 50%;
+  /* Lighter on light backgrounds (~20% less ink); dark mode keeps it grounded. */
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, #000 var(--pet-egg-shadow-ink, 26%), transparent) 0%,
+    transparent 72%
+  );
+  animation: pet-egg-shadow 2.4s ease-in-out infinite;
+}
+
+.dark .pet-egg-shadow {
+  --pet-egg-shadow-ink: 32%;
+}
+
+/* Contact shadow sized for the compact incubator egg (roughly its footprint). */
+.pet-egg-shadow--sm {
+  width: 3rem;
+  height: 0.6rem;
+}
+
+/* Contact shadow under the revealed pet — mirrors the floating mascot's in-app
+   shadow: an ellipse at the feet, ~55% of the sprite width, sitting behind it. */
+.pet-contact-shadow {
+  position: absolute;
+  bottom: -0.15rem;
+  left: 50%;
+  width: 55%;
+  aspect-ratio: 100 / 28;
+  transform: translateX(-50%);
+  background: radial-gradient(ellipse at center, color-mix(in srgb, #000 42%, transparent) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Hatch wiggle for the pixel egg (rocks around its base). */
+.pet-wobble {
+  transform-origin: 50% 85%;
+  animation: pet-egg-wobble 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-wobble {
+    animation: none;
+  }
+}
+
+@keyframes pet-egg-wobble {
+  0%,
+  62%,
+  100% {
+    transform: rotate(0deg);
+  }
+  8% {
+    transform: rotate(-7deg);
+  }
+  16% {
+    transform: rotate(6deg);
+  }
+  24% {
+    transform: rotate(-5deg);
+  }
+  32% {
+    transform: rotate(4deg);
+  }
+  40% {
+    transform: rotate(0deg);
+  }
+  /* the "almost out" burst */
+  70% {
+    transform: rotate(-12deg);
+  }
+  76% {
+    transform: rotate(12deg);
+  }
+  82% {
+    transform: rotate(-9deg);
+  }
+  88% {
+    transform: rotate(7deg);
+  }
+  94% {
+    transform: rotate(-3deg);
+  }
+}
+
+@keyframes pet-egg-glow {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.92);
+  }
+  70% {
+    opacity: 0.4;
+  }
+  84% {
+    opacity: 0.85;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes pet-egg-shadow {
+  0%,
+  62%,
+  100% {
+    transform: scaleX(1);
+    opacity: 0.6;
+  }
+  76% {
+    transform: scaleX(0.8);
+    opacity: 0.45;
+  }
+}
+
+.pet-reveal {
+  animation: pet-reveal-pop 620ms cubic-bezier(0.22, 1.4, 0.4, 1) both;
+}
+
+@keyframes pet-reveal-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.35) translateY(0.4rem);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.12) translateY(0);
+  }
+  100% {
+    transform: scale(1) translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-egg,
+  .pet-egg__glow,
+  .pet-egg-shadow,
+  .pet-reveal {
+    animation: none;
+  }
+  .pet-reveal {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Pet generation progress bar — determinate (hatch rows: done/total) or         */
+/* indeterminate (drafts, which return together so a % would just snap).         */
+.pet-progress {
+  position: relative;
+  height: 0.25rem;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--ui-accent) 15%, transparent);
+}
+
+.pet-progress__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  height: 100%;
+  border-radius: 9999px;
+  background: var(--ui-accent);
+  transition: width 320ms ease;
+}
+
+.pet-progress__indeterminate {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  border-radius: 9999px;
+  background: var(--ui-accent);
+  animation: pet-progress-slide 1.15s ease-in-out infinite;
+}
+
+@keyframes pet-progress-slide {
+  0% {
+    left: -42%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-progress__indeterminate {
+    animation: none;
+    left: 0;
+    width: 100%;
+    opacity: 0.4;
   }
 }

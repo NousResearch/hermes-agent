@@ -2,7 +2,7 @@ name: Docker / shell lint
 
 # Lints the container build inputs: Dockerfile (via hadolint) and any shell
 # scripts under docker/ (via shellcheck). These catch the class of regression
-# the behavioral docker-publish smoke test can't — unquoted variable
+# the behavioral docker smoke test can't — unquoted variable
 # expansions, silently-failing RUN commands, etc.
 #
 # Rules and ignores are documented in .hadolint.yaml at the repo root.

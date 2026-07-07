@@ -26,7 +26,16 @@ const LAPTOP = [{ workArea: { x: 0, y: 0, width: 1366, height: 728 } }]
 // ─── sanitizeWindowState ───────────────────────────────────────────────────
 
 test('sanitizeWindowState rejects missing/garbage input', () => {
-  for (const bad of [null, undefined, 'nope', 42, {}, { width: 'x', height: 800 }, { width: NaN, height: 800 }, { width: 1000 }]) {
+  for (const bad of [
+    null,
+    undefined,
+    'nope',
+    42,
+    {},
+    { width: 'x', height: 800 },
+    { width: NaN, height: 800 },
+    { width: 1000 }
+  ]) {
     assert.equal(sanitizeWindowState(bad), null)
   }
 })
@@ -112,9 +121,13 @@ test('computeWindowOptions does not clamp when displays are unknown', () => {
 test('debounce coalesces a burst into one trailing run', t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   let calls = 0
-  const d = debounce(() => { calls += 1 }, 250)
+  const d = debounce(() => {
+    calls += 1
+  }, 250)
 
-  d(); d(); d()
+  d()
+  d()
+  d()
   assert.equal(calls, 0)
   t.mock.timers.tick(249)
   assert.equal(calls, 0)
@@ -125,7 +138,9 @@ test('debounce coalesces a burst into one trailing run', t => {
 test('debounce.flush runs now and cancels the pending timer', t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   let calls = 0
-  const d = debounce(() => { calls += 1 }, 250)
+  const d = debounce(() => {
+    calls += 1
+  }, 250)
 
   d()
   d.flush()

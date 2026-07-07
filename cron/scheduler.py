@@ -2505,6 +2505,27 @@ def run_job(
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
     # ---------------------------------------------------------------
+    # max_repeat safeguard — clamp repeat.times so a high value
+    # doesn't unexpectedly spam the user.  None (infinite) is left
+    # untouched since recurring schedules are the normal cron use case.
+    # ---------------------------------------------------------------
+    _max_repeat_cfg = 1000
+    try:
+        _cfg = load_config()
+        _max_repeat_cfg = int((_cfg.get("cron", {}) or {}).get("max_repeat", 1000))
+    except Exception:
+        pass
+    _repeat = job.get("repeat")
+    if _repeat:
+        _times = _repeat.get("times")
+        if _times is not None and _times > _max_repeat_cfg:
+            logger.warning(
+                "Job '%s' (%s): repeat.times=%s exceeds max_repeat=%s — clamping to %s",
+                job_name, job_id, _times, _max_repeat_cfg, _max_repeat_cfg,
+            )
+            _repeat["times"] = _max_repeat_cfg
+
+    # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.
     # ---------------------------------------------------------------
     # This mirrors the classic "run a bash script on a timer, send its

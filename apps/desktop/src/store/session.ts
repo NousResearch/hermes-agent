@@ -4,7 +4,13 @@ import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
+import { emitDesktopDiagnostic } from '@/lib/desktop-diagnostics'
+import {
+  persistBoolean,
+  persistString,
+  storedBoolean,
+  storedString
+} from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
@@ -20,6 +26,8 @@ const COMPOSER_MODEL_KEY = 'hermes.desktop.composer.model'
 const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
 const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
 const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
+const REPLY_READY_SESSION_IDS_KEY = 'hermes.desktop.replyReadySessionIds'
+const REPLY_READY_SESSION_PROFILES_KEY = 'hermes.desktop.replyReadySessionProfiles'
 
 // The last chat the user had open, so a relaunch lands back on it instead of an
 // empty new-chat. Stored (not runtime) id — the route is keyed by stored id.
@@ -27,6 +35,13 @@ const LAST_SESSION_KEY = 'hermes.desktop.lastSessionId'
 
 export const getRememberedSessionId = (): null | string => storedString(LAST_SESSION_KEY)
 export const setRememberedSessionId = (id: null | string) => persistString(LAST_SESSION_KEY, id)
+
+try {
+  localStorage.removeItem(REPLY_READY_SESSION_IDS_KEY)
+  localStorage.removeItem(REPLY_READY_SESSION_PROFILES_KEY)
+} catch {
+  // Non-browser test/import contexts do not expose localStorage.
+}
 
 let configuredDefaultProjectDir = ''
 
@@ -125,6 +140,9 @@ function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
 export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id'>): string =>
   session._lineage_root_id ?? session.id
 
+export const isOpenableSessionListRow = (session: Pick<SessionInfo, 'end_reason'>): boolean =>
+  session.end_reason !== 'compression'
+
 /** Merge a fresh server session page into the in-memory list, keeping any
  *  row the server omitted that we still want visible — both still-"working"
  *  sessions and pinned sessions.
@@ -186,6 +204,7 @@ export function mergeSessionPage(
 
   const survivors = previous.filter(
     session =>
+      isOpenableSessionListRow(session) &&
       !incomingIds.has(session.id) &&
       !incomingLineageKeys.has(session._lineage_root_id ?? session.id) &&
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
@@ -228,6 +247,8 @@ export const $messagingTruncated = atom<boolean>(false)
 export const $sessionProfileTotals = atom<Record<string, number>>({})
 export const $sessionsLoading = atom(true)
 export const $workingSessionIds = atom<string[]>([])
+export const $replyReadySessionIds = atom<string[]>([])
+export const $replyReadySessionProfiles = atom<Record<string, string>>({})
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
 export const $messages = atom<ChatMessage[]>([])
@@ -300,6 +321,9 @@ export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =
   updateAtom($sessionProfileTotals, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
 export const setWorkingSessionIds = (next: Updater<string[]>) => updateAtom($workingSessionIds, next)
+export const setReplyReadySessionIds = (next: Updater<string[]>) => updateAtom($replyReadySessionIds, next)
+export const setReplyReadySessionProfiles = (next: Updater<Record<string, string>>) =>
+  updateAtom($replyReadySessionProfiles, next)
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
 export const setSelectedStoredSessionId = (next: Updater<string | null>) => updateAtom($selectedStoredSessionId, next)
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
@@ -401,6 +425,13 @@ function armSessionWatchdog(sessionId: string) {
     // away or the session genuinely finished, the timer is a no-op.
     if ($workingSessionIds.get().includes(sessionId)) {
       setWorkingSessionIds(current => current.filter(id => id !== sessionId))
+      emitDesktopDiagnostic({
+        component: 'session',
+        event: 'watchdog.cleared',
+        message: 'Session was cleared after the stream watchdog elapsed',
+        severity: 'warn',
+        details: { sessionId, timeoutMs: SESSION_WATCHDOG_TIMEOUT_MS }
+      })
     }
 
     for (const listener of sessionWatchdogListeners) {
@@ -445,6 +476,24 @@ function clearSessionSettled(sessionId: string) {
   settledSessionExpiry.delete(sessionId)
 }
 
+function sessionMatchesAnyId(session: SessionInfo, sessionId: string): boolean {
+  return session.id === sessionId || sessionPinId(session) === sessionId || session._lineage_root_id === sessionId
+}
+
+function knownSessions(): SessionInfo[] {
+  return [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()]
+}
+
+function sessionProfileHint(sessionId: string): null | string {
+  const stored = $replyReadySessionProfiles.get()[sessionId]
+
+  if (stored) {
+    return stored
+  }
+
+  return knownSessions().find(session => sessionMatchesAnyId(session, sessionId))?.profile ?? null
+}
+
 /** Stored ids of sessions whose turn ended within the grace window. Prunes
  *  expired entries as it reads, so it stays bounded without a timer. */
 export function getRecentlySettledSessionIds(now: number = Date.now()): string[] {
@@ -484,6 +533,70 @@ const toggleMembership = (set: (next: Updater<string[]>) => void, id: string, on
     return present ? current.filter(x => x !== id) : current
   })
 
+export function setSessionReplyReady(
+  sessionId: string | null | undefined,
+  ready: boolean,
+  profile?: null | string
+) {
+  if (!sessionId) {
+    return
+  }
+
+  toggleMembership(setReplyReadySessionIds, sessionId, ready)
+  setReplyReadySessionProfiles(current => {
+    const next = { ...current }
+
+    if (ready) {
+      if (profile) {
+        next[sessionId] = profile
+      }
+    } else {
+      delete next[sessionId]
+    }
+
+    return next
+  })
+}
+
+export function clearSessionReplyReady(sessionId: string | null | undefined) {
+  if (!sessionId) {
+    return
+  }
+
+  setSessionReplyReady(sessionId, false)
+
+  for (const session of knownSessions()) {
+    if (!sessionMatchesAnyId(session, sessionId)) {
+      continue
+    }
+
+    setSessionReplyReady(session.id, false)
+    setSessionReplyReady(sessionPinId(session), false)
+    setSessionReplyReady(session._lineage_root_id, false)
+  }
+}
+
+export function sessionNotificationAliases(session: SessionInfo): string[] {
+  return [session.id, sessionPinId(session), session._lineage_root_id].filter((id): id is string => Boolean(id))
+}
+
+export function sessionHasVisibleNotification(
+  session: SessionInfo,
+  attentionSessionIds: readonly string[],
+  replyReadySessionIds: readonly string[]
+): boolean {
+  const aliases = sessionNotificationAliases(session)
+
+  return aliases.some(id => attentionSessionIds.includes(id) || replyReadySessionIds.includes(id))
+}
+
+export function clearSessionNotifications(session: SessionInfo) {
+  for (const id of sessionNotificationAliases(session)) {
+    clearSessionReplyReady(id)
+    setSessionAttention(id, false)
+  }
+}
+
 // Stored session ids with a blocking prompt (clarify) waiting on the user.
 // Separate from $workingSessionIds: a session can be "working" (turn running)
 // AND need input. The sidebar row reads this for a persistent indicator that,
@@ -491,17 +604,105 @@ const toggleMembership = (set: (next: Updater<string[]>) => void, id: string, on
 export const $attentionSessionIds = atom<string[]>([])
 export const setAttentionSessionIds = (next: Updater<string[]>) => updateAtom($attentionSessionIds, next)
 
+let lastAttentionProfileCounts: Record<string, number> = {}
+
+function normalizeSessionProfileKey(name: string | null | undefined): string {
+  const value = (name ?? '').trim()
+
+  return value || 'default'
+}
+
+function sameNumberRecord(a: Record<string, number>, b: Record<string, number>): boolean {
+  const aKeys = Object.keys(a)
+  const bKeys = Object.keys(b)
+
+  if (aKeys.length !== bKeys.length) {
+    return false
+  }
+
+  return aKeys.every(key => a[key] === b[key])
+}
+
+export const $attentionProfileCounts = computed(
+  [
+    $attentionSessionIds,
+    $replyReadySessionIds,
+    $replyReadySessionProfiles,
+    $sessions,
+    $cronSessions,
+    $messagingSessions
+  ],
+  (attentionSessionIds, replyReadySessionIds, replyReadySessionProfiles, sessions, cronSessions, messagingSessions) => {
+    if (attentionSessionIds.length === 0 && replyReadySessionIds.length === 0) {
+      if (Object.keys(lastAttentionProfileCounts).length === 0) {
+        return lastAttentionProfileCounts
+      }
+
+      lastAttentionProfileCounts = {}
+
+      return lastAttentionProfileCounts
+    }
+
+    const next: Record<string, number> = {}
+    const countedReplyReadyIds = new Set<string>()
+
+    for (const session of [...sessions, ...cronSessions, ...messagingSessions]) {
+      if (!sessionHasVisibleNotification(session, attentionSessionIds, replyReadySessionIds)) {
+        continue
+      }
+
+      const key = normalizeSessionProfileKey(session.profile)
+      next[key] = (next[key] ?? 0) + 1
+
+      for (const alias of sessionNotificationAliases(session)) {
+        if (replyReadySessionIds.includes(alias)) {
+          countedReplyReadyIds.add(alias)
+        }
+      }
+    }
+
+    for (const id of replyReadySessionIds) {
+      if (countedReplyReadyIds.has(id)) {
+        continue
+      }
+
+      const profile = replyReadySessionProfiles[id]
+
+      if (!profile) {
+        continue
+      }
+
+      const key = normalizeSessionProfileKey(profile)
+      next[key] = (next[key] ?? 0) + 1
+    }
+
+    if (sameNumberRecord(lastAttentionProfileCounts, next)) {
+      return lastAttentionProfileCounts
+    }
+
+    lastAttentionProfileCounts = next
+
+    return next
+  }
+)
+
 export function setSessionAttention(sessionId: string | null | undefined, needsInput: boolean) {
   if (sessionId) {
     toggleMembership(setAttentionSessionIds, sessionId, needsInput)
   }
 }
 
-export function setSessionWorking(sessionId: string | null | undefined, working: boolean) {
+export function setSessionWorking(
+  sessionId: string | null | undefined,
+  working: boolean,
+  profile?: null | string,
+  options: { markReplyReady?: boolean } = {}
+) {
   if (!sessionId) {
     return
   }
 
+  const { markReplyReady = true } = options
   const wasWorking = $workingSessionIds.get().includes(sessionId)
 
   toggleMembership(setWorkingSessionIds, sessionId, working)
@@ -509,6 +710,12 @@ export function setSessionWorking(sessionId: string | null | undefined, working:
   // Bookend the watchdog: arm on enter, disarm on leave. A later
   // noteSessionActivity() from a streaming event refreshes the timer.
   if (working) {
+    clearSessionReplyReady(sessionId)
+
+    if (profile) {
+      setReplyReadySessionProfiles(current => ({ ...current, [sessionId]: profile }))
+    }
+
     clearSessionSettled(sessionId)
     armSessionWatchdog(sessionId)
   } else {
@@ -520,6 +727,10 @@ export function setSessionWorking(sessionId: string | null | undefined, working:
     // aggregator to return its now-persisted row.
     if (wasWorking) {
       markSessionSettled(sessionId)
+
+      if (markReplyReady) {
+        setSessionReplyReady(sessionId, true, profile ?? sessionProfileHint(sessionId))
+      }
     }
   }
 }

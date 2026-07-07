@@ -10543,13 +10543,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
-        _msg_preview = (event.text or "")[:80].replace("\n", " ")
+        _msg_len = len(event.text or "")
         _reply_id = getattr(event, "reply_to_message_id", None)
-        _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " ")
+        _has_reply_text = bool(getattr(event, "reply_to_text", None))
+        # Privacy hardening: do not write inbound message previews or quoted
+        # reply text to gateway logs. Personal/coaching use over Telegram often
+        # contains sensitive disclosures, and privacy.redact_pii intentionally
+        # protects model context rather than operator logs. Length + reply
+        # presence preserve enough operational signal for debugging stuck turns.
         logger.info(
-            "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
+            "inbound message: platform=%s user=%s chat=%s msg_len=%d reply_to_id=%s has_reply_text=%s",
             _platform_name, source.user_name or source.user_id or "unknown",
-            source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
+            source.chat_id or "unknown", _msg_len, _reply_id, _has_reply_text,
         )
 
         # Get or create session

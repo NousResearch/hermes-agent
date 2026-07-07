@@ -1048,6 +1048,33 @@ class TestFindAliasForProfile:
         assert info.alias_path is not None
         assert info.alias_path.name == "qiaobusi"
 
+    def test_list_profiles_does_not_scan_aliases_per_profile(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli import profiles as profiles_mod
+
+        profiles_mod.create_profile("steve", no_alias=True)
+        profiles_mod.create_profile("alice", no_alias=True)
+        profiles_mod.create_wrapper_script("qiaobusi", target="steve")
+        profiles_mod.create_wrapper_script("alice")
+
+        def fail_per_profile_alias_scan(_profile_name):
+            raise AssertionError("list_profiles must build aliases in one pass")
+
+        monkeypatch.setattr(
+            profiles_mod,
+            "find_alias_for_profile",
+            fail_per_profile_alias_scan,
+        )
+
+        rows = {profile.name: profile for profile in profiles_mod.list_profiles()}
+
+        assert rows["steve"].alias_name == "qiaobusi"
+        assert rows["steve"].alias_path is not None
+        assert rows["steve"].alias_path.name == "qiaobusi"
+        assert rows["alice"].alias_name == "alice"
+        assert rows["alice"].alias_path is not None
+        assert rows["alice"].alias_path.name == "alice"
+
 
 # ===================================================================
 # TestRenameProfile

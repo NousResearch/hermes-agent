@@ -13,10 +13,11 @@ import {
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import { clearSessionReplyReady, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 
 import type { ClientSessionState } from '../../../types'
 
+import { rememberContinuationPrompt } from './continuation-recovery'
 import {
   _submitInFlight,
   type GatewayRequest,
@@ -203,6 +204,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
+      clearSessionReplyReady(selectedStoredSessionIdRef.current ?? activeSessionIdRef.current)
       clearNotifications()
 
       let sessionId: null | string = activeSessionId
@@ -248,28 +250,80 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         const text = buildContextText(syncedAttachments)
 
         // On sleep/wake the gateway's in-memory session may have been cleared
-        // while the desktop app still holds the old session ID. Detect this,
-        // resume the stored session to re-register it, and retry once.
+        // while the desktop app still holds the old session ID. Detect this and
+        // retry once: resume durable stored sessions, or create a fresh runtime
+        // session when the user is composing from a new draft.
         let submitErr: unknown = null
 
         try {
+          rememberContinuationPrompt(sessionId, text)
           await withSessionBusyRetry(() =>
             requestGateway('prompt.submit', { session_id: sessionId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
           )
         } catch (firstErr) {
-          if (isSessionNotFoundError(firstErr) && selectedStoredSessionIdRef.current) {
-            // Re-register the session in the gateway and get a fresh live ID.
-            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: selectedStoredSessionIdRef.current
-            })
+          if (isSessionNotFoundError(firstErr)) {
+            const storedSessionId = selectedStoredSessionIdRef.current
 
-            const recoveredId = resumed?.session_id
+            if (storedSessionId) {
+              let recoveredId: null | string = null
 
-            if (recoveredId) {
-              activeSessionIdRef.current = recoveredId
-              await withSessionBusyRetry(() =>
-                requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
-              )
+              try {
+                // Re-register the session in the gateway and get a fresh live ID.
+                const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+                  session_id: storedSessionId
+                })
+
+                recoveredId = resumed?.session_id || null
+              } catch (resumeErr) {
+                if (!isSessionNotFoundError(resumeErr) || options?.fromQueue) {
+                  submitErr = resumeErr
+                }
+              }
+
+              if (!recoveredId && submitErr === null && !options?.fromQueue) {
+                recoveredId = await createBackendSessionForSend(visibleText)
+              }
+
+              if (recoveredId) {
+                const staleSessionId = sessionId
+
+                activeSessionIdRef.current = recoveredId
+
+                if (staleSessionId !== recoveredId) {
+                  dropOptimistic(staleSessionId)
+                }
+
+                sessionId = recoveredId
+                seedOptimistic(recoveredId)
+                rewriteOptimistic(recoveredId)
+                rememberContinuationPrompt(recoveredId, text)
+                await withSessionBusyRetry(() =>
+                  requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+                )
+              } else if (submitErr === null) {
+                submitErr = firstErr
+              }
+            } else if (!options?.fromQueue) {
+              const staleSessionId = sessionId
+              const recoveredId = await createBackendSessionForSend(visibleText)
+
+              if (recoveredId) {
+                activeSessionIdRef.current = recoveredId
+
+                if (staleSessionId !== recoveredId) {
+                  dropOptimistic(staleSessionId)
+                }
+
+                sessionId = recoveredId
+                seedOptimistic(recoveredId)
+                rewriteOptimistic(recoveredId)
+                rememberContinuationPrompt(recoveredId, text)
+                await withSessionBusyRetry(() =>
+                  requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+                )
+              } else {
+                submitErr = firstErr
+              }
             } else {
               submitErr = firstErr
             }
@@ -292,14 +346,18 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         return true
       } catch (err) {
-        releaseBusy()
+        // A send that never made it past the gateway's concurrency guard should
+        // not become transcript history. Remove the optimistic user bubble and
+        // report "not accepted" so the composer restores the draft or keeps the
+        // queued entry for the next idle drain.
+        if (isSessionBusyError(err)) {
+          releaseBusy()
+          dropOptimistic(sessionId)
 
-        // A queued drain that raced a not-yet-settled turn gets a transient
-        // "session busy" (4009). Don't surface an error bubble/toast — the entry
-        // stays queued and the composer's bounded auto-drain retries when idle.
-        if (options?.fromQueue && isSessionBusyError(err)) {
           return false
         }
+
+        releaseBusy()
 
         const message = inlineErrorMessage(err, copy.promptFailed)
 

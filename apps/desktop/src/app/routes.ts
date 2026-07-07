@@ -2,6 +2,7 @@ export const SESSION_ROUTE_PREFIX = '/'
 export const NEW_CHAT_ROUTE = '/'
 export const SETTINGS_ROUTE = '/settings'
 export const COMMAND_CENTER_ROUTE = '/command-center'
+export const ACTIVE_CHATS_ROUTE = '/active-chats'
 export const SKILLS_ROUTE = '/skills'
 export const MESSAGING_ROUTE = '/messaging'
 export const ARTIFACTS_ROUTE = '/artifacts'
@@ -11,6 +12,7 @@ export const AGENTS_ROUTE = '/agents'
 export const STARMAP_ROUTE = '/starmap'
 
 export type AppView =
+  | 'active-chats'
   | 'agents'
   | 'artifacts'
   | 'chat'
@@ -23,6 +25,7 @@ export type AppView =
   | 'starmap'
 
 export type AppRouteId =
+  | 'active-chats'
   | 'agents'
   | 'artifacts'
   | 'command-center'
@@ -42,6 +45,7 @@ export interface AppRoute {
 
 export const APP_ROUTES = [
   { id: 'new', path: NEW_CHAT_ROUTE, view: 'chat' },
+  { id: 'active-chats', path: ACTIVE_CHATS_ROUTE, view: 'active-chats' },
   { id: 'settings', path: SETTINGS_ROUTE, view: 'settings' },
   { id: 'command-center', path: COMMAND_CENTER_ROUTE, view: 'command-center' },
   { id: 'skills', path: SKILLS_ROUTE, view: 'skills' },

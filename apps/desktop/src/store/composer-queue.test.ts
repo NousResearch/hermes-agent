@@ -3,10 +3,13 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import type { ComposerAttachment } from './composer'
 import {
   $queuedPromptsBySession,
+  batchQueuedPrompts,
   clearQueuedPrompts,
   dequeueQueuedPrompt,
   enqueueQueuedPrompt,
   getQueuedPrompts,
+  markQueuedPromptAutoDrain,
+  markQueuedPromptsAutoDrain,
   migrateQueuedPrompts,
   promoteQueuedPrompt,
   removeQueuedPrompt,
@@ -116,6 +119,63 @@ describe('composer queue store', () => {
     const parsed = JSON.parse(String(raw)) as Record<string, { text: string }[]>
     expect(parsed[SESSION_KEY]?.[0]?.text).toBe('persist me')
   })
+
+  it('marks only live follow-up queued entries as auto-drainable', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'manual queue' })
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'follow-up queue', autoDrain: true })
+
+    const queue = getQueuedPrompts(SESSION_KEY)
+    expect(queue[0]?.autoDrain).toBeUndefined()
+    expect(queue[1]?.autoDrain).toBe(true)
+  })
+
+  it('dedupes repeated queued text and attachments for the same session', () => {
+    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [attachment('same-file')], text: 'same prompt' })
+    const second = enqueueQueuedPrompt(SESSION_KEY, { attachments: [attachment('same-file')], text: 'same prompt' })
+
+    expect(second?.id).toBe(first?.id)
+    expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+  })
+
+  it('upgrades a duplicate queued entry to auto-drainable', () => {
+    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'same prompt' })
+    const second = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'same prompt', autoDrain: true })
+
+    expect(second?.id).toBe(first?.id)
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.autoDrain)).toEqual([true])
+  })
+
+  it('marks all queued entries as auto-drainable on explicit bulk send', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'manual queue' })
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'follow-up queue', autoDrain: true })
+
+    expect(markQueuedPromptsAutoDrain(SESSION_KEY)).toBe(true)
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.autoDrain)).toEqual([true, true])
+    expect(markQueuedPromptsAutoDrain(SESSION_KEY)).toBe(false)
+  })
+
+  it('batches all queued entries into one auto-drainable send', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [attachment('first-file')], text: 'first prompt' })
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [attachment('second-file', 'image')], text: 'second prompt' })
+
+    const batch = batchQueuedPrompts(SESSION_KEY)
+
+    expect(batch).not.toBeNull()
+    expect(batch?.text).toBe('first prompt\n\nsecond prompt')
+    expect(batch?.autoDrain).toBe(true)
+    expect(batch?.attachments.map(item => item.id)).toEqual(['first-file', 'second-file'])
+    expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+    expect(getQueuedPrompts(SESSION_KEY)[0]).toEqual(batch)
+  })
+
+  it('marks one queued entry as auto-drainable on explicit row send', () => {
+    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'manual queue' })
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'other queue' })
+
+    expect(markQueuedPromptAutoDrain(SESSION_KEY, first!.id)).toBe(true)
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.autoDrain)).toEqual([true, undefined])
+    expect(markQueuedPromptAutoDrain(SESSION_KEY, first!.id)).toBe(false)
+  })
 })
 
 describe('migrateQueuedPrompts', () => {
@@ -150,21 +210,19 @@ describe('migrateQueuedPrompts', () => {
 })
 
 describe('shouldAutoDrain', () => {
-  it('drains whenever idle with a non-empty queue', () => {
-    expect(shouldAutoDrain({ isBusy: false, queueLength: 1 })).toBe(true)
+  it('drains an auto-drainable entry whenever idle with a non-empty queue', () => {
+    expect(shouldAutoDrain({ isBusy: false, nextAutoDrain: true, queueLength: 1 })).toBe(true)
   })
 
-  it('drains on mount/reconnect with no observed busy edge', () => {
-    // The whole point of dropping the edge: a remount resets the busy ref, so an
-    // edge-gated drain would strand the entry. Idle + non-empty must still fire.
-    expect(shouldAutoDrain({ isBusy: false, queueLength: 2 })).toBe(true)
+  it('does not drain stale persisted/manual queue entries just because the session is idle', () => {
+    expect(shouldAutoDrain({ isBusy: false, nextAutoDrain: false, queueLength: 1 })).toBe(false)
   })
 
   it('does not drain mid-turn', () => {
-    expect(shouldAutoDrain({ isBusy: true, queueLength: 1 })).toBe(false)
+    expect(shouldAutoDrain({ isBusy: true, nextAutoDrain: true, queueLength: 1 })).toBe(false)
   })
 
   it('does not drain an empty queue', () => {
-    expect(shouldAutoDrain({ isBusy: false, queueLength: 0 })).toBe(false)
+    expect(shouldAutoDrain({ isBusy: false, nextAutoDrain: true, queueLength: 0 })).toBe(false)
   })
 })

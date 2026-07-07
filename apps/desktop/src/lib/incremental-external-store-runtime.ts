@@ -11,7 +11,7 @@ import {
   type ThreadMessage,
   useRuntimeAdapters
 } from '@assistant-ui/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 
 const EMPTY_ARRAY = Object.freeze([])
 
@@ -166,9 +166,20 @@ class IncrementalExternalStoreRuntimeCore extends BaseAssistantRuntimeCore {
 }
 
 export function useIncrementalExternalStoreRuntime<T extends ThreadMessage>(
-  store: ExternalStoreAdapter<T>
+  store: ExternalStoreAdapter<T>,
+  options: { resetKey?: unknown } = {}
 ): AssistantRuntime {
-  const [runtime] = useState(() => new IncrementalExternalStoreRuntimeCore(store as ExternalStoreAdapter))
+  const initialStoreRef = useRef(store as ExternalStoreAdapter)
+  const { resetKey } = options
+
+  const runtime = useMemo(
+    () => {
+      void resetKey
+
+      return new IncrementalExternalStoreRuntimeCore(initialStoreRef.current)
+    },
+    [resetKey]
+  )
 
   useEffect(() => {
     runtime.setAdapter(store as ExternalStoreAdapter)

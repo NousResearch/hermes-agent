@@ -2207,6 +2207,71 @@ def test_session_create_does_not_persist_empty_row(monkeypatch):
         server._sessions.pop(sid, None)
 
 
+def test_session_continue_from_dropoff_creates_seeded_child(monkeypatch):
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    recorded = []
+
+    class _Store:
+        def search(self, query, cwd="", limit=3, timeout_s=0.2):
+            assert "continue the work" in query
+            assert cwd == "/tmp"
+            assert timeout_s <= 0.2
+            return [{"id": "dropoff-old", "source_path": "continuity", "snippet": "Prior decision"}]
+
+        def record_dropoff(self, record):
+            recorded.append(record)
+            return {**record, "id": "dropoff-1", "prompt_hash": "hash-1"}
+
+    monkeypatch.setattr(server, "_continuity_store", lambda: _Store())
+
+    server._sessions["parent-runtime"] = _session(
+        agent=types.SimpleNamespace(model="gpt-5.5"),
+        cwd="/tmp",
+        history=[
+            {"role": "user", "content": "Keep the Obsidian policy context and inspect @file:src/main.ts."},
+            {"role": "assistant", "content": "I will preserve the relevant constraints."},
+        ],
+        session_key="parent-stored",
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.continue_from_dropoff",
+            "params": {
+                "error": "Context length exceeded. Cannot compress further.",
+                "parent_session_id": "parent-stored",
+                "pending_prompt": "continue the work",
+                "session_id": "parent-runtime",
+            },
+        }
+    )
+
+    child_sid = resp["result"]["session_id"]
+    try:
+        child = server._sessions[child_sid]
+        assert resp["result"]["continued_from_session_id"] == "parent-stored"
+        assert child["parent_session_id"] == "parent-stored"
+        assert child["continued_from_dropoff"] is True
+        assert child["history"][0]["role"] == "system"
+        assert "compression was exhausted" in child["history"][0]["content"]
+        assert "Obsidian policy context" in child["history"][0]["content"]
+        assert "Retrieved continuity context" in child["history"][0]["content"]
+        assert "dropoff-old" in child["history"][0]["content"]
+        assert resp["result"]["continuity_record_id"] == "dropoff-1"
+        assert recorded
+        assert recorded[0]["parent_session_id"] == "parent-stored"
+        assert recorded[0]["child_session_id"] == resp["result"]["stored_session_id"]
+        assert recorded[0]["cwd"] == "/tmp"
+        assert recorded[0]["files"] == ["src/main.ts"]
+        assert recorded[0]["pending_prompt_hash"]
+        assert "Obsidian policy context" in recorded[0]["recent_summary"]
+    finally:
+        server._sessions.pop("parent-runtime", None)
+        server._sessions.pop(child_sid, None)
+
+
 def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
     """An explicitly chosen workspace is persisted as the session cwd."""
     created = []
@@ -6162,6 +6227,264 @@ def test_prompt_submit_surfaces_backend_error_as_visible_text(monkeypatch):
     assert payload.get("status") == "error"
     assert payload.get("text", "").startswith("Error:")
     assert "kimi-k2.6" in payload.get("text", "")
+
+
+def test_prompt_submit_marks_compression_exhausted_message_complete(monkeypatch):
+    """A context-overflow terminal failure must carry a machine-readable flag
+    so desktop can recover with a continuation instead of pattern-matching text."""
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            return {
+                "final_response": "Context length exceeded (358,245 tokens). Cannot compress further.",
+                "messages": [],
+                "api_calls": 1,
+                "completed": False,
+                "failed": True,
+                "partial": True,
+                "error": "Context length exceeded (358,245 tokens). Cannot compress further.",
+                "compression_exhausted": True,
+            }
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    server.handle_request(
+        {
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hello"},
+        }
+    )
+
+    complete_events = [e for e in emitted if e[0] == "message.complete"]
+    assert complete_events, "expected message.complete to be emitted"
+    payload = complete_events[-1][2]
+    assert payload.get("status") == "error"
+    assert payload.get("compression_exhausted") is True
+
+
+def test_status_update_emits_compression_diagnostic(monkeypatch):
+    from agent.conversation_compression import COMPACTION_STATUS
+
+    session = _session(cwd="/tmp/project")
+    server._sessions["sid"] = session
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+
+    try:
+        server._status_update("sid", "lifecycle", COMPACTION_STATUS)
+    finally:
+        server._sessions.pop("sid", None)
+
+    diagnostic = [e for e in emitted if e[0] == "diagnostic.event"]
+    assert diagnostic, "expected compression diagnostic event"
+    assert diagnostic[-1][2]["component"] == "compression"
+    assert diagnostic[-1][2]["event"] == "start"
+    assert diagnostic[-1][2]["details"]["cwd"] == "/tmp/project"
+    status = [e for e in emitted if e[0] == "status.update"]
+    assert status[-1][2]["kind"] == "compacting"
+    assert session.get("compression_started_at")
+
+
+def test_compression_watchdog_default_is_desktop_bounded(monkeypatch):
+    monkeypatch.delenv("HERMES_COMPRESSION_WATCHDOG_SECONDS", raising=False)
+
+    assert server._compression_watchdog_timeout_seconds() == 12.0
+
+
+def test_compression_watchdog_env_override(monkeypatch):
+    monkeypatch.setenv("HERMES_COMPRESSION_WATCHDOG_SECONDS", "12.5")
+
+    assert server._compression_watchdog_timeout_seconds() == 12.5
+
+
+def test_compression_watchdog_bad_env_uses_desktop_default(monkeypatch):
+    monkeypatch.setenv("HERMES_COMPRESSION_WATCHDOG_SECONDS", "not-a-number")
+
+    assert server._compression_watchdog_timeout_seconds() == 12.0
+
+
+def test_turn_idle_watchdog_default_is_alert_only(monkeypatch):
+    monkeypatch.delenv("HERMES_TURN_IDLE_WATCHDOG_SECONDS", raising=False)
+
+    assert server._turn_idle_watchdog_timeout_seconds() == 0.0
+
+
+def test_turn_idle_watchdog_env_override(monkeypatch):
+    monkeypatch.setenv("HERMES_TURN_IDLE_WATCHDOG_SECONDS", "7.5")
+
+    assert server._turn_idle_watchdog_timeout_seconds() == 7.5
+
+
+def test_turn_idle_watchdog_bad_env_uses_default(monkeypatch):
+    monkeypatch.setenv("HERMES_TURN_IDLE_WATCHDOG_SECONDS", "bad")
+
+    assert server._turn_idle_watchdog_timeout_seconds() == 0.0
+
+
+def test_compression_watchdog_timeout_marks_turn_terminal(monkeypatch):
+    calls = {"interrupted": False}
+    agent = types.SimpleNamespace(
+        interrupt=lambda: calls.__setitem__("interrupted", True),
+        context_compressor=None,
+    )
+    session = _session(agent=agent, running=True, cwd="/tmp/project")
+    session["compression_started_at"] = time.time() - 99
+    session["compression_status_text"] = "Compacting context"
+    server._sessions["sid"] = session
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: {"context_used": 0})
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session: {"running": False})
+
+    try:
+        assert server._emit_compression_timeout_terminal("sid", session, 30) is True
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert calls["interrupted"] is True
+    assert session["running"] is False
+    assert session["_turn_terminal_emitted"] is True
+    diagnostic = [e for e in emitted if e[0] == "diagnostic.event"]
+    assert diagnostic[-1][2]["event"] == "timeout"
+    complete = [e for e in emitted if e[0] == "message.complete"]
+    assert complete, "expected terminal message.complete"
+    assert complete[-1][2]["status"] == "error"
+    assert complete[-1][2]["compression_exhausted"] is True
+
+
+def test_turn_idle_watchdog_timeout_marks_turn_terminal(monkeypatch):
+    calls = {"interrupted": False}
+    agent = types.SimpleNamespace(
+        interrupt=lambda: calls.__setitem__("interrupted", True),
+        context_compressor=None,
+    )
+    session = _session(agent=agent, running=True, cwd="/tmp/project")
+    session["turn_started_at"] = time.time() - 180
+    session["turn_last_progress_at"] = time.time() - 150
+    session["turn_last_progress_event"] = "tool.complete"
+    server._sessions["sid"] = session
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: {"context_used": 0})
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session: {"running": False})
+
+    try:
+        assert server._emit_turn_idle_timeout_terminal("sid", session, 120) is True
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert calls["interrupted"] is True
+    assert session["running"] is False
+    assert session["_turn_terminal_emitted"] is True
+    diagnostic = [e for e in emitted if e[0] == "diagnostic.event"]
+    assert diagnostic[-1][2]["component"] == "turn"
+    assert diagnostic[-1][2]["event"] == "idle_timeout"
+    assert diagnostic[-1][2]["details"]["last_progress_event"] == "tool.complete"
+    complete = [e for e in emitted if e[0] == "message.complete"]
+    assert complete, "expected terminal message.complete"
+    assert complete[-1][2]["status"] == "error"
+    assert complete[-1][2]["idle_timeout"] is True
+    assert complete[-1][2]["retryable"] is True
+
+
+def test_turn_idle_watchdog_does_not_interrupt_approval_wait(monkeypatch):
+    calls = {"interrupted": False}
+    agent = types.SimpleNamespace(
+        interrupt=lambda: calls.__setitem__("interrupted", True),
+        context_compressor=None,
+    )
+    session = _session(agent=agent, running=True, cwd="/tmp/project")
+    session["turn_started_at"] = time.time() - 180
+    session["turn_last_progress_at"] = time.time() - 150
+    session["turn_last_progress_event"] = "approval.request"
+    server._sessions["sid"] = session
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+
+    try:
+        assert server._emit_turn_idle_timeout_terminal("sid", session, 120) is False
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert calls["interrupted"] is False
+    assert session["running"] is True
+    assert not session.get("_turn_terminal_emitted")
+    assert [e for e in emitted if e[0] == "message.complete"] == []
+
+
+def test_turn_progress_ignores_diagnostics_and_terminal(monkeypatch):
+    session = _session(running=True)
+    session["turn_last_progress_at"] = 1.0
+    session["turn_last_progress_event"] = "prompt.submit"
+    server._sessions["sid"] = session
+
+    try:
+        server._mark_turn_progress("sid", "diagnostic.event")
+        assert session["turn_last_progress_event"] == "prompt.submit"
+        server._mark_turn_progress("sid", "message.delta")
+        assert session["turn_last_progress_event"] == "message.delta"
+        updated_at = session["turn_last_progress_at"]
+        server._mark_turn_progress("sid", "message.complete")
+        assert session["turn_last_progress_event"] == "message.delta"
+        assert session["turn_last_progress_at"] == updated_at
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_emit_writes_turn_watchdog_ledger(monkeypatch, tmp_path):
+    session = _session(running=True, cwd="/tmp/project")
+    session["session_key"] = "key-123"
+    session["turn_started_at"] = 10.0
+    session["turn_last_progress_at"] = 10.0
+    session["turn_last_progress_event"] = "prompt.submit"
+    server._sessions["sid"] = session
+    ledger = tmp_path / "turn-watchdog.jsonl"
+    monkeypatch.setattr(server, "_TURN_WATCHDOG_LOG", str(ledger))
+    monkeypatch.setattr(server, "write_json", lambda _obj: True)
+
+    try:
+        server._emit("message.start", "sid")
+    finally:
+        server._sessions.pop("sid", None)
+
+    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["event"] == "message.start"
+    assert rows[-1]["session_id"] == "sid"
+    assert rows[-1]["session_key"] == "key-123"
+    assert rows[-1]["cwd"] == "/tmp/project"
 
 
 def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):

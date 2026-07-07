@@ -77,6 +77,17 @@ class TestResolveToolset:
     def test_unknown_toolset_returns_empty(self):
         assert resolve_toolset("nonexistent") == []
 
+    def test_flowstate_toolset(self):
+        tools = set(resolve_toolset("flowstate"))
+        assert tools == {
+            "flowstate_health",
+            "flowstate_list_tasks",
+            "flowstate_create_task",
+            "flowstate_update_task",
+            "flowstate_delete_task",
+            "flowstate_get_current_timer",
+        }
+
     def test_plugin_toolset_uses_registry_snapshot(self, monkeypatch):
         reg = ToolRegistry()
         reg.register(

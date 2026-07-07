@@ -30,11 +30,13 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_ALIAS_CACHE_KEY: Optional[Tuple[str, Tuple[Tuple[str, int, int], ...]]] = None
+_ALIAS_CACHE_VALUE: Dict[str, str] = {}
 
 # Directories bootstrapped inside every new profile
 _PROFILE_DIRS = [
@@ -46,6 +48,7 @@ _PROFILE_DIRS = [
     "plans",
     "workspace",
     "cron",
+    "plugins",
     # Back-compat/Docker HOME for tool subprocesses. Host subprocesses keep
     # the user's real HOME by default so normal CLI credentials remain visible;
     # containers still use this directory for persistent HOME state.
@@ -76,6 +79,9 @@ _CLONE_ALL_STRIP: list[str] = [
     "gateway_state.json",
     "processes.json",
 ]
+
+_NOAM_OBSIDIAN_VAULT_PATH = "/media/endlessblink/data/app-data/sync/Dropbox/OBSIDIAN_SYNCED"
+_NOAM_OBSIDIAN_PLUGIN = "obsidian-source-of-truth"
 
 # Infrastructure artifacts excluded from --clone-all when the source is the
 # default profile (``~/.hermes``).  Named profiles never contain these
@@ -549,70 +555,102 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
     so ``profile list``/``show`` surface the command the user actually typed.
     Results are sorted for deterministic output when several aliases match.
 
-    For listing ALL profiles at once, prefer :func:`build_alias_map` — calling
-    this per-profile re-reads every wrapper file N times (O(N*M)); on a wrapper
-    dir like ``~/.local/bin`` that also holds large unrelated binaries (ffmpeg
-    etc.) that meant multi-second ``list_profiles`` latency and desktop timeouts.
+    For listing ALL profiles at once, prefer :func:`_aliases_by_profile` —
+    calling this per-profile still uses the shared wrapper cache.
     """
-    return build_alias_map().get(normalize_profile_name(profile_name))
-
-
-# Cap how much of a wrapper file we read when reverse-looking-up its profile.
-# Real wrappers are a few hundred bytes of shell; the needle (``hermes -p X``)
-# sits near the top. The wrapper dir (e.g. ``~/.local/bin``) commonly also holds
-# large unrelated binaries (ffmpeg, node, …) — reading those whole, N times, was
-# the dominant cost in ``list_profiles`` (~4.5s). Reading a small head slice and
-# skipping NUL-bearing (binary) content keeps the scan to a single cheap pass.
-_WRAPPER_READ_LIMIT = 8192
+    return _aliases_by_profile().get(normalize_profile_name(profile_name))
 
 
 def build_alias_map() -> dict[str, str]:
-    """Single-pass reverse map ``{canonical_profile -> alias_name}``.
+    """Compatibility wrapper for callers that need the full alias map."""
+    return _aliases_by_profile()
 
-    Scans the wrapper dir ONCE (vs. :func:`find_alias_for_profile` per profile)
-    and reads only a small head slice of each candidate wrapper, skipping
-    binaries. A custom alias (file name != profile) wins over the profile-named
-    wrapper, matching ``find_alias_for_profile``'s preference; deterministic via
-    sorted iteration.
-    """
-    wrapper_dir = _get_wrapper_dir()
-    result: dict[str, str] = {}
-    if not wrapper_dir.is_dir():
-        return result
+
+def _alias_cache_key(wrapper_dir: Path) -> Tuple[str, Tuple[Tuple[str, int, int], ...]]:
     is_windows = sys.platform == "win32"
-    prefix = "hermes -p "
-
+    entries: List[Tuple[str, int, int]] = []
     for entry in sorted(wrapper_dir.iterdir()):
         if not entry.is_file():
             continue
-        # Only our own wrappers are named with the alias and (on Windows) .bat.
         if is_windows and entry.suffix != ".bat":
             continue
         if not is_windows and entry.suffix:
             continue
         try:
-            with open(entry, "r", encoding="utf-8", errors="strict") as f:
-                content = f.read(_WRAPPER_READ_LIMIT)
-        except (OSError, UnicodeDecodeError):
-            # UnicodeDecodeError = a binary on PATH (ffmpeg etc.) — not a wrapper.
+            stat_result = entry.stat()
+        except OSError:
             continue
-        idx = content.find(prefix)
-        if idx == -1:
+        entries.append((entry.name, stat_result.st_mtime_ns, stat_result.st_size))
+    return str(wrapper_dir), tuple(entries)
+
+
+def _read_wrapper_probe(entry: Path) -> Optional[str]:
+    try:
+        with entry.open("rb") as f:
+            content = f.read(8192)
+    except OSError:
+        return None
+    return content.decode("utf-8", errors="ignore")
+
+
+def _aliases_by_profile() -> Dict[str, str]:
+    """Return ``{profile_name: alias_name}`` by scanning wrapper scripts once.
+
+    ``list_profiles()`` renders every profile row, so calling
+    ``find_alias_for_profile`` per profile re-read the same wrapper directory
+    once for each profile. On a real desktop install that cost several seconds
+    at startup. The cache makes repeated desktop refreshes cheap while the
+    wrapper directory snapshot keeps alias edits visible. Keep the same display
+    rule here: a custom alias wins over a profile-named wrapper, and sorted
+    wrappers make ties deterministic.
+    """
+    global _ALIAS_CACHE_KEY, _ALIAS_CACHE_VALUE
+
+    wrapper_dir = _get_wrapper_dir()
+    if not wrapper_dir.is_dir():
+        _ALIAS_CACHE_KEY = None
+        _ALIAS_CACHE_VALUE = {}
+        return {}
+
+    cache_key = _alias_cache_key(wrapper_dir)
+    if cache_key == _ALIAS_CACHE_KEY:
+        return dict(_ALIAS_CACHE_VALUE)
+
+    is_windows = sys.platform == "win32"
+    custom: Dict[str, str] = {}
+    profile_named: Dict[str, str] = {}
+
+    for entry in sorted(wrapper_dir.iterdir()):
+        if not entry.is_file():
             continue
-        rest = content[idx + len(prefix):]
-        # Profile id is the first whitespace-delimited token after the flag.
-        canon = rest.split(None, 1)[0].strip() if rest.strip() else ""
-        if not canon:
+        if is_windows and entry.suffix != ".bat":
             continue
-        canon = normalize_profile_name(canon)
+        if not is_windows and entry.suffix:
+            continue
+
+        content = _read_wrapper_probe(entry)
+        if content is None:
+            continue
+
+        if "hermes" not in content.lower():
+            continue
+
+        match = re.search(r"(?:^|\s)-p\s+([a-z0-9][a-z0-9_-]{0,63}|default)\b", content)
+        if not match:
+            continue
+
+        profile = normalize_profile_name(match.group(1))
         alias = entry.stem if is_windows else entry.name
-        # Custom alias (name != profile) preferred; otherwise keep the
-        # profile-named wrapper. Don't overwrite a custom alias already found.
-        if alias == canon:
-            result.setdefault(canon, alias)
+
+        if alias == profile:
+            profile_named.setdefault(profile, alias)
         else:
-            result[canon] = alias
-    return result
+            custom.setdefault(profile, alias)
+
+    aliases = {**profile_named, **custom}
+    _ALIAS_CACHE_KEY = cache_key
+    _ALIAS_CACHE_VALUE = aliases
+    return dict(aliases)
 
 
 # ---------------------------------------------------------------------------
@@ -878,6 +916,7 @@ def list_profiles() -> List[ProfileInfo]:
     """Return info for all profiles, including the default."""
     profiles = []
     wrapper_dir = _get_wrapper_dir()
+    aliases_by_profile = _aliases_by_profile()
 
     # Default profile
     default_home = _get_default_hermes_home()
@@ -904,10 +943,6 @@ def list_profiles() -> List[ProfileInfo]:
     # Named profiles
     profiles_root = _get_profiles_root()
     if profiles_root.is_dir():
-        # Build the {profile -> alias} map ONCE here instead of calling
-        # find_alias_for_profile() per profile (which re-scanned the whole
-        # wrapper dir each time — O(N*M), the dominant cost in this function).
-        alias_map = build_alias_map()
         for entry in sorted(profiles_root.iterdir()):
             if not entry.is_dir():
                 continue
@@ -917,7 +952,7 @@ def list_profiles() -> List[ProfileInfo]:
             if not _PROFILE_ID_RE.match(name):
                 continue
             model, provider = _read_config_model(entry)
-            alias_name = alias_map.get(normalize_profile_name(name))
+            alias_name = aliases_by_profile.get(name)
             if alias_name:
                 is_windows = sys.platform == "win32"
                 alias_path = wrapper_dir / (f"{alias_name}.bat" if is_windows else alias_name)
@@ -985,6 +1020,95 @@ def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
             serve.append((name, entry))
 
     return serve
+
+
+def _ensure_noam_obsidian_guardrails(profile_dir: Path) -> None:
+    """Best-effort local vault guardrails for Noam's Hermes profiles.
+
+    This is intentionally status-free and non-secret-printing. It keeps newly
+    created profiles aligned with the canonical visible Obsidian vault.
+    """
+    default_home = _get_default_hermes_home()
+    default_plugin_dir = default_home / "plugins" / _NOAM_OBSIDIAN_PLUGIN
+
+    if not default_plugin_dir.is_dir():
+        try:
+            default_env = (default_home / ".env").read_text(encoding="utf-8")
+        except OSError:
+            default_env = ""
+        try:
+            default_config = (default_home / "config.yaml").read_text(encoding="utf-8")
+        except OSError:
+            default_config = ""
+
+        if _NOAM_OBSIDIAN_VAULT_PATH not in default_env and _NOAM_OBSIDIAN_VAULT_PATH not in default_config:
+            return
+
+    # Ensure the profile has the Obsidian source-of-truth plugin when the
+    # default profile has it installed. Fresh profile creation otherwise seeds
+    # directories/config but not local plugins.
+    try:
+        src = default_plugin_dir
+        dst = profile_dir / "plugins" / _NOAM_OBSIDIAN_PLUGIN
+        if src.is_dir() and not dst.exists():
+            shutil.copytree(src, dst)
+    except OSError:
+        pass
+
+    # Ensure `.env` carries only the vault path setting we need; do not read or
+    # print any other values. API keys/secrets may also live in this file.
+    env_path = profile_dir / ".env"
+    try:
+        text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+        lines = text.splitlines()
+        out: list[str] = []
+        seen = False
+        for line in lines:
+            if line.startswith("OBSIDIAN_VAULT_PATH="):
+                out.append(f"OBSIDIAN_VAULT_PATH={_NOAM_OBSIDIAN_VAULT_PATH}")
+                seen = True
+            else:
+                out.append(line)
+        if not seen:
+            if out and out[-1].strip():
+                out.append("")
+            out.append(f"OBSIDIAN_VAULT_PATH={_NOAM_OBSIDIAN_VAULT_PATH}")
+        new_text = "\n".join(out) + "\n"
+        if new_text != text:
+            env_path.write_text(new_text, encoding="utf-8")
+            try:
+                os.chmod(str(env_path), 0o600)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+    # Keep the plugin enabled and the vault path visible in config.yaml for
+    # tooling that reads config instead of the environment.
+    cfg_path = profile_dir / "config.yaml"
+    try:
+        text = cfg_path.read_text(encoding="utf-8") if cfg_path.exists() else ""
+        new_text = text
+        if "OBSIDIAN_VAULT_PATH:" not in new_text:
+            new_text = new_text.rstrip() + f"\nOBSIDIAN_VAULT_PATH: {_NOAM_OBSIDIAN_VAULT_PATH}\n"
+        else:
+            new_text = re.sub(
+                r"^OBSIDIAN_VAULT_PATH:.*$",
+                f"OBSIDIAN_VAULT_PATH: {_NOAM_OBSIDIAN_VAULT_PATH}",
+                new_text,
+                flags=re.M,
+            )
+        if _NOAM_OBSIDIAN_PLUGIN not in new_text:
+            if "plugins:" not in new_text:
+                new_text = new_text.rstrip() + f"\nplugins:\n  enabled:\n  - {_NOAM_OBSIDIAN_PLUGIN}\n  disabled: []\n"
+            elif "  enabled:" in new_text:
+                new_text = new_text.replace("  enabled:\n", f"  enabled:\n  - {_NOAM_OBSIDIAN_PLUGIN}\n", 1)
+            else:
+                new_text = new_text.rstrip() + f"\nplugins:\n  enabled:\n  - {_NOAM_OBSIDIAN_PLUGIN}\n"
+        if new_text != text:
+            cfg_path.write_text(new_text, encoding="utf-8")
+    except OSError:
+        pass
 
 
 def create_profile(
@@ -1155,6 +1279,8 @@ def create_profile(
     # explicit runtime/history stripping above.
     if not clone_all:
         _migrate_profile_config_if_outdated(profile_dir)
+
+    _ensure_noam_obsidian_guardrails(profile_dir)
 
     # Persist description if the caller provided one. Done last so a
     # partial-create failure doesn't strand a description file in an

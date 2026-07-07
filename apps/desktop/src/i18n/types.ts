@@ -1044,6 +1044,11 @@ export interface Translations {
     colorFor: (name: string) => string
     setColor: (color: string) => string
     autoColor: string
+    icon: string
+    chooseIconFor: (name: string) => string
+    searchEmoji: string
+    noEmoji: string
+    clearIcon: string
     noProfiles: string
     selectPrompt: string
     refresh: string
@@ -1212,6 +1217,32 @@ export interface Translations {
     copyPath: string
   }
 
+  activeChats: {
+    search: string
+    title: string
+    subtitle: string
+    emptyTitle: string
+    emptyDesc: string
+    groupStatus: string
+    groupProfile: string
+    groupWorkspace: string
+    loadingTranscript: string
+    failedTranscript: string
+    replyPlaceholder: string
+    answer: string
+    open: string
+    waiting: string
+    reply: string
+    running: string
+    recent: string
+    idle: string
+    messages: (count: number) => string
+    profile: (name: string) => string
+    noPreview: string
+    sent: string
+    sendFailed: string
+  }
+
   sidebar: {
     nav: Record<string, string>
     searchAria: string
@@ -1296,6 +1327,24 @@ export interface Translations {
     loading: string
     loadMore: string
     loadCount: (step: number) => string
+    createFolder: string
+    customFolderDefaultName: string
+    newFolderTitle: string
+    renameFolderTitle: string
+    folderNamePlaceholder: string
+    renameFolderAction: string
+    deleteFolderAction: string
+    deleteFolderTitle: string
+    deleteFolderConfirm: (name: string) => string
+    folderEmpty: string
+    pinFolder: string
+    unpinFolder: string
+    folderPinnedBadge: string
+    reorderFolder: (name: string) => string
+    folderActionsFor: (name: string) => string
+    folderCreated: string
+    folderRenamed: string
+    folderDeleted: string
     row: {
       pin: string
       unpin: string
@@ -1304,6 +1353,8 @@ export interface Translations {
       branchFrom: string
       rename: string
       archive: string
+      moveToFolder: string
+      removeFromFolder: string
       newWindow: string
       copyIdFailed: string
       actionsFor: (title: string) => string
@@ -1374,6 +1425,8 @@ export interface Translations {
     editingInComposer: string
     editingQueuedInComposer: string
     queueEdit: string
+    queueSendAll: string
+    queueSendAllNext: string
     queueSendNext: string
     queueSend: string
     queueDelete: string
@@ -1484,6 +1537,8 @@ export interface Translations {
     manualTitle: string
     manualBody: string
     manualPickedUp: string
+    dirtyTitle: string
+    dirtyBody: string
     /** GUI/backend skew (#45205): backend updated but the running desktop app
      *  package (AppImage/.deb/.rpm) was not changed and must be reinstalled. */
     guiSkewTitle: string
@@ -2017,11 +2072,16 @@ export interface Translations {
     sessionExported: string
     sessionExportFailed: string
     imageSaved: string
+    imageCopied: string
     downloadStarted: string
     restartToUseSaveImage: string
     restartToSaveImages: string
+    restartToCopyImages: string
     imageDownloadFailed: string
+    imageCopyFailed: string
     openImage: string
+    copyImage: string
+    copyingImage: string
     downloadImage: string
     savingImage: string
     imagePreviewFailed: string

@@ -5,9 +5,10 @@ import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-term
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
 import { translateNow } from '@/i18n'
-import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
+import { type GatewayEventPayload, isSessionBusyMessage, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
+import { emitDesktopDiagnostic } from '@/lib/desktop-diagnostics'
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
@@ -46,6 +47,8 @@ import type { ClientSessionState } from '../../../types'
 
 import { hasSessionInfoStatePatch, sessionInfoStatePatch, SUBAGENT_EVENT_TYPES, toTodoPayload } from './utils'
 
+const MESSAGE_COMPLETE_ERROR_STATUS = 'error'
+
 interface GatewayEventDeps {
   activeSessionIdRef: MutableRefObject<string | null>
   compactedTurnRef: MutableRefObject<Set<string>>
@@ -54,6 +57,7 @@ interface GatewayEventDeps {
   appendAssistantDelta: (sessionId: string, delta: string) => void
   appendReasoningDelta: (sessionId: string, delta: string, replace?: boolean) => void
   completeAssistantMessage: (sessionId: string, text: string) => void
+  continueFromCompressionExhausted?: (sessionId: string, errorMessage: string) => Promise<void> | void
   failAssistantMessage: (sessionId: string, errorMessage: string) => void
   flushQueuedDeltas: (sessionId?: string) => void
   queryClient: QueryClient
@@ -82,6 +86,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     lastCwdInfoSessionRef,
     nativeSubagentSessionsRef,
     completeAssistantMessage,
+    continueFromCompressionExhausted,
     failAssistantMessage,
     flushQueuedDeltas,
     queryClient,
@@ -317,9 +322,47 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         flushQueuedDeltas(sessionId)
 
+        const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
+        const completionStatus = typeof payload?.status === 'string' ? payload.status : ''
+
+        if (completionStatus === MESSAGE_COMPLETE_ERROR_STATUS) {
+          const errorMessage = finalText || payload?.message || 'Hermes reported an error'
+
+          failAssistantMessage(sessionId, errorMessage)
+
+          if (payload?.compression_exhausted) {
+            void continueFromCompressionExhausted?.(sessionId, errorMessage)
+          }
+
+          if (isActiveEvent) {
+            setTurnStartedAt(null)
+            setPetActivity({ reasoning: false, toolRunning: false })
+            flashPetActivity({ error: true })
+          }
+
+          dispatchNativeNotification({
+            body: errorMessage,
+            kind: 'turnError',
+            sessionId,
+            title: translateNow('notifications.native.turnErrorTitle')
+          })
+
+          notify({
+            id: `gateway-error:${errorMessage}`,
+            kind: 'error',
+            title: 'Hermes error',
+            message: errorMessage
+          })
+
+          if (payload?.usage) {
+            setCurrentUsage(current => ({ ...current, ...payload.usage }))
+          }
+
+          return
+        }
+
         playCompletionSound()
 
-        const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
         completeAssistantMessage(sessionId, finalText)
 
         if (isActiveEvent) {
@@ -548,6 +591,21 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // Agent closed its own read-only tab via the desktop-gated close_terminal tool.
         // The process is untouched — this only drops the view.
         closeAgentTerminalByProc(payload?.process_id ?? '')
+      } else if (event.type === 'diagnostic.event') {
+        const severity = payload?.severity
+        emitDesktopDiagnostic({
+          component: typeof payload?.component === 'string' ? payload.component : 'gateway',
+          event: typeof payload?.event === 'string' ? payload.event : 'event',
+          message: typeof payload?.message === 'string' ? payload.message : 'Gateway diagnostic event',
+          severity:
+            severity === 'debug' || severity === 'info' || severity === 'warn' || severity === 'error' || severity === 'fatal'
+              ? severity
+              : 'info',
+          details: {
+            ...(payload?.details && typeof payload.details === 'object' ? payload.details : {}),
+            sessionId
+          }
+        })
       } else if (event.type === 'status.update') {
         if (sessionId && payload?.kind === 'compacting') {
           setSessionCompacting(sessionId, true)
@@ -585,6 +643,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'
+        const isBusyBounce = isSessionBusyMessage(errorMessage)
         const looksLikeProviderSetup = isProviderSetupErrorMessage(errorMessage)
 
         // A turn that errors out has also ended — drop any open blocking prompt
@@ -603,16 +662,18 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           flashPetActivity({ error: true })
         }
 
-        dispatchNativeNotification({
-          body: errorMessage,
-          kind: 'turnError',
-          sessionId,
-          title: translateNow('notifications.native.turnErrorTitle')
-        })
+        if (!isBusyBounce) {
+          dispatchNativeNotification({
+            body: errorMessage,
+            kind: 'turnError',
+            sessionId,
+            title: translateNow('notifications.native.turnErrorTitle')
+          })
+        }
 
         if (looksLikeProviderSetup) {
           requestDesktopOnboarding(errorMessage)
-        } else {
+        } else if (!isBusyBounce) {
           // Toast globally, not just when the failing thread is focused: a
           // turn-ending error (e.g. out of funds) blocks every thread, so the
           // inline error alone is too easy to miss. The stable id collapses the
@@ -626,8 +687,21 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         if (sessionId) {
-          flushQueuedDeltas(sessionId)
-          failAssistantMessage(sessionId, errorMessage)
+          if (isBusyBounce) {
+            updateSessionState(sessionId, state => ({
+              ...state,
+              messages: state.messages.filter(message => !isSessionBusyMessage(message.error)),
+              streamId: null,
+              pendingBranchGroup: null,
+              awaitingResponse: false,
+              busy: false,
+              needsInput: false,
+              turnStartedAt: null
+            }))
+          } else {
+            flushQueuedDeltas(sessionId)
+            failAssistantMessage(sessionId, errorMessage)
+          }
         }
 
         if (isActiveEvent) {
@@ -641,6 +715,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       activeSessionIdRef,
       compactedTurnRef,
       completeAssistantMessage,
+      continueFromCompressionExhausted,
       failAssistantMessage,
       flushQueuedDeltas,
       lastCwdInfoSessionRef,

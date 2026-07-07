@@ -57,6 +57,10 @@ declare global {
       oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
       profile: {
         get: () => Promise<DesktopActiveProfile>
+        // Persists the sidebar/rail context only. This does not relaunch or
+        // re-home the backend.
+        getScope: () => Promise<DesktopActiveProfile>
+        setScope: (name: string | null) => Promise<DesktopActiveProfile>
         // Persists the desktop's profile choice and relaunches the local
         // backend under the new HERMES_HOME (reloads the window). Pass null to
         // clear the preference.
@@ -69,6 +73,7 @@ declare global {
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
       selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
       writeClipboard: (text: string) => Promise<boolean>
+      copyImageFromUrl: (url: string) => Promise<boolean>
       saveImageFromUrl: (url: string) => Promise<boolean>
       saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string) => Promise<string>
       saveClipboardImage: () => Promise<string>
@@ -91,6 +96,11 @@ declare global {
       }
       revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
+      diagnostics?: {
+        recent: (limit?: number) => Promise<{ path: string; events: DesktopDiagnosticEvent[] }>
+        event: (payload: DesktopDiagnosticInput) => Promise<{ ok: boolean; event: DesktopDiagnosticEvent }>
+        heartbeat: (payload?: Record<string, unknown>) => Promise<{ ok: boolean; at: number }>
+      }
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
       // Reveal a path in the OS file manager (Finder / Explorer).
@@ -207,6 +217,23 @@ export interface DesktopMarketplaceSearchItem {
   installs: number
 }
 
+export type DesktopDiagnosticSeverity = 'debug' | 'info' | 'warn' | 'error' | 'fatal'
+
+export interface DesktopDiagnosticInput {
+  component: string
+  event: string
+  severity?: DesktopDiagnosticSeverity
+  message?: string
+  details?: Record<string, unknown>
+}
+
+export interface DesktopDiagnosticEvent extends DesktopDiagnosticInput {
+  ts: string
+  severity: DesktopDiagnosticSeverity
+  message: string
+  details: Record<string, unknown>
+}
+
 export interface DesktopMarketplaceThemeFile {
   label: string
   /** VS Code's `uiTheme` for this entry (vs-dark / vs / hc-black). */
@@ -296,6 +323,7 @@ export interface DesktopUpdateApplyOptions {
 export interface DesktopUpdateApplyResult {
   ok: boolean
   branch?: string
+  dirty?: boolean
   error?: string
   message?: string
   /** True when no staged updater exists (CLI install) and the user should run
@@ -337,6 +365,10 @@ export type DesktopUpdateStage =
   | 'restart'
   | 'done'
   | 'manual'
+  /** Source checkout has local changes; update is paused until the user commits
+   *  or stashes them so the rebuild cannot hide working features. Terminal,
+   *  closeable. */
+  | 'dirty'
   /** Backend updated but the running GUI package (AppImage/.deb/.rpm) was NOT
    *  changed — the user must update/reinstall the desktop app. Terminal,
    *  closeable; never claims the GUI was updated. (#45205) */

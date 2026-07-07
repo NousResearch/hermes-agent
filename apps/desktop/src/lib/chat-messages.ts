@@ -21,10 +21,15 @@ export type ChatMessage = {
   attachmentRefs?: string[]
 }
 
+export function isSessionBusyMessage(value: unknown): boolean {
+  return /(?:^|\b)session busy(?:\b|$)/i.test(typeof value === 'string' ? value : String(value ?? ''))
+}
+
 export type GatewayEventPayload = {
   text?: string
   rendered?: string
   status?: string
+  compression_exhausted?: boolean
   message?: string
   id?: string
   name?: string
@@ -80,6 +85,11 @@ export type GatewayEventPayload = {
   label?: string
   index?: number
   aggregator?: string
+  // diagnostic.event — backend/gateway diagnostics mirrored to desktop logs
+  component?: string
+  event?: string
+  severity?: string
+  details?: Record<string, unknown>
 }
 
 export function textPart(text: string): ChatMessagePart {
@@ -848,7 +858,11 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   )
 
   return withUniqueToolCallIds(
-    withoutGeneratedImageEchoes.filter(m => chatMessageText(m).trim() || m.parts.some(part => part.type !== 'text'))
+    withoutGeneratedImageEchoes.filter(
+      m =>
+        !(m.role === 'assistant' && isSessionBusyMessage(m.error || chatMessageText(m))) &&
+        (chatMessageText(m).trim() || m.parts.some(part => part.type !== 'text'))
+    )
   )
 }
 
@@ -856,9 +870,11 @@ export function preserveLocalAssistantErrors(
   nextMessages: ChatMessage[],
   currentMessages: ChatMessage[]
 ): ChatMessage[] {
-  const localById = new Map(currentMessages.map(message => [message.id, message]))
+  const displayableNextMessages = nextMessages.filter(message => !isSessionBusyMessage(message.error))
+  const displayableCurrentMessages = currentMessages.filter(message => !isSessionBusyMessage(message.error))
+  const localById = new Map(displayableCurrentMessages.map(message => [message.id, message]))
 
-  const mergedNextMessages = nextMessages.map(message => {
+  const mergedNextMessages = displayableNextMessages.map(message => {
     if (message.role !== 'assistant' || message.error || message.hidden) {
       return message
     }
@@ -888,8 +904,8 @@ export function preserveLocalAssistantErrors(
     normalize(chatMessageText(candidate)) === tailUserText &&
     (candidate.attachmentRefs ?? []).join('\n') === tailUserRefs
 
-  for (let index = 0; index < currentMessages.length; index += 1) {
-    const message = currentMessages[index]
+  for (let index = 0; index < displayableCurrentMessages.length; index += 1) {
+    const message = displayableCurrentMessages[index]
 
     if (message.role !== 'assistant' || !message.error || message.hidden || existingIds.has(message.id)) {
       continue
@@ -898,7 +914,7 @@ export function preserveLocalAssistantErrors(
     preserveIds.add(message.id)
 
     for (let probe = index - 1; probe >= 0; probe -= 1) {
-      const candidate = currentMessages[probe]
+      const candidate = displayableCurrentMessages[probe]
 
       if (candidate.hidden) {
         continue
@@ -916,7 +932,7 @@ export function preserveLocalAssistantErrors(
     return mergedNextMessages
   }
 
-  const preserved = currentMessages
+  const preserved = displayableCurrentMessages
     .filter(message => preserveIds.has(message.id))
     .map(message => ({ ...message, pending: false }))
 

@@ -5,6 +5,7 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { $activeGatewayProfile } from '@/store/profile'
 import {
   $busy,
   $messages,
@@ -108,12 +109,12 @@ export function useSessionStateCache({
           runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
 
           if (existing.busy) {
-            setSessionWorking(storedSessionId, true)
+            setSessionWorking(storedSessionId, true, $activeGatewayProfile.get())
           }
         }
 
         if (previousStoredSessionId && previousStoredSessionId !== storedSessionId) {
-          setSessionWorking(previousStoredSessionId, false)
+          setSessionWorking(previousStoredSessionId, false, null, { markReplyReady: false })
         }
       }
 
@@ -252,7 +253,9 @@ export function useSessionStateCache({
       const next = updater({ ...previous, messages: previous.messages })
       sessionStateByRuntimeIdRef.current.set(sessionId, next)
 
-      if (previous.storedSessionId !== next.storedSessionId || !next.busy) {
+      if (previous.storedSessionId !== next.storedSessionId) {
+        setSessionWorking(previous.storedSessionId, false, null, { markReplyReady: false })
+      } else if (!next.busy) {
         setSessionWorking(previous.storedSessionId, false)
       }
 
@@ -260,7 +263,7 @@ export function useSessionStateCache({
         setSessionAttention(previous.storedSessionId, false)
       }
 
-      setSessionWorking(next.storedSessionId, next.busy)
+      setSessionWorking(next.storedSessionId, next.busy, next.busy ? $activeGatewayProfile.get() : undefined)
       setSessionAttention(next.storedSessionId, next.needsInput)
 
       // Every state update is effectively a "still alive" heartbeat for

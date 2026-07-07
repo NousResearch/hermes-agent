@@ -86,6 +86,8 @@ const { scanGitRepos } = require('./git-repo-scan.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
 const { resolveBehindCount, shouldCountCommits } = require('./update-count.cjs')
 const { runRebuildWithRetry } = require('./update-rebuild.cjs')
+const { dirtyUpdateResult, isDirtyStatus } = require('./update-dirty.cjs')
+const { createDiagnosticsRecorder } = require('./diagnostics.cjs')
 const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -375,6 +377,9 @@ const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-sta
 // ~/.hermes/active_profile file. Unset (null) preserves the legacy behavior:
 // no --profile flag, so the backend honors active_profile / default.
 const DESKTOP_PROFILE_CONFIG_PATH = path.join(app.getPath('userData'), 'active-profile.json')
+// selected-profile-scope.json records the sidebar/rail context only. Unlike
+// active-profile.json, changing it must not tear down or relaunch the backend.
+const DESKTOP_PROFILE_SCOPE_CONFIG_PATH = path.join(app.getPath('userData'), 'selected-profile-scope.json')
 // Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never hand the backend a
 // value its profile resolver would reject and exit on.
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -386,8 +391,10 @@ const DEFAULT_UPDATE_BRANCH = 'main'
 // errors.log, gateway.log produced by hermes_logging.setup_logging — one log
 // directory per user, regardless of which UI surface produced the line.
 const DESKTOP_LOG_PATH = path.join(HERMES_HOME, 'logs', 'desktop.log')
+const DESKTOP_DIAGNOSTICS_PATH = path.join(HERMES_HOME, 'logs', 'desktop-events.jsonl')
 const DESKTOP_LOG_FLUSH_MS = 120
 const DESKTOP_LOG_BUFFER_MAX_CHARS = 64 * 1024
+const DESKTOP_DIAGNOSTICS_HEARTBEAT_WARN_MS = 30_000
 // Bound desktop.log on disk. It is an append-only forensic log, so a boot loop
 // (version-skew crash -> backend exits instantly -> renderer keeps hitting
 // Retry) appends the full bootstrap transcript every attempt and grows without
@@ -814,11 +821,15 @@ let bootstrapAbortController = null
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
 const hermesLog = []
+const desktopDiagnostics = createDiagnosticsRecorder({ filePath: DESKTOP_DIAGNOSTICS_PATH })
 const previewWatchers = new Map()
 let previewShortcutActive = false
 let desktopLogBuffer = ''
 let desktopLogFlushTimer = null
 let desktopLogFlushPromise = Promise.resolve()
+let lastRendererHeartbeatAt = null
+let rendererHeartbeatMissing = false
+let rendererHeartbeatTimer = null
 let nativeThemeListenerInstalled = false
 let bootProgressState = {
   error: null,
@@ -945,6 +956,92 @@ function rememberLog(chunk) {
   }
 
   scheduleDesktopLogFlush()
+}
+
+function recordDiagnosticEvent(event) {
+  const entry = desktopDiagnostics.record(event)
+  if (entry.severity === 'warn' || entry.severity === 'error' || entry.severity === 'fatal') {
+    rememberLog(`[diagnostics] ${entry.component}.${entry.event}: ${entry.message}`)
+  }
+  return entry
+}
+
+process.on('uncaughtExceptionMonitor', error => {
+  recordDiagnosticEvent({
+    component: 'electron-main',
+    event: 'uncaughtException',
+    message: error?.message || String(error),
+    severity: 'fatal',
+    details: { stack: error?.stack }
+  })
+})
+
+process.on('unhandledRejection', reason => {
+  recordDiagnosticEvent({
+    component: 'electron-main',
+    event: 'unhandledRejection',
+    message: reason?.message || String(reason),
+    severity: 'error',
+    details: { stack: reason?.stack }
+  })
+})
+
+app.on('child-process-gone', (_event, details) => {
+  recordDiagnosticEvent({
+    component: 'electron',
+    event: 'child-process-gone',
+    message: `Electron child process exited: ${details?.type || 'unknown'}`,
+    severity: details?.reason === 'clean-exit' ? 'info' : 'warn',
+    details
+  })
+})
+
+app.on('gpu-process-crashed', (_event, killed) => {
+  recordDiagnosticEvent({
+    component: 'electron',
+    event: 'gpu-process-crashed',
+    message: 'Electron GPU process crashed',
+    severity: 'warn',
+    details: { killed: Boolean(killed) }
+  })
+})
+
+function markRendererHeartbeat(details = {}) {
+  lastRendererHeartbeatAt = Date.now()
+  if (rendererHeartbeatMissing) {
+    rendererHeartbeatMissing = false
+    recordDiagnosticEvent({
+      component: 'renderer',
+      event: 'heartbeat.resumed',
+      message: 'Renderer heartbeat resumed',
+      severity: 'info',
+      details
+    })
+  }
+}
+
+function startRendererHeartbeatMonitor() {
+  if (rendererHeartbeatTimer) return
+  rendererHeartbeatTimer = setInterval(() => {
+    if (!mainWindow || mainWindow.isDestroyed() || lastRendererHeartbeatAt === null) {
+      return
+    }
+
+    const silenceMs = Date.now() - lastRendererHeartbeatAt
+    if (silenceMs < DESKTOP_DIAGNOSTICS_HEARTBEAT_WARN_MS || rendererHeartbeatMissing) {
+      return
+    }
+
+    rendererHeartbeatMissing = true
+    recordDiagnosticEvent({
+      component: 'renderer',
+      event: 'heartbeat.missed',
+      message: 'Renderer heartbeat is missing',
+      severity: 'warn',
+      details: { silenceMs }
+    })
+  }, 10_000)
+  if (typeof rendererHeartbeatTimer.unref === 'function') rendererHeartbeatTimer.unref()
 }
 
 function openExternalUrl(rawUrl) {
@@ -1654,6 +1751,16 @@ function getVenvPython(venvRoot) {
   return path.join(venvRoot, IS_WINDOWS ? path.join('Scripts', 'python.exe') : path.join('bin', 'python'))
 }
 
+function inferVenvRootForPython(root, python) {
+  const normalizedPython = normalizeExecutablePathForCompare(python)
+  for (const candidate of [path.join(root, '.venv'), path.join(root, 'venv')]) {
+    if (normalizedPython === normalizeExecutablePathForCompare(getVenvPython(candidate))) {
+      return candidate
+    }
+  }
+  return path.join(root, 'venv')
+}
+
 // Windows console-window flashes are governed by the *parent's* console, not by
 // each child spawn. A GUI-subsystem parent (pythonw.exe) has no console, so every
 // console-subsystem child it spawns (git, gh, cmd, ...) must allocate its own —
@@ -2038,6 +2145,16 @@ let updateInFlight = false
 // actually dies and the hand-off script can proceed immediately.
 let isQuittingForHandoff = false
 
+async function dirtyUpdateGuard(updateRoot) {
+  if (!directoryExists(path.join(updateRoot, '.git'))) return null
+
+  const dirty = await runGit(['status', '--porcelain'], { cwd: updateRoot })
+  if (dirty.code !== 0) return null
+  if (!isDirtyStatus(dirty.stdout)) return null
+
+  return dirtyUpdateResult(updateRoot)
+}
+
 // Resolve the staged updater binary. The Tauri installer copies itself to
 // HERMES_HOME/hermes-setup.exe on a successful install (see
 // apps/bootstrap-installer paths::copy_self_to_hermes_home). That binary owns
@@ -2226,6 +2343,13 @@ async function applyUpdates(opts = {}) {
   updateInFlight = true
 
   try {
+    const updateRoot = resolveUpdateRoot()
+    const dirtyResult = await dirtyUpdateGuard(updateRoot)
+    if (dirtyResult) {
+      rememberLog(`[updates] blocked update from dirty checkout at ${updateRoot}`)
+      return dirtyResult
+    }
+
     const updater = resolveUpdaterBinary()
     if (!updater && !IS_WINDOWS) {
       // macOS/Linux drag-install: no staged Tauri hermes-setup. Unlike Windows
@@ -2246,7 +2370,6 @@ async function applyUpdates(opts = {}) {
       // silently switch a bb/gui (or any non-main) install off-branch. Mirror
       // the GUI button's contract: append --branch <current> for non-main
       // checkouts, keep it bare for main so the card stays clean.
-      const updateRoot = resolveUpdateRoot()
       let command = 'hermes update'
       try {
         const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
@@ -2271,7 +2394,6 @@ async function applyUpdates(opts = {}) {
     })
     repairMacUpdaterHelper(updater)
 
-    const updateRoot = resolveUpdateRoot()
     const { branch: configuredBranch } = readDesktopUpdateConfig()
     const branch = await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
     const updaterArgs = ['--update', '--branch', branch]
@@ -2462,6 +2584,12 @@ function shellQuote(value) {
 // restart to load the new GUI" if the swap can't be performed.
 async function applyUpdatesPosixInApp() {
   const updateRoot = resolveUpdateRoot()
+  const dirtyResult = await dirtyUpdateGuard(updateRoot)
+  if (dirtyResult) {
+    rememberLog(`[updates] blocked POSIX in-app update from dirty checkout at ${updateRoot}`)
+    return dirtyResult
+  }
+
   const hermes = resolveHermesCliBinary(updateRoot)
   if (!hermes) {
     emitUpdateProgress({ stage: 'manual', message: 'hermes update', percent: null })
@@ -2938,9 +3066,10 @@ function createPythonBackend(root, label, backendArgs, options = {}) {
   const python = findPythonForRoot(root)
   if (!python) return null
 
-  const venvRoot = path.join(root, 'venv')
-  const venvPython = getVenvPython(venvRoot)
-  const command = IS_WINDOWS && fileExists(venvPython) ? venvPython : python
+  const legacyVenvRoot = path.join(root, 'venv')
+  const legacyVenvPython = getVenvPython(legacyVenvRoot)
+  const command = IS_WINDOWS && fileExists(legacyVenvPython) ? legacyVenvPython : python
+  const venvRoot = inferVenvRootForPython(root, command)
 
   return {
     kind: 'python',
@@ -3344,7 +3473,7 @@ function fetchJson(url, token, options = {}) {
 
     req.on('error', reject)
     req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+      req.destroy(new Error(`Timed out connecting to Hermes backend at ${parsed.pathname} after ${timeoutMs}ms`))
     })
     if (body) req.write(body)
     req.end()
@@ -3695,6 +3824,13 @@ async function resourceBufferFromUrl(rawUrl) {
   }
   if (/^file:/i.test(rawUrl)) {
     const { resolvedPath } = await resolveReadableFileForIpc(rawUrl, { purpose: 'Image file' })
+    const buffer = await fs.promises.readFile(resolvedPath)
+    return { buffer, mimeType: mimeTypeForPath(resolvedPath) }
+  }
+
+  const expandedPath = expandUserPath(rawUrl)
+  if (path.isAbsolute(expandedPath)) {
+    const { resolvedPath } = await resolveReadableFileForIpc(expandedPath, { purpose: 'Image file' })
     const buffer = await fs.promises.readFile(resolvedPath)
     return { buffer, mimeType: mimeTypeForPath(resolvedPath) }
   }
@@ -4817,6 +4953,30 @@ function writeActiveDesktopProfile(name) {
   return value || null
 }
 
+function readSelectedDesktopProfileScope() {
+  const parsed = readJson(DESKTOP_PROFILE_SCOPE_CONFIG_PATH)
+  const name = parsed && typeof parsed.profile === 'string' ? parsed.profile.trim() : ''
+
+  if (name && (name === 'default' || PROFILE_NAME_RE.test(name))) {
+    return name
+  }
+
+  return null
+}
+
+function writeSelectedDesktopProfileScope(name) {
+  const value = typeof name === 'string' ? name.trim() : ''
+
+  if (value && value !== 'default' && !PROFILE_NAME_RE.test(value)) {
+    throw new Error(`Invalid profile scope: ${value}`)
+  }
+
+  fs.mkdirSync(path.dirname(DESKTOP_PROFILE_SCOPE_CONFIG_PATH), { recursive: true })
+  writeFileAtomic(DESKTOP_PROFILE_SCOPE_CONFIG_PATH, JSON.stringify({ profile: value || null }, null, 2))
+
+  return value || null
+}
+
 // Sanitize a connection config into the renderer-facing shape. With no
 // `profile` this describes the global/default connection (the existing
 // behavior); with a `profile` it describes that profile's per-profile remote
@@ -5278,6 +5438,15 @@ async function ensureBackend(profile) {
 
   const entry = { process: null, port: null, token: null, connectionPromise: null, lastActiveAt: Date.now() }
   entry.connectionPromise = spawnPoolBackend(key, entry).catch(error => {
+    rememberLog(`Hermes backend for profile "${key}" startup failed: ${error.message}`)
+    recordDiagnosticEvent({
+      component: 'backend',
+      event: 'startup.failure',
+      message: `Pooled backend startup failed for profile ${key}: ${error.message}`,
+      severity: 'error',
+      details: { profile: key, error: error.message, mode: 'pool' }
+    })
+    stopBackendChild(entry.process)
     backendPool.delete(key)
     throw error
   })
@@ -5367,6 +5536,13 @@ async function spawnPoolBackend(profile, entry) {
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
   rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
+  recordDiagnosticEvent({
+    component: 'backend',
+    event: 'spawn',
+    message: `Starting pooled backend for profile ${profile}`,
+    severity: 'info',
+    details: { label: backend.label, profile, cwd: hermesCwd, mode: 'pool' }
+  })
 
   const child = spawn(
     backend.command,
@@ -5405,11 +5581,25 @@ async function spawnPoolBackend(profile, entry) {
   })
   child.once('error', error => {
     rememberLog(`Hermes backend for profile "${profile}" failed to start: ${error.message}`)
+    recordDiagnosticEvent({
+      component: 'backend',
+      event: 'error',
+      message: `Pooled backend failed to start for profile ${profile}: ${error.message}`,
+      severity: 'error',
+      details: { profile, error: error.message, mode: 'pool' }
+    })
     backendPool.delete(profile)
     rejectStart?.(error)
   })
   child.once('exit', (code, signal) => {
     rememberLog(`Hermes backend for profile "${profile}" exited (${signal || code})`)
+    recordDiagnosticEvent({
+      component: 'backend',
+      event: 'exit',
+      message: `Pooled backend exited for profile ${profile}`,
+      severity: ready ? 'warn' : 'error',
+      details: { profile, code, signal, ready, mode: 'pool' }
+    })
     backendPool.delete(profile)
     if (!ready) {
       rejectStart?.(
@@ -5590,6 +5780,13 @@ async function startHermes() {
 
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
     rememberLog(`Starting Hermes backend via ${backend.label}`)
+    recordDiagnosticEvent({
+      component: 'backend',
+      event: 'spawn',
+      message: 'Starting primary backend',
+      severity: 'info',
+      details: { label: backend.label, profile: activeProfile || 'default', cwd: hermesCwd, mode: 'primary' }
+    })
 
     hermesProcess = spawn(
       backend.command,
@@ -5630,6 +5827,13 @@ async function startHermes() {
     })
     hermesProcess.once('error', error => {
       rememberLog(`Hermes backend failed to start: ${error.message}`)
+      recordDiagnosticEvent({
+        component: 'backend',
+        event: 'error',
+        message: `Primary backend failed to start: ${error.message}`,
+        severity: 'error',
+        details: { error: error.message, mode: 'primary' }
+      })
       updateBootProgress(
         {
           error: error.message,
@@ -5646,6 +5850,13 @@ async function startHermes() {
     })
     hermesProcess.once('exit', (code, signal) => {
       rememberLog(`Hermes backend exited (${signal || code})`)
+      recordDiagnosticEvent({
+        component: 'backend',
+        event: 'exit',
+        message: 'Primary backend exited',
+        severity: backendReady ? 'warn' : 'error',
+        details: { code, signal, ready: backendReady, mode: 'primary' }
+      })
       hermesProcess = null
       connectionPromise = null
       sendBackendExit({ code, signal })
@@ -5966,6 +6177,7 @@ function closePetOverlay() {
 }
 
 function createWindow() {
+  startRendererHeartbeatMonitor()
   const icon = getAppIconPath()
   const savedWindowState = readWindowState()
   mainWindow = new BrowserWindow({
@@ -6041,6 +6253,13 @@ function createWindow() {
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     rememberLog(`[renderer] render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`)
+    recordDiagnosticEvent({
+      component: 'renderer',
+      event: 'render-process-gone',
+      message: `Renderer process gone: ${details?.reason || 'unknown'}`,
+      severity: details?.reason === 'clean-exit' ? 'info' : 'error',
+      details
+    })
 
     if (details?.reason === 'crashed' || details?.reason === 'oom') {
       const now = Date.now()
@@ -6050,6 +6269,13 @@ function createWindow() {
         rememberLog(
           `[renderer] suppressing reload: ${rendererReloadTimes.length} crashes within ${RENDERER_RELOAD_WINDOW_MS}ms (likely a crash loop)`
         )
+        recordDiagnosticEvent({
+          component: 'renderer',
+          event: 'crash-loop',
+          message: 'Suppressing renderer reload after repeated crashes',
+          severity: 'fatal',
+          details: { crashes: rendererReloadTimes.length, windowMs: RENDERER_RELOAD_WINDOW_MS }
+        })
 
         return
       }
@@ -6066,7 +6292,24 @@ function createWindow() {
     }
   })
 
-  mainWindow.webContents.on('unresponsive', () => rememberLog('[renderer] webContents became unresponsive'))
+  mainWindow.webContents.on('unresponsive', () => {
+    rememberLog('[renderer] webContents became unresponsive')
+    recordDiagnosticEvent({
+      component: 'renderer',
+      event: 'unresponsive',
+      message: 'Renderer became unresponsive',
+      severity: 'warn'
+    })
+  })
+
+  mainWindow.webContents.on('responsive', () => {
+    recordDiagnosticEvent({
+      component: 'renderer',
+      event: 'responsive',
+      message: 'Renderer became responsive',
+      severity: 'info'
+    })
+  })
 
   // Electron always passes the event first. The canonical (Electron 36+) shape
   // is (event, messageDetails); the deprecated positional shape is
@@ -6082,6 +6325,13 @@ function createWindow() {
     const src = details ? details.sourceUrl : sourceId
     const lineNo = details ? details.lineNumber : line
     rememberLog(`[renderer console] ${text} (${src}:${lineNo})`)
+    recordDiagnosticEvent({
+      component: 'renderer',
+      event: 'console-error',
+      message: text,
+      severity: 'error',
+      details: { source: src, line: lineNo }
+    })
   })
 
   if (DEV_SERVER) {
@@ -6395,6 +6645,10 @@ ipcMain.handle('hermes:profile:set', async (_event, name) => {
 
   return { profile: next }
 })
+ipcMain.handle('hermes:profile-scope:get', async () => ({ profile: readSelectedDesktopProfileScope() }))
+ipcMain.handle('hermes:profile-scope:set', async (_event, name) => ({
+  profile: writeSelectedDesktopProfileScope(name)
+}))
 
 ipcMain.on('hermes:previewShortcutActive', (_event, active) => {
   previewShortcutActive = Boolean(active)
@@ -6676,6 +6930,11 @@ ipcMain.handle('hermes:writeClipboard', (_event, text) => {
   return true
 })
 
+ipcMain.handle('hermes:copyImageFromUrl', async (_event, url) => {
+  await copyImageFromUrl(String(url || ''))
+  return true
+})
+
 ipcMain.handle('hermes:saveImageFromUrl', (_event, url) => saveImageFromUrl(String(url || '')))
 
 ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
@@ -6824,6 +7083,21 @@ ipcMain.handle('hermes:logs:reveal', async () => {
 })
 
 ipcMain.handle('hermes:logs:recent', async () => ({ path: DESKTOP_LOG_PATH, lines: hermesLog.slice(-200) }))
+
+ipcMain.handle('hermes:diagnostics:recent', async (_event, limit) => ({
+  path: DESKTOP_DIAGNOSTICS_PATH,
+  events: desktopDiagnostics.recent(Number.isFinite(limit) ? Math.max(1, Math.min(500, limit)) : 200)
+}))
+
+ipcMain.handle('hermes:diagnostics:event', async (_event, payload) => {
+  const entry = recordDiagnosticEvent(payload && typeof payload === 'object' ? payload : {})
+  return { ok: true, event: entry }
+})
+
+ipcMain.handle('hermes:diagnostics:heartbeat', async (_event, payload) => {
+  markRendererHeartbeat(payload && typeof payload === 'object' ? payload : {})
+  return { ok: true, at: lastRendererHeartbeatAt }
+})
 
 function isExecutableFile(filePath) {
   if (!filePath || !path.isAbsolute(filePath)) {

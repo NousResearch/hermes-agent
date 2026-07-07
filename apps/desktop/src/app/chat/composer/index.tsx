@@ -1,18 +1,30 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useEffect, useRef } from 'react'
+import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useRef } from 'react'
 
 import { composerFill, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
+import { getHermesConfigRecord } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
+import { respondToClarifyRequest } from '@/lib/clarify-response'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
+import { $clarifyRequest } from '@/store/clarify'
 import { $composerAttachments } from '@/store/composer'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { removeQueuedPrompt } from '@/store/composer-queue'
+import {
+  $messageRepliesEnabled,
+  $messageReplyTarget,
+  clearMessageReply,
+  messageRepliesEnabledForProfile,
+  messageRepliesEnabledFromConfig,
+  withReplyContext
+} from '@/store/message-replies'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState, $messages } from '@/store/session'
@@ -61,6 +73,7 @@ import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 
 export function ChatBar({
   busy,
+  compacting = false,
   cwd,
   disabled,
   focusKey,
@@ -85,12 +98,47 @@ export function ChatBar({
   const attachments = useStore($composerAttachments)
   const scrolledUp = useStore($threadScrolledUp)
   const autoSpeak = useStore($autoSpeakReplies)
+  const activeProfile = useStore($activeGatewayProfile)
+  const repliesEnabled = useStore($messageRepliesEnabled) || messageRepliesEnabledForProfile(activeProfile)
+  const replyTarget = useStore($messageReplyTarget)
+  const replyActive = repliesEnabled ? replyTarget : null
   // The turn is parked on the user (clarify / approval / sudo / secret). Esc must
   // not interrupt it — there's nothing actively running to stop, and stopping
   // would discard a question the user may want to come back to. The blocking
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore($activeSessionAwaitingInput)
+  const clarifyRequest = useStore($clarifyRequest)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
+  const sendBlocked = busy || compacting
+
+  useEffect(() => {
+    let cancelled = false
+
+    getHermesConfigRecord()
+      .then(config => {
+        if (!cancelled) {
+          $messageRepliesEnabled.set(messageRepliesEnabledFromConfig(config))
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          $messageRepliesEnabled.set(false)
+          clearMessageReply()
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeProfile])
+
+  useEffect(() => {
+    if (!repliesEnabled && replyTarget) {
+      clearMessageReply()
+    }
+  }, [repliesEnabled, replyTarget])
+
+  const textWithReplyContext = useCallback((text: string) => withReplyContext(text, replyActive), [replyActive])
 
   // Status items (subagents, background processes) are keyed by the RUNTIME
   // session id — gateway events and process.list both speak that id. Only the
@@ -166,9 +214,11 @@ export function ChatBar({
     drainNextQueued,
     editingQueuedPrompt,
     exitQueuedEdit,
+    implicitQueueDrainAllowed,
     queueCurrentDraft,
     queueEdit,
     queuedPrompts,
+    sendAllQueued,
     sendQueuedNow,
     stepQueuedEdit
   } = useComposerQueue({
@@ -181,9 +231,12 @@ export function ChatBar({
     loadIntoComposer,
     onCancel,
     onSubmit,
+    onDraftQueued: clearMessageReply,
     queueEditRef,
     queueSessionKey,
-    sessionId
+    sendBlocked,
+    sessionId,
+    transformDraftText: textWithReplyContext
   })
 
   const statusStackVisible = queuedPrompts.length > 0 || statusPresent
@@ -191,13 +244,24 @@ export function ChatBar({
   const { stacked } = useComposerMetrics({ composerRef, composerSurfaceRef, editorRef, poppedOut })
   const hasComposerPayload = hasText || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
-  const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
+  const busyAction = sendBlocked && hasComposerPayload ? 'queue' : 'stop'
 
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
   // into a tool result) and never for a slash command (those execute inline).
   const canSteer = busy && !!onSteer && attachments.length === 0 && isSteerableText
 
   const showHelpHint = isHelpHint
+
+  const submitClarifyAnswer = useCallback(
+    (answer: string) =>
+      respondToClarifyRequest({
+        answer,
+        copy: t.assistant.clarify,
+        gateway,
+        request: clarifyRequest
+      }),
+    [clarifyRequest, gateway, t.assistant.clarify]
+  )
 
   // The submit engine — the orchestration seam where draft + queue meet. Owns
   // the submit decision tree, the send-with-restore primitive, and steer.
@@ -214,17 +278,21 @@ export function ChatBar({
     editorRef,
     exitQueuedEdit,
     focusInput,
+    implicitQueueDrainAllowed,
     inputDisabled,
     loadIntoComposer,
     onCancel,
     onSteer,
     onSubmit,
+    onSubmitAccepted: replyActive ? clearMessageReply : undefined,
+    onSubmitClarifyAnswer: clarifyRequest ? submitClarifyAnswer : undefined,
     queueCurrentDraft,
     queueEdit,
-    queuedPrompts,
+    sendBlocked,
     sessionId,
     setComposerText,
-    stashAt
+    stashAt,
+    transformSubmitText: textWithReplyContext
   })
 
   // Resting / reconnecting / starting placeholder text, re-rolled only on a real
@@ -571,18 +639,17 @@ export function ChatBar({
         return
       }
 
-      if (!busy && !hasLivePayload && queuedPrompts.length > 0) {
+      if (!sendBlocked && !hasLivePayload && implicitQueueDrainAllowed()) {
         void drainNextQueued()
 
         return
       }
 
-      // Empty Enter while busy is a no-op — interrupting is explicit (Stop/Esc),
-      // never a stray Enter after sending. With a payload, submitDraft queues it.
-      // Gate on the live DOM payload (not the render-lagged composer state) so a
-      // message typed fast / via IME while busy still reaches submitDraft() and
-      // gets queued instead of being mistaken for an empty Enter.
-      if (busy && !hasLivePayload) {
+      // Empty Enter while busy/compacting is a no-op — interrupting is explicit
+      // (Stop/Esc), never a stray Enter after sending. With a payload,
+      // submitDraft queues it. Gate on the live DOM payload (not the render-
+      // lagged composer state) so fast/IME text still reaches submitDraft().
+      if (sendBlocked && !hasLivePayload) {
         return
       }
 
@@ -681,7 +748,7 @@ export function ChatBar({
   const controls = (
     <ComposerControls
       autoSpeak={autoSpeak}
-      busy={busy}
+      busy={busy || (compacting && hasComposerPayload)}
       busyAction={busyAction}
       canSteer={canSteer}
       canSubmit={canSubmit}
@@ -874,6 +941,7 @@ export function ChatBar({
                     }
                   }}
                   onEdit={beginQueuedEdit}
+                  onSendAll={() => void sendAllQueued()}
                   onSendNow={id => void sendQueuedNow(id)}
                 />
               ) : null
@@ -959,6 +1027,28 @@ export function ChatBar({
                         {t.common.save}
                       </Button>
                     </div>
+                  </div>
+                )}
+                {replyActive && (
+                  <div
+                    className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-[color-mix(in_srgb,var(--dt-composer-ring)_28%,transparent)] border-r-[3px] border-r-[color-mix(in_srgb,var(--dt-composer-ring)_72%,transparent)] bg-[color-mix(in_srgb,var(--dt-composer-ring)_9%,transparent)] px-2 py-1 text-[0.7rem] leading-snug text-muted-foreground/90"
+                    data-slot="composer-reply-preview"
+                  >
+                    <div className="min-w-0 truncate">
+                      <span className="font-medium text-[color-mix(in_srgb,var(--dt-composer-ring)_82%,var(--foreground))]">
+                        Replying to Hermes:
+                      </span>{' '}
+                      {replyActive.quote}
+                    </div>
+                    <Button
+                      aria-label="Cancel reply"
+                      className="h-5 shrink-0 rounded-md px-1.5 text-[0.68rem]"
+                      onClick={clearMessageReply}
+                      type="button"
+                      variant="ghost"
+                    >
+                      ×
+                    </Button>
                   </div>
                 )}
                 {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}

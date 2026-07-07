@@ -5,7 +5,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
-import { $busy, $connection, $messages, $sessions, setSessions } from '@/store/session'
+import {
+  $busy,
+  $connection,
+  $messages,
+  $replyReadySessionIds,
+  $replyReadySessionProfiles,
+  $sessions,
+  setSessions
+} from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { uploadComposerAttachment, usePromptActions } from '.'
@@ -46,12 +54,19 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 interface HarnessHandle {
   cancelRun: () => Promise<void>
   restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
+  sendTextToSession: (target: {
+    profile?: null | string
+    runtimeSessionId?: null | string
+    storedSessionId: string
+    text: string
+  }) => Promise<boolean>
   steerPrompt: (text: string) => Promise<boolean>
   submitText: (text: string, options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }) => Promise<boolean>
 }
 
 function Harness({
   busyRef,
+  createBackendSessionForSend,
   onReady,
   onSeedState,
   openMemoryGraph,
@@ -62,6 +77,7 @@ function Harness({
   storedSessionId
 }: {
   busyRef?: MutableRefObject<boolean>
+  createBackendSessionForSend?: (preview?: string | null) => Promise<string | null>
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
   openMemoryGraph?: () => void
@@ -91,7 +107,7 @@ function Harness({
     activeSessionIdRef,
     branchCurrentSession: async () => true,
     busyRef: localBusyRef,
-    createBackendSessionForSend: async () => RUNTIME_SESSION_ID,
+    createBackendSessionForSend: createBackendSessionForSend ?? (async () => RUNTIME_SESSION_ID),
     handleSkinCommand: () => '',
     openMemoryGraph: openMemoryGraph ?? (() => undefined),
     refreshSessions,
@@ -114,10 +130,18 @@ function Harness({
     onReady({
       cancelRun: actions.cancelRun,
       restoreToMessage: actions.restoreToMessage,
+      sendTextToSession: actions.sendTextToSession,
       steerPrompt: actions.steerPrompt,
       submitText: actions.submitText
     })
-  }, [actions.cancelRun, actions.restoreToMessage, actions.steerPrompt, actions.submitText, onReady])
+  }, [
+    actions.cancelRun,
+    actions.restoreToMessage,
+    actions.sendTextToSession,
+    actions.steerPrompt,
+    actions.submitText,
+    onReady
+  ])
 
   return null
 }
@@ -129,14 +153,16 @@ describe('usePromptActions /title', () => {
 
   afterEach(() => {
     cleanup()
+    $replyReadySessionIds.set([])
+    $replyReadySessionProfiles.set({})
     vi.restoreAllMocks()
   })
 
   it('renames via the session.title RPC (with the runtime id), updates the sidebar store, and refreshes', async () => {
     const refreshSessions = vi.fn(async () => undefined)
 
-    const requestGateway = vi.fn(
-      async (method: string) => (method === 'session.title' ? { pending: false, title: 'New title' } : {}) as never
+    const requestGateway = vi.fn(async (method: string) =>
+      (method === 'session.title' ? { pending: false, title: 'New title' } : {}) as never
     )
 
     let handle: HarnessHandle | null = null
@@ -159,8 +185,8 @@ describe('usePromptActions /title', () => {
   it('reports the queued state when the session row is not persisted yet', async () => {
     const refreshSessions = vi.fn(async () => undefined)
 
-    const requestGateway = vi.fn(
-      async (method: string) => (method === 'session.title' ? { pending: true, title: 'Fresh chat' } : {}) as never
+    const requestGateway = vi.fn(async (method: string) =>
+      (method === 'session.title' ? { pending: true, title: 'Fresh chat' } : {}) as never
     )
 
     let handle: HarnessHandle | null = null
@@ -212,6 +238,28 @@ describe('usePromptActions /title', () => {
     )
     expect(refreshSessions).not.toHaveBeenCalled()
     expect($sessions.get()[0]?.title).toBe('Old title')
+  })
+
+  it('clears reply-ready markers stored under the session lineage when the user replies', async () => {
+    setSessions(() => [sessionInfo({ id: RUNTIME_SESSION_ID, _lineage_root_id: 'root-1' })])
+    $replyReadySessionIds.set(['root-1'])
+    $replyReadySessionProfiles.set({ 'root-1': 'default' })
+
+    const requestGateway = vi.fn(async () => ({} as never))
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    expect(await handle!.submitText('replying now')).toBe(true)
+    expect($replyReadySessionIds.get()).toEqual([])
+    expect($replyReadySessionProfiles.get()).toEqual({})
   })
 })
 
@@ -434,6 +482,7 @@ describe('usePromptActions desktop slash pickers', () => {
 describe('usePromptActions submit / queue drain semantics', () => {
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
@@ -576,6 +625,50 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(seeds.some(s => Array.isArray(s.messages) && (s.messages as { error?: string }[]).some(m => m.error))).toBe(
       false
     )
+  })
+
+  it('persistent "session busy" restores the draft instead of appending transcript bubbles', async () => {
+    vi.useFakeTimers()
+    const seeds: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new Error('4009: session busy')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const submitted = handle!.submitText('still running')
+    await vi.advanceTimersByTimeAsync(6_500)
+
+    expect(await submitted).toBe(false)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'still running'
+      },
+      1_800_000
+    )
+    expect(requestGateway).toHaveBeenCalledTimes(41)
+
+    const finalState = seeds.at(-1)
+    const finalMessages = (finalState?.messages ?? []) as { error?: string; role?: string }[]
+
+    expect(finalMessages).toEqual([])
+    expect(finalState?.busy).toBe(false)
+    expect(finalState?.awaitingResponse).toBe(false)
   })
 
   it('a normal (non-queue) submit still respects the busyRef guard', async () => {
@@ -1162,13 +1255,60 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls).not.toContain('session.resume')
   })
 
-  it('surfaces "session not found" (no resume) when there is no stored session id', async () => {
-    const calls: string[] = []
+  it('creates a replacement runtime session and retries when a new draft has a stale runtime id', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const createBackendSessionForSend = vi.fn(async () => 'rt-replacement-new-draft')
+    let submitAttempts = 0
 
-    const requestGateway = vi.fn(async (method: string) => {
-      calls.push(method)
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
 
       if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        createBackendSessionForSend={createBackendSessionForSend}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={null}
+      />
+    )
+
+    expect(await handle!.submitText('message')).toBe(true)
+    expect(createBackendSessionForSend).toHaveBeenCalledWith('message')
+    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'prompt.submit'])
+    expect(calls[0]?.params).toEqual({ session_id: RUNTIME_SESSION_ID, text: 'message' })
+    expect(calls[1]?.params).toEqual({ session_id: 'rt-replacement-new-draft', text: 'message' })
+  })
+
+  it('creates a replacement runtime session when the selected stored id is also stale', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const createBackendSessionForSend = vi.fn(async () => 'rt-replacement-stale-selected')
+    let submitAttempts = 0
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+      }
+
+      if (method === 'session.resume') {
         throw new Error('session not found')
       }
 
@@ -1178,17 +1318,19 @@ describe('usePromptActions sleep/wake session recovery', () => {
     let handle: HarnessHandle | null = null
     render(
       <Harness
+        createBackendSessionForSend={createBackendSessionForSend}
         onReady={h => (handle = h)}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
-        storedSessionId={null}
+        storedSessionId={RUNTIME_SESSION_ID}
       />
     )
 
-    // With a null stored ref, the `&& selectedStoredSessionIdRef.current` guard
-    // short-circuits — no resume is attempted and the error surfaces normally.
-    expect(await handle!.submitText('message')).toBe(false)
-    expect(calls).not.toContain('session.resume')
+    expect(await handle!.submitText('message')).toBe(true)
+    expect(createBackendSessionForSend).toHaveBeenCalledWith('message')
+    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
+    expect(calls[1]?.params).toEqual({ session_id: RUNTIME_SESSION_ID })
+    expect(calls[2]?.params).toEqual({ session_id: 'rt-replacement-stale-selected', text: 'message' })
   })
 })
 

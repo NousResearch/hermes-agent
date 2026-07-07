@@ -3585,21 +3585,37 @@ class TelegramAdapter(BasePlatformAdapter):
                                 pass  # Typing failures are non-fatal
                     return rich_result
 
-            # Format and split message if needed
-            formatted = self.format_message(content)
-            chunks = self.truncate_message(
-                formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
-            )
-            if len(chunks) > 1:
-                # truncate_message appends a raw " (1/2)" suffix. Escape the
-                # MarkdownV2-special parentheses so Telegram doesn't reject the
-                # chunk and fall back to plain text.
-                chunks = [
-                    _separate_chunk_indicator_from_fence(
-                        re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
-                    )
-                    for chunk in chunks
-                ]
+            # Format and split message if needed. Operators can opt into
+            # semantic multi-message delivery by asking the model to emit a
+            # marker (e.g. <<<SPLIT>>>) and configuring
+            # platforms.telegram.extra.message_split_marker. This is separate
+            # from Telegram's hard 4096-char chunking: it lets coaching-style
+            # replies arrive as several readable bubbles even when each section
+            # is well under the API limit.
+            split_marker = str(self.config.extra.get("message_split_marker", "") or "")
+            raw_parts = [content]
+            if split_marker and split_marker in content:
+                raw_parts = [part.strip() for part in content.split(split_marker) if part.strip()]
+                if not raw_parts:
+                    raw_parts = [content]
+
+            chunks = []
+            for raw_part in raw_parts:
+                formatted = self.format_message(raw_part)
+                part_chunks = self.truncate_message(
+                    formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
+                )
+                if len(part_chunks) > 1:
+                    # truncate_message appends a raw " (1/2)" suffix. Escape the
+                    # MarkdownV2-special parentheses so Telegram doesn't reject the
+                    # chunk and fall back to plain text.
+                    part_chunks = [
+                        _separate_chunk_indicator_from_fence(
+                            re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
+                        )
+                        for chunk in part_chunks
+                    ]
+                chunks.extend(part_chunks)
             
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
@@ -3926,6 +3942,17 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
+        split_marker = str(self.config.extra.get("message_split_marker", "") or "")
+        if split_marker and split_marker in content:
+            if finalize:
+                return await self._edit_overflow_split(
+                    chat_id, message_id, content, finalize=finalize, metadata=metadata,
+                )
+            # Streaming previews are edited in-place before the final reply is
+            # split into multiple Telegram bubbles. Never show the internal
+            # semantic split marker to the user while the draft is streaming.
+            content = content.replace(split_marker, "\n\n")
+
         # Rich finalize (Bot API 10.1): when the completed content has
         # constructs the legacy MarkdownV2 edit degrades (tables → bullet
         # lists, task lists, <details>, block math) and rich is available,
@@ -4145,9 +4172,26 @@ class TelegramAdapter(BasePlatformAdapter):
         Falls back to ``SendResult(success=False)`` only if even the first-
         chunk edit fails — that's a real adapter problem, not an overflow.
         """
-        chunks = self.truncate_message(
-            content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
-        )
+        split_marker = str(self.config.extra.get("message_split_marker", "") or "")
+        raw_parts = [content]
+        if split_marker and split_marker in content:
+            raw_parts = [part.strip() for part in content.split(split_marker) if part.strip()]
+            if not raw_parts:
+                raw_parts = [content]
+
+        chunks = []
+        for raw_part in raw_parts:
+            part_chunks = self.truncate_message(
+                raw_part, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
+            )
+            if len(part_chunks) > 1:
+                part_chunks = [
+                    _separate_chunk_indicator_from_fence(
+                        re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
+                    )
+                    for chunk in part_chunks
+                ]
+            chunks.extend(part_chunks)
         if len(chunks) <= 1:
             # Defensive: shouldn't happen given the caller's pre-flight, but
             # if truncate_message returned a single chunk just edit normally.

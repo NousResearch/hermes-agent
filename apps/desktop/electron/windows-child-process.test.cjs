@@ -40,8 +40,21 @@ test('desktop background child processes opt into hidden Windows consoles', () =
 
   assert.match(source, /function unwrapWindowsVenvHermesCommand\(command, backendArgs\)/)
   assert.match(source, /function getVenvSitePackagesEntries\(venvRoot\)/)
+  assert.match(source, /function inferVenvRootForPython\(root, python\)/)
   assert.match(source, /path\.join\(venvRoot, 'Lib', 'site-packages'\)/)
   assert.match(source, /args: \['-m', 'hermes_cli\.main', \.\.\.backendArgs\]/)
+})
+
+test('source backend PYTHONPATH follows the selected Python venv', () => {
+  const source = readElectronFile('main.cjs')
+  const createIndex = source.indexOf('function createPythonBackend(root, label, backendArgs, options = {})')
+  assert.notEqual(createIndex, -1, 'missing source backend resolver')
+  const snippet = source.slice(createIndex, createIndex + 900)
+
+  assert.match(snippet, /const command = IS_WINDOWS && fileExists\(legacyVenvPython\) \? legacyVenvPython : python/)
+  assert.match(snippet, /const venvRoot = inferVenvRootForPython\(root, command\)/)
+  assert.match(snippet, /pythonPathEntries: \[root, \.\.\.getVenvSitePackagesEntries\(venvRoot\)\]/)
+  assert.doesNotMatch(snippet, /const venvRoot = path\.join\(root, 'venv'\)/)
 })
 
 test('desktop backend launches console python so child consoles are inherited, not pythonw', () => {
@@ -95,6 +108,19 @@ test('desktop backend teardown tree-kills Windows backend descendants', () => {
   const quitSnippet = source.slice(quitIndex, quitIndex + 900)
   assert.match(quitSnippet, /stopBackendChild\(hermesProcess\)/)
   assert.doesNotMatch(quitSnippet, /hermesProcess\.kill\('SIGTERM'\)/)
+})
+
+test('pooled backend startup failures clean up partial children', () => {
+  const source = readElectronFile('main.cjs')
+  const ensureIndex = source.indexOf('async function ensureBackend(profile)')
+  assert.notEqual(ensureIndex, -1, 'missing ensureBackend')
+  const snippet = source.slice(ensureIndex, ensureIndex + 1400)
+
+  assert.match(snippet, /spawnPoolBackend\(key, entry\)\.catch\(error => \{/)
+  assert.match(snippet, /event: 'startup\.failure'/)
+  assert.match(snippet, /stopBackendChild\(entry\.process\)/)
+  assert.match(snippet, /backendPool\.delete\(key\)/)
+  assert.match(snippet, /throw error/)
 })
 
 test('intentional or interactive desktop child processes stay documented', () => {

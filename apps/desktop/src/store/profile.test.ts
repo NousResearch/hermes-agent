@@ -18,7 +18,18 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn() } }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, $profiles, ensureGatewayProfile, refreshProfiles } = await import('./profile')
+const {
+  $activeGatewayProfile,
+  $profileIcons,
+  $profileScope,
+  $profiles,
+  $selectedProfileScope,
+  $showAllProfiles,
+  ensureGatewayProfile,
+  refreshProfiles,
+  selectProfile,
+  setProfileIcon
+} = await import('./profile')
 const { $connection } = await import('./session')
 const { queryClient } = await import('@/lib/query-client')
 const { getProfiles } = await import('@/hermes')
@@ -44,8 +55,11 @@ const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnectio
 beforeEach(() => {
   getConnection.mockReset()
   ensureGatewayForProfile.mockClear()
+  ensureGatewayForProfile.mockImplementation(async () => undefined)
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
+  $selectedProfileScope.set('default')
+  $showAllProfiles.set(false)
   $connection.set(localConn())
   $profiles.set([])
   vi.stubGlobal('window', { hermesDesktop: { getConnection } })
@@ -56,6 +70,31 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals()
   $connection.set(null)
+})
+
+describe('setProfileIcon', () => {
+  beforeEach(() => {
+    $profileIcons.set({})
+  })
+
+  it('sets an emoji keyed by the normalized profile name', () => {
+    setProfileIcon('Film Maker', '🎬')
+
+    expect($profileIcons.get()['Film Maker']).toBe('🎬')
+  })
+
+  it('clears the icon when passed null', () => {
+    setProfileIcon('film-maker', '🎬')
+    setProfileIcon('film-maker', null)
+
+    expect($profileIcons.get()['film-maker']).toBeUndefined()
+  })
+
+  it('normalizes an empty profile name to "default"', () => {
+    setProfileIcon('', '🌱')
+
+    expect($profileIcons.get().default).toBe('🌱')
+  })
 })
 
 describe('ensureGatewayProfile → $connection sync (#46651)', () => {
@@ -132,5 +171,48 @@ describe('refreshProfiles shared rail list (#49289)', () => {
     await expect(refreshProfiles()).rejects.toThrow('backend unavailable')
 
     expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'test1'])
+  })
+})
+
+describe('selectProfile', () => {
+  it('updates the visible profile scope before the gateway finishes switching', async () => {
+    let resolveGateway!: () => void
+
+    const gatewayReady = new Promise<undefined>(resolve => {
+      resolveGateway = () => resolve(undefined)
+    })
+
+    ensureGatewayForProfile.mockImplementationOnce(() => gatewayReady)
+
+    selectProfile('content-creator')
+
+    expect($profileScope.get()).toBe('content-creator')
+    expect($selectedProfileScope.get()).toBe('content-creator')
+    expect($activeGatewayProfile.get()).toBe('default')
+
+    resolveGateway()
+    await gatewayReady
+    await vi.waitFor(() => expect($activeGatewayProfile.get()).toBe('content-creator'))
+  })
+
+  it('does not let a slower previous gateway activation override a newer selected scope', async () => {
+    let resolveFirst!: () => void
+
+    const firstGatewayReady = new Promise<undefined>(resolve => {
+      resolveFirst = () => resolve(undefined)
+    })
+
+    ensureGatewayForProfile
+      .mockImplementationOnce(() => firstGatewayReady)
+      .mockImplementationOnce(async () => undefined)
+
+    selectProfile('content-creator')
+    selectProfile('bina-meatzevet')
+
+    expect($profileScope.get()).toBe('bina-meatzevet')
+
+    resolveFirst()
+    await vi.waitFor(() => expect($activeGatewayProfile.get()).toBe('bina-meatzevet'))
+    expect($profileScope.get()).toBe('bina-meatzevet')
   })
 })

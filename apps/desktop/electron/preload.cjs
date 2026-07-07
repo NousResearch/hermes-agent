@@ -43,6 +43,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   oauthLogoutConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:oauth-logout', remoteUrl),
   profile: {
     get: () => ipcRenderer.invoke('hermes:profile:get'),
+    getScope: () => ipcRenderer.invoke('hermes:profile-scope:get'),
+    setScope: name => ipcRenderer.invoke('hermes:profile-scope:set', name),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
   },
   api: request => ipcRenderer.invoke('hermes:api', request),
@@ -52,6 +54,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   readFileText: filePath => ipcRenderer.invoke('hermes:readFileText', filePath),
   selectPaths: options => ipcRenderer.invoke('hermes:selectPaths', options),
   writeClipboard: text => ipcRenderer.invoke('hermes:writeClipboard', text),
+  copyImageFromUrl: url => ipcRenderer.invoke('hermes:copyImageFromUrl', url),
   saveImageFromUrl: url => ipcRenderer.invoke('hermes:saveImageFromUrl', url),
   saveImageBuffer: (data, ext) => ipcRenderer.invoke('hermes:saveImageBuffer', { data, ext }),
   saveClipboardImage: () => ipcRenderer.invoke('hermes:saveClipboardImage'),
@@ -80,6 +83,11 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   revealLogs: () => ipcRenderer.invoke('hermes:logs:reveal'),
   getRecentLogs: () => ipcRenderer.invoke('hermes:logs:recent'),
+  diagnostics: {
+    recent: limit => ipcRenderer.invoke('hermes:diagnostics:recent', limit),
+    event: payload => ipcRenderer.invoke('hermes:diagnostics:event', payload),
+    heartbeat: payload => ipcRenderer.invoke('hermes:diagnostics:heartbeat', payload)
+  },
   readDir: dirPath => ipcRenderer.invoke('hermes:fs:readDir', dirPath),
   gitRoot: startPath => ipcRenderer.invoke('hermes:fs:gitRoot', startPath),
   revealPath: targetPath => ipcRenderer.invoke('hermes:fs:reveal', targetPath),

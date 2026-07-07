@@ -78,6 +78,7 @@ CONFIGURABLE_TOOLSETS = [
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
+    ("flowstate",        "📋 Flow State",               "personal tasks and timer via local API"),
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
@@ -115,7 +116,7 @@ def gui_toolset_label(label: str) -> str:
 # `hermes tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
+_DEFAULT_OFF_TOOLSETS = {"homeassistant", "flowstate", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
 
 
 def _xai_credentials_present() -> bool:
@@ -503,6 +504,20 @@ TOOL_CATEGORIES = {
                 "env_vars": [
                     {"key": "HASS_TOKEN", "prompt": "Home Assistant Long-Lived Access Token"},
                     {"key": "HASS_URL", "prompt": "Home Assistant URL", "default": "http://homeassistant.local:8123"},
+                ],
+            },
+        ],
+    },
+    "flowstate": {
+        "name": "Flow State",
+        "icon": "📋",
+        "providers": [
+            {
+                "name": "Local Task API",
+                "tag": "Flow State's localhost API for personal tasks and timer state",
+                "env_vars": [
+                    {"key": "FLOW_STATE_API_TOKEN", "prompt": "Flow State Local Task API bearer token"},
+                    {"key": "FLOW_STATE_API_URL", "prompt": "Flow State Local Task API URL", "default": "http://127.0.0.1:5577"},
                 ],
             },
         ],
@@ -1997,6 +2012,9 @@ def _toolset_has_keys(
             return client is not None
         except Exception:
             return False
+
+    if ts_key == "flowstate":
+        return bool(get_env_value("FLOW_STATE_API_TOKEN"))
 
     if ts_key in {"web", "image_gen", "video_gen", "tts", "browser"}:
         features = get_nous_subscription_features(config, force_fresh=force_fresh)

@@ -33,6 +33,7 @@ export interface ChatBarState {
 
 export interface ChatBarProps {
   busy: boolean
+  compacting?: boolean
   disabled: boolean
   focusKey?: string | null
   maxRecordingSeconds?: number

@@ -571,6 +571,28 @@ describe('overlayLiveLanes', () => {
     expect(overlaid.repos[0].groups.flatMap(g => g.sessions.map(s => s.id))).toEqual(['dup'])
   })
 
+  it('does not overlay a stale compression-ended live row', () => {
+    const tip = makeSession('/www/app', { id: 'tip-5', git_branch: 'main', _lineage_root_id: 'root' })
+    const stale = makeSession('/www/app', { end_reason: 'compression', id: 'tip-4', git_branch: 'main' })
+
+    const project = projectNode({
+      id: '/www/app',
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 1,
+          groups: [lane({ id: '/www/app::branch::main', label: 'main', isMain: true, path: '/www/app', sessions: [tip] })]
+        }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [stale])
+
+    expect(overlaid.repos[0].groups.flatMap(g => g.sessions.map(s => s.id))).toEqual(['tip-5'])
+  })
+
   it('adds a new session to an existing worktree lane keyed by a divergent id (matches by path)', () => {
     // Backend keyed the worktree lane off a branch-style id (no live git probe),
     // but the lane PATH is the worktree dir. A new session under that worktree
@@ -712,5 +734,18 @@ describe('overlayLivePreviews', () => {
     const previews = overlayLivePreviews([project], [], [], 3, new Set(['gone']))
 
     expect(previews['/www/app'].map(s => s.id)).toEqual(['old'])
+  })
+
+  it('does not merge stale compression-ended live rows into project previews', () => {
+    const project = projectNode({
+      id: '/www/app',
+      previewSessions: [makeSession('/www/app', { id: 'tip-5', _lineage_root_id: 'root', started_at: 6, last_active: 6 })]
+    })
+
+    const live = [makeSession('/www/app', { end_reason: 'compression', id: 'tip-4', started_at: 5, last_active: 5 })]
+
+    const previews = overlayLivePreviews([project], live, [], 3)
+
+    expect(previews['/www/app'].map(s => s.id)).toEqual(['tip-5'])
   })
 })

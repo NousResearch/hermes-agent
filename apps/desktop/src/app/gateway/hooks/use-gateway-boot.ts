@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import type { HermesConnection } from '@/global'
 import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
+import { emitDesktopDiagnostic, sendDesktopHeartbeat } from '@/lib/desktop-diagnostics'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import {
   $desktopBoot,
@@ -108,6 +109,7 @@ export function useGatewayBoot({
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
+    const recoverableReconnectAttempt = 6
     // Surface "sign in again" once per disconnect episode, not on every backoff
     // tick — a stale OAuth ticket fails every attempt and would otherwise stack
     // identical error toasts (and their haptics). Reset on the next clean open.
@@ -178,12 +180,30 @@ export function useGatewayBoot({
           reauthNotified = true
           notifyError(err, translateNow('boot.errors.gatewaySignInRequired'))
         }
+
+        if (!cancelled && reconnectAttempt >= recoverableReconnectAttempt) {
+          emitDesktopDiagnostic({
+            component: 'gateway',
+            event: 'reconnect.repeated-failure',
+            message: 'Gateway is still unreachable after repeated reconnect attempts',
+            severity: 'warn',
+            details: { attempt: reconnectAttempt, profile: $activeGatewayProfile.get() }
+          })
+          failDesktopBoot('Hermes gateway is still unreachable after repeated reconnect attempts.')
+        }
       } finally {
         reconnecting = false
 
         if (!cancelled && !gatewayOpen()) {
           if (reconnectAttempt >= RECONNECT_ESCALATE_AFTER && !escalated) {
             escalated = true
+            emitDesktopDiagnostic({
+              component: 'gateway',
+              event: 'reconnect.escalated',
+              message: 'Gateway reconnect escalated to boot failure overlay',
+              severity: 'error',
+              details: { attempt: reconnectAttempt, profile: $activeGatewayProfile.get() }
+            })
             failDesktopBoot(translateNow('boot.errors.gatewayConnectionLost'))
           }
 
@@ -288,6 +308,20 @@ export function useGatewayBoot({
       touchActiveGatewayBackend()
       touchSecondaryGateways()
     }, 60_000)
+
+    const heartbeatTimer = setInterval(() => {
+      sendDesktopHeartbeat({
+        activeProfile: $activeGatewayProfile.get(),
+        bootCompleted,
+        gatewayState: gateway.connectionState
+      })
+    }, 10_000)
+
+    sendDesktopHeartbeat({
+      activeProfile: $activeGatewayProfile.get(),
+      bootCompleted,
+      gatewayState: gateway.connectionState
+    })
 
     // Bound concurrency cost to live work: keep a background socket only while
     // its profile has a running (working) or blocked (needs-input) session.
@@ -413,6 +447,7 @@ export function useGatewayBoot({
       cancelled = true
       clearReconnectTimer()
       clearInterval(keepaliveTimer)
+      clearInterval(heartbeatTimer)
       offWorking()
       offAttention()
       offActiveProfile()

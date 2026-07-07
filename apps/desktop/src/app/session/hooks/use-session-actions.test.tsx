@@ -10,6 +10,8 @@ import {
   $activeSessionId,
   $currentCwd,
   $messages,
+  $replyReadySessionIds,
+  $replyReadySessionProfiles,
   $resumeFailedSessionId,
   setActiveSessionId,
   setMessages,
@@ -206,6 +208,8 @@ describe('resumeSession failure recovery', () => {
     setResumeFailedSessionId(null)
     setMessages([])
     setSessions([])
+    $replyReadySessionIds.set([])
+    $replyReadySessionProfiles.set({})
     vi.restoreAllMocks()
   })
 
@@ -214,12 +218,14 @@ describe('resumeSession failure recovery', () => {
     options: {
       runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
       sessionStateByRuntimeIdRef?: MutableRefObject<Map<string, ClientSessionState>>
+      storedSessionId?: string
     } = {}
   ): Promise<void> {
+    const { storedSessionId = 'stored-1', ...refs } = options
     let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
-    render(<ResumeHarness onReady={r => (resume = r)} requestGateway={requestGateway} {...options} />)
+    render(<ResumeHarness onReady={r => (resume = r)} requestGateway={requestGateway} {...refs} />)
     await waitFor(() => expect(resume).not.toBeNull())
-    await resume!('stored-1', true)
+    await resume!(storedSessionId, true)
   }
 
   it('arms $resumeFailedSessionId when resume RPC and REST fallback both fail', async () => {
@@ -511,5 +517,29 @@ describe('resumeSession warm-cache mapping integrity', () => {
     const methods = requestGateway.mock.calls.map(([method]) => method)
     expect(methods).not.toContain('session.resume')
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
+  })
+
+  it('clears reply-ready markers stored under the compression lineage when opening the tip session', async () => {
+    setSessions([storedSession({ _lineage_root_id: 'root-1', id: 'tip-1', message_count: 3, title: 'Needs review' })])
+    $replyReadySessionIds.set(['root-1'])
+    $replyReadySessionProfiles.set({ 'root-1': 'hermes-dev' })
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-1', resumed: params?.session_id, messages: [], info: {} } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: [], session_id: 'tip-1' } as never)
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={r => (resume = r)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('tip-1', true)
+
+    expect($replyReadySessionIds.get()).toEqual([])
+    expect($replyReadySessionProfiles.get()).toEqual({})
   })
 })

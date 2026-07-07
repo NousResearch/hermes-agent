@@ -6,6 +6,9 @@ import {
   getGlobalModelOptions,
   getHermesConfig,
   getHermesConfigDefaults,
+  getHermesConfigRecord,
+  getHermesConfigSchema,
+  getLogs,
   getProfiles,
   getSessionMessages,
   getStatus,
@@ -96,32 +99,48 @@ describe('Hermes REST session helpers', () => {
   it('gives the whole startup data burst the long timeout, not just profiles', async () => {
     api.mockResolvedValue({})
 
-    const bootCalls: [() => Promise<unknown>, string][] = [
-      [getHermesConfig, '/api/config'],
-      [getHermesConfigDefaults, '/api/config/defaults'],
-      [getGlobalModelInfo, '/api/model/info'],
-      [() => getGlobalModelOptions(), '/api/model/options'],
-      [getCronJobs, '/api/cron/jobs']
-    ]
-
-    for (const [call, path] of bootCalls) {
-      api.mockClear()
-      await call()
-      expect(api).toHaveBeenCalledWith(expect.objectContaining({ path, timeoutMs: 60_000 }))
-    }
-  })
-
-  it('keeps the liveness poll on the short default so a dead backend fails fast', async () => {
-    api.mockResolvedValue({})
-    api.mockClear()
-
+    await getCronJobs()
+    await getGlobalModelInfo()
+    await getGlobalModelOptions()
+    await getHermesConfig()
+    await getHermesConfigRecord()
+    await getHermesConfigDefaults()
+    await getHermesConfigSchema()
+    await getLogs({ file: 'gui', lines: 12 })
     await getStatus()
 
-    // /api/status must NOT carry the long startup timeout — it is the runtime
-    // liveness probe and has to fail quickly when the backend drops.
-    const call = api.mock.calls[0]?.[0] as { path: string; timeoutMs?: number }
-    expect(call.path).toBe('/api/status')
-    expect(call.timeoutMs).toBeUndefined()
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/cron/jobs',
+      timeoutMs: 60_000
+    })
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/model/info',
+      timeoutMs: 60_000
+    })
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/model/options',
+      timeoutMs: 60_000
+    })
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/config',
+      timeoutMs: 60_000
+    })
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/config/defaults',
+      timeoutMs: 60_000
+    })
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/config/schema',
+      timeoutMs: 60_000
+    })
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/logs?file=gui&lines=12',
+      timeoutMs: 60_000
+    })
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/status',
+      timeoutMs: 60_000
+    })
   })
 
   it('tags cross-profile message reads for Electron routing and backend lookup', async () => {

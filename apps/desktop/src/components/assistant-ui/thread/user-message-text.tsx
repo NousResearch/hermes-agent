@@ -2,6 +2,7 @@ import type { FC } from 'react'
 import { Fragment, useMemo } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
+import { hasRTLCharacters } from '@/lib/markdown-code'
 import { cn } from '@/lib/utils'
 
 // User messages should render the bare-minimum of markdown: backtick `code`
@@ -102,13 +103,19 @@ export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) =
     <span className={cn('block', className)} data-slot="aui_user-message-text">
       {top.map((segment, segmentIndex) => {
         if (segment.kind === 'fence') {
+          const hasRtl = hasRTLCharacters(segment.code)
+
           return (
             <pre
-              className="my-1.5 max-w-full overflow-x-auto rounded-md border border-border/45 bg-[color-mix(in_srgb,currentColor_5%,transparent)] px-2.5 py-2 font-mono text-[0.86em] leading-snug"
+              className={cn(
+                'my-1.5 max-w-full overflow-x-auto rounded-md border border-border/45 bg-[color-mix(in_srgb,currentColor_5%,transparent)] px-2.5 py-2 font-mono text-[0.86em] leading-snug',
+                hasRtl && 'whitespace-pre-wrap wrap-anywhere'
+              )}
+              data-bidi-plaintext={hasRtl ? '' : undefined}
               data-slot="aui_user-fence"
               key={`fence-${segmentIndex}`}
             >
-              <code className="block whitespace-pre">{segment.code}</code>
+              <code className={cn('block', hasRtl ? 'whitespace-pre-wrap' : 'whitespace-pre')}>{segment.code}</code>
             </pre>
           )
         }

@@ -31,7 +31,9 @@ function needsBidi(): boolean {
     needsSoftwareBidi =
       process.platform === 'win32' ||
       typeof process.env['WT_SESSION'] === 'string' || // WSL in Windows Terminal
-      process.env['TERM_PROGRAM'] === 'vscode' // VS Code integrated terminal (xterm.js)
+      process.env['TERM_PROGRAM'] === 'vscode' || // VS Code integrated terminal (xterm.js)
+      process.env['HERMES_DESKTOP_TERMINAL'] === '1' || // Hermes desktop terminal (xterm.js)
+      process.env['TERM_PROGRAM'] === 'Hermes'
   }
 
   return needsSoftwareBidi

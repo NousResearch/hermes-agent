@@ -20,6 +20,7 @@ import {
   $messages,
   $sessions,
   $yoloActive,
+  clearSessionReplyReady,
   sessionPinId,
   setActiveSessionId,
   setAwaitingResponse,
@@ -43,7 +44,7 @@ import {
 } from '@/store/session'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { isWatchWindow } from '@/store/windows'
-import type { SessionCreateResponse, SessionResumeResponse, UsageStats } from '@/types/hermes'
+import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
@@ -82,6 +83,14 @@ interface SessionActionsOptions {
     updater: (state: ClientSessionState) => ClientSessionState,
     storedSessionId?: string | null
   ) => ClientSessionState
+}
+
+function clearSessionReplyReadyMarkers(storedSessionId: string, session?: SessionInfo) {
+  clearSessionReplyReady(storedSessionId)
+
+  if (session) {
+    clearSessionReplyReady(session.id)
+  }
 }
 
 export function useSessionActions({
@@ -294,6 +303,7 @@ export function useSessionActions({
       // resume entry").
       setFreshDraftReady(false)
       clearNotifications()
+      clearSessionReplyReadyMarkers(storedSessionId)
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
       // Optimistically clear any prior resume-failure latch for this session:
@@ -346,6 +356,8 @@ export function useSessionActions({
       const storedForProfile = await resolveStoredSession(storedSessionId)
       const sessionProfile = storedForProfile?.profile
 
+      clearSessionReplyReadyMarkers(storedSessionId, storedForProfile)
+
       if (resumeRequestRef.current !== requestId) {
         return
       }
@@ -382,6 +394,7 @@ export function useSessionActions({
         } else {
           setFreshDraftReady(false)
           clearNotifications()
+          clearSessionReplyReadyMarkers(storedSessionId, stored)
           setSelectedStoredSessionId(storedSessionId)
           selectedStoredSessionIdRef.current = storedSessionId
           setActiveSessionId(cachedRuntimeId)
@@ -433,6 +446,7 @@ export function useSessionActions({
       const stored =
         $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
 
+      clearSessionReplyReadyMarkers(storedSessionId, stored)
       applyStoredSessionPreviewRuntimeInfo(stored)
 
       if (stored) {

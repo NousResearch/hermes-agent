@@ -2,6 +2,8 @@
 
 import { type ComponentType, lazy, type LazyExoticComponent, type ReactNode, Suspense } from 'react'
 
+import { parseHermesUiArtifact } from '@/lib/hermes-ui-artifacts'
+
 import { RichBoundary } from './rich-boundary'
 import type { RichFenceProps } from './types'
 
@@ -9,6 +11,7 @@ import type { RichFenceProps } from './types'
 // renderer is its own split chunk (mermaid pulls in the mermaid lib, svg pulls
 // in DOMPurify), loaded only when a block of that language actually appears.
 const LAZY_FENCE: Record<string, LazyExoticComponent<ComponentType<RichFenceProps>>> = {
+  'hermes-ui': lazy(() => import('./hermes-ui-artifact')),
   mermaid: lazy(() => import('./mermaid-embed')),
   svg: lazy(() => import('./svg-embed'))
 }
@@ -23,9 +26,14 @@ interface RichCodeBlockProps extends RichFenceProps {
 }
 
 export function RichCodeBlock({ code, fallback, language, streaming }: RichCodeBlockProps) {
-  const Renderer = language ? LAZY_FENCE[language.toLowerCase()] : undefined
+  const normalizedLanguage = language?.toLowerCase()
+  const Renderer = normalizedLanguage ? LAZY_FENCE[normalizedLanguage] : undefined
 
   if (!Renderer) {
+    return <>{fallback}</>
+  }
+
+  if (normalizedLanguage === 'hermes-ui' && !parseHermesUiArtifact(code).ok) {
     return <>{fallback}</>
   }
 

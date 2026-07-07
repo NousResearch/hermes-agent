@@ -4,16 +4,26 @@ import type { SessionInfo } from '@/types/hermes'
 
 import {
   $activeSessionId,
+  $attentionProfileCounts,
   $attentionSessionIds,
   $connection,
+  $cronSessions,
   $currentCwd,
+  $messagingSessions,
+  $replyReadySessionIds,
+  $replyReadySessionProfiles,
+  $sessions,
   $workingSessionIds,
   applyConfiguredDefaultProjectDir,
+  clearSessionNotifications,
+  clearSessionReplyReady,
   getRecentlySettledSessionIds,
+  isOpenableSessionListRow,
   mergeSessionPage,
   sessionPinId,
   setCurrentCwd,
   setSessionAttention,
+  setSessionReplyReady,
   setSessionWorking,
   workspaceCwdForNewSession
 } from './session'
@@ -38,6 +48,15 @@ const session = (over: Partial<SessionInfo>): SessionInfo => ({
 })
 
 describe('setSessionAttention', () => {
+  afterEach(() => {
+    $attentionSessionIds.set([])
+    $replyReadySessionIds.set([])
+    $replyReadySessionProfiles.set({})
+    $sessions.set([])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+  })
+
   it('adds and removes a session id without duplicating it', () => {
     $attentionSessionIds.set([])
 
@@ -63,6 +82,155 @@ describe('setSessionAttention', () => {
     setSessionAttention('missing', false)
     expect($attentionSessionIds.get()).toEqual([])
   })
+
+  it('derives stable unread counts by profile without exposing full session arrays to the rail', () => {
+    $sessions.set([
+      session({ id: 's1', profile: 'film-maker', title: 'Waiting one' }),
+      session({ id: 's2', profile: 'film-maker', title: 'Waiting two' }),
+      session({ id: 's3', profile: 'default', title: 'Idle default' })
+    ])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $attentionSessionIds.set(['s1'])
+    $replyReadySessionIds.set(['s2'])
+    $replyReadySessionProfiles.set({})
+
+    const first = $attentionProfileCounts.get()
+
+    expect(first).toEqual({ 'film-maker': 2 })
+
+    $sessions.set([
+      session({ id: 's1', profile: 'film-maker', title: 'Waiting one renamed' }),
+      session({ id: 's2', profile: 'film-maker', title: 'Waiting two renamed' }),
+      session({ id: 's3', profile: 'default', title: 'Idle default renamed' })
+    ])
+
+    expect($attentionProfileCounts.get()).toBe(first)
+  })
+
+  it('counts reply-ready profile hints before that profile is loaded', () => {
+    $sessions.set([])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $attentionSessionIds.set([])
+    $replyReadySessionIds.set(['fresh-session'])
+    $replyReadySessionProfiles.set({ 'fresh-session': 'film-maker' })
+
+    expect($attentionProfileCounts.get()).toEqual({ 'film-maker': 1 })
+  })
+
+  it('counts loaded reply-ready rows under their visible profile', () => {
+    $sessions.set([session({ id: 'fresh-session', profile: 'film-maker' })])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $attentionSessionIds.set([])
+    $replyReadySessionIds.set(['fresh-session'])
+    $replyReadySessionProfiles.set({})
+
+    expect($attentionProfileCounts.get()).toEqual({ 'film-maker': 1 })
+  })
+
+  it('resolves attention and reply-ready markers through session aliases', () => {
+    $sessions.set([session({ id: 'tip-2', _lineage_root_id: 'root-1', profile: 'film-maker' })])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $attentionSessionIds.set(['root-1'])
+    $replyReadySessionIds.set([])
+    $replyReadySessionProfiles.set({})
+
+    expect($attentionProfileCounts.get()).toEqual({ 'film-maker': 1 })
+  })
+})
+
+describe('setSessionReplyReady', () => {
+  afterEach(() => {
+    $sessions.set([])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $workingSessionIds.set([])
+    $replyReadySessionIds.set([])
+    $replyReadySessionProfiles.set({})
+    localStorage.removeItem('hermes.desktop.replyReadySessionIds')
+    localStorage.removeItem('hermes.desktop.replyReadySessionProfiles')
+
+    for (const id of getRecentlySettledSessionIds(Number.MAX_SAFE_INTEGER)) {
+      void id
+    }
+  })
+
+  it('tracks finished sessions waiting for the next user reply', () => {
+    $replyReadySessionIds.set([])
+    $replyReadySessionProfiles.set({})
+
+    setSessionReplyReady('s1', true, 'film-maker')
+    setSessionReplyReady('s1', true, 'film-maker')
+    expect($replyReadySessionIds.get()).toEqual(['s1'])
+    expect($replyReadySessionProfiles.get()).toEqual({ s1: 'film-maker' })
+
+    setSessionReplyReady('s2', true, 'default')
+    expect($replyReadySessionIds.get()).toEqual(['s1', 's2'])
+
+    setSessionReplyReady('s1', false)
+    expect($replyReadySessionIds.get()).toEqual(['s2'])
+    expect($replyReadySessionProfiles.get()).toEqual({ s2: 'default' })
+
+    $replyReadySessionIds.set([])
+    $replyReadySessionProfiles.set({})
+  })
+
+  it('does not persist reply-ready markers across app restarts', () => {
+    setSessionReplyReady('s1', true, 'film-maker')
+
+    expect(localStorage.getItem('hermes.desktop.replyReadySessionIds')).toBeNull()
+    expect(localStorage.getItem('hermes.desktop.replyReadySessionProfiles')).toBeNull()
+  })
+
+  it('shows a rail badge for a finished turn using its profile hint before its row is visible', () => {
+    $sessions.set([])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $workingSessionIds.set([])
+    $replyReadySessionIds.set([])
+    $replyReadySessionProfiles.set({})
+
+    setSessionWorking('bg-session', true, 'film-maker')
+    setSessionWorking('bg-session', false)
+
+    expect($replyReadySessionIds.get()).toEqual(['bg-session'])
+    expect($attentionProfileCounts.get()).toEqual({ 'film-maker': 1 })
+  })
+
+  it('clears reply-ready markers by live id, stored id, or lineage root', () => {
+    $sessions.set([session({ id: 'tip-2', _lineage_root_id: 'root-1', profile: 'film-maker' })])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $replyReadySessionIds.set(['root-1'])
+    $replyReadySessionProfiles.set({ 'root-1': 'film-maker' })
+
+    clearSessionReplyReady('tip-2')
+
+    expect($replyReadySessionIds.get()).toEqual([])
+    expect($replyReadySessionProfiles.get()).toEqual({})
+    expect($attentionProfileCounts.get()).toEqual({})
+  })
+
+  it('clears all visible notification aliases for a session', () => {
+    const current = session({ id: 'tip-2', _lineage_root_id: 'root-1', profile: 'film-maker' })
+
+    $sessions.set([current])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $attentionSessionIds.set(['tip-2', 'root-1'])
+    $replyReadySessionIds.set(['root-1'])
+    $replyReadySessionProfiles.set({ 'root-1': 'film-maker' })
+
+    clearSessionNotifications(current)
+
+    expect($attentionSessionIds.get()).toEqual([])
+    expect($replyReadySessionIds.get()).toEqual([])
+    expect($replyReadySessionProfiles.get()).toEqual({})
+    expect($attentionProfileCounts.get()).toEqual({})
+  })
 })
 
 describe('sessionPinId', () => {
@@ -74,6 +242,17 @@ describe('sessionPinId', () => {
     // After auto-compression the entry surfaces under a fresh tip id but keeps
     // the original root — pinning on the root keeps the pin stable.
     expect(sessionPinId(session({ id: 'tip', _lineage_root_id: 'root' }))).toBe('root')
+  })
+})
+
+describe('isOpenableSessionListRow', () => {
+  it('hides compression-ended ancestors from openable sidebar lists', () => {
+    expect(isOpenableSessionListRow(session({ end_reason: 'compression' }))).toBe(false)
+  })
+
+  it('keeps normal and manually-ended sessions openable', () => {
+    expect(isOpenableSessionListRow(session({ end_reason: null }))).toBe(true)
+    expect(isOpenableSessionListRow(session({ end_reason: 'user' }))).toBe(true)
   })
 })
 
@@ -162,6 +341,19 @@ describe('mergeSessionPage', () => {
     expect(merged.map(s => s.id)).toEqual(['tip-5'])
     // The new tip comes from the server payload.
     expect(merged.find(s => s.id === 'tip-5')?._lineage_root_id).toBe('root')
+  })
+
+  it('does not preserve a stale compression-ended row from the keep set', () => {
+    // Repro: a row can be pinned while it is the live tip, then auto-compression
+    // turns it into an ended parent. The backend now returns the projected
+    // continuation tip, but the old pinned id in the keep set must not keep the
+    // ended parent visible as a second row that opens the same conversation.
+    const previous = [session({ end_reason: 'compression', id: 'tip-4' })] as SessionInfo[]
+    const incoming = [session({ id: 'tip-5', _lineage_root_id: 'root' })] as SessionInfo[]
+
+    const merged = mergeSessionPage(previous, incoming, ['tip-4'])
+
+    expect(merged.map(s => s.id)).toEqual(['tip-5'])
   })
 
   it('preserves an unrelated pinned session even when lineage dedup is active', () => {

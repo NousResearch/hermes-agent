@@ -15,12 +15,28 @@ vi.mock('@/lib/storage', () => ({
       storage.set(key, value)
     }
   },
+  persistStringArray: (key: string, value: string[]) => {
+    storage.set(key, JSON.stringify(value))
+  },
+  persistStringRecord: (key: string, value: Record<string, string>) => {
+    storage.set(key, JSON.stringify(value))
+  },
   storedBoolean: (key: string, fallback: boolean) => {
     const value = storage.get(key)
 
     return value === undefined ? fallback : value === 'true'
   },
-  storedString: (key: string) => storage.get(key) ?? null
+  storedString: (key: string) => storage.get(key) ?? null,
+  storedStringArray: (key: string) => {
+    const value = storage.get(key)
+
+    return value ? JSON.parse(value) : []
+  },
+  storedStringRecord: (key: string) => {
+    const value = storage.get(key)
+
+    return value ? JSON.parse(value) : {}
+  }
 }))
 
 const notifySpy = vi.fn()
@@ -317,6 +333,25 @@ describe('applyUpdates terminal state', () => {
 
     expect($updateApply.get().stage).toBe('manual')
     expect($updateApply.get().command).toBe('hermes update')
+    expect($updateOverlayOpen.get()).toBe(true)
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('lands on a closeable dirty state when local checkout changes would be overwritten by update', async () => {
+    applyMock.mockResolvedValue({
+      ok: false,
+      dirty: true,
+      error: 'dirty-working-tree',
+      message: 'Commit or stash local changes first.'
+    })
+
+    const result = await applyUpdates()
+
+    expect(result.dirty).toBe(true)
+    expect($updateApply.get().applying).toBe(false)
+    expect($updateApply.get().stage).toBe('dirty')
+    expect($updateApply.get().error).toBe('dirty-working-tree')
+    expect($updateApply.get().message).toMatch(/Commit or stash/)
     expect($updateOverlayOpen.get()).toBe(true)
     expect(notifySpy).not.toHaveBeenCalled()
   })

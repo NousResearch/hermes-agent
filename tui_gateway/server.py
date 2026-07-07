@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -37,6 +37,7 @@ from tui_gateway.transport import (
 )
 
 logger = logging.getLogger(__name__)
+_WATCHDOG_THREAD = threading.Thread
 
 _hermes_home = get_hermes_home()
 load_hermes_dotenv(
@@ -54,6 +55,9 @@ load_hermes_dotenv(
 # Activity — exactly what was missing when the voice-mode turns started
 # exiting the gateway mid-TTS.
 _CRASH_LOG = os.path.join(_hermes_home, "logs", "tui_gateway_crash.log")
+_TURN_WATCHDOG_LOG = os.path.join(_hermes_home, "logs", "turn-watchdog.jsonl")
+_TURN_WATCHDOG_LOG_LOCK = threading.Lock()
+_TURN_WATCHDOG_DELTA_LAST: dict[str, float] = {}
 
 
 def _panic_hook(exc_type, exc_value, exc_tb):
@@ -1054,10 +1058,32 @@ def write_json(obj: dict) -> bool:
 
 
 def _emit(event: str, sid: str, payload: dict | None = None):
+    _record_turn_watchdog_event(sid, event, payload)
+    _mark_turn_progress(sid, event)
     params = {"type": event, "session_id": sid}
     if payload is not None:
         params["payload"] = payload
     write_json({"jsonrpc": "2.0", "method": "event", "params": params})
+
+
+def _emit_diagnostic_event(
+    sid: str,
+    *,
+    component: str,
+    event: str,
+    message: str,
+    severity: str = "info",
+    details: dict | None = None,
+) -> None:
+    payload = {
+        "component": component,
+        "event": event,
+        "message": message,
+        "severity": severity,
+    }
+    if details:
+        payload["details"] = details
+    _emit("diagnostic.event", sid, payload)
 
 
 def _emit_approval_request(sid: str, data: dict | None) -> None:
@@ -1088,6 +1114,24 @@ def _status_update(sid: str, kind: str, text: str | None = None):
 
         if COMPACTION_STATUS_MARKER in body:
             out_kind = "compacting"
+    if out_kind == "compacting":
+        session = _sessions.get(sid) or {}
+        now = time.time()
+        session["compression_started_at"] = now
+        session["compression_last_heartbeat_at"] = now
+        session["compression_status_text"] = body
+        _emit_diagnostic_event(
+            sid,
+            component="compression",
+            event="start",
+            message="Context compression started",
+            details={
+                "session_id": sid,
+                "session_key": session.get("session_key") or "",
+                "cwd": session.get("cwd") or "",
+                "status": body,
+            },
+        )
     _emit("status.update", sid, {"kind": out_kind, "text": body})
 
 
@@ -1662,6 +1706,8 @@ def _ensure_session_db_row(session: dict) -> None:
     parent_session_id = session.get("parent_session_id") or None
     if parent_session_id:
         model_config["_branched_from"] = parent_session_id
+    if session.get("continued_from_dropoff"):
+        model_config["_continued_from_dropoff"] = True
     try:
         db.create_session(
             key,
@@ -4859,6 +4905,111 @@ def _inflight_text(value: Any) -> str:
     return _content_display_text(value).strip()
 
 
+def _clip_dropoff_text(value: Any, limit: int = 1200) -> str:
+    text = _content_display_text(value).strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()}…"
+
+
+def _build_dropoff_seed(
+    session: dict,
+    pending_prompt: Any = "",
+    error_message: str = "",
+    recall_hits: list[dict] | None = None,
+) -> list[dict]:
+    with session["history_lock"]:
+        history = [dict(msg) for msg in (session.get("history") or [])]
+
+    recent_lines: list[str] = []
+    for msg in history[-10:]:
+        role = str(msg.get("role") or "user")
+        if role not in {"assistant", "system", "user"}:
+            continue
+        text = _clip_dropoff_text(msg.get("content"), 1000)
+        if text:
+            recent_lines.append(f"- {role}: {text}")
+
+    agent = session.get("agent")
+    model = str(getattr(agent, "model", "") or "") if agent is not None else ""
+    pending_note = "The user's triggering prompt will be submitted again after this continuation starts."
+    if _clip_dropoff_text(pending_prompt, 240):
+        pending_note = "The user's triggering prompt is intentionally not duplicated here; it will be replayed next."
+
+    sections = [
+        "Hermes continued this chat automatically because the previous context was too large and compression was exhausted.",
+        f"Parent session: {session.get('session_key') or ''}",
+        f"Workspace: {_session_cwd(session)}",
+        f"Model: {model or _resolve_model()}",
+        f"Recovery reason: {_clip_dropoff_text(error_message, 500) or 'context compression exhausted'}",
+        pending_note,
+        "Recent transcript context:",
+        "\n".join(recent_lines) if recent_lines else "- No recent transcript text was available.",
+    ]
+    if recall_hits:
+        recall_lines = []
+        for hit in recall_hits[:3]:
+            source = hit.get("source_path") or hit.get("id") or "continuity"
+            snippet = _clip_dropoff_text(hit.get("snippet"), 500)
+            if snippet:
+                recall_lines.append(f"- [{hit.get('id')}] {source}: {snippet}")
+        if recall_lines:
+            sections.extend(["Retrieved continuity context:", "\n".join(recall_lines)])
+
+    return [{"role": "system", "content": "\n\n".join(part for part in sections if part)}]
+
+
+def _continuity_store():
+    from hermes_cli.context_continuity import ContinuityStore
+
+    return ContinuityStore()
+
+
+def _dropoff_record(
+    session: dict,
+    *,
+    child_session_id: str,
+    error_message: str,
+    parent_session_id: str,
+    pending_prompt: Any,
+) -> dict:
+    from hermes_cli.context_continuity import (
+        prompt_hash,
+        referenced_files,
+        summarize_recent,
+    )
+
+    with session["history_lock"]:
+        history = [dict(msg) for msg in (session.get("history") or [])]
+        queued = dict(session.get("queued_prompt") or {})
+        inflight = dict(session.get("inflight_turn") or {})
+
+    recent_summary = summarize_recent(history, limit=8)
+    cwd = _session_cwd(session)
+
+    return {
+        "child_session_id": child_session_id,
+        "cwd": cwd,
+        "decisions": [],
+        "error": error_message,
+        "files": referenced_files(history, cwd=cwd),
+        "inflight": {
+            "assistant": _clip_dropoff_text(inflight.get("assistant"), 1000),
+            "streaming": bool(inflight.get("streaming")),
+            "user": _clip_dropoff_text(inflight.get("user"), 1000),
+        },
+        "model": str(getattr(session.get("agent"), "model", "") or ""),
+        "open_tasks": [],
+        "parent_session_id": parent_session_id,
+        "pending_prompt_hash": prompt_hash(pending_prompt),
+        "prompt_hash": prompt_hash(pending_prompt),
+        "queued_prompt": _clip_dropoff_text(queued.get("text"), 2000),
+        "recent_summary": recent_summary,
+        "source": session.get("source") or "tui",
+        "trigger": error_message or "context compression exhausted",
+    }
+
+
 def _start_inflight_turn(session: dict, text: Any) -> None:
     now = time.time()
     session["inflight_turn"] = {
@@ -5058,6 +5209,7 @@ def _(rid, params: dict) -> dict:
             "active_session_lease": lease,
             "cols": cols,
             "created_at": now,
+            "continued_from_dropoff": is_truthy_value(params.get("continued_from_dropoff", False)),
             "edit_snapshots": {},
             "explicit_cwd": explicit_cwd,
             "history": history,
@@ -5130,6 +5282,146 @@ def _(rid, params: dict) -> dict:
             },
         },
     )
+
+
+@method("session.continue_from_dropoff")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+
+    parent_session_id = str(params.get("parent_session_id") or session.get("session_key") or "").strip()
+    if not parent_session_id:
+        return _err(rid, 4006, "parent_session_id required")
+
+    pending_prompt = params.get("pending_prompt") or params.get("text") or ""
+    error_message = str(params.get("error") or params.get("message") or "").strip()
+    store = _continuity_store()
+    try:
+        recall_hits = store.search(
+            f"{error_message}\n{_clip_dropoff_text(pending_prompt, 1000)}",
+            cwd=_session_cwd(session),
+            limit=3,
+            timeout_s=0.2,
+        )
+    except Exception:
+        recall_hits = []
+    seed = _build_dropoff_seed(
+        session,
+        pending_prompt=pending_prompt,
+        error_message=error_message,
+        recall_hits=recall_hits,
+    )
+
+    create_params = {
+        "cols": int(params.get("cols") or session.get("cols") or 80),
+        "messages": seed,
+        "parent_session_id": parent_session_id,
+        "source": params.get("source") or session.get("source") or "tui",
+        "continued_from_dropoff": True,
+    }
+
+    for key in ("cwd", "profile", "model", "provider", "reasoning_effort"):
+        value = params.get(key)
+        if value:
+            create_params[key] = value
+
+    override = session.get("model_override")
+    if isinstance(override, dict):
+        if "model" not in create_params and override.get("model"):
+            create_params["model"] = override.get("model")
+        if "provider" not in create_params and override.get("provider"):
+            create_params["provider"] = override.get("provider")
+
+    if params.get("fast"):
+        create_params["fast"] = True
+
+    created = _methods["session.create"](rid, create_params)
+    if created.get("error"):
+        return created
+
+    result = dict(created.get("result") or {})
+    result["continued_from_session_id"] = parent_session_id
+    result["dropoff_message_count"] = len(seed)
+    child_session_id = str(result.get("stored_session_id") or result.get("session_id") or "")
+    if child_session_id:
+        try:
+            record = store.record_dropoff(
+                _dropoff_record(
+                    session,
+                    child_session_id=child_session_id,
+                    error_message=error_message,
+                    parent_session_id=parent_session_id,
+                    pending_prompt=pending_prompt,
+                )
+            )
+            result["continuity_record_id"] = record.get("id")
+            result["pending_prompt_hash"] = record.get("prompt_hash")
+        except Exception as exc:
+            # Recovery must not fail just because diagnostics/recall storage is
+            # unavailable. Surface the warning to logs and continue the child.
+            print(
+                f"[tui_gateway] continuity ledger write failed: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+
+    return _ok(rid, result)
+
+
+@method("continuity.status")
+def _(rid, params: dict) -> dict:
+    try:
+        status = _continuity_store().status()
+    except Exception as exc:
+        return _err(rid, 5011, f"continuity status failed: {exc}")
+    return _ok(rid, status)
+
+
+@method("continuity.search")
+def _(rid, params: dict) -> dict:
+    query = str(params.get("query") or "").strip()
+    cwd = str(params.get("cwd") or "").strip()
+    try:
+        limit = int(params.get("limit") or 5)
+    except (TypeError, ValueError):
+        limit = 5
+    try:
+        timeout_s = float(params.get("timeout_s") or 0.5)
+    except (TypeError, ValueError):
+        timeout_s = 0.5
+    hits = _continuity_store().search(query, cwd=cwd, limit=limit, timeout_s=timeout_s)
+    return _ok(rid, {"hits": hits, "query": query})
+
+
+@method("continuity.settings.get")
+def _(rid, params: dict) -> dict:
+    status = _continuity_store().status()
+    return _ok(rid, status.get("settings") or {})
+
+
+@method("continuity.settings.set")
+def _(rid, params: dict) -> dict:
+    patch = params.get("settings") if isinstance(params.get("settings"), dict) else params
+    settings = _continuity_store().save_settings(dict(patch or {}))
+    return _ok(
+        rid,
+        {
+            "obsidian_allowlisted_folders": settings.normalized_allowlist(),
+            "obsidian_last_indexed_at": settings.obsidian_last_indexed_at,
+            "obsidian_mirror_enabled": settings.obsidian_mirror_enabled,
+            "obsidian_read_enabled": settings.obsidian_read_enabled,
+            "obsidian_vault_path": settings.obsidian_vault_path,
+        },
+    )
+
+
+@method("continuity.obsidian.index")
+def _(rid, params: dict) -> dict:
+    try:
+        result = _continuity_store().index_obsidian(timeout_s=float(params.get("timeout_s") or 2.0))
+    except Exception as exc:
+        return _err(rid, 5012, f"obsidian index failed: {exc}")
+    return _ok(rid, result)
 
 
 @method("session.list")
@@ -8554,12 +8846,392 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
+def _compression_watchdog_timeout_seconds() -> float:
+    # Desktop users experience auto-compaction as a blocking "Summarizing
+    # thread" turn. If the auxiliary compression call has not completed quickly,
+    # continuity recovery is more reliable than making the user stare at a
+    # non-terminal busy state for minutes.
+    raw = os.environ.get("HERMES_COMPRESSION_WATCHDOG_SECONDS", "12")
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 12.0
+
+
+def _turn_idle_watchdog_timeout_seconds() -> float:
+    # Normal turns can legitimately wait on user approvals, long tools, or
+    # provider-side work. The out-of-band live watchdog records and alerts on
+    # silence without killing work. Keep in-band interruption opt-in only.
+    raw = os.environ.get("HERMES_TURN_IDLE_WATCHDOG_SECONDS", "0")
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _record_turn_watchdog_event(
+    sid: str, event: str, payload: dict | None = None
+) -> None:
+    if not sid:
+        return
+    now = time.time()
+    if event == "message.delta":
+        last = _TURN_WATCHDOG_DELTA_LAST.get(sid, 0.0)
+        if now - last < 5.0:
+            return
+        _TURN_WATCHDOG_DELTA_LAST[sid] = now
+    elif event not in {
+        "message.start",
+        "message.complete",
+        "status.update",
+        "diagnostic.event",
+        "error",
+        "approval.request",
+        "tool.start",
+        "tool.complete",
+        "tool.error",
+        "review.summary",
+    } and not event.startswith(("tool.", "session.")):
+        return
+
+    session = _sessions.get(sid) or {}
+    safe_payload: dict[str, Any] = {}
+    if isinstance(payload, dict):
+        for key in ("kind", "status", "component", "event", "message", "idle_timeout", "compression_exhausted"):
+            value = payload.get(key)
+            if value is not None:
+                safe_payload[key] = value
+        details = payload.get("details")
+        if isinstance(details, dict):
+            safe_payload["details"] = {
+                key: details.get(key)
+                for key in (
+                    "elapsed_seconds",
+                    "idle_seconds",
+                    "timeout_seconds",
+                    "last_progress_event",
+                    "profile",
+                    "mode",
+                )
+                if details.get(key) is not None
+            }
+
+    row = {
+        "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        "monotonic": round(now, 3),
+        "event": event,
+        "session_id": sid,
+        "session_key": session.get("session_key") or "",
+        "cwd": session.get("cwd") or "",
+        "running": bool(session.get("running")),
+        "terminal_emitted": bool(session.get("_turn_terminal_emitted")),
+        "turn_started_at": session.get("turn_started_at"),
+        "turn_last_progress_at": session.get("turn_last_progress_at"),
+        "turn_last_progress_event": session.get("turn_last_progress_event") or "",
+        "compression_started_at": session.get("compression_started_at"),
+        "payload": safe_payload,
+    }
+    try:
+        os.makedirs(os.path.dirname(_TURN_WATCHDOG_LOG), exist_ok=True)
+        line = json.dumps(row, ensure_ascii=False, sort_keys=True)
+        with _TURN_WATCHDOG_LOG_LOCK:
+            with open(_TURN_WATCHDOG_LOG, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def _mark_turn_progress(sid: str, event: str) -> None:
+    if event in {"diagnostic.event", "session.info", "message.complete"}:
+        return
+    session = _sessions.get(sid)
+    if not session:
+        return
+    try:
+        with session["history_lock"]:
+            if not session.get("running") or session.get("_turn_terminal_emitted"):
+                return
+            session["turn_last_progress_at"] = time.time()
+            session["turn_last_progress_event"] = event
+    except Exception:
+        pass
+
+
+def _turn_terminal_emitted(session: dict) -> bool:
+    with session["history_lock"]:
+        if session.get("_turn_terminal_emitted"):
+            return False
+        session["_turn_terminal_emitted"] = True
+        return True
+
+
+def _clear_compression_tracking(session: dict) -> None:
+    session.pop("compression_started_at", None)
+    session.pop("compression_last_heartbeat_at", None)
+    session.pop("compression_status_text", None)
+
+
+def _clear_turn_watchdog_tracking(session: dict) -> None:
+    session.pop("turn_started_at", None)
+    session.pop("turn_last_progress_at", None)
+    session.pop("turn_last_progress_event", None)
+
+
+def _emit_turn_diagnostic(
+    sid: str,
+    session: dict,
+    event: str,
+    message: str,
+    *,
+    severity: str = "info",
+    details: dict | None = None,
+) -> None:
+    started_at = session.get("turn_started_at")
+    base_details = {
+        "session_id": sid,
+        "session_key": session.get("session_key") or "",
+        "cwd": session.get("cwd") or "",
+    }
+    if started_at:
+        base_details["elapsed_seconds"] = round(max(0.0, time.time() - float(started_at)), 3)
+    if details:
+        base_details.update(details)
+    _emit_diagnostic_event(
+        sid,
+        component="turn",
+        event=event,
+        message=message,
+        severity=severity,
+        details=base_details,
+    )
+
+
+def _emit_turn_idle_timeout_terminal(sid: str, session: dict, timeout_seconds: float) -> bool:
+    with session["history_lock"]:
+        last_progress_event = str(session.get("turn_last_progress_event") or "")
+        if (
+            not session.get("running")
+            or session.get("_turn_terminal_emitted")
+            or session.get("compression_started_at")
+            or last_progress_event == "approval.request"
+        ):
+            return False
+        session["_turn_terminal_emitted"] = True
+        session["_turn_cancel_requested"] = True
+        session["running"] = False
+        started_at = float(session.get("turn_started_at") or time.time())
+        last_progress_at = float(session.get("turn_last_progress_at") or started_at)
+        _clear_inflight_turn(session)
+    agent = session.get("agent")
+    if hasattr(agent, "interrupt"):
+        try:
+            agent.interrupt()
+        except Exception:
+            pass
+    elapsed = max(0.0, time.time() - started_at)
+    idle_elapsed = max(0.0, time.time() - last_progress_at)
+    message = (
+        "Hermes did not produce turn progress for "
+        f"{int(timeout_seconds)}s. The turn was stopped so the chat can continue."
+    )
+    logger.warning(
+        "turn idle watchdog timeout: sid=%s session_key=%s elapsed=%.1fs idle=%.1fs last_event=%s timeout=%.1fs",
+        sid,
+        session.get("session_key") or "",
+        elapsed,
+        idle_elapsed,
+        last_progress_event,
+        timeout_seconds,
+    )
+    _emit_turn_diagnostic(
+        sid,
+        session,
+        "idle_timeout",
+        message,
+        severity="error",
+        details={
+            "elapsed_seconds": round(elapsed, 3),
+            "idle_seconds": round(idle_elapsed, 3),
+            "timeout_seconds": timeout_seconds,
+            "last_progress_event": last_progress_event,
+        },
+    )
+    _emit(
+        "message.complete",
+        sid,
+        {
+            "text": message,
+            "status": "error",
+            "idle_timeout": True,
+            "retryable": True,
+            "usage": _get_usage(agent) if agent is not None else {},
+        },
+    )
+    try:
+        _emit("session.info", sid, _session_info(agent, session))
+    except Exception:
+        pass
+    return True
+
+
+def _emit_compression_timeout_terminal(sid: str, session: dict, timeout_seconds: float) -> bool:
+    with session["history_lock"]:
+        started_at = session.get("compression_started_at")
+        if not session.get("running") or not started_at or session.get("_turn_terminal_emitted"):
+            return False
+        session["_turn_terminal_emitted"] = True
+        session["_turn_cancel_requested"] = True
+        session["running"] = False
+        _clear_inflight_turn(session)
+    agent = session.get("agent")
+    if hasattr(agent, "interrupt"):
+        try:
+            agent.interrupt()
+        except Exception:
+            pass
+    elapsed = max(0.0, time.time() - float(started_at))
+    message = (
+        "Context compression did not finish within "
+        f"{int(timeout_seconds)}s. Continuing in a fresh session."
+    )
+    logger.warning(
+        "compression watchdog timeout: sid=%s session_key=%s elapsed=%.1fs timeout=%.1fs",
+        sid,
+        session.get("session_key") or "",
+        elapsed,
+        timeout_seconds,
+    )
+    _emit_diagnostic_event(
+        sid,
+        component="compression",
+        event="timeout",
+        message=message,
+        severity="error",
+        details={
+            "session_id": sid,
+            "session_key": session.get("session_key") or "",
+            "cwd": session.get("cwd") or "",
+            "elapsed_seconds": round(elapsed, 3),
+            "timeout_seconds": timeout_seconds,
+            "status": session.get("compression_status_text") or "",
+        },
+    )
+    _clear_compression_tracking(session)
+    _emit(
+        "message.complete",
+        sid,
+        {
+            "text": message,
+            "status": "error",
+            "compression_exhausted": True,
+            "usage": _get_usage(agent) if agent is not None else {},
+        },
+    )
+    try:
+        _emit("session.info", sid, _session_info(agent, session))
+    except Exception:
+        pass
+    return True
+
+
+def _start_compression_watchdog(sid: str, session: dict) -> threading.Event | None:
+    timeout_seconds = _compression_watchdog_timeout_seconds()
+    if timeout_seconds <= 0:
+        return None
+    stop = threading.Event()
+    heartbeat_seconds = min(30.0, max(5.0, timeout_seconds / 4.0))
+
+    def watch() -> None:
+        while not stop.wait(1.0):
+            with session["history_lock"]:
+                if not session.get("running") or session.get("_turn_terminal_emitted"):
+                    return
+                started_at = session.get("compression_started_at")
+                last_heartbeat = float(session.get("compression_last_heartbeat_at") or 0)
+            if not started_at:
+                continue
+            now = time.time()
+            elapsed = now - float(started_at)
+            if elapsed >= timeout_seconds:
+                _emit_compression_timeout_terminal(sid, session, timeout_seconds)
+                return
+            if now - last_heartbeat >= heartbeat_seconds:
+                with session["history_lock"]:
+                    session["compression_last_heartbeat_at"] = now
+                _emit_diagnostic_event(
+                    sid,
+                    component="compression",
+                    event="heartbeat",
+                    message="Context compression is still running",
+                    details={
+                        "session_id": sid,
+                        "session_key": session.get("session_key") or "",
+                        "cwd": session.get("cwd") or "",
+                        "elapsed_seconds": round(elapsed, 3),
+                        "timeout_seconds": timeout_seconds,
+                    },
+                )
+
+    _WATCHDOG_THREAD(target=watch, daemon=True).start()
+    return stop
+
+
+def _start_turn_idle_watchdog(sid: str, session: dict) -> threading.Event | None:
+    timeout_seconds = _turn_idle_watchdog_timeout_seconds()
+    if timeout_seconds <= 0:
+        return None
+    stop = threading.Event()
+    heartbeat_seconds = min(30.0, max(10.0, timeout_seconds / 3.0))
+    last_reported = 0.0
+
+    def watch() -> None:
+        nonlocal last_reported
+        while not stop.wait(1.0):
+            with session["history_lock"]:
+                if not session.get("running") or session.get("_turn_terminal_emitted"):
+                    return
+                if session.get("compression_started_at"):
+                    continue
+                started_at = float(session.get("turn_started_at") or time.time())
+                last_progress_at = float(session.get("turn_last_progress_at") or started_at)
+                last_progress_event = str(session.get("turn_last_progress_event") or "")
+            now = time.time()
+            idle_elapsed = now - last_progress_at
+            if last_progress_event == "approval.request":
+                continue
+            if idle_elapsed >= timeout_seconds:
+                _emit_turn_idle_timeout_terminal(sid, session, timeout_seconds)
+                return
+            if idle_elapsed >= heartbeat_seconds and now - last_reported >= heartbeat_seconds:
+                last_reported = now
+                _emit_turn_diagnostic(
+                    sid,
+                    session,
+                    "idle_heartbeat",
+                    "Turn is still running without visible progress",
+                    details={
+                        "idle_seconds": round(idle_elapsed, 3),
+                        "timeout_seconds": timeout_seconds,
+                        "last_progress_event": last_progress_event,
+                    },
+                )
+
+    _WATCHDOG_THREAD(target=watch, daemon=True).start()
+    return stop
+
+
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
         session["attached_images"] = []
+        session["_turn_terminal_emitted"] = False
+        _clear_compression_tracking(session)
+        now = time.time()
+        session["turn_started_at"] = now
+        session["turn_last_progress_at"] = now
+        session["turn_last_progress_event"] = "prompt.submit"
         if not isinstance(session.get("inflight_turn"), dict):
             _start_inflight_turn(session, text)
     agent = session["agent"]
@@ -8575,7 +9247,10 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
+        compression_watchdog_stop = _start_compression_watchdog(sid, session)
+        turn_idle_watchdog_stop = _start_turn_idle_watchdog(sid, session)
         try:
+            _emit_turn_diagnostic(sid, session, "start", "Turn started")
             from tools.approval import (
                 reset_current_session_key,
                 set_current_session_key,
@@ -8705,7 +9380,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     run_kwargs["task_id"] = session["session_key"]
             except (TypeError, ValueError):
                 pass
+            _emit_turn_diagnostic(sid, session, "agent_call.start", "Agent call started")
             result = agent.run_conversation(run_message, **run_kwargs)
+            _emit_turn_diagnostic(sid, session, "agent_call.complete", "Agent call completed")
+            if session.get("_turn_terminal_emitted"):
+                return
             if "moa_one_shot_restore" in session:
                 _restore = session.pop("moa_one_shot_restore", None)
                 # Restore the model the user was on before the /moa one-shot.
@@ -8813,6 +9492,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 status = "complete"
 
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+            if isinstance(result, dict) and result.get("compression_exhausted"):
+                payload["compression_exhausted"] = True
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
             if status_note:
@@ -8820,8 +9501,41 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
+            compression_started_at = session.get("compression_started_at")
+            if not _turn_terminal_emitted(session):
+                return
+            if compression_started_at:
+                _emit_diagnostic_event(
+                    sid,
+                    component="compression",
+                    event="failure" if status == "error" else "success",
+                    message=(
+                        "Context compression failed"
+                        if status == "error"
+                        else "Context compression finished"
+                    ),
+                    severity="error" if status == "error" else "info",
+                    details={
+                        "session_id": sid,
+                        "session_key": session.get("session_key") or "",
+                        "cwd": session.get("cwd") or "",
+                        "elapsed_seconds": round(time.time() - float(compression_started_at), 3),
+                        "status": status,
+                        "compression_exhausted": bool(
+                            isinstance(result, dict) and result.get("compression_exhausted")
+                        ),
+                    },
+                )
+                _clear_compression_tracking(session)
             with session["history_lock"]:
                 _clear_inflight_turn(session)
+            _emit_turn_diagnostic(
+                sid,
+                session,
+                "complete",
+                "Turn completed",
+                details={"status": status},
+            )
             _emit("message.complete", sid, payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
@@ -8962,6 +9676,14 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             print(
                 f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True
             )
+            _emit_turn_diagnostic(
+                sid,
+                session,
+                "error",
+                "Turn raised an exception",
+                severity="error",
+                details={"error_type": type(e).__name__, "error": str(e)},
+            )
             _emit("error", sid, {"message": str(e)})
         finally:
             try:
@@ -8971,11 +9693,18 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 pass
             if home_token is not None:
                 reset_hermes_home_override(home_token)
+            if compression_watchdog_stop is not None:
+                compression_watchdog_stop.set()
+            if turn_idle_watchdog_stop is not None:
+                turn_idle_watchdog_stop.set()
             _clear_session_context(session_tokens)
+            _emit_turn_diagnostic(sid, session, "finally", "Turn cleanup finished")
             with session["history_lock"]:
                 session["running"] = False
                 session["last_active"] = time.time()
                 _clear_inflight_turn(session)
+                _clear_compression_tracking(session)
+                _clear_turn_watchdog_tracking(session)
             _emit("session.info", sid, _session_info(agent, session))
 
         # A user prompt that arrived mid-turn (interrupt + queue) wins over

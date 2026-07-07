@@ -14,15 +14,17 @@ interface QueuePanelProps {
   entries: QueuedPromptEntry[]
   onDelete: (id: string) => void
   onEdit: (entry: QueuedPromptEntry) => void
+  onSendAll: () => void
   onSendNow: (id: string) => void
 }
 
 const entryPreview = (entry: QueuedPromptEntry, c: Translations['composer']) =>
   entry.text.trim() || (entry.attachments.length > 0 ? c.attachmentOnly : c.emptyTurn)
 
-export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendNow }: QueuePanelProps) {
+export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendAll, onSendNow }: QueuePanelProps) {
   const { t } = useI18n()
   const c = t.composer
+  const sendAllLabel = busy ? c.queueSendAllNext : c.queueSendAll
 
   if (entries.length === 0) {
     return null
@@ -30,6 +32,18 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
 
   return (
     <StatusSection
+      accessory={
+        <Button
+          aria-label={sendAllLabel}
+          disabled={Boolean(editingId)}
+          onClick={onSendAll}
+          size="micro"
+          type="button"
+          variant="text"
+        >
+          {sendAllLabel}
+        </Button>
+      }
       icon={<Codicon className="text-muted-foreground/70" name="layers" size="0.8rem" />}
       label={c.queued(entries.length)}
     >

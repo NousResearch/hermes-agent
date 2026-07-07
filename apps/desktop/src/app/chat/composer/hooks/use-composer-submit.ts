@@ -4,7 +4,7 @@ import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { clearComposerAttachments, clearSessionDraft, type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
-import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
+import { enqueueQueuedPrompt } from '@/store/composer-queue'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
@@ -24,17 +24,21 @@ interface UseComposerSubmitArgs {
   editorRef: RefObject<HTMLDivElement | null>
   exitQueuedEdit: (action: 'cancel' | 'save') => boolean
   focusInput: () => void
+  implicitQueueDrainAllowed: () => boolean
   inputDisabled: boolean
   loadIntoComposer: (text: string, attachments: ComposerAttachment[]) => void
   onCancel: ChatBarProps['onCancel']
   onSteer: ChatBarProps['onSteer']
   onSubmit: ChatBarProps['onSubmit']
+  onSubmitAccepted?: () => void
+  onSubmitClarifyAnswer?: (answer: string) => Promise<boolean> | boolean
   queueCurrentDraft: () => boolean
   queueEdit: QueueEditState | null
-  queuedPrompts: QueuedPromptEntry[]
+  sendBlocked: boolean
   sessionId: string | null | undefined
   setComposerText: (value: string) => void
   stashAt: (scope: string | null, text?: string, attachments?: ComposerAttachment[]) => void
+  transformSubmitText?: (text: string) => string
 }
 
 /**
@@ -59,31 +63,43 @@ export function useComposerSubmit({
   editorRef,
   exitQueuedEdit,
   focusInput,
+  implicitQueueDrainAllowed,
   inputDisabled,
   loadIntoComposer,
   onCancel,
   onSteer,
   onSubmit,
+  onSubmitAccepted,
+  onSubmitClarifyAnswer,
   queueCurrentDraft,
   queueEdit,
-  queuedPrompts,
+  sendBlocked,
   sessionId,
   setComposerText,
-  stashAt
+  stashAt,
+  transformSubmitText
 }: UseComposerSubmitArgs) {
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-load + re-stash the draft so the words survive.
   const dispatchSubmit = (text: string, attachments?: ComposerAttachment[]) => {
     const submittedScope = activeQueueSessionKeyRef.current
     const submittedAttachments = attachments ?? []
+    const submittedText = transformSubmitText?.(text) ?? text
 
     const restore = () => {
       loadIntoComposer(text, submittedAttachments)
       stashAt(activeQueueSessionKeyRef.current, text, submittedAttachments)
     }
 
-    void Promise.resolve(attachments ? onSubmit(text, { attachments }) : onSubmit(text))
-      .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
+    void Promise.resolve(attachments ? onSubmit(submittedText, { attachments }) : onSubmit(submittedText))
+      .then(accepted => {
+        if (accepted === false) {
+          restore()
+        } else {
+          clearSessionDraft(submittedScope)
+          onSubmitAccepted?.()
+        }
+      })
       .catch(restore)
   }
 
@@ -92,6 +108,34 @@ export function useComposerSubmit({
   // while always calling the latest dispatchSubmit closure.
   const dispatchSubmitRef = useRef(dispatchSubmit)
   dispatchSubmitRef.current = dispatchSubmit
+
+  const dispatchClarifyAnswer = (text: string) => {
+    if (!onSubmitClarifyAnswer) {
+      return false
+    }
+
+    const submittedScope = activeQueueSessionKeyRef.current
+
+    const restore = () => {
+      loadIntoComposer(text, [])
+      stashAt(activeQueueSessionKeyRef.current, text, [])
+    }
+
+    clearDraft()
+
+    void Promise.resolve(onSubmitClarifyAnswer(text.trim()))
+      .then(accepted => {
+        if (accepted === false) {
+          restore()
+        } else {
+          clearSessionDraft(submittedScope)
+          onSubmitAccepted?.()
+        }
+      })
+      .catch(restore)
+
+    return true
+  }
 
   useEffect(
     () =>
@@ -132,7 +176,7 @@ export function useComposerSubmit({
 
     if (queueEdit) {
       exitQueuedEdit('save')
-    } else if (busy) {
+    } else if (sendBlocked) {
       // Slash commands should execute immediately even while the agent is
       // busy — they're client-side operations (/yolo, /skin, /new, /help,
       // etc.) or self-contained gateway RPCs (/status, /compress).  onSubmit
@@ -140,19 +184,24 @@ export function useComposerSubmit({
       // busy guard for commands that genuinely need an idle session (skill
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
-      if (!attachments.length && SLASH_COMMAND_RE.test(text.trim())) {
+      if (onSubmitClarifyAnswer && payloadPresent && !attachments.length && text.trim()) {
+        dispatchClarifyAnswer(text)
+      } else if (busy && !attachments.length && SLASH_COMMAND_RE.test(text.trim())) {
         triggerHaptic('submit')
         clearDraft()
         dispatchSubmit(text)
       } else if (payloadPresent) {
         queueCurrentDraft()
       } else {
-        // Stop button (the only way to reach here while busy with an empty
-        // composer — empty Enter is short-circuited in the keydown handler).
-        triggerHaptic('cancel')
-        void Promise.resolve(onCancel())
+        // Stop button (the only way to reach here while truly busy with an
+        // empty composer — empty Enter is short-circuited in the keydown
+        // handler). Compaction without payload has nothing to submit/cancel.
+        if (busy) {
+          triggerHaptic('cancel')
+          void Promise.resolve(onCancel())
+        }
       }
-    } else if (!payloadPresent && queuedPrompts.length > 0) {
+    } else if (!payloadPresent && implicitQueueDrainAllowed()) {
       void drainNextQueued()
     } else if (payloadPresent) {
       const submittedAttachments = cloneAttachments(attachments)
@@ -181,7 +230,7 @@ export function useComposerSubmit({
 
     void Promise.resolve(onSteer(text)).then(accepted => {
       if (!accepted && activeQueueSessionKey) {
-        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
+        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [], autoDrain: true })
       }
     })
   }

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
 import { ImageLightbox } from '@/components/chat/zoomable-image'
+import { useImageCopy } from '@/hooks/use-image-copy'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
 import { X } from '@/lib/icons'
@@ -15,6 +16,7 @@ interface ReferenceChipProps {
 // the shared image viewer (lightbox), with a remove affordance.
 export function ReferenceChip({ name, onRemove, src }: ReferenceChipProps) {
   const { t } = useI18n()
+  const { copyImage, copying } = useImageCopy(src)
   const { download, saving } = useImageDownload(src)
   const [viewing, setViewing] = useState(false)
 
@@ -37,7 +39,9 @@ export function ReferenceChip({ name, onRemove, src }: ReferenceChipProps) {
       <ImageLightbox
         alt={name}
         copy={t.desktop}
-        onClick={download}
+        copying={copying}
+        onCopy={copyImage}
+        onDownload={download}
         onOpenChange={setViewing}
         open={viewing}
         saving={saving}

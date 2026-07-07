@@ -21,6 +21,8 @@ import {
 } from '@/lib/generated-images'
 import { parseTodos } from '@/lib/todos'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $sessions, setSessionReplyReady } from '@/store/session'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
 import { setSessionTodos } from '@/store/todos'
@@ -32,6 +34,7 @@ import { completionErrorText, delegateTaskPayloads, STREAM_DELTA_FLUSH_MS } from
 
 interface MessageStreamOptions {
   activeSessionIdRef: MutableRefObject<string | null>
+  continueFromCompressionExhausted?: (sessionId: string, errorMessage: string) => Promise<void> | void
   hydrateFromStoredSession: (
     attempts?: number,
     storedSessionId?: string | null,
@@ -55,6 +58,7 @@ interface QueuedStreamDeltas {
 
 export function useMessageStream({
   activeSessionIdRef,
+  continueFromCompressionExhausted,
   hydrateFromStoredSession,
   queryClient,
   refreshHermesConfig,
@@ -463,6 +467,15 @@ export function useMessageStream({
         sessionId,
         title: translateNow('notifications.native.turnDoneTitle')
       })
+
+      const replyReadyId = completedState.storedSessionId ?? sessionId
+      const replyReadyProfile =
+        $sessions
+          .get()
+          .find(session => session.id === replyReadyId || session._lineage_root_id === replyReadyId || session.id === sessionId)
+          ?.profile ?? $activeGatewayProfile.get()
+
+      setSessionReplyReady(replyReadyId, true, replyReadyProfile)
     },
     [hydrateFromStoredSession, refreshSessions, updateSessionState]
   )
@@ -518,6 +531,7 @@ export function useMessageStream({
     appendReasoningDelta,
     activeSessionIdRef,
     compactedTurnRef,
+    continueFromCompressionExhausted,
     lastCwdInfoSessionRef,
     nativeSubagentSessionsRef,
     completeAssistantMessage,

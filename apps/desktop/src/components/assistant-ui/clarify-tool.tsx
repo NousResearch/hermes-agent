@@ -18,12 +18,11 @@ import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
-import { triggerHaptic } from '@/lib/haptics'
+import { respondToClarifyRequest } from '@/lib/clarify-response'
 import { Loader2, MessageQuestion } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $clarifyRequest, clearClarifyRequest } from '@/store/clarify'
+import { $clarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
-import { notifyError } from '@/store/notifications'
 
 import { selectMessageRunning } from './tool/fallback-model'
 
@@ -154,35 +153,18 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
   const respond = useCallback(
     async (answer: string) => {
-      if (!ready || !matchingRequest) {
-        notifyError(new Error(copy.notReady), copy.sendFailed)
-
-        return
-      }
-
-      if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed)
-
-        return
-      }
-
-      setSubmitting(true)
-
-      try {
-        await gateway.request<{ ok?: boolean }>('clarify.respond', {
-          request_id: matchingRequest.requestId,
-          answer
-        })
-        triggerHaptic('submit')
-        clearClarifyRequest(matchingRequest.requestId, matchingRequest.sessionId)
-        // The matching tool.complete will land shortly after, swapping this
-        // panel for the ToolFallback view above.
-      } catch (error) {
-        notifyError(error, copy.sendFailed)
-        setSubmitting(false)
-      }
+      await respondToClarifyRequest({
+        answer,
+        copy,
+        gateway,
+        onBeforeSend: () => setSubmitting(true),
+        onError: () => setSubmitting(false),
+        request: ready ? matchingRequest : null
+      })
+      // The matching tool.complete will land shortly after, swapping this panel
+      // for the ToolFallback view above.
     },
-    [copy.gatewayDisconnected, copy.notReady, copy.sendFailed, gateway, matchingRequest, ready]
+    [copy, gateway, matchingRequest, ready]
   )
 
   const trimmedDraft = draft.trim()
@@ -303,7 +285,9 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   return (
     <ClarifyShell className="grid gap-2 px-2.5 py-2">
       <div className="flex items-start gap-2">
-        <span className="flex-1 whitespace-pre-wrap font-medium leading-(--conversation-line-height)">{question}</span>
+        <span className="flex-1 whitespace-pre-wrap font-medium leading-(--conversation-line-height)" data-bidi-plaintext="">
+          {question}
+        </span>
         <MessageQuestion aria-hidden className="mt-px size-4 shrink-0 text-(--ui-text-tertiary)" />
       </div>
 
@@ -324,7 +308,9 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
                 type="button"
               >
                 <KeyBadge char={letterFor(index)} selected={selectedChoice === choice} />
-                <span className="flex-1 wrap-anywhere">{choice}</span>
+                <span className="flex-1 wrap-anywhere" data-bidi-plaintext="">
+                  {choice}
+                </span>
               </button>
             ))}
             {/* "Other" is an inline content-sizing field, not a separate view. */}
@@ -332,6 +318,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
               <KeyBadge char={letterFor(choices.length)} preview={otherFocused} selected={Boolean(trimmedDraft)} />
               <textarea
                 className={FREEFORM_INPUT_CLASS}
+                dir="auto"
                 disabled={submitting}
                 onBlur={() => setOtherFocused(false)}
                 onChange={event => onDraftChange(event.target.value)}
@@ -353,6 +340,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         ) : (
           <Textarea
             className={FREEFORM_INPUT_CLASS}
+            dir="auto"
             disabled={submitting}
             onChange={event => onDraftChange(event.target.value)}
             onKeyDown={handleTextareaKey}

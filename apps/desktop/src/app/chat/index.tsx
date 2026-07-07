@@ -22,6 +22,7 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { quickModelOptions, sessionTitle, toRuntimeMessage } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { cn } from '@/lib/utils'
+import { $compactionActive } from '@/store/compaction'
 import type { ComposerAttachment } from '@/store/composer'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $gatewaySwapTarget } from '@/store/profile'
@@ -172,6 +173,7 @@ interface ChatRuntimeBoundaryProps {
   onEdit: (message: AppendMessage) => Promise<void>
   onReload: (parentId: string | null) => Promise<void>
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
+  runtimeKey: string
   /** Route points at an unloaded session — render empty until resume swaps in
    *  the new transcript, so the previous session's messages don't linger. */
   suppressMessages: boolean
@@ -196,6 +198,7 @@ function ChatRuntimeBoundary({
   onEdit,
   onReload,
   onThreadMessagesChange,
+  runtimeKey,
   suppressMessages
 }: ChatRuntimeBoundaryProps) {
   const storeMessages = useStore($messages)
@@ -248,7 +251,7 @@ function ChatRuntimeBoundary({
     onEdit,
     onCancel: async () => onCancel(),
     onReload
-  })
+  }, { resetKey: runtimeKey })
 
   return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
 }
@@ -286,6 +289,7 @@ export function ChatView({
   const activeSessionId = useStore($activeSessionId)
   const awaitingResponse = useStore($awaitingResponse)
   const busy = useStore($busy)
+  const compacting = useStore($compactionActive)
   const contextSuggestions = useStore($contextSuggestions)
   const currentCwd = useStore($currentCwd)
   const currentModel = useStore($currentModel)
@@ -445,6 +449,7 @@ export function ChatView({
         onEdit={onEdit}
         onReload={onReload}
         onThreadMessagesChange={onThreadMessagesChange}
+        runtimeKey={threadKey}
         suppressMessages={routeSessionMismatch}
       >
         <div
@@ -496,6 +501,7 @@ export function ChatView({
           <Suspense fallback={<ChatBarFallback />}>
             <ChatBar
               busy={busy}
+              compacting={compacting}
               cwd={currentCwd}
               disabled={!gatewayOpen}
               focusKey={activeSessionId}

@@ -1,13 +1,15 @@
 import { atom, computed } from 'nanostores'
 
-import { getProfiles, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { BOOT_AGGREGATE_REQUEST_TIMEOUT_MS, getProfiles, setApiRequestProfile } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import {
   arraysEqual,
   persistBoolean,
+  persistString,
   persistStringArray,
   persistStringRecord,
   storedBoolean,
+  storedString,
   storedStringArray,
   storedStringRecord
 } from '@/lib/storage'
@@ -24,15 +26,98 @@ export function normalizeProfileKey(name: string | null | undefined): string {
   return value || 'default'
 }
 
+function isPersistableProfileScope(name: string | null | undefined): boolean {
+  const key = normalizeProfileKey(name)
+
+  return key === 'default' || /^[a-z0-9][a-z0-9_-]{0,63}$/.test(key)
+}
+
 // The profile the running local backend is actually scoped to (mirrors
 // /api/profiles/active `current`). "default" is the root ~/.hermes. This is the
 // display source of truth for the statusbar pill; the desktop's *stored*
 // preference (which may be unset) lives in the Electron main process.
 export const $activeProfile = atom<string>('default')
 
+const SELECTED_PROFILE_SCOPE_STORAGE_KEY = 'hermes.desktop.selectedProfileScope'
+const LEGACY_THEME_PROFILE_STORAGE_KEY = 'hermes-desktop-active-profile-v1'
+
+function storedSelectedProfileScope(): string {
+  const current = storedString(SELECTED_PROFILE_SCOPE_STORAGE_KEY)
+  const legacy = storedString(LEGACY_THEME_PROFILE_STORAGE_KEY)
+  const value = current || legacy
+
+  return isPersistableProfileScope(value) ? normalizeProfileKey(value) : 'default'
+}
+
+function persistSelectedProfileScope(name: string): void {
+  const key = normalizeProfileKey(name)
+
+  if (!isPersistableProfileScope(key)) {
+    return
+  }
+
+  persistString(SELECTED_PROFILE_SCOPE_STORAGE_KEY, key)
+  if (typeof window !== 'undefined') {
+    void window.hermesDesktop?.profile?.setScope?.(key).catch(() => undefined)
+  }
+}
+
 // Cached profile list for the picker. Refreshed lazily; the dropdown also
 // re-fetches on open so a profile created elsewhere shows up.
-export const $profiles = atom<ProfileInfo[]>([])
+const PROFILES_CACHE_STORAGE_KEY = 'hermes.desktop.profiles.cache.v1'
+
+function profileInfoFromCache(value: unknown): ProfileInfo | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null
+  }
+
+  const item = value as Partial<ProfileInfo>
+
+  if (typeof item.name !== 'string' || !item.name.trim() || typeof item.path !== 'string') {
+    return null
+  }
+
+  return {
+    has_env: Boolean(item.has_env),
+    is_default: Boolean(item.is_default),
+    model: typeof item.model === 'string' ? item.model : null,
+    name: item.name,
+    path: item.path,
+    provider: typeof item.provider === 'string' ? item.provider : null,
+    skill_count: typeof item.skill_count === 'number' && Number.isFinite(item.skill_count) ? item.skill_count : 0
+  }
+}
+
+function storedProfiles(): ProfileInfo[] {
+  try {
+    const raw = storedString(PROFILES_CACHE_STORAGE_KEY)
+
+    if (!raw) {
+      return []
+    }
+
+    const parsed = JSON.parse(raw)
+
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+
+    return parsed.map(profileInfoFromCache).filter((profile): profile is ProfileInfo => profile !== null)
+  } catch {
+    return []
+  }
+}
+
+function persistProfiles(profiles: ProfileInfo[]): void {
+  persistString(PROFILES_CACHE_STORAGE_KEY, profiles.length > 0 ? JSON.stringify(profiles) : null)
+}
+
+export const $profiles = atom<ProfileInfo[]>(storedProfiles())
+
+function setProfiles(profiles: ProfileInfo[]): void {
+  $profiles.set(profiles)
+  persistProfiles(profiles)
+}
 
 export function setActiveProfile(name: string): void {
   $activeProfile.set(name || 'default')
@@ -40,7 +125,7 @@ export function setActiveProfile(name: string): void {
 
 export async function refreshProfiles(): Promise<ProfileInfo[]> {
   const { profiles } = await getProfiles()
-  $profiles.set(profiles)
+  setProfiles(profiles)
 
   return profiles
 }
@@ -101,6 +186,29 @@ export function setProfileColor(name: string, color: null | string): void {
   $profileColors.set(next)
 }
 
+// ── Rail icons ─────────────────────────────────────────────────────────────
+// Optional per-profile emoji shown on the rail square instead of the first
+// letter. Local-only cosmetic preference, mirrors $profileColors.
+const PROFILE_ICONS_STORAGE_KEY = 'hermes.desktop.profileIcons'
+
+export const $profileIcons = atom<Record<string, string>>(storedStringRecord(PROFILE_ICONS_STORAGE_KEY))
+
+$profileIcons.subscribe(value => persistStringRecord(PROFILE_ICONS_STORAGE_KEY, value))
+
+// Set (or, with null, clear) a profile's emoji/icon override.
+export function setProfileIcon(name: string, icon: null | string): void {
+  const key = normalizeProfileKey(name)
+  const next = { ...$profileIcons.get() }
+
+  if (icon) {
+    next[key] = icon
+  } else {
+    delete next[key]
+  }
+
+  $profileIcons.set(next)
+}
+
 interface ActiveProfileResponse {
   active: string
   current: string
@@ -112,7 +220,7 @@ export async function refreshActiveProfile(): Promise<void> {
   try {
     const res = await window.hermesDesktop.api<ActiveProfileResponse>({
       path: '/api/profiles/active',
-      timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+      timeoutMs: BOOT_AGGREGATE_REQUEST_TIMEOUT_MS
     })
 
     setActiveProfile(res.current || 'default')
@@ -137,6 +245,7 @@ export async function switchProfile(name: string): Promise<void> {
   }
 
   setActiveProfile(name)
+  persistSelectedProfileScope(name)
   await window.hermesDesktop.profile.set(name)
 }
 
@@ -149,6 +258,28 @@ export async function switchProfile(name: string): Promise<void> {
 // The profile the live gateway WebSocket is currently connected to. Initialized
 // to the primary (window) backend's profile on boot.
 export const $activeGatewayProfile = atom<string>('default')
+
+// The profile the user is looking at in the sidebar/rail. This is deliberately
+// separate from $activeGatewayProfile: the visible context should switch as
+// soon as the user clicks a profile, while the gateway may still be waking that
+// backend in the background.
+export const $selectedProfileScope = atom<string>(storedSelectedProfileScope())
+
+if (typeof window !== 'undefined') {
+  void window.hermesDesktop?.profile?.getScope?.()
+    .then(({ profile }) => {
+      if (profile && isPersistableProfileScope(profile)) {
+        const key = normalizeProfileKey(profile)
+        $selectedProfileScope.set(key)
+        persistString(SELECTED_PROFILE_SCOPE_STORAGE_KEY, key)
+      } else {
+        persistSelectedProfileScope($selectedProfileScope.get())
+      }
+    })
+    .catch(() => undefined)
+}
+
+let preferredProfileScope: string | null = null
 
 // Profile for the NEXT new chat (chosen via the new-chat picker). null = primary
 // / default, so single-profile users are unaffected.
@@ -173,7 +304,18 @@ let _lastRoutedProfile: string | null = null
 
 $activeGatewayProfile.subscribe(value => {
   const key = normalizeProfileKey(value)
+  const hasRoutedBefore = _lastRoutedProfile !== null
+
   setApiRequestProfile(key)
+
+  if (hasRoutedBefore && (preferredProfileScope === null || preferredProfileScope === key)) {
+    $selectedProfileScope.set(key)
+    persistSelectedProfileScope(key)
+
+    if (preferredProfileScope === key) {
+      preferredProfileScope = null
+    }
+  }
 
   if (_lastRoutedProfile !== null && _lastRoutedProfile !== key) {
     // Profile-scoped settings + the unified session list are now stale.
@@ -291,18 +433,21 @@ $showAllProfiles.subscribe(value => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY
 // gateway so opening/selecting a profile (which swaps the gateway) moves the
 // whole sidebar with it — a real context switch, not a separate filter to keep
 // in sync.
-export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile], (showAll, gateway) =>
-  showAll ? ALL_PROFILES : normalizeProfileKey(gateway)
+export const $profileScope = computed([$showAllProfiles, $selectedProfileScope], (showAll, selected) =>
+  showAll ? ALL_PROFILES : normalizeProfileKey(selected)
 )
 
 // Switch the active context to `name`: leave "All profiles" mode, point new
-// chats at it, and swap the single live gateway onto its backend (which moves
-// $activeGatewayProfile → name, so $profileScope follows).
+// chats at it, update the visible sidebar scope immediately, and swap the live
+// gateway onto its backend in the background.
 export function selectProfile(name: string): void {
   const target = normalizeProfileKey(name)
   // Switching profiles (or coming back from the all-profiles browse view) starts
   // fresh; re-tapping the profile you're already in leaves your session be.
-  const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
+  const switching = $showAllProfiles.get() || target !== normalizeProfileKey($selectedProfileScope.get())
+  preferredProfileScope = target
+  $selectedProfileScope.set(target)
+  persistSelectedProfileScope(target)
   $showAllProfiles.set(false)
   $newChatProfile.set(target)
 
@@ -381,7 +526,7 @@ export function cycleProfile(direction: 1 | -1): void {
     return
   }
 
-  const current = $showAllProfiles.get() ? -1 : keys.indexOf(normalizeProfileKey($activeGatewayProfile.get()))
+  const current = $showAllProfiles.get() ? -1 : keys.indexOf(normalizeProfileKey($selectedProfileScope.get()))
   const start = current < 0 ? (direction === 1 ? -1 : 0) : current
   const next = (start + direction + keys.length) % keys.length
 

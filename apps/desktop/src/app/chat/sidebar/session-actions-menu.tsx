@@ -1,9 +1,18 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
+  ContextMenuTrigger
+} from '@/components/ui/context-menu'
 import { CopyButton } from '@/components/ui/copy-button'
 import {
   Dialog,
@@ -13,7 +22,15 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -21,10 +38,19 @@ import { triggerHaptic } from '@/lib/haptics'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { normalizeProfileKey } from '@/store/profile'
 import { $activeSessionId, $selectedStoredSessionId, setSessions } from '@/store/session'
+import {
+  $sidebarFolders,
+  folderForKey,
+  moveSessionToFolderInScope,
+  removeSessionFromFolderInScope
+} from '@/store/sidebar-folders'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
+
+import { visibleFoldersForScope } from './folders'
 
 // Rename a session, preferring the gateway's session.title RPC over REST.
 //
@@ -76,6 +102,9 @@ interface SessionActions {
   title: string
   pinned?: boolean
   profile?: string
+  // Durable membership key for custom folders (sessionPinId). Falls back to the
+  // session id so the menu still works for callers that don't pass it.
+  folderKey?: string
   onPin?: () => void
   onBranch?: () => void
   onArchive?: () => void
@@ -98,6 +127,7 @@ function useSessionActions({
   title,
   pinned = false,
   profile,
+  folderKey,
   onPin,
   onBranch,
   onArchive,
@@ -106,6 +136,12 @@ function useSessionActions({
   const { t } = useI18n()
   const r = t.sidebar.row
   const [renameOpen, setRenameOpen] = useState(false)
+  const folders = useStore($sidebarFolders)
+  // Folder membership is keyed by the durable id (sessionPinId), mirroring pins.
+  const membershipKey = folderKey || sessionId
+  const profileKey = normalizeProfileKey(profile)
+  const visibleFolders = visibleFoldersForScope(folders, profileKey)
+  const currentFolder = folderForKey(visibleFolders, membershipKey, profileKey)
 
   const pinItem: ItemSpec = {
     disabled: !onPin,
@@ -167,18 +203,19 @@ function useSessionActions({
         onArchive?.()
       }
     },
-    {
-      className: 'text-destructive focus:text-destructive',
-      disabled: !onDelete,
-      icon: 'trash',
-      label: t.common.delete,
-      onSelect: () => {
-        triggerHaptic('warning')
-        onDelete?.()
-      },
-      variant: 'destructive'
-    }
   ]
+
+  const deleteItem: ItemSpec = {
+    className: 'text-destructive focus:text-destructive',
+    disabled: !onDelete,
+    icon: 'trash',
+    label: t.common.delete,
+    onSelect: () => {
+      triggerHaptic('warning')
+      onDelete?.()
+    },
+    variant: 'destructive'
+  }
 
   const renderMenuItem = (Item: MenuItem, { className, disabled, icon, label, onSelect, variant }: ItemSpec) => (
     <Item className={className} disabled={disabled} key={label} onSelect={onSelect} variant={variant}>
@@ -187,9 +224,64 @@ function useSessionActions({
     </Item>
   )
 
+  // Folder actions ("Move to folder" submenu + "Remove from folder") render with
+  // the Item-matched Radix Sub components so the dropdown and context menus stay
+  // at parity. Only shown when folders exist / the session is already foldered.
+  const renderFolderItems = (Item: MenuItem) => {
+    if (visibleFolders.length === 0 && !currentFolder) {
+      return null
+    }
+
+    const isDropdown = Item === DropdownMenuItem
+    const Sub = isDropdown ? DropdownMenuSub : ContextMenuSub
+    const SubTrigger = isDropdown ? DropdownMenuSubTrigger : ContextMenuSubTrigger
+    const SubContent = isDropdown ? DropdownMenuSubContent : ContextMenuSubContent
+
+    return (
+      <>
+        {visibleFolders.length > 0 && (
+          <Sub>
+            <SubTrigger disabled={!sessionId}>
+              <Codicon name="folder" size="0.875rem" />
+              <span>{r.moveToFolder}</span>
+            </SubTrigger>
+            <SubContent>
+              {visibleFolders.map(folder => (
+                <Item
+                  disabled={!sessionId || folder.id === currentFolder?.id}
+                  key={folder.id}
+                  onSelect={() => {
+                    triggerHaptic('selection')
+                    moveSessionToFolderInScope(membershipKey, folder.id, profileKey)
+                  }}
+                >
+                  <Codicon name={folder.id === currentFolder?.id ? 'check' : 'folder'} size="0.875rem" />
+                  <span>{folder.name}</span>
+                </Item>
+              ))}
+            </SubContent>
+          </Sub>
+        )}
+        {currentFolder && (
+          <Item
+            disabled={!sessionId}
+            onSelect={() => {
+              triggerHaptic('selection')
+              removeSessionFromFolderInScope(membershipKey, profileKey)
+            }}
+          >
+            <Codicon name="remove" size="0.875rem" />
+            <span>{r.removeFromFolder}</span>
+          </Item>
+        )}
+      </>
+    )
+  }
+
   const renderItems = (Item: MenuItem) => (
     <>
       {renderMenuItem(Item, pinItem)}
+      {renderFolderItems(Item)}
       <CopyButton
         appearance={Item === DropdownMenuItem ? 'menu-item' : 'context-menu-item'}
         disabled={!sessionId}
@@ -201,6 +293,7 @@ function useSessionActions({
         text={sessionId}
       />
       {items.map(spec => renderMenuItem(Item, spec))}
+      {renderMenuItem(Item, deleteItem)}
     </>
   )
 

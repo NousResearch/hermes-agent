@@ -219,7 +219,7 @@ class TestSessionResetPolicy:
 
     def test_defaults(self):
         policy = SessionResetPolicy()
-        assert policy.mode == "both"
+        assert policy.mode == "none"
         assert policy.at_hour == 4
         assert policy.idle_minutes == 1440
         assert policy.bg_process_max_age_hours == 24
@@ -229,7 +229,7 @@ class TestSessionResetPolicy:
             {"mode": None, "at_hour": None, "idle_minutes": None,
              "bg_process_max_age_hours": None}
         )
-        assert restored.mode == "both"
+        assert restored.mode == "none"
         assert restored.at_hour == 4
         assert restored.idle_minutes == 1440
         assert restored.bg_process_max_age_hours == 24

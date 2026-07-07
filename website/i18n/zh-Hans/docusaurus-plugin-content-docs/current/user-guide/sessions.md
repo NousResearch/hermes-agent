@@ -450,12 +450,12 @@ group_sessions_per_user: false
 
 ### Session 重置策略
 
-Gateway session 根据可配置的策略自动重置：
+**默认情况下 Gateway session 永不自动重置**（`mode: none`）。你可以通过 `config.yaml` 中的 `session_reset` 部分选择启用自动重置：
 
+- **none** — 永不自动重置（默认；上下文由 `/reset` 和压缩管理）
 - **idle** — 在 N 分钟不活跃后重置
 - **daily** — 每天在特定时间重置
 - **both** — 以先到者为准（idle 或 daily）
-- **none** — 永不自动重置
 
 在 session 自动重置之前，agent 会有一轮机会保存对话中的重要记忆或技能。
 

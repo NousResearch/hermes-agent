@@ -89,10 +89,58 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot is not None
     assert snapshot.plan == "Pro"
     assert len(snapshot.windows) == 2
-    assert snapshot.windows[0].label == "Session"
+    assert snapshot.windows[0].label == "5h"
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details
+
+
+def test_fetch_account_usage_codex_works_without_legacy_token_blob(monkeypatch):
+    seen_headers = {}
+
+    class _HeaderCaptureClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            seen_headers.update(headers or {})
+            return _Response(
+                {
+                    "plan_type": "team",
+                    "rate_limit": {
+                        "primary_window": {"used_percent": 99, "reset_at": 1_900_000_000},
+                        "secondary_window": {"used_percent": 10, "reset_at": 1_900_500_000},
+                    },
+                }
+            )
+
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "pool-access-token",
+            "source": "credential_pool",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        lambda: (_ for _ in ()).throw(RuntimeError("no legacy codex token blob")),
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _HeaderCaptureClient(),
+    )
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert snapshot.plan == "Team"
+    assert [w.label for w in snapshot.windows] == ["5h", "7d"]
+    assert "ChatGPT-Account-Id" not in seen_headers
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():

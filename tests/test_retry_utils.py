@@ -224,10 +224,13 @@ def test_zai_overload_retry_ceiling_exceeds_short_attempts():
     short_attempts = 3
     ceiling = zai_coding_overload_retry_ceiling(short_attempts)
     assert ceiling > short_attempts
-    # Room for every long-backoff entry to run before giving up: the loop's
-    # give-up check (retry_count >= ceiling) runs before the attempt's backoff,
-    # so the ceiling sits one past the final long entry.
-    assert ceiling == short_attempts + len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) + 1
+    # Invariant (not a formula mirror): the loop's give-up check
+    # (retry_count >= ceiling) runs *before* the attempt's backoff, so the
+    # ceiling must leave headroom for every long-backoff entry to execute —
+    # i.e. the largest attempt the loop still computes backoff for
+    # (ceiling - 1) must reach the final long-tier index.
+    last_attempt_with_backoff = ceiling - 1
+    assert last_attempt_with_backoff - short_attempts >= len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF)
 
 
 def test_zai_overload_ceiling_makes_long_tier_reachable(monkeypatch):

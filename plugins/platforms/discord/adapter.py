@@ -5228,10 +5228,14 @@ class DiscordAdapter(BasePlatformAdapter):
         content = re.sub(r"<@[!&]?\d+>", "", content)
         content = re.sub(r"<#\d+>", "", content)
         content = re.sub(r"\s+", " ", content).strip()
-        thread_name = content[:80] if content else "Hermes"
-        if len(content) > 80:
-            thread_name = thread_name[:77] + "..."
-        return thread_name
+        if not content:
+            return "Hermes"
+        # Discord thread names are budgeted in UTF-16 code units (emoji count
+        # double) — truncate with the UTF-16 helpers, not code-point slices,
+        # to match rename_thread()/the semantic-title sanitizer.
+        if utf16_len(content) > 80:
+            return _prefix_within_utf16_limit(content, 77).rstrip() + "..."
+        return content
 
     async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
         """Create a thread from a user message for auto-threading.
@@ -5391,7 +5395,11 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return None
 
-        thread_name = (name or "handoff").strip()[:80] or "handoff"
+        # Discord thread names are budgeted in UTF-16 code units (emoji count
+        # double) — truncate with the UTF-16 helpers, not code-point slices,
+        # to match rename_thread()/the semantic-title sanitizer.
+        cleaned_name = (name or "handoff").strip()
+        thread_name = _prefix_within_utf16_limit(cleaned_name, 80) or "handoff"
         reason = "Hermes session handoff"
 
         # First try: create a thread directly on the channel.

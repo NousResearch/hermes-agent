@@ -274,14 +274,43 @@ def _validation_error_summary(error: AssistantValidationError) -> str:
     return "schema or graph validation failed"
 
 
+def _build_repair_prompt(
+    original_prompt: str,
+    previous_output: str,
+    error: AssistantValidationError,
+) -> str:
+    return "\n\n".join(
+        [
+            original_prompt,
+            "Previous assistant output failed validation.",
+            f"Validation error summary: {_validation_error_summary(error)}",
+            "Return a corrected JSON object only. Do not include Markdown fences or commentary.",
+            "Previous assistant output:",
+            previous_output[:6000],
+        ]
+    )
+
+
 def _call_with_repair(prompt: str, runner: Runner, repair_attempts: int) -> WorkflowDraftResult:
-    try:
-        return parse_assistant_payload(runner(prompt))
-    except AssistantValidationError as exc:
-        raise AssistantValidationError(
-            "assistant draft failed validation "
-            f"({_validation_error_summary(exc)}); revise the request or workflow and retry"
-        ) from exc
+    attempts = max(0, int(repair_attempts or 0))
+    current_prompt = prompt
+    last_error: AssistantValidationError | None = None
+
+    for attempt in range(attempts + 1):
+        output = runner(current_prompt)
+        try:
+            return parse_assistant_payload(output)
+        except AssistantValidationError as exc:
+            last_error = exc
+            if attempt >= attempts:
+                break
+            current_prompt = _build_repair_prompt(prompt, output, exc)
+
+    assert last_error is not None
+    raise AssistantValidationError(
+        "assistant draft failed validation "
+        f"({_validation_error_summary(last_error)}); revise the request or workflow and retry"
+    ) from last_error
 
 
 def draft_workflow(goal: str, *, runner: Runner, repair_attempts: int = 1) -> WorkflowDraftResult:

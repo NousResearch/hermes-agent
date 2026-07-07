@@ -5968,6 +5968,75 @@ def _compute_nous_auth_status() -> Dict[str, Any]:
     return _snapshot_nous_pool_status()
 
 
+# Enum values reported on the dashboard /api/status as ``nous_session_valid``.
+# NAS's health sweep re-mints the bootstrap session ONLY on "terminal"; "valid"
+# and "unknown" are no-ops. Keep this set small and stable — NAS parses it with
+# a permissive schema, so new members are non-breaking but should stay rare.
+NOUS_SESSION_VALID = "valid"
+NOUS_SESSION_TERMINAL = "terminal"
+NOUS_SESSION_UNKNOWN = "unknown"
+
+
+def get_nous_session_validity() -> str:
+    """Classify the Nous bootstrap session for the dashboard /api/status probe.
+
+    Returns one of:
+      - ``"valid"``    — a usable Nous credential is present (login healthy).
+      - ``"terminal"`` — the Nous session has taken a terminal auth failure
+        (invalid_grant / quarantined / relogin required). This is the sole
+        signal NAS acts on to re-mint a hosted-agent bootstrap session.
+      - ``"unknown"``  — indeterminate (no Nous provider state, or a transient/
+        non-terminal error). Never triggers a re-mint.
+
+    Determinable with NO working token — it reads local auth-store state only,
+    which is exactly the condition a dead hosted box is in.
+
+    ANTI-FLAP CONTRACT: only a *terminal* failure maps to "terminal". A normal
+    mid-rotation blip, a transient network error, or a merely-expiring token
+    must NOT report "terminal" (that would trigger a spurious NAS re-mint on a
+    healthy box). We key "terminal" on the auth layer's own terminal signal
+    (`relogin_required`) plus a persisted quarantine marker, never on a bare
+    "not logged in".
+    """
+    # A persisted quarantine marker is the strongest, most stable terminal
+    # signal: the refresh path writes `last_auth_error.relogin_required=True`
+    # into the Nous provider state when it clears dead tokens (the exact path
+    # that produced the incident's "No access token found"). Read it directly
+    # so we report "terminal" even after the in-memory AuthError is long gone.
+    try:
+        state = get_provider_auth_state("nous")
+    except Exception:
+        state = None
+
+    if state:
+        last_err = state.get("last_auth_error")
+        if isinstance(last_err, dict) and last_err.get("relogin_required"):
+            # Only terminal while there is no usable credential left. If a later
+            # successful login repopulated tokens, the stale marker must not
+            # keep reporting terminal.
+            if not (state.get("access_token") or state.get("refresh_token")):
+                return NOUS_SESSION_TERMINAL
+
+    try:
+        status = get_nous_auth_status()
+    except Exception:
+        # Status computation itself failed — indeterminate, not terminal.
+        return NOUS_SESSION_UNKNOWN
+
+    if status.get("logged_in"):
+        return NOUS_SESSION_VALID
+
+    # Not logged in. Distinguish a terminal (relogin-required) failure from a
+    # transient / indeterminate one. Only the former is actionable by NAS.
+    if status.get("relogin_required"):
+        return NOUS_SESSION_TERMINAL
+
+    # No Nous provider state at all, or a non-terminal not-logged-in condition
+    # (e.g. a transient refresh error that did not set relogin_required). Treat
+    # as unknown so a healthy box mid-blip never triggers a re-mint.
+    return NOUS_SESSION_UNKNOWN
+
+
 def get_codex_auth_status() -> Dict[str, Any]:
     """Status snapshot for Codex auth.
     

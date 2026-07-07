@@ -2400,6 +2400,21 @@ async def get_status(profile: Optional[str] = None):
             # Module not importable yet (early startup) — leave as [].
             pass
 
+        # Nous bootstrap-session validity for the NAS health sweep. A hosted
+        # agent whose Nous auth dies terminally (invalid_grant / quarantine)
+        # looks HEALTHY to every liveness/connectivity probe — the machine,
+        # relay, and this dashboard all stay up — yet every inference turn
+        # fails. This is the ONLY signal that surfaces that condition, and it
+        # is determinable with no working token (local auth-store state). NAS
+        # re-mints the bootstrap session when it reads "terminal". Best-effort:
+        # never let auth classification break the public liveness probe.
+        nous_session_valid = "unknown"
+        try:
+            from hermes_cli.auth import get_nous_session_validity
+            nous_session_valid = get_nous_session_validity()
+        except Exception:
+            nous_session_valid = "unknown"
+
         # Always-public liveness + auth-gate shape. Safe for external uptime
         # probes (NAS's wildcard-subdomain liveness probe), the SPA's pre-login
         # bootstrap, and anyone who can curl the host — i.e. exactly the audience
@@ -2422,6 +2437,7 @@ async def get_status(profile: Optional[str] = None):
             "active_sessions": active_sessions,
             "auth_required": auth_required,
             "auth_providers": auth_providers,
+            "nous_session_valid": nous_session_valid,
         }
 
         # Absolute host paths, the gateway PID, and the internal gateway health

@@ -165,6 +165,62 @@ def test_cmd_status_prefers_provider_status_config(monkeypatch, capsys):
     assert "http://stale.local" not in output
 
 
+def test_cmd_status_reports_provider_health_failure(monkeypatch, capsys):
+    class HealthProvider:
+        def is_available(self):
+            return True
+
+        def get_health_status(self):
+            return {
+                "ok": False,
+                "label": "daemon unresponsive",
+                "detail": "GET /health timed out after 2s",
+                "fix": "Run hermes memory setup or restart the Hindsight daemon.",
+            }
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": {"provider": "hindsight"}},
+    )
+    monkeypatch.setattr(
+        memory_setup,
+        "_get_available_providers",
+        lambda: [("hindsight", "API key / local", HealthProvider())],
+    )
+
+    memory_setup.cmd_status(SimpleNamespace())
+
+    output = capsys.readouterr().out
+    assert "Status:    daemon unresponsive ✗" in output
+    assert "GET /health timed out after 2s" in output
+    assert "Run hermes memory setup or restart the Hindsight daemon." in output
+
+
+def test_cmd_status_provider_health_exception_is_unhealthy(monkeypatch, capsys):
+    class BrokenHealthProvider:
+        def is_available(self):
+            return True
+
+        def get_health_status(self):
+            raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": {"provider": "hindsight"}},
+    )
+    monkeypatch.setattr(
+        memory_setup,
+        "_get_available_providers",
+        lambda: [("hindsight", "API key / local", BrokenHealthProvider())],
+    )
+
+    memory_setup.cmd_status(SimpleNamespace())
+
+    output = capsys.readouterr().out
+    assert "Status:    health check failed ✗" in output
+    assert "probe exploded" in output
+
+
 def test_cmd_setup_generic_choice_cancel_writes_nothing(tmp_path, monkeypatch):
     class ChoiceProvider:
         def __init__(self):

@@ -452,7 +452,29 @@ def cmd_status(args) -> None:
         if provider:
             print("\n  Plugin:    installed ✓")
             if provider.is_available():
-                print("  Status:    available ✓")
+                health = None
+                if hasattr(provider, "get_health_status"):
+                    try:
+                        health = provider.get_health_status()
+                    except Exception as e:
+                        health = {
+                            "ok": False,
+                            "label": "health check failed",
+                            "detail": str(e),
+                        }
+                if isinstance(health, dict):
+                    ok = bool(health.get("ok"))
+                    label = str(health.get("label") or ("healthy" if ok else "unhealthy"))
+                    mark = "✓" if ok else "✗"
+                    print(f"  Status:    {label} {mark}")
+                    detail = str(health.get("detail") or "").strip()
+                    if detail:
+                        print(f"    Detail:  {detail}")
+                    fix = str(health.get("fix") or "").strip()
+                    if fix:
+                        print(f"    Fix:     {fix}")
+                else:
+                    print("  Status:    available ✓")
             else:
                 print("  Status:    not available ✗")
                 schema = provider.get_config_schema() if hasattr(provider, "get_config_schema") else []

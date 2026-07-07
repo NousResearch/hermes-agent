@@ -23,6 +23,7 @@ from plugins.memory.hindsight import (
     RETAIN_SCHEMA,
     _load_config,
     _build_embedded_profile_env,
+    _hindsight_http_health,
     _normalize_observation_scopes,
     _normalize_retain_tags,
     _resolve_bank_id_template,
@@ -209,6 +210,59 @@ def test_normalize_retain_tags_accepts_csv_and_dedupes():
         "agent:fakeassistantname",
         "source_system:hermes-agent",
     ]
+
+
+def test_hindsight_http_health_reports_timeout(monkeypatch):
+    class TimeoutUrlopen:
+        def __call__(self, req, timeout=0):
+            raise TimeoutError("timed out")
+
+    monkeypatch.setattr("urllib.request.urlopen", TimeoutUrlopen())
+
+    result = _hindsight_http_health("http://127.0.0.1:9177", timeout=0.1)
+
+    assert result["ok"] is False
+    assert result["label"] == "daemon unresponsive"
+    assert "timed out" in result["detail"].lower()
+
+
+def test_hindsight_health_status_marks_unresponsive_embedded_daemon_unhealthy(tmp_path, monkeypatch):
+    config_path = tmp_path / "hindsight" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps({"mode": "local_embedded", "profile": "hermes"}))
+
+    monkeypatch.setattr(
+        "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+    )
+    monkeypatch.setattr(
+        "plugins.memory.hindsight._check_local_runtime", lambda: (True, None)
+    )
+
+    class FakeManager:
+        def get_url(self, profile):
+            assert profile == "hermes"
+            return "http://127.0.0.1:9177"
+
+    monkeypatch.setattr(
+        "plugins.memory.hindsight._embedded_daemon_manager",
+        lambda: FakeManager(),
+    )
+    monkeypatch.setattr(
+        "plugins.memory.hindsight._hindsight_http_health",
+        lambda url, timeout=2.0, api_key=None: {
+            "ok": False,
+            "label": "daemon unresponsive",
+            "detail": f"GET {url}/health timed out",
+        },
+    )
+
+    status = HindsightMemoryProvider().get_health_status()
+
+    assert status["ok"] is False
+    assert status["label"] == "daemon unresponsive"
+    assert "9177" in status["detail"]
+    assert "hindsight-embed -p hermes daemon stop" in status["fix"]
+    assert "hindsight-embed -p hermes daemon start" in status["fix"]
 
 
 def test_normalize_retain_tags_accepts_json_array_string():

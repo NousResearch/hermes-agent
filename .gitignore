@@ -110,6 +110,18 @@ sync_result.txt
 /tmp_*_output.json
 /changelog.html
 /last_feature.txt
+/.last_feature_index
+/.last_provider_index
+/last_index.txt
+/current_time.txt
+/report.txt
+/eq.json
+/quake.json
+/tsunami.json
+/check_quake_tsunami.py
+/disaster_security.py
+/disaster_security_check.py
+/process_disaster.py
 /state.txt
 /hakua.ogg
 /ohayo.wav
@@ -121,6 +133,7 @@ sync_result.txt
 /output_video.mp4
 /silent_video.mp4
 /vrchat_hakua.mp4
+/scripts/daily_vrchat_post_voicevox.py
 /skills/frontend/
 /skills/taste-skill/
 

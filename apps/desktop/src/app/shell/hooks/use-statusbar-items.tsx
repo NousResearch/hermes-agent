@@ -3,6 +3,7 @@ import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
+import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -43,7 +44,6 @@ interface StatusbarItemsOptions {
   commandCenterOpen: boolean
   extraLeftItems: readonly StatusbarItem[]
   extraRightItems: readonly StatusbarItem[]
-  gatewayLogLines: readonly string[]
   gatewayState: string
   inferenceStatus: RuntimeReadinessResult | null
   openAgents: () => void
@@ -60,7 +60,6 @@ export function useStatusbarItems({
   commandCenterOpen,
   extraLeftItems,
   extraRightItems,
-  gatewayLogLines,
   gatewayState,
   inferenceStatus,
   openAgents,
@@ -131,16 +130,16 @@ export function useStatusbarItems({
   const showYoloToggle = gatewayState === 'open' && (!!activeSessionId || freshDraftReady)
 
   const gatewayMenuContent = useMemo(
-    () => (
+    () => (close: () => void) => (
       <GatewayMenuPanel
         gatewayState={gatewayState}
         inferenceStatus={inferenceStatus}
-        logLines={gatewayLogLines}
+        onClose={close}
         onOpenSystem={() => openCommandCenterSection('system')}
         statusSnapshot={statusSnapshot}
       />
     ),
-    [gatewayLogLines, gatewayState, inferenceStatus, openCommandCenterSection, statusSnapshot]
+    [gatewayState, inferenceStatus, openCommandCenterSection, statusSnapshot]
   )
 
   // The indicator must speak the same scope as the Spawn-tree panel it opens:
@@ -235,6 +234,7 @@ export function useStatusbarItems({
     const applying = backendUpdateApply.applying || backendUpdateApply.stage === 'restart'
 
     const base = copy.backendLabel(backendVersion ?? copy.unknown)
+
     const behindHint =
       !applying && behind > 0 ? ` (+${behind})` : !applying && updateAvailable ? ` (${copy.update})` : ''
 
@@ -366,8 +366,13 @@ export function useStatusbarItems({
         hidden: !contextUsage,
         id: 'context-usage',
         label: contextUsage,
-        title: copy.contextUsage,
-        variant: 'text'
+        menuAlign: 'end',
+        menuClassName: 'w-auto border-(--ui-stroke-secondary) p-0',
+        menuContent: (
+          <ContextUsagePanel currentUsage={currentUsage} requestGateway={requestGateway} sessionId={activeSessionId} />
+        ),
+        title: copy.openContextUsage,
+        variant: 'menu'
       },
       {
         detail: <LiveDuration since={sessionStartedAt} />,
@@ -403,18 +408,21 @@ export function useStatusbarItems({
       ...(backendVersionItem ? [backendVersionItem] : [])
     ],
     [
+      activeSessionId,
+      backendVersionItem,
       busy,
       chatOpen,
+      clientVersionItem,
       contextBar,
       contextUsage,
       copy,
+      currentUsage,
+      requestGateway,
       sessionStartedAt,
       showYoloToggle,
       terminalTakeover,
       toggleYolo,
       turnStartedAt,
-      clientVersionItem,
-      backendVersionItem,
       yoloActive
     ]
   )

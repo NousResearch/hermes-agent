@@ -305,12 +305,12 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
     if env_writes:
         _write_env(Path(hermes_home) / ".env", env_writes)
 
-    print(f"\n  Memory provider: mem0")
-    print(f"  Activation saved to config.yaml")
-    print(f"  Provider config saved")
+    print("\n  Memory provider: mem0")
+    print("  Activation saved to config.yaml")
+    print("  Provider config saved")
     if env_writes:
-        print(f"  API keys saved to .env")
-    print(f"\n  Start a new session to activate.\n")
+        print("  API keys saved to .env")
+    print("\n  Start a new session to activate.\n")
 
 
 def _setup_oss(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
@@ -358,14 +358,14 @@ def _setup_oss(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
     save_config(config)
 
     _run_connectivity_checks(oss_config)
-    print(f"\n  ✓ Mem0 configured (OSS mode)")
+    print("\n  ✓ Mem0 configured (OSS mode)")
     print(f"    LLM:      {oss_config['llm']['provider']} ({oss_config['llm']['config'].get('model', '')})")
     print(f"    Embedder: {oss_config['embedder']['provider']} ({oss_config['embedder']['config'].get('model', '')})")
     print(f"    Vector:   {vector_id}")
     if env_writes:
-        print(f"    API keys saved to .env")
-    print(f"    Config saved to mem0.json")
-    print(f"    Provider set in config.yaml")
+        print("    API keys saved to .env")
+    print("    Config saved to mem0.json")
+    print("    Provider set in config.yaml")
     print("\n  Start a new session to activate.\n")
 
 
@@ -417,7 +417,7 @@ def _ensure_pgvector(host: str = "localhost", port: int = 5432) -> dict | None:
                 _wait_for_port(host, port, timeout=15)
                 ok, _ = _check_pgvector(host, port)
                 if ok:
-                    print(f"  ✓ PostgreSQL container restarted")
+                    print("  ✓ PostgreSQL container restarted")
                     return None
         except Exception:
             pass
@@ -522,8 +522,7 @@ def _ensure_ollama(models: list[str]) -> bool:
             print(f"  Pulling '{model}'... (this may take a few minutes)")
             try:
                 subprocess.run([ollama_bin or "ollama", "pull", model], timeout=600,
-                               stdin=subprocess.DEVNULL,
-                               creationflags=windows_hide_flags())
+                               stdin=subprocess.DEVNULL)
                 print(f"  ✓ Model '{model}' pulled")
             except Exception as e:
                 print(f"  Warning: Could not pull '{model}': {e}")
@@ -712,14 +711,14 @@ def _setup_oss_interactive(hermes_home: str, config: dict) -> None:
     save_config(config)
 
     _run_connectivity_checks(oss_config)
-    print(f"\n  ✓ Mem0 configured (OSS mode)")
+    print("\n  ✓ Mem0 configured (OSS mode)")
     print(f"    LLM:      {oss_config['llm']['provider']} ({oss_config['llm']['config'].get('model', '')})")
     print(f"    Embedder: {oss_config['embedder']['provider']} ({oss_config['embedder']['config'].get('model', '')})")
     print(f"    Vector:   {vector_id}")
     if env_writes:
-        print(f"    API keys saved to .env")
-    print(f"    Config saved to mem0.json")
-    print(f"    Provider set in config.yaml")
+        print("    API keys saved to .env")
+    print("    Config saved to mem0.json")
+    print("    Provider set in config.yaml")
     print("\n  Start a new session to activate.\n")
 
 

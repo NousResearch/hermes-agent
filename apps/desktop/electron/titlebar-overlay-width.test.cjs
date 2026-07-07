@@ -1,7 +1,12 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
 
-const { OVERLAY_FALLBACK_WIDTH, nativeOverlayWidth } = require('./titlebar-overlay-width.cjs')
+const {
+  MACOS_TAHOE_DARWIN_MAJOR,
+  OVERLAY_FALLBACK_WIDTH,
+  macTitleBarOverlayHeight,
+  nativeOverlayWidth
+} = require('./titlebar-overlay-width.cjs')
 
 // This static reservation is only the pre-layout FALLBACK. Once laid out the
 // renderer reads the exact width from navigator.windowControlsOverlay
@@ -18,12 +23,32 @@ test('WSLg paints the same WCO, so it reserves the same fallback width', () => {
   assert.equal(nativeOverlayWidth({ isWsl: true }), OVERLAY_FALLBACK_WIDTH)
 })
 
-test('plain Linux and macOS reserve nothing', () => {
-  assert.equal(nativeOverlayWidth({ isWindows: false, isWsl: false }), 0)
-  assert.equal(nativeOverlayWidth(), 0)
-  assert.equal(nativeOverlayWidth({}), 0)
+test('plain Linux paints the WCO too, so it reserves the fallback width', () => {
+  // Regression #53185: re-enabling the overlay on plain Linux (KDE/GNOME)
+  // without reserving its width left the native min/max/close buttons painting
+  // on top of the app's right-edge titlebar tools.
+  assert.equal(nativeOverlayWidth({ isWindows: false, isWsl: false }), OVERLAY_FALLBACK_WIDTH)
+  assert.equal(nativeOverlayWidth(), OVERLAY_FALLBACK_WIDTH)
+  assert.equal(nativeOverlayWidth({}), OVERLAY_FALLBACK_WIDTH)
+})
+
+test('macOS uses traffic lights, not a WCO overlay, so it reserves nothing', () => {
+  assert.equal(nativeOverlayWidth({ isMac: true }), 0)
 })
 
 test('the fallback width is a sane positive pixel value', () => {
   assert.ok(Number.isInteger(OVERLAY_FALLBACK_WIDTH) && OVERLAY_FALLBACK_WIDTH > 0)
+})
+
+test('pre-Tahoe keeps the full titlebar overlay height', () => {
+  assert.equal(macTitleBarOverlayHeight({ darwinMajor: MACOS_TAHOE_DARWIN_MAJOR - 1, titlebarHeight: 34 }), 34)
+})
+
+test('Tahoe (Darwin 25+) drops the overlay height to 0 to avoid electron#49183', () => {
+  assert.equal(macTitleBarOverlayHeight({ darwinMajor: MACOS_TAHOE_DARWIN_MAJOR, titlebarHeight: 34 }), 0)
+  assert.equal(macTitleBarOverlayHeight({ darwinMajor: MACOS_TAHOE_DARWIN_MAJOR + 1, titlebarHeight: 34 }), 0)
+})
+
+test('macTitleBarOverlayHeight tolerates missing args (unknown platform → 0)', () => {
+  assert.equal(macTitleBarOverlayHeight(), 0)
 })

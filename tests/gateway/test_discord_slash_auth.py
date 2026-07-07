@@ -97,6 +97,8 @@ def _isolate_discord_env(monkeypatch):
         "DISCORD_IGNORED_CHANNELS",
         "DISCORD_HIDE_SLASH_COMMANDS",
         "DISCORD_ALLOW_BOTS",
+        "DISCORD_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -128,13 +130,15 @@ _SENTINEL = object()
 
 def _make_interaction(
     user_id, *, channel_id=12345, guild_id=42, in_dm=False, in_thread=False,
-    parent_channel_id=None, user=_SENTINEL,
+    parent_channel_id=None, user=_SENTINEL, channel_name=None,
 ):
     """Build a mock Discord Interaction with a still-unresponded response.
 
     ``channel_id`` may be set to ``None`` to simulate a guild interaction
     payload missing a resolvable channel id (fail-closed exercise).
     Pass ``user=None`` to simulate a payload missing the user object.
+    ``channel_name`` attaches a ``.name`` to the channel so channel-name /
+    ``#name`` allow/ignore matching can be exercised (mirrors on_message).
     """
     import discord
 
@@ -146,10 +150,14 @@ def _make_interaction(
         channel = discord.Thread()
         channel.id = channel_id
         channel.parent_id = parent_channel_id
+        if channel_name is not None:
+            channel.name = channel_name
     elif channel_id is None:
         channel = None
     else:
         channel = SimpleNamespace(id=channel_id)
+        if channel_name is not None:
+            channel.name = channel_name
 
     if user is _SENTINEL:
         user_obj = SimpleNamespace(id=int(user_id), name=f"user_{user_id}")
@@ -176,21 +184,28 @@ def _make_interaction(
 
 
 @pytest.mark.asyncio
-async def test_no_allowlist_allows_everyone(adapter):
-    """SECURITY-CRITICAL backwards-compat: deployments without any allowlist
-    env vars set must see ZERO behavior change. on_message lets everyone
-    through in this case (returns True at line 1890); slash must do the same.
-    """
+async def test_no_allowlist_denies_without_opt_in(adapter):
+    """Without allowlists or allow-all flags, Discord traffic is denied."""
     interaction = _make_interaction("999999999")
-    assert await adapter._check_slash_authorization(interaction, "/help") is True
-    interaction.response.send_message.assert_not_awaited()
+    assert await adapter._check_slash_authorization(interaction, "/help") is False
+    interaction.response.send_message.assert_awaited()
 
 
 @pytest.mark.asyncio
-async def test_no_allowlist_dm_also_allowed(adapter):
-    """Same for DMs — no allowlist means no restriction, matching on_message."""
+async def test_no_allowlist_dm_denied_without_opt_in(adapter):
+    """DM slash commands follow the same fail-closed default."""
     interaction = _make_interaction("999999999", in_dm=True)
+    assert await adapter._check_slash_authorization(interaction, "/help") is False
+    interaction.response.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_allowlist_allows_with_gateway_allow_all(adapter, monkeypatch):
+    """Explicit ``GATEWAY_ALLOW_ALL_USERS`` restores open Discord access."""
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+    interaction = _make_interaction("999999999")
     assert await adapter._check_slash_authorization(interaction, "/help") is True
+    interaction.response.send_message.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -276,11 +291,31 @@ async def test_channel_allowlist_wildcard_passes(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_channel_allowlist_matches_by_name(adapter, monkeypatch):
+    """Allowlist configured by channel NAME matches slash interactions too —
+    the same name-form matching on_message gained. Without it, a deployment
+    using DISCORD_ALLOWED_CHANNELS=cypher (by name) would reject every slash
+    command even though messages in that channel pass.
+    """
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "cypher")
+    interaction = _make_interaction("100200300", channel_id=9999, channel_name="cypher")
+    assert await adapter._check_slash_authorization(interaction, "/help") is True
+
+
+@pytest.mark.asyncio
+async def test_channel_allowlist_matches_by_hash_name(adapter, monkeypatch):
+    """``#name`` form in the allowlist also matches slash interactions."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "#cypher")
+    interaction = _make_interaction("100200300", channel_id=9999, channel_name="cypher")
+    assert await adapter._check_slash_authorization(interaction, "/help") is True
+
+
+@pytest.mark.asyncio
 async def test_channel_allowlist_does_not_apply_to_dms(adapter, monkeypatch):
-    """DMs aren't channel-gated — they go through on_message's DM lockdown."""
+    """DMs ignore channel allowlists and still require user allowlist or opt-in."""
     monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "1111")
     interaction = _make_interaction("100200300", in_dm=True)
-    assert await adapter._check_slash_authorization(interaction, "/help") is True
+    assert await adapter._check_slash_authorization(interaction, "/help") is False
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +336,14 @@ async def test_ignored_channel_rejected(adapter, monkeypatch, caplog):
 async def test_ignored_channel_wildcard_blocks_all(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "*")
     interaction = _make_interaction("100200300", channel_id=9999)
+    assert await adapter._check_slash_authorization(interaction, "/help") is False
+
+
+@pytest.mark.asyncio
+async def test_ignored_channel_matches_by_name(adapter, monkeypatch):
+    """Ignore list configured by channel NAME blocks slash interactions too."""
+    monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "cypher")
+    interaction = _make_interaction("100200300", channel_id=9999, channel_name="cypher")
     assert await adapter._check_slash_authorization(interaction, "/help") is False
 
 
@@ -432,11 +475,10 @@ async def test_missing_channel_id_rejected_when_channel_policy_configured(
 
 
 @pytest.mark.asyncio
-async def test_missing_channel_id_allowed_when_no_channel_policy(adapter):
-    """No DISCORD_ALLOWED_CHANNELS configured + missing channel id: still
-    pass through the channel block (matches no-allowlist default)."""
+async def test_missing_channel_id_denied_without_allowlists(adapter):
+    """No channel or user policy configured: fail closed by default."""
     interaction = _make_interaction("100200300", channel_id=None)
-    assert await adapter._check_slash_authorization(interaction, "/help") is True
+    assert await adapter._check_slash_authorization(interaction, "/help") is False
 
 
 @pytest.mark.asyncio
@@ -451,12 +493,44 @@ async def test_missing_user_rejected_when_allowlist_configured(adapter):
 
 
 @pytest.mark.asyncio
-async def test_missing_user_allowed_when_no_allowlist_configured(adapter):
-    """interaction.user is None but no allowlist configured: allow
-    (preserves no-allowlist back-compat -- anyone is allowed when no
-    policy is in effect)."""
+async def test_missing_user_denied_when_no_allowlist_configured(adapter):
+    """interaction.user is None without allow-all opt-in: fail closed."""
     interaction = _make_interaction("100200300", user=None)
-    assert await adapter._check_slash_authorization(interaction, "/help") is True
+    assert await adapter._check_slash_authorization(interaction, "/help") is False
+
+
+@pytest.mark.parametrize(
+    "env_name",
+    ["GATEWAY_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS"],
+)
+@pytest.mark.asyncio
+async def test_missing_user_denied_even_with_allow_all(adapter, monkeypatch, env_name):
+    """Malformed slash payloads missing user stay fail-closed with allow-all."""
+    monkeypatch.setenv(env_name, "true")
+    interaction = _make_interaction("100200300", user=None)
+    allowed, reason = adapter._evaluate_slash_authorization(interaction)
+    assert allowed is False
+    assert reason == "missing interaction.user"
+    assert await adapter._check_slash_authorization(interaction, "/help") is False
+    interaction.response.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_simple_slash_missing_user_does_not_crash(adapter, monkeypatch):
+    """_run_simple_slash must reject missing-user payloads before _build_slash_event."""
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+    interaction = _make_interaction("100200300", user=None)
+    interaction.response.defer = AsyncMock()
+    interaction.edit_original_response = AsyncMock()
+    interaction.delete_original_response = AsyncMock()
+    adapter.handle_message = AsyncMock()
+    adapter._build_slash_event = MagicMock()
+
+    await adapter._run_simple_slash(interaction, "/help")
+
+    adapter._build_slash_event.assert_not_called()
+    adapter.handle_message.assert_not_awaited()
+    interaction.response.defer.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

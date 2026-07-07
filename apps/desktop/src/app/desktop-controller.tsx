@@ -5,32 +5,26 @@ import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 're
 
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
-import { DesktopOnboardingOverlay } from '@/components/desktop-onboarding-overlay'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
+import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { Pane, PaneMain } from '@/components/pane-shell'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import { isFocusWithin } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
-import { getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
+import { getSessionMessages, type SessionMessage, triggerCronJob } from '../hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import { storedSessionIdForNotification } from '../lib/session-ids'
-import {
-  isMessagingSource,
-  LOCAL_SESSION_SOURCE_IDS,
-  MESSAGING_SESSION_SOURCE_IDS,
-  normalizeSessionSource
-} from '../lib/session-source'
+import { isMessagingSource } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
-import { setCronFocusJobId, setCronJobs } from '../store/cron'
+import { setCronFocusJobId } from '../store/cron'
 import {
   $fileBrowserOpen,
   $panesFlipped,
   $pinnedSessionIds,
-  $sessionsLimit,
-  bumpSessionsLimit,
   FILE_BROWSER_DEFAULT_WIDTH,
   FILE_BROWSER_MAX_WIDTH,
   FILE_BROWSER_MIN_WIDTH,
@@ -40,7 +34,6 @@ import {
   setSidebarOverlayMounted,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
-  SIDEBAR_SESSIONS_PAGE_SIZE,
   unpinSession
 } from '../store/layout'
 import { respondToApprovalAction } from '../store/native-notifications'
@@ -53,14 +46,7 @@ import {
   setPetOverlaySubmitHandler
 } from '../store/pet-overlay'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
-import {
-  $activeGatewayProfile,
-  $freshSessionRequest,
-  $profileScope,
-  ALL_PROFILES,
-  normalizeProfileKey,
-  refreshActiveProfile
-} from '../store/profile'
+import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '../store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '../store/projects'
 import { $reviewOpen, REVIEW_PANE_ID } from '../store/review'
 import {
@@ -75,32 +61,19 @@ import {
   $resumeFailedSessionId,
   $selectedStoredSessionId,
   $sessions,
-  $workingSessionIds,
-  CRON_SECTION_LIMIT,
-  getRecentlySettledSessionIds,
   getRememberedSessionId,
-  mergeSessionPage,
-  MESSAGING_SECTION_LIMIT,
   sessionPinId,
   setAwaitingResponse,
   setBusy,
-  setCronSessions,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentModel,
   setCurrentProvider,
   setMessages,
-  setMessagingPlatformTotals,
-  setMessagingSessions,
-  setMessagingTruncated,
-  setRememberedSessionId,
-  setSessionProfileTotals,
-  setSessions,
-  setSessionsLoading,
-  setSessionsTotal
+  setRememberedSessionId
 } from '../store/session'
 import { onSessionsChanged } from '../store/session-sync'
-import { clearSessionTodos, setSessionTodos, todoListActive } from '../store/todos'
+import { clearSessionTodos, setSessionTodos, todosForHydration } from '../store/todos'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
 import { isSecondaryWindow } from '../store/windows'
 
@@ -124,9 +97,12 @@ import { ModelVisibilityOverlay } from './model-visibility-overlay'
 import { PetGenerateOverlay } from './pet-generate/pet-generate-overlay'
 import { RightSidebarPane } from './right-sidebar'
 import { FileActionDialogs } from './right-sidebar/file-actions'
+import { RemoteFolderPicker } from './right-sidebar/files/remote-picker'
 import { ReviewPane } from './right-sidebar/review'
 import { $terminalTakeover } from './right-sidebar/store'
-import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persistent'
+import { TerminalPaneChrome } from './right-sidebar/terminal/chrome'
+import { PersistentTerminal } from './right-sidebar/terminal/persistent'
+import { closeActiveTerminal } from './right-sidebar/terminal/terminals'
 import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
 import { SessionPickerOverlay } from './session-picker-overlay'
 import { SessionSwitcher } from './session-switcher'
@@ -139,6 +115,7 @@ import { usePreviewRouting } from './session/hooks/use-preview-routing'
 import { usePromptActions } from './session/hooks/use-prompt-actions'
 import { useRouteResume } from './session/hooks/use-route-resume'
 import { useSessionActions } from './session/hooks/use-session-actions'
+import { useSessionListActions } from './session/hooks/use-session-list-actions'
 import { useSessionStateCache } from './session/hooks/use-session-state-cache'
 import { AppShell } from './shell/app-shell'
 import { useOverlayRouting } from './shell/hooks/use-overlay-routing'
@@ -154,6 +131,7 @@ const AgentsView = lazy(async () => ({ default: (await import('./agents')).Agent
 const ArtifactsView = lazy(async () => ({ default: (await import('./artifacts')).ArtifactsView }))
 const CommandCenterView = lazy(async () => ({ default: (await import('./command-center')).CommandCenterView }))
 const CronView = lazy(async () => ({ default: (await import('./cron')).CronView }))
+const StarmapView = lazy(async () => ({ default: (await import('./starmap')).StarmapView }))
 const MessagingView = lazy(async () => ({ default: (await import('./messaging')).MessagingView }))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
@@ -165,50 +143,38 @@ const SkillsView = lazy(async () => ({ default: (await import('./skills')).Skill
 // this cadence while the app is open + visible so new runs surface promptly
 // instead of waiting for the next user-triggered refreshSessions().
 const CRON_POLL_INTERVAL_MS = 30_000
-// The recents list is local-only: cron rows have their own section, and each
-// messaging platform (telegram, discord, …) is fetched separately into its own
-// self-managed sidebar section (refreshMessagingSessions). Excluding both here
-// keeps "Load more" paging through interactive local chats instead of
-// interleaving gateway threads that bury them.
-const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
-// The messaging slice is the inverse: drop cron + every local source so only
-// external-platform conversations remain, then split per platform in the UI.
-const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
+// Messaging-platform turns are written by the background gateway (WeChat,
+// Telegram, Discord, …), not the desktop websocket that drives local chats.
+// Poll the bounded messaging slice while visible so inbound platform traffic
+// appears without requiring a manual refresh or route change.
+const MESSAGING_POLL_INTERVAL_MS = 10_000
+const ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS = 5_000
 
-// Cheap signature compare so the poll only swaps the atom (and re-renders the
-// sidebar) when the visible cron rows actually changed.
-function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
-  if (a.length !== b.length) {
-    return false
-  }
-
-  return a.every((session, i) => session.id === b[i]?.id && session.title === b[i]?.title)
+function sessionMatchesStoredId(session: { id: string; _lineage_root_id?: null | string }, id: string): boolean {
+  return session.id === id || session._lineage_root_id === id
 }
 
-// Rows a session refresh must preserve even if the aggregator omits them:
-// in-flight first turns (message_count 0), pinned rows aged off the page, the
-// actively-viewed chat (its "working" flag clears a beat before the aggregator
-// sees the persisted row), and sessions whose turn just settled (same race, but
-// for a chat the user has already navigated away from). Pass `scope` to only
-// keep the active row when it belongs to the profile being paged.
-function sessionsToKeep(scope?: string): Set<string> {
-  const keep = new Set<string>([
-    ...$workingSessionIds.get(),
-    ...$pinnedSessionIds.get(),
-    ...getRecentlySettledSessionIds()
-  ])
+function hashString(hash: number, value: string): number {
+  let next = hash
 
-  const active = $selectedStoredSessionId.get()
-
-  if (active) {
-    const session = scope ? $sessions.get().find(s => s.id === active) : null
-
-    if (!scope || !session || normalizeProfileKey(session.profile) === scope) {
-      keep.add(active)
-    }
+  for (let i = 0; i < value.length; i++) {
+    next ^= value.charCodeAt(i)
+    next = Math.imul(next, 16777619)
   }
 
-  return keep
+  return next >>> 0
+}
+
+function sessionMessagesSignature(messages: SessionMessage[]): string {
+  let hash = 2166136261
+
+  for (const m of messages) {
+    hash = hashString(hash, m.role)
+    hash = hashString(hash, String(m.timestamp ?? ''))
+    hash = hashString(hash, typeof m.content === 'string' ? m.content : (JSON.stringify(m.content) ?? ''))
+  }
+
+  return `${messages.length}:${hash}`
 }
 
 export function DesktopController() {
@@ -218,7 +184,7 @@ export function DesktopController() {
 
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
-  const refreshSessionsRequestRef = useRef(0)
+  const messagingTranscriptSignatureRef = useRef(new Map<string, string>())
 
   const gatewayState = useStore($gatewayState)
   const activeSessionId = useStore($activeSessionId)
@@ -229,6 +195,7 @@ export function DesktopController() {
   const filePreviewTarget = useStore($filePreviewTarget)
   const previewTarget = useStore($previewTarget)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const messagingSessions = useStore($messagingSessions)
   const terminalTakeover = useStore($terminalTakeover)
   const reviewOpen = useStore($reviewOpen)
   const fileBrowserOpen = useStore($fileBrowserOpen)
@@ -256,8 +223,10 @@ export function DesktopController() {
     currentView,
     openAgents,
     openCommandCenterSection,
+    openStarmap,
     profilesOpen,
     settingsOpen,
+    starmapOpen,
     toggleCommandCenter
   } = useOverlayRouting()
 
@@ -387,11 +356,25 @@ export function DesktopController() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!$filePreviewTarget.get() && !$previewTarget.get()) {
+      if (event.altKey || event.shiftKey || event.key.toLowerCase() !== 'w' || (!event.metaKey && !event.ctrlKey)) {
         return
       }
 
-      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'w') {
+      // Terminal focused: ⌘W closes the active terminal. Ctrl+W is left untouched
+      // for the shell's werase, and nothing else may steal ⌘/Ctrl+W from a
+      // focused terminal (so it never closes a preview tab out from under it).
+      if (isFocusWithin('[data-terminal]')) {
+        if (event.metaKey && !event.ctrlKey) {
+          event.preventDefault()
+          event.stopPropagation()
+          closeActiveTerminal()
+        }
+
+        return
+      }
+
+      // Otherwise ⌘/Ctrl+W closes the active preview tab when one is open.
+      if ($filePreviewTarget.get() || $previewTarget.get()) {
         event.preventDefault()
         event.stopPropagation()
         closeActiveRightRailTab()
@@ -408,126 +391,14 @@ export function DesktopController() {
     }
   }, [])
 
-  // Cron-job sessions as their own list (latest N). Independent of the recents
-  // page so the two never compete for slots. Cheap + bounded. Kept (even though
-  // the sidebar now lists cron *jobs*, not run sessions) so a pinned cron run
-  // still resolves into the Pinned section via sessionByAnyId.
-  const refreshCronSessions = useCallback(async () => {
-    try {
-      const { sessions } = await listAllProfileSessions(CRON_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
-        source: 'cron'
-      })
-
-      setCronSessions(prev => (sameCronSignature(prev, sessions) ? prev : sessions))
-    } catch {
-      // Non-fatal: the cron section just stays empty/stale.
-    }
-  }, [])
-
-  // Messaging-platform sessions as their own slice, fetched separately from
-  // local recents so each platform renders a self-managed section and never
-  // competes with local chats for the recents page budget. One combined fetch
-  // seeds every platform; the sidebar splits the rows per source.
-  const refreshMessagingSessions = useCallback(async () => {
-    try {
-      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
-        excludeSources: MESSAGING_EXCLUDED_SOURCES
-      })
-
-      // Drop any non-messaging source the broad exclude didn't catch (custom
-      // sources) — those stay in local recents, not a platform section.
-      const rows = result.sessions.filter(s => isMessagingSource(s.source))
-
-      setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
-      // Hit the cap → at least one platform may have more on disk than loaded,
-      // so platform sections offer their own per-platform "load more".
-      setMessagingTruncated(result.sessions.length >= MESSAGING_SECTION_LIMIT)
-    } catch {
-      // Non-fatal: the messaging sections just stay empty/stale.
-    }
-  }, [])
-
-  // Page a single platform's section independently (mirrors the per-profile
-  // pager): fetch that source's next window and merge it back in place, leaving
-  // every other platform's rows untouched. Resolves the platform's exact total.
-  const loadMoreMessagingForPlatform = useCallback(async (platform: string) => {
-    const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform
-    const loaded = $messagingSessions.get().filter(inPlatform).length
-
-    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', 'all', {
-      source: platform
-    })
-
-    const incoming = result.sessions.filter(s => normalizeSessionSource(s.source) === platform)
-
-    setMessagingSessions(prev => [
-      ...prev.filter(s => !inPlatform(s)),
-      ...mergeSessionPage(prev.filter(inPlatform), incoming, sessionsToKeep())
-    ])
-
-    const total = result.total ?? incoming.length
-    setMessagingPlatformTotals(prev => ({ ...prev, [platform]: Math.max(total, incoming.length) }))
-  }, [])
-
-  // Cron *jobs* drive the sidebar "Cron jobs" section. Jobs are created
-  // synchronously (agent tool call or the cron UI), so refreshing here right
-  // after an agent turn surfaces a new job immediately; the interval poll keeps
-  // next-run/state fresh as the scheduler advances them.
-  const refreshCronJobs = useCallback(async () => {
-    try {
-      const jobs = await getCronJobs()
-
-      setCronJobs(jobs)
-    } catch {
-      // Non-fatal: the cron section just keeps its last-known jobs.
-    }
-  }, [])
-
-  const refreshSessions = useCallback(async () => {
-    const requestId = refreshSessionsRequestRef.current + 1
-    refreshSessionsRequestRef.current = requestId
-    setSessionsLoading(true)
-
-    try {
-      const limit = $sessionsLimit.get()
-
-      // Require at least one message so abandoned/empty "Untitled" drafts (one
-      // was created per TUI/desktop launch before the lazy-create fix) don't
-      // clutter the sidebar.
-      // Unified cross-profile list (served read-only off each profile's
-      // state.db; no per-profile backend is spawned). Single-profile users get
-      // the same rows tagged profile="default". Cron sessions are excluded here
-      // and fetched separately (refreshCronSessions) so the scheduler's
-      // always-newest rows can't consume the recents page budget.
-      // Scope the fetch to the active profile (not always 'all') so a profile
-      // with few recent sessions isn't windowed out of the cross-profile
-      // recency page — the empty-history-on-profile-switch bug.
-      const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
-
-      const result = await listAllProfileSessions(limit, 1, 'exclude', 'recent', sessionProfile, {
-        excludeSources: SIDEBAR_EXCLUDED_SOURCES
-      })
-
-      if (refreshSessionsRequestRef.current === requestId) {
-        setSessions(prev => mergeSessionPage(prev, result.sessions, sessionsToKeep()))
-        setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
-        setSessionProfileTotals(result.profile_totals ?? {})
-      }
-    } finally {
-      if (refreshSessionsRequestRef.current === requestId) {
-        setSessionsLoading(false)
-      }
-    }
-
-    void refreshCronSessions()
-    void refreshCronJobs()
-    void refreshMessagingSessions()
-  }, [profileScope, refreshCronSessions, refreshCronJobs, refreshMessagingSessions])
-
-  const loadMoreSessions = useCallback(async () => {
-    bumpSessionsLimit()
-    await refreshSessions()
-  }, [refreshSessions])
+  const {
+    loadMoreMessagingForPlatform,
+    loadMoreSessions,
+    loadMoreSessionsForProfile,
+    refreshCronJobs,
+    refreshMessagingSessions,
+    refreshSessions
+  } = useSessionListActions({ profileScope })
 
   // Another window mutated the shared session list (e.g. a chat started in the
   // pop-out). Re-pull so the sidebar reflects it. Pop-outs have no sidebar, so
@@ -539,28 +410,6 @@ export function DesktopController() {
 
     return onSessionsChanged(() => void refreshSessions().catch(() => undefined))
   }, [refreshSessions])
-
-  // ALL-profiles view pages one profile at a time: fetch that profile's next
-  // page and merge it in place, leaving every other profile's rows untouched.
-  const loadMoreSessionsForProfile = useCallback(async (profile: string) => {
-    const key = normalizeProfileKey(profile)
-    const inKey = (s: SessionInfo) => normalizeProfileKey(s.profile) === key
-    const loaded = $sessions.get().filter(inKey).length
-
-    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', key, {
-      excludeSources: SIDEBAR_EXCLUDED_SOURCES
-    })
-
-    const keep = sessionsToKeep(key)
-
-    setSessions(prev => [
-      ...prev.filter(s => !inKey(s)),
-      ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)
-    ])
-
-    const total = result.profile_totals?.[key] ?? result.total ?? result.sessions.length
-    setSessionProfileTotals(prev => ({ ...prev, [key]: Math.max(total, result.sessions.length) }))
-  }, [])
 
   const toggleSelectedPin = useCallback(() => {
     const sessionId = $selectedStoredSessionId.get()
@@ -580,7 +429,7 @@ export function DesktopController() {
     }
   }, [])
 
-  const { gatewayLogLines, inferenceStatus, statusSnapshot } = useStatusSnapshot(gatewayState, requestGateway)
+  const { inferenceStatus, statusSnapshot } = useStatusSnapshot(gatewayState, requestGateway)
 
   const updateActiveSessionRuntimeInfo = useCallback(
     (info: { branch?: string; cwd?: string }) => {
@@ -668,13 +517,17 @@ export function DesktopController() {
             storedSessionId
           )
 
-          // Seed the status stack's todo group from history — but only while
-          // the plan is still in flight, so reopening an old chat doesn't pin
-          // its finished todo list above the composer forever.
-          const todos = latestSessionTodos(messages)
+          // Rehydration runs *after* a turn completes, so an "active" stored
+          // list (last `todo` still pending/in_progress) means the turn ended
+          // without a final update — it's stale, not in-flight. Re-seeding it
+          // would re-pin "Tasks N/M" above the composer and undo the turn-end
+          // clear (and survive restarts, since it's read back from history).
+          // todosForHydration restores only a *finished* list (its short linger
+          // shows the last checkmark); anything still active is dropped.
+          const restored = todosForHydration(latestSessionTodos(messages))
 
-          if (todos && todoListActive(todos)) {
-            setSessionTodos(runtimeSessionId, todos)
+          if (restored) {
+            setSessionTodos(runtimeSessionId, restored)
           } else {
             clearSessionTodos(runtimeSessionId)
           }
@@ -691,6 +544,42 @@ export function DesktopController() {
     },
     [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
   )
+
+  const refreshActiveMessagingTranscript = useCallback(async () => {
+    const storedSessionId = selectedStoredSessionIdRef.current
+    const runtimeSessionId = activeSessionIdRef.current
+
+    if (!storedSessionId || !runtimeSessionId || busyRef.current) {
+      return
+    }
+
+    const stored = $messagingSessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+
+    if (!stored || !isMessagingSource(stored.source)) {
+      return
+    }
+
+    try {
+      const latest = await getSessionMessages(storedSessionId, stored.profile)
+      const signatureKey = `${stored.profile ?? 'default'}:${storedSessionId}`
+      const sig = sessionMessagesSignature(latest.messages)
+
+      if (messagingTranscriptSignatureRef.current.get(signatureKey) === sig) {
+        return
+      }
+
+      messagingTranscriptSignatureRef.current.set(signatureKey, sig)
+      const messages = toChatMessages(latest.messages)
+
+      updateSessionState(
+        runtimeSessionId,
+        state => ({ ...state, messages: preserveLocalAssistantErrors(messages, state.messages) }),
+        storedSessionId
+      )
+    } catch {
+      // Non-fatal: next poll or manual refresh can hydrate.
+    }
+  }, [activeSessionIdRef, busyRef, selectedStoredSessionIdRef, updateSessionState])
 
   const { handleGatewayEvent } = useMessageStream({
     activeSessionIdRef,
@@ -924,6 +813,7 @@ export function DesktopController() {
     busyRef,
     createBackendSessionForSend,
     handleSkinCommand,
+    openMemoryGraph: openStarmap,
     refreshSessions,
     requestGateway,
     resumeStoredSession: resumeSession,
@@ -1029,6 +919,58 @@ export function DesktopController() {
     }
   }, [gatewayState, refreshCronJobs])
 
+  // Keep messaging-platform session lists live: inbound Telegram/WeChat/Discord
+  // turns are written by the gateway, not the desktop websocket, so they won't
+  // appear without polling.
+  useEffect(() => {
+    if (gatewayState !== 'open') {
+      return
+    }
+
+    const tick = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshMessagingSessions()
+      }
+    }
+
+    const intervalId = window.setInterval(tick, MESSAGING_POLL_INTERVAL_MS)
+    document.addEventListener('visibilitychange', tick)
+
+    return () => {
+      window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [gatewayState, refreshMessagingSessions])
+
+  // Only the open messaging transcript needs a poll — local chats are already
+  // live over the websocket, so arming a timer for them would just no-op every
+  // tick. Gate on the active session actually being a messaging source.
+  const activeIsMessaging =
+    !!selectedStoredSessionId &&
+    isMessagingSource(messagingSessions.find(s => sessionMatchesStoredId(s, selectedStoredSessionId))?.source)
+
+  // Keep the currently-viewed messaging transcript live.
+  useEffect(() => {
+    if (gatewayState !== 'open' || !activeIsMessaging) {
+      return
+    }
+
+    const tick = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshActiveMessagingTranscript()
+      }
+    }
+
+    const intervalId = window.setInterval(tick, ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS)
+    document.addEventListener('visibilitychange', tick)
+    tick()
+
+    return () => {
+      window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [activeIsMessaging, gatewayState, refreshActiveMessagingTranscript])
+
   useEffect(() => {
     if (gatewayState === 'open' && !activeSessionId && freshDraftReady) {
       void refreshCurrentModel()
@@ -1060,7 +1002,6 @@ export function DesktopController() {
     commandCenterOpen,
     extraLeftItems: statusbarItemGroups.flat.left,
     extraRightItems: statusbarItemGroups.flat.right,
-    gatewayLogLines,
     gatewayState,
     inferenceStatus,
     openAgents,
@@ -1095,12 +1036,12 @@ export function DesktopController() {
     />
   )
 
-  // One PTY-backed terminal mounted forever; <TerminalSlot /> placeholders decide
-  // where it shows. Lives in main's stacking context (not the root overlay layer)
-  // so pane resize handles still paint above it. Toggling never rebuilds the shell.
-  const mainOverlays = (
-    <PersistentTerminal cwd={currentCwd} onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
-  )
+  // The persistent xterm layer (one host per terminal tab), CSS-overlaid onto the
+  // pane's <TerminalSlot />. Lives in main's stacking context (not the root overlay
+  // layer) so pane resize handles still paint above it. Terminals own their state
+  // (incl. a snapshotted cwd) independent of the session, so switching sessions
+  // never rebuilds or closes them; toggling the pane never rebuilds the shells.
+  const mainOverlays = <PersistentTerminal onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
 
   const overlays = (
     <>
@@ -1127,6 +1068,7 @@ export function DesktopController() {
       <PetGenerateOverlay />
       <SessionSwitcher />
       <FileActionDialogs />
+      <RemoteFolderPicker />
 
       {settingsOpen && (
         <Suspense fallback={null}>
@@ -1179,6 +1121,12 @@ export function DesktopController() {
       {profilesOpen && (
         <Suspense fallback={null}>
           <ProfilesView onClose={closeOverlayToPreviousRoute} />
+        </Suspense>
+      )}
+
+      {starmapOpen && (
+        <Suspense fallback={null}>
+          <StarmapView onClose={closeOverlayToPreviousRoute} />
         </Suspense>
       )}
     </>
@@ -1329,7 +1277,7 @@ export function DesktopController() {
           terminalAsRow ? 'border-l border-(--ui-stroke-secondary) pt-0' : 'pt-(--titlebar-height)'
         )}
       >
-        <TerminalSlot />
+        <TerminalPaneChrome />
       </div>
     </Pane>
   )

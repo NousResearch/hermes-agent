@@ -28,15 +28,12 @@ guarantee.
 from __future__ import annotations
 
 import shutil
-import subprocess
 import sys
 from typing import Sequence
 
 __all__ = [
     "IS_WINDOWS",
     "resolve_node_command",
-    "run",
-    "popen",
     "windows_detach_flags",
     "windows_detach_flags_without_breakaway",
     "windows_hide_flags",
@@ -202,44 +199,6 @@ def windows_hide_flags() -> int:
     if not IS_WINDOWS:
         return 0
     return _CREATE_NO_WINDOW
-
-
-# -----------------------------------------------------------------------------
-# The single chokepoint for spawning a process without a console window.
-# -----------------------------------------------------------------------------
-
-
-def _no_window(kwargs: dict) -> dict:
-    """OR ``CREATE_NO_WINDOW`` into ``creationflags`` on Windows (no-op on POSIX).
-
-    Merges rather than overwrites, so a caller that needs detach semantics can
-    pass ``creationflags=windows_detach_flags()`` and still go through here —
-    ``CREATE_NO_WINDOW`` is already part of that bundle, so the OR is idempotent.
-    """
-    if IS_WINDOWS:
-        kwargs["creationflags"] = kwargs.get("creationflags", 0) | _CREATE_NO_WINDOW
-    return kwargs
-
-
-def run(cmd, **kwargs):
-    """``subprocess.run`` that never flashes a console window on Windows.
-
-    This is the primitive every Hermes spawn of a *console-subsystem* program
-    (``taskkill``, ``schtasks``, ``agent-browser``, ``git-bash``, version
-    probes, …) must use. Routing through one function makes "no visible
-    terminal" structural instead of a per-call-site rule that gets forgotten —
-    which is exactly how cron-driven and future spawns leaked windows before.
-
-    Python child processes are additionally covered by the ``FreeConsole``
-    catch-all in :mod:`hermes_bootstrap`, but native exes can't run that, so the
-    spawn-time flag here is the only thing that helps them.
-    """
-    return subprocess.run(cmd, **_no_window(kwargs))
-
-
-def popen(cmd, **kwargs):
-    """``subprocess.Popen`` counterpart of :func:`run` — see its docstring."""
-    return subprocess.Popen(cmd, **_no_window(kwargs))
 
 
 def windows_detach_popen_kwargs() -> dict:

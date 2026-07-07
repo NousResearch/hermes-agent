@@ -20,7 +20,6 @@ import re
 import secrets
 import shutil
 import subprocess
-from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 import threading
 import time
 import uuid
@@ -474,7 +473,11 @@ class RaftAdapter(BasePlatformAdapter):
             self._bridge_token = secrets.token_hex(32)
             logger.info("[raft] Auto-generated bridge token")
 
-        app = web.Application()
+        # client_max_size makes aiohttp enforce the cap on every read path,
+        # including Transfer-Encoding: chunked bodies that carry no
+        # Content-Length and would otherwise bypass the header checks below
+        # (mirrors gateway/platforms/webhook.py's connect()).
+        app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get("/health", self._handle_health)
         app.router.add_post(self._path, self._handle_wake)
         app.router.add_post("/activity", self._handle_activity)
@@ -543,7 +546,7 @@ class RaftAdapter(BasePlatformAdapter):
         env = {**os.environ, "RAFT_CHANNEL_TOKEN": self._bridge_token}
         try:
             self._bridge_process = subprocess.Popen(
-                cmd, env=env, stdin=subprocess.DEVNULL, **windows_detach_popen_kwargs()
+                cmd, env=env, stdin=subprocess.DEVNULL
             )
             logger.info("[raft] Spawned bridge pid=%d profile=%s endpoint=%s", self._bridge_process.pid, profile, endpoint)
         except Exception:
@@ -601,8 +604,16 @@ class RaftAdapter(BasePlatformAdapter):
 
         try:
             raw_body = await request.read()
+        except web.HTTPRequestEntityTooLarge:
+            # aiohttp's client_max_size tripped — chunked or lying
+            # Content-Length. Same 413 as the header check above.
+            return web.json_response({"ok": False, "error": "payload_too_large"}, status=413)
         except Exception:
             return web.json_response({"ok": False, "error": "bad_request"}, status=400)
+        if len(raw_body) > self._max_body_bytes:
+            # Defense in depth: enforce the cap on the actual bytes read even
+            # if the server-level limit was bypassed or misconfigured.
+            return web.json_response({"ok": False, "error": "payload_too_large"}, status=413)
 
         payload: Dict[str, Any] = {}
         if raw_body.strip():
@@ -647,7 +658,20 @@ class RaftAdapter(BasePlatformAdapter):
             return web.json_response({"ok": False, "error": "payload_too_large"}, status=413)
 
         try:
-            payload = json.loads(await request.text())
+            raw_text = await request.text()
+        except web.HTTPRequestEntityTooLarge:
+            # aiohttp's client_max_size tripped — chunked or lying
+            # Content-Length. Same 413 as the header check above.
+            return web.json_response({"ok": False, "error": "payload_too_large"}, status=413)
+        except Exception as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        if len(raw_text.encode("utf-8")) > self._max_body_bytes:
+            # Defense in depth: enforce the cap on the actual bytes read even
+            # if the server-level limit was bypassed or misconfigured.
+            return web.json_response({"ok": False, "error": "payload_too_large"}, status=413)
+
+        try:
+            payload = json.loads(raw_text)
             self._activity_queue.push(payload)
         except json.JSONDecodeError:
             return web.json_response({"ok": False, "error": "invalid_json"}, status=400)
@@ -755,6 +779,48 @@ def _env_enablement() -> Optional[dict]:
     return {"enabled": True}
 
 
+def interactive_setup() -> None:
+    """Interactive ``hermes gateway setup`` flow for the Raft platform.
+
+    Lazy-imports CLI helpers so the plugin stays importable in gateway runtime
+    and test contexts. The flow persists ``RAFT_PROFILE`` to the Hermes env
+    file so the Raft adapter auto-enables after a gateway restart.
+    """
+    from hermes_cli.cli_output import (
+        print_header,
+        print_info,
+        print_success,
+        print_warning,
+        prompt,
+        prompt_yes_no,
+    )
+    from hermes_cli.config import get_env_value, save_env_value
+
+    print_header("Raft")
+    existing_profile = get_env_value("RAFT_PROFILE")
+    if existing_profile:
+        print_info(f"Raft: already configured (profile: {existing_profile})")
+        if not prompt_yes_no("Reconfigure Raft?", False):
+            print_info(f"Keeping RAFT_PROFILE={existing_profile}.")
+            return
+
+    print_info("Connect Hermes to Raft as an external agent.")
+    print_info("Create the External Agent in Raft first, then run:")
+    print_info("  raft agent login --server <server-url> --agent <agent-id> --profile-slug <slug>")
+    print()
+
+    profile = prompt("Raft profile slug", default=existing_profile or "")
+    if not profile:
+        print_warning("Raft profile slug is required; skipping Raft setup")
+        return
+
+    save_env_value("RAFT_PROFILE", profile.strip())
+
+    print()
+    print_success("Raft configuration saved")
+    print_info("Restart the gateway for changes to take effect: hermes gateway restart")
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
@@ -765,6 +831,7 @@ def register(ctx) -> None:
         is_connected=_is_connected,
         required_env=["RAFT_PROFILE"],
         install_hint="Install the Raft CLI from https://raft.build",
+        setup_fn=interactive_setup,
         env_enablement_fn=_env_enablement,
         emoji="🔔",
         platform_hint=(

@@ -13,6 +13,7 @@ import time
 import pytest
 
 from hermes_state import SessionDB
+import tools.session_search_tool as session_search_tool_module
 from tools.session_search_tool import (
     SESSION_SEARCH_SCHEMA,
     _HIDDEN_SESSION_SOURCES,
@@ -570,6 +571,50 @@ class TestCrossProfileRead:
             assert result["success"] is True, kwargs
             assert result["mode"] == "read"
             assert result["session_id"] == "s_other"
+
+    def _force_current_scope(self, monkeypatch, current="current"):
+        monkeypatch.setattr(
+            session_search_tool_module,
+            "_session_search_profile_scope",
+            lambda: "current",
+        )
+        monkeypatch.setattr(
+            session_search_tool_module,
+            "_current_profile_name",
+            lambda: current,
+        )
+
+    def test_current_scope_blocks_profile_param(self, db, tmp_path, monkeypatch):
+        self._force_current_scope(monkeypatch, current="current")
+        self._patch_profiles(monkeypatch, tmp_path, exists=True)
+
+        result = json.loads(session_search(session_id="s_other", profile="other", db=db))
+
+        assert result["success"] is False
+        assert "profile_scope=current" in result.get("error", "")
+        assert "requested profile 'other'" in result.get("error", "")
+
+    def test_current_scope_blocks_embedded_foreign_profile(self, db, monkeypatch):
+        self._force_current_scope(monkeypatch, current="current")
+
+        result = json.loads(session_search(session_id="other/s_other", db=db))
+
+        assert result["success"] is False
+        assert "profile_scope=current" in result.get("error", "")
+        assert "requested profile 'other'" in result.get("error", "")
+
+    def test_current_scope_does_not_scan_profiles_for_bare_id(self, db, monkeypatch):
+        self._force_current_scope(monkeypatch, current="current")
+
+        def fail_if_called(session_id):
+            raise AssertionError("_locate_session_db must not be called in current scope")
+
+        monkeypatch.setattr(session_search_tool_module, "_locate_session_db", fail_if_called)
+
+        result = json.loads(session_search(session_id="foreign_bare_id", db=db))
+
+        assert result["success"] is False
+        assert "session_id not found" in result.get("error", "")
 
 
 # =========================================================================

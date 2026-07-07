@@ -92,6 +92,16 @@ async def test_notify_on_complete_sets_internal_flag(monkeypatch, tmp_path):
     runner = _build_runner(monkeypatch, tmp_path)
     adapter = runner.adapters[Platform.DISCORD]
 
+    # Register the session as active so the session-key guard passes (#60426)
+    from gateway.platforms.base import SessionSource
+    session_key = "agent:main:discord:dm:123"
+    runner.session_store._entries[session_key] = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="123",
+        chat_type="dm",
+        user_id="test_user",
+    )
+
     await runner._run_process_watcher(_watcher_dict_with_notify())
 
     assert adapter.handle_message.await_count == 1
@@ -128,6 +138,16 @@ async def test_poll_does_not_suppress_notify_on_complete_watcher(monkeypatch, tm
 
     runner = _build_runner(monkeypatch, tmp_path)
     adapter = runner.adapters[Platform.DISCORD]
+
+    # Register the session as active so the session-key guard passes (#60426)
+    from gateway.platforms.base import SessionSource
+    session_key = "agent:main:discord:dm:123"
+    runner.session_store._entries[session_key] = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="123",
+        chat_type="dm",
+        user_id="test_user",
+    )
 
     watcher = _watcher_dict_with_notify()
     watcher["session_id"] = session.id
@@ -258,6 +278,16 @@ async def test_notify_on_complete_preserves_user_identity(monkeypatch, tmp_path)
 
     runner = _build_runner(monkeypatch, tmp_path)
     adapter = runner.adapters[Platform.DISCORD]
+
+    # Register the session as active so the session-key guard passes (#60426)
+    from gateway.platforms.base import SessionSource
+    session_key = "agent:main:discord:dm:123"
+    runner.session_store._entries[session_key] = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="123",
+        chat_type="dm",
+        user_id="test_user",
+    )
 
     watcher = _watcher_dict_with_notify()
     watcher["user_id"] = "user-42"

@@ -11,6 +11,7 @@ export {
 export {
   GatewayReauthRequiredError,
   buildHermesWebSocketUrl,
+  isGatewayAuthShapedError,
   isGatewayReauthRequired,
   resolveGatewayWsUrl,
   type GatewayAuthMode,

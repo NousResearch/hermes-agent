@@ -1,0 +1,30 @@
+# Hermes Agentic Trader — example configuration (P0 paper mode)
+# Copy to ~/.hermes/trader/hermes_trader.yaml or set HERMES_TRADER_CONFIG
+
+mode: paper  # paper | live (live requires signed ~/.hermes/trader/mandate.json)
+
+primary_chain: base
+allowed_chains:
+  - base
+  - ethereum
+  - arbitrum
+
+max_position_pct: 5.0
+max_daily_loss_pct: 3.0
+max_slippage_bps: 100
+scan_interval_minutes: 15
+min_pool_liquidity_usd: 100000
+min_confidence: 0.6
+memory_retrieval_limit: 3
+reflection_loss_threshold_usd: 5.0
+calibration_miscalibration_gap: 0.15
+
+# P5 — production hardening
+rollout_stage: steady  # paper | canary | limited | steady
+# rollout_capital_cap_usd: 50  # optional override; presets apply per stage
+max_write_tools_per_hour: 10
+consecutive_loss_alert_count: 3
+gate_reject_spike_threshold: 10
+enable_size_modifier: false  # reduce-only sizing inside RiskGate
+
+mcp_server_name: defi-trading

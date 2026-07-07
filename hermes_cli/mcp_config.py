@@ -38,6 +38,11 @@ _MCP_PRESETS: Dict[str, Dict[str, Any]] = {
         "command": "codex",
         "args": ["mcp-server"],
     },
+    "defi-trading": {
+        "command": "npx",
+        "args": ["-y", "defi-trading-mcp@latest"],
+        "paper_mode_tools": True,
+    },
 }
 
 
@@ -220,6 +225,11 @@ def _apply_mcp_preset(
         server_config["command"] = command
     if cmd_args:
         server_config["args"] = cmd_args
+
+    if preset.get("paper_mode_tools"):
+        from hermes_trader.tools import paper_mode_mcp_tools_include
+
+        server_config.setdefault("tools", {})["include"] = paper_mode_mcp_tools_include()
 
     return url, command, cmd_args, True
 

@@ -1,0 +1,80 @@
+# Nous-approved MCP catalog entry for Hermes Agentic Trader (P0).
+# Paper-safe tool surface installed by default; live swap tools require
+# explicit opt-in via `hermes mcp configure defi-trading`.
+manifest_version: 1
+
+name: defi-trading
+description: Base/EVM DeFi trading via defi-trading-mcp — portfolio, pool intel, quotes (paper-safe defaults).
+source: https://github.com/edkdev/defi-trading-mcp
+
+transport:
+  type: stdio
+  command: npx
+  args:
+    - "-y"
+    - "defi-trading-mcp@latest"
+
+auth:
+  type: api_key
+  env:
+    - name: USER_ADDRESS
+      prompt: "EVM wallet address (0x...)"
+      required: true
+      secret: false
+    - name: USER_PRIVATE_KEY
+      prompt: "EVM private key (local signing only — stored in ~/.hermes/.env)"
+      required: true
+      secret: true
+    - name: COINGECKO_API_KEY
+      prompt: "CoinGecko API key (CG-...)"
+      required: true
+      secret: true
+    - name: ALCHEMY_API_KEY
+      prompt: "Alchemy API key (optional — premium Base/EVM RPCs)"
+      required: false
+      secret: true
+      default: ""
+
+# Paper-mode allowlist: read + quote tools only. execute_swap and
+# submit_gasless_swap are intentionally omitted — enable them in live mode
+# after P1 mandate signing via `hermes mcp configure defi-trading`.
+tools:
+  default_enabled:
+    - get_portfolio_tokens
+    - get_portfolio_balances
+    - get_portfolio_transactions
+    - get_trending_pools
+    - get_new_pools
+    - get_pool_ohlcv
+    - get_pool_trades
+    - get_token_price
+    - get_token_data
+    - get_token_info
+    - search_pools
+    - get_swap_price
+    - get_swap_quote
+    - get_supported_chains
+    - get_gasless_price
+    - get_gasless_quote
+    - get_gasless_status
+    - convert_wei_to_formatted
+    - convert_formatted_to_wei
+
+post_install: |
+  Hermes Agentic Trader P0 runs in paper mode by default.
+
+  1. Install the skill:
+       hermes skills install official/trading/hermes-agentic-trader
+
+  2. Copy config:
+       mkdir -p ~/.hermes/trader
+       cp config/hermes_trader.example.yaml ~/.hermes/trader/hermes_trader.yaml
+
+  3. Start a new Hermes session — use read/quote MCP tools on Base.
+
+  Live swaps (execute_swap, submit_gasless_swap) require:
+    - mode: live in ~/.hermes/trader/hermes_trader.yaml
+    - Signed ~/.hermes/trader/mandate.json (see hermes_trader/risk/mandate.py)
+    - Enable write tools: hermes mcp configure defi-trading
+
+  Never commit private keys. Keys live only in ~/.hermes/.env.

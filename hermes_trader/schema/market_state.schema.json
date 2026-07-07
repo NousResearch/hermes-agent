@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.local/schemas/market_state.schema.json",
+  "title": "MarketState",
+  "description": "Unified perception snapshot from defi-trading-mcp tools",
+  "type": "object",
+  "required": ["chain", "captured_at", "portfolio_tokens", "trending_pools", "new_pools"],
+  "additionalProperties": false,
+  "properties": {
+    "chain": { "type": "string", "minLength": 1 },
+    "captured_at": { "type": "string", "format": "date-time" },
+    "portfolio_tokens": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["chain", "symbol", "address", "balance"],
+        "properties": {
+          "chain": { "type": "string" },
+          "symbol": { "type": "string" },
+          "address": { "type": "string" },
+          "balance": { "type": "number" },
+          "balance_usd": { "type": ["number", "null"] },
+          "price_usd": { "type": ["number", "null"] }
+        }
+      }
+    },
+    "trending_pools": { "$ref": "#/$defs/pool_list" },
+    "new_pools": { "$ref": "#/$defs/pool_list" }
+  },
+  "$defs": {
+    "pool_list": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["chain", "pool_address", "base_token_symbol", "quote_token_symbol"],
+        "properties": {
+          "chain": { "type": "string" },
+          "pool_address": { "type": "string" },
+          "base_token_symbol": { "type": "string" },
+          "quote_token_symbol": { "type": "string" },
+          "liquidity_usd": { "type": ["number", "null"] },
+          "volume_24h_usd": { "type": ["number", "null"] },
+          "price_change_24h_pct": { "type": ["number", "null"] },
+          "source": { "type": "string" }
+        }
+      }
+    }
+  }
+}

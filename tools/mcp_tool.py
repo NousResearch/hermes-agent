@@ -3856,6 +3856,50 @@ def _mark_server_call_started(server: Any) -> None:
         mark_tool_call()
 
 
+def _maybe_audit_trader_mcp_call(
+    *,
+    server_name: str,
+    tool_name: str,
+    args: dict,
+    response: str,
+    latency_ms: float,
+) -> None:
+    """Best-effort audit + write-rate recording for defi-trading MCP calls."""
+    try:
+        from hermes_trader.audit.logger import audit_mcp_call
+        from hermes_trader.audit.rate_limit import WriteToolRateLimiter
+        from hermes_trader.config import load_trader_config
+        from hermes_trader.tools import LIVE_WRITE_TOOLS
+
+        cfg = load_trader_config()
+        if server_name != cfg.mcp_server_name:
+            return
+
+        result_status = "ok"
+        error_message = ""
+        try:
+            parsed = json.loads(response)
+            if isinstance(parsed, dict) and parsed.get("error"):
+                result_status = "error"
+                error_message = str(parsed["error"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        audit_mcp_call(
+            server_name=server_name,
+            tool_name=tool_name,
+            args=args,
+            result_status=result_status,
+            latency_ms=latency_ms,
+            error_message=error_message,
+        )
+
+        if result_status == "ok" and tool_name in LIVE_WRITE_TOOLS:
+            WriteToolRateLimiter(max_per_hour=cfg.max_write_tools_per_hour).record()
+    except Exception:
+        pass
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -3864,6 +3908,26 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """
 
     def _handler(args: dict, **kwargs) -> str:
+        started = time.monotonic()
+
+        try:
+            from hermes_trader.hooks.pre_trade import intercept_mcp_tool_call
+
+            blocked = intercept_mcp_tool_call(server_name, tool_name, args)
+            if blocked:
+                response = json.dumps({"error": blocked}, ensure_ascii=False)
+                _maybe_audit_trader_mcp_call(
+                    server_name=server_name,
+                    tool_name=tool_name,
+                    args=args,
+                    response=response,
+                    latency_ms=(time.monotonic() - started) * 1000,
+                )
+                return response
+        except Exception:
+            # Trader hook is optional — never break unrelated MCP servers.
+            pass
+
         # Circuit breaker: if this server has failed too many times
         # consecutively, short-circuit with a clear message so the model
         # stops retrying and uses alternative approaches (#10447).
@@ -4004,6 +4068,13 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     _reset_server_error(server_name)  # success — reset
             except (json.JSONDecodeError, TypeError):
                 _reset_server_error(server_name)  # non-JSON = success
+            _maybe_audit_trader_mcp_call(
+                server_name=server_name,
+                tool_name=tool_name,
+                args=args,
+                response=result,
+                latency_ms=(time.monotonic() - started) * 1000,
+            )
             return result
         except InterruptedError:
             return _interrupted_call_result()
@@ -4033,11 +4104,19 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 "MCP tool %s/%s call failed: %s",
                 server_name, tool_name, exc,
             )
-            return json.dumps({
+            response = json.dumps({
                 "error": _sanitize_error(
                     f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
                 )
             }, ensure_ascii=False)
+            _maybe_audit_trader_mcp_call(
+                server_name=server_name,
+                tool_name=tool_name,
+                args=args,
+                response=response,
+                latency_ms=(time.monotonic() - started) * 1000,
+            )
+            return response
 
     return _handler
 

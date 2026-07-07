@@ -413,6 +413,38 @@ class TestMcpAdd:
         out = capsys.readouterr().out
         assert "Unknown MCP preset" in out
 
+    def test_defi_trading_preset_applies_paper_tool_allowlist(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """defi-trading preset wires npx transport and paper-mode tools.include."""
+        from hermes_trader.tools import paper_mode_mcp_tools_include
+
+        fake_tools = [FakeTool(name, f"tool {name}") for name in paper_mode_mcp_tools_include()]
+
+        def mock_probe(name, config, **kw):
+            assert name == "defi-trading"
+            assert config["command"] == "npx"
+            assert config["args"] == ["-y", "defi-trading-mcp@latest"]
+            assert config["tools"]["include"] == paper_mode_mcp_tools_include()
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import read_raw_config
+
+        cmd_mcp_add(_make_args(name="defi-trading", preset="defi-trading"))
+        out = capsys.readouterr().out
+        assert "Saved" in out
+
+        srv = read_raw_config()["mcp_servers"]["defi-trading"]
+        assert srv["command"] == "npx"
+        assert srv["args"] == ["-y", "defi-trading-mcp@latest"]
+        assert srv["tools"]["include"] == paper_mode_mcp_tools_include()
+
 
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_test

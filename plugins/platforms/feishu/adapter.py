@@ -965,7 +965,7 @@ def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -
     if actions:
         lines.append(f"Actions: {', '.join(actions)}")
 
-    text_content = "\n".join(lines[:12]).strip() or FALLBACK_INTERACTIVE_TEXT
+    text_content = "\n".join(lines[:100]).strip() or FALLBACK_INTERACTIVE_TEXT
     return FeishuNormalizedMessage(
         raw_type=message_type,
         text_content=text_content,
@@ -1066,6 +1066,7 @@ def _collect_text_segments(value: Any, *, in_rich_block: bool) -> List[str]:
         "button",
         "select_static",
         "date_picker",
+        "text",
     }
 
     segments: List[str] = []
@@ -3256,6 +3257,15 @@ class FeishuAdapter(BasePlatformAdapter):
             or getattr(message, "root_id", None)
             or None
         )
+        if not reply_to_message_id:
+            api_message = await self._fetch_message_detail(message_id)
+            if api_message:
+                reply_to_message_id = (
+                    getattr(api_message, "parent_id", None)
+                    or getattr(api_message, "upper_message_id", None)
+                    or getattr(api_message, "root_id", None)
+                    or None
+                )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
 
         sender_primary = (
@@ -4160,7 +4170,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return None
 
     async def _fetch_message_text(self, message_id: str) -> Optional[str]:
-        if not self._client or not message_id:
+        if not getattr(self, "_client", None) or not message_id:
             return None
         if message_id in self._message_text_cache:
             self._message_text_cache.move_to_end(message_id)
@@ -4190,6 +4200,24 @@ class FeishuAdapter(BasePlatformAdapter):
             return text
         except Exception:
             logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
+            return None
+
+    async def _fetch_message_detail(self, message_id: str) -> Optional[Any]:
+        """Fetch full message object from Feishu API, including reply parent fields."""
+        if not getattr(self, "_client", None) or not message_id:
+            return None
+        try:
+            request = self._build_get_message_request(message_id)
+            response = await self._run_blocking(self._client.im.v1.message.get, request)
+            if not response or getattr(response, "success", lambda: False)() is False:
+                code = getattr(response, "code", "unknown")
+                msg = getattr(response, "msg", "message lookup failed")
+                logger.warning("[Feishu] Failed to fetch message detail %s: [%s] %s", message_id, code, msg)
+                return None
+            items = getattr(getattr(response, "data", None), "items", None) or []
+            return items[0] if items else None
+        except Exception:
+            logger.warning("[Feishu] Failed to fetch message detail %s", message_id, exc_info=True)
             return None
 
     def _extract_text_from_raw_content(
@@ -4858,7 +4886,10 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _build_get_message_request(message_id: str) -> Any:
         if "GetMessageRequest" in globals():
-            return GetMessageRequest.builder().message_id(message_id).build()
+            request = GetMessageRequest.builder().message_id(message_id).build()
+            if hasattr(request, "add_query"):
+                request.add_query("card_msg_content_type", "user_card_content")
+            return request
         return SimpleNamespace(message_id=message_id)
 
     @staticmethod

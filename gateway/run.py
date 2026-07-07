@@ -10375,7 +10375,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
+            _REPLY_TO_LIMIT = 3000
+            full_reply_text = event.reply_to_text or ""
+            reply_snippet = full_reply_text[:_REPLY_TO_LIMIT]
+            if len(full_reply_text) > _REPLY_TO_LIMIT:
+                reply_snippet += "\n…[已截断，原文过长]"
             if getattr(event, "reply_to_is_own_message", False):
                 message_text = (
                     f'[Replying to your previous message: "{reply_snippet}"]\n\n'

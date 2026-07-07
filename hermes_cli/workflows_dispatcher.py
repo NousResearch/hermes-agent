@@ -216,6 +216,7 @@ def _create_or_get_agent_task(
             goal_max_turns=node.goal_max_turns,
             workflow_template_id=spec.id,
             current_step_key=node_id,
+            provider_override=node.provider_override,
             model_override=node.model_override,
             idempotency_key=f"workflow:{execution_id}:{node_id}",
         )

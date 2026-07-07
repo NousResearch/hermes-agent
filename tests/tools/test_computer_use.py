@@ -1572,8 +1572,11 @@ class TestCuaDriverSessionReconnect:
             returncode = 0
             stderr = ""
             # Daemon returns a path, not inline base64.
-            stdout = ('{"element_count": 7, "tree_markdown": "- [0] AXButton",'
-                      ' "screenshot_file_path": "%s"}' % str(shot))
+            stdout = json.dumps({
+                "element_count": 7,
+                "tree_markdown": "- [0] AXButton",
+                "screenshot_file_path": str(shot),
+            })
 
         import subprocess as _sp
         orig_run = _sp.run
@@ -1685,6 +1688,44 @@ class TestCaptureEmptyResultClipFallback:
         # CLI recovered the window list; capture resolved the Finder window.
         assert "list_windows" in cli_calls
         assert cap.app == "Finder"
+
+
+class TestCliFallbackUtf8Decoding:
+    """Bug A: `_call_tool_via_cli` must force UTF-8 decoding for cua-driver
+    stdout so non-cp932 window titles do not break Japanese Windows hosts."""
+
+    def test_call_tool_via_cli_uses_utf8_with_replace(self):
+        from typing import Any, cast
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+        captured_kw = {}
+
+        class FakeProc:
+            returncode = 0
+            stderr = ""
+            stdout = ('{"element_count": 2, "tree_markdown": '
+                      '"- [0] AXWindow \\"⛂ Claude Code\\""}')
+
+        import subprocess as _sp
+        orig_run = _sp.run
+
+        def fake_run(cmd, **kw):
+            captured_kw.update(kw)
+            return FakeProc()
+
+        _sp.run = fake_run
+        try:
+            out = session._call_tool_via_cli(
+                "get_window_state", {"pid": 1, "window_id": 2}, 30.0
+            )
+        finally:
+            _sp.run = orig_run
+
+        assert captured_kw.get("encoding") == "utf-8"
+        assert captured_kw.get("errors") == "replace"
+        assert "2 elements" in out["data"]
+        assert out["isError"] is False
 
 
 class TestCaptureAppFilterNoMatch:

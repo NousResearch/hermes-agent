@@ -3653,6 +3653,59 @@ def save_config_value(key_path: str, value: any) -> bool:
         return False
 
 
+def _persist_model_switch_runtime_state(result) -> bool:
+    """Persist the complete runtime tuple for a global ``/model`` switch.
+
+    The CLI has two model-switch entry points: the picker path and the typed
+    ``/model <name> --global`` path. Both must persist the same runtime fields
+    or a later session can keep stale ``model.base_url`` / ``model.api_mode``
+    from the previous provider (#25106).
+
+    Read the raw on-disk config instead of ``load_config()``'s merged defaults
+    so a focused model switch does not expand a minimal user config into a full
+    generated config file. Return ``True`` only when a write was attempted and
+    completed.
+    """
+    try:
+        from hermes_cli.config import is_managed, read_raw_config, save_config
+
+        if is_managed():
+            logger.warning("Cannot persist model switch while Hermes config is managed")
+            return False
+
+        cfg = read_raw_config() or {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+
+        model_cfg = cfg.get("model")
+        if isinstance(model_cfg, dict):
+            model_cfg = dict(model_cfg)
+        elif isinstance(model_cfg, str) and model_cfg.strip():
+            model_cfg = {"default": model_cfg.strip()}
+        else:
+            model_cfg = {}
+
+        model_cfg["default"] = result.new_model
+        model_cfg["provider"] = result.target_provider
+
+        preserve_keys = {("model", "default"), ("model", "provider")}
+        if result.base_url:
+            model_cfg["base_url"] = result.base_url
+            preserve_keys.add(("model", "base_url"))
+        else:
+            model_cfg.pop("base_url", None)
+        if result.api_mode:
+            model_cfg["api_mode"] = result.api_mode
+            preserve_keys.add(("model", "api_mode"))
+        else:
+            model_cfg.pop("api_mode", None)
+
+        cfg["model"] = model_cfg
+        save_config(cfg, preserve_keys=preserve_keys)
+        return True
+    except Exception as e:
+        logger.error("Failed to persist model switch runtime state: %s", e)
+        return False
 
 
 # ============================================================================
@@ -7865,10 +7918,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if result.warning_message:
             _cprint(f"    ⚠ {result.warning_message}")
         if persist_global:
-            save_config_value("model.default", result.new_model)
-            if result.provider_changed:
-                save_config_value("model.provider", result.target_provider)
-            _cprint("    Saved to config.yaml (--global)")
+            if _persist_model_switch_runtime_state(result):
+                _cprint("    Saved to config.yaml (--global)")
+            else:
+                _cprint("    ⚠ Failed to save to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")
 
@@ -8177,10 +8230,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Persistence
         if persist_global:
-            save_config_value("model.default", result.new_model)
-            if result.provider_changed:
-                save_config_value("model.provider", result.target_provider)
-            _cprint("    Saved to config.yaml")
+            if _persist_model_switch_runtime_state(result):
+                _cprint("    Saved to config.yaml")
+            else:
+                _cprint("    ⚠ Failed to save to config.yaml")
         else:
             _cprint("    (session only — add --global to persist)")
 

@@ -2008,6 +2008,39 @@ class TestVoiceTimeoutCleansRunnerState:
         assert reset_calls == [111]
 
     @pytest.mark.asyncio
+    async def test_voice_input_suspends_inactivity_timer(self, adapter):
+        """STT + agent turn work from VC input should not race the idle timer."""
+        events = []
+
+        class FakeReceiver:
+            def __init__(self):
+                self._running = True
+
+            def check_silence(self):
+                self._running = False
+                return [(222, b"pcm")]
+
+        adapter._voice_receivers[111] = FakeReceiver()
+        adapter._client = MagicMock()
+        adapter._client.get_guild.return_value = None
+        adapter._is_allowed_user = lambda *args, **kwargs: True
+        adapter._cancel_voice_timeout = lambda guild_id: events.append(("cancel", guild_id))
+        adapter._reset_voice_timeout = lambda guild_id: events.append(("reset", guild_id))
+
+        async def process_voice_input(guild_id, user_id, pcm_data):
+            events.append(("process", guild_id, user_id, pcm_data))
+
+        adapter._process_voice_input = process_voice_input
+
+        await adapter._voice_listen_loop(111)
+
+        assert events == [
+            ("cancel", 111),
+            ("process", 111, 222, b"pcm"),
+            ("reset", 111),
+        ]
+
+    @pytest.mark.asyncio
     async def test_timeout_calls_disconnect_callback(self, adapter):
         """_voice_timeout_handler calls _on_voice_disconnect with chat_id."""
         callback_calls = []

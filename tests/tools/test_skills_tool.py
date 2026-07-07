@@ -307,6 +307,28 @@ class TestFindAllSkills:
         assert [s["name"] for s in skills] == ["knowledge-brain"]
         assert skills[0]["category"] == "linked"
 
+    def test_version_field_from_frontmatter(self, tmp_path):
+        """Version field in SKILL.md frontmatter is exposed in listing."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "versioned-skill",
+                frontmatter_extra="version: 1.2.3\n",
+            )
+            skills = _find_all_skills()
+        assert len(skills) == 1
+        assert skills[0]["name"] == "versioned-skill"
+        assert skills[0]["version"] == "1.2.3"
+
+    def test_version_field_missing_is_none(self, tmp_path):
+        """Skills without a version field should report version as None."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "unversioned-skill")
+            skills = _find_all_skills()
+        assert len(skills) == 1
+        assert skills[0]["name"] == "unversioned-skill"
+        assert skills[0]["version"] is None
+
 
 # ---------------------------------------------------------------------------
 # skills_list
@@ -570,6 +592,99 @@ class TestSkillView:
         assert view_result["available_skills"] == [
             skill["name"] for skill in list_result["skills"]
         ]
+
+    def test_view_returns_version_from_frontmatter(self, tmp_path):
+        """skill_view exposes the version field from SKILL.md frontmatter."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "my-skill",
+                frontmatter_extra="version: 2.5.0\n",
+            )
+            raw = skill_view("my-skill")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["version"] == "2.5.0"
+
+    def test_view_returns_none_version_when_absent(self, tmp_path):
+        """skill_view returns version=None when frontmatter has no version."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "no-version-skill")
+            raw = skill_view("no-version-skill")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["version"] is None
+
+    def test_view_update_available_when_bundled_version_differs(self, tmp_path):
+        """update_available=True and latest_version set when local version
+        differs from bundled (stock) version."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "updatable-skill",
+                frontmatter_extra="version: 1.0.0\n",
+            )
+            # Mock the bundled skill to report a different version
+            with patch(
+                "tools.skills_tool._get_bundled_skill_version",
+                return_value="2.0.0",
+            ):
+                raw = skill_view("updatable-skill")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["update_available"] is True
+        assert result["latest_version"] == "2.0.0"
+
+    def test_view_no_update_when_versions_match(self, tmp_path):
+        """update_available=False and latest_version=None when local
+        version matches bundled version."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "current-skill",
+                frontmatter_extra="version: 3.0.0\n",
+            )
+            with patch(
+                "tools.skills_tool._get_bundled_skill_version",
+                return_value="3.0.0",
+            ):
+                raw = skill_view("current-skill")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["update_available"] is False
+        assert result["latest_version"] is None
+
+    def test_view_no_update_when_no_local_version(self, tmp_path):
+        """Skills without a local version should not report updates."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "bare-skill")
+            with patch(
+                "tools.skills_tool._get_bundled_skill_version",
+                return_value="1.0.0",
+            ):
+                raw = skill_view("bare-skill")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["update_available"] is False
+        assert result["latest_version"] is None
+
+    def test_view_no_update_when_no_bundled_version(self, tmp_path):
+        """Non-bundled skills (no stock version) should not report updates."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "custom-skill",
+                frontmatter_extra="version: 1.0.0\n",
+            )
+            with patch(
+                "tools.skills_tool._get_bundled_skill_version",
+                return_value=None,
+            ):
+                raw = skill_view("custom-skill")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["update_available"] is False
+        assert result["latest_version"] is None
 
 
 class TestSkillViewSecureSetupOnLoad:

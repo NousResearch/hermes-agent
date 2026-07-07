@@ -87,6 +87,9 @@ class ModelInfo:
     def supports_vision(self) -> bool:
         return self.attachment or "image" in self.input_modalities
 
+    def supports_image_generation(self) -> bool:
+        return "image" in self.output_modalities
+
     def supports_pdf(self) -> bool:
         return "pdf" in self.input_modalities
 
@@ -404,10 +407,15 @@ class ModelCapabilities:
 
     supports_tools: bool = True
     supports_vision: bool = False
+    supports_image_generation: bool = False
     supports_reasoning: bool = False
     context_window: int = 200000
     max_output_tokens: int = 8192
     model_family: str = ""
+    output_modalities: Tuple[str, ...] = ()
+
+    def supports_image_generation(self) -> bool:
+        return "image" in self.output_modalities
 
 
 def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
@@ -485,6 +493,21 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
         supports_vision = bool(entry.get("attachment", False))
     supports_reasoning = bool(entry.get("reasoning", False))
 
+    # Image generation: check `modalities.output` for "image".
+    # Models like GPT Image 2, Gemini 3 Pro etc. natively support
+    # generating images — no third-party API needed.
+    output_mods = entry.get("modalities", {})
+    if isinstance(output_mods, dict):
+        output_mods = output_mods.get("output")
+    else:
+        output_mods = None
+    if isinstance(output_mods, list):
+        supports_image_generation = "image" in output_mods
+        output_modalities = tuple(output_mods)
+    else:
+        supports_image_generation = False
+        output_modalities = ()
+
     # Extract limits
     limit = entry.get("limit", {})
     if not isinstance(limit, dict):
@@ -501,10 +524,12 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
     return ModelCapabilities(
         supports_tools=supports_tools,
         supports_vision=supports_vision,
+        supports_image_generation=supports_image_generation,
         supports_reasoning=supports_reasoning,
         context_window=context_window,
         max_output_tokens=max_output_tokens,
         model_family=model_family,
+        output_modalities=output_modalities,
     )
 
 

@@ -617,6 +617,36 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         return False
 
 
+def _get_bundled_skill_version(name: str) -> Optional[str]:
+    """Look up the version of a bundled (stock) skill by name.
+
+    Scans the bundled skills directory (the repo's skills/ dir) for a
+    SKILL.md whose frontmatter ``name`` matches *name*, then returns
+    the ``version`` field from that frontmatter (as a string), or None
+    if the skill is not found or has no version.
+    """
+    try:
+        from tools.skills_sync import _discover_bundled_skills, _get_bundled_dir
+
+        bundled_dir = _get_bundled_dir()
+        for skill_name, skill_dir in _discover_bundled_skills(bundled_dir):
+            if skill_name == name:
+                skill_md = skill_dir / "SKILL.md"
+                if skill_md.exists():
+                    try:
+                        content = skill_md.read_text(encoding="utf-8")[:4000]
+                        frontmatter, _ = _parse_frontmatter(content)
+                        version = frontmatter.get("version")
+                        if version is not None:
+                            return str(version)
+                    except Exception:
+                        pass
+                break
+    except Exception:
+        pass
+    return None
+
+
 def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     """Recursively find all skills in ~/.hermes/skills/ and external dirs.
 
@@ -679,11 +709,17 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
                 category = _get_category_from_path(skill_md)
 
+                # Extract version from frontmatter (agentskills.io standard field)
+                version = frontmatter.get("version")
+                if version is not None:
+                    version = str(version)
+
                 seen_names.add(name)
                 skills.append({
                     "name": name,
                     "description": description,
                     "category": category,
+                    "version": version,
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:
@@ -866,12 +902,18 @@ def _serve_plugin_skill(
                 "Could not preprocess plugin skill %s:%s", namespace, bare, exc_info=True
             )
 
+    # Extract version from plugin skill frontmatter
+    version = parsed_frontmatter.get("version")
+    if version is not None:
+        version = str(version)
+
     return json.dumps(
         {
             "success": True,
             "name": f"{namespace}:{bare}",
             "content": f"{banner}{rendered_content}" if banner else rendered_content,
             "description": description,
+            "version": version,
             "linked_files": None,
             "readiness_status": SkillReadinessStatus.AVAILABLE.value,
         },
@@ -1482,16 +1524,28 @@ def skill_view(
                     "Could not preprocess skill content for %s", skill_name, exc_info=True
                 )
 
+        # Check for bundled skill version updates
+        local_version = str(frontmatter.get("version")) if frontmatter.get("version") is not None else None
+        bundled_version = _get_bundled_skill_version(skill_name)
+        update_available = (
+            bundled_version is not None
+            and local_version is not None
+            and bundled_version != local_version
+        )
+
         result = {
             "success": True,
             "name": skill_name,
             "description": frontmatter.get("description", ""),
+            "version": local_version,
             "tags": tags,
             "related_skills": related_skills,
             "content": rendered_content,
             "path": rel_path,
             "skill_dir": str(skill_dir) if skill_dir else None,
             "linked_files": linked_files if linked_files else None,
+            "update_available": update_available,
+            "latest_version": bundled_version if update_available else None,
             "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'"
             if linked_files
             else None,
@@ -1679,3 +1733,55 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="📚",
 )
+
+
+# ---------------------------------------------------------------------------
+# skill_diff — expose diff_bundled_skill as an agent-callable tool
+# ---------------------------------------------------------------------------
+
+SKILL_DIFF_SCHEMA = {
+    "name": "skill_diff",
+    "description": (
+        "Compare a user's copy of a bundled skill against the current stock "
+        "(bundled) version. Shows line-by-line diffs for text files, and "
+        "reports added/removed/binary differences. Use this to see what "
+        "changed before deciding whether to reset or keep local edits."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": (
+                    "The skill name to diff (must be a bundled skill, "
+                    "i.e. one shipped with hermes). Use skills_list to see "
+                    "available skills."
+                ),
+            },
+        },
+        "required": ["name"],
+    },
+}
+
+
+def skill_diff(name: str) -> str:
+    """Diff a user's bundled skill against the stock (bundled) version.
+
+    Returns JSON with ok, name, found, modified, diffs, and message fields.
+    Non-bundled skills (e.g. hub-installed) return found=False.
+    """
+    from tools.skills_sync import diff_bundled_skill
+
+    result = diff_bundled_skill(name)
+    return json.dumps(result, ensure_ascii=False)
+
+
+registry.register(
+    name="skill_diff",
+    toolset="skills",
+    schema=SKILL_DIFF_SCHEMA,
+    handler=lambda args, **kw: skill_diff(args.get("name", "")),
+    check_fn=check_skills_requirements,
+    emoji="🔍",
+)
+

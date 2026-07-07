@@ -1080,6 +1080,11 @@ def _build_no_backend_setup_message() -> str:
         "→ Image Generation (run `hermes plugins list` to see installed "
         "backends)"
     )
+    lines.append(
+        "  4. Switch to a model that natively supports image generation "
+        "(e.g. GPT Image 2, Gemini 3 Pro) via `hermes model` — "
+        "no third-party API needed"
+    )
     return "\n".join(lines)
 
 
@@ -1107,6 +1112,21 @@ def check_image_generation_requirements() -> bool:
     except ImportError:
         pass
 
+    # Model-native image generation: if the active model supports generating
+    # images natively (e.g. GPT Image 2, Gemini 3 Pro), no third-party API
+    # is needed.
+    try:
+        from agent.auxiliary_client import _read_main_provider, _read_main_model
+        from agent.image_routing import _lookup_supports_image_generation
+
+        active_provider = _read_main_provider()
+        active_model = _read_main_model()
+        if _lookup_supports_image_generation(active_provider, active_model):
+            return True
+    except Exception:
+        pass
+
+    # Probe plugin providers.
     # Probe plugin providers. Discovery is idempotent and cheap.
     try:
         from agent.image_gen_registry import list_providers
@@ -1640,6 +1660,28 @@ def _build_dynamic_image_schema() -> Dict[str, Any]:
         line += f" · model: {model}"
     parts.append(line)
 
+    # Model-native image generation: check if the active model itself
+    # supports generating images without a third-party API.
+    supports_model_native = False
+    try:
+        from agent.auxiliary_client import _read_main_provider, _read_main_model
+        from agent.image_routing import _lookup_supports_image_generation
+
+        active_provider = _read_main_provider()
+        active_model = _read_main_model()
+        supports_model_native = bool(
+            _lookup_supports_image_generation(active_provider, active_model)
+        )
+    except Exception:
+        pass
+
+    if supports_model_native:
+        parts.append(
+            "- this model natively supports image generation — no "
+            "third-party API needed; images are generated directly "
+            "through the model's chat/completions API"
+        )
+
     if "image" in modalities and "text" in modalities:
         max_refs = info.get("max_reference_images") or 0
         ref_note = (
@@ -1657,12 +1699,13 @@ def _build_dynamic_image_schema() -> Dict[str, Any]:
             "- this model is image-to-image / edit only — image_url is REQUIRED"
         )
     else:
-        parts.append(
-            "- this model is text-to-image only — it is NOT capable of "
-            "image-to-image / editing; do not pass image_url or "
-            "reference_image_urls (they will be rejected). Provide a "
-            "text-only prompt."
-        )
+        if not supports_model_native:
+            parts.append(
+                "- this model is text-to-image only — it is NOT capable of "
+                "image-to-image / editing; do not pass image_url or "
+                "reference_image_urls (they will be rejected). Provide a "
+                "text-only prompt."
+            )
 
     return {"description": "\n".join(parts)}
 

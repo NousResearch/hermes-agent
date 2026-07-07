@@ -130,3 +130,79 @@ def test_reset_clears_modified_state(tmp_path):
         result = reset_bundled_skill("foo", restore=True)
         assert result["ok"] is True
         assert list_user_modified_bundled_skills() == []
+
+
+# ---------------------------------------------------------------------------
+# skill_diff  (agent-callable wrapper around diff_bundled_skill)
+# ---------------------------------------------------------------------------
+
+
+def test_skill_diff_pristine_skill(tmp_path):
+    """skill_diff reports no changes for a pristine bundled skill."""
+    import json
+
+    from tools.skills_tool import skill_diff
+
+    bundled, skills_dir, manifest_file = _env(tmp_path)
+    with _patches(bundled, skills_dir, manifest_file):
+        sync_skills(quiet=True)
+        raw = skill_diff("foo")
+    result = json.loads(raw)
+    assert result["ok"] is True
+    assert result["found"] is True
+    assert result["modified"] is False
+    assert result["diffs"] == []
+
+
+def test_skill_diff_modified_skill(tmp_path):
+    """skill_diff reports diffs when a bundled skill has been edited."""
+    import json
+
+    from tools.skills_tool import skill_diff
+
+    bundled, skills_dir, manifest_file = _env(tmp_path)
+    with _patches(bundled, skills_dir, manifest_file):
+        sync_skills(quiet=True)
+        (skills_dir / "category" / "foo" / "helper.py").write_text("print('mine')\n")
+        (skills_dir / "category" / "foo" / "extra.txt").write_text("local note\n")
+
+        raw = skill_diff("foo")
+    result = json.loads(raw)
+    assert result["ok"] is True
+    assert result["found"] is True
+    assert result["modified"] is True
+
+    by_path = {d["path"]: d for d in result["diffs"]}
+    assert by_path["helper.py"]["status"] == "modified"
+    assert by_path["extra.txt"]["status"] == "added"
+
+
+def test_skill_diff_unknown_skill(tmp_path):
+    """skill_diff returns found=False for a non-existent skill name."""
+    import json
+
+    from tools.skills_tool import skill_diff
+
+    bundled, skills_dir, manifest_file = _env(tmp_path)
+    with _patches(bundled, skills_dir, manifest_file):
+        sync_skills(quiet=True)
+        raw = skill_diff("does-not-exist")
+    result = json.loads(raw)
+    assert result["ok"] is False
+    assert result["found"] is False
+
+
+def test_skill_diff_non_bundled_skill(tmp_path):
+    """skill_diff returns found=False for non-bundled (custom) skills."""
+    import json
+
+    from tools.skills_tool import skill_diff
+
+    bundled, skills_dir, manifest_file = _env(tmp_path)
+    with _patches(bundled, skills_dir, manifest_file):
+        sync_skills(quiet=True)
+        # Non-bundled skills won't be in the bundled manifest
+        raw = skill_diff("custom-skill")
+    result = json.loads(raw)
+    assert result["ok"] is False
+    assert result["found"] is False

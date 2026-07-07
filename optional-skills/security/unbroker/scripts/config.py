@@ -82,6 +82,45 @@ def dotenv_env() -> dict:
     return merged
 
 
+# Env vars that indicate a configured stealth/cloud browser backend (Hermes browser feature). Any of
+# these clears soft/managed CAPTCHAs, so any one shifts a captcha-gated broker T2 -> T1.
+_CLOUD_BROWSER_ENV = ("BROWSERBASE_API_KEY", "BROWSER_USE_API_KEY", "FIRECRAWL_API_KEY", "CAMOFOX_URL")
+
+
+def _has_cloud_browser(env: dict) -> bool:
+    return any(env.get(k) for k in _CLOUD_BROWSER_ENV)
+
+
+def hermes_browser_configured() -> bool:
+    """Best-effort: does Hermes ALREADY have a stealth browser wired up (no skill env keys needed)?
+
+    Two no-key paths the env alone can't see (see the Hermes browser docs):
+      - a provider selected in `$HERMES_HOME/config.yaml` (`browser.cloud_provider`, e.g. browserbase,
+        browser-use, firecrawl, or the Nous Subscription gateway);
+      - a Nous Portal subscriber token in `$HERMES_HOME/auth.json` (the Tool Gateway then provides the
+        browser -- Browserbase is a built-in gateway tool, so Portal auth works instead of an API key).
+    Defensive: any read error just returns the env-only picture.
+    """
+    home = paths.hermes_home()
+    try:
+        cfg_text = (home / "config.yaml").read_text(encoding="utf-8", errors="replace")
+        for line in cfg_text.splitlines():
+            s = line.strip()
+            if s.startswith("cloud_provider:"):
+                val = s.split(":", 1)[1].strip().strip('"').strip("'")
+                if val and not val.startswith("#"):
+                    return True
+    except OSError:
+        pass
+    try:
+        auth_text = (home / "auth.json").read_text(encoding="utf-8", errors="replace").lower()
+        if "nous" in auth_text and "access_token" in auth_text:
+            return True
+    except OSError:
+        pass
+    return False
+
+
 def detect_capabilities(env: dict | None = None) -> dict:
     """Report which opt-in upgrades are available without extra setup."""
     env = os.environ if env is None else env
@@ -93,7 +132,16 @@ def detect_capabilities(env: dict | None = None) -> dict:
     )
     mail = emailer.available(env)
     return {
+        # Browserbase needs BOTH the key and a project id to actually run (per the Hermes browser docs).
         "browserbase": bool(env.get("BROWSERBASE_API_KEY")),
+        "browserbase_ready": bool(env.get("BROWSERBASE_API_KEY") and env.get("BROWSERBASE_PROJECT_ID")),
+        # Other Hermes browser backends that also provide managed stealth (clear soft CAPTCHAs):
+        "browser_use": bool(env.get("BROWSER_USE_API_KEY")),
+        "firecrawl": bool(env.get("FIRECRAWL_API_KEY")),
+        "camofox": bool(env.get("CAMOFOX_URL")),
+        # Any configured stealth/cloud browser (Browserbase | Browser Use | Firecrawl | Camofox). Nous
+        # Portal subscribers also get the browser via the Tool Gateway with NO keys (not env-detectable).
+        "cloud_browser": _has_cloud_browser(env),
         "agentmail": bool(env.get("AGENTMAIL_API_KEY")),
         "email_imap_smtp": bool(env.get("EMAIL_ADDRESS") and env.get("EMAIL_PASSWORD")),
         "smtp_send": mail["smtp"],      # CLI can SEND opt-out emails itself
@@ -121,7 +169,10 @@ def auto_configure(env: dict | None = None) -> dict:
         cfg["email_mode"] = "alias"
     else:
         cfg["email_mode"] = "draft_only"
-    cfg["browser_backend"] = "browserbase" if caps["browserbase"] else "auto"
+    # Prefer an explicit stealth backend when its creds are present; else 'auto' (which still picks up
+    # a Browserbase/Browser Use/Firecrawl key, a Camofox URL, or the Nous Portal gateway at runtime).
+    cfg["browser_backend"] = ("browserbase" if caps["browserbase"]
+                              else "camofox" if caps["camofox"] else "auto")
     if caps["age"]:
         cfg["encryption"] = "age"
     return cfg
@@ -130,15 +181,17 @@ def auto_configure(env: dict | None = None) -> dict:
 def browser_clears_captcha(cfg: dict, env: dict | None = None) -> bool:
     """True if the chosen browser backend can clear soft CAPTCHAs (shifts T2 -> T1).
 
-    Browserbase is the recommended default: a real residential-IP cloud browser passes
-    soft/managed challenges (Turnstile, hCaptcha/reCAPTCHA checkbox) as normal operation.
-    This is NOT solving/spoofing - hard interactive challenges still escalate to a human.
-    `auto` inherits this whenever BROWSERBASE_API_KEY is present.
+    Any of Hermes' stealth backends qualifies: Browserbase / Browser Use / Firecrawl (managed cloud
+    browsers on residential IPs) or Camofox (local anti-detect Firefox) pass soft/managed challenges
+    (Turnstile, hCaptcha/reCAPTCHA checkbox) as normal operation. This is NOT solving/spoofing - hard
+    interactive challenges still escalate to a human. `auto` inherits this whenever any such backend is
+    configured; Nous Portal subscribers get it via the Tool Gateway (assume true if set up).
     """
     backend = cfg.get("browser_backend", "auto")
-    if backend == "browserbase":
+    if backend in ("browserbase", "camofox"):
         return True
     if backend == "auto":
         env = os.environ if env is None else env
-        return bool(env.get("BROWSERBASE_API_KEY"))
+        # env keys (direct) OR a browser Hermes already has via config/Portal (no skill keys needed).
+        return _has_cloud_browser(env) or hermes_browser_configured()
     return False

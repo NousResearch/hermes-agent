@@ -108,11 +108,58 @@ def test_config_roundtrip_and_validation():
             raise AssertionError("invalid email_mode should raise")
 
 
+@contextlib.contextmanager
+def _empty_hermes_home():
+    """Isolate HERMES_HOME so hermes_browser_configured() sees no config.yaml/auth.json."""
+    prev = os.environ.get("HERMES_HOME")
+    with tempfile.TemporaryDirectory() as d:
+        os.environ["HERMES_HOME"] = d
+        try:
+            yield Path(d)
+        finally:
+            if prev is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = prev
+
+
 def test_browser_clears_captcha_logic():
-    assert config.browser_clears_captcha({"browser_backend": "browserbase"}) is True
-    assert config.browser_clears_captcha({"browser_backend": "agent-browser"}) is False
-    assert config.browser_clears_captcha({"browser_backend": "auto"}, env={}) is False
-    assert config.browser_clears_captcha({"browser_backend": "auto"}, env={"BROWSERBASE_API_KEY": "x"}) is True
+    with _empty_hermes_home():  # no Hermes-side browser configured, so 'auto' hinges on env keys
+        assert config.browser_clears_captcha({"browser_backend": "browserbase"}) is True
+        assert config.browser_clears_captcha({"browser_backend": "agent-browser"}) is False
+        assert config.browser_clears_captcha({"browser_backend": "auto"}, env={}) is False
+        assert config.browser_clears_captcha({"browser_backend": "auto"}, env={"BROWSERBASE_API_KEY": "x"}) is True
+        # Any Hermes stealth backend clears soft CAPTCHAs, not just Browserbase.
+        assert config.browser_clears_captcha({"browser_backend": "camofox"}) is True
+        assert config.browser_clears_captcha({"browser_backend": "auto"}, env={"BROWSER_USE_API_KEY": "x"}) is True
+        assert config.browser_clears_captcha({"browser_backend": "auto"}, env={"FIRECRAWL_API_KEY": "x"}) is True
+        assert config.browser_clears_captcha({"browser_backend": "auto"}, env={"CAMOFOX_URL": "http://x"}) is True
+
+
+def test_hermes_browser_available_via_portal_or_config_no_keys():
+    # Browserbase is a built-in gateway tool: Portal auth (auth.json token) OR a configured provider
+    # (config.yaml) means a browser is available with NO skill env keys.
+    with _empty_hermes_home() as home:
+        assert config.hermes_browser_configured() is False
+        assert config.browser_clears_captcha({"browser_backend": "auto"}, env={}) is False
+        (home / "config.yaml").write_text("browser:\n  cloud_provider: browserbase\n", encoding="utf-8")
+        assert config.hermes_browser_configured() is True
+        assert config.browser_clears_captcha({"browser_backend": "auto"}, env={}) is True  # no keys needed
+    with _empty_hermes_home() as home:
+        (home / "auth.json").write_text('{"providers": {"nous": {"access_token": "abc"}}}', encoding="utf-8")
+        assert config.hermes_browser_configured() is True   # Portal subscriber token
+
+
+def test_detect_capabilities_recognizes_all_browser_backends():
+    caps = config.detect_capabilities({"CAMOFOX_URL": "http://localhost:9377"})
+    assert caps["camofox"] and caps["cloud_browser"] and not caps["browserbase"]
+    caps = config.detect_capabilities({"BROWSER_USE_API_KEY": "x"})
+    assert caps["browser_use"] and caps["cloud_browser"]
+    # Browserbase needs BOTH the key and the project id to be "ready".
+    assert config.detect_capabilities({"BROWSERBASE_API_KEY": "x"})["browserbase_ready"] is False
+    ready = config.detect_capabilities({"BROWSERBASE_API_KEY": "x", "BROWSERBASE_PROJECT_ID": "p"})
+    assert ready["browserbase_ready"] is True and ready["cloud_browser"] is True
+    assert config.detect_capabilities({})["cloud_browser"] is False
 
 
 # --- storage ------------------------------------------------------------------

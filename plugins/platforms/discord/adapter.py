@@ -2274,6 +2274,36 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def delete_message(
+        self,
+        chat_id: str,
+        message_id: str,
+    ) -> bool:
+        """Delete a previously sent Discord message.
+
+        Enables ``display.cleanup_progress`` on Discord: the gateway collects
+        tool-progress / status bubble message IDs and deletes them after the
+        final response is delivered.  The base-class default returns ``False``
+        (no-op), which silently disables cleanup on adapters without an
+        override.  Follows the same channel-resolution pattern as
+        ``edit_message``.
+        """
+        if not self._client:
+            return False
+        try:
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            msg = await channel.fetch_message(int(message_id))
+            await msg.delete()
+            return True
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.warning(
+                "[%s] Failed to delete Discord message %s: %s",
+                self.name, message_id, e,
+            )
+            return False
+
     @staticmethod
     def _is_length_overflow_error(err: Exception) -> bool:
         """True when a Discord edit/send failed because text exceeded 2,000.

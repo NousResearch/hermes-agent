@@ -786,6 +786,9 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             "promptId": str(uuid.uuid4()),
         }
 
+    _ctx_len = getattr(agent, "context_compressor", None)
+    _ctx_len = _ctx_len.context_length if _ctx_len else None
+
     # ── Provider profile path (registered providers) ───────────────────
     # Profiles handle per-provider quirks via hooks. When a profile is
     # found, delegate fully; otherwise fall through to the legacy flag path.
@@ -814,6 +817,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             max_tokens=agent.max_tokens,
             ephemeral_max_output_tokens=_ephemeral_out,
             max_tokens_param_fn=agent._max_tokens_param,
+            context_length=_ctx_len,
             reasoning_config=agent.reasoning_config,
             request_overrides=agent.request_overrides,
             session_id=getattr(agent, "session_id", None),
@@ -846,6 +850,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         max_tokens=agent.max_tokens,
         ephemeral_max_output_tokens=_ephemeral_out,
         max_tokens_param_fn=agent._max_tokens_param,
+        context_length=_ctx_len,
         reasoning_config=agent.reasoning_config,
         request_overrides=agent.request_overrides,
         session_id=getattr(agent, "session_id", None),

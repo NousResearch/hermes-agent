@@ -588,6 +588,19 @@ DEFAULT_MAX_ITERATIONS = 50
 # headroom budget (see _apply_summary_budget). Belt-and-suspenders for
 # models that ignore the "be concise" instruction. 0 disables the ceiling.
 DEFAULT_MAX_SUMMARY_CHARS = 24000
+
+
+def _positive_int_or_none(value: Any) -> Optional[int]:
+    """Coerce a config/runtime value to a positive int, else None."""
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 # Fraction of the parent's *remaining* context headroom that the whole batch
 # of subagent summaries is allowed to consume. The per-summary budget is this
 # slice divided across the batch, so N children can't collectively blow the
@@ -1055,6 +1068,7 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
+    override_max_tokens: Optional[int] = None,
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
@@ -1298,6 +1312,12 @@ def _build_child_agent(
         # openrouter/pareto-code), so we keep it inherited even when the
         # provider is overridden — it's a no-op on any other model.
 
+    child_max_tokens: Any = (
+        override_max_tokens
+        if override_max_tokens is not None
+        else getattr(parent_agent, "max_tokens", None)
+    )
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -1307,7 +1327,7 @@ def _build_child_agent(
         acp_command=effective_acp_command,
         acp_args=effective_acp_args,
         max_iterations=max_iterations,
-        max_tokens=getattr(parent_agent, "max_tokens", None),
+        max_tokens=child_max_tokens,
         reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         fallback_model=parent_fallback,
@@ -1458,7 +1478,7 @@ def _dump_subagent_timeout_diagnostic(
         _w("## Child config")
         for attr in (
             "model", "provider", "api_mode", "base_url", "max_iterations",
-            "quiet_mode", "skip_memory", "skip_context_files", "platform",
+            "max_tokens", "quiet_mode", "skip_memory", "skip_context_files", "platform",
             "_delegate_role", "_delegate_depth",
         ):
             try:
@@ -2500,6 +2520,7 @@ def delegate_task(
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
+                override_max_tokens=creds.get("max_tokens"),
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
                 role=effective_role,
@@ -2999,6 +3020,10 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
     configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
+    configured_max_tokens = (
+        _positive_int_or_none(cfg.get("max_tokens"))
+        or _positive_int_or_none(cfg.get("max_output_tokens"))
+    )
 
     # Native-SDK providers (Bedrock, Vertex, Google GenAI) speak their own
     # wire protocol — they cannot be reached via OpenAI chat_completions against
@@ -3054,6 +3079,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
+            "max_tokens": configured_max_tokens,
         }
 
     if not configured_provider:
@@ -3064,6 +3090,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": None,
             "api_key": None,
             "api_mode": None,
+            "max_tokens": configured_max_tokens,
         }
 
     # Provider is configured — resolve full credentials
@@ -3080,6 +3107,11 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         ) from exc
 
     api_key = runtime.get("api_key", "")
+    runtime_max_tokens = (
+        configured_max_tokens
+        or _positive_int_or_none(runtime.get("max_output_tokens"))
+        or _positive_int_or_none(runtime.get("max_tokens"))
+    )
     if not api_key:
         raise ValueError(
             f"Delegation provider '{configured_provider}' resolved but has no API key. "
@@ -3092,6 +3124,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),
+        "max_tokens": runtime_max_tokens,
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
     }

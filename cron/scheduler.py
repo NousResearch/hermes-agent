@@ -2824,6 +2824,7 @@ def run_job(
             # example DeepSeek) for cron jobs that do not pin provider/model.
             runtime_kwargs = {
                 "requested": job.get("provider"),
+                "target_model": model or None,
             }
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
@@ -2944,8 +2945,15 @@ def run_job(
                 job_id, _mcp_exc,
             )
 
+        # Forward the per-provider output cap (custom_providers
+        # max_output_tokens) so cron agents don't fall back to the
+        # model-family output limit (e.g. qwen3 -> 65,536), which can
+        # exceed the local server's real context budget. Mirrors
+        # agent/background_review.py.
+        _rt_max_tokens = runtime.get("max_output_tokens")
         agent = AIAgent(
             model=model,
+            max_tokens=_rt_max_tokens if isinstance(_rt_max_tokens, int) and _rt_max_tokens > 0 else None,
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
             provider=runtime.get("provider"),

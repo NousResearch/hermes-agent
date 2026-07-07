@@ -87,12 +87,18 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
             explicit_api_key=task_api_key,
             explicit_base_url=task_base_url,
         )
+        # Forward the per-provider output cap (custom_providers
+        # max_output_tokens) so the routed fork doesn't fall back to the
+        # model-family output limit (e.g. qwen3 -> 65,536), which can exceed
+        # the local server's real context budget. Mirrors gateway/run.py.
+        _rt_max_tokens = rp.get("max_output_tokens")
         return {
             "provider": rp.get("provider") or task_provider,
             "model": task_model,
             "api_key": rp.get("api_key"),
             "base_url": rp.get("base_url"),
             "api_mode": rp.get("api_mode"),
+            "max_tokens": _rt_max_tokens if isinstance(_rt_max_tokens, int) and _rt_max_tokens > 0 else None,
             "routed": True,
         }
     except Exception as e:
@@ -682,6 +688,7 @@ def _run_review_in_thread(
             # (The runtime whitelist below still restricts dispatch.)
             review_agent = AIAgent(
                 model=_rt.get("model") or agent.model,
+                max_tokens=_rt.get("max_tokens"),
                 max_iterations=16,
                 quiet_mode=True,
                 platform=agent.platform,

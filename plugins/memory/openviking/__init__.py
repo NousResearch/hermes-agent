@@ -3116,7 +3116,14 @@ class OpenVikingMemoryProvider(MemoryProvider):
                             json.dumps(payload, ensure_ascii=False),
                         )
                     try:
-                        client.post(f"/api/v1/sessions/{sid}/messages/batch", payload)
+                        # The OpenViking server caps batches at 100 messages;
+                        # chunk so long sessions keep structured sync instead
+                        # of degrading to the 4k-char text fallback.
+                        for _start in range(0, len(batch_messages), 100):
+                            client.post(
+                                f"/api/v1/sessions/{sid}/messages/batch",
+                                {"messages": batch_messages[_start:_start + 100]},
+                            )
                         return
                     except Exception as batch_error:
                         logger.warning(

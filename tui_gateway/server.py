@@ -3935,6 +3935,38 @@ def _cfg_max_turns(cfg: dict, default: int) -> int:
     return int(agent_cfg.get("max_turns") or cfg.get("max_turns") or default)
 
 
+def _resolve_agent_max_tokens(cfg: dict, runtime: dict) -> int | None:
+    """Resolve the response-token cap passed to TUI/Desktop AIAgent instances.
+
+    Keep precedence aligned with the messaging gateway: an explicit
+    ``HERMES_MAX_TOKENS`` override wins, then documented ``model.max_tokens``,
+    then the per-provider runtime fallback (``custom_providers.max_output_tokens``).
+    Without the runtime fallback, custom Qwen-family endpoints fall back to the
+    model-family output limit (65,536), which can exceed a local server's real
+    context budget once the prompt is large.
+    """
+    try:
+        env_max = int(os.environ.get("HERMES_MAX_TOKENS", "") or 0)
+        if env_max > 0:
+            return env_max
+    except (TypeError, ValueError):
+        pass
+
+    model_cfg = cfg.get("model") if isinstance(cfg, dict) else None
+    if isinstance(model_cfg, dict):
+        value = model_cfg.get("max_tokens")
+        if isinstance(value, int) and value > 0:
+            return value
+
+    value = (runtime or {}).get("max_output_tokens")
+    if isinstance(value, int) and value > 0:
+        return value
+    value = (runtime or {}).get("max_tokens")
+    if isinstance(value, int) and value > 0:
+        return value
+    return None
+
+
 def _parse_tui_skills_env() -> list[str]:
     raw = os.environ.get("HERMES_TUI_SKILLS", "")
     skills: list[str] = []
@@ -3981,6 +4013,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "acp_command": getattr(agent, "acp_command", None) or None,
         "acp_args": getattr(agent, "acp_args", None) or None,
         "model": getattr(agent, "model", None) or _resolve_model(),
+        "max_tokens": getattr(agent, "max_tokens", None),
         "max_iterations": _cfg_max_turns(cfg, 25),
         "enabled_toolsets": getattr(agent, "enabled_toolsets", None)
         or _load_enabled_toolsets(),
@@ -4406,9 +4439,11 @@ def _make_agent(
             "requested": requested_provider,
             "target_model": model or None,
         })
+    max_tokens = _resolve_agent_max_tokens(cfg, runtime)
     _pr = _load_provider_routing()
     return AIAgent(
         model=model,
+        max_tokens=max_tokens,
         max_iterations=_cfg_max_turns(cfg, 90),
         provider=runtime.get("provider"),
         base_url=runtime.get("base_url"),

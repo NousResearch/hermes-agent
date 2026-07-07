@@ -1228,10 +1228,18 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     # the window this stays None, so the caller correctly falls through to
     # compression instead of futilely shrinking the output cap.
     _m_vllm_input = re.search(
-        r'prompt contains (?:at least )?(\d+)\s*input tokens', error_lower
+        r'prompt contains (?:(at least) )?(\d+)\s*input tokens', error_lower
     )
     if _m_ctx_tok and _m_vllm_input:
-        _available = int(_m_ctx_tok.group(1)) - int(_m_vllm_input.group(1))
+        # vLLM's "at least N input tokens" is a lower bound chosen from the
+        # requested output cap, not the real prompt token count. Treating it
+        # as exact makes Hermes stair-step max_tokens down by tiny margins
+        # (65536 → 65471 → 65406 …) until recovery exhausts. Only use exact
+        # forms; lower-bound forms should fall through to compression/preflight
+        # instead of pretending we know the available output budget.
+        if _m_vllm_input.group(1):
+            return None
+        _available = int(_m_ctx_tok.group(1)) - int(_m_vllm_input.group(2))
         if _available >= 1:
             return _available
 

@@ -15249,6 +15249,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         except Exception:
                             pass  # Non-fatal — don't break the main loop
 
+                except OSError as e:
+                    if getattr(e, "errno", None) == errno.EIO:
+                        logger.warning(
+                            "process_loop EIO on stdin (msg may be lost): %s — continuing loop", e
+                        )
+                        continue
+                    logger.warning("process_loop unhandled error (msg may be lost): %s", e)
                 except Exception as e:
                     logger.warning("process_loop unhandled error (msg may be lost): %s", e)
         

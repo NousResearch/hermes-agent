@@ -12350,8 +12350,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if hasattr(adapter, "_voice_sources"):
                 adapter._voice_sources[guild_id] = event.source.to_dict()
             voice_channel_prompts = getattr(adapter, "_voice_channel_prompts", None)
-            if isinstance(voice_channel_prompts, dict) and event.channel_prompt:
-                voice_channel_prompts[guild_id] = event.channel_prompt
+            if isinstance(voice_channel_prompts, dict):
+                if event.channel_prompt:
+                    voice_channel_prompts[guild_id] = event.channel_prompt
+                else:
+                    voice_channel_prompts.pop(guild_id, None)
             self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "all"
             self._save_voice_modes()
             self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)

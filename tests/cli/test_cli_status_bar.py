@@ -30,6 +30,7 @@ def _attach_agent(
     context_tokens: int,
     context_length: int,
     compressions: int = 0,
+    effective_context_length: int | None = None,
 ):
     cli_obj.agent = SimpleNamespace(
         model=cli_obj.model,
@@ -49,6 +50,7 @@ def _attach_agent(
             context_length=context_length,
             compression_count=compressions,
         ),
+        _omniroute_effective_context_length=effective_context_length,
     )
     return cli_obj
 
@@ -137,6 +139,23 @@ class TestCLIStatusBar:
 
         text = cli_obj._build_status_bar_text(width=120)
         assert "$" not in text  # cost is never shown in status bar
+
+    def test_build_status_bar_text_prefers_effective_omniroute_context(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="combo/coding-weighted-wide"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=1_000_000,
+            effective_context_length=128_000,
+        )
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot["context_length"] == 128_000
+        text = cli_obj._build_status_bar_text(width=120)
+        assert "12.4K/128K" in text
 
     def test_build_status_bar_text_collapses_for_narrow_terminal(self):
         cli_obj = _attach_agent(

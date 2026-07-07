@@ -4629,6 +4629,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             context_length = getattr(compressor, "context_length", 0) or 0
             if context_length < 0:
                 context_length = 0
+            effective_context_length = getattr(agent, "_omniroute_effective_context_length", None)
+            if isinstance(effective_context_length, int) and effective_context_length > 0:
+                context_length = effective_context_length
             snapshot["context_tokens"] = context_tokens
             snapshot["context_length"] = context_length or None
             snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0

@@ -32,6 +32,7 @@ from agent.conversation_compression import conversation_history_after_compressio
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
+from agent.chat_completion_helpers import omniroute_effective_context_for_tokens
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
 from agent.memory_manager import build_memory_context_block
@@ -998,6 +999,10 @@ def run_conversation(
         # LLM cooldown + anti-thrash guards (#11529). compression_attempts is a
         # hard per-turn backstop shared with the overflow error handlers.
         _compressor = agent.context_compressor
+        _effective_context = omniroute_effective_context_for_tokens(
+            agent.model, request_pressure_tokens, getattr(_compressor, "max_tokens", None) or 0,
+        )
+        _effective_threshold = _compressor.threshold_for_context(_effective_context)
         _defer_preflight = getattr(
             _compressor, "should_defer_preflight_to_real_usage", lambda _t: False
         )
@@ -1010,16 +1015,16 @@ def run_conversation(
             and compression_attempts < 3
             and not _defer_preflight(request_pressure_tokens)
             and not _compression_cooldown
-            and _compressor.should_compress(request_pressure_tokens)
+            and _compressor.should_compress(request_pressure_tokens, context_length=_effective_context)
         ):
             compression_attempts += 1
             logger.info(
                 "Pre-API compression: ~%s request tokens >= %s threshold "
                 "(context=%s, attempt=%s/3)",
                 f"{request_pressure_tokens:,}",
-                f"{int(getattr(_compressor, 'threshold_tokens', 0) or 0):,}",
-                f"{int(getattr(_compressor, 'context_length', 0) or 0):,}"
-                if getattr(_compressor, "context_length", 0) else "unknown",
+                f"{_effective_threshold:,}",
+                f"{int(_effective_context or getattr(_compressor, 'context_length', 0) or 0):,}"
+                if (_effective_context or getattr(_compressor, "context_length", 0)) else "unknown",
                 compression_attempts,
             )
             agent._emit_status(

@@ -28,6 +28,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from agent.chat_completion_helpers import omniroute_effective_context_for_tokens
 from agent.conversation_compression import conversation_history_after_compression
 from agent.iteration_budget import IterationBudget
 from agent.model_metadata import (
@@ -351,11 +352,21 @@ def build_turn_context(
     # Gate the (expensive) full token estimate behind a cheap pre-check.
     # See ``_should_run_preflight_estimate`` for the OR semantics that fix
     # issue #27405 (a few very large messages slipping past the count gate).
+    _precheck_threshold = agent.context_compressor.threshold_tokens
+    _precheck_context = omniroute_effective_context_for_tokens(
+        agent.model, 0, getattr(agent.context_compressor, "max_tokens", None) or 0,
+    )
+    if _precheck_context:
+        _precheck_threshold = min(
+            _precheck_threshold,
+            agent.context_compressor.threshold_for_context(_precheck_context),
+        )
+
     if agent.compression_enabled and _should_run_preflight_estimate(
         messages,
         agent.context_compressor.protect_first_n,
         agent.context_compressor.protect_last_n,
-        agent.context_compressor.threshold_tokens,
+        _precheck_threshold,
     ):
         _preflight_tokens = estimate_request_tokens_rough(
             messages,
@@ -363,6 +374,10 @@ def build_turn_context(
             tools=agent.tools or None,
         )
         _compressor = agent.context_compressor
+        _effective_context = omniroute_effective_context_for_tokens(
+            agent.model, _preflight_tokens, getattr(_compressor, "max_tokens", None) or 0,
+        )
+        _effective_threshold = _compressor.threshold_for_context(_effective_context)
         _defer_preflight = getattr(
             _compressor,
             "should_defer_preflight_to_real_usage",
@@ -401,7 +416,7 @@ def build_turn_context(
                 "Skipping preflight compression: rough estimate ~%s >= %s, "
                 "but last real provider prompt was %s after compression",
                 f"{_preflight_tokens:,}",
-                f"{_compressor.threshold_tokens:,}",
+                f"{_effective_threshold:,}",
                 f"{_compressor.last_real_prompt_tokens:,}",
             )
         elif _compression_cooldown:
@@ -417,17 +432,17 @@ def build_turn_context(
                 "(mode=%s); Hermes will not start thread compaction here.",
                 getattr(agent, "codex_app_server_auto_compaction", "native"),
             )
-        elif _compressor.should_compress(_preflight_tokens):
+        elif _compressor.should_compress(_preflight_tokens, context_length=_effective_context):
             logger.info(
                 "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
                 f"{_preflight_tokens:,}",
-                f"{_compressor.threshold_tokens:,}",
+                f"{_effective_threshold:,}",
                 agent.model,
-                f"{_compressor.context_length:,}",
+                f"{(_effective_context or _compressor.context_length):,}",
             )
             agent._emit_status(
                 f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
-                f">= {_compressor.threshold_tokens:,} threshold. "
+                f">= {_effective_threshold:,} threshold. "
                 "This may take a moment."
             )
             for _pass in range(3):
@@ -458,7 +473,10 @@ def build_turn_context(
                 agent._last_content_with_tools = None
                 agent._last_content_tools_all_housekeeping = False
                 agent._mute_post_response = False
-                if not _compressor.should_compress(_preflight_tokens):
+                _effective_context = omniroute_effective_context_for_tokens(
+                    agent.model, _preflight_tokens, getattr(_compressor, "max_tokens", None) or 0,
+                )
+                if not _compressor.should_compress(_preflight_tokens, context_length=_effective_context):
                     break
 
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).

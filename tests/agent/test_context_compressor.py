@@ -46,6 +46,18 @@ class TestShouldCompress:
 
 
 
+    def test_request_scoped_context_threshold(self, compressor):
+        compressor.threshold_tokens = 500_000  # session-wide model is large
+        compressor.threshold_percent = 0.85
+        compressor.max_tokens = None
+
+        assert compressor.should_compress(prompt_tokens=100_000) is False
+        assert compressor.should_compress(
+            prompt_tokens=110_000,
+            context_length=128_000,
+        ) is True
+
+
 class TestUpdateFromResponse:
     def test_updates_fields(self, compressor):
         compressor.awaiting_real_usage_after_compression = True

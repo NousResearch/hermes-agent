@@ -987,6 +987,13 @@ class ContextCompressor(ContextEngine):
                               effective_window - 1))
         return floored
 
+    def threshold_for_context(self, context_length: int | None) -> int:
+        if not context_length:
+            return self.threshold_tokens
+        return self._compute_threshold_tokens(
+            int(context_length), self.threshold_percent, self.max_tokens,
+        )
+
     def __init__(
         self,
         model: str,
@@ -1170,7 +1177,7 @@ class ContextCompressor(ContextEngine):
         self.last_rough_tokens_when_real_prompt_fit = max(baseline, rough_tokens)
         return True
 
-    def should_compress(self, prompt_tokens: int = None) -> bool:
+    def should_compress(self, prompt_tokens: int = None, *, context_length: int | None = None) -> bool:
         """Check if context exceeds the compression threshold.
 
         Includes anti-thrashing protection: if the last two compressions
@@ -1178,7 +1185,8 @@ class ContextCompressor(ContextEngine):
         where each pass removes only 1-2 messages.
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
-        if tokens < self.threshold_tokens:
+        threshold_tokens = self.threshold_for_context(context_length)
+        if tokens < threshold_tokens:
             return False
         # Do not trigger compression while the summary LLM is in cooldown.
         # On a 429/transient failure _generate_summary() sets a cooldown and

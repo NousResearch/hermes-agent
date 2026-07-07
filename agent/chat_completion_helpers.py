@@ -40,6 +40,30 @@ from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 logger = logging.getLogger(__name__)
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
 
+_OMNIROUTE_CTX_BUCKET_FAMILIES: tuple[
+    tuple[tuple[tuple[str, int], ...], str | None], ...
+] = (
+    (
+        (
+            ("combo/coding-weighted-128k", 128_000),
+            ("combo/coding-weighted-200k", 200_000),
+            ("combo/coding-weighted-262k", 262_144),
+            ("combo/coding-weighted-400k", 400_000),
+            ("combo/coding-weighted-1m", 1_000_000),
+        ),
+        "combo/coding-weighted-wide",
+    ),
+    (
+        (
+            ("combo/coding-extended-ranked-128k", 128_000),
+            ("combo/coding-extended-ranked-200k", 200_000),
+            ("combo/coding-extended-ranked-400k", 400_000),
+            ("combo/coding-extended-ranked-1m", 1_000_000),
+        ),
+        None,
+    ),
+)
+
 # When the fallback chain is fully exhausted on a non-rate-limit failure
 # (e.g. every provider returns a non-retryable client error like HTTP 400),
 # arm a short cooldown so the NEXT turn's restore_primary_runtime stays gated
@@ -171,6 +195,103 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _select_omniroute_buckets(requested_model: str) -> tuple[tuple[str, int], ...] | None:
+    for buckets, entrypoint in _OMNIROUTE_CTX_BUCKET_FAMILIES:
+        if requested_model == entrypoint:
+            return buckets
+        for idx, (model_id, _ctx) in enumerate(buckets):
+            if requested_model == model_id:
+                return buckets[: idx + 1]
+    return None
+
+
+def _requested_output_tokens(api_kwargs: dict) -> int:
+    requested_output = 0
+    for key in ("max_completion_tokens", "max_output_tokens", "max_tokens"):
+        raw = api_kwargs.get(key)
+        try:
+            requested_output = max(requested_output, int(raw or 0))
+        except (TypeError, ValueError):
+            continue
+    return requested_output
+
+
+def resolve_omniroute_context_bucket(
+    requested_model: str,
+    est_input_tokens: int,
+    requested_output: int = 0,
+) -> tuple[str | None, int | None, int | None]:
+    """Return the request-scoped OmniRoute bucket model/context, if applicable."""
+    requested_model = str(requested_model or "").strip()
+    selected_buckets = _select_omniroute_buckets(requested_model)
+    if selected_buckets is None:
+        return None, None, None
+
+    est_in_tokens = max(int(est_input_tokens or 0), 0)
+    requested_output = max(int(requested_output or 0), 0)
+    # ponytail: same reserve for routing and compression; split if providers need per-family tuning.
+    reserve = max(8_192, requested_output, int(est_in_tokens * 0.10))
+    effective_total = est_in_tokens + reserve + 4_096
+
+    for candidate_model, ctx_limit in selected_buckets:
+        if effective_total <= ctx_limit:
+            return candidate_model, ctx_limit, effective_total
+    return selected_buckets[-1][0], selected_buckets[-1][1], effective_total
+
+
+def omniroute_effective_context_for_tokens(
+    requested_model: str,
+    est_input_tokens: int,
+    requested_output: int = 0,
+) -> int | None:
+    _model, context_length, _total = resolve_omniroute_context_bucket(
+        requested_model, est_input_tokens, requested_output,
+    )
+    return context_length
+
+
+def _set_omniroute_effective_context(agent, model: str | None, context_length: int | None) -> None:
+    """Expose the routed OmniRoute bucket to UI/status code without mutating agent.model."""
+    if agent is None:
+        return
+    try:
+        setattr(agent, "_omniroute_effective_model", model)
+        setattr(agent, "_omniroute_effective_context_length", context_length)
+    except Exception:
+        pass
+
+
+def _maybe_route_omniroute_context_bucket_model(agent, api_kwargs: dict) -> dict:
+    """Downshift OmniRoute coding bucket combos to the smallest safe context tier."""
+    if not isinstance(api_kwargs, dict):
+        return api_kwargs
+
+    requested_model = str(api_kwargs.get("model") or "").strip()
+    chosen_model, chosen_context_length, effective_total = resolve_omniroute_context_bucket(
+        requested_model,
+        estimate_request_context_tokens(api_kwargs),
+        _requested_output_tokens(api_kwargs),
+    )
+    if chosen_context_length is None:
+        _set_omniroute_effective_context(agent, None, None)
+        return api_kwargs
+
+    if chosen_model == requested_model:
+        _set_omniroute_effective_context(agent, requested_model, chosen_context_length)
+        return api_kwargs
+
+    routed = dict(api_kwargs)
+    routed["model"] = chosen_model
+    _set_omniroute_effective_context(agent, chosen_model, chosen_context_length)
+    logger.info(
+        "Auto-routed OmniRoute context bucket %s -> %s (estimated total ~%s tokens)",
+        requested_model,
+        chosen_model,
+        f"{int(effective_total or 0):,}",
+    )
+    return routed
+
+
 def interruptible_api_call(agent, api_kwargs: dict):
     """
     Run the API call in a background thread so the main conversation loop
@@ -185,6 +306,8 @@ def interruptible_api_call(agent, api_kwargs: dict):
     the main retry loop can try again with backoff / credential rotation /
     provider fallback.
     """
+    api_kwargs = _maybe_route_omniroute_context_bucket_model(agent, api_kwargs)
+
     result = {"response": None, "error": None}
     request_client_holder = {"client": None, "owner_tid": None}
     request_client_lock = threading.Lock()
@@ -1780,6 +1903,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     """
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
+
+    api_kwargs = _maybe_route_omniroute_context_bucket_model(agent, api_kwargs)
 
     if agent.api_mode == "codex_responses":
         # Codex streams internally via _run_codex_stream. The main dispatch

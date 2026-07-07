@@ -539,6 +539,25 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
             _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
         )
+    # Support custom embedding model via config.json 'embeddings_local_model' field
+    # or HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL env var
+    embed_model = config.get("embeddings_local_model") or os.environ.get("HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL", "")
+    if embed_model:
+        env_values["HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL"] = str(embed_model)
+    # Support custom reranker model via config.json 'reranker_local_model' field
+    # or HINDSIGHT_API_RERANKER_LOCAL_MODEL env var
+    reranker_model = config.get("reranker_local_model") or os.environ.get("HINDSIGHT_API_RERANKER_LOCAL_MODEL", "")
+    if reranker_model:
+        env_values["HINDSIGHT_API_RERANKER_LOCAL_MODEL"] = str(reranker_model)
+    # Pass through trust_remote_code for models that need it (e.g. BAAI/bge-reranker-v2-m3)
+    # via config.json 'reranker_local_trust_remote_code' or env var
+    reranker_trust = config.get("reranker_local_trust_remote_code") or os.environ.get("HINDSIGHT_API_RERANKER_LOCAL_TRUST_REMOTE_CODE", "")
+    if reranker_trust:
+        env_values["HINDSIGHT_API_RERANKER_LOCAL_TRUST_REMOTE_CODE"] = str(reranker_trust)
+    # Pass through llm_reasoning_effort for LM Studio toggle models
+    llm_reasoning = config.get("llm_reasoning_effort") or os.environ.get("HINDSIGHT_API_LLM_REASONING_EFFORT", "")
+    if llm_reasoning:
+        env_values["HINDSIGHT_API_LLM_REASONING_EFFORT"] = str(llm_reasoning)
     return env_values
 
 
@@ -1050,6 +1069,19 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._idle_timeout = idle_timeout
                 kwargs["idle_timeout"] = idle_timeout
                 self._client = HindsightEmbedded(**kwargs)
+
+                # 0.8.0 HindsightEmbedded doesn't accept embedding/reranker model
+                # parameters — inject them into the client's config dict so the
+                # daemon picks them up on startup.
+                embed_model = self._config.get("embeddings_local_model") or os.environ.get("HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL", "")
+                if embed_model:
+                    self._client.config["HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL"] = str(embed_model)
+                reranker_model = self._config.get("reranker_local_model") or os.environ.get("HINDSIGHT_API_RERANKER_LOCAL_MODEL", "")
+                if reranker_model:
+                    self._client.config["HINDSIGHT_API_RERANKER_LOCAL_MODEL"] = str(reranker_model)
+                reranker_trust = self._config.get("reranker_local_trust_remote_code") or os.environ.get("HINDSIGHT_API_RERANKER_LOCAL_TRUST_REMOTE_CODE", "")
+                if reranker_trust:
+                    self._client.config["HINDSIGHT_API_RERANKER_LOCAL_TRUST_REMOTE_CODE"] = str(reranker_trust)
             else:
                 _ensure_cloud_client_dependency()
                 from hindsight_client import Hindsight
@@ -1421,7 +1453,13 @@ class HindsightMemoryProvider(MemoryProvider):
                     profile_env = _embedded_profile_env_path(self._config)
                     expected_env = _build_embedded_profile_env(self._config)
                     saved = _load_simple_env(profile_env)
-                    config_changed = saved != expected_env
+                    # Compare only HINDSIGHT_API_* keys — daemon_embed_manager's
+                    # _register_profile() overwrites the .env file with only those
+                    # keys (HINDSIGHT_EMBED_* keys are dropped), so comparing the
+                    # full dict would always differ and cause a restart loop.
+                    expected_api = {k: v for k, v in expected_env.items() if k.startswith("HINDSIGHT_API_")}
+                    saved_api = {k: v for k, v in saved.items() if k.startswith("HINDSIGHT_API_")}
+                    config_changed = saved_api != expected_api
 
                     if config_changed:
                         profile_env = _materialize_embedded_profile_env(self._config)
@@ -1471,6 +1509,21 @@ class HindsightMemoryProvider(MemoryProvider):
             result = self._prefetch_result
             self._prefetch_result = ""
         if not result:
+            # No cached result from a previous turn.
+            # If no background prefetch thread is running, this is the first
+            # turn of a new session — do a synchronous recall so the model
+            # still sees relevant memories on turn 1.
+            has_thread = self._prefetch_thread and self._prefetch_thread.is_alive()
+            if not has_thread and self._auto_recall:
+                logger.debug("Prefetch: first-turn eager recall (no cached result, no background thread)")
+                text = self._sync_recall(query)
+                if text:
+                    header = self._recall_prompt_preamble or (
+                        "# Hindsight Memory (persistent cross-session context)\n"
+                        "Use this to answer questions about the user and prior sessions. "
+                        "Do not call tools to look up information that is already present here."
+                    )
+                    return f"{header}\n\n{text}"
             logger.debug("Prefetch: no results available")
             return ""
         logger.debug("Prefetch: returning %d chars of context", len(result))
@@ -1480,6 +1533,38 @@ class HindsightMemoryProvider(MemoryProvider):
             "Do not call tools to look up information that is already present here."
         )
         return f"{header}\n\n{result}"
+
+    def _sync_recall(self, query: str) -> str:
+        """Perform a synchronous recall for first-turn eager prefetch."""
+        if self._shutting_down.is_set():
+            return ""
+        # Truncate query to max chars
+        if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
+            query = query[:self._recall_max_input_chars]
+        try:
+            if self._prefetch_method == "reflect":
+                resp = self._run_hindsight_operation(
+                    lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget)
+                )
+                return resp.text or ""
+            else:
+                recall_kwargs: dict = {
+                    "bank_id": self._bank_id, "query": query,
+                    "budget": self._budget, "max_tokens": self._recall_max_tokens,
+                }
+                if self._recall_tags:
+                    recall_kwargs["tags"] = self._recall_tags
+                    recall_kwargs["tags_match"] = self._recall_tags_match
+                if self._recall_types:
+                    recall_kwargs["types"] = self._recall_types
+                logger.debug("Prefetch: sync recall (bank=%s, query_len=%d, budget=%s)",
+                             self._bank_id, len(query), self._budget)
+                resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
+                if resp.results:
+                    return "\n".join(f"- {r.text}" for r in resp.results if r.text)
+        except Exception as e:
+            logger.debug("Hindsight sync recall failed: %s", e, exc_info=True)
+        return ""
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         if self._memory_mode == "tools":

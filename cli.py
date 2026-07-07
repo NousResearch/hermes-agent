@@ -6525,7 +6525,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return []
         try:
             from hermes_cli.session_listing import query_session_listing
-            from hermes_state import _LIST_DENY_SOURCES
 
             return query_session_listing(
                 self._session_db,
@@ -6534,7 +6533,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 include_all_sources=False,
                 include_unnamed=True,
                 limit=limit,
-                exclude_sources=list(_LIST_DENY_SOURCES),
+                exclude_sources=["tool"],
             )
         except Exception:
             return []

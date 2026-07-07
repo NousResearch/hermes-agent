@@ -222,15 +222,6 @@ _LONG_HANDLERS = frozenset(
         "slash.exec",
     }
 )
-_SESSION_DB_HEAVY_METHODS = frozenset(
-    {
-        "insights.get",
-        "projects.project_sessions",
-        "projects.tree",
-        "session.list",
-        "session.most_recent",
-    }
-)
 
 try:
     _rpc_pool_workers = max(
@@ -1234,20 +1225,8 @@ def _ok(rid, result: dict) -> dict:
     return {"jsonrpc": "2.0", "id": rid, "result": result}
 
 
-def _err(rid, code: int, msg: str, data: dict | None = None) -> dict:
-    error = {"code": code, "message": msg}
-    if data is not None:
-        error["data"] = data
-    return {"jsonrpc": "2.0", "id": rid, "error": error}
-
-
-def is_session_db_heavy_method(method: str | None) -> bool:
-    return method in _SESSION_DB_HEAVY_METHODS
-
-
-def backend_busy_error(rid, exc) -> dict:
-    payload = exc.to_payload() if hasattr(exc, "to_payload") else {"retryable": True}
-    return _err(rid, 5038, "backend busy; retry shortly", payload)
+def _err(rid, code: int, msg: str) -> dict:
+    return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": msg}}
 
 
 def method(name: str):
@@ -1287,21 +1266,6 @@ def handle_request(req: dict) -> dict | None:
     if not fn:
         return _err(rid, -32601, f"unknown method: {method}")
     return fn(rid, params)
-
-
-def handle_request_bound(req: dict, transport: Optional[Transport] = None) -> dict | None:
-    """Handle one request with dispatch()'s transport binding, synchronously.
-
-    WebSocket heavy-read RPCs call this under an async-side semaphore. Going
-    straight to ``handle_request`` keeps the semaphore held until the DB scan is
-    done instead of releasing after ``dispatch`` merely schedules a pool worker.
-    """
-    t = transport or _stdio_transport
-    token = bind_transport(t)
-    try:
-        return handle_request(req)
-    finally:
-        reset_transport(token)
 
 
 def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
@@ -5383,9 +5347,7 @@ def _(rid, params: dict) -> dict:
         # sources (``tool`` sub-agent runs) rather than allow-listing a
         # fixed set of platform names that goes stale whenever a new
         # platform is added or a user names their own source.
-        from hermes_state import _LIST_DENY_SOURCES
-
-        deny = frozenset(_LIST_DENY_SOURCES)
+        deny = frozenset({"tool"})
 
         limit = int(params.get("limit", 200) or 200)
         # Over-fetch modestly so per-source filtering doesn't leave us
@@ -5437,9 +5399,7 @@ def _(rid, params: dict) -> dict:
     if db is None:
         return _ok(rid, {"session_id": None})
     try:
-        from hermes_state import _LIST_DENY_SOURCES
-
-        deny = frozenset(_LIST_DENY_SOURCES)
+        deny = frozenset({"tool"})
         # Over-fetch by a generous bounded amount so heavy sub-agent
         # users (lots of recent ``tool`` rows) don't get a false
         # "no eligible session" answer.  ``session.list`` uses a

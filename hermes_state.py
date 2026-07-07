@@ -31,19 +31,6 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
-_LIST_DENY_SOURCES = ("tool",)
-_LIST_DENY_SOURCES_SET = frozenset(_LIST_DENY_SOURCES)
-
-
-def _sql_placeholders(values) -> str:
-    return ",".join("?" for _ in values)
-
-
-def _list_deny_sources_clause(alias: str = "s") -> Tuple[str, List[str]]:
-    if not _LIST_DENY_SOURCES:
-        return "1=1", []
-    return f"{alias}.source NOT IN ({_sql_placeholders(_LIST_DENY_SOURCES)})", list(_LIST_DENY_SOURCES)
-
 def _delegate_from_json(col: str = "model_config") -> str:
     return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
 
@@ -72,17 +59,6 @@ _COMPRESSION_CHILD_SQL = (
 # Rows that surface in pickers: roots + branch children (subagent runs and
 # compression continuations stay hidden).
 _LISTABLE_CHILD_SQL = f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a='s')})"
-
-
-def _effective_last_active_visible_clause(alias: str = "s") -> Tuple[str, List[str]]:
-    """SQL predicate for rows whose denormalized recency should be non-NULL."""
-    source_clause, source_params = _list_deny_sources_clause(alias)
-    return (
-        f"(({alias}.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a=alias)}) "
-        f"AND {_delegate_from_json(f'{alias}.model_config')} IS NULL "
-        f"AND {source_clause})",
-        source_params,
-    )
 
 
 def _ephemeral_child_sql(alias: str = "s") -> str:
@@ -128,32 +104,17 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
     return [sid for sid in found if sid not in seeds]
 
 
-def _delete_delegate_children(
-    conn,
-    parent_ids: List[str],
-    orphaned_child_ids: Optional[List[str]] = None,
-) -> List[str]:
+def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
     ids = _collect_delegate_child_ids(conn, parent_ids)
     if ids:
         ph = ",".join("?" * len(ids))
-        if orphaned_child_ids is not None:
-            orphaned_child_ids.extend(
-                row["id"] for row in conn.execute(
-                    f"SELECT id FROM sessions WHERE parent_session_id IN ({ph})",
-                    ids,
-                ).fetchall()
-            )
         conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", ids)
         # FK safety: orphan any untagged stragglers pointing at a doomed row.
-        # effective_last_active maintenance: callers recompute every survivor
-        # listed in orphaned_child_ids inside this same delete transaction.
         conn.execute(
             f"UPDATE sessions SET parent_session_id = NULL "
             f"WHERE parent_session_id IN ({ph})",
             ids,
         )
-        # effective_last_active recompute targets are captured before this
-        # orphaning write and recomputed by the owning delete transaction.
         conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", ids)
     return ids
 
@@ -161,9 +122,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 18
-_EFFECTIVE_LAST_ACTIVE_BACKFILL_META_KEY = "effective_last_active_backfill_version"
-_EFFECTIVE_LAST_ACTIVE_BACKFILL_VERSION = "3"
+SCHEMA_VERSION = 17
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -704,7 +663,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     system_prompt TEXT,
     parent_session_id TEXT,
     started_at REAL NOT NULL,
-    effective_last_active REAL,
     ended_at REAL,
     end_reason TEXT,
     message_count INTEGER DEFAULT 0,
@@ -799,10 +757,6 @@ CREATE INDEX IF NOT EXISTS idx_sessions_session_key
     ON sessions(session_key, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
     ON sessions(source, user_id, chat_id, chat_type, thread_id, started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_sessions_effective_last_active
-    ON sessions(effective_last_active DESC, started_at DESC, id DESC, archived, source);
-CREATE INDEX IF NOT EXISTS idx_sessions_source_effective_last_active
-    ON sessions(source, effective_last_active DESC, started_at DESC, id DESC, archived);
 """
 
 FTS_SQL = """
@@ -1208,263 +1162,6 @@ class SessionDB:
             "database is locked after max retries"
         )
 
-    # ── session.list effective_last_active denormalization ───────────────
-
-    def _row_exists(self, conn: sqlite3.Connection, session_id: str) -> bool:
-        return conn.execute(
-            "SELECT 1 FROM sessions WHERE id = ? LIMIT 1",
-            (session_id,),
-        ).fetchone() is not None
-
-    def _is_effective_last_active_visible(self, conn: sqlite3.Connection, session_id: str) -> bool:
-        visible_sql, visible_params = _effective_last_active_visible_clause("s")
-        return conn.execute(
-            f"SELECT 1 FROM sessions s WHERE s.id = ? AND {visible_sql} LIMIT 1",
-            (session_id, *visible_params),
-        ).fetchone() is not None
-
-    def _resolve_effective_last_active_root(
-        self,
-        conn: sqlite3.Connection,
-        session_id: str,
-    ) -> Optional[str]:
-        """Walk child→parent compression edges and return the recency root."""
-        row = conn.execute(
-            """
-            WITH RECURSIVE ancestors(id, depth) AS (
-                SELECT s.id, 0 FROM sessions s WHERE s.id = ?
-                UNION
-                SELECT parent.id, ancestors.depth + 1
-                FROM ancestors
-                JOIN sessions child ON child.id = ancestors.id
-                JOIN sessions parent ON parent.id = child.parent_session_id
-                WHERE parent.end_reason = 'compression'
-                  AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
-                  AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
-                  AND ancestors.depth < 100
-            )
-            SELECT id FROM ancestors ORDER BY depth DESC LIMIT 1
-            """,
-            (session_id,),
-        ).fetchone()
-        return row["id"] if row else None
-
-    def _expected_effective_last_active(
-        self,
-        conn: sqlite3.Connection,
-        session_id: str,
-    ) -> Optional[float]:
-        """Fresh CTE oracle for one row's stored recency/visibility value."""
-        if not self._row_exists(conn, session_id):
-            return None
-        if not self._is_effective_last_active_visible(conn, session_id):
-            return None
-        row = conn.execute(
-            """
-            WITH RECURSIVE chain(cur_id, depth) AS (
-                SELECT s.id, 0 FROM sessions s WHERE s.id = ?
-                UNION
-                SELECT child.id, chain.depth + 1
-                FROM chain
-                JOIN sessions parent ON parent.id = chain.cur_id
-                JOIN sessions child ON child.parent_session_id = chain.cur_id
-                WHERE parent.end_reason = 'compression'
-                  AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
-                  AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
-                  AND chain.depth < 100
-            )
-            SELECT MAX(COALESCE(
-                (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = chain.cur_id),
-                (SELECT ss.started_at FROM sessions ss WHERE ss.id = chain.cur_id)
-            )) AS value
-            FROM chain
-            """,
-            (session_id,),
-        ).fetchone()
-        return row["value"] if row else None
-
-    def _recompute_effective_last_active(
-        self,
-        conn: sqlite3.Connection,
-        session_id: Optional[str],
-    ) -> Optional[float]:
-        """Single scoped recompute chokepoint for the denormalized recency value."""
-        if not session_id or not self._row_exists(conn, session_id):
-            return None
-        value = self._expected_effective_last_active(conn, session_id)
-        conn.execute(
-            "UPDATE sessions SET effective_last_active = ? WHERE id = ?",
-            (value, session_id),
-        )
-        return value
-
-    def _recompute_effective_last_active_for_session(
-        self,
-        conn: sqlite3.Connection,
-        session_id: Optional[str],
-    ) -> None:
-        if not session_id:
-            return
-        root_id = self._resolve_effective_last_active_root(conn, session_id)
-        for sid in dict.fromkeys([session_id, root_id]):
-            self._recompute_effective_last_active(conn, sid)
-
-    def _bump_effective_last_active_for_message(
-        self,
-        conn: sqlite3.Connection,
-        session_id: str,
-        message_timestamp: float,
-    ) -> None:
-        root_id = self._resolve_effective_last_active_root(conn, session_id)
-        if not root_id:
-            return
-        if not self._is_effective_last_active_visible(conn, root_id):
-            self._recompute_effective_last_active(conn, root_id)
-            return
-        conn.execute(
-            """
-            UPDATE sessions
-            SET effective_last_active = CASE
-                WHEN effective_last_active IS NULL OR effective_last_active < ? THEN ?
-                ELSE effective_last_active
-            END
-            WHERE id = ?
-            """,
-            (message_timestamp, message_timestamp, root_id),
-        )
-
-    def _collect_orphan_effective_last_active_targets(
-        self,
-        conn: sqlite3.Connection,
-        parent_ids: List[str],
-    ) -> Tuple[List[str], List[str]]:
-        if not parent_ids:
-            return [], []
-        ph = _sql_placeholders(parent_ids)
-        children = [
-            row["id"] for row in conn.execute(
-                f"SELECT id FROM sessions WHERE parent_session_id IN ({ph})",
-                parent_ids,
-            ).fetchall()
-        ]
-        roots: List[str] = []
-        for child_id in children:
-            root_id = self._resolve_effective_last_active_root(conn, child_id)
-            if root_id and root_id not in roots:
-                roots.append(root_id)
-        return children, roots
-
-    def _recompute_effective_last_active_many(
-        self,
-        conn: sqlite3.Connection,
-        session_ids: List[str],
-    ) -> None:
-        for session_id in dict.fromkeys(sid for sid in session_ids if sid):
-            self._recompute_effective_last_active(conn, session_id)
-
-    def _backfill_effective_last_active(self, conn: sqlite3.Connection) -> None:
-        """Recompute the denormalized list recency column for every session."""
-        visible_sql, visible_params = _effective_last_active_visible_clause("s")
-        hidden_sql, hidden_params = _effective_last_active_visible_clause("sessions")
-        conn.execute(
-            f"""
-            WITH RECURSIVE chain(root_id, cur_id, depth) AS (
-                SELECT s.id, s.id, 0
-                FROM sessions s
-                WHERE {visible_sql}
-                UNION
-                SELECT chain.root_id, child.id, chain.depth + 1
-                FROM chain
-                JOIN sessions parent ON parent.id = chain.cur_id
-                JOIN sessions child ON child.parent_session_id = chain.cur_id
-                WHERE parent.end_reason = 'compression'
-                  AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
-                  AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
-                  AND chain.depth < 100
-            ),
-            chain_max AS (
-                SELECT root_id,
-                       MAX(COALESCE(
-                           (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = cur_id),
-                           (SELECT started_at FROM sessions ss WHERE ss.id = cur_id)
-                       )) AS value
-                FROM chain
-                GROUP BY root_id
-            )
-            UPDATE sessions
-            SET effective_last_active = (
-                SELECT value FROM chain_max WHERE chain_max.root_id = sessions.id
-            )
-            WHERE id IN (SELECT root_id FROM chain_max)
-            """,
-            visible_params,
-        )
-        conn.execute(
-            f"UPDATE sessions SET effective_last_active = NULL WHERE NOT ({hidden_sql})",
-            hidden_params,
-        )
-
-    def _record_effective_last_active_backfill(self, conn: sqlite3.Connection) -> None:
-        conn.execute(
-            "INSERT OR REPLACE INTO state_meta (key, value) VALUES (?, ?)",
-            (
-                _EFFECTIVE_LAST_ACTIVE_BACKFILL_META_KEY,
-                _EFFECTIVE_LAST_ACTIVE_BACKFILL_VERSION,
-            ),
-        )
-        try:
-            journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
-            conn.execute(
-                "INSERT OR REPLACE INTO state_meta (key, value) VALUES (?, ?)",
-                ("effective_last_active_migration_journal_mode", str(journal_mode)),
-            )
-        except sqlite3.OperationalError:
-            pass
-
-    def _needs_effective_last_active_backfill(self, conn: sqlite3.Connection) -> bool:
-        try:
-            row = conn.execute(
-                "SELECT value FROM state_meta WHERE key = ?",
-                (_EFFECTIVE_LAST_ACTIVE_BACKFILL_META_KEY,),
-            ).fetchone()
-        except sqlite3.OperationalError:
-            return True
-        if row is None:
-            return True
-        value = row["value"] if isinstance(row, sqlite3.Row) else row[0]
-        return value != _EFFECTIVE_LAST_ACTIVE_BACKFILL_VERSION
-
-    def expected_effective_last_active(self, session_id: str) -> Optional[float]:
-        with self._lock:
-            return self._expected_effective_last_active(self._conn, session_id)
-
-    def recompute_effective_last_active(self, session_id: str) -> None:
-        def _do(conn):
-            self._recompute_effective_last_active_for_session(conn, session_id)
-        self._execute_write(_do)
-
-    def backfill_effective_last_active(self) -> None:
-        def _do(conn):
-            self._backfill_effective_last_active(conn)
-            self._record_effective_last_active_backfill(conn)
-        self._execute_write(_do)
-
-    def audit_effective_last_active(self, limit: int = 100) -> List[Dict[str, Any]]:
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT id, effective_last_active FROM sessions ORDER BY started_at DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-            drift: List[Dict[str, Any]] = []
-            for row in rows:
-                expected = self._expected_effective_last_active(self._conn, row["id"])
-                stored = row["effective_last_active"]
-                if stored != expected:
-                    drift.append({"id": row["id"], "stored": stored, "expected": expected})
-            if drift:
-                logger.warning("effective_last_active drift: %s", drift)
-            return drift
-
     def _try_wal_checkpoint(self) -> None:
         """Best-effort TRUNCATE WAL checkpoint.  Never raises.
 
@@ -1611,9 +1308,7 @@ class SessionDB:
         The schema_version table is retained for future data migrations
         (transforming existing rows) which cannot be handled declaratively.
         """
-        conn = self._conn
-        assert conn is not None
-        cursor = conn.cursor()
+        cursor = self._conn.cursor()
 
         cursor.executescript(SCHEMA_SQL)
 
@@ -1661,7 +1356,6 @@ class SessionDB:
                 "INSERT INTO schema_version (version) VALUES (?)",
                 (SCHEMA_VERSION,),
             )
-            self._record_effective_last_active_backfill(conn)
         else:
             current_version = row["version"] if isinstance(row, sqlite3.Row) else row[0]
             # Data migrations that can't be expressed declaratively (row
@@ -1794,16 +1488,6 @@ class SessionDB:
                     )
                 except sqlite3.OperationalError:
                     pass
-            if current_version < 18 or self._needs_effective_last_active_backfill(conn):
-                # v18: denormalized session-list recency/visibility marker.
-                # The column itself is declaratively added above; the data
-                # migration is a re-runnable CTE backfill. The meta marker is
-                # deliberately separate from schema_version so builds that
-                # already stamped v18 but left stale v1 values get one exact
-                # repair on open. Record journal mode for the WAL-vs-DELETE
-                # liveness contract in the rollout notes.
-                self._backfill_effective_last_active(conn)
-                self._record_effective_last_active_backfill(conn)
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -1909,14 +1593,12 @@ class SessionDB:
         can't clobber a real source/model).
         """
         def _do(conn):
-            previous_root_id = self._resolve_effective_last_active_root(conn, session_id)
             conn.execute(
                 """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
-                   model, model_config, system_prompt, parent_session_id, cwd, started_at,
-                   effective_last_active
+                   model, model_config, system_prompt, parent_session_id, cwd, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = COALESCE(sessions.model_config, excluded.model_config),
@@ -1943,11 +1625,6 @@ class SessionDB:
                     time.time(),
                 ),
             )
-            # effective_last_active birth/upsert maintenance: recompute the
-            # old root (if this row moved) and the row's post-upsert root in
-            # the same BEGIN IMMEDIATE transaction as the parent COALESCE.
-            self._recompute_effective_last_active(conn, previous_root_id)
-            self._recompute_effective_last_active_for_session(conn, session_id)
         self._execute_write(_do)
 
     def create_session(self, session_id: str, source: str, **kwargs) -> str:
@@ -1971,7 +1648,6 @@ class SessionDB:
             return
 
         def _do(conn):
-            root_id = self._resolve_effective_last_active_root(conn, session_id)
             conn.execute(
                 """UPDATE sessions
                    SET session_key = ?, source = ?, user_id = ?, chat_id = ?,
@@ -1987,8 +1663,6 @@ class SessionDB:
                     session_id,
                 ),
             )
-            self._recompute_effective_last_active(conn, root_id)
-            self._recompute_effective_last_active_for_session(conn, session_id)
 
         self._execute_write(_do)
 
@@ -2067,40 +1741,21 @@ class SessionDB:
         intentionally need to re-end a closed session with a new reason.
         """
         def _do(conn):
-            root_id = self._resolve_effective_last_active_root(conn, session_id)
             conn.execute(
                 "UPDATE sessions SET ended_at = ?, end_reason = ? "
                 "WHERE id = ? AND ended_at IS NULL",
                 (time.time(), end_reason, session_id),
             )
-            self._recompute_effective_last_active(conn, root_id)
-            self._recompute_effective_last_active_for_session(conn, session_id)
         self._execute_write(_do)
 
     def reopen_session(self, session_id: str) -> None:
         """Clear ended_at/end_reason so a session can be resumed."""
         def _do(conn):
-            root_id = self._resolve_effective_last_active_root(conn, session_id)
             conn.execute(
                 "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
                 (session_id,),
             )
-            self._recompute_effective_last_active(conn, root_id)
-            self._recompute_effective_last_active_for_session(conn, session_id)
         self._execute_write(_do)
-
-    def _set_parent_session_id(self, session_id: str, parent_session_id: Optional[str]) -> bool:
-        """Set parent_session_id and recompute both affected effective roots."""
-        def _do(conn):
-            old_root_id = self._resolve_effective_last_active_root(conn, session_id)
-            cursor = conn.execute(
-                "UPDATE sessions SET parent_session_id = ? WHERE id = ?",
-                (parent_session_id, session_id),
-            )
-            self._recompute_effective_last_active(conn, old_root_id)
-            self._recompute_effective_last_active_for_session(conn, session_id)
-            return cursor.rowcount > 0
-        return bool(self._execute_write(_do))
 
     def update_session_cwd(
         self, session_id: str, cwd: str, git_branch: str = None, git_repo_root: str = None
@@ -3102,7 +2757,6 @@ class SessionDB:
         # Bound the walk defensively — compression chains this deep are
         # pathological and shouldn't happen in practice. 100 = plenty.
         for _ in range(100):
-            deny_clause, deny_params = _list_deny_sources_clause("child")
             with self._lock:
                 cursor = self._conn.execute(
                     """
@@ -3113,7 +2767,7 @@ class SessionDB:
                       AND parent.end_reason = 'compression'
                       AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
                       AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
-                      AND __DENY_CLAUSE__
+                      AND COALESCE(child.source, '') != 'tool'
                     ORDER BY
                       CASE
                         WHEN child.end_reason = 'compression' THEN 0
@@ -3127,8 +2781,8 @@ class SessionDB:
                       child.started_at DESC,
                       child.id DESC
                     LIMIT 1
-                    """.replace("__DENY_CLAUSE__", deny_clause),
-                    (current, *deny_params),
+                    """,
+                    (current,),
                 )
                 row = cursor.fetchone()
             if row is None:
@@ -3180,7 +2834,6 @@ class SessionDB:
         include_archived: bool = False,
         archived_only: bool = False,
         id_query: str = None,
-        _force_cte_oracle: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -3205,9 +2858,9 @@ class SessionDB:
         instead of original conversation start time. For compression chains,
         the "most-recent activity" is taken from the live tip (not the root),
         so an old conversation that was compressed and continued recently
-        surfaces in the correct slot. Ordering is served from the denormalized
-        ``effective_last_active`` marker, so LIMIT and OFFSET apply before the
-        expensive preview/last-message enrichment work.
+        surfaces in the correct slot. Ordering is computed at SQL level via
+        a recursive CTE that walks compression-continuation edges, so LIMIT
+        and OFFSET still apply efficiently.
         """
         where_clauses = []
         params = []
@@ -3229,10 +2882,6 @@ class SessionDB:
             #      marker existed.
             where_clauses.append(_LISTABLE_CHILD_SQL)
             where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
-
-        deny_clause, deny_params = _list_deny_sources_clause("s")
-        where_clauses.append(deny_clause)
-        params.extend(deny_params)
 
         if source:
             where_clauses.append("s.source = ?")
@@ -3265,154 +2914,86 @@ class SessionDB:
         # pass id_query=None.
         id_needle = (id_query or "").strip().lower()
         if order_by_last_active:
-            like_pattern = None
+            # Compute effective_last_active by walking each surfaced session's
+            # compression-continuation chain forward in SQL and taking the MAX
+            # timestamp across the chain. This lets us ORDER BY + LIMIT at SQL
+            # level instead of fetching every row and sorting in Python, while
+            # still surfacing old compression roots whose live tip is fresh.
+            #
+            # The CTE seeds from rows the outer WHERE admits (roots + branch
+            # children), then recursively joins forward through robust
+            # compression-continuation edges. Do NOT require
+            # child.started_at >= parent.ended_at here: real desktop/gateway
+            # races can insert the continuation row before the parent's
+            # ended_at is written, while stale websocket siblings may satisfy
+            # the timestamp test and hijack resume/list projection.
+            outer_where = where_sql
+            id_params: List[Any] = []
             if id_needle:
+                # Admit a surfaced row if its own id or any id in its forward
+                # compression chain matches the needle. LIKE with a leading
+                # wildcard can't use an index, but the chain membership and
+                # the small result set keep this bounded — far cheaper than
+                # fetching every session and scanning in Python.
+                id_clause = (
+                    "EXISTS (SELECT 1 FROM chain cq"
+                    "        WHERE cq.root_id = s.id"
+                    "          AND LOWER(cq.cur_id) LIKE ? ESCAPE '\\')"
+                )
                 like_pattern = (
                     "%"
                     + id_needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
                     + "%"
                 )
-
-            if not _force_cte_oracle and not include_children:
-                # Two-stage denormalized path: the inner query LIMITs on the
-                # indexed visibility+recency marker, then the outer query
-                # enriches only those selected ids with preview/last_active.
-                denorm_where_clauses = ["s.effective_last_active IS NOT NULL"]
-                denorm_params: List[Any] = []
-                if source:
-                    denorm_where_clauses.append("s.source = ?")
-                    denorm_params.append(source)
-                if exclude_sources:
-                    placeholders = ",".join("?" for _ in exclude_sources)
-                    denorm_where_clauses.append(f"s.source NOT IN ({placeholders})")
-                    denorm_params.extend(exclude_sources)
-                if cwd_prefix:
-                    clause, clause_params = _cwd_prefix_clause(cwd_prefix)
-                    denorm_where_clauses.append(clause)
-                    denorm_params.extend(clause_params)
-                if min_message_count > 0:
-                    denorm_where_clauses.append("s.message_count >= ?")
-                    denorm_params.append(min_message_count)
-                if archived_only:
-                    denorm_where_clauses.append("s.archived = 1")
-                elif not include_archived:
-                    denorm_where_clauses.append("s.archived = 0")
-                if like_pattern:
-                    denorm_where_clauses.append(
-                        "(LOWER(s.id) LIKE ? ESCAPE '\\' "
-                        "OR EXISTS ("
-                        "  WITH RECURSIVE id_chain(cur_id, depth) AS ("
-                        "    SELECT child.id, 1 "
-                        "    FROM sessions parent "
-                        "    JOIN sessions child ON child.parent_session_id = parent.id "
-                        "    WHERE parent.id = s.id "
-                        "      AND parent.end_reason = 'compression' "
-                        "      AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL "
-                        "      AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL "
-                        "    UNION ALL "
-                        "    SELECT child.id, id_chain.depth + 1 "
-                        "    FROM id_chain "
-                        "    JOIN sessions parent ON parent.id = id_chain.cur_id "
-                        "    JOIN sessions child ON child.parent_session_id = id_chain.cur_id "
-                        "    WHERE parent.end_reason = 'compression' "
-                        "      AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL "
-                        "      AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL "
-                        "      AND id_chain.depth < 100 "
-                        "  ) "
-                        "  SELECT 1 FROM id_chain WHERE LOWER(cur_id) LIKE ? ESCAPE '\\' LIMIT 1"
-                        "))"
-                    )
-                    denorm_params.extend([like_pattern, like_pattern])
-                denorm_where_sql = f"WHERE {' AND '.join(denorm_where_clauses)}"
-                query = f"""
-                    WITH selected AS (
-                        SELECT s.id, s.effective_last_active AS _effective_last_active,
-                               s.started_at AS _selected_started_at
-                        FROM sessions s
-                        {denorm_where_sql}
-                        ORDER BY s.effective_last_active DESC, s.started_at DESC, s.id DESC
-                        LIMIT ? OFFSET ?
-                    )
-                    SELECT s.*,
-                        COALESCE(
-                            (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
-                             FROM messages m
-                             WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                             ORDER BY m.timestamp, m.id LIMIT 1),
-                            ''
-                        ) AS _preview_raw,
-                        COALESCE(
-                            (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                            s.started_at
-                        ) AS last_active,
-                        selected._effective_last_active AS _effective_last_active
-                    FROM selected
-                    JOIN sessions s ON s.id = selected.id
-                    ORDER BY selected._effective_last_active DESC,
-                             selected._selected_started_at DESC,
-                             selected.id DESC
-                """
-                params = denorm_params + [limit, offset]
-            else:
-                # CTE oracle/fallback: compute effective_last_active by walking
-                # each surfaced session's compression-continuation chain forward
-                # in SQL and taking the MAX timestamp across the chain.
-                outer_where = where_sql
-                id_params: List[Any] = []
-                if like_pattern:
-                    id_clause = (
-                        "EXISTS (SELECT 1 FROM chain cq"
-                        "        WHERE cq.root_id = s.id"
-                        "          AND LOWER(cq.cur_id) LIKE ? ESCAPE '\\')"
-                    )
-                    id_params = [like_pattern]
-                    outer_where = (
-                        f"{where_sql} AND {id_clause}" if where_sql else f"WHERE {id_clause}"
-                    )
-                query = f"""
-                    WITH RECURSIVE chain(root_id, cur_id) AS (
-                        SELECT s.id, s.id FROM sessions s {where_sql}
-                        UNION ALL
-                        SELECT c.root_id, child.id
-                        FROM chain c
-                        JOIN sessions parent ON parent.id = c.cur_id
-                        JOIN sessions child ON child.parent_session_id = c.cur_id
-                        WHERE parent.end_reason = 'compression'
-                          AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
-                          AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
-                    ),
-                    chain_max AS (
-                        SELECT
-                            root_id,
-                            MAX(COALESCE(
-                                (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = cur_id),
-                                (SELECT started_at FROM sessions ss WHERE ss.id = cur_id)
-                            )) AS effective_last_active
-                        FROM chain
-                        GROUP BY root_id
-                    )
-                    SELECT s.*,
-                        COALESCE(
-                            (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
-                             FROM messages m
-                             WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                             ORDER BY m.timestamp, m.id LIMIT 1),
-                            ''
-                        ) AS _preview_raw,
-                        COALESCE(
-                            (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                            s.started_at
-                        ) AS last_active,
-                        COALESCE(cm.effective_last_active, s.started_at) AS _effective_last_active
-                    FROM sessions s
-                    LEFT JOIN chain_max cm ON cm.root_id = s.id
-                    {outer_where}
-                    ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
-                    LIMIT ? OFFSET ?
-                """
-                # WHERE params apply twice (CTE seed + outer select); the id filter
-                # only applies to the outer select.
-                params = params + params + id_params + [limit, offset]
+                id_params = [like_pattern]
+                outer_where = (
+                    f"{where_sql} AND {id_clause}" if where_sql else f"WHERE {id_clause}"
+                )
+            query = f"""
+                WITH RECURSIVE chain(root_id, cur_id) AS (
+                    SELECT s.id, s.id FROM sessions s {where_sql}
+                    UNION ALL
+                    SELECT c.root_id, child.id
+                    FROM chain c
+                    JOIN sessions parent ON parent.id = c.cur_id
+                    JOIN sessions child ON child.parent_session_id = c.cur_id
+                    WHERE parent.end_reason = 'compression'
+                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
+                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
+                      AND COALESCE(child.source, '') != 'tool'
+                ),
+                chain_max AS (
+                    SELECT
+                        root_id,
+                        MAX(COALESCE(
+                            (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = cur_id),
+                            (SELECT started_at FROM sessions ss WHERE ss.id = cur_id)
+                        )) AS effective_last_active
+                    FROM chain
+                    GROUP BY root_id
+                )
+                SELECT s.*,
+                    COALESCE(
+                        (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                         FROM messages m
+                         WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                         ORDER BY m.timestamp, m.id LIMIT 1),
+                        ''
+                    ) AS _preview_raw,
+                    COALESCE(
+                        (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                        s.started_at
+                    ) AS last_active,
+                    COALESCE(cm.effective_last_active, s.started_at) AS _effective_last_active
+                FROM sessions s
+                LEFT JOIN chain_max cm ON cm.root_id = s.id
+                {outer_where}
+                ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
+                LIMIT ? OFFSET ?
+            """
+            # WHERE params apply twice (CTE seed + outer select); the id filter
+            # only applies to the outer select.
+            params = params + params + id_params + [limit, offset]
         else:
             query = f"""
                 SELECT s.*,
@@ -3485,37 +3066,6 @@ class SessionDB:
             sessions = projected
 
         return sessions
-
-    def list_sessions_rich_cte_oracle(
-        self,
-        source: str = None,
-        exclude_sources: List[str] = None,
-        cwd_prefix: str = None,
-        limit: int = 20,
-        offset: int = 0,
-        include_children: bool = False,
-        min_message_count: int = 0,
-        project_compression_tips: bool = True,
-        include_archived: bool = False,
-        archived_only: bool = False,
-        id_query: str = None,
-    ) -> List[Dict[str, Any]]:
-        """Return the pre-denorm CTE result used as the audit/test oracle."""
-        return self.list_sessions_rich(
-            source=source,
-            exclude_sources=exclude_sources,
-            cwd_prefix=cwd_prefix,
-            limit=limit,
-            offset=offset,
-            include_children=include_children,
-            min_message_count=min_message_count,
-            project_compression_tips=project_compression_tips,
-            order_by_last_active=True,
-            include_archived=include_archived,
-            archived_only=archived_only,
-            id_query=id_query,
-            _force_cte_oracle=True,
-        )
 
     def list_cron_job_runs(
         self,
@@ -3768,9 +3318,6 @@ class SessionDB:
                     "UPDATE sessions SET message_count = message_count + 1 WHERE id = ?",
                     (session_id,),
                 )
-            self._bump_effective_last_active_for_message(
-                conn, session_id, message_timestamp
-            )
             return msg_id
 
         return self._execute_write(_do)
@@ -3883,7 +3430,6 @@ class SessionDB:
                 "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
                 (total_messages, total_tool_calls, session_id),
             )
-            self._recompute_effective_last_active_for_session(conn, session_id)
 
         self._execute_write(_do)
 
@@ -3935,7 +3481,6 @@ class SessionDB:
                 "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
                 (inserted, tool_calls_total, session_id),
             )
-            self._recompute_effective_last_active_for_session(conn, session_id)
             return inserted
 
         return self._execute_write(_do)
@@ -4242,15 +3787,14 @@ class SessionDB:
                 # the resume target to an unrelated session (e.g. a subagent
                 # run). This mirrors the child-exclusion in ``get_compression_tip``.
                 try:
-                    deny_clause, deny_params = _list_deny_sources_clause("sessions")
                     child_row = self._conn.execute(
                         "SELECT id FROM sessions "
                         "WHERE parent_session_id = ? "
                         "  AND json_extract(COALESCE(model_config, '{}'), '$._branched_from') IS NULL "
                         "  AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL "
-                        f"  AND {deny_clause} "
+                        "  AND COALESCE(source, '') != 'tool' "
                         "ORDER BY started_at DESC, id DESC LIMIT 1",
-                        (current, *deny_params),
+                        (current,),
                     ).fetchone()
                 except Exception:
                     return session_id
@@ -5314,7 +4858,6 @@ class SessionDB:
                 "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
                 (session_id,),
             )
-            self._recompute_effective_last_active_for_session(conn, session_id)
         self._execute_write(_do)
 
     @staticmethod
@@ -5367,19 +4910,8 @@ class SessionDB:
             )
             if cursor.fetchone()[0] == 0:
                 return False
-            orphaned_child_ids: List[str] = []
-            affected_root_ids: List[str] = []
-            removed_delegate_ids.extend(
-                _delete_delegate_children(conn, [session_id], orphaned_child_ids)
-            )
-            direct_orphans, direct_roots = self._collect_orphan_effective_last_active_targets(
-                conn, [session_id]
-            )
-            orphaned_child_ids.extend(direct_orphans)
-            affected_root_ids.extend(direct_roots)
+            removed_delegate_ids.extend(_delete_delegate_children(conn, [session_id]))
             # Orphan remaining child sessions (branches, etc.) so FK is satisfied.
-            # effective_last_active maintenance: recompute old surviving roots
-            # and every orphaned child below after the doomed row is deleted.
             conn.execute(
                 "UPDATE sessions SET parent_session_id = NULL "
                 "WHERE parent_session_id = ?",
@@ -5387,9 +4919,6 @@ class SessionDB:
             )
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-            self._recompute_effective_last_active_many(
-                conn, affected_root_ids + orphaned_child_ids
-            )
             return True
 
         deleted = self._execute_write(_do)
@@ -5495,23 +5024,12 @@ class SessionDB:
                 return 0
 
             existing_placeholders = ",".join("?" * len(existing))
-            orphaned_child_ids: List[str] = []
-            affected_root_ids: List[str] = []
-            removed_delegate_ids.extend(
-                _delete_delegate_children(conn, existing, orphaned_child_ids)
-            )
-            direct_orphans, direct_roots = self._collect_orphan_effective_last_active_targets(
-                conn, existing
-            )
-            orphaned_child_ids.extend(direct_orphans)
-            affected_root_ids.extend(direct_roots)
+            removed_delegate_ids.extend(_delete_delegate_children(conn, existing))
             # Orphan remaining children whose parent is in the kill list so the
             # FK constraint stays satisfied. Pin children whose parent
             # is itself in the kill list rather than NULL-ing parents
             # of survivors — the IN list on ``parent_session_id`` does
             # exactly this.
-            # effective_last_active maintenance recomputes every orphaned
-            # survivor unconditionally after the delete below.
             conn.execute(
                 f"UPDATE sessions SET parent_session_id = NULL "
                 f"WHERE parent_session_id IN ({existing_placeholders})",
@@ -5526,9 +5044,6 @@ class SessionDB:
                 existing,
             )
             removed_ids.extend(existing)
-            self._recompute_effective_last_active_many(
-                conn, affected_root_ids + orphaned_child_ids
-            )
             return len(existing)
 
         count = self._execute_write(_do)
@@ -5607,11 +5122,6 @@ class SessionDB:
                 return 0
 
             placeholders = ",".join("?" * len(session_ids))
-            orphaned_child_ids, affected_root_ids = self._collect_orphan_effective_last_active_targets(
-                conn, list(session_ids)
-            )
-            # effective_last_active maintenance recomputes every orphaned
-            # survivor unconditionally after empty parents are deleted.
             conn.execute(
                 f"UPDATE sessions SET parent_session_id = NULL "
                 f"WHERE parent_session_id IN ({placeholders})",
@@ -5628,9 +5138,6 @@ class SessionDB:
                 )
                 conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
                 removed_ids.append(sid)
-            self._recompute_effective_last_active_many(
-                conn, affected_root_ids + orphaned_child_ids
-            )
             return len(session_ids)
 
         count = self._execute_write(_do)
@@ -5675,11 +5182,6 @@ class SessionDB:
 
             # Orphan any sessions whose parent is about to be deleted
             placeholders = ",".join("?" * len(session_ids))
-            orphaned_child_ids, affected_root_ids = self._collect_orphan_effective_last_active_targets(
-                conn, list(session_ids)
-            )
-            # effective_last_active maintenance recomputes every orphaned
-            # survivor unconditionally after pruned parents are deleted.
             conn.execute(
                 f"UPDATE sessions SET parent_session_id = NULL "
                 f"WHERE parent_session_id IN ({placeholders})",
@@ -5690,9 +5192,6 @@ class SessionDB:
                 conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
                 conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
                 removed_ids.append(sid)
-            self._recompute_effective_last_active_many(
-                conn, affected_root_ids + orphaned_child_ids
-            )
             return len(session_ids)
 
         count = self._execute_write(_do)

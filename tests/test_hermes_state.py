@@ -3263,9 +3263,6 @@ class TestListSessionsRich:
                 (t0 + 10_000, "tip1", "latest message"),
             )
             db._conn.commit()
-        # Direct SQL fixture timestamp edits bypass write-path maintenance; keep
-        # the denormalized recency oracle aligned with the synthetic fixture.
-        db.backfill_effective_last_active()
 
         # limit=1 is the stress test: the old root must win the single slot.
         top = db.list_sessions_rich(limit=1, order_by_last_active=True)
@@ -3665,22 +3662,23 @@ class TestExcludeSources:
         assert "s3" in ids
         assert "s2" not in ids
 
-    def test_list_sessions_rich_no_exclusion_hides_internal_tool_source(self, db):
+    def test_list_sessions_rich_no_exclusion_returns_all(self, db):
         db.create_session("s1", "cli")
         db.create_session("s2", "tool")
         sessions = db.list_sessions_rich()
         ids = [s["id"] for s in sessions]
         assert "s1" in ids
-        assert "s2" not in ids
+        assert "s2" in ids
 
     def test_list_sessions_rich_source_and_exclude_combined(self, db):
-        """Deny-listed sources stay hidden even with explicit source=."""
+        """When source= is explicit, exclude_sources should not conflict."""
         db.create_session("s1", "cli")
         db.create_session("s2", "tool")
         db.create_session("s3", "telegram")
+        # Explicit source filter: only tool sessions, no exclusion
         sessions = db.list_sessions_rich(source="tool")
         ids = [s["id"] for s in sessions]
-        assert ids == []
+        assert ids == ["s2"]
 
     def test_list_sessions_rich_exclude_multiple_sources(self, db):
         db.create_session("s1", "cli")
@@ -4637,20 +4635,6 @@ class TestSessionIdSearch:
         db.append_message(tip, role="user", content="continued conversation")
 
         matches = db.search_sessions_by_id("root99")
-
-        assert [s["id"] for s in matches] == [tip]
-        assert matches[0]["_lineage_root_id"] == root
-
-    def test_search_sessions_by_id_matches_projected_lineage_tip_id(self, db):
-        root = "20260602_235959_root99"
-        tip = "20260603_010000_tip01"
-        db.create_session(session_id=root, source="cli")
-        db.append_message(root, role="user", content="root conversation")
-        db.end_session(root, "compression")
-        db.create_session(session_id=tip, source="cli", parent_session_id=root)
-        db.append_message(tip, role="user", content="continued conversation")
-
-        matches = db.search_sessions_by_id("tip01")
 
         assert [s["id"] for s in matches] == [tip]
         assert matches[0]["_lineage_root_id"] == root

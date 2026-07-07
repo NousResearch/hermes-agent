@@ -69,12 +69,6 @@ from hermes_cli.config import (
     write_platform_config_field,
     _deep_merge,
 )
-from hermes_cli.session_db_heavy_gate import (
-    SessionDBHeavyReadBusy,
-    session_db_heavy_read_semaphore,
-    session_db_heavy_read_slot,
-    session_db_heavy_read_stats,
-)
 from hermes_cli.memory_providers import (
     MemoryProvider,
     ProviderField,
@@ -1944,21 +1938,24 @@ async def _blocking_io(fn, *args):
     return await loop.run_in_executor(None, fn, *args)
 
 
+_SESSION_DB_HEAVY_READ_SEMAPHORES: Dict[int, asyncio.Semaphore] = {}
+
+
 def _session_db_heavy_read_semaphore() -> asyncio.Semaphore:
-    return session_db_heavy_read_semaphore()
+    loop = asyncio.get_running_loop()
+    key = id(loop)
+    semaphore = _SESSION_DB_HEAVY_READ_SEMAPHORES.get(key)
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(2)
+        _SESSION_DB_HEAVY_READ_SEMAPHORES[key] = semaphore
+    return semaphore
 
 
 async def _session_db_read(fn, *args, heavy: bool = False):
     """Run a blocking SessionDB read off-loop, bounding heavyweight scans."""
     if heavy:
-        try:
-            async with session_db_heavy_read_slot(
-                surface="rest",
-                operation=getattr(fn, "__name__", "session_db_read"),
-            ):
-                return await _blocking_io(fn, *args)
-        except SessionDBHeavyReadBusy as exc:
-            raise HTTPException(status_code=503, detail=exc.to_payload()) from exc
+        async with _session_db_heavy_read_semaphore():
+            return await _blocking_io(fn, *args)
     return await _blocking_io(fn, *args)
 
 
@@ -2271,7 +2268,6 @@ async def get_status(profile: Optional[str] = None):
             "gateway_drainable": gateway_drainable,
             "restart_drain_timeout": restart_drain_timeout,
             "active_sessions": active_sessions,
-            "session_db_heavy_reads": session_db_heavy_read_stats(),
             "auth_required": auth_required,
             "auth_providers": auth_providers,
         }

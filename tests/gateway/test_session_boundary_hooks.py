@@ -331,3 +331,87 @@ async def test_idle_expiry_clears_last_resolved_model(mock_invoke_hook):
         "session-expiry finalization must only clear the expired session's "
         "own key, not unrelated sessions' cached entries"
     )
+
+
+@pytest.mark.asyncio
+@patch("hermes_cli.plugins.invoke_hook")
+async def test_idle_expiry_writes_ended_at_to_db(mock_invoke_hook):
+    """Regression test for #28746.
+
+    When ``_session_expiry_watcher`` finalizes an idle-expired session, the
+    ``set_expiry_finalized`` write-path must call
+    ``session_store._db.end_session()`` so that ``ended_at`` is written to
+    SQLite and ``GET /api/sessions`` stops returning the session as live.
+
+    Before the fix, the watcher set ``expiry_finalized = True`` in memory and
+    state.db but never wrote ``ended_at``, causing external API clients to
+    keep injecting turns into a stale session that the gateway had already
+    discarded.
+    """
+    from datetime import datetime, timedelta
+
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionStore
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._running_agents = {}
+    runner._agent_cache = {}
+    runner._agent_cache_lock = None
+    runner._last_session_store_prune_ts = 0.0
+
+    session_key = "agent:main:telegram:group:-1002283267898:1"
+    expired_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sess-stale",
+        created_at=datetime.now() - timedelta(hours=25),
+        updated_at=datetime.now() - timedelta(hours=25),
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+    )
+    expired_entry.expiry_finalized = False
+
+    mock_db = MagicMock()
+
+    runner.session_store = MagicMock()
+    runner.session_store._ensure_loaded = MagicMock()
+    runner.session_store._entries = {session_key: expired_entry}
+    runner.session_store._is_session_expired = MagicMock(return_value=True)
+    runner.session_store._lock = MagicMock()
+    runner.session_store._lock.__enter__ = MagicMock(return_value=None)
+    runner.session_store._lock.__exit__ = MagicMock(return_value=None)
+    runner.session_store._save = MagicMock()
+    runner.session_store._db = mock_db
+    # The watcher persists finalization through the store's single write-path
+    # (#9006); bind the REAL method so the test exercises the actual DB
+    # writes instead of a MagicMock absorbing the call.
+    runner.session_store.set_expiry_finalized = (
+        lambda entry, **kw: SessionStore.set_expiry_finalized(
+            runner.session_store, entry, **kw
+        )
+    )
+
+    runner._evict_cached_agent = MagicMock()
+    runner._cleanup_agent_resources = MagicMock()
+    runner._sweep_idle_cached_agents = MagicMock(return_value=0)
+    runner._session_model_overrides = {}
+    runner._pending_model_notes = {}
+    runner._last_resolved_model = {}
+
+    _orig_sleep = __import__("asyncio").sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    def _hook_and_stop(*a, **kw):
+        runner._running = False
+        return None
+
+    mock_invoke_hook.side_effect = _hook_and_stop
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await runner._session_expiry_watcher(interval=0)
+
+    # The watcher must have ended the expired session in SQLite with reason
+    # "idle" so that ended_at is persisted and the session stops looking live.
+    mock_db.end_session.assert_called_once_with("sess-stale", "idle")

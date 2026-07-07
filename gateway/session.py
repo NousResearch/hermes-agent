@@ -1560,6 +1560,21 @@ class SessionStore:
                         "Session DB expiry_finalized write failed for %s: %s",
                         entry.session_id, exc,
                     )
+            # Also write ended_at/end_reason so the sessions API stops
+            # returning the finalized session as live. Without this,
+            # GET /api/sessions shows ended_at=null even after the watcher
+            # has finalized the session, so external API clients keep
+            # addressing a stale session the gateway has already discarded
+            # (#28746). end_session() is first-reason-wins and no-ops on an
+            # already-ended row, so later end writes (e.g. the next-message
+            # auto-reset's 'session_reset') stay harmless no-ops.
+            try:
+                self._db.end_session(entry.session_id, "idle")
+            except Exception as exc:
+                logger.debug(
+                    "Session expiry: failed to write ended_at for %s: %s",
+                    entry.session_id, exc,
+                )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.

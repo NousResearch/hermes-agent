@@ -75,6 +75,31 @@ logger = logging.getLogger(__name__)
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
 
+def _is_auth_resolution_error(api_error: Exception) -> bool:
+    """True for the Anthropic SDK's keyless-client ``TypeError``.
+
+    The Anthropic SDK raises ``TypeError("Could not resolve authentication
+    method. Expected either api_key or auth_token to be set…")`` at REQUEST time
+    when a client was constructed with no key. This happens when a credential
+    pool is exhausted under a cap (a single-key relay pool marks its one key
+    exhausted on a 429, then a rebuild resolves an empty ``runtime_api_key``).
+
+    It is a *client-construction* error (WE built the client with no key), NOT a
+    local programming bug and NOT an upstream auth rejection (a real 401 arrives
+    in a provider response body, classified via status code). Excluding it from
+    ``is_local_validation_error`` routes it through the normal error classifier
+    to the defined ``auth`` terminal instead of a turn-killing "local bug" abort.
+    The primary fix (``AIAgent._swap_credential`` never building a keyless client)
+    means this is normally never reached; this is the backstop for any rebuild
+    site that still surfaces the shape. Mirrors the ``NoneType is not iterable``
+    carve-out below.
+    """
+    return (
+        isinstance(api_error, TypeError)
+        and "could not resolve authentication method" in str(api_error).lower()
+    )
+
+
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
@@ -3617,6 +3642,16 @@ def run_conversation(
                         and "nonetype" in str(api_error).lower()
                         and "not iterable" in str(api_error).lower()
                     )
+                    # The Anthropic SDK's keyless-client TypeError ("Could not
+                    # resolve authentication method…") is a *client-construction*
+                    # error surfaced when a credential pool is exhausted under a
+                    # cap and a rebuild resolves an empty key — NOT a local
+                    # programming bug. The primary fix (``_swap_credential`` never
+                    # building a keyless client) means this is normally never hit;
+                    # this backstop routes any stray occurrence through the normal
+                    # classifier to the defined ``auth`` terminal instead of a
+                    # turn-killing abort. See ``_is_auth_resolution_error``.
+                    and not _is_auth_resolution_error(api_error)
                 )
                 # ``FailoverReason.billing`` (HTTP 402) is NOT in this
                 # exclusion set.  By the time we reach this block:

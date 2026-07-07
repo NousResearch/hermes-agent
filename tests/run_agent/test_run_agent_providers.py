@@ -9,6 +9,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from run_agent import AIAgent
+from run_agent import SwapOutcome as _SwapOutcome
 from agent.error_classifier import FailoverReason
 
 from tests.run_agent._run_agent_helpers import (
@@ -81,7 +82,7 @@ class TestCredentialPoolRecovery:
                 return next_entry
 
         agent._credential_pool = _Pool()
-        agent._swap_credential = MagicMock()
+        agent._swap_credential = MagicMock(return_value=_SwapOutcome.SWAPPED)
 
         recovered, retry_same = agent._recover_with_credential_pool(
             status_code=402,
@@ -102,7 +103,7 @@ class TestCredentialPoolRecovery:
                 return next_entry
 
         agent._credential_pool = _Pool()
-        agent._swap_credential = MagicMock()
+        agent._swap_credential = MagicMock(return_value=_SwapOutcome.SWAPPED)
 
         recovered, retry_same = agent._recover_with_credential_pool(
             status_code=400,
@@ -128,7 +129,7 @@ class TestCredentialPoolRecovery:
                 return next_entry
 
         agent._credential_pool = _Pool()
-        agent._swap_credential = MagicMock()
+        agent._swap_credential = MagicMock(return_value=_SwapOutcome.SWAPPED)
 
         recovered, retry_same = agent._recover_with_credential_pool(
             status_code=429,
@@ -156,7 +157,7 @@ class TestCredentialPoolRecovery:
                 return refreshed_entry
 
         agent._credential_pool = _Pool()
-        agent._swap_credential = MagicMock()
+        agent._swap_credential = MagicMock(return_value=_SwapOutcome.SWAPPED)
 
         recovered, retry_same = agent._recover_with_credential_pool(
             status_code=401,
@@ -180,7 +181,7 @@ class TestCredentialPoolRecovery:
                 return next_entry
 
         agent._credential_pool = _Pool()
-        agent._swap_credential = MagicMock()
+        agent._swap_credential = MagicMock(return_value=_SwapOutcome.SWAPPED)
 
         recovered, retry_same = agent._recover_with_credential_pool(
             status_code=401,
@@ -203,7 +204,7 @@ class TestCredentialPoolRecovery:
                 return None  # no more credentials
 
         agent._credential_pool = _Pool()
-        agent._swap_credential = MagicMock()
+        agent._swap_credential = MagicMock(return_value=_SwapOutcome.SWAPPED)
 
         recovered, retry_same = agent._recover_with_credential_pool(
             status_code=401,
@@ -281,7 +282,7 @@ class TestCredentialPoolRecovery:
                 return next_entry
 
         agent._credential_pool = _Pool()
-        agent._swap_credential = MagicMock()
+        agent._swap_credential = MagicMock(return_value=_SwapOutcome.SWAPPED)
 
         recovered, retry_same = agent._recover_with_credential_pool(
             status_code=429,

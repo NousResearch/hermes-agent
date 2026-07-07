@@ -2033,7 +2033,22 @@ def _run_single_child(
             try:
                 leased_entry = child_pool.current()
                 if leased_entry is not None and hasattr(child, "_swap_credential"):
-                    child._swap_credential(leased_entry)
+                    outcome = child._swap_credential(leased_entry)
+                    # ``_swap_credential`` refuses to install a keyless client and
+                    # returns a non-SWAPPED SwapOutcome instead of raising. If the
+                    # leased entry had no usable key the child keeps its own prior
+                    # credential — surface that explicitly rather than silently
+                    # running delegated work under stale/unexpected credential state.
+                    from run_agent import SwapOutcome
+                    if outcome is not None and outcome != SwapOutcome.SWAPPED:
+                        logger.warning(
+                            "Child not bound to leased credential %s: entry has no "
+                            "usable key (%s); child retains its own credential.",
+                            leased_cred_id,
+                            getattr(outcome, "value", outcome),
+                        )
+                        child_pool.release_lease(leased_cred_id)
+                        leased_cred_id = None
             except Exception as exc:
                 logger.debug("Failed to bind child to leased credential: %s", exc)
 

@@ -4,6 +4,7 @@ When has_retried_429 is lost (user cancels between 429s), the pool should
 still rotate if the current credential is already marked exhausted.
 """
 from unittest.mock import MagicMock, patch
+from run_agent import SwapOutcome as _SwapOutcome
 
 from agent.credential_pool import PooledCredential, STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
@@ -41,7 +42,7 @@ def test_rotate_immediately_when_credential_already_exhausted():
     with patch("run_agent.get_tool_definitions", return_value=[]),          patch("run_agent.check_toolset_requirements", return_value={}),          patch("run_agent.OpenAI"):
         agent = MagicMock(spec=AIAgent)
         agent._credential_pool = pool
-        agent._swap_credential = MagicMock()
+        agent._swap_credential = MagicMock(return_value=_SwapOutcome.SWAPPED)
         recovered, retried = AIAgent._recover_with_credential_pool(
             agent,
             status_code=429,
@@ -86,7 +87,7 @@ def test_rotate_on_second_429_when_not_exhausted():
     with patch("run_agent.get_tool_definitions", return_value=[]),          patch("run_agent.check_toolset_requirements", return_value={}),          patch("run_agent.OpenAI"):
         agent = MagicMock(spec=AIAgent)
         agent._credential_pool = pool
-        agent._swap_credential = MagicMock()
+        agent._swap_credential = MagicMock(return_value=_SwapOutcome.SWAPPED)
         recovered, retried = AIAgent._recover_with_credential_pool(
             agent,
             status_code=429,

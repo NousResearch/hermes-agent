@@ -34,6 +34,7 @@ except ModuleNotFoundError:
 import asyncio
 import base64
 import copy
+import enum
 import hashlib
 import json
 import logging
@@ -355,6 +356,35 @@ class _StreamErrorEvent(Exception):
                 "type": "error",
             }
         }
+
+
+class SwapOutcome(enum.Enum):
+    """Result of ``AIAgent._swap_credential`` — a tri-state, not a bool.
+
+    A credential pool can be exhausted under a cap such that a rotation selects
+    an entry whose ``runtime_api_key`` resolves to ``""``. Building an Anthropic
+    client with an empty key succeeds at construction but raises a
+    ``TypeError("Could not resolve authentication method…")`` at request time,
+    which the conversation loop then misclassifies as a non-retryable local bug
+    and aborts the turn. ``_swap_credential`` must instead refuse to install a
+    keyless client and tell the caller which kind of "no usable key" it saw:
+
+    - ``SWAPPED`` — a usable key was installed; proceed as before.
+    - ``RETRYABLE_EXHAUSTED`` — the entry's key is empty AND the entry was
+      rate-limit-exhausted (a 429) within its cooldown window. This is a
+      transient cap that self-heals on window reset → the caller falls through
+      to the normal rate-limit / cooldown / fallback path (retryable), NOT an
+      abort. The live client is left untouched.
+    - ``MISSING_CREDENTIAL`` — the entry's key is empty and there is no live
+      429 exhaustion (never rate-limited, or the 429 marker is past its TTL).
+      This is a genuine missing/dead credential (a config error) → the caller
+      surfaces a LOUD terminal, never a silent retry. The live client is left
+      untouched.
+    """
+
+    SWAPPED = "swapped"
+    RETRYABLE_EXHAUSTED = "retryable_exhausted"
+    MISSING_CREDENTIAL = "missing_credential"
 
 
 class AIAgent:
@@ -4255,8 +4285,52 @@ class AIAgent:
         if merged:
             self._client_kwargs["default_headers"] = merged
 
-    def _swap_credential(self, entry) -> None:
+    def _swap_credential(self, entry) -> "SwapOutcome":
+        """Install the pool ``entry``'s credential, or refuse if it has no key.
+
+        Returns a :class:`SwapOutcome` (tri-state, NOT a bool): ``SWAPPED`` when a
+        usable key was installed; ``RETRYABLE_EXHAUSTED`` / ``MISSING_CREDENTIAL``
+        when the entry resolves an empty key and NO client is installed (see the
+        enum docstring). The empty-key refusal prevents building an Anthropic
+        client with ``api_key=""``, which would raise a non-retryable
+        ``TypeError("Could not resolve authentication method…")`` at request time
+        and abort the turn — masking a transient rate-limit as a local bug. This
+        mirrors the ``if entry_key:`` guard ``_restore_primary_runtime`` already
+        applies before its own ``_swap_credential`` call.
+        """
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
+
+        # Guard: never install a keyless client. Distinguish a transient
+        # 429-exhaustion (retryable, self-heals on window reset) from a genuine
+        # missing/dead credential (loud config error) using the entry's own
+        # rate-limit-exhaustion marker, bounded by its cooldown TTL.
+        if not (isinstance(runtime_key, str) and runtime_key.strip()):
+            try:
+                from agent.credential_pool import _exhausted_until
+                exhausted_until = _exhausted_until(entry)
+            except Exception:  # noqa: BLE001 - never crash the recovery path on this probe
+                exhausted_until = None
+            is_ratelimit_exhausted = (
+                getattr(entry, "last_error_code", None) == 429
+                and exhausted_until is not None
+                and time.time() < exhausted_until
+            )
+            if is_ratelimit_exhausted:
+                logger.info(
+                    "Credential rotation: pool entry %s has no usable key and is "
+                    "429-exhausted within its window — treating as retryable "
+                    "rate-limit (not installing a keyless client).",
+                    getattr(entry, "id", "?"),
+                )
+                return SwapOutcome.RETRYABLE_EXHAUSTED
+            logger.warning(
+                "Credential rotation: pool entry %s has no usable key and no live "
+                "429 exhaustion — treating as MISSING credential (config error), "
+                "not a transient rate-limit.",
+                getattr(entry, "id", "?"),
+            )
+            return SwapOutcome.MISSING_CREDENTIAL
+
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
 
         if self.api_mode == "anthropic_messages":
@@ -4276,7 +4350,7 @@ class AIAgent:
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key
             self.base_url = runtime_base
-            return
+            return SwapOutcome.SWAPPED
 
         self.api_key = runtime_key
         self.base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
@@ -4284,6 +4358,7 @@ class AIAgent:
         self._client_kwargs["base_url"] = self.base_url
         self._apply_client_headers_for_base_url(self.base_url)
         self._replace_primary_openai_client(reason="credential_rotation")
+        return SwapOutcome.SWAPPED
 
     def _recover_with_credential_pool(
         self,

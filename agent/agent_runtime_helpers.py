@@ -57,6 +57,37 @@ def _ra():
     return run_agent
 
 
+def _recovered_after_swap(agent, entry, has_retried_429: bool) -> tuple[bool, bool]:
+    """Swap in ``entry`` and translate the tri-state outcome to a recovery tuple.
+
+    ``_swap_credential`` refuses to install a keyless client (a pool entry can
+    resolve an empty ``runtime_api_key`` when a single-key relay pool is
+    exhausted under a cap). It returns a :class:`run_agent.SwapOutcome`:
+
+    - ``SWAPPED`` → a usable key was installed → ``(True, False)`` (recovered;
+      retry the turn against the new credential, exactly as before).
+    - ``RETRYABLE_EXHAUSTED`` / ``MISSING_CREDENTIAL`` → NO client was installed.
+      Return ``(False, has_retried_429)`` so the conversation loop does NOT retry
+      against a keyless client and instead falls through to its normal rate-limit
+      / cooldown / fallback path. The two non-swap outcomes differ only in
+      logging severity (done inside ``_swap_credential``): a 429-exhausted entry
+      is a transient cap (retryable, self-heals), a never-rate-limited empty key
+      is a genuine missing/dead credential (loud config error).
+
+    This closes the bug where a keyless client was built and then raised a
+    non-retryable ``TypeError("Could not resolve authentication method…")`` that
+    aborted the turn — masking a transient rate-limit as a local programming bug.
+    """
+    from run_agent import SwapOutcome
+
+    outcome = agent._swap_credential(entry)
+    if outcome == SwapOutcome.SWAPPED:
+        return True, False
+    # No usable credential installed — do not "recover→retry" onto a keyless
+    # client; let the loop take its rate-limit / fallback path.
+    return False, has_retried_429
+
+
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
     {"todo", "session_search", "memory", "clarify", "read_terminal", "delegate_task"}
 )
@@ -901,8 +932,7 @@ def recover_with_credential_pool(
                 rotate_status,
                 getattr(next_entry, "id", "?"),
             )
-            agent._swap_credential(next_entry)
-            return True, False
+            return _recovered_after_swap(agent, next_entry, False)
         return False, has_retried_429
 
     if effective_reason == FailoverReason.rate_limit:
@@ -925,8 +955,7 @@ def recover_with_credential_pool(
                     rotate_status,
                     getattr(next_entry, "id", "?"),
                 )
-                agent._swap_credential(next_entry)
-                return True, False
+                return _recovered_after_swap(agent, next_entry, False)
             return False, True
 
         usage_limit_reached = False
@@ -949,8 +978,7 @@ def recover_with_credential_pool(
                 rotate_status,
                 getattr(next_entry, "id", "?"),
             )
-            agent._swap_credential(next_entry)
-            return True, False
+            return _recovered_after_swap(agent, next_entry, False)
         return False, True
 
     if effective_reason == FailoverReason.auth:
@@ -1037,8 +1065,7 @@ def recover_with_credential_pool(
                     )
                     return False, has_retried_429
             _ra().logger.info(f"Credential auth failure — refreshed pool entry {getattr(refreshed, 'id', '?')}")
-            agent._swap_credential(refreshed)
-            return True, has_retried_429
+            return _recovered_after_swap(agent, refreshed, has_retried_429)
         # Refresh failed — rotate to next credential instead of giving up.
         # The failed entry is already marked exhausted by try_refresh_current().
         rotate_status = status_code if status_code is not None else 401
@@ -1049,8 +1076,7 @@ def recover_with_credential_pool(
                 rotate_status,
                 getattr(next_entry, "id", "?"),
             )
-            agent._swap_credential(next_entry)
-            return True, False
+            return _recovered_after_swap(agent, next_entry, False)
 
     return False, has_retried_429
 

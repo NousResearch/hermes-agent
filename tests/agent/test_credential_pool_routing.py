@@ -9,6 +9,7 @@ Covers:
 """
 
 from types import SimpleNamespace
+from run_agent import SwapOutcome as _SwapOutcome
 from unittest.mock import MagicMock, patch
 
 
@@ -168,7 +169,7 @@ class TestPoolRotationCycle:
 
         pool.mark_exhausted_and_rotate = MagicMock(side_effect=rotate)
         agent._credential_pool = pool
-        agent._swap_credential = MagicMock()
+        agent._swap_credential = MagicMock(return_value=_SwapOutcome.SWAPPED)
         agent.log_prefix = ""
 
         return agent, pool, entries

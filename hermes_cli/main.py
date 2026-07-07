@@ -63,6 +63,7 @@ except ModuleNotFoundError:
 
 import os
 import sys
+from urllib.parse import urlsplit, urlunsplit
 
 
 def _set_process_title() -> None:
@@ -6665,19 +6666,36 @@ def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
     return None
 
 
+def _normalize_remote_url(remote_url: str) -> str:
+    normalized = remote_url.strip().rstrip("/")
+    if not normalized:
+        return ""
+
+    try:
+        parsed = urlsplit(normalized)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            host = parsed.hostname or ""
+            if parsed.port:
+                host = f"{host}:{parsed.port}"
+            normalized = urlunsplit(
+                (parsed.scheme.lower(), host.lower(), parsed.path, "", "")
+            )
+    except ValueError:
+        pass
+
+    normalized = normalized.rstrip("/")
+    if normalized.endswith(".git"):
+        normalized = normalized[:-4]
+    return normalized
+
+
 def _is_fork(origin_url: Optional[str]) -> bool:
     """Check if the origin remote points to a fork (not the official repo)."""
     if not origin_url:
         return False
-    # Normalize URL for comparison (strip trailing .git if present)
-    normalized = origin_url.rstrip("/")
-    if normalized.endswith(".git"):
-        normalized = normalized[:-4]
+    normalized = _normalize_remote_url(origin_url)
     for official in OFFICIAL_REPO_URLS:
-        official_normalized = official.rstrip("/")
-        if official_normalized.endswith(".git"):
-            official_normalized = official_normalized[:-4]
-        if normalized == official_normalized:
+        if normalized == _normalize_remote_url(official):
             return False
     return True
 

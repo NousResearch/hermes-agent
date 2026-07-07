@@ -250,6 +250,19 @@ class TestCmdUpdateBranchFallback:
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
 
+    def test_official_origin_with_embedded_credentials_is_not_fork(self):
+        from hermes_cli import main as hm
+
+        assert not hm._is_fork(
+            "https://ghp_example@github.com/NousResearch/hermes-agent.git"
+        )
+        assert not hm._is_fork(
+            "https://user:token@github.com/NousResearch/hermes-agent.git"
+        )
+        assert hm._is_fork(
+            "https://ghp_example@github.com/example/hermes-agent.git"
+        )
+
     @patch("shutil.which")
     @patch("subprocess.run")
     def test_update_refreshes_repo_and_tui_node_dependencies(

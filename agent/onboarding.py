@@ -27,6 +27,7 @@ BUSY_INPUT_FLAG = "busy_input_prompt"
 TOOL_PROGRESS_FLAG = "tool_progress_prompt"
 OPENCLAW_RESIDUE_FLAG = "openclaw_residue_cleanup"
 PROFILE_BUILD_FLAG = "profile_build_offered"
+CODEX_GPT55_AUTORAISE_NOTICE_FLAG = "codex_gpt55_autoraise_notice"
 
 
 # -------------------------------------------------------------------------
@@ -240,6 +241,7 @@ __all__ = [
     "TOOL_PROGRESS_FLAG",
     "OPENCLAW_RESIDUE_FLAG",
     "PROFILE_BUILD_FLAG",
+    "CODEX_GPT55_AUTORAISE_NOTICE_FLAG",
     "busy_input_hint_gateway",
     "busy_input_hint_cli",
     "tool_progress_hint_gateway",

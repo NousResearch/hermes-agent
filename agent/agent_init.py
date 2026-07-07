@@ -71,10 +71,8 @@ def _ra():
 def _build_codex_gpt55_autoraise_notice(autoraise: Dict[str, float]) -> str:
     """Build the one-time notice shown when Codex gpt-5.5 raises compaction.
 
-    ``autoraise`` is ``{"from": <old_ratio>, "to": <new_ratio>}``. The same
-    text is printed inline for CLI users and replayed via ``status_callback``
-    for gateway users, so it must be self-contained and include the exact
-    opt-back-out command.
+    ``autoraise`` is ``{"from": <old_ratio>, "to": <new_ratio>}`` and the text
+    includes the exact opt-back-out command.
     """
     from_pct = int(round(autoraise["from"] * 100))
     to_pct = int(round(autoraise["to"] * 100))
@@ -84,6 +82,51 @@ def _build_codex_gpt55_autoraise_notice(autoraise: Dict[str, float]) -> str:
         f"summarizing.\n"
         f"  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
     )
+
+
+def _codex_gpt55_autoraise_notice_if_unseen(
+    autoraise: Dict[str, float],
+    config: Dict[str, Any],
+    *,
+    config_path=None,
+) -> Optional[str]:
+    """Return the Codex gpt-5.5 autoraise notice once per profile.
+
+    The autoraise is informational: Hermes silently does the safe thing by
+    delaying compaction for the Codex OAuth route. Gateway processes can create
+    fresh ``AIAgent`` instances across turns, so replaying this as a normal
+    compression warning turns a first-touch explanation into a repeated nag.
+
+    Track the notice with the existing onboarding ``seen`` flags so users still
+    learn about the automatic threshold bump and opt-out command once, while
+    actionable compression warnings continue to show whenever they matter.
+    """
+    try:
+        from agent.onboarding import (
+            CODEX_GPT55_AUTORAISE_NOTICE_FLAG,
+            is_seen,
+            mark_seen,
+        )
+
+        if is_seen(config, CODEX_GPT55_AUTORAISE_NOTICE_FLAG):
+            return None
+
+        path = config_path or (get_hermes_home() / "config.yaml")
+        mark_seen(path, CODEX_GPT55_AUTORAISE_NOTICE_FLAG)
+
+        # Keep the already-loaded config mapping in sync for any later checks in
+        # this process. ``mark_seen`` persists best-effort; if it fails we still
+        # show the notice this turn rather than hiding a useful first-touch tip.
+        if isinstance(config, dict):
+            onboarding = config.setdefault("onboarding", {})
+            if isinstance(onboarding, dict):
+                seen = onboarding.setdefault("seen", {})
+                if isinstance(seen, dict):
+                    seen[CODEX_GPT55_AUTORAISE_NOTICE_FLAG] = True
+    except Exception as exc:
+        logger.debug("codex gpt-5.5 autoraise notice dedupe failed: %s", exc)
+
+    return _build_codex_gpt55_autoraise_notice(autoraise)
 
 
 def _normalized_custom_base_url(value: Any) -> str:
@@ -1713,30 +1756,34 @@ def init_agent(
             "Ollama num_ctx: will request %d tokens (model max from /api/show)",
             agent._ollama_num_ctx,
         )
+    # Informational one-time notice when the Codex gpt-5.5 autoraise kicks in.
+    # Dedup it per profile before both the CLI startup print and the gateway
+    # replay path so gateway users do not get re-nagged when fresh AIAgent
+    # instances are created across turns. Actionable compression warnings still
+    # use _compression_warning below and are not suppressed by this flag.
+    _autoraise_notice = None
+    _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
+    if _autoraise and compression_enabled:
+        _autoraise_notice = _codex_gpt55_autoraise_notice_if_unseen(
+            _autoraise,
+            _agent_cfg,
+        )
 
     if not agent.quiet_mode:
         if compression_enabled:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {agent.context_compressor.threshold_tokens:,})")
         else:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
-        # One-time notice when the Codex gpt-5.5 autoraise kicked in, with the
-        # exact opt-back-out command. Printed inline at startup for CLI users;
-        # gateway users get the same text replayed via _compression_warning on
-        # turn 1 (set below, after the warning slot is initialized).
-        _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-        if _autoraise and compression_enabled:
-            print(_build_codex_gpt55_autoraise_notice(_autoraise))
+        if _autoraise_notice:
+            print(_autoraise_notice)
 
     # Check immediately so CLI users see the warning at startup.
     # Gateway status_callback is not yet wired, so any warning is stored
     # in _compression_warning and replayed in the first run_conversation().
     agent._compression_warning = None
-    # Gateway parity for the Codex gpt-5.5 autoraise notice: the startup print
-    # above only reaches the CLI, so stash the same text here to be replayed
-    # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
-    _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-    if _autoraise and compression_enabled:
-        agent._compression_warning = _build_codex_gpt55_autoraise_notice(_autoraise)
+    if _autoraise_notice:
+        agent._compression_warning = _autoraise_notice
+
     # Lazy feasibility check: deferred to the first turn that approaches the
     # compression threshold. Running it eagerly here costs ~400ms cold (network
     # probe of the auxiliary provider chain + /models lookup) on every agent

@@ -368,6 +368,69 @@ class TestGatewayPidState:
             record, 9999, expected_home=profile_home
         ) is True
 
+    def test_record_bare_hermes_rejects_short_profile_flag(self, monkeypatch):
+        """``hermes -p coder`` must NOT be accepted as a bare gateway entry
+        point.  An interactive profile CLI with a matching profile should not
+        register as a running gateway (false positive)."""
+        profile_home = Path("/home/hermes/test-profile")
+        monkeypatch.setattr(
+            status, "_read_process_cmdline", lambda pid: "hermes -p coder"
+        )
+        # Even with matching HERMES_HOME, the -p flag means this is an
+        # interactive session, not a bare gateway entry point.
+        record = {"pid": 9999, "kind": "hermes-gateway"}
+        assert status._record_matches_live_gateway_pid(
+            record, 9999, expected_home=profile_home
+        ) is False
+
+    def test_record_bare_hermes_rejects_long_profile_flag(self, monkeypatch):
+        """``hermes --profile=coder`` must NOT be accepted as a bare gateway
+        entry point.  Same false-positive risk as the short-flag variant."""
+        profile_home = Path("/home/hermes/test-profile")
+        monkeypatch.setattr(
+            status, "_read_process_cmdline",
+            lambda pid: "hermes --profile=coder",
+        )
+        record = {"pid": 9999, "kind": "hermes-gateway"}
+        assert status._record_matches_live_gateway_pid(
+            record, 9999, expected_home=profile_home
+        ) is False
+
+    def test_gateway_identity_files_use_process_home_not_context_override(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: pid/lock/state files must use process-level HERMES_HOME.
+
+        When a profile context override is active (e.g., during session dispatch
+        for a named profile), gateway identity files should still be written to
+        the process-level HERMES_HOME, not the profile's directory.  See #56986.
+        """
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+        process_home = tmp_path / "default"
+        process_home.mkdir()
+        profile_home = tmp_path / "profiles" / "cfo"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(process_home))
+
+        # Simulate a profile context override being active during write.
+        token = set_hermes_home_override(str(profile_home))
+        try:
+            status.write_pid_file()
+        finally:
+            reset_hermes_home_override(token)
+
+        # PID file must land in the process-level home, not the profile home.
+        assert (process_home / "gateway.pid").exists()
+        assert not (profile_home / "gateway.pid").exists()
+
+        payload = json.loads((process_home / "gateway.pid").read_text())
+        assert payload["pid"] == os.getpid()
+
+        # Cleanup for atexit hooks.
+        monkeypatch.setenv("HERMES_HOME", str(process_home))
+        (process_home / "gateway.pid").unlink(missing_ok=True)
+
 
 class TestGatewayRuntimeStatus:
     def test_write_json_file_uses_atomic_json_write(self, tmp_path, monkeypatch):

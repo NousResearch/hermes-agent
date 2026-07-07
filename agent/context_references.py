@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -13,6 +14,8 @@ from typing import Awaitable, Callable
 
 from agent.model_metadata import estimate_tokens_rough
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
+
+logger = logging.getLogger(__name__)
 
 _QUOTED_REFERENCE_VALUE = r'(?:`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\')'
 REFERENCE_PATTERN = re.compile(
@@ -103,6 +106,29 @@ def parse_context_references(message: str) -> list[ContextReference]:
     return refs
 
 
+# Upper bound on context-reference preprocessing. Every message containing
+# @references (files/urls/diffs) runs this; a slow or hung fetch must not be
+# allowed to block the caller indefinitely — on the gateway this runs on a
+# worker thread, and an unbounded block starves the turn pool and stops ALL
+# message processing (gateway lockup).
+PREPROCESS_CONTEXT_TIMEOUT_SECONDS = 60.0
+
+
+def _degraded_context_result(message: str) -> "ContextReferenceResult":
+    """Fallback when preprocessing exceeds its timeout.
+
+    Returns the original message unchanged (no expansion) with a warning, so
+    the turn still proceeds instead of hanging or dropping the user's message.
+    """
+    return ContextReferenceResult(
+        message=message,
+        original_message=message,
+        warnings=[
+            "@ context expansion timed out; continuing with the raw message."
+        ],
+    )
+
+
 def preprocess_context_references(
     message: str,
     *,
@@ -118,16 +144,47 @@ def preprocess_context_references(
         url_fetcher=url_fetcher,
         allowed_root=allowed_root,
     )
-    # Safe for both CLI (no loop) and gateway (loop already running).
+    # Bound the work so a slow/hanging fetch (custom url_fetcher, a blocking
+    # file read, or a misconfigured web_extract) can never block the caller
+    # forever. On the gateway this runs on a worker thread; an unbounded block
+    # starves the turn pool and stops ALL message processing. Time out and fall
+    # back to the raw message (non-lossy: the turn still proceeds).
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
     if loop and loop.is_running():
         import concurrent.futures
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result()
-    return asyncio.run(coro)
+            # Wrap the coroutine in wait_for so the worker thread self-terminates
+            # at the timeout (the executor's __exit__ waits for in-flight tasks,
+            # so an unbounded task would otherwise stall this return path too).
+            fut = pool.submit(
+                lambda: asyncio.run(
+                    asyncio.wait_for(coro, timeout=PREPROCESS_CONTEXT_TIMEOUT_SECONDS)
+                )
+            )
+            try:
+                return fut.result(timeout=PREPROCESS_CONTEXT_TIMEOUT_SECONDS)
+            except concurrent.futures.TimeoutError:
+                logger.warning(
+                    "context_references: preprocessing timed out after %.0fs; "
+                    "using raw message",
+                    PREPROCESS_CONTEXT_TIMEOUT_SECONDS,
+                )
+                return _degraded_context_result(message)
+    try:
+        return asyncio.run(
+            asyncio.wait_for(coro, timeout=PREPROCESS_CONTEXT_TIMEOUT_SECONDS)
+        )
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.warning(
+            "context_references: preprocessing timed out after %.0fs; "
+            "using raw message",
+            PREPROCESS_CONTEXT_TIMEOUT_SECONDS,
+        )
+        return _degraded_context_result(message)
 
 
 async def preprocess_context_references_async(

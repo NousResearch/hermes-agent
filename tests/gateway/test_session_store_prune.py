@@ -17,6 +17,7 @@ tests pin the prune behaviour:
 import json
 import threading
 from datetime import datetime, timedelta
+from typing import Any, cast
 from unittest.mock import patch
 
 
@@ -187,6 +188,47 @@ class TestPruneBasics:
 
         store.prune_old_entries(max_age_days=90)
         assert save_calls == [1]
+
+    def test_prune_finalizes_pruned_sqlite_sessions(self, tmp_path):
+        """Routing-store prune must also close DB rows so state.db retention can reap them."""
+        store = _make_store(tmp_path)
+        store._entries["stale"] = _entry("stale", age_days=500, session_id="sid_stale")
+        store._entries["fresh"] = _entry("fresh", age_days=1, session_id="sid_fresh")
+
+        ended = []
+
+        class FakeDB:
+            def end_session(self, session_id, end_reason):
+                ended.append((session_id, end_reason))
+
+        cast(Any, store)._db = FakeDB()
+
+        assert store.prune_old_entries(max_age_days=90) == 1
+        assert ended == [("sid_stale", "agent_close")]
+
+    def test_prune_does_not_finalize_preserved_sqlite_sessions(self, tmp_path):
+        """Suspended/active rows are kept in routing and must stay open in state.db."""
+        active_keys = {"active"}
+        store = _make_store(
+            tmp_path,
+            has_active_processes_fn=lambda session_key: session_key in active_keys,
+        )
+        store._entries["suspended"] = _entry(
+            "suspended", age_days=500, suspended=True, session_id="sid_suspended"
+        )
+        store._entries["active"] = _entry("active", age_days=500, session_id="sid_active")
+        store._entries["stale"] = _entry("stale", age_days=500, session_id="sid_stale")
+
+        ended = []
+
+        class FakeDB:
+            def end_session(self, session_id, end_reason):
+                ended.append((session_id, end_reason))
+
+        cast(Any, store)._db = FakeDB()
+
+        assert store.prune_old_entries(max_age_days=90) == 1
+        assert ended == [("sid_stale", "agent_close")]
 
     def test_prune_is_thread_safe(self, tmp_path):
         """Prune acquires _lock internally; concurrent update_session is safe."""

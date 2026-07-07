@@ -2060,6 +2060,7 @@ class SessionStore:
 
         cutoff = _now() - timedelta(days=max_age_days)
         removed_keys: list[str] = []
+        removed_session_ids: list[str] = []
 
         with self._lock:
             self._ensure_loaded_locked()
@@ -2082,10 +2083,24 @@ class SessionStore:
                         )
                 if entry.updated_at < cutoff:
                     removed_keys.append(key)
+                    if entry.session_id:
+                        removed_session_ids.append(entry.session_id)
             for key in removed_keys:
                 self._entries.pop(key, None)
             if removed_keys:
                 self._save()
+
+        db = getattr(self, "_db", None)
+        if removed_session_ids and db is not None:
+            for session_id in removed_session_ids:
+                try:
+                    db.end_session(session_id, "agent_close")
+                except Exception as exc:
+                    logger.debug(
+                        "SessionStore prune could not finalize %s in state.db: %s",
+                        session_id,
+                        exc,
+                    )
 
         if removed_keys:
             logger.info(

@@ -1033,6 +1033,31 @@ _INITIALIZED_PATHS: set[str] = set()
 _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 
+# Monotonic timestamp of the last successful (or lock-skipped) integrity
+# probe per resolved DB path. Drives the periodic re-probe below so a
+# long-lived daemon that connected before corruption occurred still
+# re-detects it instead of writing to a damaged file forever (2026-06-24
+# "orphan index" / 2026-07-06 "Rowid out of order" incidents).
+_LAST_INTEGRITY_PROBE: dict[str, float] = {}
+
+_DEFAULT_INTEGRITY_RECHECK_SECONDS = 300.0
+
+
+def _integrity_recheck_seconds() -> float:
+    """Seconds between periodic integrity re-probes of a cached-healthy DB.
+
+    Controlled by ``HERMES_KANBAN_INTEGRITY_RECHECK_SECONDS``; default 300.
+    A value <= 0 disables the periodic re-probe entirely (the first-connect
+    full probe still runs).
+    """
+    raw = os.environ.get("HERMES_KANBAN_INTEGRITY_RECHECK_SECONDS", "").strip()
+    if not raw:
+        return _DEFAULT_INTEGRITY_RECHECK_SECONDS
+    try:
+        return float(raw)
+    except ValueError:
+        return _DEFAULT_INTEGRITY_RECHECK_SECONDS
+
 
 def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
     """Return True for a TLS record header at ``data[offset:]``."""
@@ -1104,11 +1129,30 @@ class KanbanDbCorruptError(RuntimeError):
         )
 
 
+_DEFAULT_CORRUPT_BACKUP_CAP = 16
+
+
+def _corrupt_backup_cap() -> int:
+    """Max number of ``<db>.corrupt.*`` sibling files to keep around.
+
+    Controlled by ``HERMES_KANBAN_CORRUPT_BACKUP_CAP``; default 16. A value
+    <= 0 disables the cap (unlimited backups, pre-hardening behavior).
+    """
+    raw = os.environ.get("HERMES_KANBAN_CORRUPT_BACKUP_CAP", "").strip()
+    if not raw:
+        return _DEFAULT_CORRUPT_BACKUP_CAP
+    try:
+        return int(raw)
+    except ValueError:
+        return _DEFAULT_CORRUPT_BACKUP_CAP
+
+
 def _backup_corrupt_db(path: Path) -> Optional[Path]:
     """Copy a corrupt DB (and its WAL/SHM sidecars) to a timestamped backup.
 
     Returns the backup path of the main DB file, or ``None`` if the copy
-    itself failed (the caller still raises loudly in that case).
+    itself failed or the ``.corrupt.*`` sibling cap was already reached
+    (the caller still raises loudly in either case).
 
     Writes are confined to the original DB's parent directory. The
     backup basename is derived purely from ``path.name``, never from
@@ -1120,6 +1164,26 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     resolved = path.resolve()
     parent = resolved.parent
     base_name = resolved.name  # basename only
+    # Cap the backup swarm: repeated corrupt connect attempts (e.g. a
+    # gateway crash-looping against a damaged board) must not fill the
+    # disk with hundreds of ``.corrupt.*`` copies (524 observed in the
+    # 2026-07-06 incident). At/over the cap we skip the copy — the
+    # original file is still preserved because the caller raises instead
+    # of recreating schema on top of it.
+    cap = _corrupt_backup_cap()
+    if cap > 0:
+        try:
+            existing = sum(1 for _ in parent.glob(f"{base_name}.corrupt.*"))
+        except OSError:
+            existing = 0
+        if existing >= cap:
+            _log.warning(
+                "kanban corrupt-backup cap reached for %s: %d existing "
+                "%s.corrupt.* files >= cap %d "
+                "(HERMES_KANBAN_CORRUPT_BACKUP_CAP); skipping new backup",
+                resolved, existing, base_name, cap,
+            )
+            return None
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     candidate = parent / f"{base_name}.corrupt.{stamp}.bak"
     # Defensive: candidate must still be inside parent after construction.
@@ -1166,8 +1230,11 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     treated as corruption; they propagate raw so the caller sees a
     normal lock failure and no spurious ``.corrupt`` backup is made.
 
-    No-op for missing files, zero-byte files (treated as fresh), and
-    paths already proven healthy this process (cache hit).
+    No-op for missing files and zero-byte files (treated as fresh). Paths
+    already proven healthy this process (cache hit) skip the full check but
+    are periodically re-probed with the cheaper ``PRAGMA quick_check`` via
+    :func:`_maybe_periodic_integrity_reprobe` so long-lived daemons still
+    detect corruption that happens after their first connect.
 
     Path-trust note: ``path`` arrives via :func:`connect`, which itself
     resolves it from an explicit ``db_path`` argument, the
@@ -1188,7 +1255,11 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
             return
     except OSError:
         return
-    if str(resolved) in _INITIALIZED_PATHS:
+    key = str(resolved)
+    if key in _INITIALIZED_PATHS:
+        # Already proven healthy this process — but long-lived daemons must
+        # not trust that verdict forever. Cheap periodic re-probe below.
+        _maybe_periodic_integrity_reprobe(resolved, key)
         return
     reason: Optional[str] = None
     try:
@@ -1205,7 +1276,66 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     except sqlite3.DatabaseError as exc:
         reason = f"sqlite refused to open file: {exc}"
     if reason is None:
+        _LAST_INTEGRITY_PROBE[key] = time.monotonic()
         return
+    backup = _backup_corrupt_db(resolved)
+    raise KanbanDbCorruptError(resolved, backup, reason)
+
+
+def _maybe_periodic_integrity_reprobe(resolved: Path, key: str) -> None:
+    """Re-probe a cached-healthy DB with ``PRAGMA quick_check`` periodically.
+
+    Closes the "long-lived daemon never re-checks" hole: before this,
+    a process that connected once before on-disk corruption happened kept
+    writing to the damaged file indefinitely because
+    :func:`_guard_existing_db_is_healthy` returned early on the
+    ``_INITIALIZED_PATHS`` cache hit forever.
+
+    Behavior:
+
+    * Runs at most once per ``HERMES_KANBAN_INTEGRITY_RECHECK_SECONDS``
+      (default 300; <= 0 disables) per resolved path.
+    * Uses ``PRAGMA quick_check`` — cheaper than the first-connect full
+      ``integrity_check`` — over a short-timeout probe connection.
+    * Lock/busy (``sqlite3.OperationalError``) is NOT corruption: the probe
+      is simply skipped and deferred one full interval so hot paths never
+      fail or stall behind a contended board.
+    * On a corruption verdict, the path is evicted from
+      ``_INITIALIZED_PATHS`` (so subsequent connects re-run the full
+      guard), the existing backup path runs, and
+      :class:`KanbanDbCorruptError` is raised.
+    """
+    interval = _integrity_recheck_seconds()
+    if interval <= 0:
+        return
+    now = time.monotonic()
+    last = _LAST_INTEGRITY_PROBE.get(key)
+    if last is not None and (now - last) < interval:
+        return
+    reason: Optional[str] = None
+    try:
+        probe = sqlite3.connect(str(resolved), timeout=2, isolation_level=None)
+        try:
+            row = probe.execute("PRAGMA quick_check").fetchone()
+        finally:
+            probe.close()
+        if not row or (row[0] or "").lower() != "ok":
+            reason = f"quick_check returned {row[0] if row else '<no row>'!r}"
+    except sqlite3.OperationalError:
+        # Lock contention / busy — never corruption. Skip this probe rather
+        # than failing a hot path; try again a full interval from now.
+        _LAST_INTEGRITY_PROBE[key] = now
+        return
+    except sqlite3.DatabaseError as exc:
+        reason = f"sqlite refused to open file: {exc}"
+    if reason is None:
+        _LAST_INTEGRITY_PROBE[key] = now
+        return
+    # Corruption detected on a previously-trusted path: evict the cache so
+    # every subsequent connect() re-runs the full first-connect guard
+    # instead of trusting the stale verdict.
+    _INITIALIZED_PATHS.discard(key)
+    _LAST_INTEGRITY_PROBE.pop(key, None)
     backup = _backup_corrupt_db(resolved)
     raise KanbanDbCorruptError(resolved, backup, reason)
 
@@ -1297,6 +1427,10 @@ def connect(
                     conn.executescript(SCHEMA_SQL)
                     _migrate_add_optional_columns(conn)
                     _INITIALIZED_PATHS.add(resolved)
+                    # Fresh DBs skip the on-disk guard (file was missing or
+                    # empty), so stamp the probe clock here; the periodic
+                    # re-probe measures from first trust, not epoch.
+                    _LAST_INTEGRITY_PROBE.setdefault(resolved, time.monotonic())
         except Exception:
             conn.close()
             raise

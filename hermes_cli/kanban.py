@@ -18,7 +18,11 @@ import argparse
 import json
 import os
 import shlex
+import shutil
+import sqlite3
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -790,6 +794,46 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Emit one JSON object per task on stdout",
     )
 
+    # --- integrity (read-only substrate probe) ---
+    p_integrity = sub.add_parser(
+        "integrity",
+        help="Read-only integrity probe of the kanban DB "
+             "(PRAGMA quick_check + integrity_check; never mutates, "
+             "never creates backups)",
+        description=(
+            "Opens the resolved kanban DB with a short-timeout read-only "
+            "probe connection and reports PRAGMA quick_check + "
+            "integrity_check as JSON. Safe to run while gateways are live. "
+            "Exit codes: 0 ok, 3 corrupt, 4 unavailable (missing/locked)."
+        ),
+    )
+    p_integrity.add_argument(
+        "--db", default=None, metavar="PATH",
+        help="Explicit DB file to probe (default: the resolved board DB)",
+    )
+
+    # --- recover (offline .recover into a NEW file) ---
+    p_recover = sub.add_parser(
+        "recover",
+        help="Offline-recover a (corrupt) kanban DB into a NEW file via "
+             "the sqlite3 CLI '.recover' — never modifies the live DB",
+        description=(
+            "Copies the DB (+ -wal/-shm sidecars) to a private temp dir, "
+            "runs the sqlite3 CLI '.recover' on the copy, builds a fresh DB "
+            "at --output, and integrity-checks it. Prints per-table row "
+            "counts (old vs recovered) as JSON. Exit 0 only when the "
+            "recovered DB passes integrity_check."
+        ),
+    )
+    p_recover.add_argument(
+        "--output", required=True, metavar="PATH",
+        help="Path for the NEW recovered DB (must not already exist)",
+    )
+    p_recover.add_argument(
+        "--db", default=None, metavar="PATH",
+        help="Explicit DB file to recover from (default: the resolved board DB)",
+    )
+
     # --- gc ---
     p_gc = sub.add_parser(
         "gc", help="Garbage-collect archived-task workspaces, old events, and old logs",
@@ -870,6 +914,17 @@ def kanban_command(args: argparse.Namespace) -> int:
             return 1
         os.environ["HERMES_KANBAN_BOARD"] = normed
         restore_board_env = True
+
+    # Substrate diagnostics dispatch BEFORE the auto-init below: they must
+    # never create schema on the target file, never take the corrupt-guard
+    # backup path, and never raise KanbanDbCorruptError — the whole point
+    # is to inspect a possibly-damaged DB without touching it.
+    if action in ("integrity", "recover"):
+        handler = _cmd_integrity if action == "integrity" else _cmd_recover
+        try:
+            return int(handler(args) or 0)
+        finally:
+            _restore_board_env()
 
     # Auto-initialize the DB before dispatching any subcommand. init_db
     # is idempotent, so running it every invocation is cheap (one
@@ -2605,6 +2660,246 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     print(f"GC complete: {removed_ws} workspace(s), "
           f"{removed_events} event row(s), {removed_logs} log file(s) removed")
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Substrate diagnostics (hermes kanban integrity / recover)
+#
+# Both handlers are dispatched BEFORE kanban_command's kb.init_db() auto-init
+# and deliberately bypass kb.connect(): they must never create schema, never
+# take the corrupt-guard backup path, and never mutate the live DB.
+# ---------------------------------------------------------------------------
+
+# Exit codes for `hermes kanban integrity` (and reused by `recover`).
+_INTEGRITY_EXIT_OK = 0
+_INTEGRITY_EXIT_CORRUPT = 3
+_INTEGRITY_EXIT_UNAVAILABLE = 4
+
+
+def _diag_db_path(args: argparse.Namespace) -> Path:
+    """Resolve the DB file a diagnostics subcommand should look at.
+
+    ``--db`` wins; otherwise the normal board resolution
+    (``HERMES_KANBAN_DB`` env → board → default) via kb.kanban_db_path().
+    """
+    db_arg = getattr(args, "db", None)
+    if db_arg:
+        return Path(db_arg).expanduser()
+    return kb.kanban_db_path()
+
+
+def _readonly_probe_connection(db_path: Path) -> sqlite3.Connection:
+    """Open ``db_path`` read-only (URI mode=ro) with a short timeout.
+
+    ``mode=ro`` guarantees the probe can never write pages, journals, or
+    WAL frames into a possibly-damaged file.
+    """
+    from urllib.parse import quote
+    uri = f"file:{quote(str(db_path))}?mode=ro"
+    return sqlite3.connect(uri, uri=True, timeout=2, isolation_level=None)
+
+
+def _pragma_check_rows(conn: sqlite3.Connection, pragma: str) -> str:
+    """Run an integrity pragma and join its result rows into one string."""
+    rows = conn.execute(f"PRAGMA {pragma}").fetchall()
+    return "; ".join(str(r[0]) for r in rows) if rows else "<no rows>"
+
+
+def _cmd_integrity(args: argparse.Namespace) -> int:
+    """Read-only integrity probe. Exit 0 ok / 3 corrupt / 4 unavailable."""
+    db_path = _diag_db_path(args)
+    result: dict[str, Any] = {
+        "db_path": str(db_path),
+        "quick_check": None,
+        "integrity_check": None,
+        "verdict": "unavailable",
+    }
+
+    def _emit(verdict: str, code: int, error: Optional[str] = None) -> int:
+        result["verdict"] = verdict
+        if error:
+            result["error"] = error
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return code
+
+    if not db_path.is_file():
+        return _emit(
+            "unavailable", _INTEGRITY_EXIT_UNAVAILABLE,
+            f"no such database file: {db_path}",
+        )
+    try:
+        conn = _readonly_probe_connection(db_path)
+        try:
+            result["quick_check"] = _pragma_check_rows(conn, "quick_check")
+            result["integrity_check"] = _pragma_check_rows(conn, "integrity_check")
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        # Locked / busy / cannot-open — NOT proof of corruption.
+        return _emit("unavailable", _INTEGRITY_EXIT_UNAVAILABLE, str(exc))
+    except sqlite3.DatabaseError as exc:
+        # malformed image / not a database — corruption.
+        return _emit("corrupt", _INTEGRITY_EXIT_CORRUPT, str(exc))
+    ok = result["quick_check"] == "ok" and result["integrity_check"] == "ok"
+    return _emit(
+        "ok" if ok else "corrupt",
+        _INTEGRITY_EXIT_OK if ok else _INTEGRITY_EXIT_CORRUPT,
+    )
+
+
+_RECOVER_SWAP_REMINDER = """\
+============================================================================
+NOTE: the live DB was NOT modified. The recovered copy is a NEW file.
+To swap it in you MUST first:
+  1. Quiesce ALL writers (stop every gateway/dispatcher/daemon using this
+     board — `hermes gateway stop` on each profile).
+  2. Delete the stale sidecars next to the live DB (<db>-wal and <db>-shm);
+     leaving them in place will corrupt the swapped-in file immediately.
+  3. Move the old DB aside, move the recovered file into place, restart.
+============================================================================"""
+
+
+def _cmd_recover(args: argparse.Namespace) -> int:
+    """Offline `.recover` into a NEW file. Never touches the live DB."""
+    out_path = Path(args.output).expanduser()
+    if out_path.exists():
+        print(
+            f"kanban recover: refusing to overwrite existing output file "
+            f"{out_path} — pick a fresh path",
+            file=sys.stderr,
+        )
+        return 2
+    db_path = _diag_db_path(args)
+    if not db_path.is_file():
+        print(f"kanban recover: no such database file: {db_path}", file=sys.stderr)
+        return _INTEGRITY_EXIT_UNAVAILABLE
+
+    sqlite3_bin = shutil.which("sqlite3")
+    if not sqlite3_bin:
+        print(
+            "kanban recover: the `sqlite3` CLI binary is required for "
+            "`.recover` but was not found on PATH. Install sqlite3 "
+            "(>= 3.29 for .recover support) and re-run.",
+            file=sys.stderr,
+        )
+        return 1
+
+    result: dict[str, Any] = {
+        "db_path": str(db_path),
+        "output": str(out_path),
+        "sqlite3_binary": sqlite3_bin,
+        "tables": {},
+        "integrity_check": None,
+        "verdict": "corrupt",
+    }
+
+    with tempfile.TemporaryDirectory(prefix="hermes-kanban-recover-") as td:
+        tmp_dir = Path(td)
+        # Copy db + sidecars so .recover sees the same WAL state the live
+        # file has, without ever opening the live file for write.
+        work_copy = tmp_dir / db_path.name
+        shutil.copy2(db_path, work_copy)
+        for suffix in ("-wal", "-shm"):
+            sidecar = db_path.parent / (db_path.name + suffix)
+            if sidecar.exists():
+                shutil.copy2(sidecar, tmp_dir / sidecar.name)
+
+        try:
+            proc = subprocess.run(
+                [sqlite3_bin, str(work_copy), ".recover"],
+                capture_output=True, text=True, timeout=600,
+            )
+        except subprocess.TimeoutExpired:
+            print("kanban recover: sqlite3 .recover timed out after 600s",
+                  file=sys.stderr)
+            return 1
+        stderr_lower = (proc.stderr or "").lower()
+        if "unknown command" in stderr_lower:
+            print(
+                f"kanban recover: this sqlite3 binary ({sqlite3_bin}) does "
+                "not support `.recover` — upgrade to sqlite3 >= 3.29.",
+                file=sys.stderr,
+            )
+            return 1
+        if proc.returncode != 0 and not proc.stdout.strip():
+            print(
+                f"kanban recover: sqlite3 .recover failed "
+                f"(rc={proc.returncode}): {proc.stderr.strip()}",
+                file=sys.stderr,
+            )
+            return 1
+        recovered_sql = proc.stdout
+
+        # Build the new DB by piping the recovered SQL through the CLI —
+        # .recover output can include dot-commands the sqlite3 module
+        # cannot execute.
+        build = subprocess.run(
+            [sqlite3_bin, str(out_path)],
+            input=recovered_sql, capture_output=True, text=True, timeout=600,
+        )
+        if build.returncode != 0 or not out_path.exists():
+            print(
+                f"kanban recover: rebuilding {out_path} from recovered SQL "
+                f"failed (rc={build.returncode}): {build.stderr.strip()}",
+                file=sys.stderr,
+            )
+            return 1
+
+        # Integrity-verify the NEW file (ours; read-write is fine).
+        try:
+            new_conn = sqlite3.connect(str(out_path), timeout=5)
+            try:
+                result["integrity_check"] = _pragma_check_rows(
+                    new_conn, "integrity_check")
+                table_names = [
+                    r[0] for r in new_conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' "
+                        "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                    ).fetchall()
+                ]
+                new_counts = {
+                    name: _count_rows_best_effort(new_conn, name)
+                    for name in table_names
+                }
+            finally:
+                new_conn.close()
+        except sqlite3.DatabaseError as exc:
+            result["integrity_check"] = f"error: {exc}"
+            table_names, new_counts = [], {}
+
+        # Old counts run against the temp COPY (never the live file) and
+        # tolerate per-table failures — corrupt tables may not be countable.
+        old_counts: dict[str, Optional[int]] = {}
+        try:
+            old_conn = sqlite3.connect(str(work_copy), timeout=5)
+            try:
+                for name in table_names:
+                    old_counts[name] = _count_rows_best_effort(old_conn, name)
+            finally:
+                old_conn.close()
+        except sqlite3.Error:
+            old_counts = {name: None for name in table_names}
+
+        result["tables"] = {
+            name: {"old": old_counts.get(name), "new": new_counts.get(name)}
+            for name in table_names
+        }
+
+    ok = result["integrity_check"] == "ok"
+    result["verdict"] = "ok" if ok else "corrupt"
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    print(_RECOVER_SWAP_REMINDER, file=sys.stderr)
+    return _INTEGRITY_EXIT_OK if ok else _INTEGRITY_EXIT_CORRUPT
+
+
+def _count_rows_best_effort(conn: sqlite3.Connection, table: str) -> Optional[int]:
+    """COUNT(*) a table, returning None instead of raising on damaged pages."""
+    quoted = table.replace('"', '""')
+    try:
+        row = conn.execute(f'SELECT COUNT(*) FROM "{quoted}"').fetchone()
+        return int(row[0]) if row else None
+    except sqlite3.Error:
+        return None
 
 
 # ---------------------------------------------------------------------------

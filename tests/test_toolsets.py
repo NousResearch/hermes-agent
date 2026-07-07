@@ -118,6 +118,21 @@ class TestResolveMultipleToolsets:
         assert resolve_multiple_toolsets([]) == []
 
 
+class TestFileReadonlyToolset:
+    def test_file_readonly_resolves_only_read_and_search_tools(self):
+        assert resolve_toolset("file_readonly") == ["read_file", "search_files"]
+
+    def test_file_readonly_does_not_include_mutating_file_tools(self):
+        tools = set(resolve_toolset("file_readonly"))
+
+        assert "write_file" not in tools
+        assert "patch" not in tools
+
+    def test_file_readonly_is_valid_builtin_toolset(self):
+        assert validate_toolset("file_readonly") is True
+        assert get_toolset_info("file_readonly")["tool_count"] == 2
+
+
 class TestValidateToolset:
     def test_valid(self):
         assert validate_toolset("web") is True

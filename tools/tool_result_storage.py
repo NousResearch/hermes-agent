@@ -234,14 +234,29 @@ def enforce_turn_budget(
         content = msg["content"]
         tool_use_id = msg.get("tool_call_id", f"budget_{idx}")
 
-        replacement = maybe_persist_tool_result(
-            content=content,
-            tool_name=_BUDGET_TOOL_NAME,
-            tool_use_id=tool_use_id,
-            env=env,
-            config=config,
-            threshold=0,
-        )
+        try:
+            from agent.tool_output_envelope import compact_envelope_receipt, is_tool_output_envelope
+        except Exception:
+            replacement = maybe_persist_tool_result(
+                content=content,
+                tool_name=_BUDGET_TOOL_NAME,
+                tool_use_id=tool_use_id,
+                env=env,
+                config=config,
+                threshold=0,
+            )
+        else:
+            if is_tool_output_envelope(content):
+                replacement = compact_envelope_receipt(content)
+            else:
+                replacement = maybe_persist_tool_result(
+                    content=content,
+                    tool_name=_BUDGET_TOOL_NAME,
+                    tool_use_id=tool_use_id,
+                    env=env,
+                    config=config,
+                    threshold=0,
+                )
         if replacement != content:
             total_size -= size
             total_size += len(replacement)

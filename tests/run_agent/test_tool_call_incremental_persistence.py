@@ -171,13 +171,7 @@ def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_disp
 
     agent._flush_messages_to_session_db = MagicMock(side_effect=_record_flush)
 
-    with (
-        patch("run_agent.handle_function_call", side_effect=_fake_dispatch) as disp,
-        patch(
-            "agent.tool_executor.maybe_persist_tool_result",
-            side_effect=lambda **kwargs: kwargs["content"],
-        ),
-    ):
+    with patch("run_agent.handle_function_call", side_effect=_fake_dispatch) as disp:
         agent._execute_tool_calls_sequential(assistant_message, messages, "task-1")
 
     # The mock proves we exercised the REAL sequential dispatch surface.
@@ -229,13 +223,7 @@ def test_execute_tool_calls_concurrent_flushes_each_tool_result_in_order():
 
     agent._flush_messages_to_session_db = MagicMock(side_effect=_record_flush)
 
-    with (
-        patch.object(agent, "_invoke_tool", side_effect=_fake_invoke) as inv,
-        patch(
-            "agent.tool_executor.maybe_persist_tool_result",
-            side_effect=lambda **kwargs: kwargs["content"],
-        ),
-    ):
+    with patch.object(agent, "_invoke_tool", side_effect=_fake_invoke) as inv:
         agent._execute_tool_calls_concurrent(assistant_message, messages, "task-1")
 
     # Proves the real concurrent dispatch surface was exercised.

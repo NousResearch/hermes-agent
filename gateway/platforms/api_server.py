@@ -877,6 +877,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
+        self._response_approval_sessions: Dict[str, str] = {}
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
@@ -2931,6 +2932,12 @@ class APIServerAdapter(BasePlatformAdapter):
                         await _emit_tool_started(payload)
                     elif tag == "__tool_completed__":
                         await _emit_tool_completed(payload)
+                    elif tag == "__approval_request__":
+                        await _write_event("response.approval.requested", {
+                            "type": "response.approval.requested",
+                            "response_id": response_id,
+                            "approval": payload,
+                        })
                 elif isinstance(it, str):
                     # Batch text deltas — append to buffer, flush on timer
                     _batch_buf.append(it)
@@ -3166,6 +3173,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if not agent_task.done():
                 agent_task.cancel()
             logger.info("SSE task cancelled; persisted incomplete snapshot for %s", response_id)
+            self._response_approval_sessions.pop(response_id, None)
             raise
         except Exception as _exc:
             # Agent crashed with an unhandled error (e.g. model API error like
@@ -3192,6 +3200,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 pass
             logger.error("Agent crashed mid-stream for %s: %s", response_id, str(agent_error)[:300])
 
+        self._response_approval_sessions.pop(response_id, None)
         return response
 
     async def _handle_responses(self, request: "web.Request") -> "web.Response":
@@ -3363,6 +3372,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 })
                 _stream_q.put(("__approval_request__", event))
 
+            response_id = f"resp_{uuid.uuid4().hex[:28]}"
+            approval_session_key = gateway_session_key or session_id or response_id
+            self._response_approval_sessions[response_id] = approval_session_key
+
             agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
@@ -3382,7 +3395,6 @@ class APIServerAdapter(BasePlatformAdapter):
             # agent_task.done(), which can race with queue timeout checks.
             agent_task.add_done_callback(lambda _fut: _stream_q.put(None))
 
-            response_id = f"resp_{uuid.uuid4().hex[:28]}"
             model_name = body.get("model", self._model_name)
             created_at = int(time.time())
 
@@ -3403,16 +3415,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_session_key=gateway_session_key,
             )
 
-        # For non-streaming responses, approvals will be handled through the
-        # agent's built-in approval mechanism; the callback is wired for
-        # consistency and future potential logging/metrics.
-        def _on_approval_request_nonstream(approval_data: Dict[str, Any]) -> None:
-            """Handle approval requests in non-streaming Responses API calls."""
-            # Non-streaming responses don't have an active stream to emit to,
-            # so the approval is handled internally by the agent's approval
-            # system, which may reject automatically or defer based on config.
-            pass
-
         async def _compute_response():
             return await self._run_agent(
                 user_message=user_message,
@@ -3421,7 +3423,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
-                approval_notify_callback=_on_approval_request_nonstream,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -3538,6 +3539,76 @@ class APIServerAdapter(BasePlatformAdapter):
             "id": response_id,
             "object": "response",
             "deleted": True,
+        })
+
+    async def _handle_response_approval(self, request: "web.Request") -> "web.Response":
+        """POST /v1/responses/{response_id}/approval — resolve a pending response approval."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        response_id = request.match_info["response_id"]
+        approval_session_key = self._response_approval_sessions.get(response_id)
+        if not approval_session_key:
+            return web.json_response(
+                _openai_error(
+                    f"Response has no active approval session: {response_id}",
+                    code="approval_not_active",
+                ),
+                status=409,
+            )
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        raw_choice = str(body.get("choice", "")).strip().lower()
+        aliases = {"approve": "once", "approved": "once", "allow": "once"}
+        choice = aliases.get(raw_choice, raw_choice)
+        allowed = {"once", "session", "always", "deny"}
+        if choice not in allowed:
+            return web.json_response(
+                _openai_error(
+                    "Invalid approval choice; expected one of: once, session, always, deny",
+                    code="invalid_approval_choice",
+                ),
+                status=400,
+            )
+
+        resolve_all = (
+            _coerce_request_bool(body.get("all"), default=False)
+            or _coerce_request_bool(body.get("resolve_all"), default=False)
+        )
+        try:
+            from tools.approval import resolve_gateway_approval
+
+            resolved = resolve_gateway_approval(
+                approval_session_key,
+                choice,
+                resolve_all=resolve_all,
+            )
+        except Exception as exc:
+            logger.exception(
+                "[api_server] approval resolution failed for response %s",
+                response_id,
+            )
+            return web.json_response(_openai_error(str(exc)), status=500)
+
+        if resolved <= 0:
+            return web.json_response(
+                _openai_error(
+                    f"Response has no pending approval: {response_id}",
+                    code="approval_not_pending",
+                ),
+                status=409,
+            )
+
+        return web.json_response({
+            "object": "hermes.response.approval_response",
+            "response_id": response_id,
+            "choice": choice,
+            "resolved": resolved,
         })
 
     # ------------------------------------------------------------------
@@ -4839,6 +4910,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+            self._app.router.add_post("/v1/responses/{response_id}/approval", self._handle_response_approval)
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)

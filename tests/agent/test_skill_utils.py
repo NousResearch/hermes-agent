@@ -348,7 +348,9 @@ class TestNormalizeSkillLookupName:
         skills_dir = tmp_path / "skills"
         skill_dir = skills_dir / "category" / "my-skill"
         skill_dir.mkdir(parents=True)
-        monkeypatch.setattr("agent.skill_utils.get_skills_dir", lambda: skills_dir)
+        # Patch the root skill_view() itself enforces — normalization reads
+        # tools.skills_tool.SKILLS_DIR at call time so the two stay in sync.
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
         assert normalize_skill_lookup_name(str(skill_dir)) == "category/my-skill"
 
     def test_absolute_via_symlink_uses_lexical_relative_path(self, tmp_path, monkeypatch):
@@ -363,12 +365,13 @@ class TestNormalizeSkillLookupName:
             link.symlink_to(external)
         except OSError:
             pytest.skip("Symlinks not supported")
-        monkeypatch.setattr("agent.skill_utils.get_skills_dir", lambda: skills_dir)
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
         assert normalize_skill_lookup_name(str(link)) == "my-skill"
 
     def test_untrusted_absolute_returned_unchanged(self, tmp_path, monkeypatch):
         from agent.skill_utils import normalize_skill_lookup_name
 
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path / "skills")
         monkeypatch.setattr("agent.skill_utils.get_skills_dir", lambda: tmp_path / "skills")
         outside = str(tmp_path / "outside" / "skill")
         assert normalize_skill_lookup_name(outside) == outside

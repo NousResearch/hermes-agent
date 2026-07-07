@@ -13543,9 +13543,17 @@ def main():
     )
     sessions_export.add_argument(
         "--format",
-        choices=["jsonl", "md", "qmd"],
+        choices=["jsonl", "md", "qmd", "html"],
         default="jsonl",
         help="Export format (default: jsonl)",
+    )
+    sessions_export.add_argument(
+        "--only",
+        choices=["user-prompts"],
+        help=(
+            "Export only a filtered view (user-prompts: one prompt record "
+            "per line for jsonl, headed sections for md)"
+        ),
     )
     sessions_export.add_argument(
         "--session-id", help="Session ID or unique prefix to export"
@@ -13787,6 +13795,99 @@ def main():
                 from hermes_cli.session_export_md import redact_session_data
 
                 return redact_session_data(data)
+
+            def _collect_sessions():
+                """Resolve --session-id / filters / bare export into a list
+                of redacted session dicts, or None after printing an error."""
+                if args.session_id:
+                    resolved = db.resolve_session_id(args.session_id)
+                    data = _redact(db.export_session(resolved)) if resolved else None
+                    if not data:
+                        print(f"Session '{args.session_id}' not found.")
+                        return None
+                    return [data]
+                if filters:
+                    candidates = db.list_prune_candidates(**filters)
+                    if args.dry_run:
+                        print(
+                            f"Would export {len(candidates)} session(s) "
+                            f"({describe_filters(filters)})."
+                        )
+                        for row in candidates[:100]:
+                            print(f"  {row.get('id')}  {row.get('source', '')}")
+                        if len(candidates) > 100:
+                            print(f"  ... {len(candidates) - 100} more")
+                        return None
+                    return [
+                        s
+                        for s in (
+                            _redact(db.export_session(row["id"])) for row in candidates
+                        )
+                        if s
+                    ]
+                if args.dry_run:
+                    print("--dry-run requires at least one filter.")
+                    return None
+                return [_redact(s) for s in db.export_all(source=None)]
+
+            # Prompt-only export (--only user-prompts): one prompt record per
+            # line (jsonl) or headed sections (md). Delegates rendering to
+            # hermes_cli.session_export.
+            if getattr(args, "only", None):
+                if args.format not in ("jsonl", "md"):
+                    print("--only user-prompts supports --format jsonl or md.")
+                    return
+                from hermes_cli.session_export import (
+                    export_record_count,
+                    render_sessions_export,
+                )
+
+                sessions = _collect_sessions()
+                if sessions is None:
+                    db.close()
+                    return
+                rendered = render_sessions_export(
+                    sessions,
+                    fmt="markdown" if args.format == "md" else "jsonl",
+                    only=args.only,
+                )
+                if not args.output or args.output == "-":
+                    sys.stdout.write(rendered)
+                    db.close()
+                    return
+                with open(args.output, "w", encoding="utf-8") as f:
+                    f.write(rendered)
+                count, noun = export_record_count(sessions, only=args.only)
+                suffix = "" if count == 1 else "s"
+                print(f"Exported {count} {noun}{suffix} to {args.output}")
+                db.close()
+                return
+
+            # Standalone HTML export: one self-contained file (single session
+            # or multi-session with sidebar navigation).
+            if args.format == "html":
+                if not args.output or args.output == "-":
+                    print("HTML export requires an output file path.")
+                    return
+                from hermes_cli.session_export_html import (
+                    generate_html_export,
+                    generate_multi_session_html_export,
+                )
+
+                sessions = _collect_sessions()
+                if sessions is None:
+                    db.close()
+                    return
+                if len(sessions) == 1:
+                    content = generate_html_export(sessions[0])
+                else:
+                    content = generate_multi_session_html_export(sessions)
+                with open(args.output, "w", encoding="utf-8") as f:
+                    f.write(content)
+                suffix = "" if len(sessions) == 1 else "s"
+                print(f"Exported {len(sessions)} session{suffix} to {args.output} (HTML)")
+                db.close()
+                return
 
             if args.format == "jsonl":
                 if not args.output:

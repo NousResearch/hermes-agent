@@ -188,7 +188,7 @@ def test_sessions_export_cli_prompt_only_markdown_file(monkeypatch, capsys, tmp_
             "--session-id",
             "sess",
             "--format",
-            "markdown",
+            "md",
             "--only",
             "user-prompts",
         ],
@@ -203,13 +203,13 @@ def test_sessions_export_cli_prompt_only_markdown_file(monkeypatch, capsys, tmp_
     assert "I will inspect the auth middleware." not in content
 
 
-def test_sessions_export_rejects_full_session_markdown(monkeypatch, capsys):
+def test_sessions_export_only_rejects_unsupported_format(monkeypatch, capsys):
     import hermes_cli.main as main_mod
     import hermes_state
 
     class FakeDB:
         def export_all(self, source=None):
-            return [_sample_session()]
+            raise AssertionError("should refuse before touching the DB")
 
         def close(self):
             pass
@@ -218,92 +218,9 @@ def test_sessions_export_rejects_full_session_markdown(monkeypatch, capsys):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["hermes", "sessions", "export", "-", "--format", "markdown"],
+        ["hermes", "sessions", "export", "-", "--format", "html", "--only", "user-prompts"],
     )
 
     main_mod.main()
 
-    assert (
-        "Error: --format markdown currently requires --only user-prompts."
-        in capsys.readouterr().out
-    )
-
-
-def test_sessions_export_prompts_cli_stdout(monkeypatch, capsys):
-    import hermes_cli.main as main_mod
-    import hermes_state
-
-    captured = {}
-
-    class FakeDB:
-        def resolve_session_id(self, session_id):
-            captured["resolved_from"] = session_id
-            return "sess-123"
-
-        def export_session(self, session_id):
-            captured["exported"] = session_id
-            return _sample_session()
-
-        def close(self):
-            captured["closed"] = True
-
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["hermes", "sessions", "export-prompts", "sess"],
-    )
-
-    main_mod.main()
-
-    output = capsys.readouterr().out
-    records = [json.loads(line) for line in output.splitlines()]
-    assert [record["text"] for record in records] == [
-        "Why is login broken?",
-        "Only show me the prompts.",
-    ]
-    assert captured == {
-        "resolved_from": "sess",
-        "exported": "sess-123",
-        "closed": True,
-    }
-
-
-def test_sessions_export_prompts_cli_markdown_file(monkeypatch, capsys, tmp_path):
-    import hermes_cli.main as main_mod
-    import hermes_state
-
-    class FakeDB:
-        def resolve_session_id(self, _session_id):
-            return "sess-123"
-
-        def export_session(self, _session_id):
-            return _sample_session()
-
-        def close(self):
-            pass
-
-    output_path = tmp_path / "prompts.md"
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "hermes",
-            "sessions",
-            "export-prompts",
-            "sess",
-            "--format",
-            "md",
-            "--output",
-            str(output_path),
-        ],
-    )
-
-    main_mod.main()
-
-    assert f"Exported 2 prompts to {output_path}" in capsys.readouterr().out
-    content = output_path.read_text(encoding="utf-8")
-    assert "# User prompts for session sess-123" in content
-    assert "Why is login broken?" in content
-    assert "I will inspect the auth middleware." not in content
+    assert "--only user-prompts supports --format jsonl or md." in capsys.readouterr().out

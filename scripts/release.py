@@ -839,6 +839,9 @@ AUTHOR_MAP = {
     "27719690+Mirac1eSky@users.noreply.github.com": "Mirac1eSky",
     "web3blind@users.noreply.github.com": "web3blind",
     "264741654+web3blind@users.noreply.github.com": "web3blind",
+    # Sessions export format cluster (July 2026): HTML + prompt-only salvages
+    "840004959@qq.com": "simplast",
+    "catbearlove1@gmail.com": "catbearlove1-lang",
     "julia@alexland.us": "alexg0bot",
     "christian@scheid.tech": "scheidti",
     # Moonshot schema anyOf+enum salvage (May 2026)

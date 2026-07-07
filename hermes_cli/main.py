@@ -13433,65 +13433,6 @@ def main():
         "--limit", type=int, default=20, help="Max sessions to show"
     )
 
-    sessions_export = sessions_subparsers.add_parser(
-        "export", help="Export sessions to JSONL, Markdown, or QMD"
-    )
-    sessions_export.add_argument(
-        "output",
-        nargs="?",
-        help=(
-            "Output path. JSONL: file path (use - for stdout, required). "
-            "md/qmd: output directory (default: <hermes home>/session-exports)"
-        ),
-    )
-    sessions_export.add_argument(
-        "--format",
-        choices=["jsonl", "md", "qmd"],
-        default="jsonl",
-        help="Export format (default: jsonl)",
-    )
-    sessions_export.add_argument("--source", help="Filter by source")
-    sessions_export.add_argument(
-        "--session-id", help="Session ID or unique prefix to export"
-    )
-    sessions_export.add_argument(
-        "--older-than",
-        type=int,
-        help="md/qmd only: bulk-export ended sessions older than N days",
-    )
-    sessions_export.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="md/qmd only: preview matching sessions without writing files",
-    )
-    sessions_export.add_argument(
-        "--lineage",
-        choices=["single", "logical"],
-        default="single",
-        help="md/qmd only: export one row or its compression lineage",
-    )
-    sessions_export.add_argument(
-        "--delete-after-verified",
-        action="store_true",
-        help="md/qmd only: after verified single-session export, delete that session",
-    )
-    sessions_export.add_argument(
-        "--yes", "-y", action="store_true", help="Required with --delete-after-verified"
-    )
-    sessions_export.add_argument(
-        "--force",
-        action="store_true",
-        help="md/qmd only: overwrite an existing export file",
-    )
-
-    sessions_delete = sessions_subparsers.add_parser(
-        "delete", help="Delete a specific session"
-    )
-    sessions_delete.add_argument("session_id", help="Session ID to delete")
-    sessions_delete.add_argument(
-        "--yes", "-y", action="store_true", help="Skip confirmation"
-    )
-
     def _add_session_filter_args(p, default_older_help):
         p.add_argument(
             "--older-than",
@@ -13588,6 +13529,61 @@ def main():
         p.add_argument(
             "--yes", "-y", action="store_true", help="Skip confirmation"
         )
+
+    sessions_export = sessions_subparsers.add_parser(
+        "export", help="Export sessions to JSONL, Markdown, or QMD"
+    )
+    sessions_export.add_argument(
+        "output",
+        nargs="?",
+        help=(
+            "Output path. JSONL: file path (use - for stdout, required). "
+            "md/qmd: output directory (default: <hermes home>/session-exports)"
+        ),
+    )
+    sessions_export.add_argument(
+        "--format",
+        choices=["jsonl", "md", "qmd"],
+        default="jsonl",
+        help="Export format (default: jsonl)",
+    )
+    sessions_export.add_argument(
+        "--session-id", help="Session ID or unique prefix to export"
+    )
+    _add_session_filter_args(
+        sessions_export,
+        "Only export sessions older than AGE (duration like '5h'/'2d', "
+        "bare number of days, or an ISO timestamp)",
+    )
+    sessions_export.add_argument(
+        "--redact",
+        action="store_true",
+        help="Redact secrets (API keys, tokens, credentials) from exported content",
+    )
+    sessions_export.add_argument(
+        "--lineage",
+        choices=["single", "logical"],
+        default="single",
+        help="md/qmd only: export one row or its compression lineage",
+    )
+    sessions_export.add_argument(
+        "--delete-after-verified",
+        action="store_true",
+        help="md/qmd only: after verified single-session export, delete that session (needs --yes)",
+    )
+    sessions_export.add_argument(
+        "--force",
+        action="store_true",
+        help="md/qmd only: overwrite an existing export file",
+    )
+
+    sessions_delete = sessions_subparsers.add_parser(
+        "delete", help="Delete a specific session"
+    )
+    sessions_delete.add_argument("session_id", help="Session ID to delete")
+    sessions_delete.add_argument(
+        "--yes", "-y", action="store_true", help="Skip confirmation"
+    )
 
     sessions_prune = sessions_subparsers.add_parser(
         "prune",
@@ -13759,6 +13755,39 @@ def main():
                     print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
 
         elif action == "export":
+            from hermes_cli.session_filters import (
+                build_prune_filters,
+                describe_filters,
+            )
+
+            _filter_arg_names = (
+                "older_than", "newer_than", "before", "after",
+                "source", "title", "end_reason", "cwd",
+                "min_messages", "max_messages", "model", "provider",
+                "user", "chat_id", "chat_type", "branch",
+                "min_tokens", "max_tokens", "min_cost", "max_cost",
+                "min_tool_calls", "max_tool_calls",
+            )
+            _any_filters = any(
+                getattr(args, a, None) is not None for a in _filter_arg_names
+            )
+            filters = None
+            if _any_filters:
+                try:
+                    filters = build_prune_filters(args)
+                except ValueError as e:
+                    print(f"Error: {e}")
+                    return
+                # Unlike prune/archive, export includes archived sessions.
+                filters["archived"] = None
+
+            def _redact(data):
+                if not args.redact or data is None:
+                    return data
+                from hermes_cli.session_export_md import redact_session_data
+
+                return redact_session_data(data)
+
             if args.format == "jsonl":
                 if not args.output:
                     print("JSONL export requires an output path (use - for stdout).")
@@ -13768,7 +13797,7 @@ def main():
                     if not resolved_session_id:
                         print(f"Session '{args.session_id}' not found.")
                         return
-                    data = db.export_session(resolved_session_id)
+                    data = _redact(db.export_session(resolved_session_id))
                     if not data:
                         print(f"Session '{args.session_id}' not found.")
                         return
@@ -13781,15 +13810,42 @@ def main():
                             f.write(line)
                         print(f"Exported 1 session to {args.output}")
                 else:
-                    sessions = db.export_all(source=args.source)
+                    if filters:
+                        candidates = db.list_prune_candidates(**filters)
+                        if args.dry_run:
+                            print(
+                                f"Would export {len(candidates)} session(s) "
+                                f"({describe_filters(filters)})."
+                            )
+                            for row in candidates[:100]:
+                                print(f"  {row.get('id')}  {row.get('source', '')}")
+                            if len(candidates) > 100:
+                                print(f"  ... {len(candidates) - 100} more")
+                            return
+                        sessions = [
+                            s
+                            for s in (
+                                db.export_session(row["id"]) for row in candidates
+                            )
+                            if s
+                        ]
+                    else:
+                        if args.dry_run:
+                            print("--dry-run requires at least one filter.")
+                            return
+                        sessions = db.export_all(source=None)
                     if args.output == "-":
 
                         for s in sessions:
-                            sys.stdout.write(_json.dumps(s, ensure_ascii=False) + "\n")
+                            sys.stdout.write(
+                                _json.dumps(_redact(s), ensure_ascii=False) + "\n"
+                            )
                     else:
                         with open(args.output, "w", encoding="utf-8") as f:
                             for s in sessions:
-                                f.write(_json.dumps(s, ensure_ascii=False) + "\n")
+                                f.write(
+                                    _json.dumps(_redact(s), ensure_ascii=False) + "\n"
+                                )
                         print(f"Exported {len(sessions)} sessions to {args.output}")
                 return
 
@@ -13814,6 +13870,7 @@ def main():
                 )
                 if not data:
                     return None, None
+                data = _redact(data)
                 path = write_session_markdown(
                     data,
                     output_dir,
@@ -13865,16 +13922,19 @@ def main():
                 db.close()
                 return
 
-            if args.older_than is None and not args.source:
-                print("Refusing bulk export without a filter. Pass --session-id, --older-than, or --source.")
+            if not filters:
+                print(
+                    "Refusing bulk export without a filter. Pass --session-id or "
+                    "at least one filter (e.g. --older-than 90, --source telegram)."
+                )
                 db.close()
                 return
-            candidates = db.list_export_candidates(
-                older_than_days=args.older_than,
-                source=args.source,
-            )
+            candidates = db.list_prune_candidates(**filters)
             if args.dry_run:
-                print(f"Would export {len(candidates)} session(s).")
+                print(
+                    f"Would export {len(candidates)} session(s) "
+                    f"({describe_filters(filters)})."
+                )
                 for row in candidates[:100]:
                     print(f"  {row.get('id')}  {row.get('source', '')}")
                 if len(candidates) > 100:

@@ -187,8 +187,14 @@ def test_sessions_export_md_bulk_dry_run_lists_candidates(monkeypatch, tmp_path,
     import hermes_state
 
     class FakeDB:
-        def list_export_candidates(self, **kwargs):
-            assert kwargs == {"older_than_days": 30, "source": "cron"}
+        def list_prune_candidates(self, **kwargs):
+            # Export flows through the shared prune-filter machinery:
+            # --older-than 30 becomes a started_before epoch bound, source
+            # passes through, and archived is tri-state None (export includes
+            # archived sessions).
+            assert kwargs.get("source") == "cron"
+            assert kwargs.get("started_before") is not None
+            assert kwargs.get("archived") is None
             return [{"id": "s1", "source": "cron"}, {"id": "s2", "source": "cron"}]
 
         def close(self):
@@ -227,7 +233,7 @@ def test_sessions_export_md_bulk_requires_filter(monkeypatch, tmp_path, capsys):
     import hermes_state
 
     class FakeDB:
-        def list_export_candidates(self, **kwargs):
+        def list_prune_candidates(self, **kwargs):
             raise AssertionError("bulk export without filters should refuse")
 
         def close(self):
@@ -250,7 +256,7 @@ def test_sessions_export_md_bulk_writes_manifest(monkeypatch, tmp_path, capsys):
     import hermes_state
 
     class FakeDB:
-        def list_export_candidates(self, **kwargs):
+        def list_prune_candidates(self, **kwargs):
             return [{"id": "s1"}, {"id": "s2"}]
 
         def export_session_lineage(self, session_id):
@@ -360,3 +366,141 @@ def test_sessions_export_md_delete_after_verified_deletes_after_file_check(monke
     assert captured == {"deleted": "s1"}
     assert len(list(tmp_path.glob("*.md"))) == 1
     assert "Deleted exported session 's1'" in capsys.readouterr().out
+
+
+def test_sessions_export_md_accepts_duration_age_grammar(monkeypatch, tmp_path, capsys):
+    """--older-than accepts the same AGE grammar as prune ('2w', '5h', ISO)."""
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    class FakeDB:
+        def list_prune_candidates(self, **kwargs):
+            assert kwargs.get("started_before") is not None
+            return [{"id": "s1", "source": "cli"}]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hermes", "sessions", "export", "--format", "md",
+            "--older-than", "2w", "--dry-run", str(tmp_path),
+        ],
+    )
+
+    main_mod.main()
+
+    assert "Would export 1 session(s)" in capsys.readouterr().out
+
+
+def test_sessions_export_md_supports_extended_prune_filters(monkeypatch, tmp_path, capsys):
+    """Filters like --model/--min-messages pass through the shared machinery."""
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    captured = {}
+
+    class FakeDB:
+        def list_prune_candidates(self, **kwargs):
+            captured.update(kwargs)
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hermes", "sessions", "export", "--format", "md",
+            "--model", "sonnet", "--min-messages", "5", "--dry-run",
+            str(tmp_path),
+        ],
+    )
+
+    main_mod.main()
+
+    assert captured.get("model_like") == "sonnet"
+    assert captured.get("min_messages") == 5
+    assert "Would export 0 session(s)" in capsys.readouterr().out
+
+
+def test_sessions_export_jsonl_honors_filters(monkeypatch, tmp_path, capsys):
+    """JSONL bulk export uses the same filter machinery as md/qmd."""
+    import json
+
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    class FakeDB:
+        def list_prune_candidates(self, **kwargs):
+            assert kwargs.get("source") == "telegram"
+            return [{"id": "s1", "source": "telegram"}]
+
+        def export_session(self, session_id):
+            return {"id": session_id, "messages": [{"role": "user", "content": "hi"}]}
+
+        def export_all(self, **kwargs):
+            raise AssertionError("filtered jsonl export must not fall back to export_all")
+
+        def close(self):
+            pass
+
+    out = tmp_path / "out.jsonl"
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "sessions", "export", "--source", "telegram", str(out)],
+    )
+
+    main_mod.main()
+
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["id"] == "s1"
+    assert "Exported 1 sessions" in capsys.readouterr().out
+
+
+def test_sessions_export_redact_scrubs_secrets(monkeypatch, tmp_path):
+    """--redact runs exported content through force-mode secret redaction."""
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    secret = "sk-proj-Zz12345678901234567890123456789012345678"
+
+    class FakeDB:
+        def resolve_session_id(self, session_id):
+            return "s1"
+
+        def export_session(self, session_id):
+            return {
+                "id": "s1",
+                "title": "Redact",
+                "messages": [
+                    {"role": "tool", "name": "terminal", "content": f"api key: {secret}"}
+                ],
+            }
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hermes", "sessions", "export", "--format", "md",
+            "--session-id", "s1", "--redact", str(tmp_path),
+        ],
+    )
+
+    main_mod.main()
+
+    text = next(tmp_path.glob("*.md")).read_text(encoding="utf-8")
+    assert secret not in text
+    assert "api key:" in text

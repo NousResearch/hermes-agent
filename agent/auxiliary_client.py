@@ -1025,9 +1025,18 @@ class _CodexCompletionsAdapter:
                 logger.debug("Codex auxiliary: cache eviction on timeout failed", exc_info=True)
 
         def _check_cancelled() -> None:
+            if timed_out.is_set():
+                raise TimeoutError(_timeout_message())
             if deadline is not None and time.monotonic() >= deadline:
                 if not timed_out.is_set():
                     _close_client_on_timeout()
+                raise TimeoutError(_timeout_message())
+            # Avoid spending the last few milliseconds of a strict total-timeout
+            # budget importing/checking the best-effort interrupt hook. Timeout
+            # enforcement is the hard contract here; interrupt handling can wait
+            # for the next event on very small budgets.
+            near_deadline_slack = min(0.05, float(total_timeout) * 0.5) if total_timeout else 0.0
+            if deadline is not None and deadline - time.monotonic() < near_deadline_slack:
                 raise TimeoutError(_timeout_message())
             try:
                 from tools.interrupt import is_interrupted
@@ -1043,6 +1052,10 @@ class _CodexCompletionsAdapter:
                 # Interrupt state is a best-effort UX hook; never make it a
                 # new failure mode for auxiliary calls.
                 pass
+            if timed_out.is_set() or (deadline is not None and time.monotonic() >= deadline):
+                if not timed_out.is_set():
+                    _close_client_on_timeout()
+                raise TimeoutError(_timeout_message())
 
         try:
             if total_timeout:

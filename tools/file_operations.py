@@ -1316,6 +1316,10 @@ class ShellFileOperations(FileOperations):
         files. The content never appears in the shell command string —
         only the file path does.
 
+        JSON/YAML/TOML content is syntax-checked BEFORE the write; invalid
+        content is refused outright (nothing touches disk, top-level
+        ``error`` set) instead of being written and reported afterward.
+
         After the write, runs a post-first / pre-lazy lint check via
         ``_check_lint_delta()``.  If the new content is clean, the lint
         call is O(one parse).  If the new content has errors, the pre-write
@@ -1337,6 +1341,26 @@ class ShellFileOperations(FileOperations):
         if _is_write_denied(path):
             return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
+        ext = os.path.splitext(path)[1].lower()
+
+        # ── Pre-write syntax gate for structured formats ────────────────
+        # JSON/YAML/TOML are atomic blobs: content that doesn't parse is
+        # corrupt, full stop. Check the raw ``content`` argument here,
+        # before mkdir / line-ending / BOM shims / LSP snapshot run below,
+        # so a rejected write has zero side effects and the check can't be
+        # fooled by a BOM this method itself would re-add (see BOM block
+        # below). ``.py`` is excluded: this codebase's own test fixtures
+        # write arbitrary non-Python text through *.py paths as generic
+        # write-mechanics fixtures, so Python keeps its existing
+        # non-blocking post-write lint-delta report instead of a refusal.
+        if ext in LINTERS_INPROC and ext != '.py':
+            _ok, _err = LINTERS_INPROC[ext](content)
+            if not _ok:
+                return WriteResult(
+                    error=f"Refused to write '{path}': invalid {ext} ({_err}). "
+                          "File was not created or modified."
+                )
+
         # Capture pre-write content.  Two consumers want it:
         #
         #   1. The lint-delta layer (for in-process linters like ast.parse
@@ -1352,7 +1376,6 @@ class ShellFileOperations(FileOperations):
         # the UNION of in-process lint coverage and LSP coverage.  For
         # extensions outside both sets (binaries, opaque formats),
         # skipping the read keeps the hot path fast.
-        ext = os.path.splitext(path)[1].lower()
         pre_content: Optional[str] = None
         want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
         if want_pre:

@@ -430,3 +430,7 @@ class TestRegisterRoutes:
         resume_path = "/api/sessions/20260702_143022_a1b2c3d4/resume"
         assert token_auth.is_token_route_method_allowed(resume_path, "POST") is True
         assert token_auth.is_token_route_method_allowed(resume_path, "GET") is False
+
+        # Logs: the pre-existing desktop log-viewer endpoint, GET only.
+        assert token_auth.is_token_route_method_allowed("/api/logs", "GET") is True
+        assert token_auth.is_token_route_method_allowed("/api/logs", "POST") is False

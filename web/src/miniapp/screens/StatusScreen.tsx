@@ -22,7 +22,20 @@ function platformDotColor(state: string): string {
   return "var(--warning)";
 }
 
-export function StatusScreen({ statusExtra }: { statusExtra: MiniAppStatusExtra }) {
+const LOG_ITEMS: Array<{ key: string; label: string }> = [
+  { key: "agent", label: "Agent Messages" },
+  { key: "errors", label: "Errors and Warnings" },
+  { key: "gateway", label: "Gateway Logs" },
+  { key: "update", label: "Updates" },
+];
+
+export function StatusScreen({
+  statusExtra,
+  onOpenLog,
+}: {
+  statusExtra: MiniAppStatusExtra;
+  onOpenLog: (key: string, label: string) => void;
+}) {
   const { isAdmin, gwConnected, gwRestarting, askRestartGateway, askUpdateHermes } = useMiniApp();
   const [status, setStatus] = useState<StatusResponse | null>(null);
 
@@ -152,6 +165,34 @@ export function StatusScreen({ statusExtra }: { statusExtra: MiniAppStatusExtra 
               <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: platformDotColor(p.state), whiteSpace: "nowrap" }}>
                 {p.state}
               </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {isAdmin && (
+        <div style={{ background: "var(--card)", border: "1px solid var(--line)", borderRadius: 14, overflow: "hidden" }}>
+          <div style={{ padding: "11px 16px 8px", fontSize: 10, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--t3)", fontFamily: "var(--mono)" }}>
+            Logs
+          </div>
+          {LOG_ITEMS.map(({ key, label }) => (
+            <div
+              key={key}
+              onClick={() => onOpenLog(key, label)}
+              style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 16px", borderTop: "1px solid var(--line)", cursor: "pointer" }}
+            >
+              <span style={{ fontSize: 13.5, fontWeight: 550, color: "var(--mid)" }}>{label}</span>
+              <svg width="7" height="12" viewBox="0 0 7 12" style={{ marginLeft: "auto", flexShrink: 0 }}>
+                <path
+                  d="M1 1l5 5-5 5"
+                  stroke="currentColor"
+                  strokeOpacity={0.4}
+                  strokeWidth="1.8"
+                  fill="none"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
             </div>
           ))}
         </div>

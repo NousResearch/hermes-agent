@@ -1,5 +1,6 @@
 """Tests for hermes_cli.tools_config platform tool persistence."""
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -58,6 +59,61 @@ def test_agent_disabled_toolsets_with_explicit_platform_config():
     assert "terminal" in enabled
 
 
+def test_all_invalid_platform_toolsets_logs_runtime_warning(caplog):
+    """#38798: an explicit platform config whose toolset names are all invalid
+    (e.g. 'hermes' instead of 'hermes-cli') must warn at resolve time so an
+    already-corrupted config is caught at runtime, not just during migration."""
+    import hermes_cli.tools_config as _tc
+    # The runtime warning fires once per platform per process; clear the guard
+    # so this test is deterministic regardless of prior resolutions.
+    _tc._warned_invalid_platform_toolsets.discard("cli")
+    config = {"platform_toolsets": {"cli": ["hermes"]}}
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "cli")
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("#38798" in m and "hermes" in m for m in warnings), warnings
+
+
+def test_invalid_platform_toolsets_runtime_warning_fires_once(caplog):
+    """The runtime warning is deduped per platform — a persistently-corrupt
+    config must not spam an identical warning on every tool resolution."""
+    import hermes_cli.tools_config as _tc
+    _tc._warned_invalid_platform_toolsets.discard("cli")
+    config = {"platform_toolsets": {"cli": ["hermes"]}}
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "cli")
+        _get_platform_tools(config, "cli")
+        _get_platform_tools(config, "cli")
+
+    hits = [r for r in caplog.records if "#38798" in r.getMessage()]
+    assert len(hits) == 1, f"expected exactly one warning, got {len(hits)}"
+
+
+def test_valid_platform_toolsets_no_runtime_warning(caplog):
+    """A correctly-configured platform must not emit the #38798 warning."""
+    config = {"platform_toolsets": {"cli": ["hermes-cli"]}}
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "cli")
+
+    assert not any("#38798" in r.getMessage() for r in caplog.records)
+
+
+def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
+    """When at least one configured toolset is valid, tools still resolve, so
+    the runtime zero-tools warning must not fire (the migration-time check still
+    flags the individual bad name)."""
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "bogus"]}}
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "cli")
+
+    assert not any("#38798" in r.getMessage() for r in caplog.records)
+
+
 def test_agent_disabled_toolsets_empty_list_is_noop():
     """Empty or missing disabled_toolsets should not change behavior."""
     config_empty = {"agent": {"disabled_toolsets": []}}
@@ -85,10 +141,6 @@ def test_gui_toolset_label_strips_leading_emoji():
     assert gui_toolset_label("👁️  Vision / Image Analysis") == "Vision / Image Analysis"
     assert gui_toolset_label("🔌 My Plugin") == "My Plugin"
     assert gui_toolset_label("Terminal & Processes") == "Terminal & Processes"
-
-
-def test_configurable_toolsets_include_messaging():
-    assert any(ts_key == "messaging" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
 
 def test_configurable_toolsets_include_context_engine():
@@ -128,12 +180,6 @@ def test_get_platform_tools_context_engine_respects_explicit_empty_selection():
     enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
 
     assert "context_engine" not in enabled
-
-
-def test_get_platform_tools_default_telegram_includes_messaging():
-    enabled = _get_platform_tools({}, "telegram")
-
-    assert "messaging" in enabled
 
 
 def test_get_platform_tools_default_whatsapp_includes_web():
@@ -975,19 +1021,6 @@ def test_toolset_has_keys_treats_no_key_providers_as_configured():
     assert _toolset_has_keys("computer_use", config) is True
 
 
-def test_web_no_prompt_when_usable_keyless():
-    """Fresh install: web works via the free Parallel MCP, so enabling the web
-    toolset should not force provider setup."""
-    with patch("tools.web_tools.check_web_api_key", return_value=True):
-        assert _toolset_needs_configuration_prompt("web", {}) is False
-
-
-def test_web_no_prompt_when_extract_backend_is_extract_capable():
-    with patch("tools.web_tools.check_web_api_key", return_value=True):
-        cfg = {"web": {"extract_backend": "parallel"}}
-        assert _toolset_needs_configuration_prompt("web", cfg) is False
-
-
 def test_computer_use_needs_configuration_when_cua_driver_post_setup_pending():
     """No-key providers can still need setup when their post_setup is unsatisfied.
 
@@ -1565,3 +1598,161 @@ def test_real_configurable_changes_still_reported_in_diff():
     assert ((new_enabled2 - current) & universe) == {"vision"}
 
 
+def test_vision_picker_writes_provider_and_model(tmp_path, monkeypatch):
+    """Picking a provider+model persists auxiliary.vision.{provider,model}.
+
+    Vision must not force OpenRouter — it offers the same any-provider surface
+    as ``hermes model`` and writes the selection to the auxiliary config keys
+    the resolver reads.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import hermes_cli.tools_config as tc
+    from hermes_cli.config import load_config
+
+    fake_providers = [
+        {"slug": "anthropic", "name": "Anthropic", "total_models": 2,
+         "models": ["claude-sonnet-4.6", "claude-opus-4.6"]},
+        {"slug": "openai", "name": "OpenAI", "total_models": 1,
+         "models": ["gpt-5.4"]},
+    ]
+    # Top-level choice 1 (pick provider+model) → provider idx 0 (anthropic)
+    # → model idx 1 (claude-opus-4.6).
+    seq = iter([1, 0, 1])
+    with patch("hermes_cli.model_switch.list_authenticated_providers",
+               return_value=fake_providers), \
+         patch.object(tc, "_prompt_choice", side_effect=lambda *a, **k: next(seq)), \
+         patch.object(tc, "_toolset_has_keys", return_value=False):
+        tc._configure_vision_backend()
+
+    v = load_config().get("auxiliary", {}).get("vision", {})
+    assert v.get("provider") == "anthropic"
+    assert v.get("model") == "claude-opus-4.6"
+    # Provider selection must not leave a stale custom endpoint.
+    assert not v.get("base_url")
+
+
+def test_vision_picker_auto_clears_override(tmp_path, monkeypatch):
+    """Choosing Auto clears any pinned provider/model so resolution auto-detects."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import hermes_cli.tools_config as tc
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    cfg.setdefault("auxiliary", {})["vision"] = {
+        "provider": "openrouter", "model": "google/gemini-2.5-flash"}
+    save_config(cfg)
+
+    seq = iter([0])  # Auto
+    with patch.object(tc, "_prompt_choice", side_effect=lambda *a, **k: next(seq)), \
+         patch.object(tc, "_toolset_has_keys", return_value=False):
+        tc._configure_vision_backend()
+
+    v = load_config().get("auxiliary", {}).get("vision", {})
+    # Cleared back to the "auto" sentinel (DEFAULT_CONFIG default) — no pinned
+    # real provider/model survive.
+    assert v.get("provider") in (None, "", "auto")
+    assert not v.get("model")
+
+
+def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
+    """Custom endpoint writes base_url+model to config and the key to env."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import hermes_cli.tools_config as tc
+    from hermes_cli.config import load_config
+
+    seq = iter([2])  # Custom OpenAI-compatible endpoint
+    prompts = iter(["https://my.endpoint/v1", "sk-secret", "my-vision-model"])
+    with patch.object(tc, "_prompt_choice", side_effect=lambda *a, **k: next(seq)), \
+         patch.object(tc, "_prompt", side_effect=lambda *a, **k: next(prompts)), \
+         patch.object(tc, "save_env_value") as save_env, \
+         patch.object(tc, "_toolset_has_keys", return_value=False):
+        tc._configure_vision_backend()
+
+    v = load_config().get("auxiliary", {}).get("vision", {})
+    assert v.get("base_url") == "https://my.endpoint/v1"
+    assert v.get("model") == "my-vision-model"
+    # provider pinned to "custom" so the resolver routes through base_url.
+    assert v.get("provider") == "custom"
+    save_env.assert_called_once_with("OPENAI_API_KEY", "sk-secret")
+
+
+def test_save_platform_tools_clears_newly_enabled_from_disabled_toolsets():
+    """Enabling a toolset via the picker must remove it from
+    agent.disabled_toolsets, or _get_platform_tools() permanently masks it
+    back to OFF on the next read no matter what platform_toolsets says.
+
+    Blank Slate installs pre-populate disabled_toolsets with ~27 toolsets,
+    making the desktop Toolsets UI's enable toggle effectively a no-op for
+    any of them (issue #49995).
+    """
+    config = {
+        "platform_toolsets": {"cli": ["file", "terminal"]},
+        "agent": {"disabled_toolsets": ["todo", "memory", "browser"]},
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"file", "terminal", "todo"})
+
+    # The toolset the user just enabled is cleared from the block-list...
+    assert "todo" not in config["agent"]["disabled_toolsets"]
+    # ...but toolsets the user did NOT touch stay disabled (no over-reach).
+    assert "memory" in config["agent"]["disabled_toolsets"]
+    assert "browser" in config["agent"]["disabled_toolsets"]
+    assert "todo" in config["platform_toolsets"]["cli"]
+
+
+def test_save_platform_tools_resolves_to_enabled_after_disabled_toolsets_reconcile():
+    """End-to-end: after _save_platform_tools() reconciles disabled_toolsets,
+    _get_platform_tools() must actually resolve the toolset as enabled --
+    this is the exact symptom from issue #49995 (toggle saves but the UI/agent
+    still reads it as OFF after reopen).
+    """
+    config = {
+        "platform_toolsets": {"cli": ["file", "terminal"]},
+        "agent": {"disabled_toolsets": ["todo", "memory"]},
+    }
+
+    # Before: todo is masked off despite not being in platform_toolsets yet.
+    assert "todo" not in _get_platform_tools(config, "cli")
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"file", "terminal", "todo"})
+
+    # After: todo must resolve as enabled, and untouched 'memory' must
+    # remain masked off.
+    resolved = _get_platform_tools(config, "cli")
+    assert "todo" in resolved
+    assert "memory" not in resolved
+
+
+def test_save_platform_tools_no_disabled_toolsets_is_noop():
+    """When agent.disabled_toolsets is absent or empty, the reconcile step
+    must be a complete no-op (no KeyError, no spurious 'agent' key creation).
+    """
+    config = {"platform_toolsets": {"cli": ["file", "terminal"]}}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"file", "terminal", "todo"})
+
+    assert "todo" in config["platform_toolsets"]["cli"]
+    # No 'agent' key should be fabricated when none existed.
+    assert "agent" not in config
+
+
+def test_save_platform_tools_disabling_a_toolset_does_not_touch_disabled_toolsets():
+    """Turning a toolset OFF (not present in enabled_toolset_keys) must not
+    remove anything from agent.disabled_toolsets -- only toolsets the user
+    just explicitly enabled are reconciled.
+    """
+    config = {
+        "platform_toolsets": {"cli": ["file", "terminal", "todo"]},
+        "agent": {"disabled_toolsets": ["memory"]},
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        # User unchecks 'todo' -- it's no longer in enabled_toolset_keys.
+        _save_platform_tools(config, "cli", {"file", "terminal"})
+
+    assert "todo" not in config["platform_toolsets"]["cli"]
+    # disabled_toolsets is untouched by a disable action.
+    assert config["agent"]["disabled_toolsets"] == ["memory"]

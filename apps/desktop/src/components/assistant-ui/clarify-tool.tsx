@@ -1,20 +1,31 @@
 'use client'
 
-import { type ToolCallMessagePartProps } from '@assistant-ui/react'
+import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type FormEvent, type KeyboardEvent, useCallback, useMemo, useRef, useState } from 'react'
+import {
+  type ComponentProps,
+  type FormEvent,
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 
-import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
+import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { Button } from '@/components/ui/button'
-import { KbdCombo } from '@/components/ui/kbd'
+import { Kbd } from '@/components/ui/kbd'
 import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Check, HelpCircle, Loader2 } from '@/lib/icons'
+import { Loader2, MessageQuestion } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $clarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
+
+import { selectMessageRunning } from './tool/fallback-model'
 
 interface ClarifyArgs {
   question?: string
@@ -35,28 +46,64 @@ function readClarifyArgs(args: unknown): ClarifyArgs {
   }
 }
 
-// Choice and "Other" rows share a layout; only color/hover differs.
-const OPTION_ROW_CLASS = 'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors'
+// Each option (and "Other") is keyed A, B, C… so it can be picked by pressing
+// that letter — the badge doubles as the shortcut hint.
+const letterFor = (index: number): string => String.fromCharCode(65 + index)
 
-function RadioDot({ selected }: { selected: boolean }) {
+// Choice and "Other" rows share a layout; only color differs. Mirrors a tool
+// row's compact rhythm so the panel reads as part of the transcript.
+const OPTION_ROW_CLASS =
+  'flex w-full items-start gap-2 rounded-[0.25rem] px-1.5 py-1 text-left disabled:cursor-not-allowed disabled:opacity-50'
+
+// Content-sizing freeform field (CSS `field-sizing` — same primitive as the
+// commit bar and search field): starts at one line, grows with what's typed,
+// and never reflows the panel when focused. Bare so the "Other" row matches the
+// choice rows above it.
+const FREEFORM_INPUT_CLASS =
+  'field-sizing-content max-h-40 min-h-0 w-full resize-none bg-transparent p-0 leading-(--conversation-line-height) text-(--ui-text-primary) outline-none placeholder:text-(--ui-text-tertiary) disabled:opacity-50'
+
+// Quiet inline panel that matches the surrounding tool rows: a single hairline
+// border in the shared stroke token, a soft surface fill, and a faint primary
+// accent that signals "this one needs you" without the loud animated ring.
+const CLARIFY_SHELL_CLASS =
+  'my-1.5 rounded-md border border-primary/20 bg-(--ui-chat-surface-background) text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)'
+
+function ClarifyShell({ children, className, ...props }: ComponentProps<'div'>) {
   return (
-    <span
-      aria-hidden
+    <div className={cn(CLARIFY_SHELL_CLASS, className)} data-slot="clarify-inline" {...props}>
+      {children}
+    </div>
+  )
+}
+
+// Selection lives on the letter badge alone — a solid primary fill — not the
+// whole row, which stays a quiet hover target. `preview` is the focused-but-empty
+// "Other" state: the badge outlines in primary to show it's armed, then fills
+// once a value is actually typed.
+function KeyBadge({ char, preview, selected }: { char: string; preview?: boolean; selected: boolean }) {
+  return (
+    <Kbd
       className={cn(
-        'grid size-3.5 shrink-0 place-items-center rounded-full border transition-colors',
-        selected ? 'border-primary' : 'border-muted-foreground/40'
+        'mt-px',
+        selected && 'border-primary bg-primary text-white shadow-none',
+        !selected && preview && 'border-primary text-primary shadow-none'
       )}
+      size="sm"
     >
-      {selected && <span className="size-1.5 rounded-full bg-primary" />}
-    </span>
+      {char}
+    </Kbd>
   )
 }
 
 export const ClarifyTool = (props: ToolCallMessagePartProps) => {
-  const isPending = props.result === undefined
+  const messageRunning = useAuiState(selectMessageRunning)
 
-  // Once Hermes records an answer, fall back to the standard tool block so
-  // the past Q/A renders consistently with every other tool in the thread.
+  // Only the live, still-blocked turn shows the interactive panel. Once the
+  // message stops running — answered, the turn ended, or the user hit Stop —
+  // fall back to the standard tool block so the Q/A settles like every other
+  // row instead of stranding a dead prompt the gateway no longer waits on.
+  const isPending = messageRunning && props.result === undefined
+
   if (!isPending) {
     return <ToolFallback {...props} />
   }
@@ -92,16 +139,18 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
   const hasChoices = choices.length > 0
 
-  const [typing, setTyping] = useState(false)
   const [draft, setDraft] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [selectedChoice, setSelectedChoice] = useState<string | null>(null)
+  const [otherFocused, setOtherFocused] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
   // Race: tool.start fires a tick before clarify.request, so request_id
-  // arrives slightly after the tool block mounts. Show the question (from
-  // args) but disable submit until we have the request id from the gateway.
+  // arrives slightly after the tool block mounts. Hold the whole panel on a
+  // spinner until the gateway request is wired — showing disabled choices or
+  // a "loading question" stub is worse than a brief wait.
   const ready = Boolean(matchingRequest?.requestId)
+  const loading = !ready && !submitting
 
   const respond = useCallback(
     async (answer: string) => {
@@ -133,153 +182,205 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         setSubmitting(false)
       }
     },
-    [gateway, matchingRequest, ready]
+    [copy.gatewayDisconnected, copy.notReady, copy.sendFailed, gateway, matchingRequest, ready]
   )
+
+  const trimmedDraft = draft.trim()
+  // The answer is whichever input is active: a picked choice, or typed text.
+  // Picking a choice no longer fires immediately — it selects, then the user
+  // confirms with Continue (or Enter from the field).
+  const pendingAnswer = selectedChoice ?? (trimmedDraft || null)
+
+  const selectChoice = useCallback((choice: string) => {
+    // Picking a choice and typing are mutually exclusive answers.
+    setDraft('')
+    setSelectedChoice(choice)
+  }, [])
+
+  const submitAnswer = useCallback(() => {
+    if (selectedChoice !== null) {
+      void respond(selectedChoice)
+
+      return
+    }
+
+    if (trimmedDraft) {
+      void respond(trimmedDraft)
+    }
+  }, [respond, selectedChoice, trimmedDraft])
 
   const handleTextareaKey = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
-      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-        event.preventDefault()
-        const trimmed = draft.trim()
+      if (event.nativeEvent.isComposing) {
+        return
+      }
 
-        if (trimmed) {
-          void respond(trimmed)
-        }
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault()
+        submitAnswer()
       }
     },
-    [draft, respond]
+    [submitAnswer]
   )
 
-  const handleSubmitFreeform = useCallback(
+  const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault()
-      const trimmed = draft.trim()
-
-      if (trimmed) {
-        void respond(trimmed)
-      }
+      submitAnswer()
     },
-    [draft, respond]
+    [submitAnswer]
   )
 
+  // Letter shortcuts: A/B/C… pick the matching option, the trailing letter jumps
+  // into "Other", and Enter confirms the current pick. Stands down whenever a
+  // field is focused (you're typing, not navigating) so it never eats keystrokes
+  // meant for the composer or the Other box.
+  useEffect(() => {
+    if (!ready || !hasChoices || submitting) {
+      return
+    }
+
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented) {
+        return
+      }
+
+      const active = document.activeElement as HTMLElement | null
+
+      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) {
+        return
+      }
+
+      const key = event.key.toLowerCase()
+
+      if (key.length === 1 && key >= 'a' && key <= 'z') {
+        const index = key.charCodeAt(0) - 97
+
+        if (index < choices.length) {
+          event.preventDefault()
+          selectChoice(choices[index])
+        } else if (index === choices.length) {
+          event.preventDefault()
+          textareaRef.current?.focus()
+        }
+
+        return
+      }
+
+      if (event.key === 'Enter' && pendingAnswer) {
+        event.preventDefault()
+        submitAnswer()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [choices, hasChoices, pendingAnswer, ready, selectChoice, submitAnswer, submitting])
+
+  if (loading) {
+    return (
+      <ClarifyShell
+        aria-label={copy.loadingQuestion}
+        className="grid min-h-12 place-items-center px-2.5 py-3"
+        role="status"
+      >
+        <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
+      </ClarifyShell>
+    )
+  }
+
+  const onDraftChange = (value: string) => {
+    setDraft(value)
+
+    // Typing is its own answer — drop any picked choice so the two inputs can't
+    // both look selected.
+    if (value.trim()) {
+      setSelectedChoice(null)
+    }
+  }
+
   return (
-    <div
-      className="relative mb-3 mt-2 grid gap-6 rounded-[0.5rem] border border-border/70 bg-card/40 px-3 py-2.5 text-sm shadow-[inset_0_1px_0_color-mix(in_srgb,var(--foreground)_3%,transparent)]"
-      data-slot="clarify-inline"
-    >
-      <span aria-hidden className="arc-border" />
-      <div className="flex items-start gap-2.5">
-        <span
-          aria-hidden
-          className="mt-px grid size-6 shrink-0 place-items-center rounded-md bg-[color-mix(in_srgb,var(--dt-primary)_14%,transparent)] text-primary ring-1 ring-inset ring-primary/15"
-        >
-          <HelpCircle className="size-3.5" />
-        </span>
-        <span className="flex-1 whitespace-pre-wrap font-medium leading-snug text-foreground">
-          {question || <em className="font-normal text-muted-foreground/70">{copy.loadingQuestion}</em>}
-        </span>
+    <ClarifyShell className="grid gap-2 px-2.5 py-2">
+      <div className="flex items-start gap-2">
+        <span className="flex-1 whitespace-pre-wrap font-medium leading-(--conversation-line-height)">{question}</span>
+        <MessageQuestion aria-hidden className="mt-px size-4 shrink-0 text-(--ui-text-tertiary)" />
       </div>
 
-      {!typing && hasChoices && (
-        <div className="grid gap-0.5" role="group">
-          {choices.map((choice, index) => (
-            <button
-              className={cn(
-                OPTION_ROW_CLASS,
-                'text-foreground/95 hover:bg-accent/60 disabled:cursor-not-allowed disabled:opacity-55',
-                selectedChoice === choice && 'bg-accent/60'
-              )}
-              data-choice
-              disabled={!ready || submitting}
-              key={`${index}-${choice}`}
-              onClick={() => {
-                setSelectedChoice(choice)
-                void respond(choice)
-              }}
-              type="button"
-            >
-              <RadioDot selected={selectedChoice === choice} />
-              <span className="flex-1 wrap-anywhere">{choice}</span>
-              {selectedChoice === choice && <Check aria-hidden className="size-4 shrink-0 text-primary" />}
-            </button>
-          ))}
-          <button
-            className={cn(OPTION_ROW_CLASS, 'text-muted-foreground hover:bg-accent/40 hover:text-foreground')}
-            disabled={submitting}
-            onClick={() => {
-              setTyping(true)
-              window.setTimeout(() => textareaRef.current?.focus({ preventScroll: true }), 0)
-            }}
-            type="button"
-          >
-            <RadioDot selected={false} />
-            <span className="flex-1">{copy.other}</span>
-          </button>
-        </div>
-      )}
-
-      {(typing || !hasChoices) && (
-        <form className="grid gap-2" onSubmit={handleSubmitFreeform}>
+      <form className="grid gap-2" onSubmit={handleSubmit}>
+        {hasChoices ? (
+          <div className="grid gap-px" role="group">
+            {choices.map((choice, index) => (
+              <button
+                className={cn(
+                  OPTION_ROW_CLASS,
+                  'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)',
+                  selectedChoice === choice && 'text-(--ui-text-primary)'
+                )}
+                data-choice
+                disabled={submitting}
+                key={`${index}-${choice}`}
+                onClick={() => selectChoice(choice)}
+                type="button"
+              >
+                <KeyBadge char={letterFor(index)} selected={selectedChoice === choice} />
+                <span className="flex-1 wrap-anywhere">{choice}</span>
+              </button>
+            ))}
+            {/* "Other" is an inline content-sizing field, not a separate view. */}
+            <label className={cn(OPTION_ROW_CLASS, 'focus-within:bg-(--chrome-action-hover)')}>
+              <KeyBadge char={letterFor(choices.length)} preview={otherFocused} selected={Boolean(trimmedDraft)} />
+              <textarea
+                className={FREEFORM_INPUT_CLASS}
+                disabled={submitting}
+                onBlur={() => setOtherFocused(false)}
+                onChange={event => onDraftChange(event.target.value)}
+                // Focusing "Other" is a switch to typing your own answer, so it
+                // deselects any picked choice — a chosen option and an active
+                // Other field can never both look selected.
+                onFocus={() => {
+                  setSelectedChoice(null)
+                  setOtherFocused(true)
+                }}
+                onKeyDown={handleTextareaKey}
+                placeholder={copy.other}
+                ref={textareaRef}
+                rows={1}
+                value={draft}
+              />
+            </label>
+          </div>
+        ) : (
           <Textarea
-            className="min-h-20 resize-y rounded-lg border-transparent bg-accent/40 text-sm focus-visible:bg-background/60"
+            className={FREEFORM_INPUT_CLASS}
             disabled={submitting}
-            onChange={event => setDraft(event.target.value)}
+            onChange={event => onDraftChange(event.target.value)}
             onKeyDown={handleTextareaKey}
             placeholder={copy.placeholder}
             ref={textareaRef}
+            rows={1}
             value={draft}
           />
-          <div className="flex items-center justify-between gap-2">
-            <span className="inline-flex items-center gap-1 text-[0.6875rem] text-muted-foreground/85">
-              <KbdCombo combo="mod+enter" size="sm" />
-              {copy.shortcutSuffix}
-            </span>
-            <div className="flex items-center gap-1.5">
-              {hasChoices && (
-                <Button
-                  disabled={submitting}
-                  onClick={() => {
-                    setTyping(false)
-                    setDraft('')
-                  }}
-                  size="sm"
-                  type="button"
-                  variant="ghost"
-                >
-                  {copy.back}
-                </Button>
-              )}
-              <Button
-                disabled={!ready || submitting}
-                onClick={() => void respond('')}
-                size="sm"
-                type="button"
-                variant="ghost"
-              >
-                {copy.skip}
-              </Button>
-              <Button disabled={!ready || submitting || !draft.trim()} size="sm" type="submit">
-                {submitting ? <Loader2 className="size-3.5 animate-spin" /> : copy.send}
-              </Button>
-            </div>
-          </div>
-        </form>
-      )}
+        )}
 
-      {!typing && hasChoices && (
-        <div className="flex justify-end">
-          <Button
-            className="-mr-2"
-            disabled={!ready || submitting}
-            onClick={() => void respond('')}
-            size="xs"
-            type="button"
-            variant="text"
-          >
+        <div className="flex items-center justify-end gap-1">
+          <Button disabled={submitting} onClick={() => void respond('')} size="xs" type="button" variant="text">
             {copy.skip}
           </Button>
+          <Button disabled={submitting || !pendingAnswer} size="xs" type="submit">
+            {submitting ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <>
+                {copy.continueLabel}
+                <span aria-hidden className="ml-0.5 text-[0.625rem] opacity-70">
+                  ⏎
+                </span>
+              </>
+            )}
+          </Button>
         </div>
-      )}
-    </div>
+      </form>
+    </ClarifyShell>
   )
 }

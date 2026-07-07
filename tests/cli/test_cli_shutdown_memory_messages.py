@@ -109,3 +109,61 @@ def test_cleanup_provider_exception_is_swallowed(mock_invoke_hook):
         cli_mod._cleanup_done = False
 
     agent.shutdown_memory_provider.assert_called_once()
+
+
+def test_cli_close_persists_agent_session_messages_before_end_session():
+    """CLI shutdown flushes live agent messages before closing the session."""
+    import cli as cli_mod
+
+    transcript = [
+        {"role": "user", "content": "long task"},
+        {"role": "assistant", "content": "partial answer"},
+    ]
+    conversation_history = [{"role": "user", "content": "long task"}]
+
+    cli = object.__new__(cli_mod.HermesCLI)
+    cli.conversation_history = conversation_history
+    cli.session_id = "old-session"
+    agent = MagicMock()
+    agent.session_id = "live-session"
+    agent._session_messages = transcript
+    cli.agent = agent
+
+    cli._persist_active_session_before_close()
+
+    agent._persist_session.assert_called_once_with(transcript, conversation_history)
+    assert cli.session_id == "live-session"
+
+
+def test_cli_close_persist_falls_back_to_conversation_history():
+    """Bare MagicMock agents do not provide a real _session_messages list."""
+    import cli as cli_mod
+
+    conversation_history = [{"role": "user", "content": "saved from cli"}]
+    cli = object.__new__(cli_mod.HermesCLI)
+    cli.conversation_history = conversation_history
+    cli.session_id = "session-id"
+    agent = MagicMock()
+    agent.session_id = "session-id"
+    cli.agent = agent
+
+    cli._persist_active_session_before_close()
+
+    agent._persist_session.assert_called_once_with(conversation_history, conversation_history)
+
+
+def test_cli_close_persist_skips_empty_transcripts():
+    """Do not create empty session writes for idle CLI startup/shutdown."""
+    import cli as cli_mod
+
+    cli = object.__new__(cli_mod.HermesCLI)
+    cli.conversation_history = []
+    cli.session_id = "session-id"
+    agent = MagicMock()
+    agent.session_id = "session-id"
+    agent._session_messages = []
+    cli.agent = agent
+
+    cli._persist_active_session_before_close()
+
+    agent._persist_session.assert_not_called()

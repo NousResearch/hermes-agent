@@ -1545,13 +1545,35 @@ class AccessPolicy:
         self._group_policy = group_policy
         self._group_allow_from = group_allow_from
 
+    def _open_dm_opted_in(self) -> bool:
+        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+            return True
+        return os.getenv("YUANBAO_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+
     def is_dm_allowed(self, sender_id: str) -> bool:
-        """Platform-level DM inbound filter (open / allowlist / disabled)."""
+        """Strict DM authorization — pairing does not imply access."""
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
             return sender_id.strip() in self._dm_allow_from
-        return True
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
+
+    def is_dm_intake_allowed(self, sender_id: str) -> bool:
+        """Whether a DM may reach gateway intake (pairing handshake path)."""
+        principal = str(sender_id or "").strip()
+        if not principal:
+            return False
+        if self._dm_policy == "disabled":
+            return False
+        if self._dm_policy == "allowlist":
+            return principal in self._dm_allow_from
+        if self._dm_policy == "pairing":
+            return True
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
 
     def is_group_allowed(self, group_code: str) -> bool:
         """Platform-level group chat inbound filter (open / allowlist / disabled)."""
@@ -1559,7 +1581,11 @@ class AccessPolicy:
             return False
         if self._group_policy == "allowlist":
             return group_code.strip() in self._group_allow_from
-        return True
+        if self._group_policy == "pairing":
+            return False
+        if self._group_policy == "open":
+            return self._open_dm_opted_in()
+        return False
 
     @property
     def dm_policy(self) -> str:
@@ -1579,7 +1605,7 @@ class AccessGuardMiddleware(InboundMiddleware):
         adapter = ctx.adapter
         policy: AccessPolicy = adapter._access_policy
         if ctx.chat_type == "dm":
-            if not policy.is_dm_allowed(ctx.from_account):
+            if not policy.is_dm_intake_allowed(ctx.from_account):
                 logger.debug(
                     "[%s] DM from %s blocked by dm_policy=%s",
                     adapter.name, ctx.from_account, policy.dm_policy,
@@ -1601,13 +1627,19 @@ class AutoSetHomeMiddleware(InboundMiddleware):
     Triggers when no home channel is configured, or when an existing group-chat
     home is superseded by the first DM (direct > group upgrade).
     Silent: writes config.yaml and env, no user-facing message.
+
+    Runs after :class:`BuildSourceMiddleware` and :class:`GroupAtGuardMiddleware`
+    so unaddressed group traffic is dropped before home-channel persistence.
+    Only senders that pass strict authorization (allowlist / explicit open
+    opt-in / pairing-store approval) may claim ``YUANBAO_HOME_CHANNEL``.
+    Intake-only pairing forwards must not claim ``YUANBAO_HOME_CHANNEL``.
     """
 
     name = "auto-sethome"
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         adapter = ctx.adapter
-        if not adapter._auto_sethome_done:
+        if not adapter._auto_sethome_done and adapter._sender_may_designate_home(ctx):
             _cur_home = os.getenv("YUANBAO_HOME_CHANNEL", "")
             _should_set = (
                 not _cur_home
@@ -1618,7 +1650,7 @@ class AutoSetHomeMiddleware(InboundMiddleware):
             if _should_set:
                 try:
                     from hermes_constants import get_hermes_home
-                    from utils import atomic_yaml_write
+                    from hermes_cli.config import atomic_config_write
                     import yaml
 
                     _home = get_hermes_home()
@@ -1628,7 +1660,7 @@ class AutoSetHomeMiddleware(InboundMiddleware):
                         with open(config_path, encoding="utf-8") as f:
                             user_config = yaml.safe_load(f) or {}
                     user_config["YUANBAO_HOME_CHANNEL"] = ctx.chat_id
-                    atomic_yaml_write(config_path, user_config)
+                    atomic_config_write(config_path, user_config)
                     os.environ["YUANBAO_HOME_CHANNEL"] = str(ctx.chat_id)
                     logger.info(
                         "[%s] Auto-sethome: designated %s (%s) as Yuanbao home channel",
@@ -2586,6 +2618,27 @@ class MediaResolveMiddleware(InboundMiddleware):
                 cls._resource_cache.pop(k, None)
         cls._resource_cache[resource_id] = (local_path, mime, time.time())
 
+    @classmethod
+    def _append_cached_resource(
+        cls,
+        adapter,
+        resource_id: str,
+        media_paths: List[str],
+        mimes: List[str],
+    ) -> bool:
+        """Append a cached resource to output lists when available."""
+        hit = cls._get_cached_resource(resource_id)
+        if hit is None:
+            return False
+        local_path, mime = hit
+        logger.debug(
+            "[%s] resource cache hit: rid=%s path=%s",
+            adapter.name, resource_id, local_path,
+        )
+        media_paths.append(local_path)
+        mimes.append(mime)
+        return True
+
     @staticmethod
     def _guess_image_ext_from_url(url: str) -> str:
         """Guess image extension from URL path."""
@@ -2773,6 +2826,8 @@ class MediaResolveMiddleware(InboundMiddleware):
 
             # Extract resourceId from the placeholder URL for cache dedup.
             rid = ExtractContentMiddleware._parse_resource_id(url)
+            if rid and cls._append_cached_resource(adapter, rid, media_urls, media_types):
+                continue
 
             try:
                 fetch_url = await cls._resolve_download_url(adapter, url)
@@ -2813,6 +2868,8 @@ class MediaResolveMiddleware(InboundMiddleware):
         mimes: List[str] = []
         for rid, kind, filename in refs:
             if kind not in _RESOLVABLE_MEDIA_KINDS:
+                continue
+            if cls._append_cached_resource(adapter, rid, media_paths, mimes):
                 continue
             try:
                 fresh_url = await cls._fetch_resource_url(adapter, rid)
@@ -3180,12 +3237,12 @@ class InboundPipelineBuilder:
         SkipSelfMiddleware,
         ChatRoutingMiddleware,
         AccessGuardMiddleware,
-        AutoSetHomeMiddleware,
         ExtractContentMiddleware,
         PlaceholderFilterMiddleware,
         OwnerCommandMiddleware,
         BuildSourceMiddleware,
         GroupAtGuardMiddleware,
+        AutoSetHomeMiddleware,
         GroupAttributionMiddleware,
         ClassifyMessageTypeMiddleware,
         QuoteContextMiddleware,
@@ -3836,6 +3893,7 @@ class ConnectionManager:
                     "[%s] Reconnected on attempt %d. connectId=%s",
                     adapter.name, attempt + 1, self._connect_id,
                 )
+                YuanbaoAdapter.set_active(adapter)
                 return True
 
             except asyncio.TimeoutError:
@@ -4983,6 +5041,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
 
     PLATFORM = Platform.YUANBAO
     MAX_TEXT_CHUNK: int = 4000  # Yuanbao single message character limit
+    splits_long_messages = True  # send() auto-chunks via truncate_message(MAX_TEXT_CHUNK)
     MEDIA_MAX_SIZE_MB: int = 50  # Max media file size in MB for upload validation
     REPLY_REF_MAX_ENTRIES: ClassVar[int] = 500  # Max capacity of reference dedup dict
 
@@ -5049,7 +5108,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         # ------------------------------------------------------------------
         dm_policy: str = (
             _extra.get("dm_policy")
-            or os.getenv("YUANBAO_DM_POLICY", "open")
+            or os.getenv("YUANBAO_DM_POLICY", "pairing")
         ).strip().lower()
 
         _dm_allow_from_raw: str = (
@@ -5060,7 +5119,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
 
         group_policy: str = (
             _extra.get("group_policy")
-            or os.getenv("YUANBAO_GROUP_POLICY", "open")
+            or os.getenv("YUANBAO_GROUP_POLICY", "pairing")
         ).strip().lower()
 
         _group_allow_from_raw: str = (
@@ -5113,7 +5172,37 @@ class YuanbaoAdapter(BasePlatformAdapter):
         """Yuanbao gates DM/group access at intake via dm_policy/group_policy."""
         return True
 
-    async def connect(self) -> bool:
+    def _sender_may_designate_home(self, ctx: InboundContext) -> bool:
+        """True when the sender may persist ``YUANBAO_HOME_CHANNEL``.
+
+        Intake-only pairing forwards are excluded until the sender is on the
+        strict allowlist, has explicit open-world opt-in, or is approved in the
+        pairing store.
+        """
+        policy: AccessPolicy = self._access_policy
+        sender = str(ctx.from_account or "").strip()
+        if not sender:
+            return False
+        if ctx.chat_type == "dm":
+            if policy.is_dm_allowed(sender):
+                return True
+            if policy.dm_policy == "pairing":
+                from gateway.pairing import PairingStore
+
+                return PairingStore().is_approved(Platform.YUANBAO.value, sender)
+            return False
+        if ctx.chat_type == "group":
+            group_code = str(ctx.group_code or "").strip()
+            if not group_code:
+                return False
+            if policy.group_policy == "allowlist":
+                return policy.is_group_allowed(group_code)
+            if policy.group_policy == "open":
+                return policy._open_dm_opted_in()
+            return False
+        return False
+
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Yuanbao WS gateway and authenticate.
 
         Delegates to ConnectionManager.open().

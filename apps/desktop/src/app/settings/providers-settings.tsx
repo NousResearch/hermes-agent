@@ -1,18 +1,25 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
+import { runInTerminal } from '@/app/right-sidebar/store'
 import {
   FEATURED_ID,
   FeaturedProviderRow,
   KeyProviderRow,
   ProviderRow,
+  providerTitle,
   sortProviders
-} from '@/components/desktop-onboarding-overlay'
+} from '@/components/onboarding'
 import { Button } from '@/components/ui/button'
-import { listOAuthProviders } from '@/hermes'
+import { RowButton } from '@/components/ui/row-button'
+import { SearchField } from '@/components/ui/search-field'
+import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { ChevronDown, KeyRound } from '@/lib/icons'
+import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
+import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
+import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
@@ -21,14 +28,37 @@ import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { providerGroup, providerMeta, providerPriority } from './helpers'
 import { LoadingState, SettingsContent } from './primitives'
 
+// The embedded terminal (and thus the "run disconnect command" path) only
+// exists in the Electron desktop shell, not the web dashboard.
+const canRunInTerminal = () => typeof window !== 'undefined' && Boolean(window.hermesDesktop?.terminal)
+
+// Parallel group headers ("Connected", "Other providers") so the expanded list
+// reads as its own section instead of bleeding into the connected group.
+function GroupLabel({ children }: { children: ReactNode }) {
+  return (
+    <p className="mt-3 px-0.5 text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-tertiary)">
+      {children}
+    </p>
+  )
+}
+
 // Sub-views surfaced as a sidebar subnav: account sign-in vs raw API keys.
 export const PROVIDER_VIEWS = ['accounts', 'keys'] as const
 
 export type ProviderView = (typeof PROVIDER_VIEWS)[number]
 
 // Group the env catalog by provider — one ListRow per vendor plus optional
-// advanced overrides (base URL, region, etc.). Groups without a key field and
-// the "Other" bucket are skipped.
+// advanced overrides (base URL, region, etc.). Groups without a key field are
+// skipped.
+//
+// Grouping key precedence:
+//   1. Backend `provider_label` / `provider` (from the unified provider catalog
+//      in hermes_cli/provider_catalog.py) — the SAME provider identity
+//      `hermes model` uses. This is authoritative: a provider tagged by the
+//      backend always renders a card, even with no PROVIDER_GROUPS row.
+//   2. Desktop prefix match (`providerGroup`) — legacy fallback for provider
+//      env vars that predate the backend tagging.
+// Only entries that resolve to neither (the "Other" bucket) are skipped.
 function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGroup[] {
   const buckets = new Map<string, [string, EnvVarInfo][]>()
 
@@ -37,7 +67,9 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
       continue
     }
 
-    const name = providerGroup(key)
+    // Prefer the backend-supplied provider label/id so the Keys tab groups by
+    // the same identity the CLI picker uses; fall back to the prefix guess.
+    const name = info.provider_label?.trim() || info.provider?.trim() || providerGroup(key)
 
     if (name === 'Other') {
       continue
@@ -55,6 +87,9 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
       continue
     }
 
+    // Presentation overlay (priority, blurb, docs) is keyed by the prefix-based
+    // group name; when the backend introduced this provider it may have no
+    // overlay entry, so fall back to the backend/env metadata for display.
     const meta = providerMeta(name)
 
     groups.push({
@@ -85,7 +120,19 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
 // Selecting a provider hands off to the shared onboarding overlay, which runs
 // that provider's real sign-in flow; the key affordances open the API-key
 // catalog below.
-function OAuthPicker({ onWantApiKey, providers }: { onWantApiKey: () => void; providers: OAuthProvider[] }) {
+function OAuthPicker({
+  disconnecting,
+  onDisconnect,
+  onTerminalDisconnect,
+  onWantApiKey,
+  providers
+}: {
+  disconnecting: null | string
+  onDisconnect: (provider: OAuthProvider) => void
+  onTerminalDisconnect: (provider: OAuthProvider) => void
+  onWantApiKey: () => void
+  providers: OAuthProvider[]
+}) {
   const { t } = useI18n()
   const p = t.settings.providers
   const [showAll, setShowAll] = useState(false)
@@ -97,10 +144,11 @@ function OAuthPicker({ onWantApiKey, providers }: { onWantApiKey: () => void; pr
 
   const select = (p: OAuthProvider) => startManualProviderOAuth(p.id)
 
-  const featured = ordered.find(p => p.id === FEATURED_ID) ?? null
+  const featured = ordered.find(p => p.id === FEATURED_ID && !p.status?.logged_in) ?? null
   const rest = featured ? ordered.filter(p => p.id !== FEATURED_ID) : ordered
   // Keep connected accounts grouped and always visible; only the unconnected
   // providers hide behind the disclosure, so the page leads with what's set up.
+  // Both lists preserve `sortProviders` order (curated priority, then name).
   const connected = rest.filter(p => p.status?.logged_in)
   const others = rest.filter(p => !p.status?.logged_in)
   const collapsible = others.length > 0
@@ -126,16 +174,22 @@ function OAuthPicker({ onWantApiKey, providers }: { onWantApiKey: () => void; pr
       {featured && <FeaturedProviderRow onSelect={select} provider={featured} />}
       {connected.length > 0 && (
         <>
-          <p className="mt-1 px-0.5 text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-tertiary)">
-            {p.connected}
-          </p>
+          <GroupLabel>{p.connected}</GroupLabel>
           {connected.map(p => (
-            <ProviderRow key={p.id} onSelect={select} provider={p} />
+            <ConnectedProviderRow
+              disconnecting={disconnecting === p.id}
+              key={p.id}
+              onDisconnect={onDisconnect}
+              onSelect={select}
+              onTerminalDisconnect={onTerminalDisconnect}
+              provider={p}
+            />
           ))}
         </>
       )}
       {showOthers && (
         <>
+          {connected.length > 0 && <GroupLabel>{p.otherProviders}</GroupLabel>}
           {others.map(p => (
             <ProviderRow key={p.id} onSelect={select} provider={p} />
           ))}
@@ -158,6 +212,80 @@ function OAuthPicker({ onWantApiKey, providers }: { onWantApiKey: () => void; pr
   )
 }
 
+function ConnectedProviderRow({
+  disconnecting,
+  onDisconnect,
+  onSelect,
+  onTerminalDisconnect,
+  provider
+}: {
+  disconnecting: boolean
+  onDisconnect: (provider: OAuthProvider) => void
+  onSelect: (provider: OAuthProvider) => void
+  onTerminalDisconnect: (provider: OAuthProvider) => void
+  provider: OAuthProvider
+}) {
+  const { t } = useI18n()
+  const copy = t.settings.providers
+  const title = providerTitle(provider)
+  const Trail = provider.flow === 'external' ? Terminal : ChevronRight
+  // Hermes can clear this provider's creds via the API.
+  const canDisconnect = provider.disconnectable ?? provider.flow !== 'external'
+  // External (CLI-managed) provider Hermes can't clear via the API, but ships a
+  // command we can run in the embedded terminal (Electron shell only).
+  const terminalDisconnect = !canDisconnect && Boolean(provider.disconnect_command) && canRunInTerminal()
+  // Only fall back to a static "remove it elsewhere" hint when we offer no button.
+  const showHint = !canDisconnect && !terminalDisconnect
+
+  return (
+    <div className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[6px] transition-colors hover:bg-(--ui-control-hover-background)">
+      <RowButton className="min-w-0 px-3 py-2.5 text-left" onClick={() => onSelect(provider)}>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-[length:var(--conversation-text-font-size)] font-semibold">{title}</span>
+          <span className="inline-flex shrink-0 items-center gap-1 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+            <Check className="size-3" />
+            {copy.connected}
+          </span>
+        </div>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.flowSubtitles[provider.flow]}</p>
+        {showHint && (
+          <p className="mt-0.5 truncate text-[0.68rem] leading-5 text-muted-foreground/70">
+            {provider.flow === 'external' ? copy.removeExternalGeneric(title) : copy.removeKeyManaged(title)}
+          </p>
+        )}
+      </RowButton>
+      <div className="flex items-center gap-1 pr-2">
+        <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
+        {canDisconnect && (
+          <Button
+            aria-label={`${t.common.remove} ${title}`}
+            disabled={disconnecting}
+            onClick={() => onDisconnect(provider)}
+            size="icon-xs"
+            title={`${t.common.remove} ${title}`}
+            type="button"
+            variant="ghost"
+          >
+            {disconnecting ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
+          </Button>
+        )}
+        {terminalDisconnect && (
+          <Button
+            aria-label={`${copy.disconnect} ${title}`}
+            onClick={() => onTerminalDisconnect(provider)}
+            size="icon-xs"
+            title={copy.disconnectInTerminal}
+            type="button"
+            variant="ghost"
+          >
+            <Trash2 className="size-3" />
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function NoProviderKeys() {
   const { t } = useI18n()
 
@@ -168,25 +296,33 @@ function NoProviderKeys() {
   )
 }
 
-export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps) {
+export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSettingsProps) {
   const { t } = useI18n()
   const { rowProps, vars } = useEnvCredentials()
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
   const [openProvider, setOpenProvider] = useState<null | string>(null)
+  const [disconnecting, setDisconnecting] = useState<null | string>(null)
+  // Free-text filter for the API-keys view (provider name / env-var key / desc).
+  const [keyQuery, setKeyQuery] = useState('')
   // The onboarding overlay owns the OAuth flow. Watch its `manual` flag so we
   // re-read connection state when the user finishes (or dismisses) a sign-in
   // they launched from this page — otherwise the cards keep their stale status.
   const onboardingActive = useStore($desktopOnboarding).manual
 
-  useEffect(() => {
-    if (onboardingActive) {
-      return
-    }
+  const refreshOAuthProviders = useCallback(async () => {
+    // OAuth providers are best-effort — a failure here just hides the panel.
+    const { providers } = await listOAuthProviders()
+    setOauthProviders(providers)
+  }, [])
 
+  useEffect(() => {
     let cancelled = false
 
-    // OAuth providers are best-effort — a failure here just hides the panel.
     void (async () => {
+      if (onboardingActive) {
+        return
+      }
+
       try {
         const { providers } = await listOAuthProviders()
 
@@ -201,6 +337,58 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
     return () => void (cancelled = true)
   }, [onboardingActive])
 
+  // External (CLI-managed) providers can't be cleared via the API by design —
+  // Hermes never deletes creds another tool owns behind a silent API call.
+  // Instead we run the documented removal command in the embedded terminal so
+  // the user sees exactly what executes, then return them to chat to watch it.
+  function handleTerminalDisconnect(provider: OAuthProvider) {
+    const command = provider.disconnect_command
+
+    if (!command) {
+      return
+    }
+
+    const name = providerTitle(provider)
+
+    if (!window.confirm(t.settings.providers.removeTerminalConfirm(name, command))) {
+      return
+    }
+
+    // Leave the settings overlay so the terminal pane (chat-only) is visible.
+    onClose()
+    runInTerminal(command)
+    notify({
+      kind: 'info',
+      title: t.settings.providers.removedTitle,
+      message: t.settings.providers.removeTerminalRunning(name)
+    })
+  }
+
+  async function handleDisconnect(provider: OAuthProvider) {
+    const name = providerTitle(provider)
+
+    if (!window.confirm(t.settings.providers.removeConfirm(name))) {
+      return
+    }
+
+    setDisconnecting(provider.id)
+
+    try {
+      await disconnectOAuthProvider(provider.id)
+      notify({
+        durationMs: 3_000,
+        kind: 'success',
+        title: t.settings.providers.removedTitle,
+        message: t.settings.providers.removedMessage(name)
+      })
+      await refreshOAuthProviders().catch(() => undefined)
+    } catch (err) {
+      notifyError(err, t.settings.providers.failedRemove(name))
+    } finally {
+      setDisconnecting(null)
+    }
+  }
+
   if (!vars) {
     return <LoadingState label={t.settings.providers.loading} />
   }
@@ -213,20 +401,45 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
   const keyGroups = buildProviderKeyGroups(vars)
 
   if (showApiKeys) {
+    const q = normalize(keyQuery)
+
+    const visibleGroups = q
+      ? keyGroups.filter(group => {
+          const haystack = [group.name, group.description ?? '', group.primary[0], ...group.advanced.map(([k]) => k)]
+
+          return haystack.some(s => s.toLowerCase().includes(q))
+        })
+      : keyGroups
+
     return (
       <SettingsContent>
         {keyGroups.length > 0 ? (
-          <div className="grid gap-2">
-            {keyGroups.map(group => (
-              <ProviderKeyRows
-                expanded={openProvider === group.name}
-                group={group}
-                key={group.name}
-                onExpand={() => setOpenProvider(group.name)}
-                onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
-                rowProps={rowProps}
-              />
-            ))}
+          <div className="grid gap-3">
+            <SearchField
+              aria-label={t.settings.providers.searchKeys}
+              containerClassName="w-full"
+              onChange={setKeyQuery}
+              placeholder={t.settings.providers.searchKeys}
+              value={keyQuery}
+            />
+            {visibleGroups.length > 0 ? (
+              <div className="grid gap-2">
+                {visibleGroups.map(group => (
+                  <ProviderKeyRows
+                    expanded={openProvider === group.name}
+                    group={group}
+                    key={group.name}
+                    onExpand={() => setOpenProvider(group.name)}
+                    onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
+                    rowProps={rowProps}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="grid min-h-24 place-items-center px-4 py-6 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
+                {t.settings.providers.noKeysMatch}
+              </div>
+            )}
           </div>
         ) : (
           <NoProviderKeys />
@@ -237,7 +450,13 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
 
   return (
     <SettingsContent>
-      <OAuthPicker onWantApiKey={() => onViewChange('keys')} providers={oauthProviders} />
+      <OAuthPicker
+        disconnecting={disconnecting}
+        onDisconnect={provider => void handleDisconnect(provider)}
+        onTerminalDisconnect={handleTerminalDisconnect}
+        onWantApiKey={() => onViewChange('keys')}
+        providers={oauthProviders}
+      />
     </SettingsContent>
   )
 }
@@ -253,6 +472,7 @@ interface ProviderKeyGroup {
 }
 
 interface ProvidersSettingsProps {
+  onClose: () => void
   onViewChange: (view: ProviderView) => void
   view: ProviderView
 }

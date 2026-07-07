@@ -79,6 +79,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
 )
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway import rich_sent_store
 from hermes_constants import get_hermes_dir
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,7 @@ DEFAULT_WEBHOOK_HOST = "0.0.0.0"
 DEFAULT_WEBHOOK_PORT = 8090
 DEFAULT_WEBHOOK_PATH = "/whatsapp/webhook"
 GRAPH_API_BASE = "https://graph.facebook.com"
+WEBHOOK_MAX_BODY_BYTES = 3 * 1024 * 1024
 # Meta retries failed webhooks for up to 7 days. We don't need to remember
 # every wamid for the full retry window — the practical risk is duplicate
 # delivery within minutes, not days. 5000 entries with FIFO eviction is
@@ -143,6 +145,17 @@ _WHATSAPP_MIME_EXTENSION_OVERRIDES: Dict[str, str] = {
 }
 
 
+async def _read_limited_request_body(request: Any, max_bytes: int) -> bytes:
+    """Read at most ``max_bytes`` from an aiohttp request body."""
+    try:
+        body = await request.content.readexactly(max_bytes + 1)
+    except asyncio.IncompleteReadError as exc:
+        body = exc.partial
+    if len(body) > max_bytes:
+        raise ValueError("payload too large")
+    return body
+
+
 def _ext_for_mime(mime: str) -> Optional[str]:
     """Resolve a mime type to the file extension we want on disk.
 
@@ -187,6 +200,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     syntax). The Baileys adapter does the same.
     """
 
+    splits_long_messages = True  # send() chunks via truncate_message()
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP_CLOUD)
         extra = config.extra or {}
@@ -222,18 +237,35 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         import os
 
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
-        self._dm_policy: str = str(
-            extra.get("dm_policy")
-            or os.getenv("WHATSAPP_CLOUD_DM_POLICY")
-            or os.getenv("WHATSAPP_DM_POLICY", "open")
-        ).strip().lower()
+        # Allowlist: honor the *documented* WHATSAPP_CLOUD_ALLOWED_USERS (the
+        # var the setup wizard writes) in addition to WHATSAPP_CLOUD_ALLOW_FROM.
+        # The adapter historically read only ALLOW_FROM, so an allowlist
+        # configured via the documented var silently dropped every inbound.
         self._allow_from: set[str] = self._normalize_allow_ids(
             self._coerce_allow_list(
                 extra.get("allow_from")
                 or extra.get("allowFrom")
                 or os.getenv("WHATSAPP_CLOUD_ALLOW_FROM")
+                or os.getenv("WHATSAPP_CLOUD_ALLOWED_USERS")
             )
         )
+        # DM policy: explicit config wins; otherwise choose a safe, working
+        # default -- "open" if the operator opted into allow-all, else
+        # "allowlist" when an allowlist is configured (so it is actually
+        # enforced instead of silently dropping), else "open".
+        _allow_all_optin = str(
+            os.getenv("WHATSAPP_CLOUD_ALLOW_ALL_USERS", "")
+        ).strip().lower() in {"true", "1", "yes"}
+        _default_dm_policy = (
+            "open" if _allow_all_optin
+            else ("allowlist" if self._allow_from else "open")
+        )
+        self._dm_policy: str = str(
+            extra.get("dm_policy")
+            or os.getenv("WHATSAPP_CLOUD_DM_POLICY")
+            or os.getenv("WHATSAPP_DM_POLICY")
+            or _default_dm_policy
+        ).strip().lower()
         self._group_policy: str = str(
             extra.get("group_policy")
             or os.getenv("WHATSAPP_CLOUD_GROUP_POLICY")
@@ -344,8 +376,19 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return (bare or sender_id) in self._allow_from
         return super()._is_dm_allowed(sender_id)
 
+    def _open_dm_opted_in(self) -> bool:
+        """Also honor the documented WHATSAPP_CLOUD_ALLOW_ALL_USERS opt-in.
+
+        The shared mixin only checks GATEWAY_ALLOW_ALL_USERS /
+        WHATSAPP_ALLOW_ALL_USERS; the Cloud adapter's documented open-access
+        opt-in is WHATSAPP_CLOUD_ALLOW_ALL_USERS, so honor it here too.
+        """
+        if str(os.getenv("WHATSAPP_CLOUD_ALLOW_ALL_USERS", "")).strip().lower() in {"true", "1", "yes"}:
+            return True
+        return super()._open_dm_opted_in()
+
     # ------------------------------------------------------------------ lifecycle
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not check_whatsapp_cloud_requirements():
             self._set_fatal_error(
                 "whatsapp_cloud_deps_missing",
@@ -372,7 +415,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
 
         # Inbound webhook server.
-        app = web.Application()
+        # client_max_size backstops the bounded reader in _handle_webhook —
+        # aiohttp enforces the cap on request.read()/post() paths too
+        # (#58536/#58902/#59180 pattern).
+        app = web.Application(client_max_size=WEBHOOK_MAX_BODY_BYTES)
         app.router.add_get(self._health_path, self._handle_health)
         app.router.add_get(self._webhook_path, self._handle_verify)
         app.router.add_post(self._webhook_path, self._handle_webhook)
@@ -486,6 +532,15 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     last_message_id = ids[0].get("id")
             except Exception:
                 pass
+
+        # Remember (chat_id, wamid) -> text so that when the user replies to
+        # one of our messages, _build_message_event_from_cloud can resolve the
+        # quoted text. Meta's inbound webhook ``context`` object carries only
+        # the quoted message's id, never its text, so without this index the
+        # agent would never learn what the user was replying to. Best-effort;
+        # rich_sent_store swallows all errors.
+        if last_message_id:
+            rich_sent_store.record(chat_id, last_message_id, formatted)
 
         return SendResult(success=True, message_id=last_message_id)
 
@@ -1365,15 +1420,17 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
              multiply downstream agent work because of a transient bug
              during dispatch.
         """
+        # Meta's documented max payload is 3MB. Read one byte past the limit
+        # so oversized chunked bodies are rejected before buffering the rest.
         try:
-            raw = await request.read()
+            raw = await _read_limited_request_body(
+                request,
+                WEBHOOK_MAX_BODY_BYTES,
+            )
+        except ValueError:
+            return web.Response(status=413)
         except Exception:
             return web.Response(status=400)
-
-        # Meta's documented max payload is 3MB. Reject earlier than aiohttp
-        # would so we don't even compute HMAC over giant junk.
-        if len(raw) > 3 * 1024 * 1024:
-            return web.Response(status=413)
 
         # Refuse to accept anything if app_secret isn't configured. Without
         # it we can't authenticate the sender, and the handler would be a
@@ -1921,9 +1978,26 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             doc_path,
                         )
 
-        # context.id is set when the user replied to one of our messages.
+        # context.id is set when the user replied to a prior message. Meta's
+        # webhook only gives us the quoted message's id (and its author in
+        # context.from) — never the quoted text. We resolve the text from
+        # rich_sent_store, which we populate on every inbound message (below)
+        # and every outbound send. Without this the agent receives a bare
+        # reply_to_message_id and run.py can't inject the "[Replying to: ...]"
+        # disambiguation prefix (it gates on reply_to_text being present).
         context = raw_message.get("context") or {}
         reply_to_id = str(context.get("id") or "").strip() or None
+        reply_to_text: Optional[str] = None
+        reply_to_is_own = False
+        if reply_to_id:
+            reply_to_text = rich_sent_store.lookup(chat_id, reply_to_id)
+            # context.from is the wa_id of the quoted message's author. When it
+            # matches our business number the user replied to the bot's own
+            # message; otherwise they replied to one of their own messages.
+            quoted_from = str(context.get("from") or "").strip()
+            our_number = str(metadata.get("display_phone_number") or "").strip()
+            if quoted_from and our_number:
+                reply_to_is_own = quoted_from == our_number
 
         source = self.build_source(
             chat_id=chat_id,
@@ -1943,6 +2017,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # gating) so filtered messages don't leak typing on
             # unwanted inbound traffic.
             self._bounded_put(self._last_inbound_wamid_by_chat, chat_id, wamid)
+            # Index this message's text by wamid so a later reply to it can
+            # resolve the quoted text (Meta's webhook context carries only
+            # the id). Mirrors the outbound record in send(). Best-effort.
+            if body:
+                rich_sent_store.record(chat_id, wamid, body)
 
         return MessageEvent(
             text=body,
@@ -1951,6 +2030,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             raw_message=raw_message,
             message_id=wamid,
             reply_to_message_id=reply_to_id,
+            reply_to_text=reply_to_text,
+            reply_to_is_own_message=reply_to_is_own,
             media_urls=media_urls,
             media_types=media_types,
         )

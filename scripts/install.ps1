@@ -245,6 +245,58 @@ function Invoke-NativeWithRelaxedErrorAction {
         $ErrorActionPreference = $prevEAP
     }
 }
+# Runs python.exe WITHOUT PowerShell's native-command stream plumbing.
+# On corp-managed hosts (group policy constraining console encoding), any
+# `2>&1` / `2>$null` stderr redirection on a python call can abort with
+#   Program 'python.exe' failed to run: StandardErrorEncoding is only
+#   supported when standard error is redirected.
+# before python even starts, turning a successful install into a
+# false-negative (#60129).  Start-Process with explicit file redirects
+# bypasses that machinery entirely: PowerShell never sets a
+# StandardErrorEncoding, the child's raw bytes go straight to temp files.
+#
+# -Code is written to a temp .py file and executed from there, which
+# sidesteps Start-Process's argument-quoting pitfalls for multi-line
+# `-c` snippets.  Use -Arguments for plain argument lists instead.
+#
+# Returns @{ ExitCode; Stdout; Stderr } and mirrors the exit code into
+# $global:LASTEXITCODE so existing `$LASTEXITCODE -eq 0` checks at call
+# sites keep working unchanged.
+function Invoke-PythonEncodingSafe {
+    param(
+        [Parameter(Mandatory)][string]$PythonExe,
+        [string]$Code,
+        [string[]]$Arguments = @()
+    )
+
+    $tmpOut = [System.IO.Path]::GetTempFileName()
+    $tmpErr = [System.IO.Path]::GetTempFileName()
+    $tmpPy = $null
+    try {
+        if ($Code) {
+            $tmpPy = [System.IO.Path]::GetTempFileName() + ".py"
+            [System.IO.File]::WriteAllText($tmpPy, $Code, (New-Object System.Text.UTF8Encoding $false))
+            $Arguments = @($tmpPy)
+        }
+        # Quote ourselves: -ArgumentList joins array elements with spaces
+        # and PS 5.1 does not add quoting for elements that contain them.
+        $argString = ($Arguments | ForEach-Object {
+            if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
+        }) -join ' '
+        $proc = Start-Process -FilePath $PythonExe -ArgumentList $argString `
+            -WorkingDirectory (Get-Location).Path -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput $tmpOut -RedirectStandardError $tmpErr
+        $global:LASTEXITCODE = $proc.ExitCode
+        [pscustomobject]@{
+            ExitCode = $proc.ExitCode
+            Stdout   = [System.IO.File]::ReadAllText($tmpOut)
+            Stderr   = [System.IO.File]::ReadAllText($tmpErr)
+        }
+    } finally {
+        Remove-Item $tmpOut, $tmpErr -Force -ErrorAction SilentlyContinue
+        if ($tmpPy) { Remove-Item $tmpPy -Force -ErrorAction SilentlyContinue }
+    }
+}
 function Discard-LockfileChurn {
     param([string]$Repo = $InstallDir)
 
@@ -1862,7 +1914,7 @@ function Install-Dependencies {
     $pythonExeForParse = if (-not $NoVenv) { "$InstallDir\venv\Scripts\python.exe" } else { (& $UvCmd python find $PythonVersion) }
     $allExtras = @()
     if (Test-Path $pythonExeForParse) {
-        $parsed = & $pythonExeForParse -c @"
+        $parseProbe = Invoke-PythonEncodingSafe -PythonExe $pythonExeForParse -Code @"
 import re, sys, tomllib
 try:
     with open('pyproject.toml', 'rb') as fh:
@@ -1875,9 +1927,9 @@ try:
     print(','.join(out))
 except Exception:
     sys.exit(1)
-"@ 2>$null
-        if ($LASTEXITCODE -eq 0 -and $parsed) {
-            $allExtras = $parsed.Trim().Split(',')
+"@
+        if ($parseProbe.ExitCode -eq 0 -and $parseProbe.Stdout.Trim()) {
+            $allExtras = $parseProbe.Stdout.Trim().Split(',')
         }
     }
     if (-not $allExtras -or $allExtras.Count -eq 0) {
@@ -1923,17 +1975,13 @@ except Exception:
         if (-not (Test-Path $venvPython)) {
             throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, manually: cd '$InstallDir'; Remove-Item -Recurse -Force venv,.venv; uv venv venv --python $PythonVersion; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
         }
-        # Relax EAP=Stop while running the import probe.  Python writes
-        # deprecation warnings and import-system info to stderr; under
-        # EAP=Stop the 2>&1 merge wraps those as ErrorRecord objects and
-        # throws even when the imports succeed.  $LASTEXITCODE is the
-        # reliable signal (it's 0 iff the python invocation exited 0,
-        # regardless of what was written to stderr).
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        & $venvPython -c "import dotenv, openai, rich, prompt_toolkit" 2>&1 | Out-Null
-        $importExitCode = $LASTEXITCODE
-        $ErrorActionPreference = $prevEAP
+        # Probe through Invoke-PythonEncodingSafe, not `2>&1 | Out-Null`:
+        # corp-managed hosts abort the stream merge before python even runs
+        # (#60129), and under EAP=Stop python's own stderr warnings would be
+        # wrapped as throwing ErrorRecords.  The exit code is the reliable
+        # signal (it's 0 iff the python invocation exited 0, regardless of
+        # what was written to stderr).
+        $importExitCode = (Invoke-PythonEncodingSafe -PythonExe $venvPython -Code "import dotenv, openai, rich, prompt_toolkit").ExitCode
         if ($importExitCode -ne 0) {
             $sibling = "$InstallDir\.venv"
             $hint = if (Test-Path $sibling) {
@@ -1954,14 +2002,14 @@ except Exception:
         $scriptsDir = Join-Path $InstallDir "venv\Scripts"
         $pythonExe = Join-Path $scriptsDir "python.exe"
         if ((Test-Path $scriptsDir) -and (Test-Path $pythonExe)) {
-            $scriptNames = & $pythonExe -c @"
+            $scriptsProbe = Invoke-PythonEncodingSafe -PythonExe $pythonExe -Code @"
 import tomllib
 with open('pyproject.toml', 'rb') as fh:
     scripts = tomllib.load(fh).get('project', {}).get('scripts', {}) or {}
 print(','.join(scripts))
-"@ 2>$null
-            if ($LASTEXITCODE -eq 0 -and $scriptNames) {
-                $expected = @($scriptNames.Trim().Split(',') | Where-Object { $_ })
+"@
+            if ($scriptsProbe.ExitCode -eq 0 -and $scriptsProbe.Stdout.Trim()) {
+                $expected = @($scriptsProbe.Stdout.Trim().Split(',') | Where-Object { $_ })
                 $missing = @()
                 foreach ($name in $expected) {
                     $exe = Join-Path $scriptsDir "$name.exe"
@@ -1996,22 +2044,19 @@ print(','.join(scripts))
     if (Test-Path $pythonExe) {
         $webOk = $false
         $webServerSyntaxOk = $false
-        # Relax EAP=Stop while running the import probe; see the matching
-        # comment on the baseline-imports check above.  Python writes
-        # deprecation warnings to stderr and we don't want those wrapped
-        # as ErrorRecords that silently force the "not importable" path
-        # even when fastapi/uvicorn are actually installed.
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
+        # Probe through Invoke-PythonEncodingSafe; see the matching comment
+        # on the baseline-imports check above.  Stderr goes to a temp file,
+        # so python's deprecation warnings can't be wrapped as ErrorRecords
+        # that silently force the "not importable" path even when
+        # fastapi/uvicorn are actually installed.
         try {
-            & $pythonExe -c "import fastapi, uvicorn" 2>&1 | Out-Null
+            $null = Invoke-PythonEncodingSafe -PythonExe $pythonExe -Code "import fastapi, uvicorn"
             if ($LASTEXITCODE -eq 0) { $webOk = $true }
         } catch { }
         try {
-            & $pythonExe -m py_compile "$InstallDir\hermes_cli\web_server.py" 2>&1 | Out-Null
+            $null = Invoke-PythonEncodingSafe -PythonExe $pythonExe -Arguments @('-m', 'py_compile', "$InstallDir\hermes_cli\web_server.py")
             if ($LASTEXITCODE -eq 0) { $webServerSyntaxOk = $true }
         } catch { }
-        $ErrorActionPreference = $prevEAP
         if (-not $webOk) {
             Write-Warn "fastapi/uvicorn not importable -- `hermes dashboard` will not work."
             Write-Info "Attempting targeted install of [web] extra as last resort..."
@@ -2220,7 +2265,9 @@ You are Hermes Agent, an intelligent AI assistant created by Nous Research. You 
     $pythonExe = "$InstallDir\venv\Scripts\python.exe"
     if (Test-Path $pythonExe) {
         try {
-            & $pythonExe "$InstallDir\tools\skills_sync.py" 2>$null
+            if ((Invoke-PythonEncodingSafe -PythonExe $pythonExe -Arguments @("$InstallDir\tools\skills_sync.py")).ExitCode -ne 0) {
+                throw "skills_sync.py exited non-zero"
+            }
             Write-Success "Skills synced to $HermesHome\skills"
         } catch {
             # Fallback: simple directory copy
@@ -2936,55 +2983,41 @@ function Install-PlatformSdks {
     Write-Info "Verifying platform SDKs for tokens found in $envPath ..."
 
     # Verify each SDK's import without triggering side-effect imports.
-    # Quirk: PowerShell wraps non-zero-exit native stderr as a
-    # NativeCommandError that prints even with `2>$null` / `*> $null`
-    # unless we set $ErrorActionPreference to SilentlyContinue for the
-    # span.  Save + restore rather than nuking globally.
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = "SilentlyContinue"
-    try {
-        $missing = @()
-        foreach ($sdk in $needed) {
-            & $pythonExe -c "import $($sdk.Import)" 2>&1 | Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                $missing += $sdk
-                Write-Warn "  $($sdk.Import) NOT importable (needed for $($sdk.Var))"
-            } else {
-                Write-Success "  $($sdk.Import) OK"
-            }
+    # Probes run through Invoke-PythonEncodingSafe: stderr lands in a temp
+    # file instead of PowerShell's stream plumbing, so a failed import can't
+    # print a NativeCommandError and corp-managed hosts can't abort the
+    # launch outright (#60129).
+    $missing = @()
+    foreach ($sdk in $needed) {
+        if ((Invoke-PythonEncodingSafe -PythonExe $pythonExe -Code "import $($sdk.Import)").ExitCode -ne 0) {
+            $missing += $sdk
+            Write-Warn "  $($sdk.Import) NOT importable (needed for $($sdk.Var))"
+        } else {
+            Write-Success "  $($sdk.Import) OK"
         }
-    } finally {
-        $ErrorActionPreference = $prevEAP
     }
     if ($missing.Count -eq 0) { return }
 
     # Bootstrap pip into the venv if it isn't there.  `uv` creates venvs
     # without pip; ensurepip is the stdlib-blessed way to add it.
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = "SilentlyContinue"
-    try {
-        & $pythonExe -m pip --version 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            Write-Info "Bootstrapping pip into venv (uv doesn't ship pip)..."
-            & $pythonExe -m ensurepip --upgrade 2>&1 | Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                Write-Warn "ensurepip failed -- can't auto-install missing SDKs."
-                Write-Info "Manual recovery: $UvCmd pip install `"$($missing[0].Spec)`""
-                return
-            }
+    if ((Invoke-PythonEncodingSafe -PythonExe $pythonExe -Arguments @('-m', 'pip', '--version')).ExitCode -ne 0) {
+        Write-Info "Bootstrapping pip into venv (uv doesn't ship pip)..."
+        if ((Invoke-PythonEncodingSafe -PythonExe $pythonExe -Arguments @('-m', 'ensurepip', '--upgrade')).ExitCode -ne 0) {
+            Write-Warn "ensurepip failed -- can't auto-install missing SDKs."
+            Write-Info "Manual recovery: $UvCmd pip install `"$($missing[0].Spec)`""
+            return
         }
+    }
 
-        foreach ($sdk in $missing) {
-            Write-Info "  Installing $($sdk.Spec) ..."
-            & $pythonExe -m pip install $sdk.Spec 2>&1 | ForEach-Object { Write-Host "    $_" }
-            if ($LASTEXITCODE -eq 0) {
-                Write-Success "  Installed $($sdk.Import)"
-            } else {
-                Write-Warn "  Failed to install $($sdk.Spec). Recover manually: $pythonExe -m pip install `"$($sdk.Spec)`""
-            }
+    foreach ($sdk in $missing) {
+        Write-Info "  Installing $($sdk.Spec) ..."
+        $pipResult = Invoke-PythonEncodingSafe -PythonExe $pythonExe -Arguments @('-m', 'pip', 'install', $sdk.Spec)
+        ($pipResult.Stdout + $pipResult.Stderr) -split "`r?`n" | Where-Object { $_ } | ForEach-Object { Write-Host "    $_" }
+        if ($pipResult.ExitCode -eq 0) {
+            Write-Success "  Installed $($sdk.Import)"
+        } else {
+            Write-Warn "  Failed to install $($sdk.Spec). Recover manually: $pythonExe -m pip install `"$($sdk.Spec)`""
         }
-    } finally {
-        $ErrorActionPreference = $prevEAP
     }
 }
 

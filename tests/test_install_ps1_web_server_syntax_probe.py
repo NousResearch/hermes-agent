@@ -24,8 +24,11 @@ INSTALL_PS1 = REPO_ROOT / "scripts" / "install.ps1"
 def test_install_ps1_compiles_web_server_source_after_web_deps_probe() -> None:
     text = INSTALL_PS1.read_text(encoding="utf-8")
 
+    # The py_compile probe runs through Invoke-PythonEncodingSafe (#60129),
+    # so match the argument-list form rather than a bare `-m py_compile ...`.
     probe = re.search(
-        r'import fastapi, uvicorn[\s\S]{0,1200}?-m py_compile "\$InstallDir\\hermes_cli\\web_server\.py"',
+        r"import fastapi, uvicorn[\s\S]{0,1200}?"
+        r"'py_compile',\s*\"\$InstallDir\\hermes_cli\\web_server\.py\"",
         text,
     )
     assert probe is not None, (

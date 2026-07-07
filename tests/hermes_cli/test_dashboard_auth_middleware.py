@@ -593,3 +593,54 @@ def test_unverifiable_token_with_reachable_providers_redirects(_gated_state):
     r = client.get("/api/auth/me")
     assert r.status_code == 401
     assert "unreachable" not in r.text.lower()
+
+# Test for password-only provider (BasicAuthProvider) - no auto-SSO
+from plugins.dashboard_auth.basic import BasicAuthProvider
+
+
+@pytest.fixture
+def gated_app_with_basic_only():
+    """Configure web_server.app for gated mode + only BasicAuthProvider."""
+    clear_providers()
+    # Register a BasicAuthProvider (password-only)
+    provider = BasicAuthProvider(
+        username="admin",
+        password_hash="scrypt$16384$8$1$base64salt$base64hash",
+        secret=b"32-byte-secret-key-for-testing-only",
+    )
+    register_provider(provider)
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_port = getattr(web_server.app.state, "bound_port", None)
+    prev_required = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.bound_host = "0.0.0.0"
+    web_server.app.state.bound_port = 8080
+    web_server.app.state.auth_required = True
+    client = TestClient(web_server.app, base_url="http://0.0.0.0:8080")
+    yield client
+    clear_providers()
+    web_server.app.state.bound_host = prev_host
+    web_server.app.state.bound_port = prev_port
+    web_server.app.state.auth_required = prev_required
+
+
+def test_password_only_provider_no_auto_sso(gated_app_with_basic_only):
+    """When only BasicAuthProvider is registered, auto-SSO should NOT trigger.
+    
+    Regression test for #60105: auto-SSO would redirect to /auth/login?provider=basic,
+    which would 500 because BasicAuthProvider.start_login() raises NotImplementedError.
+    The fix: _auto_sso_response() checks for supports_password and falls through to
+    /login interstitial for password-only providers.
+    """
+    # Request to root path without session cookie
+    r = gated_app_with_basic_only.get("/", follow_redirects=False)
+    
+    # Should redirect to /login (the interstitial), NOT /auth/login (OAuth flow)
+    assert r.status_code == 302
+    location = r.headers.get("location", "")
+    assert "/auth/login" not in location, (
+        f"Should not redirect to /auth/login (OAuth flow) for password-only provider, "
+        f"got: {location}"
+    )
+    assert "/login" in location or location.endswith("/login"), (
+        f"Should redirect to /login (password form interstitial), got: {location}"
+    )

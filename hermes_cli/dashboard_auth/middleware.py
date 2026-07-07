@@ -154,6 +154,7 @@ def _auto_sso_response(request: Request) -> Response | None:
         already bounced to the portal once and came back still
         unauthenticated (no portal session) — auto-redirecting again would
         ping-pong, so we fall through to ``/login`` and clear the marker.
+      * the provider supports OAuth (i.e. does NOT have ``supports_password``).
 
     The portal ``/oauth/authorize`` auto-approves any current member of the
     dashboard's org and is a silent 302 when the user already holds a portal
@@ -185,6 +186,12 @@ def _auto_sso_response(request: Request) -> Response | None:
     from hermes_cli.dashboard_auth.prefix import prefix_from_request
 
     provider = providers[0]
+    # Password-only providers (e.g. BasicAuthProvider) do not support OAuth
+    # and have no start_login() implementation. Auto-SSO would fail with 500,
+    # so fall through to /login which renders the password form.
+    if getattr(provider, "supports_password", False):
+        return None
+
     prefix = prefix_from_request(request)
     next_param = _safe_next_target(request)
     from urllib.parse import quote
@@ -458,4 +465,3 @@ def _attempt_refresh(request: Request, *, refresh_token):
         if new_session is not None:
             return new_session, provider.name
     return None
-

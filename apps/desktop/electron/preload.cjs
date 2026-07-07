@@ -78,6 +78,18 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     setDefaultProjectDir: dir => ipcRenderer.invoke('hermes:setting:defaultProjectDir:set', dir),
     pickDefaultProjectDir: () => ipcRenderer.invoke('hermes:setting:defaultProjectDir:pick')
   },
+  zoom: {
+    // Current zoom of this window, as { level, percent }.
+    get: () => ipcRenderer.invoke('hermes:zoom:get'),
+    setPercent: percent => ipcRenderer.send('hermes:zoom:set-percent', percent),
+    // Fires on every zoom change, including the Ctrl/Cmd +/-/0 shortcuts,
+    // so the settings UI can stay in sync with the keyboard.
+    onChanged: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:zoom:changed', listener)
+      return () => ipcRenderer.removeListener('hermes:zoom:changed', listener)
+    }
+  },
   revealLogs: () => ipcRenderer.invoke('hermes:logs:reveal'),
   getRecentLogs: () => ipcRenderer.invoke('hermes:logs:recent'),
   readDir: dirPath => ipcRenderer.invoke('hermes:fs:readDir', dirPath),

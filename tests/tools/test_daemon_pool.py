@@ -83,6 +83,29 @@ def test_wedged_worker_does_not_block_interpreter_exit():
     assert "main-done" in proc.stdout
 
 
+def test_initializer_args_passed_on_python_314_plus():
+    """Regression test for #59896: _initializer/_initargs no longer exist on Python 3.14.
+
+    Python 3.14 replaced the _initializer/_initargs attributes with a WorkerContext
+    pattern. The pool must use _create_worker_context() when available and fall back
+    to _initializer/_initargs on older versions.
+    """
+    seen = []
+
+    def _init(tag):
+        seen.append(tag)
+
+    pool = DaemonThreadPoolExecutor(max_workers=1, initializer=_init, initargs=("314-test",))
+    try:
+        # Submit a task to trigger thread creation.
+        result = pool.submit(lambda: 42).result(timeout=10)
+        assert result == 42
+        # Initializer must have been called.
+        assert seen == ["314-test"]
+    finally:
+        pool.shutdown(wait=True)
+
+
 def _repo_root():
     import pathlib
 

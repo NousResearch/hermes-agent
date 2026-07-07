@@ -277,6 +277,7 @@ _SESSION_MESSAGES_RE = rf"/api/sessions/{_SESSION_ID_SHAPE}/messages"
 # Cron job ids are uuid4().hex[:12] (cron/jobs.py's create_job) -- 12 lowercase
 # hex chars, never a shape that could collide with a sibling literal path.
 _CRON_JOB_ACTION_RE = r"/api/cron/jobs/[0-9a-f]{12}/(pause|resume|trigger)"
+_CRON_JOB_ID_RE = r"/api/cron/jobs/[0-9a-f]{12}"
 
 # Same numeric-id shape POST /api/telegram/allowlist validates server-side
 # (hermes_cli/web_server.py's _TELEGRAM_USER_ID_RE) -- anchors the DELETE
@@ -297,10 +298,11 @@ def _register_miniapp_token_routes() -> None:
     module comment above. The admin-tier mutations added below are each a
     DIFFERENT method on paths that share no literal collision with anything
     not meant to be exposed (verified per-endpoint: cron's pause/resume/
-    trigger via a regex anchored to the real job-id shape, not a prefix that
-    would also sweep in PUT/DELETE .../jobs/{id} job-detail-edit and
-    job-delete; sessions' PATCH/DELETE via the SAME session-id regex already
-    registered read-only, method sets unioned across the two registrations).
+    trigger/delete via regexes anchored to the real job-id shape, not a
+    prefix that would also sweep in PUT /api/cron/jobs/{id} (job-detail-edit
+    -- no Mini App editor exists for it); sessions' PATCH/DELETE via the SAME
+    session-id regex already registered read-only, method sets unioned
+    across the two registrations).
     Every one of these mutating routes has its own handler-level
     `_require_dashboard_admin(request)` call (hermes_cli/web_server.py) —
     registering a route here only makes it DISPATCH-eligible for a bearer
@@ -329,10 +331,13 @@ def _register_miniapp_token_routes() -> None:
     register_token_route("/api/miniapp/me", required=False, methods=_READ_METHODS)
 
     # ---- admin-tier mutating actions -------------------------------------
-    # Cron: pause/resume/trigger only -- NOT delete (out of the design's
-    # scope; the Cron screen never offers a delete action) and NOT a prefix
-    # (would also expose PUT/DELETE /api/cron/jobs/{id}).
+    # Cron: pause/resume/trigger, plus DELETE the job itself -- NOT a prefix
+    # (would also expose PUT /api/cron/jobs/{id}, job-detail-edit, which the
+    # Mini App's Cron screen has no editor for). _CRON_JOB_ID_RE is
+    # deliberately registered for DELETE only here; GET on the same shape
+    # (single-job detail) is not a Mini App route at all yet.
     register_token_route(_CRON_JOB_ACTION_RE, match="regex", required=False, methods=("POST",))
+    register_token_route(_CRON_JOB_ID_RE, match="regex", required=False, methods=("DELETE",))
 
     # Skills: toggle only -- NOT create/edit (POST /api/skills, PUT
     # /api/skills/content -- agent-executed skill writes stay out of the

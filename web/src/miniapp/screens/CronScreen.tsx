@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { CronJob } from "@/lib/api";
-import { get, post } from "../api";
+import { del, get, post } from "../api";
 import { useMiniApp } from "../context";
 
 function relativeToNow(iso: string | null | undefined): string | null {
@@ -15,7 +15,7 @@ function relativeToNow(iso: string | null | undefined): string | null {
 }
 
 export function CronScreen({ onShowLog }: { onShowLog: (title: string, text: string) => void }) {
-  const { showToast } = useMiniApp();
+  const { isAdmin, showToast, askConfirm } = useMiniApp();
   const [jobs, setJobs] = useState<CronJob[] | null>(null);
   const [ranJobs, setRanJobs] = useState<Record<string, boolean>>({});
   const [pending, setPending] = useState<Record<string, boolean>>({});
@@ -56,6 +56,23 @@ export function CronScreen({ onShowLog }: { onShowLog: (title: string, text: str
     const text = [job.last_error, job.last_delivery_error].filter(Boolean).join("\n\n") || "no log available";
     onShowLog(`${job.name || job.id} — last run`, text);
   };
+
+  const removeJob = (job: CronJob) =>
+    askConfirm({
+      title: "Delete this cron job?",
+      body: `${job.name || job.id} will stop running and its schedule is removed. This cannot be undone.`,
+      label: "Delete job",
+      destructive: true,
+      run: async () => {
+        try {
+          await del(`/api/cron/jobs/${job.id}`);
+          showToast(`${job.name || job.id} deleted`);
+          load();
+        } catch {
+          showToast("Couldn't delete job");
+        }
+      },
+    });
 
   return (
     <div style={{ padding: "16px 14px 24px", display: "flex", flexDirection: "column", gap: 10 }}>
@@ -175,6 +192,26 @@ export function CronScreen({ onShowLog }: { onShowLog: (title: string, text: str
               >
                 {ran ? "Dispatched" : "Run now"}
               </button>
+              {isAdmin && (
+                <button
+                  onClick={() => removeJob(job)}
+                  style={{
+                    fontFamily: "var(--mono)",
+                    fontSize: 11,
+                    letterSpacing: "0.05em",
+                    padding: "5px 11px",
+                    borderRadius: 8,
+                    border: "1px solid var(--line2)",
+                    background: "transparent",
+                    cursor: "pointer",
+                    color: "var(--destr)",
+                    whiteSpace: "nowrap",
+                    flexShrink: 0,
+                  }}
+                >
+                  Delete
+                </button>
+              )}
             </div>
             {hasError && (
               <div

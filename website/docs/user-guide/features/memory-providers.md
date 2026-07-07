@@ -348,7 +348,15 @@ Preview without writing files:
 hermes memory setup mem0 --mode oss --oss-llm-key sk-... --dry-run
 ```
 
-**Setup (Self-Hosted Dashboard):** connect to a Mem0 server you run via Docker (the dashboard's REST API). Set `host` and an API key — either as env vars:
+**Setup (Self-Hosted Dashboard):** connect to a Mem0 server you run via Docker (the dashboard's REST API):
+
+```bash
+hermes memory setup    # select "mem0" → "Self-hosted server"
+# Or via flags:
+hermes memory setup mem0 --mode selfhosted --host http://localhost:8888 --api-key your-admin-api-key
+```
+
+Or configure manually — either as env vars:
 
 ```bash
 echo "MEM0_HOST=http://localhost:8888" >> ~/.hermes/.env
@@ -381,7 +389,7 @@ The plugin authenticates with `X-API-Key` and uses the server's `/search` / `/me
 | Embedder | openai, ollama |
 | Vector Store | qdrant (local/server), pgvector |
 
-**Switching modes:** Re-run `hermes memory setup mem0 --mode <platform|oss>` or edit `mem0.json` directly.
+**Switching modes:** Re-run `hermes memory setup mem0 --mode <platform|selfhosted|oss>` or edit `mem0.json` directly.
 
 ---
 

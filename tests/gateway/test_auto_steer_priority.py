@@ -236,24 +236,22 @@ class TestAutoSteerBusyMessageExpanded:
         agent_as = MagicMock()
         agent_as.steer.return_value = False
         runner_as._running_agents[sk] = agent_as
-        with patch("gateway.run.merge_pending_message_event") as mock_merge_as:
-            result_as = await runner_as._handle_active_session_busy_message(
-                event, session_key=sk
-            )
+        result_as = await runner_as._handle_active_session_busy_message(
+            event, session_key=sk
+        )
         assert result_as is False
-        mock_merge_as.assert_not_called()
+        runner_as._queue_or_replace_pending_event.assert_not_called()
 
-        # steer: steer fails → fall back to queue → calls merge_pending_message_event
+        # steer: steer fails → fall back to queue → queues via _queue_or_replace_pending_event
         runner_s = _make_runner_with_mode("steer")
         agent_s = MagicMock()
         agent_s.steer.return_value = False
         runner_s._running_agents[sk] = agent_s
-        with patch("gateway.run.merge_pending_message_event") as mock_merge_s:
-            result_s = await runner_s._handle_active_session_busy_message(
-                event, session_key=sk
-            )
-        # steer mode falls back to queue → calls merge_pending_message_event
-        mock_merge_s.assert_called_once()
+        result_s = await runner_s._handle_active_session_busy_message(
+            event, session_key=sk
+        )
+        # steer mode falls back to queue → queues via _queue_or_replace_pending_event
+        runner_s._queue_or_replace_pending_event.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_auto_steer_vs_steer_no_agent_fallback(self):
@@ -263,20 +261,18 @@ class TestAutoSteerBusyMessageExpanded:
 
         # auto_steer: no agent → return False
         runner_as = _make_runner_with_mode("auto_steer")
-        with patch("gateway.run.merge_pending_message_event") as mock_merge_as:
-            result_as = await runner_as._handle_active_session_busy_message(
-                event, session_key=sk
-            )
+        result_as = await runner_as._handle_active_session_busy_message(
+            event, session_key=sk
+        )
         assert result_as is False
-        mock_merge_as.assert_not_called()
+        runner_as._queue_or_replace_pending_event.assert_not_called()
 
-        # steer: no agent → fall back to queue → calls merge_pending_message_event
+        # steer: no agent → fall back to queue → queues via _queue_or_replace_pending_event
         runner_s = _make_runner_with_mode("steer")
-        with patch("gateway.run.merge_pending_message_event") as mock_merge_s:
-            result_s = await runner_s._handle_active_session_busy_message(
-                event, session_key=sk
-            )
-        mock_merge_s.assert_called_once()
+        result_s = await runner_s._handle_active_session_busy_message(
+            event, session_key=sk
+        )
+        runner_s._queue_or_replace_pending_event.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

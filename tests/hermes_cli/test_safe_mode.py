@@ -130,3 +130,40 @@ def test_parser_accepts_safe_mode_on_root_and_chat():
     assert parser.parse_args(["--safe-mode"]).safe_mode is True
     assert parser.parse_args(["chat", "--safe-mode"]).safe_mode is True
     assert parser.parse_args(["chat"]).safe_mode is False
+
+
+def test_shell_hooks_skipped(monkeypatch):
+    monkeypatch.setenv("HERMES_SAFE_MODE", "1")
+    from agent.shell_hooks import register_from_config
+
+    cfg = {
+        "hooks": {
+            "pre_tool_call": [{"command": "echo hooked"}],
+        },
+        "hooks_auto_accept": True,
+    }
+
+    assert register_from_config(cfg, accept_hooks=True) == []
+
+
+def test_shell_hooks_register_without_safe_mode(monkeypatch):
+    import agent.shell_hooks as sh
+
+    cfg = {
+        "hooks": {
+            "pre_tool_call": [{"command": "echo hooked"}],
+        },
+        "hooks_auto_accept": True,
+    }
+
+    manager = types.SimpleNamespace(_hooks={})
+    plugins = types.ModuleType("hermes_cli.plugins")
+    setattr(plugins, "get_plugin_manager", lambda: manager)
+    setattr(plugins, "VALID_HOOKS", {"pre_tool_call"})
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", plugins)
+    monkeypatch.setattr(sh, "_registered", set())
+
+    registered = sh.register_from_config(cfg, accept_hooks=True)
+
+    assert len(registered) == 1
+    assert "pre_tool_call" in manager._hooks

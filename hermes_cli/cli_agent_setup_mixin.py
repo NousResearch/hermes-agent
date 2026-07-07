@@ -36,11 +36,11 @@ class CLIAgentSetupMixin:
         Relative paths are resolved from ~/.hermes/.
         """
         from cli import _hermes_home, logger
-        from hermes_cli.config import cfg_get
+        from hermes_cli.config import cfg_get, load_config
 
         file_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
         if not file_path:
-            cfg = hermes_cli.config.load_config()
+            cfg = load_config()
             file_path = str(cfg.get("prefill_messages_file", "") or "")
             if not file_path:
                 file_path = str(cfg_get(cfg, "agent", "prefill_messages_file", default="") or "")

@@ -37,31 +37,60 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
 
   // Seed the composer's model state from the profile default. `force` reseeds
   // for a profile swap (the new profile has its own default); otherwise this
-  // only fills an EMPTY selection so a user's pick (plain UI state in
-  // $currentModel) survives the lifecycle refreshes that fire on boot / fresh
-  // draft / session events. A live session owns the footer, so skip entirely.
+  // fills an EMPTY selection OR corrects a stale one so a config.yaml change
+  // (model.default / model.provider) is reflected on next boot without the
+  // user having to manually switch in the model picker.
+  //
+  // The early-return below previously bailed out whenever $currentModel was
+  // non-empty, which meant a model written by onboarding would stick forever
+  // even after the user updated config.yaml — the Desktop GUI would continue
+  // routing to the onboarding-chosen provider/model, ignoring the new config.
+  // (Issue #59979: Desktop GUI ignores model.default and model.provider.)
+  //
+  // Fix: always fetch the backend's current config-driven model and provider.
+  // Update the atoms only when the stored value differs, so a user's deliberate
+  // mid-session pick (selectModel) is still respected — it lands in localStorage
+  // too, so the stored value will match what was deliberately chosen. A live
+  // session is left untouched regardless.
   const refreshCurrentModel = useCallback(async (force = false) => {
     try {
       if ($activeSessionId.get()) {
         return
       }
 
-      if (!force && $currentModel.get()) {
-        return
-      }
-
       const result = await getGlobalModelInfo()
 
-      if ($activeSessionId.get() || (!force && $currentModel.get())) {
+      // Re-check after the async fetch; bail if a session started in the gap.
+      if ($activeSessionId.get()) {
         return
       }
 
-      if (typeof result.model === 'string') {
-        setCurrentModel(result.model)
+      const configModel = typeof result.model === 'string' ? result.model : ''
+      const configProvider = typeof result.provider === 'string' ? result.provider : ''
+
+      // On a forced refresh (profile swap) always apply; on a normal refresh
+      // apply when either:
+      //   (a) the composer has no model selected yet (first boot / cleared), or
+      //   (b) the config-driven value differs from what's stored — meaning the
+      //       user changed config.yaml since the last time the app ran.
+      const storedModel = $currentModel.get()
+      const storedProvider = $currentProvider.get()
+      const shouldUpdate =
+        force ||
+        !storedModel ||
+        configModel !== storedModel ||
+        configProvider !== storedProvider
+
+      if (!shouldUpdate) {
+        return
       }
 
-      if (typeof result.provider === 'string') {
-        setCurrentProvider(result.provider)
+      if (configModel) {
+        setCurrentModel(configModel)
+      }
+
+      if (configProvider) {
+        setCurrentProvider(configProvider)
       }
     } catch {
       // The delayed session.info event still updates this once the agent is ready.

@@ -153,7 +153,7 @@ describe('useModelControls', () => {
     expect(setGlobalModel).not.toHaveBeenCalled()
   })
 
-  it('seeds an empty composer model from global but never clobbers a pick', async () => {
+  it('seeds an empty composer model from global config on first boot', async () => {
     vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
 
     const { result } = renderHook(() =>
@@ -167,13 +167,66 @@ describe('useModelControls', () => {
     // Empty → seeds the default.
     await result.current.refreshCurrentModel()
     expect($currentModel.get()).toBe('openai/gpt-5.5')
+    expect($currentProvider.get()).toBe('openai-codex')
+  })
 
-    // A user pick must survive the lifecycle refreshes that fire on boot / fresh
-    // draft / session events.
+  it('updates a stale localStorage model when config.yaml has changed (#59979)', async () => {
+    // Simulate a stale onboarding model in localStorage that no longer matches
+    // what config.yaml specifies (model.default was changed by the user).
+    setCurrentModel('agnes-1.5-flash')
+    setCurrentProvider('openrouter')
+
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'agnes-2.0-flash', provider: 'custom' })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        activeSessionId: null,
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel()
+
+    // Config value differs from stored → update to match config.yaml.
+    expect($currentModel.get()).toBe('agnes-2.0-flash')
+    expect($currentProvider.get()).toBe('custom')
+  })
+
+  it('does not update atoms when stored model already matches config', async () => {
+    // When stored value already matches config.yaml, no update should happen.
+    setCurrentModel('openai/gpt-5.5')
+    setCurrentProvider('openai-codex')
+
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        activeSessionId: null,
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('openai/gpt-5.5')
+    expect($currentProvider.get()).toBe('openai-codex')
+  })
+
+  it('force=true reseeds from config regardless of stored value (profile swap)', async () => {
     setCurrentModel('anthropic/claude-sonnet-4.6')
     setCurrentProvider('anthropic')
-    await result.current.refreshCurrentModel()
-    expect($currentModel.get()).toBe('anthropic/claude-sonnet-4.6')
+
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        activeSessionId: null,
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
 
     // A profile swap forces a reseed to the new profile's default.
     await result.current.refreshCurrentModel(true)

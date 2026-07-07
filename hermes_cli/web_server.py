@@ -9549,15 +9549,30 @@ async def get_session_latest_descendant(
         db.close()
 
 @app.get("/api/sessions/{session_id}/messages")
-async def get_session_messages(session_id: str, profile: Optional[str] = None):
+async def get_session_messages(
+    session_id: str,
+    profile: Optional[str] = None,
+    limit: Optional[int] = None,
+    offset: int = 0,
+):
     db = _open_session_db_for_profile(profile)
     try:
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
         sid = db.resolve_resume_session_id(sid)
-        messages = db.get_messages(sid)
-        return {"session_id": sid, "messages": messages}
+        # Clamp limit to prevent abuse (max 500 per page)
+        _limit = min(limit, 500) if limit is not None else None
+        messages = db.get_messages(sid, limit=_limit, offset=offset)
+        return {
+            "session_id": sid,
+            "messages": messages,
+            "pagination": {
+                "limit": _limit,
+                "offset": offset,
+                "returned": len(messages),
+            },
+        }
     finally:
         db.close()
 

@@ -1,6 +1,7 @@
 import asyncio
 import threading
 import time
+from types import SimpleNamespace
 
 from hermes_cli import mcp_startup
 from tui_gateway import server
@@ -40,6 +41,31 @@ def test_ws_startup_starts_background_mcp_discovery(monkeypatch):
         server._sessions.clear()
 
     assert calls == [{"logger": ws_mod._log, "thread_name": "tui-ws-mcp-discovery"}]
+
+
+def test_ws_loop_lag_watchdog_installed_once_per_loop(monkeypatch):
+    calls = []
+
+    class FakeHandle:
+        def cancelled(self):
+            return False
+
+    monkeypatch.setattr(
+        ws_mod,
+        "install_event_loop_lag_watchdog",
+        lambda **kwargs: calls.append(kwargs) or FakeHandle(),
+    )
+    monkeypatch.setattr(ws_mod, "_loop_lag_watchdog_loop", None)
+    monkeypatch.setattr(ws_mod, "_loop_lag_watchdog_handle", None)
+
+    loop = SimpleNamespace(name="loop")
+    ws_mod._ensure_loop_lag_watchdog(loop)
+    ws_mod._ensure_loop_lag_watchdog(loop)
+
+    assert len(calls) == 1
+    assert calls[0]["loop"] is loop
+    assert calls[0]["logger"] is ws_mod._log
+    assert calls[0]["component"] == "tui ws"
 
 
 def _run_disconnect(monkeypatch, seed):

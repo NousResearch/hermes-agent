@@ -42,10 +42,17 @@ def server():
     }):
         import importlib
         mod = importlib.import_module("tui_gateway.server")
-        yield mod
-        mod._sessions.clear()
-        mod._pending.clear()
-        mod._answers.clear()
+        methods = dict(mod._methods)
+        real_stdout = mod._real_stdout
+        try:
+            yield mod
+        finally:
+            mod._methods.clear()
+            mod._methods.update(methods)
+            mod._real_stdout = real_stdout
+            mod._sessions.clear()
+            mod._pending.clear()
+            mod._answers.clear()
 
 
 @pytest.fixture()
@@ -66,6 +73,7 @@ def capture(server):
 FRONTEND_POLLED_RPCS = [
     "session.list",          # loads session list — SQLite query
     "pet.info",              # petdex poll — file/network read
+    "pet.info.meta",         # active-pet metadata poll — config/file stat path
     "process.list",          # background process status — process registry scan
     "setup.runtime_check",   # runtime readiness — resolve_runtime_provider() I/O
     "setup.status",          # provider configured check — config/credential scan

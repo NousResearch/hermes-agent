@@ -175,6 +175,16 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # everything else stays on the main thread so ordering stays sane for the
 # fast path.  write_json is already _stdout_lock-guarded, so concurrent
 # response writes are safe.
+#
+# Dispatch policy contract:
+# - Add every frontend-polled RPC here unless it is proven in-memory-only.
+#   “Small” DB/file/network/process reads still starve the WS read loop under
+#   GIL pressure because handle_ws awaits dispatch() before reading the next
+#   frame on that socket (#50005).
+# - Keep truly trivial control responses inline so ordering stays predictable.
+# - Do not move live agent/session mutation into a ProcessPool without an
+#   explicit serialization boundary; use this thread pool or a dedicated
+#   subprocess instead.
 _LONG_HANDLERS = frozenset(
     {
         "billing.step_up",
@@ -202,6 +212,7 @@ _LONG_HANDLERS = frozenset(
         "pet.generate",
         "pet.hatch",
         "pet.info",
+        "pet.info.meta",
         "pet.select",
         "pet.thumb",
         "learning.frames",
@@ -1931,6 +1942,16 @@ def _enable_gateway_prompts() -> None:
 
 
 # ── Blocking prompt factory ──────────────────────────────────────────
+
+
+def _clarify_timeout_seconds() -> int:
+    """Return the configured clarify timeout for Desktop/TUI prompts."""
+    try:
+        from tools.clarify_gateway import get_clarify_timeout
+
+        return max(1, int(get_clarify_timeout()))
+    except Exception:
+        return 3600
 
 
 def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
@@ -3733,8 +3754,18 @@ def _agent_cbs(sid: str) -> dict:
         "notice_clear_callback": lambda key: _emit(
             "notification.clear", sid, {"key": key}
         ),
-        "clarify_callback": lambda q, c: _block(
-            "clarify.request", sid, {"question": q, "choices": c}
+        "clarify_callback": lambda q, c, **kw: _block(
+            "clarify.request",
+            sid,
+            {
+                "question": q,
+                "choices": c,
+                "multi_select": bool(kw.get("multi_select", False)),
+                "min_selections": kw.get("min_selections", 0),
+                "max_selections": kw.get("max_selections"),
+                "allow_other": kw.get("allow_other", True),
+            },
+            timeout=_clarify_timeout_seconds(),
         ),
         # read_terminal tool (desktop GUI): same blocking bridge as clarify — the
         # renderer answers terminal.read.respond with the serialized buffer.
@@ -8496,6 +8527,33 @@ def _notification_poller_loop(
         process_registry.completion_queue.put(evt)
 
 
+def _bound_agent_terminal_live_chunk(chunk: Any) -> str:
+    """Bound best-effort live terminal chunks before they cross Desktop WS.
+
+    The process registry keeps full output for explicit process(log)/poll reads.
+    The live read-only terminal stream is UI telemetry; sending a single huge
+    stdout/stderr frame through JSON-RPC can stall the renderer WebSocket and
+    trigger false lost-gateway overlays. Preserve the head/tail plus a marker so
+    the user sees what happened without flooding the transport.
+    """
+    text = chunk if isinstance(chunk, str) else str(chunk)
+    max_chars = 16_384
+    if len(text) <= max_chars:
+        return text
+
+    marker = (
+        "\r\n… [Hermes: middle omitted from live terminal stream; "
+        "use process(log) for full output] …\r\n"
+    )
+    budget = max_chars - len(marker)
+    if budget <= 0:
+        return marker[:max_chars]
+
+    head = budget // 2
+    tail = budget - head
+    return f"{text[:head]}{marker}{text[-tail:]}"
+
+
 def _wire_agent_terminal_output() -> None:
     """Idempotently route background-process output (and tab-close requests) to
     the desktop, keyed by process id. Read-only agent terminal tabs stream
@@ -8526,7 +8584,7 @@ def _wire_agent_terminal_output() -> None:
         _emit(
             "agent.terminal.output",
             _owner_sid_for_process(session),
-            {"process_id": session.id, "chunk": chunk},
+            {"process_id": session.id, "chunk": _bound_agent_terminal_live_chunk(chunk)},
         )
 
     def _emit_agent_terminal_close(session, process_id):
@@ -9817,6 +9875,74 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"task_id": task_id})
 
 
+def _coerce_clarify_response_from_payload(payload: dict, answer: str) -> tuple[bool, str, str]:
+    """Validate/normalize Desktop clarify replies before unblocking the agent.
+
+    The renderer is a convenience layer, not the trust boundary.  Keep the
+    server-side bridge aligned with ``tools.clarify_gateway`` so a stale or
+    buggy UI cannot turn a constrained single-select prompt into free-form or
+    multi-select input.
+    """
+    text = str(answer or "").strip()
+
+    choices = payload.get("choices")
+    if not isinstance(choices, list):
+        choices = []
+    clean_choices = [str(choice).strip() for choice in choices if str(choice).strip()]
+    if not clean_choices:
+        return True, text, ""
+
+    multi_select = bool(payload.get("multi_select", False))
+    allow_other = bool(payload.get("allow_other", True))
+    try:
+        min_selections = int(payload.get("min_selections") or 0)
+    except (TypeError, ValueError):
+        min_selections = 0
+    max_raw = payload.get("max_selections")
+    try:
+        max_selections = int(max_raw) if max_raw is not None else None
+    except (TypeError, ValueError):
+        max_selections = None
+
+    if not text:
+        if multi_select and min_selections > 0:
+            return False, "", f"Select at least {min_selections} choices."
+        if not multi_select and not allow_other:
+            return False, "", "Reply with one of the listed choices."
+        return True, "", ""
+
+    if multi_select:
+        try:
+            from tools.clarify_gateway import parse_multi_select_response
+
+            parsed = parse_multi_select_response(text, clean_choices)
+        except Exception:
+            parsed = None
+        if parsed:
+            if len(parsed) < min_selections:
+                return False, "", f"Select at least {min_selections} choices."
+            if max_selections is not None and len(parsed) > max_selections:
+                return False, "", f"Select at most {max_selections} choices."
+            return True, ", ".join(parsed), ""
+        if allow_other:
+            return True, text, ""
+        return False, "", "Reply with one or more listed choices."
+
+    label_map = {choice.casefold(): choice for choice in clean_choices}
+    exact = label_map.get(text.casefold())
+    if exact is not None:
+        return True, exact, ""
+    try:
+        idx = int(text) - 1
+    except ValueError:
+        idx = -1
+    if 0 <= idx < len(clean_choices):
+        return True, clean_choices[idx], ""
+    if allow_other:
+        return True, text, ""
+    return False, "", "Reply with one of the listed choices."
+
+
 # ── Methods: respond ─────────────────────────────────────────────────
 
 
@@ -9834,6 +9960,18 @@ def _respond(rid, params, key):
 
 @method("clarify.respond")
 def _(rid, params: dict) -> dict:
+    request_id = params.get("request_id", "")
+    answer = params.get("answer", "")
+    with _prompt_lock:
+        prompt_payload = _pending_prompt_payloads.get(request_id)
+    if prompt_payload and prompt_payload[0] == "clarify.request":
+        ok, coerced, message = _coerce_clarify_response_from_payload(
+            prompt_payload[1], str(answer),
+        )
+        if not ok:
+            return _err(rid, 4010, message or "Invalid clarify response")
+        params = dict(params)
+        params["answer"] = coerced
     return _respond(rid, params, "answer")
 
 

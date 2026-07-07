@@ -1477,6 +1477,32 @@ class ProcessRegistry:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
+    def forget(self, session_id: str) -> dict:
+        """Remove a session from tracking WITHOUT terminating it.
+
+        Used by the desktop status stack's dismiss action so a finished (or
+        session-owned running) process can be dropped from the view and never
+        reappear on the next ``process.list`` poll. In contrast to
+        ``kill_process``, this does NOT send any signal — the process keeps
+        running untracked.
+
+        Returns ``{"status": "forgotten", "session_id": ...}`` on success or
+        ``{"status": "not_found", "session_id": ...}`` if the id is unknown.
+        """
+        with self._lock:
+            in_running = session_id in self._running
+            in_finished = session_id in self._finished
+            if not in_running and not in_finished:
+                return {"status": "not_found", "session_id": session_id}
+            self._running.pop(session_id, None)
+            self._finished.pop(session_id, None)
+        # Drop from any completion-tracking sets so a stale completion event
+        # for the dismissed process is never delivered later.
+        self._completion_consumed.discard(session_id)
+        self._poll_observed.discard(session_id)
+        self._write_checkpoint()
+        return {"status": "forgotten", "session_id": session_id}
+
     def write_stdin(self, session_id: str, data: str) -> dict:
         """Send raw data to a running process's stdin (no newline appended)."""
         session = self.get(session_id)
@@ -1594,6 +1620,33 @@ class ProcessRegistry:
             all_sessions = list(self._running.values()) + list(self._finished.values())
 
         all_sessions = [self._refresh_detached_session(s) for s in all_sessions]
+
+        # F1 (issue #48339): self-healing liveness reconcile on the *list* path.
+        # Previously poll()/wait() were the only callers of _reconcile_local_exit(),
+        # so a dead-but-unreaped host-PID process (or a stuck reader thread) showed
+        # "running" forever in the desktop status stack. Detached sessions are
+        # reconciled above by _refresh_detached_session; here we heal local Popen
+        # sessions and other non-detached host-pid sessions so the list can never
+        # get stuck on a stale "running".
+        for s in all_sessions:
+            if s.exited or s.detached:
+                continue
+            # Local Popen sessions: reconcile against the direct child. Safe
+            # no-op when session.process is None (env/PTY sandbox).
+            self._reconcile_local_exit(s)
+            # Any non-detached host-pid session whose PID is no longer alive
+            # (and wasn't already reconciled above) is healed to "lost". Env/PTY
+            # sandbox sessions (pid_scope != "host") are reconciled by their
+            # environment, so we deliberately leave them untouched.
+            if not s.exited and s.pid_scope == "host" and s.pid:
+                if not self._is_host_pid_alive(s.pid):
+                    with s._lock:
+                        if s.exited:
+                            continue
+                        s.exited = True
+                        s.completion_reason = "lost"
+                        s.exit_code = None
+                    self._move_to_finished(s)
 
         if task_id or session_key:
             all_sessions = [

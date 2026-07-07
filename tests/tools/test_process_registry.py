@@ -1840,3 +1840,236 @@ class TestHandleProcessRedaction:
         monkeypatch.setattr(pr, "process_registry", reg)
         out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
         assert "zzzopaque1234567890abcdef" in out["output"]
+
+
+# =========================================================================
+# Issue #48339 — stale "running" status + lost tracking across sessions
+# =========================================================================
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: uses setsid/fcntl")
+class TestIssue48339StaleRunningAndSessionIndependent:
+    """Regression tests for issue #48339.
+
+    F1: list_sessions() must self-heal liveness, so a dead-but-unreaped host
+        process never shows "running" forever.
+    F2: the desktop status stack (process.list / _session_processes) must show
+        ALL running processes across sessions, not just the current session's.
+    F3: process.forget removes a finished (or own running) entry from tracking
+        without killing it; foreign running entries are protected.
+    """
+
+    # ---- F1: liveness reconcile on the list path ----
+
+    def test_list_sessions_heals_stale_running_host_pid(self, registry):
+        """A running HOST-PID LOCAL process whose direct child has exited but
+        the reader is stalled must flip to 'exited' when list_sessions() is
+        called (F1 self-healing). Models the #17327 orphaned-pipe scenario,
+        but here we assert the *list* path reconciles, not just poll()/wait().
+        """
+        proc = subprocess.Popen(
+            ["sh", "-c", "exec 1>&2; ( sleep 30 ) & disown; exit 0"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            preexec_fn=os.setsid,
+        )
+        s = _make_session(sid="proc_48339_orphan")
+        s.process = proc
+        s.pid = proc.pid
+        registry._running[s.id] = s
+
+        # Wait for the direct child to exit; no reader thread started, so
+        # session.exited stays False (mimics the stuck-reader state).
+        assert _wait_until(lambda: proc.poll() is not None, timeout=5.0)
+        assert s.exited is False  # Precondition: stuck reader hasn't updated.
+
+        # The list path must reconcile and report the process as exited.
+        entries = registry.list_sessions()
+        by_id = {e["session_id"]: e for e in entries}
+        assert by_id["proc_48339_orphan"]["status"] == "exited"
+        # The session itself must be healed (moved to finished).
+        assert s.exited is True
+        assert s.id in registry._finished
+        assert s.id not in registry._running
+
+        # Clean up the orphaned descendant.
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    def test_list_sessions_keeps_alive_running(self, registry):
+        """A genuinely running process must NOT be flipped by the list path."""
+        proc = _spawn_python_sleep(5.0)
+        s = _make_session(sid="proc_48339_alive")
+        s.process = proc
+        s.pid = proc.pid
+        registry._running[s.id] = s
+
+        entries = registry.list_sessions()
+        by_id = {e["session_id"]: e for e in entries}
+        assert by_id["proc_48339_alive"]["status"] == "running"
+        assert s.exited is False
+
+        proc.kill()
+        proc.wait()
+
+    # ---- F2: session-independent display ----
+
+    def test_list_sessions_shows_running_across_sessions(self, registry):
+        """Two running processes under DIFFERENT gateway session_keys must both
+        appear in an unfiltered list_sessions() (F2 data source)."""
+        a = _make_session(sid="proc_gwA")
+        a.session_key = "gwA"
+        b = _make_session(sid="proc_gwB")
+        b.session_key = "gwB"
+        registry._running[a.id] = a
+        registry._running[b.id] = b
+
+        result = registry.list_sessions()
+        ids = {r["session_id"] for r in result}
+        assert ids == {"proc_gwA", "proc_gwB"}
+
+    def test_session_processes_shows_foreign_running_and_own_finished(self, registry, monkeypatch):
+        """_session_processes (the process.list handler) must keep foreign
+        RUNNING processes visible, keep the current session's FINISHED ones,
+        and hide foreign FINISHED ones — and tag each entry with session_key /
+        owned_by_me (F2)."""
+        # Patch the registry singleton the handler reads from.
+        monkeypatch.setattr(
+            "tools.process_registry.process_registry", registry
+        )
+
+        own_running = _make_session(sid="proc_own_run")
+        own_running.session_key = "gwB"
+        own_finished = _make_session(sid="proc_own_done", exited=True, exit_code=0)
+        own_finished.session_key = "gwB"
+        foreign_running = _make_session(sid="proc_foreign_run")
+        foreign_running.session_key = "gwA"
+        foreign_finished = _make_session(sid="proc_foreign_done", exited=True, exit_code=0)
+        foreign_finished.session_key = "gwA"
+        registry._running[own_running.id] = own_running
+        registry._finished[own_finished.id] = own_finished
+        registry._running[foreign_running.id] = foreign_running
+        registry._finished[foreign_finished.id] = foreign_finished
+
+        from tui_gateway.server import _session_processes
+
+        shown = _session_processes({"session_key": "gwB"})
+        shown_ids = {e["session_id"] for e in shown}
+
+        # Foreign running is visible; own running and own finished visible;
+        # foreign finished is hidden.
+        assert "proc_foreign_run" in shown_ids
+        assert "proc_own_run" in shown_ids
+        assert "proc_own_done" in shown_ids
+        assert "proc_foreign_done" not in shown_ids
+
+        by_id = {e["session_id"]: e for e in shown}
+        assert by_id["proc_foreign_run"]["owned_by_me"] is False
+        assert by_id["proc_foreign_run"]["session_key"] == "gwA"
+        assert by_id["proc_own_run"]["owned_by_me"] is True
+        assert by_id["proc_own_run"]["session_key"] == "gwB"
+
+    # ---- F3: process.forget (registry) ----
+
+    def test_forget_removes_finished_entry(self, registry):
+        s = _make_session(sid="proc_forget_fin", exited=True, exit_code=0)
+        registry._finished[s.id] = s
+
+        result = registry.forget(s.id)
+        assert result == {"status": "forgotten", "session_id": s.id}
+        assert s.id not in registry._finished
+        assert s.id not in registry._running
+        assert s.id not in {e["session_id"] for e in registry.list_sessions()}
+
+    def test_forget_unknown_id_returns_not_found(self, registry):
+        result = registry.forget("proc_does_not_exist")
+        assert result == {"status": "not_found", "session_id": "proc_does_not_exist"}
+
+    def test_forget_removes_running_entry_without_killing(self, registry):
+        """Forget drops tracking but must NOT terminate a running process."""
+        proc = _spawn_python_sleep(5.0)
+        s = _make_session(sid="proc_forget_run")
+        s.process = proc
+        s.pid = proc.pid
+        registry._running[s.id] = s
+
+        result = registry.forget(s.id)
+        assert result["status"] == "forgotten"
+        assert s.id not in registry._running
+        # The OS process is still alive (untracked) — kill it for cleanup.
+        assert proc.poll() is None
+        proc.kill()
+        proc.wait()
+
+    # ---- F3: process.forget RPC handler safety (owner-scoped for running) ----
+
+    def test_forget_rpc_allows_finished_foreign(self, registry, monkeypatch):
+        """A FINISHED entry owned by another session may always be forgotten."""
+        monkeypatch.setattr(
+            "tools.process_registry.process_registry", registry
+        )
+        import tui_gateway.server as srv
+
+        s = _make_session(sid="proc_rpc_fin", exited=True, exit_code=0)
+        s.session_key = "gwA"
+        registry._finished[s.id] = s
+
+        monkeypatch.setattr(srv, "_sess", lambda params, rid: ({"session_key": "gwB"}, None))
+        out = srv._methods["process.forget"](
+            rid=1, params={"process_id": s.id, "session_id": "gwB"}
+        )
+        assert out["result"]["result"]["status"] == "forgotten"
+        assert s.id not in registry._finished
+
+    def test_forget_rpc_blocks_foreign_running(self, registry, monkeypatch):
+        """A RUNNING entry owned by another session must be rejected (4044)."""
+        monkeypatch.setattr(
+            "tools.process_registry.process_registry", registry
+        )
+        import tui_gateway.server as srv
+
+        s = _make_session(sid="proc_rpc_foreign_run")
+        s.session_key = "gwA"
+        registry._running[s.id] = s
+
+        monkeypatch.setattr(srv, "_sess", lambda params, rid: ({"session_key": "gwB"}, None))
+        out = srv._methods["process.forget"](
+            rid=1, params={"process_id": s.id, "session_id": "gwB"}
+        )
+        assert out["error"]["code"] == 4044
+        # Still tracked (not forgotten).
+        assert s.id in registry._running
+
+    def test_forget_rpc_allows_own_running(self, registry, monkeypatch):
+        """A RUNNING entry owned by the caller's session may be forgotten."""
+        monkeypatch.setattr(
+            "tools.process_registry.process_registry", registry
+        )
+        import tui_gateway.server as srv
+
+        proc = _spawn_python_sleep(5.0)
+        s = _make_session(sid="proc_rpc_own_run")
+        s.session_key = "gwB"
+        s.process = proc
+        s.pid = proc.pid
+        registry._running[s.id] = s
+
+        monkeypatch.setattr(srv, "_sess", lambda params, rid: ({"session_key": "gwB"}, None))
+        out = srv._methods["process.forget"](
+            rid=1, params={"process_id": s.id, "session_id": "gwB"}
+        )
+        assert out["result"]["result"]["status"] == "forgotten"
+        assert s.id not in registry._running
+        proc.kill()
+        proc.wait()
+
+    def test_forget_rpc_requires_process_id(self, registry, monkeypatch):
+        monkeypatch.setattr(
+            "tools.process_registry.process_registry", registry
+        )
+        import tui_gateway.server as srv
+
+        monkeypatch.setattr(srv, "_sess", lambda params, rid: ({"session_key": "gwB"}, None))
+        out = srv._methods["process.forget"](rid=1, params={"session_id": "gwB"})
+        assert out["error"]["code"] == 4012

@@ -11083,15 +11083,34 @@ def _(rid, params: dict) -> dict:
 
 
 def _session_processes(session: dict) -> list:
-    """Background processes owned by this session (registry session_key match)."""
+    """Background processes for the desktop status stack.
+
+    F2 (issue #48339): show ALL running processes across sessions, plus the
+    current session's finished ones. A long-lived server process spawned in
+    session A must stay visible in the desktop status stack after the user
+    switches to session B or refreshes the GUI (which re-calls process.list
+    for the new sid) — before this fix, the strict session_key filter hid
+    every foreign running process, making the stack appear empty despite the
+    process being alive.
+    """
     from tools.process_registry import process_registry
 
     key = str(session.get("session_key") or "")
     owned = []
     for entry in process_registry.list_sessions():
         proc = process_registry.get(entry["session_id"])
-        if proc is None or str(getattr(proc, "session_key", "") or "") != key:
+        if proc is None:
             continue
+        proc_key = str(getattr(proc, "session_key", "") or "")
+        # Keep a process if it is still running (regardless of owner) OR it
+        # belongs to the current session (so you keep seeing your own finished
+        # work). Foreign finished processes are hidden — they're not "live" and
+        # not yours.
+        if proc.exited and proc_key != key:
+            continue
+        # Tag ownership so the frontend can decide what actions are allowed.
+        entry["session_key"] = proc_key
+        entry["owned_by_me"] = proc_key == key
         # The 200-char list preview is too thin for the desktop's inline
         # terminal viewer — ship a real tail alongside it.
         entry["output_tail"] = (proc.output_buffer or "")[-4000:]
@@ -11130,6 +11149,43 @@ def _(rid, params: dict) -> dict:
         ):
             return _err(rid, 4044, f"no such process: {proc_id}")
         return _ok(rid, process_registry.kill_process(proc_id))
+    except Exception as e:
+        return _err(rid, 5010, str(e))
+
+
+@method("process.forget")
+def _(rid, params: dict) -> dict:
+    """Dismiss/forget a background process from the status stack.
+
+    Removes the session from tracking WITHOUT killing it. Safety: a FINISHED
+    entry can always be forgotten; a RUNNING entry may only be forgotten if it
+    belongs to the caller's session — a foreign running process cannot be
+    silently hidden from another window (use process.kill to stop it). On
+    success the refreshed process list is returned so the UI can reconcile.
+    """
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    proc_id = str(params.get("process_id") or "")
+    if not proc_id:
+        return _err(rid, 4012, "process_id required")
+    try:
+        from tools.process_registry import process_registry
+
+        proc = process_registry.get(proc_id)
+        if proc is not None:
+            # Owner-scoped for running entries; finished entries are always
+            # dismissable (mirrors process.kill's 4044 foreign-ownership guard,
+            # but allows dismissing your own running process by design).
+            if not proc.exited and str(getattr(proc, "session_key", "") or "") != str(
+                session.get("session_key") or ""
+            ):
+                return _err(
+                    rid, 4044,
+                    f"cannot dismiss a running process owned by another session: {proc_id}",
+                )
+        result = process_registry.forget(proc_id)
+        return _ok(rid, {"result": result, "processes": _session_processes(session)})
     except Exception as e:
         return _err(rid, 5010, str(e))
 

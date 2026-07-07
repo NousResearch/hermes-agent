@@ -7850,11 +7850,60 @@ async def cancel_oauth_session(
 
 
 
-def _session_latest_descendant(session_id: str):
+def _find_session_profile(session_id: str) -> Optional[str]:
+    """Best-effort: name of the profile whose ``state.db`` owns *session_id*.
+
+    Read-only and cheap: opens each profile's db with ``read_only=True`` and
+    does a single ``resolve_session_id`` + ``get_session`` point lookup (no
+    table scan, no descendant walk), so it cannot write-lock a live writer.
+    Returns the owning profile name (possibly ``"default"``), or ``None`` if no
+    profile claims the id.
+
+    Used only as a cold-path fallback when a session lookup arrives without an
+    explicit ``?profile=`` — e.g. a bookmarked or desktop-restored
+    ``/chat?resume=<id>`` URL — so such links resolve against the owning
+    profile's db instead of 404ing against whichever profile is sticky-active.
+    """
+    from hermes_state import SessionDB
+    from hermes_cli import profiles as profiles_mod
+
+    try:
+        infos = profiles_mod.list_profiles()
+    except Exception:
+        _log.debug("list_profiles failed during session-owner lookup", exc_info=True)
+        return None
+    for info in infos:
+        db_path = Path(info.path) / "state.db"
+        if not db_path.exists():
+            continue
+        try:
+            db = SessionDB(db_path=db_path, read_only=True)
+        except Exception:
+            _log.debug("owner-lookup: could not open %s read-only", db_path, exc_info=True)
+            continue
+        try:
+            sid = db.resolve_session_id(session_id)
+            if sid and db.get_session(sid):
+                return info.name
+        except Exception:
+            _log.debug("owner-lookup probe failed for profile %s", info.name, exc_info=True)
+        finally:
+            db.close()
+    return None
+
+
+def _session_latest_descendant(session_id: str, profile: Optional[str] = None):
     """Resolve a session id to the newest child leaf session.
 
     /model may create child sessions. Dashboard refresh should continue the
     newest child instead of reopening the old parent.
+
+    ``profile`` selects which profile's ``state.db`` to walk — compression
+    lineage never crosses profiles. When ``profile`` is omitted and the id is
+    not found in the process/default db, fall back to locating the owning
+    profile (see :func:`_find_session_profile`) so resume links that carry no
+    profile — notably the desktop's restored ``/chat?resume=<id>`` URL —
+    resolve instead of 404ing when a different profile is sticky-active.
     """
     from hermes_state import SessionDB
 
@@ -7869,11 +7918,22 @@ def _session_latest_descendant(session_id: str):
             except Exception:
                 return None
 
-    db = SessionDB()
+    db = _open_session_db_for_profile(profile)
     try:
         sid = db.resolve_session_id(session_id)
         if not sid or not db.get_session(sid):
-            return None, []
+            # Not in the requested/default db. Locate the owning profile and
+            # walk its db instead. Session ids are globally unique, so this is
+            # safe and resolves a session whose owner differs from the
+            # requested/sticky-active profile, plus links that carry no profile.
+            owner = _find_session_profile(session_id)
+            if owner is None:
+                return None, []
+            db.close()
+            db = _open_session_db_for_profile(owner)
+            sid = db.resolve_session_id(session_id)
+            if not sid or not db.get_session(sid):
+                return None, []
 
         conn = (
             getattr(db, "conn", None)
@@ -8098,8 +8158,8 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
 
 
 @app.get("/api/sessions/{session_id}/latest-descendant")
-async def get_session_latest_descendant(session_id: str):
-    latest, path = _session_latest_descendant(session_id)
+async def get_session_latest_descendant(session_id: str, profile: Optional[str] = None):
+    latest, path = _session_latest_descendant(session_id, profile)
     if not latest:
         raise HTTPException(status_code=404, detail="Session not found")
     return {
@@ -12824,6 +12884,38 @@ def _resolve_chat_argv(
     if requested and requested.lower() != "current":
         profile_dir = _resolve_profile_dir(requested)
 
+    # A *resume* must run in the profile that OWNS the session. The dashboard
+    # switcher's `profile` is only a hint — often the sticky-active profile,
+    # not the session's owner (and a bare desktop-restored /chat?resume=<id>
+    # URL carries none). Binding the wrong HERMES_HOME makes the TUI reopen the
+    # wrong state.db and 404 ("session not found"). Resolve the real owner and
+    # pin HERMES_HOME to it explicitly, so an inherited active-profile
+    # HERMES_HOME cannot misroute a default-owned resume either.
+    resume_profile: Optional[str] = requested or None
+    resume_home: Optional[Path] = None
+    if resume:
+        hint = requested if (requested and requested.lower() != "current") else None
+        owner: Optional[str] = None
+        if hint:
+            # Trust an explicit named profile only if it actually owns the
+            # session; otherwise fall through to the cross-profile lookup.
+            probe = _open_session_db_for_profile(hint)
+            try:
+                psid = probe.resolve_session_id(resume)
+                if psid and probe.get_session(psid):
+                    owner = hint
+            finally:
+                probe.close()
+        if owner is None:
+            owner = _find_session_profile(resume)
+        if owner:
+            resume_profile = None if owner == "default" else owner
+            # profile_dir drives gateway-attach below: None => attach the
+            # in-memory (default-profile) gateway; a named profile spawns its
+            # own. resume_home is the HERMES_HOME we pin for the resume.
+            profile_dir = None if owner == "default" else _resolve_profile_dir(owner)
+            resume_home = _resolve_profile_dir(owner)  # "default" -> ~/.hermes
+
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
     env = os.environ.copy()
     try:
@@ -12844,9 +12936,14 @@ def _resolve_chat_argv(
 
     if profile_dir is not None:
         env["HERMES_HOME"] = str(profile_dir)
+    elif resume_home is not None:
+        # Default-owned resume: pin HERMES_HOME to the default home so an
+        # inherited active-profile value can't misroute it, while still
+        # attaching the in-memory (default) gateway below.
+        env["HERMES_HOME"] = str(resume_home)
 
     if resume:
-        latest_resume, _latest_path = _session_latest_descendant(resume)
+        latest_resume, _latest_path = _session_latest_descendant(resume, profile=resume_profile)
         if latest_resume:
             resume = latest_resume
         env["HERMES_TUI_RESUME"] = resume

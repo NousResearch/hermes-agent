@@ -49,6 +49,15 @@ test('default is cold-start tolerant (> the historical 45s floor)', () => {
   )
 })
 
+test('backend status readiness uses short probes inside a longer boot budget', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8').replace(/\r\n/g, '\n')
+
+  assert.match(source, /const BACKEND_READY_TIMEOUT_MS = 90_000/)
+  assert.match(source, /const BACKEND_READY_PROBE_TIMEOUT_MS = 2_000/)
+  assert.match(source, /const BACKEND_READY_POLL_MS = 500/)
+  assert.match(source, /fetchJson\(`\$\{baseUrl\}\/api\/status`, token, \{ timeoutMs: probeTimeoutMs \}\)/)
+})
+
 test('honors a valid HERMES_DESKTOP_PORT_ANNOUNCE_TIMEOUT_MS override', () => {
   const env = { HERMES_DESKTOP_PORT_ANNOUNCE_TIMEOUT_MS: '120000' }
   assert.equal(resolvePortAnnounceTimeoutMs(env), 120_000)

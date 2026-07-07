@@ -82,6 +82,7 @@ const {
   reviewStage,
   reviewUnstage
 } = require('./git-review-ops.cjs')
+const { log: scmLog, show: scmShow, divergence: scmDivergence } = require('./git-scm.cjs')
 const { scanGitRepos } = require('./git-repo-scan.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
 const { resolveBehindCount, shouldCountCommits } = require('./update-count.cjs')
@@ -7118,6 +7119,12 @@ ipcMain.handle('hermes:git:branchList', async (_event, repoPath) => listBranches
 // composer coding rail. Returns null on a non-repo / remote backend so the rail
 // hides cleanly rather than erroring.
 ipcMain.handle('hermes:git:repoStatus', async (_event, repoPath) => repoStatus(repoPath, resolveGitBinary()))
+
+// Commit graph for the review pane — backed by git-scm.cjs (execFile + arg
+// arrays, GIT_TERMINAL_PROMPT=0).
+ipcMain.handle('hermes:git:log', async (_event, repoPath, count) => scmLog(resolveGitBinary(), repoPath, count))
+ipcMain.handle('hermes:git:show', async (_event, repoPath, hash) => scmShow(resolveGitBinary(), repoPath, hash))
+ipcMain.handle('hermes:git:divergence', async (_event, repoPath) => scmDivergence(resolveGitBinary(), repoPath))
 
 // Codex-style review pane: list changed files for a scope, fetch one file's
 // unified diff, and stage / unstage / revert. Reads return empty on failure;

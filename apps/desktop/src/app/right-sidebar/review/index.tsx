@@ -22,6 +22,7 @@ import { notifyError } from '@/store/notifications'
 import {
   $reviewDiff,
   $reviewDiffLoading,
+  $reviewDiffTitle,
   $reviewFiles,
   $reviewIsRepo,
   $reviewLoading,
@@ -43,6 +44,7 @@ import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import { PaneEmptyState, RightSidebarSectionHeader } from '../index'
 
 import { ReviewFileTree } from './file-tree'
+import { ReviewGraph } from './graph'
 import { ReviewShipBar } from './ship-bar'
 
 // Compact header/diff action buttons — micro hit targets packed tight, matching
@@ -59,11 +61,16 @@ export function ReviewPane() {
   const selectedPath = useStore($reviewSelectedPath)
   const diff = useStore($reviewDiff)
   const diffLoading = useStore($reviewDiffLoading)
+  const diffTitle = useStore($reviewDiffTitle)
   const revertTarget = useStore($reviewRevertTarget)
   const treeMode = useStore($reviewTreeMode)
 
   const selectedFile = files.find(file => file.path === selectedPath)
   const hasFiles = files.length > 0
+  // Diff panel shows for both uncommitted files (selectedFile) and commit diffs
+  // (diffTitle set without a matching file in $reviewFiles).
+  const showDiffPanel = !!selectedFile || diffLoading || !!diff
+  const panelTitle = diffTitle ?? selectedFile?.path ?? ''
   // `{ path: null }` → revert all; `{ path: '…' }` → revert one file.
   const revertingAll = revertTarget?.path == null
   // Delay the skeletons so fast loads (most project switches) just blank → content
@@ -156,32 +163,36 @@ export function ReviewPane() {
         <PaneEmptyState label={t.rightSidebar.noDiffs} />
       )}
 
-      {/* Selected file's diff — reuses the shiki-highlighted FileDiffPanel. */}
-      {selectedFile && (
+      {/* Diff panel — shows uncommitted file diffs AND commit diffs. */}
+      {showDiffPanel && (
         <div className="flex max-h-[55%] shrink-0 flex-col border-t border-(--ui-stroke-secondary)">
           <div className="flex items-center gap-1 px-2.5 py-1.5" data-suppress-pane-reveal-side="">
             <span
               className="min-w-0 flex-1 truncate font-mono text-[0.66rem] text-(--ui-text-secondary)"
-              title={selectedFile.path}
+              title={panelTitle}
             >
-              {selectedFile.path}
+              {panelTitle}
             </span>
-            <DiffCount added={selectedFile.added} className="text-[0.64rem] leading-4" removed={selectedFile.removed} />
-            <Tip label={selectedFile.staged ? c.unstage : c.stage}>
-              <Button
-                aria-label={selectedFile.staged ? c.unstage : c.stage}
-                className={ACTION_BTN}
-                onClick={() =>
-                  void (
-                    selectedFile.staged ? unstageReviewFile(selectedFile.path) : stageReviewFile(selectedFile.path)
-                  ).catch(err => notifyError(err, c.stage))
-                }
-                size="icon-xs"
-                variant="ghost"
-              >
-                <Codicon name={selectedFile.staged ? 'remove' : 'add'} size="0.8rem" />
-              </Button>
-            </Tip>
+            {selectedFile && (
+              <DiffCount added={selectedFile.added} className="text-[0.64rem] leading-4" removed={selectedFile.removed} />
+            )}
+            {selectedFile && (
+              <Tip label={selectedFile.staged ? c.unstage : c.stage}>
+                <Button
+                  aria-label={selectedFile.staged ? c.unstage : c.stage}
+                  className={ACTION_BTN}
+                  onClick={() =>
+                    void (
+                      selectedFile.staged ? unstageReviewFile(selectedFile.path) : stageReviewFile(selectedFile.path)
+                    ).catch(err => notifyError(err, c.stage))
+                  }
+                  size="icon-xs"
+                  variant="ghost"
+                >
+                  <Codicon name={selectedFile.staged ? 'remove' : 'add'} size="0.8rem" />
+                </Button>
+              </Tip>
+            )}
             <Tip label={c.close}>
               <Button
                 aria-label={c.close}
@@ -200,7 +211,7 @@ export function ReviewPane() {
                 <DiffSkeleton />
               ) : null
             ) : diff ? (
-              <FileDiffPanel diff={diff} path={selectedFile.path} />
+              <FileDiffPanel diff={diff} path={selectedFile?.path ?? ''} />
             ) : (
               <div className="py-6 text-center text-[0.66rem] text-muted-foreground/60">{c.noDiff}</div>
             )}
@@ -208,6 +219,7 @@ export function ReviewPane() {
         </div>
       )}
 
+      <ReviewGraph />
       <ReviewShipBar />
 
       <Dialog onOpenChange={open => !open && cancelRevert()} open={revertTarget !== undefined}>

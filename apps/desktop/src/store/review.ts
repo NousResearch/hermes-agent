@@ -74,6 +74,8 @@ export const $reviewMaxChurn = computed($reviewFiles, files =>
 export const $reviewSelectedPath = persistentAtom<null | string>(SELECTED_KEY, null, Codecs.nullableText)
 export const $reviewDiff = atom<null | string>(null)
 export const $reviewDiffLoading = atom(false)
+// Label for the diff panel header: a file path (uncommitted) or a commit message (commit diff).
+export const $reviewDiffTitle = atom<null | string>(null)
 
 // Ship state: gh availability + this branch's PR, and a busy flag for the
 // commit/push/PR action bar (disables buttons + shows progress).
@@ -178,6 +180,7 @@ function scheduleReviewRefresh(): void {
 
 export async function selectReviewFile(file: HermesReviewFile): Promise<void> {
   $reviewSelectedPath.set(file.path)
+  $reviewDiffTitle.set(file.path)
 
   const ctx = reviewCtx()
 
@@ -206,10 +209,77 @@ export async function selectReviewFile(file: HermesReviewFile): Promise<void> {
   }
 }
 
+// Show the diff introduced by a specific commit for a single file.
+// Used by the graph's "Open Changes" on committed files.
+export async function showCommitFileDiff(path: string, hash: string): Promise<void> {
+  $reviewSelectedPath.set(path)
+  $reviewDiffTitle.set(path)
+
+  const ctx = reviewCtx()
+
+  if (!ctx) {
+    $reviewDiff.set(null)
+
+    return
+  }
+
+  $reviewDiffLoading.set(true)
+
+  try {
+    const diff = await ctx.review.diff(ctx.cwd, path, 'commit', hash, false)
+
+    if ($reviewSelectedPath.get() === path) {
+      $reviewDiff.set(diff || '')
+    }
+  } catch {
+    if ($reviewSelectedPath.get() === path) {
+      $reviewDiff.set('')
+    }
+  } finally {
+    if ($reviewSelectedPath.get() === path) {
+      $reviewDiffLoading.set(false)
+    }
+  }
+}
+
+// Show the full diff introduced by a commit (all files).
+// Used by the graph's commit-level "Open Changes".
+export async function showCommitDiff(hash: string, message: string): Promise<void> {
+  $reviewSelectedPath.set(null)
+  $reviewDiffTitle.set(message)
+
+  const ctx = reviewCtx()
+
+  if (!ctx) {
+    $reviewDiff.set(null)
+
+    return
+  }
+
+  $reviewDiffLoading.set(true)
+
+  try {
+    const diff = await ctx.review.diff(ctx.cwd, null, 'commit', hash, false)
+
+    if ($reviewDiffTitle.get() === message) {
+      $reviewDiff.set(diff || '')
+    }
+  } catch {
+    if ($reviewDiffTitle.get() === message) {
+      $reviewDiff.set('')
+    }
+  } finally {
+    if ($reviewDiffTitle.get() === message) {
+      $reviewDiffLoading.set(false)
+    }
+  }
+}
+
 export function clearReviewSelection(): void {
   $reviewSelectedPath.set(null)
   $reviewDiff.set(null)
   $reviewDiffLoading.set(false)
+  $reviewDiffTitle.set(null)
 }
 
 // ── View state ───────────────────────────────────────────────────────────────

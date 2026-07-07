@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from agent.auxiliary_client import call_llm
+from agent.model_metadata import estimate_messages_tokens_rough, get_model_context_length
 from agent.transports import get_transport
 
 logger = logging.getLogger(__name__)
@@ -253,11 +254,19 @@ def _run_reference(
     label = _slot_label(slot)
     runtime = _slot_runtime(slot)
     try:
+        # Trim ref_messages to fit this reference model's context window.
+        # Reference models may have a smaller context window than the
+        # aggregator (e.g. kimi-k2.7-code @ 262K vs glm-5.2 @ 1M), and the
+        # advisory view inherits the full conversation length.  Without this
+        # trim the provider returns a hard HTTP 400 and the reference silently
+        # degrades (issue #60345).
+        trimmed_messages = _trim_messages_for_reference(ref_messages, slot, runtime)
+
         # Prepend the advisory-role system prompt so the reference understands
         # it is analyzing state for an aggregator, not acting on the task. The
         # trimmed view (_reference_messages) already strips the agent's own
         # system prompt, so this is the only system message the reference sees.
-        messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
+        messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *trimmed_messages]
         # Apply the same Anthropic-style prompt-caching decoration the main
         # agent loop applies (system_and_3 breakpoints). The advisory view is
         # append-only across iterations (new turns append before the trailing
@@ -331,6 +340,76 @@ def _run_reference(
             provider=runtime.get("provider") or slot.get("provider"),
             temperature=temperature,
         )
+
+
+def _trim_messages_for_reference(
+    messages: list[dict[str, Any]],
+    slot: dict[str, str],
+    runtime: dict[str, Any],
+    safety_margin: float = 0.25,
+) -> list[dict[str, Any]]:
+    """Trim *messages* to fit within a reference model's context window.
+
+    Reference models may have a smaller context window than the aggregator
+    or the main conversation.  Without this trim, a reference whose window
+    is exceeded gets a hard HTTP 400 and silently degrades the MoA turn
+    (issue #60345).
+
+    Strategy: estimate the messages' token count, resolve the reference
+    model's context length, and drop the **oldest** user+assistant+tool
+    frames until estimated usage fits within ``(1 - safety_margin)`` of the
+    window — leaving headroom for the advisory system prompt and the
+    reference's response.
+
+    When the model cannot be resolved or trimming is unnecessary, the
+    messages are returned unchanged.
+    """
+    if not messages:
+        return messages
+
+    model = slot.get("model", "")
+    provider = runtime.get("provider") or slot.get("provider", "")
+    base_url = runtime.get("base_url", "")
+    api_key = runtime.get("api_key", "")
+
+    if not model:
+        return messages
+
+    try:
+        context_length = get_model_context_length(
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            provider=provider,
+        )
+    except Exception:
+        logger.debug("MoA reference context-length resolution failed for %s", _slot_label(slot))
+        return messages
+
+    if context_length <= 0:
+        return messages
+
+    budget = int(context_length * (1.0 - safety_margin))
+    estimated = estimate_messages_tokens_rough(messages)
+    if estimated <= budget:
+        return messages
+
+    # Drop the oldest frames until we fit.  Always keep at least the last
+    # two messages (the latest assistant+tool exchange and the trailing user
+    # turn that ends the advisory view) so the reference has the most recent
+    # context.
+    trimmed = list(messages)
+    while len(trimmed) > 2 and estimate_messages_tokens_rough(trimmed) > budget:
+        trimmed.pop(0)
+
+    dropped = len(messages) - len(trimmed)
+    if dropped:
+        logger.info(
+            "MoA reference %s: estimated %d exceeds context window %d; "
+            "dropped %d oldest message(s) to fit budget %d.",
+            _slot_label(slot), estimated, context_length, dropped, budget,
+        )
+    return trimmed
 
 
 def _run_references_parallel(

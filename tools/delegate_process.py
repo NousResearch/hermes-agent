@@ -488,6 +488,7 @@ def run_children_in_processes(
     entries: Dict[int, Dict[str, Any]] = {}
     dead_since: Dict[int, float] = {}
     timeout_signaled: Dict[int, float] = {}
+    child_start_mono: Dict[int, float] = {}  # per-child proc.start() timestamp
     # Per-child heartbeat staleness state (port of _run_single_child's
     # heartbeat loop): [last_iter, last_tool, stale_count, stopped]
     hb_state: Dict[int, list] = {}
@@ -593,6 +594,7 @@ def run_children_in_processes(
             logger.warning("Failed to start subagent process %d: %s", i, exc)
             _finalize(i, _fabricated(i, "error", f"Failed to start subagent process: {exc}"))
             continue
+        child_start_mono[i] = time.monotonic()
         procs[i] = proc
         _fire_start_hook(spec)
 
@@ -709,9 +711,11 @@ def run_children_in_processes(
         now = time.monotonic()
 
         # Per-child wall-clock timeout (delegation.child_timeout_seconds).
+        # Measure from each child's own proc.start(), not the batch start,
+        # so staggered startup doesn't eat into a child's timeout budget.
         if child_timeout:
             for i in list(pending):
-                elapsed = now - started_mono
+                elapsed = now - child_start_mono.get(i, started_mono)
                 if i not in timeout_signaled and elapsed > child_timeout:
                     timeout_signaled[i] = now
                     specs[i].interrupt(f"Timed out after {child_timeout}s")

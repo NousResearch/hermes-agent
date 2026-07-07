@@ -14,13 +14,55 @@ loaded) so this module never imports ``cli`` at import time -> no import cycle.
 
 from __future__ import annotations
 
+import json
 import sys
+from pathlib import Path
+from typing import Any, Dict, List
 
 from rich.markup import escape as _escape
 
 
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
+
+    @staticmethod
+    def _load_prefill_messages() -> List[Dict[str, Any]]:
+        """Load ephemeral prefill messages from config or env var.
+
+        Checks HERMES_PREFILL_MESSAGES_FILE env var first, then falls back to
+        the top-level prefill_messages_file key in ~/.hermes/config.yaml.
+        agent.prefill_messages_file is accepted as a legacy fallback.
+        Relative paths are resolved from ~/.hermes/.
+        """
+        from cli import _hermes_home, logger
+        from hermes_cli.config import cfg_get
+
+        file_path = sys.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
+        if not file_path:
+            cfg = hermes_cli.config.load_config()
+            file_path = str(cfg.get("prefill_messages_file", "") or "")
+            if not file_path:
+                file_path = str(cfg_get(cfg, "agent", "prefill_messages_file", default="") or "")
+        if not file_path:
+            return []
+
+        path = Path(file_path).expanduser()
+        if not path.is_absolute():
+            path = _hermes_home / path
+        if not path.exists():
+            logger.warning("Prefill messages file not found: %s", path)
+            return []
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, list):
+                logger.warning("Prefill messages file must contain a JSON array: %s", path)
+                return []
+            return data
+        except Exception as e:
+            logger.warning("Failed to load prefill messages from %s: %s", path, e)
+            return []
 
     def _ensure_runtime_credentials(self) -> bool:
         """
@@ -233,6 +275,9 @@ class CLIAgentSetupMixin:
 
         if not self._ensure_runtime_credentials():
             return False
+
+        # Load prefill messages from config or env var
+        self.prefill_messages = self._load_prefill_messages()
 
         from hermes_cli.mcp_startup import wait_for_mcp_discovery
 

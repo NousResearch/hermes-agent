@@ -400,25 +400,27 @@ def _compute_tool_definitions(
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):
                 from toolsets import bundle_non_core_tools, get_toolset
-                if toolset_name.startswith("hermes-") or (get_toolset(toolset_name) or {}).get("posture"):
-                    # Platform bundles (hermes-*) include _HERMES_CORE_TOOLS, and
-                    # posture toolsets (`posture: True`, e.g. `coding`) re-list
-                    # those same core tools without owning them, so subtracting
-                    # the whole toolset would strip core tools shared by other
-                    # enabled toolsets and empty the tool list (#33924, #57315).
-                    # Subtract only the non-core delta; keep core.
+                ts_def = get_toolset(toolset_name) or {}
+                if (
+                    toolset_name.startswith("hermes-")
+                    or ts_def.get("posture")
+                    or ts_def.get("includes")
+                ):
+                    # Platform bundles (hermes-*), posture toolsets, and any
+                    # composite toolset with `includes` re-list tools that are
+                    # shared by other explicitly-enabled toolsets, so subtracting
+                    # the whole toolset would strip core/shared tools and empty
+                    # the tool list (#33924, #57315, #58281).
+                    # Subtract only the non-core delta; keep core/shared.
                     to_remove = bundle_non_core_tools(toolset_name)
                     tools_to_include.difference_update(to_remove)
                     resolved = sorted(to_remove)
-                    if (not quiet_mode and toolset_name.startswith("hermes-")
-                            and toolset_name not in _WARNED_DISABLED_BUNDLES):
+                    if not quiet_mode and toolset_name not in _WARNED_DISABLED_BUNDLES:
                         _WARNED_DISABLED_BUNDLES.add(toolset_name)
                         logger.info(
-                            "agent.disabled_toolsets contains platform-bundle "
-                            "name '%s'; core tools are preserved and only its "
-                            "platform-specific tools (%s) are removed. Bundle "
-                            "names usually belong in `toolsets:`, not "
-                            "`disabled_toolsets` (#33924).",
+                            "agent.disabled_toolsets contains composite name '%s'; "
+                            "core/shared tools from enabled toolsets are preserved "
+                            "and only its unique tools (%s) are removed (#33924, #58281).",
                             toolset_name,
                             ", ".join(resolved) if resolved else "none",
                         )

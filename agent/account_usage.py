@@ -438,9 +438,19 @@ def _resolve_codex_usage_url(base_url: str) -> str:
 
 def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
     creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
-    token_data = _read_codex_tokens()
-    tokens = token_data.get("tokens") or {}
-    account_id = str(tokens.get("account_id", "") or "").strip() or None
+    account_id = str(creds.get("account_id", "") or "").strip() or None
+    if not account_id:
+        try:
+            token_data = _read_codex_tokens()
+            tokens = token_data.get("tokens") or {}
+            account_id = str(tokens.get("account_id", "") or "").strip() or None
+        except Exception:
+            # Credential-pool OAuth entries do not necessarily have a legacy
+            # single-account Codex token blob. The usage endpoint still works
+            # without ChatGPT-Account-Id for the active credential, so do not
+            # drop the whole /usage block just because that optional header is
+            # unavailable.
+            account_id = None
     headers = {
         "Authorization": f"Bearer {creds['api_key']}",
         "Accept": "application/json",
@@ -454,7 +464,7 @@ def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
     payload = response.json() or {}
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
-    for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
+    for key, label in (("primary_window", "5h"), ("secondary_window", "7d")):
         window = rate_limit.get(key) or {}
         used = window.get("used_percent")
         if used is None:

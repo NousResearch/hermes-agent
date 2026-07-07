@@ -21,6 +21,7 @@ stdlib only (no a2a-sdk). ``extract_text`` stays tolerant of v0.3 peers.
 from __future__ import annotations
 
 import json
+import copy
 import os
 import threading
 import time
@@ -100,8 +101,21 @@ def build_agent_card(
     streaming: bool = False,
     push_notifications: bool = False,
     auth_required: bool = False,
+    tenant: str = "",
 ) -> dict:
-    """Construct an A2A v1.0 Agent Card document."""
+    """Construct an A2A v1.0 Agent Card document.
+
+    ``tenant`` is the optional v1.0 multi-tenancy routing key advertised on
+    AgentInterface. When present, clients MUST echo it in request params.
+    """
+    iface: dict[str, Any] = {
+        "url": url,
+        "protocolBinding": "JSONRPC",
+        "protocolVersion": PROTOCOL_VERSION,
+    }
+    if tenant:
+        iface["tenant"] = tenant
+
     card: dict[str, Any] = {
         "name": name,
         "description": description,
@@ -111,13 +125,7 @@ def build_agent_card(
             "organization": os.getenv("A2A_PROVIDER_ORG", "Hermes Agent"),
             "url": os.getenv("A2A_PROVIDER_URL", "") or url,
         },
-        "supportedInterfaces": [
-            {
-                "url": url,
-                "protocolBinding": "JSONRPC",
-                "protocolVersion": PROTOCOL_VERSION,
-            },
-        ],
+        "supportedInterfaces": [iface],
         "capabilities": {
             "streaming": streaming,
             "pushNotifications": push_notifications,
@@ -181,6 +189,38 @@ def jsonrpc_result(req_id: Any, result: Any) -> dict:
 
 def jsonrpc_error(req_id: Any, code: int, message: str) -> dict:
     return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
+
+
+def send_message_response(payload: dict) -> dict:
+    """A2A v1.0 SendMessageResponse oneof wrapper.
+
+    The JSON-RPC ``SendMessage`` result is not a bare Task/Message; it is a
+    wrapper containing exactly one of ``task`` or ``message``. Legacy methods
+    still return bare payloads for compatibility.
+    """
+    if isinstance(payload, dict) and payload.get("status") and payload.get("id"):
+        return {"task": payload}
+    return {"message": payload}
+
+
+def unwrap_send_message_response(result: Any) -> Any:
+    """Return the Task/Message inside a v1.0 response, or pass legacy through."""
+    if isinstance(result, dict):
+        if isinstance(result.get("task"), dict):
+            return result["task"]
+        if isinstance(result.get("message"), dict):
+            return result["message"]
+    return result
+
+
+def stream_task(task: dict) -> dict:
+    """v1.0 StreamResponse with a task member."""
+    return {"task": task}
+
+
+def stream_message(message: dict) -> dict:
+    """v1.0 StreamResponse with a message member."""
+    return {"message": message}
 
 
 def new_task_id() -> str:
@@ -517,10 +557,9 @@ metrics = Metrics()
 class TaskStore:
     """In-memory store of A2A tasks, kept after completion for tasks/get.
 
-    Terminal tasks are retained (bounded to _MAX_TERMINAL, oldest evicted) so
-    peers can poll tasks/get, page tasks/list, and reconnect via
-    tasks/subscribe after the fact. Watchers registered via ``watch()`` are
-    resolved with (state, reply) when the task reaches a terminal state.
+    Records carry the routed agent slug and tenant. All read/write helpers accept
+    optional scope values and return not-found when the task exists but is not
+    visible in that scope, satisfying the spec's authorization scoping rule.
     """
 
     _MAX_TERMINAL = 500
@@ -530,11 +569,22 @@ class TaskStore:
         self._watchers: dict[str, list[Future]] = {}
         self._lock = threading.Lock()
 
-    def create(self, task_id: str, context_id: str, peer: str) -> dict:
+    @staticmethod
+    def _in_scope(rec: dict, agent_slug: str = "", tenant: str = "") -> bool:
+        if agent_slug and rec.get("agent_slug", "") != agent_slug:
+            return False
+        if tenant and rec.get("tenant", "") != tenant:
+            return False
+        return True
+
+    def create(self, task_id: str, context_id: str, peer: str,
+               agent_slug: str = "", tenant: str = "") -> dict:
         rec = {
             "task_id": task_id,
             "context_id": context_id,
             "peer": peer,
+            "agent_slug": agent_slug or "",
+            "tenant": tenant or "",
             "state": STATE_SUBMITTED,
             "reply": "",
             "created_at": time.time(),
@@ -552,11 +602,12 @@ class TaskStore:
             if rec and rec["state"] not in TERMINAL_STATES:
                 rec["state"] = state
 
-    def set_push_config(self, task_id: str, url: str) -> Optional[dict]:
+    def set_push_config(self, task_id: str, url: str,
+                        agent_slug: str = "", tenant: str = "") -> Optional[dict]:
         """Attach a push notification config; returns the stored config or None."""
         with self._lock:
             rec = self._tasks.get(task_id)
-            if not rec:
+            if not rec or not self._in_scope(rec, agent_slug, tenant):
                 return None
             rec["push_url"] = url
             rec["push_config_id"] = "cfg-" + uuid.uuid4().hex[:12]
@@ -572,35 +623,28 @@ class TaskStore:
             "pushNotificationConfig": {"url": rec.get("push_url") or ""},
         }
 
-    def get_push_config(self, task_id: str, config_id: str = "") -> Optional[dict]:
-        """Retrieve a push notification config by task (and optional config id).
-
-        Returns the matching config or None if the task doesn't exist.
-        If ``config_id`` is provided and doesn't match, returns None.
-        """
+    def get_push_config(self, task_id: str, config_id: str = "",
+                        agent_slug: str = "", tenant: str = "") -> Optional[dict]:
         with self._lock:
             rec = self._tasks.get(task_id)
-            if not rec or not rec.get("push_url"):
+            if not rec or not self._in_scope(rec, agent_slug, tenant) or not rec.get("push_url"):
                 return None
             if config_id and rec.get("push_config_id") != config_id:
                 return None
             return self._push_config_view(rec)
 
-    def list_push_configs(self, task_id: str) -> list[dict]:
-        """List all push notification configs for a task (currently max 1
-        per task — v1.0 allows multiple but we keep one)."""
+    def list_push_configs(self, task_id: str, agent_slug: str = "", tenant: str = "") -> list[dict]:
         with self._lock:
             rec = self._tasks.get(task_id)
-            if not rec or not rec.get("push_url"):
+            if not rec or not self._in_scope(rec, agent_slug, tenant) or not rec.get("push_url"):
                 return []
             return [self._push_config_view(rec)]
 
-    def delete_push_config(self, task_id: str, config_id: str = "") -> bool:
-        """Remove a push notification config. Returns True if deleted, False
-        if the task or config doesn't exist."""
+    def delete_push_config(self, task_id: str, config_id: str = "",
+                           agent_slug: str = "", tenant: str = "") -> bool:
         with self._lock:
             rec = self._tasks.get(task_id)
-            if not rec or not rec.get("push_url"):
+            if not rec or not self._in_scope(rec, agent_slug, tenant) or not rec.get("push_url"):
                 return False
             if config_id and rec.get("push_config_id") != config_id:
                 return False
@@ -616,14 +660,15 @@ class TaskStore:
             url, rec["push_url"] = rec["push_url"], ""
             return url
 
-    def get(self, task_id: str) -> Optional[dict]:
+    def get(self, task_id: str, agent_slug: str = "", tenant: str = "") -> Optional[dict]:
         with self._lock:
             rec = self._tasks.get(task_id)
-            return dict(rec) if rec else None
+            if not rec or not self._in_scope(rec, agent_slug, tenant):
+                return None
+            return dict(rec)
 
     def complete(self, task_id: str, state: str, reply: str = "") -> Optional[dict]:
-        """Transition a task to a terminal state. Idempotent: returns None if
-        the task is unknown or already terminal (prevents double-counting)."""
+        """Transition a task to a terminal state. Idempotent."""
         watchers: list[Future] = []
         with self._lock:
             rec = self._tasks.get(task_id)
@@ -640,14 +685,10 @@ class TaskStore:
                 fut.set_result((state, reply))
         return out
 
-    def watch(self, task_id: str) -> Optional[Future]:
-        """Future resolved with (state, reply) at terminal transition.
-
-        Resolved immediately if the task is already terminal; None if unknown.
-        """
+    def watch(self, task_id: str, agent_slug: str = "", tenant: str = "") -> Optional[Future]:
         with self._lock:
             rec = self._tasks.get(task_id)
-            if not rec:
+            if not rec or not self._in_scope(rec, agent_slug, tenant):
                 return None
             fut: Future = Future()
             if rec["state"] in TERMINAL_STATES:
@@ -662,22 +703,32 @@ class TaskStore:
         state: str = "",
         page_size: int = 50,
         offset: int = 0,
-    ) -> tuple[list[dict], int]:
-        """Filtered task page (newest first). Returns (records, next_offset);
-        next_offset is 0 when there are no more results."""
-        page_size = max(1, min(int(page_size or 50), 200))
+        agent_slug: str = "",
+        tenant: str = "",
+        with_total: bool = False,
+    ):
+        """Filtered task page (newest first).
+
+        Historical API returns ``(records, next_offset)``. v1.0 ListTasks needs
+        ``totalSize``, so callers can opt into ``(records, next_offset, total)``.
+        """
+        page_size = max(1, min(int(page_size or 50), 100))
         with self._lock:
             recs = [dict(r) for r in reversed(self._tasks.values())]
+        if agent_slug or tenant:
+            recs = [r for r in recs if self._in_scope(r, agent_slug, tenant)]
         if context_id:
             recs = [r for r in recs if r["context_id"] == context_id]
         if state:
             recs = [r for r in recs if r["state"] == state]
+        total = len(recs)
         page = recs[offset:offset + page_size]
-        next_offset = offset + page_size if offset + page_size < len(recs) else 0
+        next_offset = offset + page_size if offset + page_size < total else 0
+        if with_total:
+            return page, next_offset, total
         return page, next_offset
 
     def fail_orphans(self, timeout_seconds: int = 300) -> list[str]:
-        """Mark non-terminal tasks older than timeout as FAILED; return their ids."""
         with self._lock:
             now = time.time()
             stale = [
@@ -698,16 +749,20 @@ class TaskStore:
             self._tasks.pop(tid, None)
 
     @staticmethod
-    def to_task(rec: dict) -> dict:
+    def to_task(rec: dict, history_length: Optional[int] = None, include_artifacts: bool = True) -> dict:
         """Render a stored record as an A2A v1.0 Task object."""
-        return build_task(
+        task = build_task(
             rec["task_id"],
             rec["context_id"],
             rec["state"],
             rec.get("reply", ""),
             created_at=rec.get("created_iso", ""),
         )
-
+        if not include_artifacts:
+            task.pop("artifacts", None)
+        if history_length == 0:
+            task.pop("history", None)
+        return copy.deepcopy(task)
 
 # --------------------------------------------------------------------------
 # Conversation persistence (outside the context-compaction pipeline)

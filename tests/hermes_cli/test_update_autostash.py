@@ -475,6 +475,60 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     assert ".[all]" in install_cmds[0]
 
 
+def test_cmd_update_reloads_runtime_modules_before_lazy_refresh(monkeypatch, tmp_path):
+    """Lazy refresh must not see pre-pull modules cached in this process."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
+
+    events = []
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "fetch", "origin", "main"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+            return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
+        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+            events.append("pull")
+            return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        if "pip" in cmd and "install" in cmd:
+            events.append("install")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def fake_reload_runtime_modules():
+        events.append("reload")
+
+    def fake_refresh_lazy_features():
+        events.append("lazy-refresh")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(hermes_main, "_reload_updated_runtime_modules", fake_reload_runtime_modules)
+    monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", fake_refresh_lazy_features)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    assert (
+        events.index("pull")
+        < events.index("install")
+        < events.index("reload")
+        < events.index("lazy-refresh")
+    )
+
+
+def test_reload_updated_runtime_modules_restores_new_hermes_constants_symbol(monkeypatch):
+    """A pre-pull module object missing a new helper is repaired by reload."""
+    import hermes_constants
+
+    monkeypatch.delattr(hermes_constants, "apply_subprocess_home_env", raising=False)
+    assert not hasattr(hermes_constants, "apply_subprocess_home_env")
+
+    hermes_main._reload_updated_runtime_modules()
+
+    assert callable(hermes_constants.apply_subprocess_home_env)
+
+
 def test_install_with_optional_fallback_honors_custom_group(monkeypatch):
     """Termux update path should target .[termux-all] when requested."""
     calls = []

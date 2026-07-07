@@ -4434,6 +4434,38 @@ def _clear_bytecode_cache(root: Path) -> int:
     return removed
 
 
+_UPDATE_RUNTIME_RELOAD_MODULES = (
+    "hermes_constants",
+    "tools.environments.local",
+    "tools.lazy_deps",
+)
+
+
+def _reload_updated_runtime_modules() -> None:
+    """Reload update-sensitive modules after the checkout changes in-place.
+
+    ``hermes update`` keeps running in the pre-pull Python process. After a
+    large update, modules already present in ``sys.modules`` can still expose
+    old symbols even though their source files on disk are new. Refresh the
+    small module set used by lazy-backend refresh before that step imports
+    newly-updated code paths.
+    """
+    try:
+        import importlib
+
+        importlib.invalidate_caches()
+        for module_name in _UPDATE_RUNTIME_RELOAD_MODULES:
+            module = sys.modules.get(module_name)
+            if module is None:
+                continue
+            try:
+                importlib.reload(module)
+            except Exception as exc:
+                logger.debug("Could not reload updated module %s: %s", module_name, exc)
+    except Exception as exc:
+        logger.debug("Could not refresh update runtime modules: %s", exc)
+
+
 # Critical files that Hermes must be able to import immediately after an
 # update/install. Most are imported on every CLI startup; ``web_server.py``
 # is the desktop/dashboard backend path that a fresh Windows install launches
@@ -9900,6 +9932,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # UI, desktop rebuild) are non-core and can't brick the venv.
         _clear_update_incomplete_marker()
 
+        # The update process is still the old Python interpreter process. Run
+        # one final cache/module refresh immediately before lazy backend
+        # refresh, which imports newly-pulled modules that may depend on fresh
+        # symbols in hermes_constants or lazy_deps.
+        removed = _clear_bytecode_cache(PROJECT_ROOT)
+        if removed:
+            print(
+                f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
+            )
+        _reload_updated_runtime_modules()
+
         _refresh_active_lazy_features()
 
         _update_node_dependencies()
@@ -9956,18 +9999,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("  ✓ Model catalog cache refreshed from checkout")
         except Exception as e:
             logger.debug("Model catalog seed during update failed: %s", e)
-
-        # After git pull, source files on disk are newer than cached Python
-        # modules in this process.  Reload hermes_constants so that any lazy
-        # import executed below (skills sync, gateway restart) sees new
-        # attributes like display_hermes_home() added since the last release.
-        try:
-            import importlib
-            import hermes_constants as _hc
-
-            importlib.reload(_hc)
-        except Exception:
-            pass  # non-fatal — worst case a lazy import fails gracefully
 
         # Sync bundled skills (copies new, updates changed, respects user deletions)
         try:

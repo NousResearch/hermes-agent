@@ -23,16 +23,25 @@
 - [x] A10 Commit Track A
 
 ### Track B — github native toolset
-- [ ] B1 Confirm branch strategy for Track B
-- [ ] B2 Implement tools/github_tools.py
-- [ ] B3 Add GitHub auth/helper layer
-- [ ] B4 Add first GitHub wrapper tools
-- [ ] B5 Wire into toolsets.py as opt-in github toolset
-- [ ] B6 Add tests in tests/tools/test_github_tools.py
-- [ ] B7 Run focused tests
+- [x] B1 Confirm branch strategy for Track B
+- [x] B2 Implement tools/github_tools.py
+- [x] B3 Add GitHub auth/helper layer
+- [x] B4 Add first GitHub wrapper tools
+- [x] B5 Wire into toolsets.py as opt-in github toolset
+- [x] B6 Add tests in tests/tools/test_github_tools.py
+- [x] B7 Run focused tests
 - [ ] B8 Run combined tests
 - [ ] B9 Review diff for cleanliness
 - [ ] B10 Commit Track B
+
+### Track C — github_add_issue_comment
+- [x] C1 Check branch, status, and files
+- [x] C2 Implement github_add_issue_comment_tool
+- [x] C3 Register tool schema/handler/toolset
+- [x] C4 Add mocked tests in tests/tools/test_github_tools.py
+- [x] C5 Verify compilation and run regression suite
+- [x] C6 Review diff for cleanliness
+- [x] C7 Commit and log Track C
 
 ### Final
 - [ ] F1 Final implementation summary
@@ -89,5 +98,61 @@
 - **Status:** Completed
 - **Details:** Committed the Track A implementation, tests, toolset configuration, and build log updates to the branch `feat/http-request-tool`.
 - **Commit Message:** `feat: add http_request API tool`
-- **Commit Hash:** `467f71023bde8d7ee2d01b1fe98b630304795ff9`
+- **Commit Hash:** `59102b9e2a2ceb7074c8289f25e11b9be5b54779`
+
+## Step B1: Confirm branch strategy for Track B
+- **Status:** Completed
+- **Details:** Switched to branch `feat/github-toolset` based on the clean amended Track A commit `59102b9e2a2ceb7074c8289f25e11b9be5b54779`. Verified that the working tree is clean.
+
+## Step B2: Implement tools/github_tools.py
+- **Status:** Completed
+- **Details:** Created [github_tools.py](file:///c:/Users/ralle/projects/Hermes/tools/github_tools.py) with the base module skeleton and API request helper on top of the secure `http_request` foundation. Defined default base URL, token env var configs, `_get_github_token` resolver, `check_github_requirements` checklist check, and the `github_api_request` helper function which passes target REST paths and standard headers to `http_request_tool`.
+
+## Step B3: Add GitHub auth/helper layer
+- **Status:** Completed
+- **Details:** Expanded [github_tools.py](file:///c:/Users/ralle/projects/Hermes/tools/github_tools.py) to implement robust auth, request-shaping, repository parsing, and error normalization. Added `parse_owner_repo` to resolve repository URLs/paths into `(owner, repo)` tuples, and `get_github_error_message` to extract detailed user-facing descriptions from status codes or standard GitHub API error payloads.
+
+## Step B4: Add first GitHub wrapper tools
+- **Status:** Completed
+- **Details:** Added and self-registered four read-only core GitHub wrapper tools in [github_tools.py](file:///c:/Users/ralle/projects/Hermes/tools/github_tools.py): `github_get_issue`, `github_list_issues` (which excludes PRs), `github_get_pull_request`, and `github_list_pull_requests`. Each tool is configured to parse inputs via `parse_owner_repo`, query the API via `github_api_request`, and filter/format payloads to return only relevant metadata (redacting token/header noise). Registered under the `github` toolset with requirement checks mapping to `check_github_requirements`.
+
+## Step B5: Wire into toolsets.py as opt-in github toolset
+- **Status:** Completed
+- **Details:** Modified [toolsets.py](file:///c:/Users/ralle/projects/Hermes/toolsets.py) to define the opt-in `"github"` toolset in `TOOLSETS`. Listed the four wrapper tools under `"tools"`. This exposes the GitHub capabilities dynamically in sessions where the `github` toolset is requested, while keeping them isolated from core/default toolsets.
+
+## Step B6: Add tests in tests/tools/test_github_tools.py
+- **Status:** Completed
+- **Details:** Created [test_github_tools.py](file:///c:/Users/ralle/projects/Hermes/tests/tools/test_github_tools.py) implementing a mocked test suite covering: check requirements gating (token lookup), owner/repo string and URL parsing including trailing `.git` sanitation, error parsing from response JSON/text, all four core tool success paths, invalid inputs, non-200 and failed requests, and specific issue-vs-PR filtering (PRs correctly omitted in `github_list_issues`).
+
+## Step B7: Run focused tests
+- **Status:** Completed
+- **Details:** Executed the focused pytest suite using `uv run --extra dev pytest tests/tools/test_github_tools.py -v --tb=short`. All 10 test cases passed cleanly.
+
+## Step C1: Check Branch, Status, and Files
+- **Status:** Completed
+- **Details:** Checked git status, active branch (`feat/github-toolset`), and read the relevant implementation files `tools/github_tools.py`, `tests/tools/test_github_tools.py`, and `toolsets.py`.
+
+## Step C2: Implement github_add_issue_comment_tool
+- **Status:** Completed
+- **Details:** Added `github_add_issue_comment_tool` to `tools/github_tools.py`, implementing a safe POST request to `/repos/{owner}/{repo}/issues/{issue_number}/comments` via `github_api_request` and returning id, html_url, body, created_at, updated_at, and author (from user.login).
+
+## Step C3: Register Tool Schema/Handler/Toolset
+- **Status:** Completed
+- **Details:** Registered the schema `GITHUB_ADD_ISSUE_COMMENT_SCHEMA`, handler `_handle_github_add_issue_comment`, and connected it in the registry under the `"github"` toolset in `tools/github_tools.py`. Added it to the static `"github"` toolset definition in `toolsets.py`.
+
+## Step C4: Add Mocked Tests in tests/tools/test_github_tools.py
+- **Status:** Completed
+- **Details:** Added four deterministic mocked unit tests: `test_github_add_issue_comment_success`, `test_github_add_issue_comment_invalid_repo`, `test_github_add_issue_comment_non_200_response`, and `test_github_add_issue_comment_failed_http_request`.
+
+## Step C5: Verify Compilation and Run Regression Suite
+- **Status:** Completed
+- **Details:** Ran `python -m py_compile` to verify syntax check. Executed focused tests (14 passed) and combined regression suite (240 passed in 15.37s).
+
+## Step C6: Review Diff for Cleanliness
+- **Status:** Completed
+- **Details:** Verified `git diff` for minimal changes, lack of debug artifacts, and adherence to styling.
+
+## Step C7: Commit and Log Track C
+- **Status:** Completed
+- **Details:** Committed the changes with message `feat: add github_add_issue_comment tool`. Commit hash: `c7621d48385afb1a2feb690248ce646024a5f08e`.
 

@@ -105,6 +105,18 @@ TOOLSETS = {
         "includes": []
     },
     
+    "github": {
+        "description": "Native GitHub operations (get/list issues, pull requests, and comments)",
+        "tools": [
+            "github_get_issue",
+            "github_list_issues",
+            "github_get_pull_request",
+            "github_list_pull_requests",
+            "github_add_issue_comment"
+        ],
+        "includes": []
+    },
+    
     "search": {
         "description": "Web search only (no content extraction/scraping)",
         "tools": ["web_search"],

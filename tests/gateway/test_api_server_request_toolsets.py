@@ -135,6 +135,12 @@ def _minimal_adapter(monkeypatch):
     adapter._api_key = ""
     adapter._model_name = "test-model"
     adapter._background_tasks = set()
+    # Concurrency cap fields (added to main after this test was written): disable
+    # the cap so _concurrency_limited_response() short-circuits to None.
+    adapter._max_concurrent_runs = 0
+    adapter._inflight_agent_runs = 0
+    adapter._run_streams = {}
+    adapter._model_routes = None
     adapter._get_platform_enabled_toolsets = lambda: ["web", "terminal"]
     adapter._parse_session_key_header = lambda request: (None, None)
     return adapter
@@ -262,6 +268,8 @@ def _install_fake_gateway_run(monkeypatch):
         SimpleNamespace(
             _resolve_runtime_agent_kwargs=lambda: {"api_key": "key", "base_url": "http://example.test"},
             _resolve_gateway_model=lambda: "test-model",
+            _current_max_iterations=lambda: 50,
+            _load_gateway_config=lambda: {},
             GatewayRunner=FakeGatewayRunner,
         ),
     )

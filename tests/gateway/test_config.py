@@ -561,6 +561,26 @@ class TestLoadGatewayConfig:
 
         assert config.max_concurrent_sessions == 2
 
+    def test_bridges_discord_voice_inactivity_timeout_from_config_yaml(self, tmp_path, monkeypatch):
+        """discord.voice_inactivity_timeout_seconds reaches PlatformConfig.extra."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  voice_inactivity_timeout_seconds: 0\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.DISCORD].extra["voice_inactivity_timeout_seconds"]
+            == 0
+        )
+
     def test_bridges_discord_thread_require_mention_from_config_yaml(self, tmp_path, monkeypatch):
         """discord.thread_require_mention in config.yaml should reach the runtime env var."""
         hermes_home = tmp_path / ".hermes"

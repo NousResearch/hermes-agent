@@ -190,6 +190,25 @@ def test_agent_result_contract_enum_accepts_boolean_values():
     ) == []
 
 
+def test_result_contract_rejects_string_for_array():
+    assert workflows_dispatcher._validate_result_contract(
+        {"sources": "not an array"}, {"sources": "array"}
+    ) == ["result key sources must be array"]
+
+
+def test_result_contract_rejects_string_for_object():
+    assert workflows_dispatcher._validate_result_contract(
+        {"metadata": "not an object"}, {"metadata": "object"}
+    ) == ["result key metadata must be object"]
+
+
+def test_result_contract_accepts_array_and_object():
+    assert workflows_dispatcher._validate_result_contract(
+        {"sources": [], "metadata": {}},
+        {"sources": "array", "metadata": "object"},
+    ) == []
+
+
 def test_tick_initializes_empty_db_path(tmp_path):
     db_path = tmp_path / "workflows.db"
 

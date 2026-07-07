@@ -248,6 +248,10 @@ def _validate_result_contract(output: Any, contract: dict[str, Any]) -> list[str
             errors.append(f"result key {key} must be number")
         elif expected == "boolean" and not isinstance(value, bool):
             errors.append(f"result key {key} must be boolean")
+        elif expected == "array" and not isinstance(value, list):
+            errors.append(f"result key {key} must be array")
+        elif expected == "object" and not isinstance(value, dict):
+            errors.append(f"result key {key} must be object")
         elif isinstance(expected, str) and "|" in expected:
             allowed = {part.strip() for part in expected.split("|") if part.strip()}
             actual = "true" if value is True else "false" if value is False else str(value)

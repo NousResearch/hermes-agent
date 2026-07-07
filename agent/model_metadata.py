@@ -1693,14 +1693,24 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
     return None
 
 
-# Known ChatGPT Codex OAuth context windows (observed via live
-# chatgpt.com/backend-api/codex/models probe, Apr 2026). These are the
-# `context_window` values, which are what Codex actually enforces — the
-# direct OpenAI API has larger limits for the same slugs, but Codex OAuth
-# caps lower (e.g. gpt-5.5 is 1.05M on the API, 272K on Codex).
+# Known ChatGPT Codex OAuth context budgets.
 #
-# Used as a fallback when the live probe fails (no token, network error).
+# The Codex /models endpoint reports ``context_window`` values around 272K for
+# several GPT-5.x slugs, but the Codex runtime also supports a larger native
+# prompt budget for selected models.  OpenClaw exposes this split as
+# ``contextWindow`` (native window) vs ``contextTokens`` (runtime/reporting
+# budget); Hermes has a single context-length knob, so keep a narrow curated
+# override for the models we intentionally run beyond the endpoint-reported
+# compatibility cap.  Users can still set ``model.context_length`` to override.
+#
 # Longest keys first so substring match picks the most specific entry.
+_CODEX_OAUTH_CONTEXT_OVERRIDES: Dict[str, int] = {
+    "gpt-5.4-mini": 400_000,
+    "gpt-5.5": 400_000,
+}
+
+# Fallback values used when the live probe fails (no token, network error) and
+# there is no curated runtime-budget override above.
 _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
     "gpt-5.1-codex-max": 272_000,
     "gpt-5.1-codex-mini": 272_000,
@@ -1718,6 +1728,18 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
     "gpt-5.2": 272_000,
     "gpt-5": 272_000,
 }
+
+
+def _resolve_codex_oauth_context_override(model: str) -> Optional[int]:
+    model_lower = _strip_provider_prefix(model).strip().lower()
+    if not model_lower:
+        return None
+    for slug, ctx in sorted(
+        _CODEX_OAUTH_CONTEXT_OVERRIDES.items(), key=lambda x: len(x[0]), reverse=True
+    ):
+        if slug in model_lower:
+            return ctx
+    return None
 
 
 _codex_oauth_context_cache: Dict[str, int] = {}
@@ -1788,18 +1810,21 @@ def _resolve_codex_oauth_context_length(
     if not model_bare:
         return None
 
+    override = _resolve_codex_oauth_context_override(model_bare)
+    if override:
+        return override
+
+    model_lower = model_bare.lower()
     if access_token:
         live = _fetch_codex_oauth_context_lengths(access_token)
         if model_bare in live:
             return live[model_bare]
         # Case-insensitive match in case casing drifts
-        model_lower = model_bare.lower()
         for slug, ctx in live.items():
             if slug.lower() == model_lower:
                 return ctx
 
     # Fallback: longest-key-first substring match over hardcoded defaults.
-    model_lower = model_bare.lower()
     for slug, ctx in sorted(
         _CODEX_OAUTH_CONTEXT_FALLBACK.items(), key=lambda x: len(x[0]), reverse=True
     ):
@@ -1969,6 +1994,11 @@ def get_model_context_length(
     # local servers actually know about.  Ollama "model:tag" colons are preserved.
     model = _strip_provider_prefix(model)
 
+    if provider == "openai-codex":
+        codex_override = _resolve_codex_oauth_context_override(model)
+        if codex_override:
+            return codex_override
+
     # 1. Check persistent cache (model+provider)
     # LM Studio is excluded — its loaded context length is transient (the
     # user can reload the model with a different context_length at any time
@@ -1976,12 +2006,11 @@ def get_model_context_length(
     if base_url and not _skip_persistent_context_cache(base_url, provider):
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
-            # Invalidate stale Codex OAuth cache entries: pre-PR #14935 builds
+            # Invalidate stale Codex cache entries: pre-PR #14935 builds
             # resolved gpt-5.x to the direct-API value (e.g. 1.05M) via
-            # models.dev and persisted it. Codex OAuth caps at 272K for every
-            # slug, so any cached Codex entry at or above 400K is a leftover
-            # from the old resolution path. Drop it and fall through to the
-            # live /models probe in step 5 below.
+            # models.dev and persisted it. Curated 400K runtime-budget
+            # overrides return before cache lookup, so any cached 400K+ value
+            # reaching this branch is stale for a non-overridden model.
             if provider == "openai-codex" and cached >= 400_000:
                 logger.info(
                     "Dropping stale Codex cache entry %s@%s -> %s (pre-fix value); "

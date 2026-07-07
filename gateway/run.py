@@ -13125,6 +13125,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     thread_id=source.thread_id,
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     fallback_model=self._fallback_model,
+                    save_trajectories=agent_cfg.get("save_trajectories", False),
                 )
                 try:
                     return agent.run_conversation(
@@ -17930,6 +17931,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # Refresh agent max_iterations from current config
                             # (cached agent may have been created with old config)
                             agent.max_iterations = max_iterations
+                            agent.save_trajectories = agent_cfg_local.get("save_trajectories", False)
                             logger.debug("Reusing cached agent for session %s", session_key)
                             reused_cached_agent = True
 
@@ -17986,6 +17988,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     gateway_session_key=session_key,
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     fallback_model=self._fallback_model,
+                    save_trajectories=agent_cfg_local.get("save_trajectories", False),
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:

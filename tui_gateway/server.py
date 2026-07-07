@@ -4464,6 +4464,7 @@ def _make_agent(
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         fallback_model=_load_fallback_model(),
+        save_trajectories=agent_cfg.get("save_trajectories", False),
         **_agent_cbs(sid),
     )
 

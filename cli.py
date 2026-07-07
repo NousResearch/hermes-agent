@@ -3882,6 +3882,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 20)
         self.checkpoint_max_total_size_mb = cp_cfg.get("max_total_size_mb", 500)
         self.checkpoint_max_file_size_mb = cp_cfg.get("max_file_size_mb", 10)
+        self.save_trajectories = CLI_CONFIG["agent"].get("save_trajectories", False)
         self.pass_session_id = pass_session_id
         # --ignore-rules: honor either the constructor flag or the env var set
         # by `hermes chat --ignore-rules` in hermes_cli/main.py. When true we

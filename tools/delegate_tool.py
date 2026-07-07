@@ -1058,6 +1058,7 @@ def _build_child_agent(
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    override_fallback_model: Optional[List[Dict[str, Any]]] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1275,7 +1276,11 @@ def _build_child_agent(
     # from rate-limits and credential exhaustion exactly like the top-level
     # agent does.  _fallback_chain is a list accepted by AIAgent's
     # fallback_model parameter (which handles both list and dict forms).
-    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    parent_fallback = (
+        override_fallback_model
+        if override_fallback_model is not None
+        else (getattr(parent_agent, "_fallback_chain", None) or None)
+    )
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -2502,6 +2507,7 @@ def delegate_task(
                 override_api_mode=creds["api_mode"],
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
+                override_fallback_model=creds.get("fallback_chain"),
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -2888,6 +2894,38 @@ def delegate_task(
     return json.dumps(_execute_and_aggregate(), ensure_ascii=False)
 
 
+def _delegation_model_alias_entry(alias_name: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Return config.yaml model_aliases.<alias_name> when usable for delegation.
+
+    Delegation historically accepted only concrete provider/model values.
+    model_aliases entries carry a provider/model pair plus optional routing
+    metadata such as fallback_chain; resolving them here lets
+    delegation.model: smart-cheap use the same symbolic worker lane as
+    auxiliary tasks without passing the literal alias string to a provider.
+    """
+    key = str(alias_name or "").strip().lower()
+    if not key:
+        return None
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+    except Exception:
+        return None
+    aliases = config.get("model_aliases") if isinstance(config, dict) else None
+    if not isinstance(aliases, dict):
+        return None
+    for name, entry in aliases.items():
+        if str(name or "").strip().lower() != key or not isinstance(entry, dict):
+            continue
+        provider = str(entry.get("provider") or "").strip()
+        model = str(entry.get("model") or "").strip()
+        if not provider or not model:
+            return None
+        return dict(entry)
+    return None
+
+
 def _resolve_child_credential_pool(
     effective_provider: Optional[str],
     parent_agent,
@@ -2997,6 +3035,19 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_model = str(cfg.get("model") or "").strip() or None
     configured_provider = str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
+
+    # Resolve model_aliases: if delegation.model names a configured alias
+    # (e.g. smart-cheap), expand to the alias's concrete provider/model pair.
+    alias = _delegation_model_alias_entry(cfg.get("model_alias") or configured_model)
+    if alias is not None:
+        configured_model = str(alias.get("model") or configured_model or "").strip() or None
+        configured_provider = (
+            str(alias.get("provider") or configured_provider or "").strip()
+            or configured_provider
+        )
+        alias_base_url = str(alias.get("base_url") or "").strip() or None
+        if alias_base_url:
+            configured_base_url = configured_base_url or alias_base_url
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
     configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
 
@@ -3054,6 +3105,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
+            "fallback_chain": alias.get("fallback_chain") if alias is not None else None,
         }
 
     if not configured_provider:
@@ -3064,6 +3116,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": None,
             "api_key": None,
             "api_mode": None,
+            "fallback_chain": alias.get("fallback_chain") if alias is not None else None,
         }
 
     # Provider is configured — resolve full credentials
@@ -3094,6 +3147,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
+        "fallback_chain": alias.get("fallback_chain") if alias is not None else None,
     }
 
 

@@ -6380,6 +6380,7 @@ def _update_via_zip(args):
 
     print()
     print("✓ Update complete!")
+    _warn_vulnerable_deps()
     try:
         _print_curator_first_run_notice()
     except Exception as e:
@@ -9295,6 +9296,63 @@ def cmd_update(args):
         _finalize_update_output(_update_io_state)
 
 
+def _warn_vulnerable_deps() -> None:
+    """Check for known-vulnerable dependencies and warn if any found.
+
+    Attempts ``pip-audit`` first (proper vulnerability scanning), falls
+    back to ``pip list --outdated`` as a weaker proxy.  Silently skips
+    if neither tool is available.  Intended to run after ``hermes update``
+    so users are alerted of known-vulnerable deps even when the update
+    itself succeeded.
+    """
+    vuln_count = 0
+    pip_audit_found = False
+
+    # Strategy 1: pip-audit (proper CVE scanning)
+    pip_audit_path = shutil.which("pip-audit")
+    if pip_audit_path:
+        pip_audit_found = True
+        try:
+            result = subprocess.run(
+                [pip_audit_path, "--format=json"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                try:
+                    audit_data = json.loads(result.stdout)
+                    vuln_count = len(audit_data.get("vulnerabilities", []))
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    else:
+        # Strategy 2: pip list --outdated (general out-of-date proxy)
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "list", "--outdated", "--format=json"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                try:
+                    outdated = json.loads(result.stdout)
+                    vuln_count = len(outdated)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+    if vuln_count > 0:
+        audit_hint = "pip-audit" if pip_audit_found else "pip list --outdated"
+        print(
+            f"  ⚠️  Warning: {vuln_count} known-vulnerable dep(s) found "
+            f"after update. Run `{audit_hint}` to review."
+        )
+
+
 def _cmd_update_pip(args):
     """Update Hermes via pip (for PyPI installs)."""
     from hermes_cli import __version__
@@ -9354,6 +9412,7 @@ def _cmd_update_pip(args):
         sys.exit(1)
 
     print("✓ Update complete! Restart hermes to use the new version.")
+    _warn_vulnerable_deps()
 
 
 def _cmd_update_impl(args, gateway_mode: bool):
@@ -10205,6 +10264,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print()
         print("✓ Update complete!")
+        _warn_vulnerable_deps()
 
         # Curator first-run heads-up. Only prints when curator is enabled AND
         # has never run — i.e. the window where the ticker would otherwise

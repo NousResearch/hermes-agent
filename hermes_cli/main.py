@@ -2325,10 +2325,6 @@ def cmd_chat(args):
     except Exception:
         pass
 
-    # --yolo: bypass all dangerous command approvals
-    if getattr(args, "yolo", False):
-        os.environ["HERMES_YOLO_MODE"] = "1"
-
     # --ignore-user-config: make load_cli_config() / load_config() skip the
     # user's ~/.hermes/config.yaml and return built-in defaults. Set BEFORE
     # importing cli (which runs `CLI_CONFIG = load_cli_config()` at module
@@ -14110,6 +14106,12 @@ def main():
     if args.version:
         cmd_version(args)
         return
+
+    # --yolo: set HERMES_YOLO_MODE before _prepare_agent_startup() imports
+    # tools.approval (which freezes _YOLO_MODE_FROZEN at import time).
+    # Must be set before any import that could trigger tools/approval.py.
+    if getattr(args, "yolo", False):
+        os.environ["HERMES_YOLO_MODE"] = "1"
 
     # Discover Python plugins and register shell hooks once, before any
     # command that can fire lifecycle hooks.  Both are idempotent; gated

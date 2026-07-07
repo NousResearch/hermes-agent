@@ -3057,6 +3057,7 @@ def delegate_task(
             # Reuse the live-transcript directory's id (when created) so the
             # returned delegation_id matches cache/delegation/live/<id>/.
             delegation_id=live_deleg_id,
+            timeout_seconds=_get_child_timeout(),
         )
 
         if dispatch.get("status") == "dispatched":

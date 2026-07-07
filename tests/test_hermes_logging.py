@@ -1,4 +1,5 @@
 """Tests for hermes_logging — centralized logging setup."""
+import errno
 import io
 import logging
 import os
@@ -875,6 +876,69 @@ class TestWindowsConcurrentLogLockTimeout:
 
             captured = capsys.readouterr()
             assert "unexpected logging failure" in captured.err
+            assert "--- Logging error ---" in captured.err
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
+
+    def test_transient_fd_error_eio_suppresses_traceback(self, tmp_path, capsys):
+        """OSError EIO must be suppressed and the stream must be marked for recovery."""
+        logger, handler = self._make_logger_and_handler(tmp_path / "agent.log")
+        record = logger.makeRecord(
+            logger.name, logging.INFO, __file__, 0, "test message", (), None,
+        )
+        try:
+            # Simulate EIO from flush() or tell() as reported in #59997.
+            try:
+                raise OSError(errno.EIO, "Input/output error")
+            except OSError:
+                handler.handleError(record)
+
+            captured = capsys.readouterr()
+            # EIO should be suppressed — no "Logging error" or traceback.
+            assert "Input/output error" not in captured.err
+            assert "--- Logging error ---" not in captured.err
+            # Stream should be marked for recovery (closed on next emit).
+            assert handler.stream is None
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
+
+    def test_transient_fd_error_estale_suppresses_traceback(self, tmp_path, capsys):
+        """OSError ESTALE (stale NFS handle) must be suppressed and stream marked for recovery."""
+        logger, handler = self._make_logger_and_handler(tmp_path / "agent.log")
+        record = logger.makeRecord(
+            logger.name, logging.INFO, __file__, 0, "test message", (), None,
+        )
+        try:
+            try:
+                raise OSError(errno.ESTALE, "Stale file handle")
+            except OSError:
+                handler.handleError(record)
+
+            captured = capsys.readouterr()
+            assert "Stale file handle" not in captured.err
+            assert "--- Logging error ---" not in captured.err
+            assert handler.stream is None
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
+
+    def test_other_oserrors_still_print_to_stderr(self, tmp_path, capsys):
+        """OSError that indicates real problems must still emit the normal stdlib output."""
+        logger, handler = self._make_logger_and_handler(tmp_path / "agent.log")
+        record = logger.makeRecord(
+            logger.name, logging.INFO, __file__, 0, "test message", (), None,
+        )
+        try:
+            # ENOSPC (disk full) is a real problem — must surface.
+            try:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            except OSError:
+                handler.handleError(record)
+
+            captured = capsys.readouterr()
+            assert "No space left on device" in captured.err
             assert "--- Logging error ---" in captured.err
         finally:
             logger.removeHandler(handler)

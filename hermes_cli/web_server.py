@@ -3973,6 +3973,74 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
         raise HTTPException(status_code=500, detail="Search failed")
 
 
+@app.get("/api/teams-context")
+async def get_teams_context(
+    source_id: Optional[str] = None,
+    source_type: Optional[str] = None,
+    q: str = "",
+    limit: int = 100,
+):
+    """Read-only view over the local Teams context store."""
+    try:
+        from plugins.teams_context.store import TeamsContextStore, resolve_store_path
+    except Exception as exc:
+        _log.warning("Teams context plugin unavailable: %s", exc)
+        path = get_hermes_home() / "teams_context.sqlite"
+        return {
+            "store_path": str(path),
+            "sources": [],
+            "items": [],
+            "messages": [],
+            "chats": [],
+            "total": 0,
+            "limit": max(1, min(int(limit or 100), 500)),
+            "query": (q or "").strip(),
+            "source_id": source_id,
+            "source_type": source_type,
+        }
+
+    path = resolve_store_path(None)
+    safe_limit = max(1, min(int(limit or 100), 500))
+    query = (q or "").strip()
+    if not path.exists():
+        return {
+            "store_path": str(path),
+            "sources": [],
+            "items": [],
+            "messages": [],
+            "chats": [],
+            "total": 0,
+            "limit": safe_limit,
+            "query": query,
+            "source_id": source_id,
+            "source_type": source_type,
+        }
+
+    try:
+        store = TeamsContextStore(path)
+        payload = store.dashboard_items(
+            query=query,
+            source_id=source_id,
+            source_type=source_type,
+            limit=safe_limit,
+        )
+    except Exception:
+        _log.exception("GET /api/teams-context failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    return {
+        "store_path": str(path),
+        "sources": payload["sources"],
+        "items": payload["items"],
+        "messages": payload["items"],
+        "chats": payload["sources"],
+        "total": payload["total"],
+        "limit": safe_limit,
+        "query": query,
+        "source_id": source_id,
+        "source_type": source_type,
+    }
+
+
 def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize config for the web UI.
 

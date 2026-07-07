@@ -955,6 +955,9 @@ platform_toolsets:
 #     args: ["-y", "@modelcontextprotocol/server-github"]
 #     env:
 #       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+#   teams_context:
+#     command: python
+#     args: ["-m", "plugins.teams_context.mcp_server"]
 #
 # Sampling (server-initiated LLM requests) — enabled by default.
 # Per-server config under the 'sampling' key:
@@ -1299,6 +1302,45 @@ display:
 #
 # hooks_auto_accept: false
 
+# =============================================================================
+# Microsoft Teams Context KB
+# =============================================================================
+# Local TeamContext store for no-Graph Teams channel scrape imports, meeting
+# recording/transcript imports, and optional Graph or Power Automate capture.
+#
+# teams_context:
+#   store_path: "~/.hermes/teams_context.sqlite"
+#   artifact_cache: "~/.hermes/cache/teams_context"
+#   chats:
+#     - chat_id: "19:placeholder-chat-id@thread.v2"
+#       label: "Placeholder chat"
+#       backfill_days: 30
+#
+# No-Graph channel scrape:
+#   1. Open Microsoft Teams in Chrome and navigate to the target channel.
+#   2. Run:
+#      hermes teams-context scrape-ui --label "Placeholder channel" --max-scrolls 5 --since-days 14
+#
+# No-Graph recording KB import:
+#   hermes teams-context ingest-recording ./meeting.mp4 --meeting-label "Placeholder meeting"
+#   hermes teams-context ingest-recording ./meeting.mp4 --meeting-label "Placeholder meeting" --transcript ./meeting.vtt
+#
+# Graph-free selected-message capture via Power Automate. Enable this platform
+# when you do not have Microsoft Graph app permissions. Power Automate posts
+# messages to:
+#   https://<public-tunnel-host>/teams-relay/messages
+#
+# platforms:
+#   teams_relay:
+#     enabled: true
+#     extra:
+#       host: "127.0.0.1"
+#       port: 8647
+#       path: "/teams-relay/messages"
+#       secret: "${TEAMS_RELAY_SECRET}"
+#
+# Optional Graph chat capture remains available when credentials are present.
+# It is not required for TeamContext v1 no-Graph scrape or recording imports.
 
 # =============================================================================
 # Update Behavior

@@ -2303,6 +2303,15 @@ def _teams_pipeline_plugin_enabled() -> bool:
     return "teams_pipeline" in enabled or "teams-pipeline" in enabled
 
 
+def _teams_context_plugin_enabled() -> bool:
+    """Return True when the standalone Teams context plugin is enabled."""
+    config = _load_gateway_config()
+    enabled = cfg_get(config, "plugins", "enabled", default=[])
+    if not isinstance(enabled, list):
+        return False
+    return "teams_context" in enabled or "teams-context" in enabled
+
+
 def _gateway_config_home() -> Path:
     """Return the Hermes home that gateway config reads should use."""
     override = get_hermes_home_override()
@@ -2971,6 +2980,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
         self._teams_pipeline_runtime_error: Optional[str] = None
+        # Teams chat-context runtime (bound later when msgraph_webhook adapter exists).
+        self._teams_context_runtime = None
+        self._teams_context_runtime_error: Optional[str] = None
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
@@ -3147,6 +3159,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.warning(
                 "Teams pipeline runtime unavailable: %s",
                 self._teams_pipeline_runtime_error,
+            )
+
+    def _wire_teams_context_runtime(self) -> None:
+        """Bind Teams chat-context ingestion to Graph webhook ingress."""
+        if Platform.MSGRAPH_WEBHOOK not in self.adapters:
+            return
+        if not _teams_context_plugin_enabled():
+            logger.debug("Teams context plugin is disabled; skipping runtime wiring")
+            return
+        try:
+            from plugins.teams_context.runtime import bind_gateway_runtime
+        except Exception as exc:
+            logger.warning("Teams context runtime import failed: %s", exc)
+            return
+        try:
+            bound = bind_gateway_runtime(self)
+        except Exception as exc:
+            logger.warning("Teams context runtime wiring failed: %s", exc)
+            return
+        if bound:
+            logger.info("Teams context runtime bound to msgraph webhook ingress")
+        elif self._teams_context_runtime_error:
+            logger.warning(
+                "Teams context runtime unavailable: %s",
+                self._teams_context_runtime_error,
             )
 
 
@@ -7122,6 +7159,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return True
         self.delivery_router.adapters = self.adapters
         self._wire_teams_pipeline_runtime()
+        self._wire_teams_context_runtime()
 
         self._running = True
         self._update_runtime_status("running")

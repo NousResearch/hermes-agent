@@ -762,6 +762,16 @@ export const api = {
       appendProfileParam(`/api/sessions/search?q=${encodeURIComponent(q)}`, profile),
     ),
 
+  getTeamsContext: (params: { sourceId?: string; sourceType?: string; q?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.sourceId) qs.set("source_id", params.sourceId);
+    if (params.sourceType) qs.set("source_type", params.sourceType);
+    if (params.q) qs.set("q", params.q);
+    if (params.limit) qs.set("limit", String(params.limit));
+    const query = qs.toString();
+    return fetchJSON<TeamsContextResponse>(`/api/teams-context${query ? `?${query}` : ""}`);
+  },
+
   // OAuth provider management
   getOAuthProviders: () =>
     fetchJSON<OAuthProvidersResponse>("/api/providers/oauth"),
@@ -1765,6 +1775,47 @@ export interface SessionMessagesResponse {
 export interface LogsResponse {
   file: string;
   lines: string[];
+}
+
+export type TeamsContextSourceType = "channel" | "meeting" | "recording" | "transcript";
+
+export interface TeamsContextSource {
+  source_id: string;
+  source_type: TeamsContextSourceType;
+  label: string;
+  item_count: number;
+  latest_at: string | null;
+  last_ingested: string | null;
+}
+
+export interface TeamsContextItem {
+  source_id: string;
+  source_type: TeamsContextSourceType;
+  source_label: string;
+  item_id: string;
+  sender_name: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  text: string;
+  html: string | null;
+  web_url: string | null;
+  meeting_id: string | null;
+  chunk_index: number | null;
+  metadata: Record<string, unknown>;
+  ingested_at: string;
+}
+
+export interface TeamsContextResponse {
+  store_path: string;
+  sources: TeamsContextSource[];
+  items: TeamsContextItem[];
+  messages: TeamsContextItem[];
+  chats: TeamsContextSource[];
+  total: number;
+  limit: number;
+  query: string;
+  source_id: string | null;
+  source_type: string | null;
 }
 
 export interface ManagedFileEntry {

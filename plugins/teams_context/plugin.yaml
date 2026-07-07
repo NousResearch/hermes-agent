@@ -1,0 +1,9 @@
+name: teams_context
+version: 0.1.0
+description: "Microsoft Teams context capture and MCP retrieval for channels and meeting KB."
+author: NousResearch
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows

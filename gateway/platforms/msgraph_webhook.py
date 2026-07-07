@@ -9,6 +9,7 @@ import json
 import logging
 from collections import deque
 from hashlib import sha1
+from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 try:
@@ -43,6 +44,12 @@ def check_msgraph_webhook_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
+def _response(*, status: int = 200, text: str | None = None, content_type: str | None = None):
+    if web is not None:
+        return web.Response(status=status, text=text, content_type=content_type)
+    return SimpleNamespace(status=status, text=text, content_type=content_type)
+
+
 class MSGraphWebhookAdapter(BasePlatformAdapter):
     """Receive Microsoft Graph change notifications and surface them internally."""
 
@@ -72,6 +79,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         )
         self._runner = None
         self._notification_scheduler: Optional[NotificationScheduler] = None
+        self._notification_schedulers: dict[str, NotificationScheduler] = {}
         self._seen_receipts: set[str] = set()
         self._seen_receipt_order: deque[str] = deque()
         self._accepted_count = 0
@@ -136,6 +144,28 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
 
     def set_notification_scheduler(self, scheduler: Optional[NotificationScheduler]) -> None:
         self._notification_scheduler = scheduler
+        if scheduler is None:
+            self._notification_schedulers.pop("default", None)
+        else:
+            self._notification_schedulers["default"] = scheduler
+
+    def register_notification_scheduler(
+        self,
+        name: str,
+        scheduler: NotificationScheduler,
+    ) -> None:
+        """Register a named Graph-notification consumer."""
+        key = str(name or "").strip()
+        if not key:
+            raise ValueError("notification scheduler name is required")
+        self._notification_schedulers[key] = scheduler
+
+    def unregister_notification_scheduler(self, name: str) -> None:
+        key = str(name or "").strip()
+        if key:
+            self._notification_schedulers.pop(key, None)
+            if key == "default":
+                self._notification_scheduler = None
 
     def _source_allowlist_required_but_missing(self) -> bool:
         return is_network_accessible(self._host) and not self._allowed_source_networks
@@ -224,38 +254,41 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
 
     async def _handle_notification(self, request: "web.Request") -> "web.Response":
         if not self._source_ip_allowed(request):
-            return web.Response(status=403)
+            return _response(status=403)
 
         # Graph never sends validationToken on POST, but tolerate it for
         # defensive clients that replay the handshake in-band.
         validation_token = request.query.get("validationToken", "")
         if validation_token:
-            return web.Response(text=validation_token, content_type="text/plain")
+            return _response(text=validation_token, content_type="text/plain")
 
         try:
             content_length = request.content_length
         except Exception:
             content_length = None
         if content_length is not None and content_length > self._max_body_bytes:
-            return web.Response(status=413)
+            return _response(status=413)
 
         try:
-            raw_body = await request.read()
+            if hasattr(request, "read"):
+                raw_body = await request.read()
+            else:
+                raw_body = json.dumps(await request.json()).encode("utf-8")
         except Exception:
-            return web.Response(status=400)
+            return _response(status=400)
         if len(raw_body) > self._max_body_bytes:
-            return web.Response(status=413)
+            return _response(status=413)
 
         try:
             body = json.loads(raw_body.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
-            return web.Response(status=400)
+            return _response(status=400)
         if not isinstance(body, dict):
-            return web.Response(status=400)
+            return _response(status=400)
 
         notifications = body.get("value")
         if not isinstance(notifications, list):
-            return web.Response(status=400)
+            return _response(status=400)
 
         accepted = 0
         duplicates = 0
@@ -298,10 +331,10 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         # resource-not-accepted) are the sender's configuration problem,
         # so 400.
         if accepted or duplicates:
-            return web.Response(status=202)
+            return _response(status=202)
         if auth_rejected and not other_rejected:
-            return web.Response(status=403)
-        return web.Response(status=400)
+            return _response(status=403)
+        return _response(status=400)
 
     def _source_ip_allowed(self, request: "web.Request") -> bool:
         """Return True if the request's source IP is in the configured allowlist.
@@ -427,15 +460,32 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         notification: Dict[str, Any],
         event: MessageEvent,
     ) -> None:
-        scheduler = self._notification_scheduler
-        if scheduler is not None:
-            result = scheduler(notification, event)
-            if asyncio.iscoroutine(result):
-                task = asyncio.create_task(result)
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
+        schedulers = list(self._notification_schedulers.items())
+        if schedulers:
+            for name, scheduler in schedulers:
+                self._schedule_single_notification(name, scheduler, notification, event)
             return
 
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+
+    def _schedule_single_notification(
+        self,
+        name: str,
+        scheduler: NotificationScheduler,
+        notification: Dict[str, Any],
+        event: MessageEvent,
+    ) -> None:
+        try:
+            result = scheduler(notification, event)
+        except Exception:
+            logger.exception(
+                "[msgraph_webhook] Notification scheduler %r failed synchronously",
+                name,
+            )
+            return
+        if asyncio.iscoroutine(result):
+            task = asyncio.create_task(result)
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)

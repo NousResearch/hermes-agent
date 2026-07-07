@@ -6663,18 +6663,27 @@ def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
 
 
 def _is_fork(origin_url: Optional[str]) -> bool:
-    """Check if the origin remote points to a fork (not the official repo)."""
+    """Check if the origin remote points to a fork (not the official repo).
+
+    GitHub owner/repo slugs are case-insensitive (``nousresearch`` and
+    ``NousResearch`` resolve to the same repository), and so is the
+    remote URL host portion. Compare URLs case-insensitively so a clone
+    URL typed in lowercase still classifies as the upstream (#60240).
+    """
     if not origin_url:
         return False
-    # Normalize URL for comparison (strip trailing .git if present)
+    # Normalize URL for comparison: strip trailing slash, strip ``.git``
+    # suffix, and lowercase the whole thing. The path + host are both
+    # case-insensitive for GitHub SSH and HTTPS URLs.
     normalized = origin_url.rstrip("/")
     if normalized.endswith(".git"):
         normalized = normalized[:-4]
+    normalized = normalized.lower()
     for official in OFFICIAL_REPO_URLS:
         official_normalized = official.rstrip("/")
         if official_normalized.endswith(".git"):
             official_normalized = official_normalized[:-4]
-        if normalized == official_normalized:
+        if normalized == official_normalized.lower():
             return False
     return True
 

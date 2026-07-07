@@ -95,6 +95,55 @@ class TestSanitizePluginName:
         target = _sanitize_plugin_name("a/b/c", tmp_path, allow_subdir=True)
         assert target.is_relative_to(tmp_path.resolve())
 
+    # ── allow_symlink=True ──
+
+    def test_symlink_rejected_without_allow_symlink(self, tmp_path):
+        """Default behavior (install/create path): a symlink escaping
+        plugins_dir is still rejected as 'outside the plugins directory'."""
+        outside = tmp_path.parent / "shared-plugin-checkout"
+        outside.mkdir(exist_ok=True)
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        (plugins_dir / "hermes-lcm").symlink_to(outside, target_is_directory=True)
+
+        with pytest.raises(ValueError, match="resolves outside the plugins directory"):
+            _sanitize_plugin_name("hermes-lcm", plugins_dir)
+
+    def test_symlink_allowed_with_allow_symlink(self, tmp_path):
+        """Update/read path: an operator-created symlink into a shared
+        checkout outside plugins_dir resolves to the symlink path itself
+        (not the plugins_dir-escaping realpath), matching the documented
+        cross-profile shared-plugin pattern."""
+        outside = tmp_path.parent / "shared-plugin-checkout"
+        outside.mkdir(exist_ok=True)
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        link = plugins_dir / "hermes-lcm"
+        link.symlink_to(outside, target_is_directory=True)
+
+        target = _sanitize_plugin_name("hermes-lcm", plugins_dir, allow_symlink=True)
+        assert target == link
+
+    def test_allow_symlink_still_rejects_traversal_in_name(self, tmp_path):
+        """allow_symlink must not weaken the character-level traversal guard
+        on *name* itself -- only the on-disk symlink-resolution step."""
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        with pytest.raises(ValueError, match="must not contain"):
+            _sanitize_plugin_name("../../etc/passwd", plugins_dir, allow_symlink=True)
+
+    def test_allow_symlink_does_not_affect_non_symlink_targets(self, tmp_path):
+        """A regular (non-symlink) installed plugin still goes through the
+        normal resolve()-and-contain check even with allow_symlink=True."""
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        (plugins_dir / "regular-plugin").mkdir()
+
+        target = _sanitize_plugin_name(
+            "regular-plugin", plugins_dir, allow_symlink=True
+        )
+        assert target == (plugins_dir / "regular-plugin").resolve()
+
 
 # ── _resolve_git_url ──────────────────────────────────────────────────────
 

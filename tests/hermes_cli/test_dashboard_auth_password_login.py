@@ -221,6 +221,16 @@ class TestProviderListFlag:
 
 
 class TestPasswordLoginRoute:
+    def test_password_provider_html_redirects_to_login_with_next(self, gated_app):
+        resp = gated_app.get("/sessions", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login?next=%2Fsessions"
+
+    def test_password_provider_root_redirects_to_login(self, gated_app):
+        resp = gated_app.get("/", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] in ("/login", "/login?next=%2F")
+
     def test_valid_credentials_set_session_cookies_and_return_next(
         self, gated_app
     ):

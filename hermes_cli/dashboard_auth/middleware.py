@@ -188,9 +188,14 @@ def _auto_sso_response(request: Request) -> Response | None:
     prefix = prefix_from_request(request)
     next_param = _safe_next_target(request)
     from urllib.parse import quote
-    auth_login = f"{prefix}/auth/login?provider={quote(provider.name, safe='')}"
+    # Password providers don't support the OAuth redirect entrypoint.
+    if getattr(provider, "supports_password", False):
+        auth_login = f"{prefix}/login"
+    else:
+        auth_login = f"{prefix}/auth/login?provider={quote(provider.name, safe='')}"
     if next_param:
-        auth_login = f"{auth_login}&next={next_param}"
+        sep = "&" if "?" in auth_login else "?"
+        auth_login = f"{auth_login}{sep}next={next_param}"
 
     resp = RedirectResponse(url=auth_login, status_code=302)
     # Drop the one-shot marker so a return trip that's STILL unauthenticated

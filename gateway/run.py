@@ -8893,6 +8893,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # direct replies to multi-choice prompts are accepted too ("2" maps
         # to the second option, arbitrary text becomes a custom answer). Slash
         # commands still bypass this path so /stop and friends keep working.
+        #
+        # Voice/audio messages are also accepted: when event.text is empty
+        # but event.media_urls contains audio files, we transcribe them
+        # synchronously using the configured STT provider and pass the
+        # transcript as the clarify response. This prevents the agent from
+        # hanging indefinitely waiting for a text reply when the user sends
+        # voice.
         _clarify_mod = None
         try:
             from tools import clarify_gateway as _clarify_mod
@@ -8903,6 +8910,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _pending_clarify = None
         if _pending_clarify is not None and _clarify_mod is not None:
             _raw_clarify_reply = (event.text or "").strip()
+
+            # If no text but audio media is present, transcribe it for the clarify response
+            if not _raw_clarify_reply and event.media_urls and event.media_types:
+                audio_paths = []
+                for i, path in enumerate(event.media_urls):
+                    mtype = event.media_types[i] if i < len(event.media_types) else ""
+                    if mtype.startswith("audio/"):
+                        audio_paths.append(path)
+
+                if audio_paths and getattr(self.config, "stt_enabled", True):
+                    try:
+                        from tools.transcription_tools import transcribe_audio
+                        import asyncio
+
+                        # Transcribe the first audio clip and use it as the reply
+                        result = await asyncio.to_thread(transcribe_audio, audio_paths[0])
+                        if result["success"]:
+                            _raw_clarify_reply = result["transcript"].strip()
+                            logger.info(
+                                "Gateway transcribed voice message for clarify response (session=%s, id=%s)",
+                                _quick_key, _pending_clarify.clarify_id,
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to transcribe audio for clarify response: %s",
+                            e,
+                            exc_info=True,
+                        )
+
             # Skip slash commands — the user clearly wanted to issue a
             # command, not answer the clarify.  Leave the clarify pending
             # so the user can retry; if it times out, the agent unblocks
@@ -8913,8 +8949,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if _resolved:
                     logger.info(
-                        "Gateway intercepted clarify text response (session=%s, id=%s)",
+                        "Gateway intercepted clarify response (session=%s, id=%s): %s",
                         _quick_key, _pending_clarify.clarify_id,
+                        _raw_clarify_reply[:50] if len(_raw_clarify_reply) > 50 else _raw_clarify_reply,
                     )
                     # Acknowledge with empty string so adapters that emit
                     # the agent's response don't double-post.  The agent

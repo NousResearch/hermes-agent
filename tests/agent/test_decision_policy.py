@@ -2,11 +2,13 @@ import json
 
 from agent.decision_packet import DecisionPacket, decision_packet_tool_result
 from agent.decision_policy import evaluate_terminal_command, evaluate_tool_call
+from tools.approval import detect_hardline_command
 
 
-def _needs_chad(result):
+def _needs_chad(result) -> DecisionPacket:
     assert result.needs_chad
     packet = result.packet
+    assert packet is not None
     assert packet.status == "NEEDS_CHAD"
     text = packet.to_text()
     for field in (
@@ -83,6 +85,34 @@ def test_runtime_service_and_config_changes_stop():
 
     assert "Runtime" in service_packet.reason
     assert "Runtime" in config_packet.reason
+
+
+def test_rm_destructive_filesystem_commands_stop():
+    commands = [
+        "rm /tmp/pilot-test-file",
+        "rm -r /tmp/pilot-test",
+        "rm -rf /tmp/pilot-test",
+        "rm -fr /tmp/pilot-test",
+        "rm --recursive /tmp/pilot-test",
+        "rm --force --recursive /tmp/pilot-test",
+        "rm -rf '/tmp/pilot test'",
+        'rm -rf "./local dir"',
+        "rm -rf ./local-dir",
+    ]
+
+    for command in commands:
+        packet = _needs_chad(evaluate_terminal_command(command))
+        assert "Destructive filesystem" in packet.reason
+        assert command in packet.proposed_action
+
+
+def test_catastrophic_rm_root_deferred_to_hardline_floor():
+    result = evaluate_terminal_command("rm -rf /")
+    is_hardline, reason = detect_hardline_command("rm -rf /")
+
+    assert not result.needs_chad
+    assert is_hardline
+    assert "root" in reason.lower()
 
 
 def test_credential_secret_handling_stops():

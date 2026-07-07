@@ -399,16 +399,22 @@ def evaluate_terminal_command(
             evidence=_terminal_evidence(command, cwd=cwd, task_id=task_id),
         )
 
-    if include_destructive_fs and (
-        _DESTRUCTIVE_FS_RE.search(command) or _TRUNCATING_REDIRECT_RE.search(command)
-    ):
-        return _packet_result(
-            reason="Destructive filesystem action requires Chad approval.",
-            proposed_action=f"terminal command: {redacted}",
-            why="This can delete or irreversibly alter filesystem state rather than making a bounded edit.",
-            default="Do not delete or clean files. Continue with read-only inventory and an exact deletion proposal.",
-            evidence=_terminal_evidence(command, cwd=cwd, task_id=task_id),
-        )
+    if include_destructive_fs:
+        destructive_fs = _classify_destructive_fs_command(command)
+        if destructive_fs is None and _TRUNCATING_REDIRECT_RE.search(command):
+            destructive_fs = (
+                "Destructive filesystem action",
+                "This can delete or irreversibly alter filesystem state rather than making a bounded edit.",
+            )
+        if destructive_fs is not None:
+            category, why = destructive_fs
+            return _packet_result(
+                reason=f"{category} requires Chad approval.",
+                proposed_action=f"terminal command: {redacted}",
+                why=why,
+                default="Do not delete or clean files. Continue with read-only inventory and an exact deletion proposal.",
+                evidence=_terminal_evidence(command, cwd=cwd, task_id=task_id),
+            )
 
     return continue_result()
 
@@ -629,6 +635,65 @@ def _branch_args_mutate_strategy(args: Sequence[str]) -> bool:
     # decision. No bare positional (only flags/consumed query values) is a
     # read-only listing query.
     return bool(positionals)
+
+
+def _classify_destructive_fs_command(command: str) -> tuple[str, str] | None:
+    if _DESTRUCTIVE_FS_RE.search(command):
+        return (
+            "Destructive filesystem action",
+            "This can delete or irreversibly alter filesystem state rather than making a bounded edit.",
+        )
+
+    for argv in _shell_words_by_segment(command):
+        if not argv:
+            continue
+        rm_idx = _find_command_index(argv, "rm")
+        if rm_idx is None:
+            continue
+        args = list(argv[rm_idx + 1 :])
+        if _rm_args_delete_any_path(args):
+            if _rm_args_target_root(args):
+                return (
+                    "Destructive filesystem action",
+                    "This can delete or irreversibly alter filesystem state, including catastrophic root-level targets.",
+                )
+            return (
+                "Destructive filesystem action",
+                "This can delete or irreversibly alter filesystem state rather than making a bounded edit.",
+            )
+    return None
+
+
+def _rm_args_delete_any_path(args: Sequence[str]) -> bool:
+    return any(_rm_arg_is_operand(arg) for arg in args)
+
+
+def _rm_args_target_root(args: Sequence[str]) -> bool:
+    return any(_rm_arg_is_operand(arg) and arg.strip() == "/" for arg in args)
+
+
+def _rm_arg_is_operand(arg: str) -> bool:
+    if arg == "--":
+        return False
+    if arg.startswith("-"):
+        return False
+    return bool(arg.strip())
+
+
+def _find_command_index(argv: Sequence[str], command_name: str) -> int | None:
+    wrappers = {"sudo", "env", "command", "time", "noglob"}
+    idx = 0
+    while idx < len(argv):
+        base = Path(argv[idx]).name.lower()
+        if base == command_name:
+            return idx
+        if idx == 0 and base in wrappers:
+            idx += 1
+            while base == "env" and idx < len(argv) and "=" in argv[idx] and not argv[idx].startswith("-"):
+                idx += 1
+            continue
+        return None
+    return None
 
 
 def _tool_name_suggests_external_side_effect(name: str) -> bool:

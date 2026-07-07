@@ -675,6 +675,59 @@ def _cache_mcp_image_block(block) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Safe task teardown helper
+# ---------------------------------------------------------------------------
+
+
+def _safe_cancel_task(task) -> None:
+    """Cancel ``task`` without raising if the event loop is closed.
+
+    Background: when a coroutine's ``finally`` block runs while the
+    interpreter is tearing down (process exit, KeyboardInterrupt during
+    ``asyncio.run``, etc.), the loop attached to the task may already be
+    closed.  ``Task.cancel()`` internally does
+    ``loop.call_soon(_must_cancel)``, which calls ``_check_closed()`` and
+    raises ``RuntimeError: Event loop is closed``.  When that exception
+    surfaces during garbage collection of the coroutine, CPython prints
+    ``Exception ignored in: <coroutine ...>`` for every live task — flooding
+    the user's terminal with the same traceback per server (see #17070,
+    n=70+ in the original report).
+
+    Accepts any object with ``done()`` and ``cancel()`` (asyncio Task,
+    concurrent.futures Future, etc.). For asyncio Tasks it inspects the
+    bound loop; for plain Futures it just no-ops if already done.
+
+    This helper no-ops when:
+    - ``task`` is None or already done,
+    - the task's loop has been closed, or
+    - ``RuntimeError`` slips out of ``cancel()`` anyway.
+
+    The cancellation request is best-effort during shutdown: the GC pass
+    will reclaim the coroutine regardless, and we explicitly do not want
+    to print a traceback to stderr for a routine teardown.
+    """
+    if task is None or task.done():
+        return
+    # asyncio.Task exposes get_loop(); concurrent.futures.Future does not.
+    # Use a duck-typed probe so this helper is reusable across both shapes.
+    get_loop = getattr(task, "get_loop", None)
+    if get_loop is not None:
+        try:
+            loop = get_loop()
+        except RuntimeError:
+            # Task is not bound to a loop (detached). Nothing useful to do.
+            return
+        if loop.is_closed():
+            return
+    try:
+        task.cancel()
+    except RuntimeError:
+        # Defensive: _check_closed() may still fire if the loop closes
+        # between our is_closed() check and cancel()'s call_soon().
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Remote MCP URL validation
 # ---------------------------------------------------------------------------
 
@@ -1836,12 +1889,27 @@ class MCPServerTask:
                         break
         finally:
             for t in (shutdown_task, reconnect_task):
-                if not t.done():
-                    t.cancel()
-                    try:
-                        await t
-                    except (asyncio.CancelledError, Exception):
-                        pass
+                # _safe_cancel_task: skip if the loop is already closed
+                # (process shutdown) to avoid "Exception ignored in:
+                # <coroutine ...> RuntimeError: Event loop is closed" spam
+                # during interpreter teardown. See _safe_cancel_task for
+                # the full context.
+                _safe_cancel_task(t)
+            # Drain whichever task was signalled, but only if the loop is
+            # still alive — awaiting on a closed loop raises here too.
+            for t in (shutdown_task, reconnect_task):
+                if t.done() or t.cancelled():
+                    continue
+                try:
+                    loop = t.get_loop()
+                except RuntimeError:
+                    continue
+                if loop.is_closed():
+                    continue
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
 
         if self._shutdown_event.is_set():
             return "shutdown"
@@ -1880,12 +1948,24 @@ class MCPServerTask:
             )
         finally:
             for t in (shutdown_task, reconnect_task):
-                if not t.done():
-                    t.cancel()
-                    try:
-                        await t
-                    except (asyncio.CancelledError, Exception):
-                        pass
+                # _safe_cancel_task: skip if the loop is already closed
+                # (process shutdown) — see _safe_cancel_task for the full
+                # context on the "Event loop is closed" traceback this
+                # avoids during interpreter teardown.
+                _safe_cancel_task(t)
+            for t in (shutdown_task, reconnect_task):
+                if t.done() or t.cancelled():
+                    continue
+                try:
+                    loop = t.get_loop()
+                except RuntimeError:
+                    continue
+                if loop.is_closed():
+                    continue
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
         if self._shutdown_event.is_set():
             return "shutdown"
         self._reconnect_event.clear()
@@ -2707,16 +2787,50 @@ class MCPServerTask:
                     "MCP server '%s' shutdown timed out, cancelling task",
                     self.name,
                 )
-                self._task.cancel()
-                try:
-                    await self._task
-                except asyncio.CancelledError:
-                    pass
+                # _safe_cancel_task: skip if the loop is already closed —
+                # see _safe_cancel_task for the full context on the
+                # "Event loop is closed" traceback this avoids.
+                _safe_cancel_task(self._task)
+                # Await the cancel result only if the loop is still alive.
+                if not self._task.done() and not self._task.cancelled():
+                    try:
+                        loop = self._task.get_loop()
+                    except RuntimeError:
+                        loop = None
+                    if loop is not None and not loop.is_closed():
+                        try:
+                            await self._task
+                        except (asyncio.CancelledError, Exception):
+                            pass
         if self._pending_refresh_tasks:
-            for task in list(self._pending_refresh_tasks):
-                task.cancel()
-            await asyncio.gather(*self._pending_refresh_tasks, return_exceptions=True)
+            # _safe_cancel_task on each pending refresh; then drain them
+            # only if the loop is still alive, otherwise the gather below
+            # would itself raise "Event loop is closed" on every task.
+            pending = list(self._pending_refresh_tasks)
             self._pending_refresh_tasks.clear()
+            for task in pending:
+                _safe_cancel_task(task)
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None and not loop.is_closed():
+                # Re-snapshot the tasks we actually need to drain; some may
+                # have been GC'd between clear() and gather() if the loop
+                # shut down between those two statements.
+                drain = []
+                for task in pending:
+                    try:
+                        if not task.done() and task.get_loop() is loop:
+                            drain.append(task)
+                    except RuntimeError:
+                        continue
+                if drain:
+                    try:
+                        await asyncio.gather(*drain, return_exceptions=True)
+                    except RuntimeError:
+                        # Event loop closed mid-gather; ignore.
+                        pass
         self._deregister_tools()
         self.session = None
 
@@ -3434,14 +3548,14 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
 
     while True:
         if is_interrupted():
-            future.cancel()
+            _safe_cancel_task(future)
             raise InterruptedError("User sent a new message")
 
         wait_timeout = 0.1
         if deadline is not None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                future.cancel()
+                _safe_cancel_task(future)
                 elapsed = time.monotonic() - start_time
                 raise TimeoutError(
                     f"MCP call timed out after {elapsed:.1f}s "

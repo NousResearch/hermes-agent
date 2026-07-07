@@ -1352,6 +1352,29 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             agent._transport_cache.clear()
         agent._fallback_activated = True
 
+        # Update the session's billing route so insights/cost tracking
+        # attributes subsequent API calls to the fallback model, not the
+        # stale primary model.  Without this, COALESCE in
+        # update_token_counts keeps the primary's model/provider and
+        # all fallback cost is mis-attributed.  See #60431 discussion.
+        if getattr(agent, "_session_db", None) and getattr(agent, "session_id", None):
+            try:
+                agent._session_db.update_session_model(
+                    agent.session_id, fb_model,
+                )
+                agent._session_db.update_session_billing_route(
+                    agent.session_id,
+                    provider=fb_provider,
+                    base_url=fb_base_url,
+                    billing_mode=fb_api_mode,
+                )
+            except Exception:
+                logger.debug(
+                    "Could not update billing route for fallback to %s/%s",
+                    fb_provider, fb_model,
+                    exc_info=True,
+                )
+
         # Rebind the credential pool to the fallback provider when the provider
         # changes.  Keeping the primary pool attached would make downstream
         # recovery (rate_limit / billing / auth) mutate the wrong credential

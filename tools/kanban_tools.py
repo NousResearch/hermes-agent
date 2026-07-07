@@ -151,6 +151,41 @@ def _stamp_worker_session_metadata(
     return stamped
 
 
+def _validate_artifact_paths(metadata: Optional[dict]) -> Optional[str]:
+    """Reject completion receipts that claim missing deliverable files."""
+    if not isinstance(metadata, dict) or "artifacts" not in metadata:
+        return None
+    artifacts = metadata.get("artifacts")
+    if isinstance(artifacts, str):
+        artifacts = [artifacts]
+        metadata["artifacts"] = artifacts
+    if not isinstance(artifacts, (list, tuple)):
+        return tool_error(
+            f"metadata.artifacts must be a list of file paths, got "
+            f"{type(artifacts).__name__}"
+        )
+    normalized: list[str] = []
+    for item in artifacts:
+        path = str(item).strip()
+        if not path:
+            continue
+        if not os.path.exists(path):
+            return tool_error(
+                f"artifact path does not exist: {path}. "
+                "The task is still in-flight (no state change); create the "
+                "file first, or remove it from artifacts before completing."
+            )
+        if not os.path.isfile(path):
+            return tool_error(
+                f"artifact path is not a file: {path}. "
+                "The task is still in-flight (no state change); list concrete "
+                "deliverable files, not directories."
+            )
+        normalized.append(path)
+    metadata["artifacts"] = normalized
+    return None
+
+
 def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     """Reject worker-driven destructive calls on foreign task IDs.
 
@@ -613,6 +648,9 @@ def _handle_complete(args: dict, **kw) -> str:
         return tool_error(
             f"metadata must be an object/dict, got {type(metadata).__name__}"
         )
+    artifact_err = _validate_artifact_paths(metadata)
+    if artifact_err:
+        return artifact_err
     metadata = _stamp_worker_session_metadata(tid, metadata)
     board = args.get("board")
     try:
@@ -1308,9 +1346,10 @@ KANBAN_COMPLETE_SCHEMA = {
                     "else uploads as a file) so the deliverable "
                     "lands with the completion notification. Skip "
                     "intermediate scratch files and references that "
-                    "are not the deliverable. The path must exist "
-                    "on disk when the notifier runs; missing files "
-                    "are silently skipped."
+                    "are not the deliverable. Every path must already "
+                    "exist as a file when you call ``kanban_complete``; "
+                    "missing paths block completion so the receipt cannot "
+                    "claim artifacts that were never produced."
                 ),
             },
             "board": _board_schema_prop(),

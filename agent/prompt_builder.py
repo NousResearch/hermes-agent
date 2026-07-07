@@ -1273,20 +1273,43 @@ def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
             logger.debug("Could not remove skills prompt snapshot: %s", e)
 
 
-def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
-    """Build an mtime/size manifest of all SKILL.md and DESCRIPTION.md files."""
+def _build_skills_manifest(
+    skills_dir: Path,
+    external_dirs: tuple[Path, ...] = (),
+) -> dict[str, list[int]]:
+    """Build an mtime/size manifest of all SKILL.md and DESCRIPTION.md files.
+
+    Walks both the local ``skills_dir`` and any ``external_dirs`` so the manifest
+    (and therefore the LRU cache key + disk snapshot) captures external-dir
+    changes as well. External-dir entries are namespaced by their absolute path
+    prefix so they don't collide with local-dir entries.
+    """
     manifest: dict[str, list[int]] = {}
-    for filename in ("SKILL.md", "DESCRIPTION.md"):
-        for path in iter_skill_index_files(skills_dir, filename):
-            try:
-                st = path.stat()
-            except OSError:
-                continue
-            manifest[str(path.relative_to(skills_dir))] = [st.st_mtime_ns, st.st_size]
+
+    def _walk(root: Path) -> None:
+        for filename in ("SKILL.md", "DESCRIPTION.md"):
+            for path in iter_skill_index_files(root, filename):
+                try:
+                    st = path.stat()
+                except OSError:
+                    continue
+                try:
+                    key = f"@{root}::{path.relative_to(root)}"
+                except ValueError:
+                    # path not under root — fall back to absolute key
+                    key = f"@{root}::{path}"
+                manifest[key] = [st.st_mtime_ns, st.st_size]
+
+    _walk(skills_dir)
+    for ext_dir in external_dirs:
+        _walk(ext_dir)
     return manifest
 
 
-def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
+def _load_skills_snapshot(
+    skills_dir: Path,
+    external_dirs: tuple[Path, ...] = (),
+) -> Optional[dict]:
     """Load the disk snapshot if it exists and its manifest still matches."""
     snapshot_path = _skills_prompt_snapshot_path()
     if not snapshot_path.exists():
@@ -1299,7 +1322,7 @@ def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
         return None
     if snapshot.get("version") != _SKILLS_SNAPSHOT_VERSION:
         return None
-    if snapshot.get("manifest") != _build_skills_manifest(skills_dir):
+    if snapshot.get("manifest") != _build_skills_manifest(skills_dir, external_dirs):
         return None
     return snapshot
 
@@ -1471,7 +1494,7 @@ def build_skills_system_prompt(
             return cached
 
     # ── Layer 2: disk snapshot ────────────────────────────────────────
-    snapshot = _load_skills_snapshot(skills_dir)
+    snapshot = _load_skills_snapshot(skills_dir, tuple(external_dirs))
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}

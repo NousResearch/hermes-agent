@@ -14609,6 +14609,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if thread_id is None:
             return None
         metadata: Dict[str, Any] = {"thread_id": thread_id}
+        # Forward chat_type so adapters can apply per-chat-class routing
+        # decisions (e.g. Feishu must not reply-in-thread on DMs even when
+        # the gateway stamped a routing thread_id). Each adapter falls back
+        # to its own resolution when the key is absent.
+        if chat_type and "chat_type" not in metadata:
+            metadata["chat_type"] = str(chat_type)
         if self._is_telegram_dm_topic_target(
             platform,
             chat_id,

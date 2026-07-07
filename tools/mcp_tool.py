@@ -2312,7 +2312,13 @@ class MCPServerTask:
                 async with ClientSession(
                     read_stream, write_stream, **sampling_kwargs
                 ) as session:
-                    self.initialize_result = await session.initialize()
+                    # Bound the handshake — same orphaned-task hang as the
+                    # stdio path (#59349): an endpoint that accepts the
+                    # connection but never answers ``initialize`` parks this
+                    # coroutine forever on the background loop.
+                    self.initialize_result = await asyncio.wait_for(
+                        session.initialize(), timeout=float(connect_timeout)
+                    )
                     self.session = session
                     await self._discover_tools()
                     self._ready.set()
@@ -2366,7 +2372,10 @@ class MCPServerTask:
                     read_stream, write_stream, _get_session_id,
                 ):
                     async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
-                        self.initialize_result = await session.initialize()
+                        # Bound the handshake (#59349) — see stdio path.
+                        self.initialize_result = await asyncio.wait_for(
+                            session.initialize(), timeout=float(connect_timeout)
+                        )
                         self.session = session
                         await self._discover_tools()
                         self._ready.set()
@@ -2394,7 +2403,10 @@ class MCPServerTask:
                 read_stream, write_stream, _get_session_id,
             ):
                 async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
-                    self.initialize_result = await session.initialize()
+                    # Bound the handshake (#59349) — see stdio path.
+                    self.initialize_result = await asyncio.wait_for(
+                        session.initialize(), timeout=float(connect_timeout)
+                    )
                     self.session = session
                     await self._discover_tools()
                     self._ready.set()
@@ -2715,7 +2727,19 @@ class MCPServerTask:
     async def start(self, config: dict):
         """Create the background Task and wait until ready (or failed)."""
         self._task = asyncio.ensure_future(self.run(config))
-        await self._ready.wait()
+        try:
+            await self._ready.wait()
+        except asyncio.CancelledError:
+            # The caller's connect timeout (discover_mcp_tools wraps start()
+            # in asyncio.wait_for) cancels *this* coroutine, but the
+            # ensure_future'd run() task is independent and would otherwise
+            # keep running detached — parked on a hung transport with no
+            # owner to reap it (#59349). Propagate the cancellation so the
+            # transport context managers unwind and their finally blocks
+            # release the child process / FDs.
+            if self._task and not self._task.done():
+                self._task.cancel()
+            raise
         if self._error:
             raise self._error
 

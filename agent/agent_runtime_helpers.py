@@ -1265,6 +1265,13 @@ def restore_primary_runtime(agent) -> bool:
 
     rt = agent._primary_runtime
     try:
+        # Capture the CURRENT (fallback) route + effort BEFORE the restore
+        # overwrites agent.model/provider/reasoning_config below — the recovery
+        # audit line's OLD side must be the fallback route we're leaving, not the
+        # primary we're returning to (a primary->primary line would be garbage).
+        _rec_old_provider = agent.provider
+        _rec_old_model = agent.model
+        _rec_old_reasoning_config = getattr(agent, "reasoning_config", None)
         # ── Core runtime state ──
         agent.model = rt["model"]
         agent.provider = rt["provider"]
@@ -1379,6 +1386,55 @@ def restore_primary_runtime(agent) -> bool:
             "Primary runtime restored for new turn: %s (%s)",
             agent.model, agent.provider,
         )
+
+        # Route-change AUDIT + gated chat ANNOUNCE for the recovery leg
+        # (fallback → primary). Mirrors the failover site in
+        # chat_completion_helpers.try_activate_fallback: always write the durable
+        # sink line, gate only the chat announce (on model.announce_recovery,
+        # default OFF — recovery is a "green" event, silent in chat unless opted
+        # in). record_event=False so a recovery never stamps the "after model
+        # fallback" compaction-causality record. Best-effort — telemetry must
+        # never break the restore.
+        try:
+            from agent.chat_completion_helpers import (
+                _append_route_change,
+                _effort_label,
+                _emit_fallback_announce,
+            )
+            # New (post-restore) effort read from the LIVE attr — reflects
+            # whether the guarded ``if "reasoning_config" in rt`` revert above
+            # actually applied (a legacy keyless snapshot leaves it unchanged).
+            # Never a hard rt["reasoning_config"] subscript (KeyError on a
+            # snapshot that predates the key).
+            _rec_old_eff = _effort_label(_rec_old_reasoning_config)
+            _rec_new_eff = _effort_label(getattr(agent, "reasoning_config", None))
+            # Only a genuine route change (provider or model actually differs).
+            if (_rec_old_provider, _rec_old_model) != (agent.provider, agent.model):
+                _append_route_change(
+                    "recovery",
+                    _rec_old_provider, _rec_old_model,
+                    agent.provider, agent.model,
+                    old_effort=_rec_old_eff, new_effort=_rec_new_eff,
+                )
+                _rec_announce = False
+                try:
+                    from hermes_cli.config import read_raw_config
+                    _raw = read_raw_config() or {}
+                    _mcfg = _raw.get("model", {}) if isinstance(_raw, dict) else {}
+                    _rec_announce = bool(_mcfg.get("announce_recovery", False))
+                except Exception:
+                    pass  # config read failure → default-off (silent)
+                _emit_fallback_announce(
+                    agent, _rec_old_model, agent.model, agent.provider,
+                    old_provider=_rec_old_provider,
+                    old_effort=_rec_old_eff,
+                    new_effort=_rec_new_eff,
+                    announce_enabled=_rec_announce,
+                    record_event=False,
+                    kind="recovery",
+                )
+        except Exception:
+            logger.debug("recovery route-change record failed", exc_info=True)
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)

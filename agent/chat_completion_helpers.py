@@ -1421,6 +1421,71 @@ def _format_context_window(tokens: "int | None") -> str:
     return str(tokens)
 
 
+def _effort_label(cfg_or_str) -> str:
+    """Normalize a reasoning-effort value to a bare level string for comparison
+    and display.
+
+    ``agent.reasoning_config`` / a ``_primary_runtime["reasoning_config"]`` snapshot
+    are DICTs (``parse_reasoning_effort`` returns ``{"enabled": True, "effort":
+    "high"}`` / ``{"enabled": False}`` / ``None``); a per-entry fallback override
+    (``fb["reasoning_effort"]``) is a raw string like ``"xhigh"``. Comparing a dict
+    to a string would ALWAYS differ, so both the route-change differ-check and the
+    audit sink route every effort value through this helper first.
+
+    Returns ``""`` for None/blank/unset (→ renders no suffix), ``"none"`` for a
+    disabled config, else the bare level (``"high"``/``"xhigh"``/…).
+    """
+    if cfg_or_str is None:
+        return ""
+    if isinstance(cfg_or_str, dict):
+        if cfg_or_str.get("enabled", True) is False:
+            return "none"
+        return str(cfg_or_str.get("effort", "") or "").strip()
+    return str(cfg_or_str or "").strip()
+
+
+def _append_route_change(
+    kind: str,
+    old_provider,
+    old_model,
+    new_provider,
+    new_model,
+    old_effort=None,
+    new_effort=None,
+) -> None:
+    """Append one route-change line to ``$HERMES_HOME/state/model-route-changes.log``.
+
+    ``kind`` ∈ {``failover``, ``recovery``}. Append-only, per-process-home,
+    best-effort (a telemetry write must NEVER break a live turn). Effort is
+    rendered as an ``@<level>`` suffix on a side ONLY when that side has a
+    resolved (non-blank) effort label — the callers normalize blank-inherited
+    effort to the primary's level via ``_effort_label`` before calling, so a
+    fallback that inherits the primary effort writes no ``@`` suffix.
+
+    Line format (consumed OPAQUELY by the delivery cron — no field parsing):
+        2026-07-07T13:41:07 failover claude-app/claude-opus-4-8 -> openai-codex/gpt-5.5@xhigh
+    """
+    try:
+        home = os.environ.get("HERMES_HOME") or os.path.join(
+            os.path.expanduser("~"), ".hermes"
+        )
+        state_dir = os.path.join(home, "state")
+        os.makedirs(state_dir, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+
+        def _side(prov, mdl, eff):
+            s = f"{prov or '?'}/{mdl}"
+            return f"{s}@{eff}" if eff else s
+
+        old = _side(old_provider, old_model, old_effort)
+        new = _side(new_provider, new_model, new_effort)
+        path = os.path.join(state_dir, "model-route-changes.log")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"{stamp} {kind} {old} -> {new}\n")
+    except Exception:
+        pass  # telemetry never breaks a turn
+
+
 def _emit_fallback_announce(
     agent,
     old_model: str,
@@ -1430,9 +1495,14 @@ def _emit_fallback_announce(
     old_provider: "str | None" = None,
     old_window: "int | None" = None,
     new_window: "int | None" = None,
+    old_effort: "Any | None" = None,
+    new_effort: "Any | None" = None,
+    announce_enabled: bool = True,
+    record_event: bool = True,
+    kind: str = "fallback",
 ) -> None:
-    """Emit a single, always-visible chat status line when a model fallback
-    activates successfully.
+    """Emit a single, always-visible chat status line when a model route changes
+    (an automatic failover OR a recovery back to the primary).
 
     Unlike ``_buffer_status`` (suppressed on successful recovery, flushed only on
     a terminal turn failure), this routes through ``_emit_status`` so it reaches
@@ -1446,13 +1516,36 @@ def _emit_fallback_announce(
     the provider is the thing that explains a window/behavior change. When the
     old provider is unknown the source side degrades to the bare model slug.
 
-    De-duplicated on the ``(old_model, new_model)`` pair so a re-entrant fallback
-    chain that bounces to the same destination within a turn announces once
-    (Invariant I5). A no-op transition (``old_model == new_model``) is silent.
+    Route identity is the ``(provider, model)`` tuple. A same-model, cross-PROVIDER
+    failover (``opus@claude-app → opus@f3``) is a REAL route change and announces;
+    only a true no-op (same provider AND model) is silent. De-duplicated on the
+    ``((old_provider, old_model), (new_provider, new_model))`` transition so a
+    re-entrant chain bouncing to the same destination within a turn announces once
+    (Invariant I5).
+
+    Reasoning-effort is a display RIDER, never part of the route identity: a side
+    renders ``(effort)`` only when the two sides' resolved effort LABELS differ, so
+    the common inherited-effort failover reads as a pure route change. ``old_effort``
+    / ``new_effort`` are already normalized to bare labels by the caller.
+
+    ``announce_enabled`` (caller-resolved from ``model.announce_route_change`` for a
+    failover or ``model.announce_recovery`` for a recovery) gates ONLY the chat
+    emit — never the ``_last_fallback_event`` write, which a compaction consumer
+    reads. ``record_event`` is True only for a genuine failover (a recovery must NOT
+    stamp the "after model fallback" causality record).
     """
-    if not new_model or old_model == new_model:
+    old_route = (old_provider, old_model)
+    new_route = (new_provider, new_model)
+    if not new_model or old_route == new_route:
         return
-    transition = (old_model, new_model)
+    # Edge (§5B): when the old provider is UNKNOWN and the model is unchanged,
+    # we cannot prove the route actually changed — staying silent avoids a
+    # spurious "opus → provider/opus" announce for a possibly-identical route.
+    # (In the real failover path old_provider is always captured from
+    # agent.provider, so this only guards the degenerate/defensive call.)
+    if old_provider is None and old_model == new_model:
+        return
+    transition = (old_route, new_route)
     if getattr(agent, "_last_fallback_announced", None) == transition:
         return
     agent._last_fallback_announced = transition
@@ -1460,27 +1553,45 @@ def _emit_fallback_announce(
     # Record a structured fallback event so a compaction shortly afterward, in
     # the SAME logical turn, can note it was "after model fallback" (turn-scoped
     # causality, not wall-clock proximity). See conversation_compression.
-    try:
-        agent._last_fallback_event = {
-            "old_model": old_model,
-            "new_model": new_model,
-            "old_provider": old_provider,
-            "new_provider": new_provider,
-            "old_window": old_window,
-            "new_window": new_window,
-            "turn_id": getattr(agent, "_current_turn_id", None),
-            "monotonic_time": time.monotonic(),
-        }
-    except Exception:
-        pass
+    # Only a genuine failover records this — a recovery must not tag a following
+    # compaction as "after fallback."
+    if record_event:
+        try:
+            agent._last_fallback_event = {
+                "old_model": old_model,
+                "new_model": new_model,
+                "old_provider": old_provider,
+                "new_provider": new_provider,
+                "old_window": old_window,
+                "new_window": new_window,
+                "turn_id": getattr(agent, "_current_turn_id", None),
+                "monotonic_time": time.monotonic(),
+            }
+        except Exception:
+            pass
 
-    old_label = f"{old_provider}/{old_model}" if old_provider else old_model
-    new_label = f"{new_provider}/{new_model}" if new_provider else new_model
-    msg = f"🔄 Model fallback: {old_label} → {new_label}"
+    # Reasoning-effort rider: render the (effort) suffix on each side only when
+    # the two resolved labels differ, so an inherited-effort failover reads as a
+    # pure route change. Both labels come pre-normalized from the caller.
+    _oe = _effort_label(old_effort)
+    _ne = _effort_label(new_effort)
+    _show_effort = bool(_oe or _ne) and _oe != _ne
+
+    def _side_label(prov, mdl, eff):
+        base = f"{prov}/{mdl}" if prov else mdl
+        return f"{base} ({eff})" if (_show_effort and eff) else base
+
+    old_label = _side_label(old_provider, old_model, _oe)
+    new_label = _side_label(new_provider, new_model, _ne)
+    verb = "Model recovery" if kind == "recovery" else "Model fallback"
+    icon = "🔄"
+    msg = f"{icon} {verb}: {old_label} → {new_label}"
     old_lbl = _format_context_window(old_window)
     new_lbl = _format_context_window(new_window)
     if old_lbl and new_lbl and old_lbl != new_lbl:
         msg += f" · context window {old_lbl}→{new_lbl}"
+    if not announce_enabled:
+        return
     emit = getattr(agent, "_emit_status", None)
     if callable(emit):
         emit(msg)
@@ -1661,7 +1772,11 @@ def try_activate_fallback(
 
         old_model = agent.model
         old_provider = agent.provider
-
+        # Snapshot the primary reasoning effort BEFORE the per-entry override
+        # below mutates ``agent.reasoning_config`` — the route-change announce
+        # and audit sink need the OLD (primary) effort to compare against the
+        # fallback entry's effort. See _effort_label / _append_route_change.
+        _old_reasoning_config = getattr(agent, "reasoning_config", None)
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
         # the stale value from the previous model.  See #22387.
@@ -1880,22 +1995,49 @@ def try_activate_fallback(
             "Fallback activated: %s → %s (%s)",
             old_model, fb_model, fb_provider,
         )
-        # Always-emitted, deduped fallback ANNOUNCE (separate from the
-        # suppress-on-recovery _buffer_status above, which only flushes on a
-        # TERMINAL turn failure — so a fallback that SUCCEEDS was invisible,
-        # the 2026-06-19 opus->gpt-5.5 case). This reaches the gateway
+        # Always-recorded route-change AUDIT + gated chat ANNOUNCE (separate
+        # from the suppress-on-recovery _buffer_status above, which only flushes
+        # on a TERMINAL turn failure — so a fallback that SUCCEEDS was invisible,
+        # the 2026-06-19 opus->gpt-5.5 case). The chat line reaches the gateway
         # status_callback (Discord/Telegram), not just the CLI, via _emit_status.
-        # Deduped on the (old->new) model pair so a re-entrant fallback chain
-        # that bounces to the same destination in one turn announces once (I5).
+        # Deduped on the ((old_provider,old_model),(new_provider,new_model))
+        # transition so a re-entrant chain bouncing to the same destination in
+        # one turn announces once (I5). The durable sink line is written EVERY
+        # failover regardless of the chat gate or the announce dedupe.
         try:
             _new_ctx_window = getattr(
                 getattr(agent, "context_compressor", None), "context_length", None
             )
+            # Effort labels: OLD = the primary effort snapshotted before the
+            # per-entry override; NEW = the fallback entry's effort, blank-
+            # inherited → normalized to the primary's label so an inherited
+            # failover renders no (effort) suffix.
+            _old_eff = _effort_label(_old_reasoning_config)
+            _new_eff = _effort_label(_fb_reasoning_effort) or _old_eff
+            # Durable audit sink — always, gate-independent, dedupe-independent.
+            _append_route_change(
+                "failover", old_provider, old_model, fb_provider, fb_model,
+                old_effort=_old_eff, new_effort=_new_eff,
+            )
+            # Chat announce — gated on model.announce_route_change (default on).
+            _announce_on = True
+            try:
+                from hermes_cli.config import read_raw_config
+                _raw = read_raw_config() or {}
+                _model_cfg = _raw.get("model", {}) if isinstance(_raw, dict) else {}
+                _announce_on = bool(_model_cfg.get("announce_route_change", True))
+            except Exception:
+                pass  # config read failure → default-on
             _emit_fallback_announce(
                 agent, old_model, fb_model, fb_provider,
                 old_provider=old_provider,
                 old_window=locals().get("_old_ctx_window"),
                 new_window=_new_ctx_window,
+                old_effort=_old_eff,
+                new_effort=_new_eff,
+                announce_enabled=_announce_on,
+                record_event=True,
+                kind="fallback",
             )
         except Exception:
             logger.debug("fallback announce failed", exc_info=True)

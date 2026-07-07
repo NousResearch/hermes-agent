@@ -326,6 +326,45 @@ class TestActiveFeatures:
         )
         assert "platform.slack" in ld.active_features()
 
+    # -- ACTIVE_FEATURE_MARKERS (#58458) -----------------------------------
+    # platform.matrix declares aiohttp as one of its specs (a shared CVE-floor
+    # pin), but aiohttp is commonly present as a transitive of unrelated
+    # packages (edge-tts, firecrawl-py, discord.py, ...). A marked feature
+    # must NOT be considered active just because that shared package is
+    # present — only its distinctive marker package (mautrix) should count.
+
+    def test_marked_feature_not_activated_by_shared_generic_package_alone(
+        self, monkeypatch,
+    ):
+        # Only aiohttp is present (as if pulled in transitively by an
+        # unrelated package) — mautrix itself was never installed.
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == "aiohttp",
+        )
+        active = ld.active_features()
+        assert "platform.matrix" not in active
+
+    def test_marked_feature_activated_by_its_marker_package(self, monkeypatch):
+        # mautrix (the marker/distinctive package) is present — the feature
+        # should register as active even if none of its other specs are.
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == "mautrix",
+        )
+        assert "platform.matrix" in ld.active_features()
+
+    def test_unmarked_feature_keeps_any_spec_present_semantics(self, monkeypatch):
+        # platform.slack has no marker entry — it must still be activated by
+        # ANY of its specs, including the shared aiohttp pin (backward
+        # compatibility with the pre-fix behavior for unmarked features).
+        assert "platform.slack" not in ld.ACTIVE_FEATURE_MARKERS
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == "aiohttp",
+        )
+        assert "platform.slack" in ld.active_features()
+
 
 class TestRefreshActiveFeatures:
     def test_no_active_features_returns_empty(self, monkeypatch):

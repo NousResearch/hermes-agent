@@ -469,6 +469,37 @@ def _unsupported_feature_reason(feature: str) -> Optional[str]:
     return None
 
 
+# Some lazy feature groups include generic/shared packages (usually a CVE-
+# floor pin like ``aiohttp==3.14.1``) that can be installed for entirely
+# unrelated reasons — as a transitive of edge-tts, firecrawl-py, discord.py,
+# etc. `active_features()` (used by the `hermes update` refresh pass) must
+# NOT treat that shared package's mere presence as proof the user opted into
+# the feature. Without this, a shared dependency such as aiohttp can make
+# `hermes update` try to refresh the full Matrix stack on machines that never
+# enabled Matrix — which currently pulls python-olm and fails to build on
+# many toolchains (needs make/clang, no Windows wheels at all). See #58458.
+#
+# For any feature listed here, `active_features()` checks ONLY the marker
+# packages below instead of "any spec present". The actual install specs in
+# LAZY_DEPS are unchanged — `ensure()` / `feature_missing()` still install
+# every listed package for a feature once it's genuinely active.
+#
+# Scope: only `platform.matrix` is marked here. It is the one feature with a
+# transitive dependency (python-olm, via mautrix[encryption]) that is known
+# to hard-fail to build on common platforms, making the false-positive
+# genuinely destructive (a permanently-stuck `hermes update` warning).
+# `platform.slack` / `platform.discord` / `platform.teams` also share the
+# aiohttp floor pin, but their false-positive refresh is comparatively
+# harmless (aiohttp is already satisfied, so a false "active" flag for them
+# is a same-version no-op reinstall of packages that were probably going to
+# be present anyway) — so they're left on the original any-spec-present
+# semantics to keep this fix minimal and reviewable. Extend this dict if a
+# similar hard failure is found in one of those trees.
+ACTIVE_FEATURE_MARKERS: dict[str, tuple[str, ...]] = {
+    "platform.matrix": ("mautrix",),
+}
+
+
 def _spec_is_safe(spec: str) -> bool:
     """Reject pip specs that contain URLs, paths, or shell metacharacters."""
     if not spec or len(spec) > 200:
@@ -860,11 +891,23 @@ def active_features() -> list[str]:
     is currently installed in the venv (presence check, ignoring version).
     Features the user has never enabled stay quiet.
 
+    Exception: features listed in :data:`ACTIVE_FEATURE_MARKERS` are
+    activated ONLY by the presence of their marker package(s), not by any
+    of their other declared specs. This avoids false-positive activation
+    from a shared/generic package (e.g. ``aiohttp``) that got installed
+    for an unrelated reason — see the comment above
+    :data:`ACTIVE_FEATURE_MARKERS` and #58458.
+
     Used by ``hermes update`` to figure out which lazy backends need a
     refresh pass when pins move in :data:`LAZY_DEPS`.
     """
     active = []
     for feature, specs in LAZY_DEPS.items():
+        markers = ACTIVE_FEATURE_MARKERS.get(feature)
+        if markers is not None:
+            if any(_is_present(marker) for marker in markers):
+                active.append(feature)
+            continue
         if any(_is_present(s) for s in specs):
             active.append(feature)
     return active

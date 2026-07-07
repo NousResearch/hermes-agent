@@ -444,6 +444,115 @@ class TestConfig:
         assert captured["llm_provider"] == "openai"
 
 
+class TestEmbeddedDaemonConfigChangeRestart:
+    """Regression tests: a config change detected during daemon start must
+    not kill a healthy, already-running embedded daemon from inside a live
+    request path.
+
+    Root cause: multiple Hermes profiles can share the same default
+    Hindsight embedded daemon/profile. Calling ``client._manager.stop(profile)``
+    the moment a config diff is detected can terminate in-flight
+    retain/recall calls for *other* profiles sharing that daemon, surfacing
+    as unexpected Hindsight HTTP 500s. The fix defers the restart: the
+    updated profile env is still materialized immediately (so it takes
+    effect on the daemon's next natural start), but a healthy running
+    daemon is left alone.
+
+    This is distinct from (and complementary to) upstream PR #51066, which
+    fixes a comparison bug in ``_persisted_profile_env_keys`` that made
+    ``config_changed`` spuriously always True. That PR is about *detecting*
+    config_changed correctly; these tests are about what happens once
+    config_changed is legitimately True.
+    """
+
+    def _run_start_daemon_and_wait(self, provider, tmp_path, monkeypatch, fake_client):
+        """Drive provider.initialize() in local_embedded mode, then block
+        until the background daemon-start thread it spawns has finished."""
+        import threading
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_local_runtime", lambda: (True, "")
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._materialize_embedded_profile_env",
+            lambda config, **kwargs: tmp_path / "hermes.env",
+        )
+
+        config = {
+            "mode": "local_embedded",
+            "profile": "hermes",
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+
+        provider = HindsightMemoryProvider()
+        monkeypatch.setattr(provider, "_get_client", lambda: fake_client)
+
+        threads_before = {t.ident for t in threading.enumerate()}
+        provider.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
+
+        # initialize() spawns the daemon-start work on a background thread
+        # named "hindsight-daemon-start" (or resolves synchronously if
+        # local_embedded got disabled). Find and join it if present.
+        new_thread = None
+        for t in threading.enumerate():
+            if t.ident not in threads_before and t.name == "hindsight-daemon-start":
+                new_thread = t
+                break
+        assert new_thread is not None, "expected initialize() to spawn the daemon-start thread"
+        new_thread.join(timeout=5)
+        assert not new_thread.is_alive()
+
+        return provider
+
+    def test_healthy_running_daemon_not_stopped_on_config_change(self, tmp_path, monkeypatch):
+        """config_changed=True + a healthy running daemon => defer, don't stop."""
+        fake_manager = MagicMock()
+        fake_manager.is_running.return_value = True
+        fake_client = MagicMock()
+        fake_client._manager = fake_manager
+
+        # Force config_changed True: the saved profile env never matches
+        # the freshly-built expected env because no file exists on disk.
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._load_simple_env", lambda path: {"stale": "value"}
+        )
+
+        provider = self._run_start_daemon_and_wait(None, tmp_path, monkeypatch, fake_client)
+
+        fake_manager.is_running.assert_called_with("hermes")
+        fake_manager.stop.assert_not_called()
+        fake_client._ensure_started.assert_called_once()
+
+        log_path = tmp_path / "logs" / "hindsight-embed.log"
+        log_text = log_path.read_text(encoding="utf-8")
+        assert "restart deferred" in log_text
+        assert "Config changed, restarting daemon" not in log_text
+
+    def test_no_running_daemon_on_config_change_does_not_touch_manager_stop(self, tmp_path, monkeypatch):
+        """When no daemon is running yet, there's nothing to stop either way —
+        this just pins down that stop() is never reached along this path."""
+        fake_manager = MagicMock()
+        fake_manager.is_running.return_value = False
+        fake_client = MagicMock()
+        fake_client._manager = fake_manager
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._load_simple_env", lambda path: {"stale": "value"}
+        )
+
+        self._run_start_daemon_and_wait(None, tmp_path, monkeypatch, fake_client)
+
+        fake_manager.stop.assert_not_called()
+        fake_client._ensure_started.assert_called_once()
+
+
 class TestPostSetup:
     def test_setup_cancel_at_mode_picker_writes_nothing(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes-home"

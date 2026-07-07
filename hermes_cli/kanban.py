@@ -2762,10 +2762,20 @@ To swap it in you MUST first:
 def _cmd_recover(args: argparse.Namespace) -> int:
     """Offline `.recover` into a NEW file. Never touches the live DB."""
     out_path = Path(args.output).expanduser()
-    if out_path.exists():
+    # is_symlink() (lstat semantics) as well as exists(): a BROKEN symlink
+    # reports exists() == False, but the sqlite3 CLI would follow it and
+    # write through to the link target.
+    if out_path.exists() or out_path.is_symlink():
         print(
             f"kanban recover: refusing to overwrite existing output file "
             f"{out_path} — pick a fresh path",
+            file=sys.stderr,
+        )
+        return 2
+    if not out_path.parent.is_dir():
+        print(
+            f"kanban recover: output directory {out_path.parent} does not "
+            f"exist (or is not a directory) — create it first",
             file=sys.stderr,
         )
         return 2

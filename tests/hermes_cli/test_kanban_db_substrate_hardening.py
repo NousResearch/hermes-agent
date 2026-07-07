@@ -164,12 +164,95 @@ def test_reprobe_lock_contention_skips_probe_and_defers(tmp_path, monkeypatch):
     assert key in kb._LAST_INTEGRITY_PROBE
 
 
+def test_reprobe_connection_is_read_only(tmp_path, monkeypatch):
+    """The periodic re-probe must open the DB via URI mode=ro so it can
+    never checkpoint, recover, or take write locks on a WAL/hot-journal DB."""
+    monkeypatch.setenv("HERMES_KANBAN_INTEGRITY_RECHECK_SECONDS", "0.000001")
+    db_path = _fresh_connected_db(tmp_path)
+    time.sleep(0.01)  # make the probe due
+
+    calls: list[tuple[tuple, dict]] = []
+    real_connect = sqlite3.connect
+
+    def capturing_connect(*args, **kwargs):
+        calls.append((args, kwargs))
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(kb.sqlite3, "connect", capturing_connect)
+    conn = kb.connect(db_path=db_path)
+    conn.close()
+
+    # First connection is the re-probe, second is the real connection.
+    assert len(calls) == 2, f"expected probe + real connection, saw {calls!r}"
+    probe_args, probe_kwargs = calls[0]
+    assert probe_args[0].startswith("file:")
+    assert "mode=ro" in probe_args[0]
+    assert probe_kwargs.get("uri") is True
+    real_args, real_kwargs = calls[1]
+    assert "mode=ro" not in str(real_args[0])
+
+    # And the probe connection genuinely cannot write.
+    ro = real_connect(probe_args[0], **probe_kwargs)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            ro.execute("CREATE TABLE probe_should_not_write(x)")
+    finally:
+        ro.close()
+
+
+def test_reprobe_timestamp_set_before_probe_coalesces(tmp_path, monkeypatch):
+    """The probe timestamp is recorded BEFORE the probe connection opens, so
+    concurrent connects skip instead of stacking probes behind the lock."""
+    monkeypatch.setenv("HERMES_KANBAN_INTEGRITY_RECHECK_SECONDS", "0.000001")
+    db_path = _fresh_connected_db(tmp_path)
+    key = str(db_path.resolve())
+    time.sleep(0.01)  # make the probe due
+    kb._LAST_INTEGRITY_PROBE.pop(key, None)
+
+    seen: dict[str, object] = {}
+    real_connect = sqlite3.connect
+
+    def observing_connect(*args, **kwargs):
+        seen.setdefault("stamp_at_probe", kb._LAST_INTEGRITY_PROBE.get(key))
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(kb.sqlite3, "connect", observing_connect)
+    conn = kb.connect(db_path=db_path)
+    conn.close()
+
+    assert seen["stamp_at_probe"] is not None, (
+        "timestamp must be stamped before the probe connection opens"
+    )
+
+
+def test_reprobe_effective_interval_jitter_bounded_and_deterministic():
+    """Per-process jitter: within (interval, interval*1.1], stable across
+    calls in the same process, and derived from os.getpid()."""
+    import os
+
+    interval = 300.0
+    first = kb._reprobe_effective_interval(interval)
+    second = kb._reprobe_effective_interval(interval)
+    assert first == second, "jitter must be deterministic within a process"
+    assert interval <= first <= interval * 1.1
+    expected = interval * (1.0 + 0.1 * ((os.getpid() % 1024) / 1024.0))
+    assert first == expected
+
+
 def test_integrity_recheck_seconds_env_parsing(monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_INTEGRITY_RECHECK_SECONDS", raising=False)
     assert kb._integrity_recheck_seconds() == 300.0
     monkeypatch.setenv("HERMES_KANBAN_INTEGRITY_RECHECK_SECONDS", "42.5")
     assert kb._integrity_recheck_seconds() == 42.5
     monkeypatch.setenv("HERMES_KANBAN_INTEGRITY_RECHECK_SECONDS", "not-a-number")
+    assert kb._integrity_recheck_seconds() == 300.0
+
+
+@pytest.mark.parametrize("raw", ["nan", "NaN", "inf", "-inf", "Infinity"])
+def test_integrity_recheck_seconds_nonfinite_falls_back(monkeypatch, raw):
+    """float() accepts NaN/inf; both must fall back to the default instead
+    of producing an interval that fails comparisons unpredictably."""
+    monkeypatch.setenv("HERMES_KANBAN_INTEGRITY_RECHECK_SECONDS", raw)
     assert kb._integrity_recheck_seconds() == 300.0
 
 
@@ -222,10 +305,46 @@ def test_backup_cap_under_cap_still_creates_backup(tmp_path, monkeypatch):
     assert backup.read_bytes() == original
 
 
+def test_backup_cap_counts_literally_with_glob_metachar_filename(
+    tmp_path, monkeypatch
+):
+    """A DB filename containing glob metacharacters ("kanban[1].db") must
+    still count its .corrupt.* siblings — parent.glob() would treat "[1]"
+    as a character class, count 0, and defeat the cap."""
+    monkeypatch.setenv("HERMES_KANBAN_CORRUPT_BACKUP_CAP", "3")
+    db_path = tmp_path / "kanban[1].db"
+    original = _write_corrupt_db(db_path)
+    for i in range(3):
+        (tmp_path / f"kanban[1].db.corrupt.fake{i}.bak").write_bytes(b"x")
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+        kb.connect(db_path=db_path)
+
+    # Cap honored: no new backup despite the metachar name.
+    assert excinfo.value.backup_path is None
+    siblings = sorted(
+        p.name for p in tmp_path.iterdir()
+        if p.name.startswith("kanban[1].db.corrupt.")
+    )
+    assert siblings == [f"kanban[1].db.corrupt.fake{i}.bak" for i in range(3)]
+    assert db_path.read_bytes() == original
+
+
 def test_corrupt_backup_cap_env_parsing(monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_CORRUPT_BACKUP_CAP", raising=False)
     assert kb._corrupt_backup_cap() == 16
     monkeypatch.setenv("HERMES_KANBAN_CORRUPT_BACKUP_CAP", "5")
     assert kb._corrupt_backup_cap() == 5
     monkeypatch.setenv("HERMES_KANBAN_CORRUPT_BACKUP_CAP", "garbage")
+    assert kb._corrupt_backup_cap() == 16
+
+
+@pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "1e2", "16.0"])
+def test_corrupt_backup_cap_nonfinite_and_float_strings_fall_back(
+    monkeypatch, raw
+):
+    """Non-finite and float-shaped strings must land on the default cap,
+    never a NaN/inf that breaks the >= cap comparison."""
+    monkeypatch.setenv("HERMES_KANBAN_CORRUPT_BACKUP_CAP", raw)
     assert kb._corrupt_backup_cap() == 16

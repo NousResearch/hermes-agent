@@ -206,6 +206,51 @@ def test_recover_refuses_existing_output(tmp_path, capsys):
     assert out.read_bytes() == b"precious"
 
 
+def test_recover_refuses_symlink_output(tmp_path, capsys):
+    """A BROKEN symlink reports exists() == False, but the sqlite3 CLI
+    would follow it and write through to the link target — reject it."""
+    db = tmp_path / "k.db"
+    _make_healthy_db(db)
+    target = tmp_path / "victim.db"  # deliberately never created
+    out = tmp_path / "sneaky-link.db"
+    out.symlink_to(target)
+    assert not out.exists() and out.is_symlink()
+
+    rc = _run_kanban(["recover", "--db", str(db), "--output", str(out)])
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "refusing" in captured.err
+    assert not target.exists(), "recover must never write through a symlink"
+
+
+def test_recover_refuses_symlink_output_to_existing_file(tmp_path, capsys):
+    """A live symlink to an existing file is also rejected (and untouched)."""
+    db = tmp_path / "k.db"
+    _make_healthy_db(db)
+    target = tmp_path / "precious.db"
+    target.write_bytes(b"precious")
+    out = tmp_path / "link-to-precious.db"
+    out.symlink_to(target)
+
+    rc = _run_kanban(["recover", "--db", str(db), "--output", str(out)])
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "refusing" in captured.err
+    assert target.read_bytes() == b"precious"
+
+
+def test_recover_refuses_missing_output_directory(tmp_path, capsys):
+    db = tmp_path / "k.db"
+    _make_healthy_db(db)
+    out = tmp_path / "no-such-dir" / "out.db"
+
+    rc = _run_kanban(["recover", "--db", str(db), "--output", str(out)])
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "output directory" in captured.err
+    assert not out.parent.exists(), "recover must not create the directory"
+
+
 def test_recover_missing_source_db(tmp_path, capsys):
     rc = _run_kanban([
         "recover",

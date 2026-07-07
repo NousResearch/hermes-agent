@@ -76,6 +76,7 @@ try:
 except ImportError:  # pragma: no cover - fcntl is unavailable on Windows.
     fcntl = None  # type: ignore[assignment]
 import json
+import math
 import os
 import re
 import secrets
@@ -90,6 +91,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Optional
+from urllib.parse import quote as _url_quote
 
 from toolsets import get_toolset_names
 
@@ -1054,9 +1056,26 @@ def _integrity_recheck_seconds() -> float:
     if not raw:
         return _DEFAULT_INTEGRITY_RECHECK_SECONDS
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
         return _DEFAULT_INTEGRITY_RECHECK_SECONDS
+    # float() accepts "nan"/"inf": NaN fails every comparison unpredictably
+    # and inf would defer the re-probe forever while looking enabled.
+    if not math.isfinite(value):
+        return _DEFAULT_INTEGRITY_RECHECK_SECONDS
+    return value
+
+
+def _reprobe_effective_interval(interval: float) -> float:
+    """The re-probe interval plus a deterministic per-process jitter.
+
+    Adds up to 10% of ``interval``, derived from ``os.getpid()`` — stable
+    within a process, different across sibling daemons — so 12 supervisors
+    started together don't all re-probe at the same interval boundary and
+    stampede the board. Deliberately not the ``random`` module: the jitter
+    must be deterministic per process.
+    """
+    return interval * (1.0 + 0.1 * ((os.getpid() % 1024) / 1024.0))
 
 
 def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
@@ -1142,9 +1161,14 @@ def _corrupt_backup_cap() -> int:
     if not raw:
         return _DEFAULT_CORRUPT_BACKUP_CAP
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
+        # int() rejects "nan"/"inf"/float strings, so non-finite or
+        # non-integer input always lands here and takes the default.
         return _DEFAULT_CORRUPT_BACKUP_CAP
+    if not math.isfinite(value):  # defensive: int() cannot yield non-finite
+        return _DEFAULT_CORRUPT_BACKUP_CAP
+    return value
 
 
 def _backup_corrupt_db(path: Path) -> Optional[Path]:
@@ -1172,8 +1196,15 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     # of recreating schema on top of it.
     cap = _corrupt_backup_cap()
     if cap > 0:
+        # Literal prefix match via iterdir(), NOT parent.glob(): glob
+        # metacharacters in an unusual DB filename ("kanban[1].db") would
+        # silently break the count and defeat the cap.
+        backup_prefix = f"{base_name}.corrupt."
         try:
-            existing = sum(1 for _ in parent.glob(f"{base_name}.corrupt.*"))
+            existing = sum(
+                1 for p in parent.iterdir()
+                if p.name.startswith(backup_prefix)
+            )
         except OSError:
             existing = 0
         if existing >= cap:
@@ -1294,12 +1325,23 @@ def _maybe_periodic_integrity_reprobe(resolved: Path, key: str) -> None:
     Behavior:
 
     * Runs at most once per ``HERMES_KANBAN_INTEGRITY_RECHECK_SECONDS``
-      (default 300; <= 0 disables) per resolved path.
+      (default 300; <= 0 disables) per resolved path, plus a deterministic
+      per-process jitter of up to 10% of the interval (pid-derived) so a
+      dozen daemons started together don't all probe at the same interval
+      boundary.
     * Uses ``PRAGMA quick_check`` — cheaper than the first-connect full
-      ``integrity_check`` — over a short-timeout probe connection.
-    * Lock/busy (``sqlite3.OperationalError``) is NOT corruption: the probe
-      is simply skipped and deferred one full interval so hot paths never
-      fail or stall behind a contended board.
+      ``integrity_check`` — over a short-timeout, **read-only**
+      (URI ``mode=ro``) probe connection. Read/write probe connections on
+      a WAL/hot-journal DB can checkpoint, run recovery, or take write
+      locks; a probe must never mutate a possibly-damaged file.
+    * The probe timestamp is recorded BEFORE probing (coalescing): while
+      one thread's probe is in flight, concurrent connects see a fresh
+      timestamp and skip instead of stacking probes behind
+      ``_cross_process_init_lock``.
+    * Lock/busy or a failed read-only open (``sqlite3.OperationalError``,
+      e.g. shm/lock issues) is NOT corruption: the probe is simply skipped
+      and deferred one full interval so hot paths never fail or stall
+      behind a contended board.
     * On a corruption verdict, the path is evicted from
       ``_INITIALIZED_PATHS`` (so subsequent connects re-run the full
       guard), the existing backup path runs, and
@@ -1310,11 +1352,19 @@ def _maybe_periodic_integrity_reprobe(resolved: Path, key: str) -> None:
         return
     now = time.monotonic()
     last = _LAST_INTEGRITY_PROBE.get(key)
-    if last is not None and (now - last) < interval:
+    if last is not None and (now - last) < _reprobe_effective_interval(interval):
         return
+    # Coalesce: stamp before probing so concurrent connects skip while this
+    # probe is in flight instead of queueing more probes. Every outcome
+    # below either keeps this stamp (healthy / lock-skip) or pops it
+    # (corruption eviction), so no verdict is lost.
+    _LAST_INTEGRITY_PROBE[key] = now
     reason: Optional[str] = None
     try:
-        probe = sqlite3.connect(str(resolved), timeout=2, isolation_level=None)
+        probe = sqlite3.connect(
+            f"file:{_url_quote(str(resolved))}?mode=ro",
+            uri=True, timeout=2, isolation_level=None,
+        )
         try:
             row = probe.execute("PRAGMA quick_check").fetchone()
         finally:
@@ -1322,14 +1372,14 @@ def _maybe_periodic_integrity_reprobe(resolved: Path, key: str) -> None:
         if not row or (row[0] or "").lower() != "ok":
             reason = f"quick_check returned {row[0] if row else '<no row>'!r}"
     except sqlite3.OperationalError:
-        # Lock contention / busy — never corruption. Skip this probe rather
-        # than failing a hot path; try again a full interval from now.
-        _LAST_INTEGRITY_PROBE[key] = now
+        # Lock contention / busy / read-only open refused (shm/lock) —
+        # never corruption. Skip this probe rather than failing a hot
+        # path; the pre-probe stamp above defers the next attempt a full
+        # interval from now.
         return
     except sqlite3.DatabaseError as exc:
         reason = f"sqlite refused to open file: {exc}"
     if reason is None:
-        _LAST_INTEGRITY_PROBE[key] = now
         return
     # Corruption detected on a previously-trusted path: evict the cache so
     # every subsequent connect() re-runs the full first-connect guard

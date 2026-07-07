@@ -90,3 +90,59 @@ def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
         force_document=False,
     )
 
+
+# ---------------------------------------------------------------------------
+# WeCom native ID routing — regression tests for #wecom-group-route (2026-07)
+#
+# Before the fix _parse_target_ref had no wecom branch, so 'wecom:wr<groupid>'
+# fell through to resolve_channel_name; the resolver's step-0 exact-id lookup
+# would return the same id, which the caller then re-parsed and still saw as
+# non-explicit, ultimately delivering the message to the home DM channel
+# instead of the target group.
+# ---------------------------------------------------------------------------
+
+
+def test_wecom_group_id_is_explicit() -> None:
+    """WeCom open_chatid (group) starts with 'wr' — must route as explicit."""
+    chat_id, thread_id, is_explicit = _parse_target_ref(
+        "wecom", "wrFQbCAAA0_qNz5FZGaKcXauJTU7U3Q"
+    )
+    assert chat_id == "wrFQbCAAA0_qNz5FZGaKcXauJTU7U3Q"
+    assert thread_id is None
+    assert is_explicit is True
+
+
+def test_wecom_user_id_is_explicit() -> None:
+    """WeCom open_userid (DM) starts with 'wo' — also explicit."""
+    chat_id, thread_id, is_explicit = _parse_target_ref(
+        "wecom", "wofFQbCAAAW20pGpj4fHwyCCz2WyUYCA"
+    )
+    assert chat_id == "wofFQbCAAAW20pGpj4fHwyCCz2WyUYCA"
+    assert thread_id is None
+    assert is_explicit is True
+
+
+def test_wecom_wm_prefix_is_explicit() -> None:
+    """'wm' covers ancillary WeCom IDs (media/message tokens, misc)."""
+    assert _parse_target_ref("wecom", "wmXYZ12345")[2] is True
+
+
+def test_wecom_leading_whitespace_ignored() -> None:
+    """Callers occasionally splat 'wecom:  wr...' after string concat."""
+    chat_id, _, is_explicit = _parse_target_ref("wecom", "  wrABCDEF  ")
+    assert is_explicit is True
+    assert chat_id == "wrABCDEF"
+
+
+def test_wecom_friendly_name_still_uses_directory_resolution() -> None:
+    """Non-native names (aliases, group titles) must NOT be treated as
+    explicit so the channel-directory resolver still runs."""
+    assert _parse_target_ref("wecom", "工作群")[2] is False
+    assert _parse_target_ref("wecom", "engineering")[2] is False
+
+
+def test_wecom_prefix_only_matches_wecom_platform() -> None:
+    """The wr/wo/wm heuristic must not leak into other platforms."""
+    assert _parse_target_ref("telegram", "wrFQbCAAA0_qNz5FZGa")[2] is False
+    assert _parse_target_ref("weixin", "wofFQbCAAAW20pGpj4fH")[2] is False
+

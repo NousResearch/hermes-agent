@@ -2392,6 +2392,40 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             usage=usage_obj,
         )
 
+    def _call_chat_completion_non_streaming():
+        """Non-streaming chat completion — still benefits from retry/backoff."""
+        import httpx as _httpx
+
+        _provider_timeout_cfg = get_provider_request_timeout(agent.provider, agent.model)
+        _base_timeout = (
+            _provider_timeout_cfg
+            if _provider_timeout_cfg is not None
+            else env_float("HERMES_API_TIMEOUT", 1800.0)
+        )
+        _conn_cap = min(_base_timeout, 60.0) if _provider_timeout_cfg is not None else 30.0
+        _ns_kwargs = {
+            **api_kwargs,
+            "timeout": _httpx.Timeout(
+                connect=_conn_cap,
+                read=_base_timeout,
+                write=_base_timeout,
+                pool=_conn_cap,
+            ),
+        }
+        request_client = _set_request_client(
+            agent._create_request_openai_client(
+                reason="chat_completion_non_streaming_request",
+                api_kwargs=_ns_kwargs,
+            )
+        )
+        last_chunk_time["t"] = time.time()
+        agent._touch_activity("waiting for non-streaming response")
+        _diag = agent._stream_diag_init()
+        request_client_holder["diag"] = _diag
+        response = request_client.chat.completions.create(**_ns_kwargs)
+        agent._capture_rate_limits(getattr(response, "_response", None))
+        return response
+
     def _call_anthropic():
         """Stream an Anthropic Messages API response.
 
@@ -2505,10 +2539,23 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # causing multi-minute delays between /stop and response.
                 if agent._interrupt_requested:
                     raise InterruptedError("Agent interrupted before stream retry")
+                # Reset per-attempt state so partial results from a failed
+                # attempt don't corrupt the next one.
+                result["error"] = None
+                result["response"] = None
+                result["partial_tool_names"] = []
+                if _stream_attempt > 0:
+                    _backoff = min(2 ** (_stream_attempt - 1), 30)
+                    import time as _time
+                    _time.sleep(_backoff)
                 try:
                     if agent.api_mode == "anthropic_messages":
                         agent._try_refresh_anthropic_client_credentials()
                         result["response"] = _call_anthropic()
+                    elif agent.api_mode == "chat_completions" and not api_kwargs.get("stream", True):
+                        # Non-streaming chat completion — still gets retry
+                        # and backoff via the outer retry loop.
+                        result["response"] = _call_chat_completion_non_streaming()
                     else:
                         result["response"] = _call_chat_completions()
                     return  # success

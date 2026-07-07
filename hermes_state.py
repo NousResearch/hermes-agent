@@ -5601,18 +5601,34 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return self._execute_write(_do) or 0
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Get a session by ID."""
+        """Get a session by ID.
+
+        Includes a computed ``last_active`` (latest message timestamp,
+        falling back to ``started_at`` for a session with no messages yet) —
+        the same COALESCE(MAX(messages.timestamp), started_at) pattern every
+        list-shaped query in this module already applies. This single-row
+        fetch used to omit it entirely (no such column exists on the table
+        itself; every other accessor computes it), which any caller keying
+        off ``last_active`` — the miniapp's single-session detail view among
+        them — silently read as ``None``/``NaN`` rather than a real value.
+        """
         # Cost/usage readers (/status, /usage, gateway endpoints) reach the
         # row through here; drain queued token deltas so they see exact
         # totals. No-op attribute check when nothing is queued.
         self.flush_token_counts()
         with self._read_ctx() as conn:
             cursor = conn.execute(
-                "SELECT s.*, "
-                "COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
-                "FROM sessions s "
-                "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
-                "WHERE s.id = ?",
+                """
+                SELECT s.*,
+                    COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved,
+                    COALESCE(
+                        (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id),
+                        s.started_at
+                    ) AS last_active
+                FROM sessions s
+                LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash
+                WHERE s.id = ?
+                """,
                 (session_id,),
             )
             row = cursor.fetchone()

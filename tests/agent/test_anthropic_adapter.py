@@ -1704,6 +1704,67 @@ class TestBuildAnthropicKwargs:
         )
         assert kwargs["max_tokens"] == 64_000
 
+    # ── thinking.display parity (Codex reasoning.summary) ──────────────
+
+    def test_reasoning_config_default_display_is_summarized(self):
+        """Default display='summarized' — backward compatible with existing
+        behavior. reasoning_config without an explicit display field keeps
+        reasoning text populated in the response stream."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "think"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert kwargs["thinking"]["type"] == "adaptive"
+        assert kwargs["thinking"]["display"] == "summarized"
+
+    def test_reasoning_config_display_omitted_is_passed_through(self):
+        """display='omitted' is passed through to the Anthropic API for
+        latency-sensitive workflows. The server skips streaming thinking
+        tokens and returns only the signature, improving TTFB. Mirrors
+        Codex's reasoning.summary control for cross-provider parity."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "think fast"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={
+                "enabled": True, "effort": "high", "display": "omitted",
+            },
+        )
+        assert kwargs["thinking"]["type"] == "adaptive"
+        assert kwargs["thinking"]["display"] == "omitted"
+
+    def test_reasoning_config_invalid_display_falls_back_to_summarized(self):
+        """An unrecognised display value must not reach the API — fall back
+        to 'summarized' so a stale or malformed config doesn't cause a
+        request failure."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "think"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={
+                "enabled": True, "effort": "medium", "display": "invalid-value",
+            },
+        )
+        assert kwargs["thinking"]["display"] == "summarized"
+
+    def test_reasoning_config_display_case_insensitive(self):
+        """display value is normalised to lowercase."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "think"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={
+                "enabled": True, "effort": "medium", "display": "OMITTED",
+            },
+        )
+        assert kwargs["thinking"]["display"] == "omitted"
+
 
 # ---------------------------------------------------------------------------
 # Model output limit lookup

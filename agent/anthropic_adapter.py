@@ -2635,17 +2635,29 @@ def build_anthropic_kwargs(
     #
     # On 4.7+ the `thinking.display` field defaults to "omitted", which
     # silently hides reasoning text that Hermes surfaces in its CLI. We
-    # request "summarized" so the reasoning blocks stay populated — matching
+    # default to "summarized" so the reasoning blocks stay populated — matching
     # 4.6 behavior and preserving the activity-feed UX during long tool runs.
+    # Users can set reasoning_config.display = "omitted" for latency-sensitive
+    # workflows (faster TTFB as the server skips streaming thinking tokens).
+    # This mirrors Codex's ``reasoning.summary`` control — both APIs expose a
+    # display/summary toggle for cross-provider parity.
     _is_kimi_coding = _is_kimi_family_endpoint(base_url, model)
     if reasoning_config and isinstance(reasoning_config, dict) and not _is_kimi_coding:
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
+            # Resolve thinking display mode. Accepts "summarized" (default) or
+            # "omitted" (faster TTFB — server skips streaming thinking tokens
+            # and returns only the signature). Configurable via
+            # reasoning_config.display for parity with Codex's
+            # ``reasoning.summary`` control.
+            _display = str(reasoning_config.get("display", "summarized")).strip().lower()
+            if _display not in ("summarized", "omitted"):
+                _display = "summarized"
             if _supports_adaptive_thinking(model):
                 kwargs["thinking"] = {
                     "type": "adaptive",
-                    "display": "summarized",
+                    "display": _display,
                 }
                 adaptive_effort = ADAPTIVE_EFFORT_MAP.get(effort, "medium")
                 # Downgrade xhigh→max on models that don't list xhigh as a

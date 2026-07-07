@@ -281,7 +281,7 @@ def _maybe_apply_moa_cache_control(
 
 
 def _run_reference(
-    slot: dict[str, str],
+    slot: dict[str, Any],
     ref_messages: list[dict[str, Any]],
     *,
     temperature: float | None = None,
@@ -333,11 +333,16 @@ def _run_reference(
         # (their caching is automatic; markers are ignored harmlessly, but we
         # only decorate when the policy says the route honors them).
         messages = _maybe_apply_moa_cache_control(messages, runtime)
+        # Per-slot max_tokens takes precedence over the preset-level
+        # reference_max_tokens passed in by the caller. This lets each
+        # reference model have its own output cap independently.
+        _slot_max_tokens: int | None = slot.get("max_tokens")
+        _effective_max_tokens = _slot_max_tokens if _slot_max_tokens is not None else max_tokens
         response = call_llm(
             task="moa_reference",
             messages=messages,
             temperature=temperature,
-            max_tokens=max_tokens,
+            max_tokens=_effective_max_tokens,
             reasoning_config=_slot_reasoning_config(slot),
             **runtime,
         )
@@ -398,7 +403,7 @@ def _run_reference(
 
 
 def _run_references_parallel(
-    reference_models: list[dict[str, str]],
+    reference_models: list[dict[str, Any]],
     ref_messages: list[dict[str, Any]],
     *,
     temperature: float | None = None,
@@ -683,8 +688,8 @@ def aggregate_moa_context(
     *,
     user_prompt: str,
     api_messages: list[dict[str, Any]],
-    reference_models: list[dict[str, str]],
-    aggregator: dict[str, str],
+    reference_models: list[dict[str, Any]],
+    aggregator: dict[str, Any],
     temperature: float | None = None,
     aggregator_temperature: float | None = None,
     reference_max_tokens: int | None = None,

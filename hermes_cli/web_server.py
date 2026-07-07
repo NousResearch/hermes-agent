@@ -3891,6 +3891,7 @@ def _provider_field_entry(field: ProviderField) -> Dict[str, Any]:
         "label": field.label,
         "kind": field.kind,
         "description": field.description,
+        "info": field.info,
         "placeholder": field.placeholder,
         "inline": field.inline,
         "group": field.group,

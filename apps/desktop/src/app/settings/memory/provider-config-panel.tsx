@@ -7,7 +7,7 @@ import { Loader2, Save, SlidersHorizontal } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 import type { MemoryProviderConfig } from '@/types/hermes'
 
-import { FieldControl } from './field-control'
+import { FieldControl, FieldTitle } from './field-control'
 import { ListRow, LoadingState, Pill } from '../primitives'
 import { ProviderConfigModal } from './provider-config-modal'
 
@@ -145,7 +145,7 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
                   />
                 }
                 description={field.description}
-                title={field.label}
+                title={<FieldTitle field={field} />}
               />
             </div>
           ))}

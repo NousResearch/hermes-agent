@@ -9,6 +9,11 @@ vi.mock('@/hermes', () => ({
   saveMemoryProviderConfig: (provider: string, values: unknown) => saveMemoryProviderConfig(provider, values)
 }))
 
+vi.mock('@/store/profile', async () => {
+  const { atom } = await import('nanostores')
+  return { $activeGatewayProfile: atom('default') }
+})
+
 vi.mock('@/store/notifications', () => ({
   notify: vi.fn(),
   notifyError: vi.fn()

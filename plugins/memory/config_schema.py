@@ -78,6 +78,8 @@ class ProviderField:
     env_fallbacks: tuple[str, ...] = ()
     inline: bool = False
     group: str = ""
+    # Longer help text surfaced as an info tooltip next to the field label.
+    info: str = ""
     # Host-block placement: "host" (per-profile) or "root"; flat-json ignores it.
     scope: str = "host"
 

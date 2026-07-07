@@ -131,6 +131,7 @@ export interface MemoryProviderFieldOption {
 export interface MemoryProviderField {
   description: string
   group: string
+  info?: string
   inline: boolean
   is_set: boolean
   key: string

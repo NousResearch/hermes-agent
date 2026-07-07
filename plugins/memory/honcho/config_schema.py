@@ -100,6 +100,12 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             kind=KIND_SELECT,
             default="per-directory",
             description="How conversations map to Honcho sessions.",
+            info=(
+                "Per session: every conversation gets its own Honcho session. "
+                "Per directory: conversations from the same working directory share one. "
+                "Per repo: conversations from the same git repo share one. "
+                "Global: everything shares a single session."
+            ),
             options=(
                 ProviderFieldOption("per-session", "Per session"),
                 ProviderFieldOption("per-directory", "Per directory"),
@@ -181,6 +187,11 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             kind=KIND_TEXT,
             default="async",
             description="When to flush messages: async, turn, session, or every N turns.",
+            info=(
+                "async: write in the background as messages arrive. "
+                "turn: flush after each turn. session: flush when the session ends. "
+                "A number N flushes every N turns."
+            ),
             placeholder="async | turn | session | N",
             group="Message writing",
         ),
@@ -259,6 +270,11 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             kind=KIND_SELECT,
             default="hybrid",
             description="How memory retrieval works: hybrid, context-only, or tools-only.",
+            info=(
+                "Hybrid: auto-injected context plus on-demand memory tools. "
+                "Context only: injection without tools. "
+                "Tools only: the model queries memory explicitly, nothing is injected."
+            ),
             options=(
                 ProviderFieldOption("hybrid", "Hybrid"),
                 ProviderFieldOption("context", "Context only"),

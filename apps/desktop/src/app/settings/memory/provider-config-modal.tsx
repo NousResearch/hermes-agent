@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -15,7 +16,9 @@ import { ExternalLink, Loader2, Save, SlidersHorizontal } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 
-import { FieldControl } from './field-control'
+import { $activeGatewayProfile } from '@/store/profile'
+
+import { FieldControl, FieldTitle } from './field-control'
 import { ListRow } from '../primitives'
 
 // Secrets seed blank: values are write-only and blank keeps the stored one.
@@ -51,6 +54,7 @@ export function ProviderConfigModal({
   onOpenChange: (open: boolean) => void
   onSaved: () => Promise<void> | void
 }) {
+  const activeProfile = useStore($activeGatewayProfile)
   const [values, setValues] = useState<Record<string, string>>({})
   const [seeded, setSeeded] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
@@ -87,8 +91,8 @@ export function ProviderConfigModal({
         <DialogHeader>
           <DialogTitle icon={SlidersHorizontal}>{config.label} — full configuration</DialogTitle>
           <DialogDescription>
-            Every {config.label} option for the active profile. Blank fields fall back to the resolved host or
-            built-in default.
+            Every {config.label} option for the <span className="font-medium">{activeProfile}</span> profile. Blank
+            fields fall back to the resolved host or built-in default.
           </DialogDescription>
           {config.docs_url && (
             <a
@@ -125,7 +129,7 @@ export function ProviderConfigModal({
                         />
                       }
                       description={field.description}
-                      title={field.label}
+                      title={<FieldTitle field={field} />}
                     />
                   </div>
                 ))}

@@ -96,6 +96,8 @@ def _cmd_status(args) -> int:
             pinned.append(r["name"])
 
     print(f"\nagent-created skills: {len(rows)} total")
+    if curator.get_prune_builtins():
+        print("  (may include bundled built-ins as archive-only prune candidates)")
     for state_name in ("active", "stale", "archived"):
         bucket = by_state.get(state_name, [])
         print(f"  {state_name:10s} {len(bucket)}")
@@ -250,8 +252,8 @@ def _cmd_pin(args) -> int:
     from tools import skill_usage
     if not skill_usage.is_agent_created(args.skill):
         print(
-            f"curator: '{args.skill}' is bundled or hub-installed — cannot pin "
-            "(only agent-created skills participate in curation)"
+            f"curator: '{args.skill}' is bundled, hub-installed, or external — "
+            "cannot pin (only non-bundled, non-hub, non-external skill names can be pinned)"
         )
         return 1
     skill_usage.set_pinned(args.skill, True)
@@ -263,8 +265,8 @@ def _cmd_unpin(args) -> int:
     from tools import skill_usage
     if not skill_usage.is_agent_created(args.skill):
         print(
-            f"curator: '{args.skill}' is bundled or hub-installed — "
-            "there's nothing to unpin (curator only tracks agent-created skills)"
+            f"curator: '{args.skill}' is bundled, hub-installed, or external — "
+            "there's nothing to unpin"
         )
         return 1
     skill_usage.set_pinned(args.skill, False)
@@ -318,6 +320,9 @@ def _idle_days(record: dict) -> Optional[int]:
 
 def _cmd_prune(args) -> int:
     """Bulk-archive agent-created skills idle for >= N days.
+
+    When ``curator.prune_builtins`` is enabled, bundled built-ins can also be
+    included as archive-only candidates.
 
     Pinned skills are exempt. Already-archived skills are skipped. Default
     ``--days 90`` matches a conservative read of the curator's own archive
@@ -491,7 +496,8 @@ def _cmd_list_archived(args) -> int:
 def _cmd_usage(args) -> int:
     """Show usage telemetry for ALL skills, with provenance.
 
-    Unlike `status` (curator-scoped to agent-created candidates), this lists
+    Unlike `status` (scoped to agent-created skills plus any prune-eligible
+    bundled built-ins), this lists
     every skill on disk — bundled built-ins and hub-installed included — so you
     can see how often each is actually used regardless of curation.
     """
@@ -635,7 +641,10 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
 
     p_prune = subs.add_parser(
         "prune",
-        help="Bulk-archive agent-created skills idle for >= N days (default 90)",
+        help=(
+            "Bulk-archive agent-created skills idle for >= N days (default 90); "
+            "may include bundled built-ins when curator.prune_builtins is on"
+        ),
     )
     p_prune.add_argument(
         "--days", type=int, default=90,

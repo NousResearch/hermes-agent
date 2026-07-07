@@ -876,7 +876,7 @@ hermes bundles delete backend-dev
 hermes curator <subcommand>
 ```
 
-Curator 是一个辅助模型后台任务，定期审查 agent 创建的 skill，修剪过期的，合并重叠的，并归档过时的。捆绑和通过 hub 安装的 skill 不会被触及。归档可恢复；不会发生自动删除。
+Curator 是一个辅助模型后台任务，定期审查 agent 创建的 skill，修剪过期的，合并重叠的，并归档过时的。默认情况下（`curator.prune_builtins: true`），未使用的捆绑内置 skill 也可能在空闲窗口之后被归档；设置 `curator.prune_builtins: false` 可豁免它们。Hub 安装的 skill 永远不会被触及。归档可恢复；不会发生自动删除。
 
 | 子命令 | 说明 |
 |------------|-------------|

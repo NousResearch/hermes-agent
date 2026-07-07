@@ -1031,8 +1031,10 @@ go to `~/.hermes/skills/.archive/` and are restorable.
   archived), `pinned`.
 
 Invariants:
-- Curator only touches skills with `created_by: "agent"` provenance —
-  bundled + hub-installed skills are off-limits.
+- Curator primarily touches skills with `created_by: "agent"` provenance.
+- Unused bundled built-ins may also be archived when
+  `curator.prune_builtins: true` (default). They are archive-only
+  candidates; hub-installed skills are always off-limits.
 - Never deletes; max destructive action is archive.
 - Pinned skills are exempt from every auto-transition and from the
   LLM review pass.

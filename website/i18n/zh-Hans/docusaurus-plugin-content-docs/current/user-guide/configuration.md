@@ -17,7 +17,7 @@ description: "配置 Hermes Agent — config.yaml、providers、模型、API 密
 ├── auth.json       # OAuth provider 凭据（Nous Portal 等）
 ├── SOUL.md         # 主要 agent 身份（系统提示词第 #1 槽位）
 ├── memories/       # 持久记忆（MEMORY.md、USER.md）
-├── skills/         # Agent 创建的技能（通过 skill_manage 工具管理）
+├── skills/         # 技能：捆绑内置、hub 安装以及本地创建
 ├── cron/           # 定时任务
 ├── sessions/       # Gateway 会话
 └── logs/           # 日志（errors.log、gateway.log — 机密自动脱敏）

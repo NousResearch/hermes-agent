@@ -27,6 +27,7 @@ BUSY_INPUT_FLAG = "busy_input_prompt"
 TOOL_PROGRESS_FLAG = "tool_progress_prompt"
 OPENCLAW_RESIDUE_FLAG = "openclaw_residue_cleanup"
 PROFILE_BUILD_FLAG = "profile_build_offered"
+SETHOME_NOTICE_FLAG_PREFIX = "sethome_notice"  # per-platform: sethome_notice_<platform>
 
 
 # -------------------------------------------------------------------------
@@ -184,6 +185,56 @@ def profile_build_directive() -> str:
 
 
 # -------------------------------------------------------------------------
+# Sethome-notice gate (the "📬 No home channel is set…" prompt)
+# -------------------------------------------------------------------------
+
+def sethome_notice_mode(config: Mapping[str, Any]) -> str:
+    """Resolve how the no-home-channel onboarding notice is shown.
+
+    Returns one of:
+      ``"once"``   — show at most once per platform per install (default).
+      ``"always"`` — legacy behavior: show in every chat with empty history.
+      ``"off"``    — never show.
+
+    Read from ``config.onboarding.sethome_notice``. The default is "once"
+    because on multi-user deployments (one bot, many DM chats) the legacy
+    per-chat behavior surfaced a staff-facing setup prompt to end users in
+    every fresh chat until someone set the home channel.
+    """
+    if not isinstance(config, Mapping):
+        return "once"
+    onboarding = config.get("onboarding")
+    if not isinstance(onboarding, Mapping):
+        return "once"
+    mode = onboarding.get("sethome_notice")
+    if isinstance(mode, str) and mode.strip().lower() in ("off", "always"):
+        return mode.strip().lower()
+    return "once"
+
+
+def sethome_notice_gate(
+    config: Mapping[str, Any], platform_name: str
+) -> tuple[bool, Optional[str]]:
+    """Decide whether to show the no-home-channel notice for a platform.
+
+    Returns ``(show, mark_flag)``. ``mark_flag`` is the seen-flag the caller
+    must persist via :func:`mark_seen` after actually delivering the notice —
+    it is only set in "once" mode; "always" never persists (and never
+    suppresses). The caller remains responsible for the cheap checks (home
+    env var unset, platform is real, chat history empty).
+    """
+    mode = sethome_notice_mode(config)
+    if mode == "off":
+        return False, None
+    flag = f"{SETHOME_NOTICE_FLAG_PREFIX}_{platform_name}"
+    if mode == "once":
+        if is_seen(config, flag):
+            return False, None
+        return True, flag
+    return True, None  # mode == "always"
+
+
+# -------------------------------------------------------------------------
 # State read / write
 # -------------------------------------------------------------------------
 
@@ -240,6 +291,7 @@ __all__ = [
     "TOOL_PROGRESS_FLAG",
     "OPENCLAW_RESIDUE_FLAG",
     "PROFILE_BUILD_FLAG",
+    "SETHOME_NOTICE_FLAG_PREFIX",
     "busy_input_hint_gateway",
     "busy_input_hint_cli",
     "tool_progress_hint_gateway",
@@ -248,6 +300,8 @@ __all__ = [
     "detect_openclaw_residue",
     "profile_build_mode",
     "profile_build_directive",
+    "sethome_notice_mode",
+    "sethome_notice_gate",
     "is_seen",
     "mark_seen",
 ]

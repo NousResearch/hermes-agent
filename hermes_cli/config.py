@@ -2798,6 +2798,12 @@ DEFAULT_CONFIG = {
         # reads connected accounts silently). "off" -> plain intro only.
         # The offer fires at most once (latched under onboarding.seen).
         "profile_build": "ask",
+        # "📬 No home channel is set…" prompt shown when a platform has no
+        # home-target env var. "once" (default) -> at most once per platform
+        # per install (latched under onboarding.seen.sethome_notice_<platform>).
+        # "always" -> legacy per-empty-chat behavior. "off" -> never show
+        # (recommended for multi-user / customer-facing deployments).
+        "sethome_notice": "once",
     },
 
     # ``hermes update`` behaviour.

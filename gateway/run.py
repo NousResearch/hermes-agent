@@ -10015,28 +10015,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 context_prompt += _intro_note
         
-        # One-time prompt if no home channel is set for this platform
+        # Prompt if no home channel is set for this platform. Gated by
+        # onboarding.sethome_notice ("once" default / "always" / "off") — on
+        # multi-user deployments the ungated prompt leaked a staff-facing
+        # setup message into every fresh end-user chat.
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
             env_key = _home_target_env_var(platform_name)
             if not os.getenv(env_key):
-                # Slack dispatches all Hermes commands through a single
-                # parent slash command `/hermes`; bare `/sethome` is not
-                # registered and would fail with "app did not respond".
-                sethome_cmd = (
-                    "/hermes sethome"
-                    if source.platform == Platform.SLACK
-                    else "/sethome"
-                )
-                notice = (
-                    f"📬 No home channel is set for {platform_name.title()}. "
-                    f"A home channel is where Hermes delivers cron job results "
-                    f"and cross-platform messages.\n\n"
-                    f"Type {sethome_cmd} to make this chat your home channel, "
-                    f"or ignore to skip."
-                )
-                await self._deliver_platform_notice(source, notice)
+                try:
+                    from agent.onboarding import mark_seen, sethome_notice_gate
+
+                    _show_notice, _notice_flag = sethome_notice_gate(
+                        _load_gateway_config(), platform_name
+                    )
+                except Exception as _sh_err:
+                    # Fail closed: suppressing an onboarding hint is strictly
+                    # safer than re-spamming it into customer-facing chats.
+                    logger.debug("sethome-notice gate failed, skipping: %s", _sh_err)
+                    _show_notice, _notice_flag = False, None
+                if _show_notice:
+                    # Slack dispatches all Hermes commands through a single
+                    # parent slash command `/hermes`; bare `/sethome` is not
+                    # registered and would fail with "app did not respond".
+                    sethome_cmd = (
+                        "/hermes sethome"
+                        if source.platform == Platform.SLACK
+                        else "/sethome"
+                    )
+                    notice = (
+                        f"📬 No home channel is set for {platform_name.title()}. "
+                        f"A home channel is where Hermes delivers cron job results "
+                        f"and cross-platform messages.\n\n"
+                        f"Type {sethome_cmd} to make this chat your home channel, "
+                        f"or ignore to skip."
+                    )
+                    await self._deliver_platform_notice(source, notice)
+                    if _notice_flag:
+                        mark_seen(_hermes_home / "config.yaml", _notice_flag)
         
         # -----------------------------------------------------------------
         # Voice channel awareness — inject current voice channel state

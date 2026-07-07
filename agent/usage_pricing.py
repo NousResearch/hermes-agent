@@ -27,12 +27,19 @@ CostSource = Literal[
 ]
 
 
-# Local subscription proxies / bridges / pools that front the Anthropic API.
-# Their marginal cash cost is $0 (flat Claude subscription / tailnet failover /
-# local relay), but we price them at official Anthropic API rates for fleet cost
-# *visibility* and label the result "estimated". Provider names match the
-# `provider:` keys used in ~/.hermes/config.yaml + plugins/model-providers/*
-# across the fleet.
+# Providers that front the Anthropic API and are priced at official Anthropic
+# API rates (docs snapshot) for fleet cost *visibility*, labelled "estimated".
+# Two flavors, same routing:
+#   • Local subscription proxies / bridges / pools whose marginal cash cost is
+#     $0 (flat Claude subscription / tailnet failover / local relay).
+#   • Third-party Anthropic-compatible resellers billed in real cash but at
+#     their own rate (e.g. `yunwu`, 云雾 API) — priced here at the SAME official
+#     Anthropic snapshot the other Claude rows use, on purpose, so a Yunwu
+#     claude-* turn reconciles against the rest of the fleet rather than getting
+#     a bespoke rate table (the estimate is Anthropic list price, not Yunwu's
+#     actual ⚡-credit cost — same "estimated" caveat as the $0 proxies).
+# Provider names match the `provider:` keys used in ~/.hermes/config.yaml +
+# plugins/model-providers/* across the fleet.
 #
 # This is the set of EXACT BASE names. The numbered failover family
 # (claude-api-proxy-fN / claude-bridge-fN, any integer N) is matched by PATTERN
@@ -44,6 +51,7 @@ NOTIONAL_ANTHROPIC_PROVIDERS = frozenset({
     "claude-bridge",
     "claude-pool",
     "claude-app",
+    "yunwu",
 })
 
 # claude-api-proxy-f1, claude-bridge-f2, … -f<any integer>. Anchored +

@@ -1488,6 +1488,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             "Fallback activated: %s → %s (%s)",
             old_model, fb_model, fb_provider,
         )
+        # Reset the cross-turn stream-stale circuit breaker (#58962): the
+        # streak measured the OLD provider's unresponsiveness.  Carrying it
+        # over would short-circuit the freshly activated fallback before it
+        # gets a single stream attempt.
+        agent._consecutive_stale_streams = 0
         return True
     except Exception as e:
         if fb_provider == "nous":

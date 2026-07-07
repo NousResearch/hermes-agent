@@ -1992,6 +1992,13 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # ── Invalidate cached system prompt so it rebuilds next turn ──
     agent._cached_system_prompt = None
 
+    # ── Reset the cross-turn stream-stale circuit breaker (#58962) ──
+    # The breaker's error text tells the user to "switch models ... then
+    # retry"; without this reset the streak stays latched and the freshly
+    # selected (healthy) provider would keep short-circuiting before any
+    # stream is even attempted.
+    agent._consecutive_stale_streams = 0
+
     # ── Update _primary_runtime so the change persists across turns ──
     _cc = agent.context_compressor if hasattr(agent, "context_compressor") and agent.context_compressor else None
     agent._primary_runtime = {

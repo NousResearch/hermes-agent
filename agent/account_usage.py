@@ -72,6 +72,59 @@ def _parse_dt(value: Any) -> Optional[datetime]:
     return None
 
 
+def _coerce_percent_value(value: Any) -> Optional[float]:
+    """Return an already-scaled percent value when numeric and finite."""
+
+    if value is None:
+        return None
+    try:
+        percent = float(value)
+    except (TypeError, ValueError):
+        return None
+    return percent if math.isfinite(percent) else None
+
+
+def _coerce_usage_percent(value: Any) -> Optional[float]:
+    """Return a percent value for legacy Anthropic utilization fields.
+
+    Anthropic's OAuth usage endpoint has emitted both fractional utilization
+    values (``0.41``) and already-scaled percentage values (``41``). Treat
+    utilization values in ``[0, 1]`` as fractions and larger values as
+    percentages. Do not use this for fields literally named ``percent``.
+    """
+
+    percent = _coerce_percent_value(value)
+    if percent is None:
+        return None
+    return percent * 100 if 0 <= percent <= 1 else percent
+
+
+def _anthropic_scoped_limit_label(limit: dict[str, Any]) -> Optional[str]:
+    """Human label for Anthropic ``limits[]`` scoped quota entries.
+
+    Newer Claude Code/Anthropic OAuth usage responses expose model-specific
+    weekly buckets (for example the Fable weekly bucket) under ``limits`` as
+    ``kind=weekly_scoped`` instead of the legacy ``seven_day_sonnet`` /
+    ``seven_day_opus`` top-level fields. Preserve those buckets so /usage does
+    not make the old all-models weekly limit look like the only weekly signal.
+    """
+
+    if limit.get("kind") != "weekly_scoped":
+        return None
+    scope = limit.get("scope")
+    if not isinstance(scope, dict):
+        return "Scoped week"
+    model = scope.get("model")
+    if isinstance(model, dict):
+        display = str(model.get("display_name") or model.get("id") or "").strip()
+        if display:
+            return f"{display} week"
+    surface = scope.get("surface")
+    if isinstance(surface, str) and surface.strip():
+        return f"{_title_case_slug(surface)} week"
+    return "Scoped week"
+
+
 def _format_reset(dt: Optional[datetime]) -> str:
     if not dt:
         return "unknown"
@@ -571,12 +624,12 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
         ("seven_day_opus", "Opus week"),
         ("seven_day_sonnet", "Sonnet week"),
     )
+    seen_labels: set[str] = set()
     for key, label in mapping:
         window = payload.get(key) or {}
-        util = window.get("utilization")
-        if util is None:
+        used = _coerce_usage_percent(window.get("utilization"))
+        if used is None:
             continue
-        used = float(util) * 100 if float(util) <= 1 else float(util)
         windows.append(
             AccountUsageWindow(
                 label=label,
@@ -584,6 +637,29 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
                 reset_at=_parse_dt(window.get("resets_at")),
             )
         )
+        seen_labels.add(label)
+
+    # Claude Code's newer /api/oauth/usage payload can carry scoped weekly
+    # buckets in a generic limits[] array while the older top-level fields (for
+    # example seven_day_sonnet) are null. This is how model-specific buckets
+    # like the Fable weekly allowance currently appear.
+    for limit in payload.get("limits") or []:
+        if not isinstance(limit, dict):
+            continue
+        label = _anthropic_scoped_limit_label(limit)
+        if not label or label in seen_labels:
+            continue
+        used = _coerce_percent_value(limit.get("percent"))
+        if used is None:
+            continue
+        windows.append(
+            AccountUsageWindow(
+                label=label,
+                used_percent=used,
+                reset_at=_parse_dt(limit.get("resets_at")),
+            )
+        )
+        seen_labels.add(label)
     details: list[str] = []
     extra = payload.get("extra_usage") or {}
     if extra.get("is_enabled"):

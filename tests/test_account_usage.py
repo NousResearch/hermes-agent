@@ -95,6 +95,82 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert "Credits balance: $12.50" in snapshot.details
 
 
+def test_fetch_account_usage_anthropic_includes_scoped_weekly_limits(monkeypatch):
+    reset = "2026-07-11T00:59:59.849583+00:00"
+    monkeypatch.setattr("agent.account_usage.resolve_anthropic_token", lambda: "sk-ant-oat-test")
+    monkeypatch.setattr("agent.account_usage._is_oauth_token", lambda token: True)
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "five_hour": {"utilization": 30, "resets_at": "2026-07-07T10:39:59Z"},
+                "seven_day": {"utilization": 76, "resets_at": reset},
+                "seven_day_opus": None,
+                "seven_day_sonnet": None,
+                "limits": [
+                    {
+                        "kind": "session",
+                        "group": "session",
+                        "percent": 30,
+                        "resets_at": "2026-07-07T10:39:59Z",
+                    },
+                    {
+                        "kind": "weekly_all",
+                        "group": "weekly",
+                        "percent": 76,
+                        "resets_at": reset,
+                    },
+                    {
+                        "kind": "weekly_scoped",
+                        "group": "weekly",
+                        "percent": 41,
+                        "resets_at": reset,
+                        "scope": {"model": {"id": None, "display_name": "Fable"}},
+                    },
+                    {
+                        "kind": "weekly_scoped",
+                        "group": "weekly",
+                        "percent": 1,
+                        "resets_at": reset,
+                        "scope": {"model": {"id": None, "display_name": "Haiku"}},
+                    },
+                ],
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("anthropic")
+
+    assert snapshot is not None
+    assert [(window.label, window.used_percent) for window in snapshot.windows] == [
+        ("Current session", 30.0),
+        ("Current week", 76.0),
+        ("Fable week", 41.0),
+        ("Haiku week", 1.0),
+    ]
+    assert snapshot.windows[2].reset_at == datetime.fromisoformat(reset)
+    assert snapshot.windows[3].reset_at == datetime.fromisoformat(reset)
+
+
+def test_fetch_account_usage_anthropic_accepts_fractional_legacy_utilization(monkeypatch):
+    monkeypatch.setattr("agent.account_usage.resolve_anthropic_token", lambda: "sk-ant-oat-test")
+    monkeypatch.setattr("agent.account_usage._is_oauth_token", lambda token: True)
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "five_hour": {"utilization": 0.3, "resets_at": "2026-07-07T10:39:59Z"},
+                "seven_day": {"utilization": 0.76, "resets_at": "2026-07-11T00:59:59Z"},
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("anthropic")
+
+    assert snapshot is not None
+    assert [window.used_percent for window in snapshot.windows] == [30.0, 76.0]
+
+
 def test_render_account_usage_lines_includes_reset_and_provider():
     snapshot = AccountUsageSnapshot(
         provider="openai-codex",

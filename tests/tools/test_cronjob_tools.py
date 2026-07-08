@@ -1,6 +1,8 @@
 """Tests for tools/cronjob_tools.py — prompt scanning, schedule/list/remove dispatchers."""
 
 import json
+from typing import Optional
+
 import pytest
 
 from tools.cronjob_tools import (
@@ -704,3 +706,226 @@ class TestValidateCronBaseUrl:
 
     def test_base_url_without_provider_rejected(self):
         assert self._v(None, "https://x.example/v1") is not None
+
+
+# =========================================================================
+# Cross-user isolation in multi-user gateway context
+# =========================================================================
+
+from gateway.session_context import set_session_vars, clear_session_vars
+
+
+class TestCronCrossUserIsolation:
+    """Users must not see or mutate each other's cron jobs in multi-user
+    gateway contexts. When ``HERMES_SESSION_USER_ID`` is set, the cron tool
+    scopes list/remove/pause/resume/run/update to jobs whose ``origin.user_id``
+    matches the caller. When unset (CLI/TUI), all jobs are visible."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_cron_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+        # Ensure session ContextVars are clean per test
+        tokens = set_session_vars()
+        yield
+        clear_session_vars(tokens)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _set_caller(self, user_id: Optional[str]):
+        """Set the session env so the cron tool resolves *user_id* as the
+        calling user.  Pass ``None`` to simulate CLI/TUI mode (no user
+        identity)."""
+        if user_id is not None:
+            return set_session_vars(platform="telegram", chat_id="999", user_id=user_id)
+        return set_session_vars()
+
+    def _create_job_as(self, owner_id: str, name: str) -> str:
+        """Create a cron job owned by *owner_id* and return its ID."""
+        # The gateway always sets platform + chat_id + user_id. Without
+        # platform+chat_id, _origin_from_env() returns None and no origin
+        # is captured — the ownership check would then always fail.
+        tokens = set_session_vars(platform="telegram", chat_id="999", user_id=owner_id)
+        try:
+            result = json.loads(
+                cronjob(
+                    action="create",
+                    prompt=f"Job owned by {owner_id}",
+                    schedule="every 1h",
+                    name=name,
+                )
+            )
+            assert result["success"] is True
+            return result["job_id"]
+        finally:
+            clear_session_vars(tokens)
+
+    # ------------------------------------------------------------------
+    # List scoping
+    # ------------------------------------------------------------------
+
+    def test_list_shows_own_jobs(self):
+        """A user sees only their own jobs when HERMES_SESSION_USER_ID is set."""
+        alice_job = self._create_job_as("alice", "Alice Job")
+        tokens = self._set_caller("alice")
+        try:
+            listing = json.loads(cronjob(action="list"))
+            assert listing["success"] is True
+            assert listing["count"] == 1
+            assert listing["jobs"][0]["job_id"] == alice_job
+            assert listing["jobs"][0]["name"] == "Alice Job"
+        finally:
+            clear_session_vars(tokens)
+
+    def test_list_hides_other_users_jobs(self):
+        """User B must not see User A's jobs."""
+        self._create_job_as("alice", "Secret Job")
+        tokens = self._set_caller("bob")
+        try:
+            listing = json.loads(cronjob(action="list"))
+            assert listing["success"] is True
+            assert listing["count"] == 0
+        finally:
+            clear_session_vars(tokens)
+
+    def test_list_shows_all_jobs_when_no_user_id(self):
+        """CLI/TUI mode (no HERMES_SESSION_USER_ID) shows all jobs — backward
+        compatible."""
+        self._create_job_as("alice", "Alice Job")
+        self._create_job_as("bob", "Bob Job")
+        # No caller identity set → should see both
+        listing = json.loads(cronjob(action="list"))
+        assert listing["success"] is True
+        assert listing["count"] == 2
+
+    # ------------------------------------------------------------------
+    # Remove ownership
+    # ------------------------------------------------------------------
+
+    def test_remove_own_job_succeeds(self):
+        alice_job = self._create_job_as("alice", "My Job")
+        tokens = self._set_caller("alice")
+        try:
+            result = json.loads(cronjob(action="remove", job_id=alice_job))
+            assert result["success"] is True
+        finally:
+            clear_session_vars(tokens)
+
+    def test_remove_other_users_job_blocked(self):
+        alice_job = self._create_job_as("alice", "Secret")
+        tokens = self._set_caller("bob")
+        try:
+            result = json.loads(cronjob(action="remove", job_id=alice_job))
+            assert result["success"] is False
+            assert "access denied" in result.get("error", "").lower() or "not found" in result.get("error", "").lower()
+        finally:
+            clear_session_vars(tokens)
+
+    # ------------------------------------------------------------------
+    # Pause / resume ownership
+    # ------------------------------------------------------------------
+
+    def test_pause_own_job_succeeds(self):
+        alice_job = self._create_job_as("alice", "My Job")
+        tokens = self._set_caller("alice")
+        try:
+            result = json.loads(cronjob(action="pause", job_id=alice_job))
+            assert result["success"] is True
+            assert result["job"]["state"] == "paused"
+        finally:
+            clear_session_vars(tokens)
+
+    def test_pause_other_users_job_blocked(self):
+        alice_job = self._create_job_as("alice", "Secret")
+        tokens = self._set_caller("bob")
+        try:
+            result = json.loads(cronjob(action="pause", job_id=alice_job))
+            assert result["success"] is False
+        finally:
+            clear_session_vars(tokens)
+
+    def test_resume_other_users_job_blocked(self):
+        alice_job = self._create_job_as("alice", "Secret")
+        # Alice pauses it first
+        tokens = self._set_caller("alice")
+        try:
+            json.loads(cronjob(action="pause", job_id=alice_job))
+        finally:
+            clear_session_vars(tokens)
+        # Bob tries to resume
+        tokens = self._set_caller("bob")
+        try:
+            result = json.loads(cronjob(action="resume", job_id=alice_job))
+            assert result["success"] is False
+        finally:
+            clear_session_vars(tokens)
+
+    # ------------------------------------------------------------------
+    # Update ownership
+    # ------------------------------------------------------------------
+
+    def test_update_own_job_succeeds(self):
+        alice_job = self._create_job_as("alice", "My Job")
+        tokens = self._set_caller("alice")
+        try:
+            result = json.loads(
+                cronjob(action="update", job_id=alice_job, name="Updated Name")
+            )
+            assert result["success"] is True
+            assert result["job"]["name"] == "Updated Name"
+        finally:
+            clear_session_vars(tokens)
+
+    def test_update_other_users_job_blocked(self):
+        alice_job = self._create_job_as("alice", "Secret")
+        tokens = self._set_caller("bob")
+        try:
+            result = json.loads(
+                cronjob(action="update", job_id=alice_job, name="Hacked")
+            )
+            assert result["success"] is False
+        finally:
+            clear_session_vars(tokens)
+
+    # ------------------------------------------------------------------
+    # Run ownership
+    # ------------------------------------------------------------------
+
+    def test_run_other_users_job_blocked(self):
+        alice_job = self._create_job_as("alice", "Secret")
+        tokens = self._set_caller("bob")
+        try:
+            result = json.loads(cronjob(action="run", job_id=alice_job))
+            assert result["success"] is False
+        finally:
+            clear_session_vars(tokens)
+
+    # ------------------------------------------------------------------
+    # Mixed users: scoping is per-user, not global
+    # ------------------------------------------------------------------
+
+    def test_multiple_users_independent_jobs(self):
+        """Each user sees only their own jobs when scoped."""
+        alice_job = self._create_job_as("alice", "Alice Data")
+        bob_job = self._create_job_as("bob", "Bob Data")
+
+        # Alice sees her job
+        tokens = self._set_caller("alice")
+        try:
+            listing = json.loads(cronjob(action="list"))
+            assert listing["count"] == 1
+            assert listing["jobs"][0]["job_id"] == alice_job
+        finally:
+            clear_session_vars(tokens)
+
+        # Bob sees his job
+        tokens = self._set_caller("bob")
+        try:
+            listing = json.loads(cronjob(action="list"))
+            assert listing["count"] == 1
+            assert listing["jobs"][0]["job_id"] == bob_job
+        finally:
+            clear_session_vars(tokens)

@@ -308,6 +308,29 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
     return None
 
 
+def _caller_owner_id() -> Optional[str]:
+    """Resolve the calling user's identity for ownership scoping.
+
+    In gateway mode the session env carries ``HERMES_SESSION_USER_ID``.
+    When set, cron operations are scoped to jobs whose ``origin.user_id``
+    matches — users can only see and manage their own jobs. In CLI/TUI/ACP
+    mode the env var is absent and this returns ``None``, which means no
+    filtering (full backward compatibility, all jobs visible).
+
+    Returns ``None`` when no user identity is available (single-user modes).
+    """
+    from gateway.session_context import get_session_env
+    return get_session_env("HERMES_SESSION_USER_ID") or None
+
+
+def _owner_matches(job: Dict[str, Any], owner_id: Optional[str]) -> bool:
+    """Return True when ``owner_id`` is None (no scoping active) or the
+    job's ``origin.user_id`` matches ``owner_id``."""
+    if owner_id is None:
+        return True  # no scoping — all jobs visible
+    return (job.get("origin") or {}).get("user_id") == owner_id
+
+
 def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> Optional[str]:
     """Return an informational notice when a created job won't deliver anywhere.
 
@@ -774,7 +797,11 @@ def cronjob(
             )
 
         if normalized == "list":
-            jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
+            owner_id = _caller_owner_id()
+            all_jobs = list_jobs(include_disabled=include_disabled)
+            if owner_id is not None:
+                all_jobs = [j for j in all_jobs if _owner_matches(j, owner_id)]
+            jobs = [_format_job(job) for job in all_jobs]
             return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
 
         if not job_id:
@@ -806,6 +833,15 @@ def cronjob(
             )
         # Resolve to canonical ID (supports name-based lookup)
         job_id = job["id"]
+
+        # Ownership gate for multi-user gateway contexts.
+        # Users can only mutate (remove/pause/resume/run/update) jobs they own.
+        caller_owner = _caller_owner_id()
+        if caller_owner is not None and not _owner_matches(job, caller_owner):
+            return json.dumps(
+                {"success": False, "error": f"Job '{job_id}' not found or access denied. Use cronjob(action='list') to inspect your jobs."},
+                indent=2,
+            )
 
         if normalized == "remove":
             removed = remove_job(job_id)

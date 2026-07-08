@@ -144,3 +144,6 @@ apps/desktop/demo/
 # PR body is the archive. See the hermes-agent-dev skill's
 # pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
 infographic/
+
+# Local scratch / repro directories. Throwaway artifacts, never part of the app.
+scratch/

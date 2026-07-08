@@ -465,7 +465,7 @@ class MemoryManager:
                 if result and result.strip():
                     parts.append(result)
             except Exception as e:
-                logger.debug(
+                logger.warning(
                     "Memory provider '%s' prefetch failed (non-fatal): %s",
                     provider.name, e,
                 )
@@ -491,7 +491,7 @@ class MemoryManager:
                 try:
                     p.queue_prefetch(clean_query, session_id=session_id)
                 except Exception as e:
-                    logger.debug(
+                    logger.warning(
                         "Memory provider '%s' queue_prefetch failed (non-fatal): %s",
                         p.name, e,
                     )
@@ -904,7 +904,7 @@ class MemoryManager:
                 # tasks; any in-flight task keeps running in the background.
                 executor.shutdown(wait=False, cancel_futures=True)
             except TypeError:
-                # Older Python without cancel_futures kwarg.
+                # Python < 3.9 without cancel_futures kwarg.
                 try:
                     executor.shutdown(wait=False)
                 except Exception as e:  # pragma: no cover

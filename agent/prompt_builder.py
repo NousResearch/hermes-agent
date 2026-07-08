@@ -911,6 +911,26 @@ _WINDOWS_BASH_SHELL_HINT = (
     "POSIX equivalents (`ls`, `$FOO`, `grep`)."
 )
 
+_WINDOWS_POWERSHELL_HINT = (
+    "Shell: on this Windows host your `terminal` tool runs commands through "
+    "PowerShell (native Windows), NOT bash or cmd.exe. Use PowerShell syntax "
+    "(`Get-ChildItem`, `$env:FOO`, `Select-String`, `&&`, `|`) inside terminal "
+    "calls. Native Windows paths like `C:\\Users\\<user>\\...` are standard. "
+    "POSIX commands (`ls`, `grep`, `cat`) will NOT work — use their PowerShell "
+    "equivalents (`Get-ChildItem` / `dir`, `Select-String`, `Get-Content`). "
+    'For simple file ops, `cmd /c "dir"` style fallbacks also work.'
+)
+
+_WINDOWS_CMD_HINT = (
+    "Shell: on this Windows host your `terminal` tool runs commands through "
+    "cmd.exe (native Windows Command Prompt), NOT bash or PowerShell. "
+    "Use cmd syntax (`dir`, `%VAR%`, `&&`, `|`) inside terminal calls. "
+    "Native Windows paths like `C:\\Users\\<user>\\...` are standard. "
+    "POSIX commands (`ls`, `grep`, `cat`) will NOT work — use their cmd "
+    "equivalents (`dir`, `findstr`, `type`). PowerShell cmdlets also "
+    'won\'t work unless wrapped with `powershell -Command "..."`.'
+)
+
 
 def _probe_remote_backend(env_type: str) -> str | None:
     """Run a tiny introspection command inside the active terminal backend.
@@ -1096,10 +1116,17 @@ def build_environment_hints() -> str:
             )
         hints.append("\n".join(host_lines))
 
-        # Windows-local terminal runs bash, not PowerShell — the model must
-        # know this or it will issue PowerShell syntax and fail.
+        # Windows-local terminal: tell the model which shell is active.
+        # Defaults to bash (Git Bash / WSL bash); HERMES_TERMINAL_SHELL
+        # can be set to "powershell", "pwsh", or "cmd" for native Windows.
         if sys.platform == "win32" and not is_wsl():
-            hints.append(_WINDOWS_BASH_SHELL_HINT)
+            terminal_shell = os.environ.get("HERMES_TERMINAL_SHELL", "").strip().lower()
+            if terminal_shell in ("powershell", "pwsh"):
+                hints.append(_WINDOWS_POWERSHELL_HINT)
+            elif terminal_shell == "cmd":
+                hints.append(_WINDOWS_CMD_HINT)
+            else:
+                hints.append(_WINDOWS_BASH_SHELL_HINT)
     else:
         # --- Remote backend block (host info suppressed) ---
         probe = _probe_remote_backend(backend)

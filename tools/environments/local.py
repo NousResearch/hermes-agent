@@ -567,6 +567,52 @@ def _find_bash() -> str:
     )
 
 
+# Shell-type override — set HERMES_TERMINAL_SHELL=powershell|pwsh|cmd to use
+# native Windows shells instead of bash (Git Bash / WSL bash).
+_TERMINAL_SHELL_TYPE: str = "bash"  # "bash", "powershell", "pwsh", "cmd"
+
+
+def _get_terminal_shell() -> tuple:
+    """Return (executable_path, shell_type) for terminal command execution.
+
+    On Windows, honours HERMES_TERMINAL_SHELL to switch away from bash
+    to native PowerShell or cmd.exe.  Defaults to ``_find_bash()`` /
+    ``"bash"`` when the env var is absent or unset.
+    """
+    global _TERMINAL_SHELL_TYPE
+
+    if _IS_WINDOWS:
+        override = os.environ.get("HERMES_TERMINAL_SHELL", "").strip().lower()
+        if override in ("powershell", "pwsh"):
+            exe = (
+                shutil.which("powershell.exe")
+                or shutil.which("pwsh.exe")
+                or os.path.join(
+                    os.environ.get("SystemRoot", r"C:\Windows"),
+                    "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
+                )
+            )
+            _TERMINAL_SHELL_TYPE = "powershell"
+            return exe, "powershell"
+        if override == "cmd":
+            exe = os.environ.get("COMSPEC") or os.path.join(
+                os.environ.get("SystemRoot", r"C:\Windows"),
+                "System32", "cmd.exe",
+            )
+            _TERMINAL_SHELL_TYPE = "cmd"
+            return exe, "cmd"
+
+    _TERMINAL_SHELL_TYPE = "bash"
+    path = _find_bash()
+    if path.lower().endswith(".exe") and not os.path.isfile(path):
+        # _find_bash returned a WSL entry point or stale path
+        raise RuntimeError(
+            f"Shell executable not found: {path}. "
+            f"Set HERMES_TERMINAL_SHELL=powershell for native Windows shell."
+        )
+    return path, "bash"
+
+
 # POSIX-sh-family shells that understand the ``[shell, "-lic", "set +m; …"]``
 # invocation spawn_local uses. $SHELL values outside this set (fish, csh/tcsh,
 # nushell, elvish, xonsh, …) would error on that syntax, so _find_shell falls
@@ -769,8 +815,12 @@ def _apply_windows_msys_bash_env_defaults(env: dict) -> None:
     """
     if not _IS_WINDOWS:
         return
-    env.setdefault("MSYS_NO_PATHCONV", "1")
-    env.setdefault("MSYS2_ARG_CONV_EXCL", "*")
+    # Only set MSYS path-conversion opt-outs when the shell is bash-family.
+    # Native Windows shells (PowerShell, cmd) don't need these and setting
+    # MSYS2_ARG_CONV_EXCL on them is harmless but misleading.
+    if _TERMINAL_SHELL_TYPE == "bash":
+        env.setdefault("MSYS_NO_PATHCONV", "1")
+        env.setdefault("MSYS2_ARG_CONV_EXCL", "*")
 
 
 def _path_env_key(run_env: dict) -> str | None:
@@ -989,18 +1039,26 @@ class LocalEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
-        bash = _find_bash()
+        shell_exe, shell_type = _get_terminal_shell()
         # For login-shell invocations (used by init_session to build the
         # environment snapshot), prepend sources for the user's bashrc /
         # custom init files so tools registered outside bash_profile
         # (nvm, asdf, pyenv, …) end up on PATH in the captured snapshot.
         # Non-login invocations are already sourcing the snapshot and
-        # don't need this.
-        if login:
+        # don't need this.  Login mode only applies to bash-family shells.
+        if login and shell_type == "bash":
             init_files = _resolve_shell_init_files()
             if init_files:
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
-        args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
+
+        # Build invocation args per shell type
+        if shell_type in ("powershell", "pwsh"):
+            args = [shell_exe, "-NoProfile", "-NonInteractive", "-Command", cmd_string]
+        elif shell_type == "cmd":
+            args = [shell_exe, "/c", cmd_string]
+        else:
+            # bash, zsh, sh, etc.
+            args = [shell_exe, "-l", "-c", cmd_string] if login else [shell_exe, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 
         # Recover when the cwd has been deleted out from under us — usually by

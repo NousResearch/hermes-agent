@@ -608,6 +608,22 @@ class LocalEnvironment(BaseEnvironment):
                     if pgid is None:
                         raise
 
+                # Guard: never signal our own process group — this would
+                # kill the gateway / CLI itself.  See issue #47788.
+                own_pgid = os.getpgid(os.getpid())
+                if pgid == own_pgid:
+                    logger.warning(
+                        "Refusing to killpg(%d, SIGTERM) — it is our own "
+                        "process group; falling back to kill(%d)",
+                        pgid, proc.pid,
+                    )
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=1.0)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    return
+
                 try:
                     os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX process-group SIGTERM (guarded by _IS_WINDOWS above)
                 except ProcessLookupError:

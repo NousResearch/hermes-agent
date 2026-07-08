@@ -226,6 +226,12 @@ def load_hermes_dotenv(
 
     Behavior:
     - `~/.hermes/.env` overrides stale shell-exported values when present.
+    - When ``hermes_home`` is a profile-specific directory
+      (``<root>/profiles/<name>``), the *root* `.env` is loaded first as the
+      base, then the profile's `.env` overrides it. This preserves profile
+      isolation while still letting shared credentials (e.g. a billing API
+      key) live in the root `.env` and be overridden per-profile only where
+      needed (#61046).
     - project `.env` acts as a dev fallback and only fills missing values when
       the user env exists.
     - if no user env exists, the project `.env` also overrides stale shell vars.
@@ -235,6 +241,22 @@ def load_hermes_dotenv(
     home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
+
+    # If hermes_home is a profile directory (<root>/profiles/<name>), load the
+    # root .env first as the base so shared credentials in ~/.hermes/.env are
+    # available, then let the profile's .env override them. Without this, a
+    # profile home never sees credentials that only exist in the root .env
+    # (#61046).
+    root_env: Path | None = None
+    try:
+        if home_path.parent.name == "profiles":
+            root_env = home_path.parent.parent / ".env"
+    except (OSError, ValueError):
+        pass
+    if root_env is not None and root_env.exists():
+        _sanitize_env_file_if_needed(root_env)
+        _load_dotenv_with_fallback(root_env, override=False)
+        loaded.append(root_env)
 
     # Fix corrupted .env files before python-dotenv parses them (#8908).
     if user_env.exists():
@@ -265,6 +287,14 @@ def load_hermes_dotenv(
         loaded.append(project_env_path)
 
     _apply_external_secret_sources(home_path)
+    # Also apply external secrets for the root home when running under a
+    # profile, so vault-sourced credentials in the root config.yaml are
+    # resolved alongside the profile ones (#61046).
+    if root_env is not None:
+        try:
+            _apply_external_secret_sources(root_env.parent)
+        except Exception:  # noqa: BLE001 — must never block startup
+            pass
     _apply_managed_env()
 
     return loaded

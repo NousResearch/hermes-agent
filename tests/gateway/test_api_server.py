@@ -3963,6 +3963,84 @@ class TestModelRoutesHandlers:
                     "model": "minimax/minimax-m1", "provider": "openrouter",
                 }
 
+    @pytest.mark.asyncio
+    async def test_session_chat_passes_route_to_run_agent(self, monkeypatch):
+        """POST /api/sessions/{id}/chat honours a model_routes alias sent in the
+        request body, mirroring /v1/chat/completions."""
+        routes = {"minimax-m2": {"model": "minimax/minimax-m1", "provider": "openrouter"}}
+        adapter = _make_routing_adapter(routes)
+        # Session existence + history are storage concerns; stub them so this
+        # stays a pure routing unit test (the /v1 handler tests need no session).
+        monkeypatch.setattr(adapter, "_get_existing_session_or_404", lambda sid: ({"id": sid}, None))
+        monkeypatch.setattr(adapter, "_conversation_history_for_session", lambda sid: [])
+        app = web.Application()
+        app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "hi", "session_id": "s1", "messages": [], "api_calls": 1},
+                    {"input_tokens": 5, "output_tokens": 5, "total_tokens": 10},
+                )
+                resp = await cli.post("/api/sessions/s1/chat", json={
+                    "model": "minimax-m2",
+                    "message": "hello",
+                })
+                assert resp.status == 200
+                assert mock_run.call_args.kwargs.get("route") == {
+                    "model": "minimax/minimax-m1", "provider": "openrouter",
+                }
+
+    @pytest.mark.asyncio
+    async def test_session_chat_stream_passes_route_to_run_agent(self, monkeypatch):
+        """POST /api/sessions/{id}/chat/stream honours a model_routes alias sent
+        in the request body (the endpoint the mobile client actually uses)."""
+        routes = {"minimax-m2": {"model": "minimax/minimax-m1", "provider": "openrouter"}}
+        adapter = _make_routing_adapter(routes)
+        monkeypatch.setattr(adapter, "_get_existing_session_or_404", lambda sid: ({"id": sid}, None))
+        monkeypatch.setattr(adapter, "_conversation_history_for_session", lambda sid: [])
+        monkeypatch.setattr(adapter, "_turn_transcript_messages", lambda *a, **k: [])
+        app = web.Application()
+        app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "hi", "session_id": "s1", "messages": [], "api_calls": 1},
+                    {"input_tokens": 5, "output_tokens": 5, "total_tokens": 10},
+                )
+                resp = await cli.post("/api/sessions/s1/chat/stream", json={
+                    "model": "minimax-m2",
+                    "message": "hello",
+                })
+                assert resp.status == 200
+                await resp.read()  # drain SSE so the background run completes
+                assert mock_run.call_args.kwargs.get("route") == {
+                    "model": "minimax/minimax-m1", "provider": "openrouter",
+                }
+
+    @pytest.mark.asyncio
+    async def test_session_chat_stream_no_route_for_unknown_model(self, monkeypatch):
+        """An unrecognised model on the stream endpoint resolves to no route,
+        leaving the gateway's global default in effect."""
+        adapter = _make_routing_adapter({"minimax-m2": {"model": "minimax/minimax-m1"}})
+        monkeypatch.setattr(adapter, "_get_existing_session_or_404", lambda sid: ({"id": sid}, None))
+        monkeypatch.setattr(adapter, "_conversation_history_for_session", lambda sid: [])
+        monkeypatch.setattr(adapter, "_turn_transcript_messages", lambda *a, **k: [])
+        app = web.Application()
+        app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "hi", "session_id": "s1", "messages": [], "api_calls": 1},
+                    {"input_tokens": 5, "output_tokens": 5, "total_tokens": 10},
+                )
+                resp = await cli.post("/api/sessions/s1/chat/stream", json={
+                    "model": "unknown-model",
+                    "message": "hello",
+                })
+                assert resp.status == 200
+                await resp.read()
+                assert mock_run.call_args.kwargs.get("route") is None
+
 
 class TestModelRoutesAgentCreation:
     def test_route_overrides_model_and_credentials(self, monkeypatch):

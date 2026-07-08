@@ -2998,10 +2998,11 @@ def _bump_server_error(server_name: str) -> None:
     breaker-open timestamp so the cooldown clock starts (or re-starts,
     for probe failures in the half-open state).
     """
-    n = _server_error_counts.get(server_name, 0) + 1
-    _server_error_counts[server_name] = n
-    if n >= _CIRCUIT_BREAKER_THRESHOLD:
-        _server_breaker_opened_at[server_name] = time.monotonic()
+    with _lock:
+        n = _server_error_counts.get(server_name, 0) + 1
+        _server_error_counts[server_name] = n
+        if n >= _CIRCUIT_BREAKER_THRESHOLD:
+            _server_breaker_opened_at[server_name] = time.monotonic()
 
 
 def _reset_server_error(server_name: str) -> None:
@@ -3011,8 +3012,9 @@ def _reset_server_error(server_name: str) -> None:
     this on any unambiguous success signal (successful tool call,
     successful reconnect, manual /mcp refresh).
     """
-    _server_error_counts[server_name] = 0
-    _server_breaker_opened_at.pop(server_name, None)
+    with _lock:
+        _server_error_counts[server_name] = 0
+        _server_breaker_opened_at.pop(server_name, None)
 
 
 def _signal_reconnect(server: Any) -> bool:
@@ -3411,10 +3413,10 @@ def _handle_session_expired_and_retry(
         try:
             parsed = json.loads(result)
             if "error" not in parsed:
-                _server_error_counts[server_name] = 0
+                _reset_server_error(server_name)
                 return result
         except (json.JSONDecodeError, TypeError):
-            _server_error_counts[server_name] = 0
+            _reset_server_error(server_name)
             return result
     except Exception as retry_exc:
         logger.warning(

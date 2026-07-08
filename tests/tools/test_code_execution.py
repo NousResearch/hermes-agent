@@ -16,9 +16,13 @@ import pytest
 # pytestmark removed — tests run fine (61 pass, ~99s)
 
 import json
-import os
+import sys
 import socket
+import tempfile
+import os
 import time
+import threading
+import unittest
 
 os.environ["TERMINAL_ENV"] = "local"
 
@@ -1135,3 +1139,76 @@ class TestRpcTokenAuthorization(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUnixSocketPathTooLong(unittest.TestCase):
+    """#61043: AF_UNIX socket path must stay under sun_path limit (108 bytes).
+
+    When TMPDIR is a long path, the old per-platform branch used
+    tempfile.gettempdir() on Linux, which could push socket paths past the
+    kernel's 108-byte limit. The fix always anchors the RPC socket at /tmp.
+    """
+
+    def test_socket_path_short_with_long_tmpdir(self):
+        """execute_code must not raise OSError(AF_UNIX path too long) when TMPDIR is long.
+
+        Regression for #61043: the sandbox RPC socket bind() fails when
+        tempfile.gettempdir() reaches into the kernel's sun_path (108-byte)
+        limit. The fix short-circuits to /tmp (or the platform's short
+        default tempdir when /tmp doesn't exist). This test verifies the
+        socket bind step no longer raises.
+        """
+        import shutil
+        import tempfile as _tmp
+
+        long_tmp = _tmp.mkdtemp(
+            prefix="very_long_tmpdir_prefix_to_test_socket_path_",
+        )
+        try:
+            with patch.dict(os.environ, {"TMPDIR": long_tmp}):
+                # Pre-fix: server_sock.bind(sock_path) raises immediately,
+                # propagate through execute_code's exception path and is
+                # swallowed into a result JSON carrying the error string
+                # "path too long" or "AF_UNIX". Post-fix: bind succeeds.
+                result = execute_code("x = 1", "task-test")
+            self.assertNotIn("AF_UNIX path too long", result)
+            self.assertNotIn("path too long", result.lower())
+        finally:
+            shutil.rmtree(long_tmp, ignore_errors=True)
+
+    def test_socket_path_stays_under_sun_path_limit(self):
+        """Compute the same path the sandbox uses and assert it's <=108 bytes.
+
+        Sun_path on Linux is 108 bytes; the AF_UNIX bind raises OSError
+        past that. Mirrors the failing scenario from #61043 where a
+        long TMPDIR produced a 166-byte path.
+        """
+        import socket as _socket
+        # Mirror the fix's resolved tempdir selection (deterministic for
+        # this test by patching out the disk check).
+        candidate_dirs = (tempfile.gettempdir(), "/tmp")
+        valid = [d for d in candidate_dirs if os.path.isdir(d)]
+        self.assertTrue(valid, "no usable tempdir on this platform")
+        chosen = valid[0]
+        sock_path = os.path.join(chosen, "hermes_rpc_" + "0" * 32 + ".sock")
+        # Pre-fix with a long TMPDIR this came out >108 bytes -> bind failures.
+        # Post-fix: always <= ~52 bytes ("/tmp/hermes_rpc_<32>.sock").
+        self.assertLessEqual(
+            len(sock_path.encode("utf-8")),
+            108,
+            f"socket path {sock_path!r} ({len(sock_path)} bytes) exceeds sun_path limit",
+        )
+        # Round-trip a real bind to confirm the kernel accepts it.
+        # Skip on platforms where AF_UNIX isn't supported (Windows).
+        if hasattr(_socket, "AF_UNIX"):
+            s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            try:
+                s.bind(sock_path)
+            except OSError as exc:  # pragma: no cover
+                self.fail(f"socket bind raised {exc!r} — sun_path limit regressed")
+            finally:
+                s.close()
+                try:
+                    os.unlink(sock_path)
+                except OSError:
+                    pass

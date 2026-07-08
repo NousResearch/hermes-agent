@@ -18,11 +18,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { canonicalGitHubRemote,
+import {
+  canonicalGitHubRemote,
   isOfficialSshRemote,
   isSshRemote,
   OFFICIAL_REPO_CANONICAL,
-  OFFICIAL_REPO_HTTPS_URL } from './update-remote'
+  OFFICIAL_REPO_HTTPS_URL
+} from './update-remote'
 
 test('canonicalGitHubRemote normalizes SSH and HTTPS forms to the same value', () => {
   assert.equal(canonicalGitHubRemote('git@github.com:NousResearch/hermes-agent.git'), OFFICIAL_REPO_CANONICAL)

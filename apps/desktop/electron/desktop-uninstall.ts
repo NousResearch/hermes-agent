@@ -69,7 +69,9 @@ function modeRemovesUserData(mode) {
 function resolveRemovableAppPath(execPath, platform, env: any = {}) {
   const exe = String(execPath || '')
 
-  if (!exe) {return null}
+  if (!exe) {
+    return null
+  }
 
   // Use the path flavor that matches the TARGET platform, not the host running
   // this code — so the Windows branch parses backslash paths correctly even
@@ -82,7 +84,9 @@ function resolveRemovableAppPath(execPath, platform, env: any = {}) {
     const contents = p.dirname(macOsDir) // …/Contents
     const appBundle = p.dirname(contents) // …/Hermes.app
 
-    if (appBundle.endsWith('.app')) {return appBundle}
+    if (appBundle.endsWith('.app')) {
+      return appBundle
+    }
 
     return null
   }
@@ -91,17 +95,23 @@ function resolveRemovableAppPath(execPath, platform, env: any = {}) {
     // NSIS per-user installs Hermes.exe directly in the install dir.
     const dir = p.dirname(exe)
 
-    if (/[\\/]Hermes$/i.test(dir) || /[\\/]hermes-desktop$/i.test(dir)) {return dir}
+    if (/[\\/]Hermes$/i.test(dir) || /[\\/]hermes-desktop$/i.test(dir)) {
+      return dir
+    }
 
     return null
   }
 
   // Linux: an AppImage exposes its own path via the APPIMAGE env var.
-  if (env.APPIMAGE) {return env.APPIMAGE}
+  if (env.APPIMAGE) {
+    return env.APPIMAGE
+  }
   // Unpacked electron-builder tree: …/linux-unpacked/hermes
   const dir = p.dirname(exe)
 
-  if (/-unpacked$/.test(dir)) {return dir}
+  if (/-unpacked$/.test(dir)) {
+    return dir
+  }
 
   return null
 }
@@ -245,11 +255,13 @@ function buildWindowsCleanupScript({
   return lines.join('\r\n')
 }
 
-export { buildPosixCleanupScript,
+export {
+  buildPosixCleanupScript,
   buildWindowsCleanupScript,
   modeRemovesAgent,
   modeRemovesUserData,
   resolveRemovableAppPath,
   shouldRemoveAppBundle,
   UNINSTALL_MODES,
-  uninstallArgsForMode }
+  uninstallArgsForMode
+}

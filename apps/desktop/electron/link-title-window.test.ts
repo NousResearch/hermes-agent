@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import {   createLinkTitleWindow,
+import {
+  createLinkTitleWindow,
   guardLinkTitleSession,
   linkTitleWindowOptions,
-  readLinkTitleWindowTitle } from './link-title-window'
+  readLinkTitleWindowTitle
+} from './link-title-window'
 
 function makeFakeBrowserWindow() {
   const calls = { audioMuted: [] }

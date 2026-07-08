@@ -65,8 +65,10 @@ function hermesRuntimeImportProbe() {
  * @param {object} [opts.env] - Additional environment for the probe.
  * @returns {boolean}
  */
-function canImportHermesCli(pythonPath: string, opts:{env?: Record<string, string>} = {}) {
-  if (!pythonPath) {return false}
+function canImportHermesCli(pythonPath: string, opts: { env?: Record<string, string> } = {}) {
+  if (!pythonPath) {
+    return false
+  }
 
   try {
     execFileSync(pythonPath, ['-c', hermesRuntimeImportProbe()], {
@@ -102,8 +104,10 @@ function canImportHermesCli(pythonPath: string, opts:{env?: Record<string, strin
  *   in resolveHermesBackend.
  * @returns {boolean}
  */
-function verifyHermesCli(hermesCommand: string, opts?: {shell?: boolean}) {
-  if (!hermesCommand) {return false}
+function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
+  if (!hermesCommand) {
+    return false
+  }
 
   try {
     execFileSync(hermesCommand, ['--version'], {
@@ -119,7 +123,4 @@ function verifyHermesCli(hermesCommand: string, opts?: {shell?: boolean}) {
   }
 }
 
-export { canImportHermesCli,
-  hermesRuntimeImportProbe,
-  PROBE_TIMEOUT_MS,
-  verifyHermesCli }
+export { canImportHermesCli, hermesRuntimeImportProbe, PROBE_TIMEOUT_MS, verifyHermesCli }

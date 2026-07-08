@@ -32,7 +32,9 @@ export function serveBackendArgs(profile?: string) {
 export function dashboardFallbackArgs(args) {
   const i = args.indexOf('serve')
 
-  if (i === -1) {return args.slice()}
+  if (i === -1) {
+    return args.slice()
+  }
 
   return [...args.slice(0, i), 'dashboard', '--no-open', ...args.slice(i + 1)]
 }

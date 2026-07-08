@@ -27,7 +27,7 @@ function findGitRoot(start, fsImpl = fs) {
   return null
 }
 
-async function gitRootForIpc(startPath, options: {fs?: typeof fs} = {}) {
+async function gitRootForIpc(startPath, options: { fs?: typeof fs } = {}) {
   const fsImpl = options.fs || fs
   let resolved
 
@@ -47,5 +47,4 @@ async function gitRootForIpc(startPath, options: {fs?: typeof fs} = {}) {
   }
 }
 
-export { findGitRoot,
-  gitRootForIpc }
+export { findGitRoot, gitRootForIpc }

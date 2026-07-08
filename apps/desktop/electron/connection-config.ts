@@ -237,11 +237,17 @@ function authModeFromStatus(statusBody) {
  * Returns 'oauth' | 'token'.
  */
 function resolveAuthMode(inputAuthMode, existingAuthMode) {
-  if (inputAuthMode === 'oauth') {return 'oauth'}
+  if (inputAuthMode === 'oauth') {
+    return 'oauth'
+  }
 
-  if (inputAuthMode === 'token') {return 'token'}
+  if (inputAuthMode === 'token') {
+    return 'token'
+  }
 
-  if (existingAuthMode === 'oauth') {return 'oauth'}
+  if (existingAuthMode === 'oauth') {
+    return 'oauth'
+  }
 
   return 'token'
 }
@@ -258,7 +264,9 @@ function resolveAuthMode(inputAuthMode, existingAuthMode) {
  * need to know whether an unexpired access token is present right now.
  */
 function cookiesHaveSession(cookies) {
-  if (!Array.isArray(cookies)) {return false}
+  if (!Array.isArray(cookies)) {
+    return false
+  }
 
   return cookies.some(c => c && AT_COOKIE_VARIANTS.includes(c.name) && c.value)
 }
@@ -277,12 +285,15 @@ function cookiesHaveSession(cookies) {
  * the RT is also dead/revoked).
  */
 function cookiesHaveLiveSession(cookies) {
-  if (!Array.isArray(cookies)) {return false}
+  if (!Array.isArray(cookies)) {
+    return false
+  }
 
   return cookies.some(c => c && c.value && (AT_COOKIE_VARIANTS.includes(c.name) || RT_COOKIE_VARIANTS.includes(c.name)))
 }
 
-export { AT_COOKIE_VARIANTS,
+export {
+  AT_COOKIE_VARIANTS,
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
@@ -296,4 +307,5 @@ export { AT_COOKIE_VARIANTS,
   resolveAuthMode,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
-  tokenPreview }
+  tokenPreview
+}

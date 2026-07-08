@@ -1,9 +1,13 @@
 import fs from 'node:fs'
 
 function isWslEnvironment(env = process.env, platform = process.platform, kernelRelease = null) {
-  if (platform !== 'linux') {return false}
+  if (platform !== 'linux') {
+    return false
+  }
 
-  if (env.WSL_DISTRO_NAME || env.WSL_INTEROP) {return true}
+  if (env.WSL_DISTRO_NAME || env.WSL_INTEROP) {
+    return true
+  }
 
   try {
     const release = kernelRelease ?? fs.readFileSync('/proc/sys/kernel/osrelease', 'utf8')
@@ -14,10 +18,15 @@ function isWslEnvironment(env = process.env, platform = process.platform, kernel
   }
 }
 
-function isWindowsBinaryPathInWsl(filePath, options: {isWsl?: boolean, env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform} = {}) {
+function isWindowsBinaryPathInWsl(
+  filePath,
+  options: { isWsl?: boolean; env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}
+) {
   const isWsl = options.isWsl ?? isWslEnvironment(options.env, options.platform)
 
-  if (!isWsl) {return false}
+  if (!isWsl) {
+    return false
+  }
 
   const normalized = String(filePath || '')
     .replace(/\\/g, '/')
@@ -51,7 +60,7 @@ const GPU_OVERRIDE_OFF = new Set(['0', 'false', 'no', 'off'])
  *
  * Pure + dependency-free so it can be unit-tested and called before app ready.
  */
-function detectRemoteDisplay(options: {env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform} = {}) {
+function detectRemoteDisplay(options: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}) {
   const env = options.env ?? process.env
   const platform = options.platform ?? process.platform
 
@@ -59,13 +68,19 @@ function detectRemoteDisplay(options: {env?: NodeJS.ProcessEnv, platform?: NodeJ
     .trim()
     .toLowerCase()
 
-  if (GPU_OVERRIDE_ON.has(override)) {return 'override (HERMES_DESKTOP_DISABLE_GPU)'}
+  if (GPU_OVERRIDE_ON.has(override)) {
+    return 'override (HERMES_DESKTOP_DISABLE_GPU)'
+  }
 
-  if (GPU_OVERRIDE_OFF.has(override)) {return null}
+  if (GPU_OVERRIDE_OFF.has(override)) {
+    return null
+  }
 
   // Launched from an SSH session → the display is X11-forwarded or otherwise
   // remote. Covers the common `ssh user@box` + GUI-forwarding case.
-  if (env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY) {return 'ssh-session'}
+  if (env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY) {
+    return 'ssh-session'
+  }
 
   if (platform === 'linux') {
     // X11 forwarding sets DISPLAY to "<host>:N" (e.g. "localhost:10.0"); a
@@ -84,13 +99,12 @@ function detectRemoteDisplay(options: {env?: NodeJS.ProcessEnv, platform?: NodeJ
     // "Console".
     const sessionName = String(env.SESSIONNAME || '')
 
-    if (/^rdp-/i.test(sessionName)) {return `rdp (SESSIONNAME=${sessionName})`}
+    if (/^rdp-/i.test(sessionName)) {
+      return `rdp (SESSIONNAME=${sessionName})`
+    }
   }
 
   return null
 }
 
-export { bundledRuntimeImportCheck,
-  detectRemoteDisplay,
-  isWindowsBinaryPathInWsl,
-  isWslEnvironment }
+export { bundledRuntimeImportCheck, detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment }

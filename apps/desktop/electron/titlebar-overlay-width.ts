@@ -15,7 +15,9 @@ export const OVERLAY_FALLBACK_WIDTH = 144
  * @param {{ isMac?: boolean }} opts
  */
 export function nativeOverlayWidth({ isWindows = false, isWsl = false, isMac = false } = {}) {
-  if (isMac) {return 0}
+  if (isMac) {
+    return 0
+  }
 
   return OVERLAY_FALLBACK_WIDTH
 }
@@ -38,4 +40,3 @@ export const MACOS_TAHOE_DARWIN_MAJOR = 25
 export function macTitleBarOverlayHeight({ darwinMajor = 0, titlebarHeight = 0 } = {}) {
   return darwinMajor >= MACOS_TAHOE_DARWIN_MAJOR ? 0 : titlebarHeight
 }
-

@@ -52,10 +52,14 @@ export function guardLinkTitleSession(partitionSession) {
 // guard isDestroyed and swallow Electron's "Object has been destroyed" throws.
 export function readLinkTitleWindowTitle(window) {
   try {
-    if (!window || window.isDestroyed()) {return ''}
+    if (!window || window.isDestroyed()) {
+      return ''
+    }
     const contents = window.webContents
 
-    if (!contents || contents.isDestroyed()) {return ''}
+    if (!contents || contents.isDestroyed()) {
+      return ''
+    }
 
     return contents.getTitle() || ''
   } catch {

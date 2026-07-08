@@ -24,7 +24,8 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
-import { buildRelaunchScript,
+import {
+  buildRelaunchScript,
   collectRelaunchArgs,
   collectRelaunchEnv,
   decideRelaunchOutcome,
@@ -32,7 +33,8 @@ import { buildRelaunchScript,
   sandboxFallbackFromEnv,
   sandboxPreflight,
   shellQuote,
-  unpackedDirName } from './update-relaunch'
+  unpackedDirName
+} from './update-relaunch'
 
 const ROOT = '/home/u/.hermes/hermes-agent'
 const UNPACKED = path.join(ROOT, 'apps', 'desktop', 'release', 'linux-unpacked')

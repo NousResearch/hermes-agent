@@ -8,7 +8,7 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
-import simpleGit from "simple-git";
+import simpleGit from 'simple-git'
 
 import { resolveRequestedPathForIpc } from './hardening'
 
@@ -31,7 +31,7 @@ function ghEnv(ghBin) {
 
 // Run the `gh` CLI in a repo. Resolves { ok, stdout } so callers branch on
 // availability/auth without a throw. gh missing/unauthed → ok:false.
-function runGh(args, cwd, ghBin): Promise<{ok: boolean, stdout: string}> {
+function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string }> {
   return new Promise(resolve => {
     execFile(
       ghBin || 'gh',
@@ -242,8 +242,8 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
 
       const files = summary.files.map(file => ({
         path: resolveRenamePath(file.file),
-        added: 'insertions' in file ? file.insertions : 0 ,
-        removed: 'deletions' in file ? file.deletions : 0 ,
+        added: 'insertions' in file ? file.insertions : 0,
+        removed: 'deletions' in file ? file.deletions : 0,
         status: 'M',
         staged: false
       }))
@@ -674,7 +674,8 @@ async function repoStatus(repoPath, gitBin) {
   return result
 }
 
-export { branchBase,
+export {
+  branchBase,
   fileDiffVsHead,
   repoStatus,
   resolveRenamePath,
@@ -688,4 +689,5 @@ export { branchBase,
   reviewRevParse,
   reviewShipInfo,
   reviewStage,
-  reviewUnstage }
+  reviewUnstage
+}

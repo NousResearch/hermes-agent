@@ -568,6 +568,22 @@ class TestCheckWebApiKey:
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
+    def test_null_backend_value_does_not_crash(self):
+        # config.yaml with ``web:\n  backend:`` yields backend=None. The gate
+        # must not raise AttributeError on None.lower() — mirrors _get_backend.
+        with patch("tools.web_tools._load_web_config", return_value={"backend": None}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is False
+
+    def test_null_web_section_does_not_crash(self):
+        # config.yaml with a present-but-null ``web:`` section makes the raw
+        # ``.get("web", {})`` return None; _load_web_config must still yield a
+        # dict so no caller does None.get(...).
+        with patch("hermes_cli.config.load_config", return_value={"web": None}):
+            from tools.web_tools import _load_web_config, check_web_api_key
+            assert _load_web_config() == {}
+            assert check_web_api_key() is False
+
     def test_firecrawl_key_only(self):
         with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
             from tools.web_tools import check_web_api_key

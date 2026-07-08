@@ -256,3 +256,28 @@ def test_reset_for_turn_clears_bounded_guardrail_state():
 
     assert controller.before_call("web_search", {"query": "same"}).action == "allow"
     assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
+
+
+def test_same_tool_success_does_not_reset_varying_args_failure_counter():
+    """A single signature's success must not wipe the entire same-tool counter."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            exact_failure_block_after=99,
+            same_tool_failure_warn_after=2,
+            same_tool_failure_halt_after=3,
+        )
+    )
+
+    # Two different signatures fail → count = 2
+    controller.after_call("terminal", {"command": "cmd-1"}, '{"exit_code":1}', failed=True)
+    controller.after_call("terminal", {"command": "cmd-2"}, '{"exit_code":1}', failed=True)
+
+    # A third signature succeeds — must NOT reset the counter
+    controller.after_call("terminal", {"command": "ok"}, '{"exit_code":0}', failed=False)
+
+    # One more failure should trigger halt (counter was 2, now 3)
+    third_fail = controller.after_call("terminal", {"command": "cmd-3"}, '{"exit_code":1}', failed=True)
+    assert third_fail.action == "halt"
+    assert third_fail.code == "same_tool_failure_halt"
+    assert third_fail.count == 3

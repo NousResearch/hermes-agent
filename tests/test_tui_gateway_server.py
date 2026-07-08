@@ -1,5 +1,6 @@
 import json
 import os
+import platform
 import subprocess
 import sys
 import threading
@@ -6835,10 +6836,20 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
         resp["result"]["messages"][0]
         == "Chromium-family browser isn't running with remote debugging — attempting to launch..."
     )
-    assert any(
-        "No supported Chromium-family browser executable was found" in line
-        for line in resp["result"]["messages"]
-    )
+    if platform.system() == "Darwin":
+        assert any(
+            line.startswith('open -a "Google Chrome" --args ')
+            for line in resp["result"]["messages"]
+        )
+        assert any(
+            "--disable-features=MacAppCodeSignClone" in line
+            for line in resp["result"]["messages"]
+        )
+    else:
+        assert any(
+            "No supported Chromium-family browser executable was found" in line
+            for line in resp["result"]["messages"]
+        )
     assert any(
         "--remote-debugging-port=9222" in line for line in resp["result"]["messages"]
     )

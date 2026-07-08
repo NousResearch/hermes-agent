@@ -115,6 +115,67 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     return "gemini" in m or "gemma" in m
 
 
+def _route_preserves_cache_control(
+    *,
+    model: Any,
+    provider_profile: Any = None,
+    provider_name: Any = None,
+    base_url: Any = None,
+    is_openrouter: bool = False,
+    is_nous: bool = False,
+) -> bool:
+    """Return True for OpenAI-wire routes that intentionally accept
+    Anthropic-style ``cache_control`` markers.
+
+    Most chat-completions providers are strict OpenAI-compatible endpoints and
+    reject nested ``cache_control`` content-part keys. A few routes opt into
+    those markers for prompt caching; keep those exact paths intact.
+    """
+    model_lower = str(model or "").lower()
+    provider_lower = str(provider_name or "").strip().lower()
+    profile_name = str(getattr(provider_profile, "name", "") or "").strip().lower()
+    base_lower = str(base_url or "").strip().lower()
+
+    is_openrouter_route = (
+        bool(is_openrouter)
+        or profile_name == "openrouter"
+        or "openrouter.ai" in base_lower
+    )
+    is_nous_route = (
+        bool(is_nous)
+        or profile_name == "nous"
+        or "nousresearch" in base_lower
+    )
+
+    if is_openrouter_route and "claude" in model_lower:
+        return True
+    if is_nous_route and ("claude" in model_lower or "qwen" in model_lower):
+        return True
+    if provider_lower in {"opencode", "opencode-zen", "opencode-go", "alibaba"} and "qwen" in model_lower:
+        return True
+    return False
+
+
+def _content_has_cache_control(content: Any) -> bool:
+    if isinstance(content, list):
+        return any(isinstance(part, dict) and "cache_control" in part for part in content)
+    return False
+
+
+def _strip_cache_control_from_content(content: Any) -> Any:
+    if not isinstance(content, list):
+        return content
+    stripped = []
+    for part in content:
+        if isinstance(part, dict) and "cache_control" in part:
+            clean_part = dict(part)
+            clean_part.pop("cache_control", None)
+            stripped.append(clean_part)
+        else:
+            stripped.append(part)
+    return stripped
+
+
 class ChatCompletionsTransport(ProviderTransport):
     """Transport for api_mode='chat_completions'.
 
@@ -160,10 +221,15 @@ class ChatCompletionsTransport(ProviderTransport):
           gateways (e.g. opencode-go, codex.nekos.me) reject with
           ``Extra inputs are not permitted, field: 'messages[N]._empty_recovery_synthetic'``,
           which then poisons every subsequent request in the session.
+        - Stale ``cache_control`` markers on messages or nested text content
+          parts, unless the outgoing route is one of the known OpenAI-wire
+          providers that intentionally accepts those markers for prompt
+          caching. Strict providers such as Cerebras/Groq reject them.
         """
         strip_extra_content = not _model_consumes_thought_signature(
             kwargs.get("model")
         )
+        preserve_cache_control = bool(kwargs.get("preserve_cache_control"))
         needs_sanitize = False
         for msg in messages:
             if not isinstance(msg, dict):
@@ -173,6 +239,11 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "codex_message_items" in msg
                 or "tool_name" in msg
                 or "timestamp" in msg  # #47868 — strict providers reject this
+                or (not preserve_cache_control and "cache_control" in msg)
+                or (
+                    not preserve_cache_control
+                    and _content_has_cache_control(msg.get("content"))
+                )
             ):
                 needs_sanitize = True
                 break
@@ -203,6 +274,10 @@ class ChatCompletionsTransport(ProviderTransport):
             msg.pop("codex_message_items", None)
             msg.pop("tool_name", None)
             msg.pop("timestamp", None)  # #47868 — leak into strict providers
+            if not preserve_cache_control:
+                msg.pop("cache_control", None)
+                if _content_has_cache_control(msg.get("content")):
+                    msg["content"] = _strip_cache_control_from_content(msg.get("content"))
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
             # OpenAI's message schema has no ``_``-prefixed fields, so this
             # is safe and future-proofs against new markers being added.
@@ -273,13 +348,26 @@ class ChatCompletionsTransport(ProviderTransport):
             anthropic_max_output: int | None
             extra_body_additions: dict | None
         """
+        _profile = params.get("provider_profile")
+        preserve_cache_control = _route_preserves_cache_control(
+            model=model,
+            provider_profile=_profile,
+            provider_name=params.get("provider_name"),
+            base_url=params.get("base_url"),
+            is_openrouter=params.get("is_openrouter", False),
+            is_nous=params.get("is_nous", False),
+        )
+
         # Codex sanitization: drop reasoning_items / call_id / response_item_id.
         # Pass model so the Gemini thought_signature (extra_content) is kept for
         # Gemini targets and stripped for strict non-Gemini providers.
-        sanitized = self.convert_messages(messages, model=model)
+        sanitized = self.convert_messages(
+            messages,
+            model=model,
+            preserve_cache_control=preserve_cache_control,
+        )
 
         # ── Provider profile: single-path when present ──────────────────
-        _profile = params.get("provider_profile")
         if _profile:
             return self._build_kwargs_from_profile(
                 _profile, model, sanitized, tools, params

@@ -135,6 +135,7 @@ def _chrome_debug_args(port: int) -> list[str]:
         f"--user-data-dir={chrome_debug_data_dir()}",
         "--no-first-run",
         "--no-default-browser-check",
+        "--disable-features=MacAppCodeSignClone",
     ]
 
 
@@ -186,7 +187,8 @@ def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: st
         data_dir = chrome_debug_data_dir()
         return (
             f'open -a "Google Chrome" --args --remote-debugging-port={port} '
-            f'--user-data-dir="{data_dir}" --no-first-run --no-default-browser-check'
+            f'--user-data-dir="{data_dir}" --no-first-run --no-default-browser-check '
+            f'--disable-features=MacAppCodeSignClone'
         )
 
     return None

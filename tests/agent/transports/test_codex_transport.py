@@ -112,6 +112,31 @@ class TestCodexBuildKwargs:
         )
         assert kw1["prompt_cache_key"] == kw2["prompt_cache_key"]
 
+    def test_long_prompt_cache_key_override_is_hashed_under_provider_cap(self, transport):
+        """Caller overrides must not reintroduce overlong cache keys after the
+        transport has built its short content-addressed key."""
+        messages = [{"role": "user", "content": "Hi"}]
+        long_key = "cron_smoke_morning_brief_openai_codex_" + ("x" * 80)
+
+        kw1 = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            request_overrides={"prompt_cache_key": long_key},
+        )
+        kw2 = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            request_overrides={"prompt_cache_key": long_key},
+        )
+
+        pck = kw1.get("prompt_cache_key", "")
+        assert pck.startswith("pck_")
+        assert len(pck) <= 64
+        assert pck != long_key
+        assert pck == kw2["prompt_cache_key"]
+
     def test_github_responses_no_cache_key(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
@@ -162,6 +187,26 @@ class TestCodexBuildKwargs:
         )
         eb = kw.get("extra_body", {})
         assert eb.get("prompt_cache_key") == "caller-override"
+        assert eb.get("other_field") == 42
+
+    def test_xai_extra_body_long_prompt_cache_key_override_is_hashed(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        long_key = "xai-cache-key-" + ("y" * 80)
+
+        kw = transport.build_kwargs(
+            model="grok-4.3", messages=messages, tools=[],
+            session_id="conv-xai-1",
+            is_xai_responses=True,
+            request_overrides={
+                "extra_body": {"prompt_cache_key": long_key, "other_field": 42}
+            },
+        )
+
+        eb = kw.get("extra_body", {})
+        pck = eb.get("prompt_cache_key", "")
+        assert pck.startswith("pck_")
+        assert len(pck) <= 64
+        assert pck != long_key
         assert eb.get("other_field") == 42
 
     def test_max_tokens(self, transport):

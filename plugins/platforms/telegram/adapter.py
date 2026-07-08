@@ -5345,10 +5345,51 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="⛔ You are not authorized to approve commands.")
                     return
 
-                session_key = self._approval_state.pop(approval_id, None)
+                session_key = self._approval_state.get(approval_id)
                 if not session_key:
                     await query.answer(text="This approval has already been resolved.")
                     return
+
+                user_display = getattr(query.from_user, "first_name", "User")
+
+                # Resolve the approval before acknowledging success.  If the
+                # backend queue already timed out or was cleared by /stop, a
+                # stale Telegram button can still be clickable.  Do not pop the
+                # callback state or edit the prompt as approved until the agent
+                # thread was actually unblocked.
+                try:
+                    from tools.approval import resolve_gateway_approval
+                    count = resolve_gateway_approval(session_key, choice)
+                    logger.info(
+                        "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)",
+                        count, session_key, choice, user_display,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Failed to resolve gateway approval from Telegram button: %s",
+                        exc,
+                        exc_info=True,
+                    )
+                    await query.answer(
+                        text="Could not deliver approval. Please tap again."
+                    )
+                    return
+
+                if not count:
+                    self._approval_state.pop(approval_id, None)
+                    expired_text = "⚠️ Approval expired before it could be delivered"
+                    await query.answer(text="This approval is no longer active. Please retry the command.")
+                    try:
+                        await query.edit_message_text(
+                            text=self.format_message(expired_text),
+                            parse_mode=ParseMode.MARKDOWN_V2,
+                            reply_markup=None,
+                        )
+                    except Exception:
+                        pass
+                    return
+
+                self._approval_state.pop(approval_id, None)
 
                 # Map choice to human-readable label
                 label_map = {
@@ -5357,7 +5398,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     "always": "✅ Approved permanently",
                     "deny": "❌ Denied",
                 }
-                user_display = getattr(query.from_user, "first_name", "User")
                 label = label_map.get(choice, "Resolved")
 
                 await query.answer(text=label)
@@ -5371,18 +5411,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception:
                     pass  # non-fatal if edit fails
-
-                # Resolve the approval — unblocks the agent thread
-                try:
-                    from tools.approval import resolve_gateway_approval
-                    count = resolve_gateway_approval(session_key, choice)
-                    logger.info(
-                        "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                        count, session_key, choice, user_display,
-                    )
-                except Exception as exc:
-                    logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
-                    count = 0
 
                 # Resume the typing indicator — paused when the approval was
                 # sent (gateway/run.py).  The text /approve and /deny paths

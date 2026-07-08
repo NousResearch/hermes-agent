@@ -304,15 +304,21 @@ class TestTelegramApprovalCallback:
         assert "12345" not in adapter._typing_paused
 
     @pytest.mark.asyncio
-    async def test_typing_stays_paused_when_resolve_returns_zero(self):
-        """If resolve_gateway_approval reports 0 resolves, the agent thread
-        was never unblocked, so typing should NOT be force-resumed."""
+    async def test_expired_backend_approval_is_not_marked_approved(self):
+        """A stale inline button must not claim approval if no waiter exists.
+
+        Regression: the Telegram callback used to pop the button state and show
+        "Approved" before calling resolve_gateway_approval(). If the backend
+        queue had already timed out or been cleared, resolve returned 0, the
+        agent thread stayed blocked/denied, and a second tap only showed
+        "already resolved".
+        """
         adapter = _make_adapter()
         adapter._approval_state[6] = "agent:main:telegram:group:12345:99"
         adapter.pause_typing_for_chat("12345")
 
         query = AsyncMock()
-        query.data = "ea:once:6"
+        query.data = "ea:always:6"
         query.message = MagicMock()
         query.message.chat_id = 12345
         query.from_user = MagicMock()
@@ -330,6 +336,44 @@ class TestTelegramApprovalCallback:
                 await adapter._handle_callback_query(update, context)
 
         assert "12345" in adapter._typing_paused
+        assert 6 not in adapter._approval_state
+        assert "no longer active" in query.answer.call_args[1]["text"]
+        edit_kwargs = query.edit_message_text.call_args[1]
+        assert "Approval expired" in edit_kwargs["text"]
+        assert "Approved" not in edit_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_resolver_exception_keeps_approval_available_for_retry(self):
+        """Transient resolver failures should not consume the Telegram button."""
+        adapter = _make_adapter()
+        adapter._approval_state[8] = "agent:main:telegram:group:12345:99"
+        adapter.pause_typing_for_chat("12345")
+
+        query = AsyncMock()
+        query.data = "ea:always:8"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Norbert"
+        query.from_user.id = "12345"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch(
+                "tools.approval.resolve_gateway_approval",
+                side_effect=RuntimeError("temporary resolver failure"),
+            ):
+                await adapter._handle_callback_query(update, context)
+
+        assert "12345" in adapter._typing_paused
+        assert adapter._approval_state[8] == "agent:main:telegram:group:12345:99"
+        assert "tap again" in query.answer.call_args[1]["text"]
+        query.edit_message_text.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_approval_callback_escapes_dynamic_user_name(self):

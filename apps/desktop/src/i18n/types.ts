@@ -162,6 +162,9 @@ export interface Translations {
     backendOutOfDateTitle: string
     backendOutOfDateMessage: string
     updateHermes: string
+    desktopOutOfDateTitle: string
+    desktopOutOfDateMessage: string
+    updateDesktopApp: string
     updateReadyTitle: string
     updateReadyMessage: (count: number) => string
     seeWhatsNew: string

@@ -89,16 +89,22 @@ function isUpdateToastSnoozed(): boolean {
 
 // Must match tui_gateway's DESKTOP_BACKEND_CONTRACT that this build was written
 // against. The backend reports its own value in session runtime info; a lower
-// value (or none — a pre-GUI checkout) means GUI<->backend skew.
+// value (or none — a pre-GUI checkout) means the backend is older than this
+// GUI, a higher value means this GUI is older than the backend. Both
+// directions are GUI<->backend skew and both warn — an old GUI silently
+// driving a newer backend is just as broken as the reverse, it only fails
+// further from the cause.
 // v2: requires the file.attach RPC (remote-gateway non-image file upload).
 const REQUIRED_BACKEND_CONTRACT = 2
 const SKEW_TOAST_ID = 'backend-contract-skew'
+const GUI_SKEW_TOAST_ID = 'gui-contract-skew'
 // The contract check runs on every session.resume (applyRuntimeInfo), so
 // without a snooze the warning re-popped on every thread the user opened, even
 // right after they closed it. Mirror the update toast: persist a cooldown when
-// the user dismisses it. It still reminds again after the window if the backend
-// is still behind, and clears immediately once the backend catches up.
+// the user dismisses it. It still reminds again after the window if the skew
+// persists, and clears immediately once the two sides align.
 const SKEW_TOAST_SNOOZE_KEY = 'hermes:backend-skew-toast-snooze-until'
+const GUI_SKEW_TOAST_SNOOZE_KEY = 'hermes:gui-skew-toast-snooze-until'
 const SKEW_TOAST_COOLDOWN_MS = 24 * 60 * 60 * 1000
 
 function snoozeSkewToast(): void {
@@ -111,44 +117,89 @@ function isSkewToastSnoozed(): boolean {
   return Number.isFinite(until) && Date.now() < until
 }
 
+function snoozeGuiSkewToast(): void {
+  persistString(GUI_SKEW_TOAST_SNOOZE_KEY, String(Date.now() + SKEW_TOAST_COOLDOWN_MS))
+}
+
+function isGuiSkewToastSnoozed(): boolean {
+  const until = Number(storedString(GUI_SKEW_TOAST_SNOOZE_KEY) || 0)
+
+  return Number.isFinite(until) && Date.now() < until
+}
+
 /**
- * Guard against a desktop GUI talking to a backend that predates its contract
- * (e.g. a bb/gui-built app pointed at a `main` checkout). Rather than failing
- * cryptically downstream, surface a warning with a one-click align that runs
- * the normal update flow (which self-heals to the right branch).
+ * Guard against GUI<->backend contract skew in either direction. A backend
+ * that predates this GUI's contract (e.g. a bb/gui-built app pointed at a
+ * `main` checkout) gets a "backend out of date" warning with a one-click
+ * align that runs the normal backend update flow. A backend *ahead* of this
+ * GUI's contract (typically a long-running app that survived a backend
+ * update without relaunching) gets the reverse "app out of date" warning
+ * pointing at the client update flow. Without the reverse check an old GUI
+ * silently drives a newer backend and fails cryptically downstream.
  *
- * Runs on every session open; closing the toast snoozes it for a cooldown so it
+ * Runs on every session open; closing a toast snoozes it for a cooldown so it
  * doesn't nag on every thread switch.
  */
 export function reportBackendContract(contract: number | undefined): void {
-  if ((contract ?? 0) >= REQUIRED_BACKEND_CONTRACT) {
+  const reported = contract ?? 0
+
+  if (reported >= REQUIRED_BACKEND_CONTRACT) {
     dismissNotification(SKEW_TOAST_ID)
     // Backend caught up — forget any prior snooze so a future regression warns
     // immediately rather than staying silent for the rest of the window.
     persistString(SKEW_TOAST_SNOOZE_KEY, null)
+  }
+
+  if (reported <= REQUIRED_BACKEND_CONTRACT) {
+    dismissNotification(GUI_SKEW_TOAST_ID)
+    persistString(GUI_SKEW_TOAST_SNOOZE_KEY, null)
+  }
+
+  if (reported < REQUIRED_BACKEND_CONTRACT) {
+    if (isSkewToastSnoozed()) {
+      return
+    }
+
+    notify({
+      action: {
+        label: translateNow('notifications.updateHermes'),
+        onClick: () => {
+          snoozeSkewToast()
+          void applyBackendUpdate()
+        }
+      },
+      durationMs: 0,
+      id: SKEW_TOAST_ID,
+      kind: 'warning',
+      message: translateNow('notifications.backendOutOfDateMessage'),
+      onDismiss: () => snoozeSkewToast(),
+      title: translateNow('notifications.backendOutOfDateTitle')
+    })
 
     return
   }
 
-  if (isSkewToastSnoozed()) {
-    return
-  }
+  if (reported > REQUIRED_BACKEND_CONTRACT) {
+    if (isGuiSkewToastSnoozed()) {
+      return
+    }
 
-  notify({
-    action: {
-      label: translateNow('notifications.updateHermes'),
-      onClick: () => {
-        snoozeSkewToast()
-        void applyBackendUpdate()
-      }
-    },
-    durationMs: 0,
-    id: SKEW_TOAST_ID,
-    kind: 'warning',
-    message: translateNow('notifications.backendOutOfDateMessage'),
-    onDismiss: () => snoozeSkewToast(),
-    title: translateNow('notifications.backendOutOfDateTitle')
-  })
+    notify({
+      action: {
+        label: translateNow('notifications.updateDesktopApp'),
+        onClick: () => {
+          snoozeGuiSkewToast()
+          openUpdateOverlayFor('client')
+        }
+      },
+      durationMs: 0,
+      id: GUI_SKEW_TOAST_ID,
+      kind: 'warning',
+      message: translateNow('notifications.desktopOutOfDateMessage'),
+      onDismiss: () => snoozeGuiSkewToast(),
+      title: translateNow('notifications.desktopOutOfDateTitle')
+    })
+  }
 }
 
 /**

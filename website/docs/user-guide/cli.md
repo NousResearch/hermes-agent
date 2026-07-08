@@ -43,6 +43,11 @@ hermes chat -s github-pr-workflow -q "open a draft PR"
 hermes --continue             # Resume the most recent CLI session (-c)
 hermes --resume <session_id>  # Resume a specific session by ID (-r)
 
+# Open browser/native surfaces
+hermes dashboard              # Browser management dashboard
+hermes webapp                 # Browser-native Hermes workspace surface
+hermes desktop                # Native Desktop app
+
 # Verbose mode (debug output)
 hermes chat --verbose
 

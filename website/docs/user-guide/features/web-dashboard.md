@@ -8,6 +8,10 @@ description: "Browser-based administration panel for managing configuration, API
 
 The web dashboard is a browser-based UI for managing your Hermes Agent installation. Instead of editing YAML files or running CLI commands, you can configure settings, manage API keys, and monitor sessions from a clean web interface.
 
+:::tip Dashboard vs Webapp
+The Dashboard is the management/admin surface. The new [Hermes Webapp](../hermes-webapp.md) command names the browser-native workspace direction: chat, files, previews, and future per-chat browser/RPA work. Today `hermes webapp` starts the same server/UI bundle while that dedicated workspace is built out; `hermes dashboard` remains supported for management workflows.
+:::
+
 :::tip
 Hosted-mode auth uses Nous Portal OAuth; if you also want the dashboard to talk to a real backend, `hermes setup --portal` wires up the model and tool gateway too. See [Nous Portal](/integrations/nous-portal).
 :::

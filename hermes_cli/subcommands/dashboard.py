@@ -1,11 +1,12 @@
-"""``hermes dashboard`` / ``hermes serve`` subcommand parsers.
+"""``hermes dashboard`` / ``hermes webapp`` / ``hermes serve`` subcommand parsers.
 
-``dashboard`` is the browser web UI; ``serve`` is the same gateway, headless —
-what the desktop app and remote backends run. ``serve`` also skips the web UI
-build (``headless_backend=True``): pure JSON-RPC/WS clients never load the SPA.
-Both share one handler (``cmd_dashboard`` → ``start_server``). Extracted from
-``hermes_cli/main.py:main()`` (god-file Phase 2); handler injected to avoid
-importing ``main``.
+``dashboard`` is the existing browser management UI. ``webapp`` is the canonical
+portal/workspace name for the browser UI as it grows beyond management screens.
+``serve`` is the same gateway, headless — what the desktop app and remote
+backends run. ``serve`` also skips the web UI build (``headless_backend=True``):
+pure JSON-RPC/WS clients never load the SPA. All three share one handler
+(``cmd_dashboard`` → ``start_server``). Extracted from ``hermes_cli/main.py:main()``
+(god-file Phase 2); handler injected to avoid importing ``main``.
 """
 
 from __future__ import annotations
@@ -87,13 +88,14 @@ def _add_server_runtime_args(parser) -> None:
 def build_dashboard_parser(
     subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable
 ) -> None:
-    """Attach the ``dashboard`` and ``serve`` subcommands.
+    """Attach the ``dashboard``, ``webapp``, and ``serve`` subcommands.
 
     Both share the same backend (``cmd_dashboard`` → ``start_server``).
-    ``dashboard`` is the browser UI; ``serve`` is the headless backend used by
-    the desktop app and remote clients. They are independent surfaces — neither
-    "launches" the other — so the desktop app spawns ``serve``, never
-    ``dashboard``.
+    ``dashboard`` is the established management UI name; ``webapp`` is the
+    canonical browser workspace/portal name; ``serve`` is the headless backend
+    used by the desktop app and remote clients. They are independent surfaces —
+    neither "launches" the other — so the desktop app spawns ``serve``, never
+    ``dashboard`` or ``webapp``.
     """
     # =========================================================================
     # dashboard command — the browser web UI
@@ -123,6 +125,30 @@ def build_dashboard_parser(
         help=argparse.SUPPRESS,
     )
     dashboard_parser.set_defaults(func=cmd_dashboard)
+
+    # =========================================================================
+    # webapp command — canonical browser portal/workspace surface
+    #
+    # For now this intentionally starts the same SPA/server as `dashboard` so the
+    # new product vocabulary is real without duplicating backend code. Future
+    # Hermes Webapp work can specialize the browser workspace behind this command
+    # while keeping `dashboard` backward-compatible for management workflows.
+    # =========================================================================
+    webapp_parser = subparsers.add_parser(
+        "webapp",
+        help="Start the Hermes Webapp browser workspace",
+        description=(
+            "Launch the Hermes Webapp — the browser-native portal/workspace for "
+            "chat, sessions, panes, and future per-chat browser/RPA work. Today "
+            "it serves the same UI bundle as `hermes dashboard`; the separate "
+            "command names the product boundary without replacing Dashboard."
+        ),
+    )
+    _add_server_runtime_args(webapp_parser)
+    webapp_parser.add_argument(
+        "--no-open", action="store_true", help="Don't open browser automatically"
+    )
+    webapp_parser.set_defaults(func=cmd_dashboard)
 
     # =========================================================================
     # serve command — the headless backend server

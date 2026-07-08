@@ -16,6 +16,7 @@ Hermes has several front ends that all talk to the same agent:
 - **Desktop App** (this page) — a native application with a purpose-built UI for chat, configuration, and management.
 - **CLI** (`hermes`) and **[TUI](./tui.md)** (`hermes --tui`) — terminal interfaces.
 - **[Web Dashboard](./features/web-dashboard.md)** (`hermes dashboard`) — a browser admin panel; its optional **Chat** tab embeds the TUI through a pseudo-terminal.
+- **[Hermes Webapp](./hermes-webapp.md)** (`hermes webapp`) — the browser-native workspace direction for chat, files, previews, and future per-chat browser/RPA work. Today it starts the same server/UI bundle as Dashboard while the dedicated workspace is built out.
 
 Pick whichever fits the moment. They share state, so you can start a session in one and resume it in another.
 :::

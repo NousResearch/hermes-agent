@@ -93,6 +93,8 @@ def test_dashboard_builder_two_handlers():
     build_dashboard_parser(sub, cmd_dashboard=dash, cmd_dashboard_register=reg)
     # bare dashboard -> launch handler
     assert parser.parse_args(["dashboard"]).func is dash
+    # canonical webapp alias -> same launch handler
+    assert parser.parse_args(["webapp"]).func is dash
     # dashboard register -> register handler
     assert parser.parse_args(["dashboard", "register"]).func is reg
 

@@ -39,6 +39,9 @@ Usage:
     hermes uninstall           Uninstall Hermes Agent
     hermes acp                 Run as an ACP server for editor integration
     hermes sessions browse     Interactive session picker with search
+    hermes dashboard           Start browser management dashboard
+    hermes webapp              Start browser-native Hermes workspace surface
+    hermes serve               Start headless backend server
 
     hermes claw migrate --dry-run  # Preview migration without changes
 """
@@ -5791,7 +5794,7 @@ def _find_stale_dashboard_pids(
     *,
     exclude_pids: set[int] | None = None,
 ) -> list[int]:
-    """Return PIDs of ``hermes dashboard`` processes other than ourselves.
+    """Return PIDs of ``hermes dashboard``/``webapp`` processes other than ourselves.
 
     ``hermes dashboard`` is a long-lived server process commonly started and
     forgotten.  When ``hermes update`` replaces files on disk, the running
@@ -5820,6 +5823,12 @@ def _find_stale_dashboard_pids(
         "hermes dashboard",
         "hermes_cli.main dashboard",
         "hermes_cli/main.py dashboard",
+        # `hermes webapp` is the canonical browser workspace command. It uses
+        # the same long-lived web server and therefore needs the same status,
+        # stop, and post-update stale-process management as `dashboard`.
+        "hermes webapp",
+        "hermes_cli.main webapp",
+        "hermes_cli/main.py webapp",
         # The headless backend (`hermes serve`) is the same long-lived server
         # under a different command name — the desktop app spawns it. Reap it
         # on update for the same frontend/backend-mismatch reason.
@@ -5827,6 +5836,18 @@ def _find_stale_dashboard_pids(
         "hermes_cli.main serve",
         "hermes_cli/main.py serve",
     ]
+    lifecycle_flags = {"--status", "--stop"}
+
+    def is_lifecycle_probe(command: str) -> bool:
+        """Return True for short-lived status/stop invocations.
+
+        ``hermes dashboard --status`` and ``hermes webapp --stop`` use this
+        scanner but are not themselves stale long-lived web server processes.
+        This also prevents shell wrappers whose command line contains a status
+        probe from being reported as a running dashboard/webapp server.
+        """
+        return any(flag in command.split() for flag in lifecycle_flags)
+
     self_pid = os.getpid()
     dashboard_pids: list[int] = []
 
@@ -5864,6 +5885,7 @@ def _find_stale_dashboard_pids(
                     pid_str = line[len("ProcessId=") :]
                     if (
                         any(p in current_cmd for p in patterns)
+                        and not is_lifecycle_probe(current_cmd)
                         and int(pid_str) != self_pid
                     ):
                         try:
@@ -5896,7 +5918,11 @@ def _find_stale_dashboard_pids(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if (
+                        any(p in command for p in patterns)
+                        and not is_lifecycle_probe(command)
+                        and pid != self_pid
+                    ):
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
@@ -11725,7 +11751,7 @@ def _render_distribution_plan(plan) -> None:
 
 
 def _report_dashboard_status() -> int:
-    """Print ``hermes dashboard`` PIDs and return the count.
+    """Print Hermes web server PIDs and return the count.
 
     Uses the same detection logic as ``_find_stale_dashboard_pids`` (the
     current process is excluded, but since ``hermes dashboard --status``
@@ -11734,10 +11760,10 @@ def _report_dashboard_status() -> int:
     """
     pids = _find_stale_dashboard_pids()
     if not pids:
-        print("No hermes dashboard processes running.")
+        print("No Hermes web server processes running.")
         return 0
 
-    print(f"{len(pids)} hermes dashboard process(es) running:")
+    print(f"{len(pids)} Hermes web server process(es) running:")
     for pid in pids:
         # Best-effort: show the full cmdline so users can tell profiles apart.
         cmdline = ""
@@ -11928,7 +11954,7 @@ def cmd_dashboard(args):
     if getattr(args, "stop", False):
         pids = _find_stale_dashboard_pids()
         if not pids:
-            print("No hermes dashboard processes running.")
+            print("No Hermes web server processes running.")
             sys.exit(0)
         # Reuse the same SIGTERM-grace-SIGKILL path used after `hermes update`.
         _kill_stale_dashboard_processes(reason="requested via --stop")

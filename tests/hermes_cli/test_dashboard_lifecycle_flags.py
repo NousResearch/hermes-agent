@@ -36,7 +36,7 @@ class TestDashboardStatus:
             cmd_dashboard(_ns(status=True))
         assert exc.value.code == 0
         out = capsys.readouterr().out
-        assert "No hermes dashboard processes running" in out
+        assert "No Hermes web server processes running" in out
 
     def test_status_with_processes(self, capsys):
         with patch("hermes_cli.main._find_stale_dashboard_pids",
@@ -46,7 +46,7 @@ class TestDashboardStatus:
         # Status is informational — always exits 0.
         assert exc.value.code == 0
         out = capsys.readouterr().out
-        assert "2 hermes dashboard process(es) running" in out
+        assert "2 Hermes web server process(es) running" in out
         assert "PID 12345" in out
         assert "PID 12346" in out
 
@@ -76,7 +76,7 @@ class TestDashboardStop:
             cmd_dashboard(_ns(stop=True))
         assert exc.value.code == 0
         out = capsys.readouterr().out
-        assert "No hermes dashboard processes running" in out
+        assert "No Hermes web server processes running" in out
 
     def test_stop_kills_and_exits_zero_when_all_killed(self, capsys):
         """After the kill, if the second scan returns empty we exit 0."""
@@ -179,3 +179,30 @@ class TestArgparseWiring:
              pytest.raises(SystemExit) as exc:
             mod.cmd_dashboard(_ns(status=True))
         assert exc.value.code == 0
+
+
+class TestWebappProcessDetection:
+    def test_webapp_command_lines_are_managed_with_dashboard_processes(self):
+        from hermes_cli import main as main_mod
+
+        ps_output = """
+          111 python -m hermes_cli.main webapp --host 127.0.0.1 --port 9119
+          222 hermes webapp --host 127.0.0.1 --port 9119
+          333 hermes dashboard --host 127.0.0.1 --port 9119
+          444 python -m hermes_cli.main chat -q webapp
+          555 /usr/bin/bash -c /venv/bin/python -m hermes_cli.main webapp --status
+          556 /usr/bin/bash -c /venv/bin/python -m hermes_cli.main dashboard --stop
+        """
+
+        completed = MagicMock(returncode=0, stdout=ps_output)
+
+        with patch.object(main_mod.sys, "platform", "linux"), \
+             patch.object(main_mod.subprocess, "run", return_value=completed):
+            pids = main_mod._find_stale_dashboard_pids()
+
+        assert 111 in pids
+        assert 222 in pids
+        assert 333 in pids
+        assert 444 not in pids
+        assert 555 not in pids
+        assert 556 not in pids

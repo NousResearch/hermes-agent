@@ -7,6 +7,8 @@ the desktop never invokes ``dashboard``. These tests pin that contract:
 - ``serve`` routes to the same handler as ``dashboard``;
 - ``serve`` is headless by default, ``dashboard`` is not;
 - both expose the identical server-runtime flag surface.
+- ``webapp`` is the canonical named portal surface: browser UI, not headless,
+  same runtime flags as ``dashboard`` while ``dashboard`` remains supported.
 """
 
 from __future__ import annotations
@@ -68,3 +70,27 @@ def test_serve_is_a_headless_backend_but_dashboard_is_not():
     # build; only `serve` carries it.
     assert getattr(_parser().parse_args(["serve"]), "headless_backend", False) is True
     assert getattr(_parser().parse_args(["dashboard"]), "headless_backend", False) is False
+
+
+def test_webapp_routes_to_the_shared_dashboard_handler():
+    args = _parser().parse_args(["webapp"])
+    assert args.func is _dash
+
+
+def test_webapp_is_browser_ui_not_headless_backend():
+    args = _parser().parse_args(["webapp"])
+    assert args.no_open is False
+    assert getattr(args, "headless_backend", False) is False
+
+
+def test_webapp_takes_the_same_runtime_flags_as_dashboard():
+    argv = ["--host", "0.0.0.0", "--port", "0", "--insecure", "--skip-build", "--isolated"]
+    webapp = _parser().parse_args(["webapp", *argv])
+    dash = _parser().parse_args(["dashboard", *argv])
+    for field in ("host", "port", "insecure", "skip_build", "isolated"):
+        assert getattr(webapp, field) == getattr(dash, field)
+
+
+def test_webapp_supports_lifecycle_flags():
+    for flag in ("--stop", "--status"):
+        assert getattr(_parser().parse_args(["webapp", flag]), flag.lstrip("-")) is True

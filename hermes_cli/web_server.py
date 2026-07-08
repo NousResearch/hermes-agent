@@ -9660,7 +9660,7 @@ def _new_dashboard_backup_path() -> Path:
 
 @app.post("/api/ops/backup")
 async def run_backup(body: BackupRequest):
-    args = ["backup"]
+    args = ["backup", "-o"]
     archive: Optional[Path] = None
     if body.output:
         args.append(body.output.strip())

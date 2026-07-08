@@ -1675,7 +1675,7 @@ class TestWebServerEndpoints:
 
         assert data["name"] == "backup"
         assert captured["name"] == "backup"
-        assert captured["args"] == ["backup", str(archive)]
+        assert captured["args"] == ["backup", "-o", str(archive)]
         assert archive.parent == get_hermes_home() / "backups"
         assert archive.name.startswith("hermes-backup-")
         assert archive.suffix == ".zip"
@@ -1702,7 +1702,7 @@ class TestWebServerEndpoints:
         archive = Path(resp.json()["archive"])
 
         assert archive.parent == hosted_home / "backups"
-        assert captured["args"] == ["backup", str(archive)]
+        assert captured["args"] == ["backup", "-o", str(archive)]
         assert archive.parent.is_dir()
 
     def test_ops_backup_download_streams_dashboard_backup(self, tmp_path):

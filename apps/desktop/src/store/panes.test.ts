@@ -97,7 +97,7 @@ describe('panes store', () => {
       expect(getPaneStateSnapshot('files')?.widthOverride).toBeUndefined()
     })
 
-    it('width override is in-memory only — not persisted across reloads', () => {
+    it('width override is NOT in-memory only, and is persisted across reloads', () => {
       ensurePaneRegistered('files', { open: true })
       setPaneWidthOverride('files', 300)
 

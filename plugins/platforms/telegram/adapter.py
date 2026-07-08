@@ -3088,6 +3088,15 @@ class TelegramAdapter(BasePlatformAdapter):
             else:  # pragma: no cover — httpx always present alongside PTB
                 _pool_limits = None
 
+            # Check if HTTPXRequest supports httpx_kwargs (PTB >= 22.6)
+            # Older PTB versions don't support this parameter and will raise
+            # TypeError: "got an unexpected keyword argument 'httpx_kwargs'"
+            # See #61158
+            import inspect as _inspect
+            _httpx_request_supports_httpx_kwargs = (
+                "httpx_kwargs" in _inspect.signature(HTTPXRequest.__init__).parameters
+            )
+
             def _with_limits(httpx_kwargs: Optional[dict] = None) -> dict:
                 """Merge tuned keepalive limits into httpx client kwargs.
 
@@ -3101,6 +3110,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 if _pool_limits is not None and "limits" not in kwargs:
                     kwargs["limits"] = _pool_limits
                 return kwargs
+
+            def _httpx_kwargs_if_supported(kwargs: dict) -> dict:
+                """Return kwargs for HTTPXRequest, excluding httpx_kwargs if unsupported."""
+                if _httpx_request_supports_httpx_kwargs:
+                    return {"httpx_kwargs": kwargs}
+                # Older PTB versions: pass proxy directly, ignore httpx_kwargs
+                # (keepalive tuning not available in older PTB)
+                return {}
 
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"})
             fallback_ips = self._fallback_ips()
@@ -3135,34 +3152,34 @@ class TelegramAdapter(BasePlatformAdapter):
                     _transport_kwargs["limits"] = _pool_limits
                 request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs={
+                    **_httpx_kwargs_if_supported({
                         "transport": TelegramFallbackTransport(
                             fallback_ips, **_transport_kwargs
                         )
-                    },
+                    }),
                 )
                 get_updates_request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs={
+                    **_httpx_kwargs_if_supported({
                         "transport": TelegramFallbackTransport(
                             fallback_ips, **_transport_kwargs
                         )
-                    },
+                    }),
                 )
             elif proxy_url:
                 logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
                 request = HTTPXRequest(
-                    **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
+                    **request_kwargs, proxy=proxy_url, **_httpx_kwargs_if_supported(_with_limits())
                 )
                 get_updates_request = HTTPXRequest(
-                    **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
+                    **request_kwargs, proxy=proxy_url, **_httpx_kwargs_if_supported(_with_limits())
                 )
             else:
                 if disable_fallback:
                     logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
-                request = HTTPXRequest(**request_kwargs, httpx_kwargs=_with_limits())
+                request = HTTPXRequest(**request_kwargs, **_httpx_kwargs_if_supported(_with_limits()))
                 get_updates_request = HTTPXRequest(
-                    **request_kwargs, httpx_kwargs=_with_limits()
+                    **request_kwargs, **_httpx_kwargs_if_supported(_with_limits())
                 )
 
             builder = builder.request(request).get_updates_request(get_updates_request)

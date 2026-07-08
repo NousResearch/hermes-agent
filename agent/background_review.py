@@ -446,7 +446,15 @@ def summarize_background_review_actions(
         if tcid and all_tool_call_ids and tcid not in call_details:
             continue
         try:
-            data = json.loads(msg.get("content", "{}"))
+            content_raw = msg.get("content", "{}")
+            # OpenAI multi-part content format: content can be a list of
+            # {type, text} blocks instead of a plain string.  Extract the
+            # text before JSON-parsing.  See #59437.
+            if isinstance(content_raw, list):
+                content_raw = " ".join(
+                    b.get("text", "") for b in content_raw if isinstance(b, dict)
+                ) or "{}"
+            data = json.loads(content_raw)
         except (json.JSONDecodeError, TypeError):
             continue
         # ``data`` may not be a dict — some memory/skill tool responses in
@@ -461,7 +469,7 @@ def summarize_background_review_actions(
         if not isinstance(data, dict) or not data.get("success"):
             continue
         message = data.get("message", "")
-        detail = call_details.get(tcid) or {}
+        detail = call_details.get(tcid, {})
         if not isinstance(detail, dict):
             detail = {}
         target = data.get("target", "") or detail.get("target", "")

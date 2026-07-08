@@ -886,6 +886,16 @@ class DiscordAdapter(BasePlatformAdapter):
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
+        # Suppress Discord's client-side link-preview embed cards on
+        # assistant-authored plain-text sends. Naming parity with Telegram's
+        # `extra.disable_link_previews` (see #60942); uses discord.py's
+        # native `suppress_embeds=True` kwarg on `channel.send()`, which is
+        # server-side and robust regardless of message formatting (unlike the
+        # angle-bracket `<url>` workaround). Opt-in / default off so existing
+        # deployments keep today's behavior.
+        self._disable_link_previews: bool = bool(
+            self.config.extra.get("disable_link_previews", False)
+        )
         # In-memory cache of the bot's last message ID per channel, used by
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
@@ -2055,6 +2065,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     msg = await channel.send(
                         content=chunk,
                         reference=chunk_reference,
+                        suppress_embeds=self._disable_link_previews,
                     )
                 except Exception as e:
                     err_text = str(e)
@@ -2077,6 +2088,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         msg = await channel.send(
                             content=chunk,
                             reference=None,
+                            suppress_embeds=self._disable_link_previews,
                         )
                     else:
                         raise
@@ -2124,6 +2136,7 @@ class DiscordAdapter(BasePlatformAdapter):
             thread = await forum_channel.create_thread(
                 name=thread_name,
                 content=starter_content,
+                suppress_embeds=self._disable_link_previews,
             )
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
@@ -2140,7 +2153,10 @@ class DiscordAdapter(BasePlatformAdapter):
         warnings: list[str] = []
         for chunk in chunks[1:]:
             try:
-                msg = await thread_channel.send(content=chunk)
+                msg = await thread_channel.send(
+                    content=chunk,
+                    suppress_embeds=self._disable_link_previews,
+                )
                 message_ids.append(str(msg.id))
             except Exception as e:
                 warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"
@@ -2376,7 +2392,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 except Exception:
                     reference = None
             try:
-                sent = await channel.send(content=chunk, reference=reference)
+                sent = await channel.send(
+                    content=chunk,
+                    reference=reference,
+                    suppress_embeds=self._disable_link_previews,
+                )
             except Exception as send_err:
                 # Drop the reply anchor and retry once — a deleted/expired
                 # anchor (10008) or system-message reply (50035) shouldn't lose
@@ -2386,7 +2406,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     self.name, send_err,
                 )
                 try:
-                    sent = await channel.send(content=chunk, reference=None)
+                    sent = await channel.send(
+                        content=chunk,
+                        reference=None,
+                        suppress_embeds=self._disable_link_previews,
+                    )
                 except Exception as retry_err:
                     logger.warning(
                         "[%s] Overflow split: stopped at %d/%d chunks delivered: %s",

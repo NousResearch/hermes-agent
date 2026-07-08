@@ -54,7 +54,7 @@ async def test_send_retries_without_reference_when_reply_target_is_system_messag
     sent_msg = SimpleNamespace(id=1234)
     send_calls = []
 
-    async def fake_send(*, content, reference=None):
+    async def fake_send(*, content, reference=None, **_kwargs):
         send_calls.append({"content": content, "reference": reference})
         if len(send_calls) == 1:
             raise RuntimeError(
@@ -92,7 +92,7 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
     sent_msgs = [SimpleNamespace(id=1001), SimpleNamespace(id=1002)]
     send_calls = []
 
-    async def fake_send(*, content, reference=None):
+    async def fake_send(*, content, reference=None, **_kwargs):
         send_calls.append({"content": content, "reference": reference})
         if len(send_calls) == 1:
             raise RuntimeError(
@@ -135,7 +135,7 @@ async def test_send_does_not_retry_on_unrelated_errors():
     ref_msg = SimpleNamespace(id=99, to_reference=MagicMock(return_value=reference_obj))
     send_calls = []
 
-    async def fake_send(*, content, reference=None):
+    async def fake_send(*, content, reference=None, **_kwargs):
         send_calls.append({"content": content, "reference": reference})
         raise RuntimeError(
             "403 Forbidden (error code: 50013): Missing Permissions"
@@ -445,3 +445,90 @@ async def test_typing_stop_cleans_up():
 
     await adapter.stop_typing("12345")
     assert "12345" not in adapter._typing_tasks
+
+
+# ---------------------------------------------------------------------------
+# disable_link_previews config toggle (#60942)
+# ---------------------------------------------------------------------------
+
+
+def test_disable_link_previews_defaults_to_false():
+    """Opt-in / default-off: existing deployments keep today's embed behavior."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    assert adapter._disable_link_previews is False
+
+
+def test_disable_link_previews_reads_config_extra():
+    adapter = DiscordAdapter(
+        PlatformConfig(enabled=True, token="***", extra={"disable_link_previews": True})
+    )
+    assert adapter._disable_link_previews is True
+
+
+@pytest.mark.asyncio
+async def test_send_passes_suppress_embeds_true_when_enabled():
+    adapter = DiscordAdapter(
+        PlatformConfig(enabled=True, token="***", extra={"disable_link_previews": True})
+    )
+
+    channel = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=1)))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "See https://example.com")
+
+    assert result.success is True
+    channel.send.assert_awaited_once_with(
+        content="See https://example.com",
+        reference=None,
+        suppress_embeds=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_passes_suppress_embeds_false_by_default():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    channel = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=1)))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "See https://example.com")
+
+    assert result.success is True
+    channel.send.assert_awaited_once_with(
+        content="See https://example.com",
+        reference=None,
+        suppress_embeds=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_to_forum_passes_suppress_embeds_when_enabled():
+    adapter = DiscordAdapter(
+        PlatformConfig(enabled=True, token="***", extra={"disable_link_previews": True})
+    )
+
+    thread_ch = SimpleNamespace(id=555, send=AsyncMock(return_value=SimpleNamespace(id=600)))
+    thread = SimpleNamespace(
+        id=555,
+        message=SimpleNamespace(id=500),
+        thread=thread_ch,
+    )
+    forum_channel = _discord_mod.ForumChannel()
+    forum_channel.id = 999
+    forum_channel.name = "ideas"
+    forum_channel.create_thread = AsyncMock(return_value=thread)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: forum_channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    await adapter.send("999", "Hello forum!")
+
+    forum_channel.create_thread.assert_awaited_once()
+    assert forum_channel.create_thread.await_args.kwargs["suppress_embeds"] is True

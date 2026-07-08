@@ -1282,7 +1282,7 @@ async def test_discord_send_does_not_cache_nonconversational_status_as_history_b
     """Automated status notifications should not move the backfill boundary."""
 
     class SendingChannel(FakeTextChannel):
-        async def send(self, content, reference=None):
+        async def send(self, content, reference=None, **_kwargs):
             return SimpleNamespace(id=222)
 
     channel = SendingChannel(channel_id=777)

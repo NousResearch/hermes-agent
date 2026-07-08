@@ -9,11 +9,13 @@ which closes BOTH streams when the loop exits. This is wrong because:
 3. The keepalive timer then tries send_ping() on the now-closed write_stream,
    raising ClosedResourceError and triggering a reconnect cascade.
 
-The fix: _receive_loop should only close read_stream (which it owns as reader),
-not write_stream (which is owned by the caller).
+The fix: wrap write_stream in _NonClosingStreamWrapper so the async-with block
+cannot close it. The wrapper stays in place permanently (not restored after
+_receive_loop exits) because the keepalive timer can fire between _receive_loop
+exit and session teardown.
 
-Bug: https://github.com/NousResearch/hermes-agent/issues/XXXX
-SDK bug: https://github.com/modelcontextprotocol/python-sdk/issues/XXXX
+Bug: https://github.com/NousResearch/hermes-agent/issues/19417
+SDK bug: https://github.com/modelcontextprotocol/python-sdk/issues/631
 """
 
 import asyncio
@@ -28,7 +30,7 @@ from mcp.types import JSONRPCNotification, JSONRPCRequest
 
 
 # ---------------------------------------------------------------------------
-# The monkey-patch (same as in mcp_tool.py)
+# The monkey-patch (mirrors production code in mcp_tool.py exactly)
 # ---------------------------------------------------------------------------
 
 class _NonClosingStreamWrapper:
@@ -50,18 +52,36 @@ class _NonClosingStreamWrapper:
     async def __aexit__(self, *args):
         return False
 
+    async def send(self, item):
+        """Delegate send() to the underlying stream."""
+        return await self._stream.send(item)
+
 
 _original_receive_loop = BaseSession._receive_loop
 
 
 async def _patched_receive_loop(self) -> None:
-    """Patched _receive_loop that does NOT close write_stream on exit."""
+    """Patched _receive_loop that does NOT close write_stream on exit.
+
+    Mirrors the production code in mcp_tool.py exactly:
+    - Wraps write_stream in _NonClosingStreamWrapper before calling original
+    - Skips wrapping if already wrapped (re-entry during reconnect)
+    - Intentionally does NOT restore the original write_stream after
+      _receive_loop exits, because the keepalive timer can fire between
+      _receive_loop exit and session teardown
+    """
+    if isinstance(self._write_stream, _NonClosingStreamWrapper):
+        # Already wrapped (e.g., re-entry during reconnect). Skip.
+        await _original_receive_loop(self)
+        return
+
     original_write_stream = self._write_stream
     self._write_stream = _NonClosingStreamWrapper(original_write_stream)
-    try:
-        await _original_receive_loop(self)
-    finally:
-        self._write_stream = original_write_stream
+    await _original_receive_loop(self)
+    # Intentionally NOT restoring original_write_stream here.
+    # The keepalive timer can fire between _receive_loop exit and
+    # session teardown; restoring the unwrapped stream would let
+    # the original async-with __aexit__ close it.
 
 
 # Apply the monkey-patch BEFORE any tests create BaseSession instances
@@ -78,7 +98,6 @@ class _TestRequest(JSONRPCRequest):
 class _TestNotification(JSONRPCNotification):
     """Minimal notification type for test sessions."""
 
-
 def _make_session():
     """Create a BaseSession with memory streams for testing.
 
@@ -89,7 +108,6 @@ def _make_session():
 
     Returns (session, read_stream, read_stream_writer, write_stream, write_stream_reader).
     """
-    # Matches stdio_client naming: read_stream_writer, read_stream = create_memory_object_stream(0)
     read_stream_writer, read_stream = anyio.create_memory_object_stream[SessionMessage | Exception](0)
     write_stream, write_stream_reader = anyio.create_memory_object_stream[SessionMessage](0)
 
@@ -140,7 +158,7 @@ class TestReceiveLoopStreamOwnership:
         # BUG (original SDK): async with (read_stream, write_stream) closes
         # write_stream, causing ClosedResourceError on subsequent send() calls.
         #
-        # FIX: _receive_loop only closes read_stream, write_stream stays open.
+        # FIX: _receive_loop wraps write_stream so __aexit__ is a no-op.
         assert not write_stream._closed, (
             "write_stream must NOT be closed by _receive_loop — "
             "it is owned by the caller (stdio_client), not by _receive_loop"
@@ -179,7 +197,7 @@ class TestReceiveLoopStreamOwnership:
 
         # After _receive_loop exits, write_stream should still be usable.
         # BUG (original SDK): write_stream is closed, send_nowait raises ClosedResourceError
-        # FIX: write_stream remains open.
+        # FIX: write_stream remains open (wrapped in _NonClosingStreamWrapper).
         #
         # With a zero-buffer stream and no active reader, send_nowait raises WouldBlock
         # (buffer full, no waiter) or BrokenResourceError (receiver gone). Both are
@@ -201,6 +219,67 @@ class TestReceiveLoopStreamOwnership:
             # WouldBlock: no waiter and zero buffer (expected — stream is open but idle)
             # Both prove write_stream is NOT closed — the fix works.
             pass
+
+    @pytest.mark.asyncio
+    async def test_wrapper_stays_after_receive_loop_exit(self):
+        """After _receive_loop exits, _write_stream remains wrapped (not restored).
+
+        The production code intentionally does NOT restore the original
+        write_stream after _receive_loop exits. This is because the keepalive
+        timer can fire between _receive_loop exit and session teardown; if we
+        restored the unwrapped stream, the original async-with __aexit__ could
+        still close it.
+        """
+        session, read_stream, read_stream_writer, write_stream, write_stream_reader = _make_session()
+
+        # Before _receive_loop starts, write_stream is the raw memory stream
+        assert not isinstance(session._write_stream, _NonClosingStreamWrapper)
+
+        # Close read_stream_writer to trigger _receive_loop exit
+        await read_stream_writer.aclose()
+
+        async with session:
+            await asyncio.sleep(0.1)
+
+        # After _receive_loop exits, write_stream should STILL be wrapped
+        # (the production code intentionally does not restore the original)
+        assert isinstance(session._write_stream, _NonClosingStreamWrapper), (
+            "_write_stream should remain wrapped after _receive_loop exits — "
+            "restoring the original would expose it to ClosedResourceError "
+            "from the keepalive timer"
+        )
+
+    @pytest.mark.asyncio
+    async def test_reentry_skips_wrapping(self):
+        """If _write_stream is already wrapped, the patched _receive_loop skips re-wrapping.
+
+        This tests the re-entry guard: during reconnect, _receive_loop is called
+        again on the same session. If write_stream is already wrapped, we must
+        not double-wrap it.
+        """
+        session, read_stream, read_stream_writer, write_stream, write_stream_reader = _make_session()
+
+        # Manually wrap write_stream to simulate re-entry
+        original = session._write_stream
+        session._write_stream = _NonClosingStreamWrapper(original)
+
+        # Verify the re-entry guard: calling _patched_receive_loop on a
+        # session with an already-wrapped stream should call the original
+        # _receive_loop directly without double-wrapping.
+        # We can't easily test "no double-wrap" in a black-box way, but we
+        # can verify the stream is still wrapped exactly once after the call.
+        await read_stream_writer.aclose()
+
+        async with session:
+            await asyncio.sleep(0.1)
+
+        # After exit, write_stream should still be wrapped exactly once
+        assert isinstance(session._write_stream, _NonClosingStreamWrapper)
+        # The inner stream should be the original, not another wrapper
+        assert isinstance(session._write_stream._stream, type(original)), (
+            "Inner stream should be the original MemoryObjectSendStream, "
+            "not another _NonClosingStreamWrapper (double-wrap bug)"
+        )
 
 
 class TestKeepaliveWithOpenWriteStream:

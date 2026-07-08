@@ -195,9 +195,17 @@ class GatewayStreamConsumer:
         # continuing to edit and deliver stale deltas.
         self._run_still_current = run_still_current or (lambda: True)
 
+        # Voice media paths for send_voice delivery during streaming.
+        # When streaming is enabled, [[audio_as_voice]] + MEDIA: tags are
+        # intercepted here and delivered via adapter.send_voice after the
+        # stream completes. This prevents the MEDIA tag from being sent as
+        # plain text, which would render as a file attachment instead of a
+        # voice bubble on platforms like Telegram. See issue #60556.
+        self._voice_media_paths: "set[str]" = set()
+
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
-        self._in_think_block = False
         self._think_buffer = ""
+        self._in_think_block = False
 
         # Native draft-streaming state.  Resolved at the start of run() based
         # on cfg.transport, cfg.chat_type, and the adapter's
@@ -358,6 +366,38 @@ class GatewayStreamConsumer:
             type(self)._draft_id_counter += 1
             self._draft_id = type(self)._draft_id_counter
 
+    # ── Voice media handling ──────────────────────────────────────────
+    # When streaming is enabled, [[audio_as_voice]] + MEDIA: tags are
+    # intercepted here and delivered via adapter.send_voice after the
+    # stream completes. This prevents the MEDIA tag from being sent as
+    # plain text, which would render as a file attachment instead of a
+    # voice bubble on platforms like Telegram. See issue #60556.
+
+    _VOICE_DIRECTIVE_PATTERN = re.compile(
+        r"\[\[audio_as_voice\]\]\s*MEDIA:([^\n]+)",
+        re.MULTILINE,
+    )
+
+    def _extract_voice_media_paths(self, text: str) -> tuple[str, set[str]]:
+        """Extract [[audio_as_voice]] + MEDIA: paths from text.
+
+        Returns:
+            A tuple of (text_without_directives, media_paths_set).
+
+        The directives are stripped from the returned text so they don't
+        appear in the streamed message. The media paths are stored and
+        delivered via adapter.send_voice after the stream completes.
+        """
+        paths: set[str] = set()
+        # Find all matches and collect paths
+        for match in self._VOICE_DIRECTIVE_PATTERN.finditer(text):
+            path = match.group(1).strip()
+            if path:
+                paths.add(path)
+        # Remove all matches from the text
+        clean_text = self._VOICE_DIRECTIVE_PATTERN.sub("", text)
+        return clean_text, paths
+
     def on_delta(self, text: str) -> None:
         """Thread-safe callback — called from the agent's worker thread.
 
@@ -389,7 +429,14 @@ class GatewayStreamConsumer:
         reasoning/thinking block.  Text inside such blocks is silently
         discarded.  Partial tags at buffer boundaries are held back in
         ``_think_buffer`` until enough characters arrive to decide.
+
+        Also extracts [[audio_as_voice]] + MEDIA: paths for voice delivery
+        after the stream completes.
         """
+        # Extract voice media paths before any other processing
+        text, voice_paths = self._extract_voice_media_paths(text)
+        self._voice_media_paths.update(voice_paths)
+
         buf = self._think_buffer + text
         self._think_buffer = ""
 
@@ -593,6 +640,22 @@ class GatewayStreamConsumer:
                 # tag is not lost.
                 if got_done:
                     self._flush_think_buffer()
+
+                    # Send voice media via adapter.send_voice. This must happen
+                    # BEFORE finalizing the streamed message so voice messages
+                    # appear in correct order (text first, then voice bubble).
+                    if self._voice_media_paths and hasattr(self.adapter, "send_voice"):
+                        for path in self._voice_media_paths:
+                            try:
+                                await self.adapter.send_voice(
+                                    chat_id=self.chat_id,
+                                    audio_path=path,
+                                    reply_to=self._message_id or self._initial_reply_to_id,
+                                )
+                                logger.debug("Stream consumer sent voice message: %s", path)
+                            except Exception as e:
+                                logger.error("Stream consumer send_voice error: %s", e)
+                        self._voice_media_paths.clear()
 
                     # Intentional-silence suppression.  When the agent chose
                     # not to reply it emits a bare control marker (NO_REPLY /

@@ -21,7 +21,7 @@ export function SidebarFooter({ status }: SidebarFooterProps) {
       </Typography>
 
       <a
-        href="https://nousresearch.com"
+        href="https://github.com/uaixo/awesome-hermes-agent"
         target="_blank"
         rel="noopener noreferrer"
         className={cn(
@@ -30,7 +30,7 @@ export function SidebarFooter({ status }: SidebarFooterProps) {
           "focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/40",
         )}
       >
-        {t.app.footer.org}
+        {t.app.brand}
       </a>
     </div>
   );

@@ -91,6 +91,50 @@ def popen_text_kwargs(**kwargs: Any) -> dict[str, Any]:
     return text_subprocess_kwargs(**kwargs)
 
 
+def _apply_lossy_text_defaults(kwargs: dict[str, Any]) -> None:
+    if not (kwargs.get("text") or kwargs.get("universal_newlines")):
+        return
+    if kwargs.get("encoding") is None:
+        kwargs["encoding"] = "utf-8"
+    if kwargs.get("errors") is None:
+        kwargs["errors"] = "replace"
+
+
+def install_lossy_text_subprocess_defaults() -> None:
+    """Make ad-hoc text-mode subprocess calls decode lossy instead of crashing.
+
+    Shared code should prefer ``run_text_subprocess``/``popen_text_kwargs``.
+    This process-local guard covers older direct ``subprocess.run(..., text=True)``
+    calls whose internal reader threads would otherwise raise UnicodeDecodeError.
+    """
+
+    current_popen = subprocess.Popen
+    if getattr(current_popen, "_hermes_lossy_text_defaults", False):
+        return
+
+    if isinstance(current_popen, type):
+        base_popen = current_popen
+
+        class HermesLossyTextPopen(base_popen):  # type: ignore[misc, valid-type]
+            _hermes_lossy_text_defaults = True
+
+            def __init__(self, *popenargs: Any, **kwargs: Any) -> None:
+                _apply_lossy_text_defaults(kwargs)
+                super().__init__(*popenargs, **kwargs)
+
+        HermesLossyTextPopen.__name__ = getattr(base_popen, "__name__", "Popen")
+        HermesLossyTextPopen.__qualname__ = getattr(base_popen, "__qualname__", "Popen")
+        subprocess.Popen = HermesLossyTextPopen  # type: ignore[assignment]
+        return
+
+    def hermes_lossy_text_popen(*popenargs: Any, **kwargs: Any) -> Any:
+        _apply_lossy_text_defaults(kwargs)
+        return current_popen(*popenargs, **kwargs)
+
+    hermes_lossy_text_popen._hermes_lossy_text_defaults = True  # type: ignore[attr-defined]
+    subprocess.Popen = hermes_lossy_text_popen  # type: ignore[assignment]
+
+
 def run_text_subprocess(*popenargs: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
     """Run a subprocess and decode captured output through shared safe logic."""
 

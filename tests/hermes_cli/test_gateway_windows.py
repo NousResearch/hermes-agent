@@ -14,6 +14,7 @@ import hermes_cli.setup as setup
     [
         "ERROR: Access is denied.",
         "ERROR: Acceso denegado.",
+        "ERROR: Odmowa dostepu.",
         "ERROR: Přístup byl odepřen.",
         "schtasks timed out after 15s",
         "schtasks produced no output",
@@ -23,6 +24,10 @@ def test_schtasks_fallback_patterns_cover_localized_access_denied(detail):
     """Localized schtasks access-denied errors should use Startup fallback."""
 
     assert gateway_windows._should_fall_back(1, detail) is True
+
+
+def test_access_denied_detection_covers_polish_schtasks_output():
+    assert gateway_windows._is_access_denied("ERROR: Odmowa dostepu.") is True
 
 
 def test_schtasks_fallback_does_not_hide_unknown_errors():
@@ -184,7 +189,7 @@ def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):
     monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda via: calls.append(("report_start", via)))
     monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: calls.append(("next_steps", None)))
     monkeypatch.setattr(gateway, "find_gateway_pids", lambda: running_pids)
-    monkeypatch.setattr(gateway, "_profile_arg", lambda: "--profile alice")
+    monkeypatch.setattr(gateway, "_profile_arg", lambda *args: "--profile alice")
     return script_path, calls
 
 
@@ -243,6 +248,50 @@ def test_gateway_cmd_script_uses_uv_safe_base_pythonw(monkeypatch, tmp_path):
     assert f'set "VIRTUAL_ENV={project / "venv"}"' in content
     assert str(site_packages) in content
     assert str(venv_pythonw) not in content
+
+
+@pytest.mark.parametrize("value", [r"C:\Hermes&Home", r"C:\Hermes^Home", r"C:\Hermes|Home", r"C:\Hermes(Home)"])
+def test_quote_cmd_script_arg_quotes_cmd_metacharacters(value):
+    assert gateway_windows._quote_cmd_script_arg(value) == f'"{value}"'
+
+
+def test_gateway_cmd_script_quotes_cmd_metacharacters_in_commands(monkeypatch):
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (r"C:\Py&Tools\pythonw.exe", r"C:\Hermes&Env\venv", []),
+    )
+
+    content = gateway_windows._build_gateway_cmd_script(
+        r"C:\Py&Tools\python.exe",
+        r"C:\Work&Repo",
+        r"C:\Hermes&Home\profiles\A&B",
+        "--profile a&b",
+    )
+
+    assert r'cd /d "C:\Work&Repo"' in content
+    assert r'set "HERMES_HOME=C:\Hermes&Home\profiles\A&B"' in content
+    assert r'"C:\Py&Tools\pythonw.exe" -m hermes_cli.main --profile "a&b" gateway run' in content
+
+
+def test_gateway_cmd_watchdog_script_quotes_cmd_metacharacters(monkeypatch):
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (r"C:\Py&Tools\pythonw.exe", r"C:\Hermes&Env\venv", []),
+    )
+
+    content = gateway_windows._build_gateway_cmd_watchdog_script(
+        r"C:\Py&Tools\python.exe",
+        r"C:\Work&Repo",
+        r"C:\Hermes&Home\profiles\A&B",
+        "--profile a&b",
+    )
+
+    assert r'if not exist "C:\Hermes&Home\profiles\A&B\logs" mkdir "C:\Hermes&Home\profiles\A&B\logs"' in content
+    assert r'cd /d "C:\Work&Repo"' in content
+    assert r'"C:\Py&Tools\python.exe" -c "from gateway.status import get_running_pid; raise SystemExit(0 if get_running_pid() else 1)" >nul 2>nul' in content
+    assert r'"C:\Py&Tools\python.exe" -m hermes_cli.main --profile "a&b" gateway run >> "%HERMES_SUPERVISOR_LOG%" 2>&1' in content
 
 
 def test_elevated_gateway_command_uses_pythonw_hidden_console(monkeypatch):
@@ -568,6 +617,21 @@ def test_install_startup_fallback_does_not_spawn_when_gateway_already_running(mo
     out = capsys.readouterr().out
     assert "already running" in out
     assert "24476" in out
+
+
+def test_install_startup_fallback_hardens_legacy_cmd_target(monkeypatch, tmp_path, capsys):
+    """If the old Scheduled Task cannot be replaced, its .cmd target should self-supervise."""
+    script_path, calls = _arrange_startup_fallback(monkeypatch, tmp_path, [24476])
+    script_path.write_text("old one-shot launcher", encoding="utf-8")
+
+    gateway_windows.install(force=False)
+
+    content = script_path.read_text(encoding="utf-8")
+    assert ("install_startup", script_path) in calls
+    assert ":watch" in content
+    assert "gateway-supervisor.log" in content
+    assert "gateway run" in content
+    assert "old one-shot launcher" not in content
 
 
 def test_install_startup_fallback_does_not_auto_spawn_when_gateway_stopped(monkeypatch, tmp_path, capsys):

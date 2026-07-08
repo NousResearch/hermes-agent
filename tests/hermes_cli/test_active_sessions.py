@@ -1082,3 +1082,57 @@ def test_update_active_session_metadata_fails_open_when_registry_lock_is_busy(
         "Skipped active session metadata update because registry lock is busy" in record.message
         for record in caplog.records
     )
+
+
+def test_update_active_session_metadata_dedupes_lock_busy_warning(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(
+        active_sessions,
+        "_METADATA_UPDATE_BUSY_LOG_STATE",
+        {"window_start": 0.0, "messages": {}},
+        raising=False,
+    )
+    active_sessions._write_entries(
+        active_sessions._state_path(),
+        [
+            {
+                "lease_id": "ours",
+                "session_id": "metadata-target",
+                "session_key": "metadata-target",
+                "surface": "cli",
+                "owner_kind": "cli",
+                "pid": os.getpid(),
+                "process_start_time": active_sessions._process_start_time(os.getpid()),
+            }
+        ],
+    )
+
+    owner = {
+        "pid": 67890,
+        "session_id": "metadata-target",
+        "owner_kind": "metadata_update",
+    }
+
+    def raise_busy(_self):
+        raise active_sessions.ActiveSessionLockBusyError(owner)
+
+    monkeypatch.setattr(active_sessions._FileLock, "__enter__", raise_busy)
+    caplog.set_level(logging.WARNING, logger="hermes_cli.active_sessions")
+
+    for _attempt in range(5):
+        assert active_sessions.update_active_session_metadata(
+            session_id="metadata-target",
+            metadata={"current_tool": "terminal"},
+        ) == 0
+
+    warnings = [
+        record.message
+        for record in caplog.records
+        if "Skipped active session metadata update because registry lock is busy" in record.message
+    ]
+    assert len(warnings) == 1

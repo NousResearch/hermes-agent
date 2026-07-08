@@ -161,6 +161,11 @@ _LOCK_BUSY_ALERT_STATE: dict[str, Any] = {
     "count": 0,
     "alerted": False,
 }
+_METADATA_UPDATE_BUSY_LOG_WINDOW_SECONDS = 120.0
+_METADATA_UPDATE_BUSY_LOG_STATE: dict[str, Any] = {
+    "window_start": 0.0,
+    "messages": {},
+}
 
 
 def _lock_owner_dir() -> Path:
@@ -557,6 +562,24 @@ def _record_lock_busy_alert(owner: dict[str, Any]) -> None:
     )
 
 
+def _should_log_metadata_update_busy(owner: dict[str, Any]) -> bool:
+    now = time.time()
+    state = _METADATA_UPDATE_BUSY_LOG_STATE
+    window_start = float(state.get("window_start") or 0.0)
+    if window_start <= 0.0 or now - window_start > _METADATA_UPDATE_BUSY_LOG_WINDOW_SECONDS:
+        state["window_start"] = now
+        state["messages"] = {}
+    messages = state.setdefault("messages", {})
+    if not isinstance(messages, dict):
+        messages = {}
+        state["messages"] = messages
+    key = _format_lock_owner_summary(_safe_lock_owner_summary(owner))
+    if key in messages:
+        return False
+    messages[key] = now
+    return True
+
+
 def _safe_status_metadata_update(metadata: dict[str, Any]) -> tuple[dict[str, Any], set[str]]:
     safe: dict[str, Any] = {}
     remove: set[str] = set()
@@ -910,10 +933,17 @@ def update_active_session_metadata(
                 _write_entries(state_path, entries)
     except ActiveSessionLockBusyError as exc:
         _record_lock_busy_alert(exc.owner)
-        logger.warning(
-            "Skipped active session metadata update because registry lock is busy: %s",
-            active_session_lock_busy_message(exc.owner),
-        )
+        message = active_session_lock_busy_message(exc.owner)
+        if _should_log_metadata_update_busy(exc.owner):
+            logger.warning(
+                "Skipped active session metadata update because registry lock is busy: %s",
+                message,
+            )
+        else:
+            logger.debug(
+                "Skipped active session metadata update because registry lock is busy: %s",
+                message,
+            )
         return 0
     return updated
 

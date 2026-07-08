@@ -5,23 +5,41 @@ onto the shared process_registry.completion_queue, the rich re-injection block
 formatting, capacity rejection, and crash handling.
 """
 
+import os
 import queue
+import subprocess
+import sys
+import tempfile
 import threading
 import time
+from pathlib import Path
 
 import pytest
+
+# scripts/run_tests.sh intentionally scrubs HOME for hermetic subprocesses.
+# process_registry resolves Hermes home at import time, so provide a module
+# collection fallback before importing Hermes modules; per-test state is still
+# isolated by the autouse fixture below.
+_TEST_HOME_FALLBACK = Path(tempfile.gettempdir()) / f"hermes-test-home-{os.getpid()}"
+os.environ.setdefault("HERMES_HOME", str(_TEST_HOME_FALLBACK))
+os.environ.setdefault("MESSAGING_CWD", str(_TEST_HOME_FALLBACK))
 
 from tools import async_delegation as ad
 from tools.process_registry import process_registry, format_process_notification
 
 
 @pytest.fixture(autouse=True)
-def _clean_state():
+def _clean_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     ad._reset_for_tests()
     while not process_registry.completion_queue.empty():
         process_registry.completion_queue.get_nowait()
     yield
     ad._reset_for_tests()
+    # Some tests release daemon workers right before teardown. Give any worker
+    # that already captured its record a moment to enqueue, then drain so the
+    # next test cannot see a late completion from a prior dispatch.
+    time.sleep(0.05)
     while not process_registry.completion_queue.empty():
         process_registry.completion_queue.get_nowait()
 
@@ -109,6 +127,316 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["summary"] == "the result"
     assert evt["session_key"] == "agent:main:cli:dm:local"
     assert evt["delegation_id"] == res["delegation_id"]
+
+
+def test_completed_batch_event_recovers_from_durable_checkpoint():
+    def runner():
+        return {
+            "results": [
+                {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "durable result",
+                    "api_calls": 1,
+                    "duration_seconds": 0.1,
+                    "child_session_id": "child-session-1",
+                }
+            ],
+            "total_duration_seconds": 0.1,
+        }
+
+    res = ad.dispatch_async_delegation_batch(
+        goals=["recover me"],
+        context="ctx",
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="agent:main:telegram:dm:12345",
+        runner=runner,
+        max_async_children=3,
+        parent_session_id="parent-session",
+        parent_turn_id="turn-1",
+        child_session_ids=["child-session-1"],
+    )
+    assert res["status"] == "dispatched"
+    evt = _drain_one()
+    assert evt is not None
+    assert evt["results"][0]["summary"] == "durable result"
+
+    # Simulate process/queue loss after the child finished but before the
+    # parent turn consumed the completion. The durable record must requeue it.
+    ad._reset_for_tests(clear_persistent=False)
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    assert ad.recover_pending_delegations(origin="test restart") == 1
+    recovered = _drain_one()
+    assert recovered is not None
+    assert recovered["delegation_id"] == res["delegation_id"]
+    assert recovered["results"][0]["summary"] == "durable result"
+    assert recovered["child_session_ids"] == ["child-session-1"]
+
+    assert ad.mark_delivered(res["delegation_id"]) is True
+    ad._reset_for_tests(clear_persistent=False)
+    assert ad.recover_pending_delegations(origin="after delivered") == 0
+
+
+def test_recovered_event_retries_until_mark_delivered_same_process():
+    def runner():
+        return {
+            "results": [
+                {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "retryable durable result",
+                }
+            ],
+            "total_duration_seconds": 0.1,
+        }
+
+    res = ad.dispatch_async_delegation_batch(
+        goals=["retry me"],
+        context="ctx",
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="agent:main:telegram:dm:12345",
+        runner=runner,
+        max_async_children=3,
+        parent_session_id="parent-session",
+        parent_turn_id="turn-retry",
+        child_session_ids=["child-retry"],
+    )
+    assert res["status"] == "dispatched"
+    assert _drain_one() is not None
+
+    # Simulate a restart, recover the durable result, then simulate a delivery
+    # path that consumes/drops the queue item before mark_delivered(). A second
+    # same-process recovery must requeue it; the old _recovered_event_ids guard
+    # returned 0 here and lost the result until process restart.
+    ad._reset_for_tests(clear_persistent=False)
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    assert ad.recover_pending_delegations(origin="first recover") == 1
+    assert ad.recover_pending_delegations(origin="already queued") == 0
+    assert process_registry.completion_queue.qsize() == 1
+
+    dropped = process_registry.completion_queue.get_nowait()
+    assert dropped["delegation_id"] == res["delegation_id"]
+
+    assert ad.recover_pending_delegations(origin="retry after dropped delivery") == 1
+    retried = _drain_one()
+    assert retried is not None
+    assert retried["delegation_id"] == res["delegation_id"]
+    assert retried["results"][0]["summary"] == "retryable durable result"
+
+    assert ad.mark_delivered(res["delegation_id"]) is True
+    assert ad.recover_pending_delegations(origin="after delivered") == 0
+
+
+def test_process_registry_drain_skips_already_delivered_async_event():
+    def runner():
+        return {
+            "results": [
+                {"task_index": 0, "status": "completed", "summary": "delivered"}
+            ],
+            "total_duration_seconds": 0.1,
+        }
+
+    res = ad.dispatch_async_delegation_batch(
+        goals=["deliver once"],
+        context="ctx",
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="",
+        runner=runner,
+        max_async_children=3,
+    )
+    assert res["status"] == "dispatched"
+    evt = _drain_one()
+    assert evt is not None
+    assert ad.mark_delivered(res["delegation_id"]) is True
+
+    # A stale duplicate can remain queued if recovery raced with the delivery
+    # turn. CLI/TUI post-turn drains must skip it after the durable delivered
+    # bit is set, rather than injecting the same subagent result twice.
+    process_registry.completion_queue.put(evt)
+    assert process_registry.drain_notifications() == []
+
+
+def test_running_checkpoint_recovers_as_lost_with_packet(tmp_path):
+    gate = threading.Event()
+
+    def runner():
+        gate.wait(timeout=10)
+        return {
+            "results": [
+                {"task_index": 0, "status": "completed", "summary": "late"}
+            ],
+            "total_duration_seconds": 0.1,
+        }
+
+    try:
+        res = ad.dispatch_async_delegation_batch(
+            goals=["slow a", "slow b"],
+            context="ctx",
+            toolsets=["terminal"],
+            role="leaf",
+            model="m",
+            session_key="agent:main:telegram:dm:12345",
+            runner=runner,
+            max_async_children=3,
+            parent_session_id="parent-session",
+            parent_turn_id="turn-2",
+            child_session_ids=["child-a", "child-b"],
+        )
+        assert res["status"] == "dispatched"
+        assert ad.active_count() == 1
+
+        # Simulate a hard parent process restart: the daemon worker is no longer
+        # adoptable, but its checkpoint survives.
+        ad._reset_for_tests(clear_persistent=False)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+        assert ad.recover_pending_delegations(origin="test restart") == 1
+        evt = _drain_one()
+        assert evt is not None
+        assert evt["delegation_id"] == res["delegation_id"]
+        assert evt["status"] == "lost"
+        assert evt["child_session_ids"] == ["child-a", "child-b"]
+        assert "silently dropping" in evt["error"]
+        packet_path = Path(evt["recovery_packet_path"])
+        assert packet_path.exists()
+        text = format_process_notification(evt)
+        assert "Recovery packet" in text
+        assert "child-a" in text
+    finally:
+        gate.set()
+
+
+def test_running_checkpoint_owned_by_live_sibling_is_not_marked_lost():
+    """A sibling Hermes process sharing HERMES_HOME may own a running delegation."""
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    delegation_id = "deleg_livebeef"
+    try:
+        ad._persist_record({
+            "delegation_id": delegation_id,
+            "goal": "still running elsewhere",
+            "goals": ["still running elsewhere"],
+            "context": "ctx",
+            "toolsets": None,
+            "role": "leaf",
+            "model": "m",
+            "session_key": "agent:main:telegram:dm:12345",
+            "status": "running",
+            "dispatched_at": time.time(),
+            "completed_at": None,
+            "delivered": False,
+            "owner_pid": proc.pid,
+            "owner_start_time": ad._get_process_start_time(proc.pid),
+            "owner_hermes_home": os.environ["HERMES_HOME"],
+            "owner_session_key": "agent:main:telegram:dm:12345",
+        })
+
+        assert ad.recover_pending_delegations(origin="sibling poller") == 0
+        assert process_registry.completion_queue.empty()
+        state = ad._read_persistent_state_unlocked()
+        assert state["records"][delegation_id]["status"] == "running"
+        assert "result_event" not in state["records"][delegation_id]
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_drain_notifications_checks_delivered_state_in_explicit_home(tmp_path):
+    """TUI/Desktop callers can dedupe against a session's profile_home."""
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    delegation_id = "deleg_profile1"
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": delegation_id,
+        "session_key": "session-key",
+        "goal": "done in profile",
+        "status": "completed",
+        "summary": "already delivered",
+        "dispatched_at": 1000.0,
+        "completed_at": 1001.0,
+    }
+    ad._persist_record(
+        {
+            "delegation_id": delegation_id,
+            "goal": "done in profile",
+            "status": "completed",
+            "dispatched_at": 1000.0,
+            "completed_at": 1001.0,
+            "delivered": True,
+            "delivered_at": 1002.0,
+            "result_event": evt,
+        },
+        hermes_home=profile_home,
+    )
+
+    process_registry.completion_queue.put(evt)
+    assert process_registry.drain_notifications(hermes_home=profile_home) == []
+
+
+def test_persistence_failure_rejects_background_handle(monkeypatch):
+    def boom(_record):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ad, "_persist_record", boom)
+    res = ad.dispatch_async_delegation_batch(
+        goals=["a"],
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="",
+        runner=lambda: {"results": []},
+        max_async_children=3,
+    )
+    assert res["status"] == "rejected"
+    assert "Failed to persist" in res["error"]
+    assert ad.active_count() == 0
+    assert process_registry.completion_queue.empty()
+
+
+def test_async_formatter_bounds_huge_summaries(tmp_path):
+    full_path = tmp_path / "full-summary.txt"
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_abcdef12",
+        "session_key": "",
+        "goal": "huge",
+        "goals": ["huge"],
+        "status": "completed",
+        "is_batch": True,
+        "results": [
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "x" * 80_000,
+                "summary_full_path": str(full_path),
+                "child_session_id": "child-huge",
+            }
+        ],
+        "dispatched_at": 100.0,
+        "completed_at": 101.0,
+    }
+    text = format_process_notification(evt)
+    assert len(text) < 62_000
+    assert "ASYNC SUMMARY TRUNCATED" in text
+    assert str(full_path) in text
+    assert "child-huge" in text
+    assert ad.extract_delegation_ids_from_text(text) == ["deleg_abcdef12"]
 
 
 def test_rich_reinjection_block_is_self_contained():

@@ -247,7 +247,11 @@ def test_bare_value_flag_keeps_its_value(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stdout
     # Exactly one test selected: the per-file summary shows "1✓" (1 passed).
     # test_beta is deselected by the -k filter.
-    assert "1✓" in proc.stdout or "1 passed" in proc.stdout, proc.stdout
+    assert (
+        "1✓" in proc.stdout
+        or "1 passed" in proc.stdout
+        or "1 tests passed" in proc.stdout
+    ), proc.stdout
     assert "2✓" not in proc.stdout, (
         f"both tests ran — -k filter did not apply:\n{proc.stdout}"
     )
@@ -277,3 +281,51 @@ def test_positional_path_not_treated_as_flag(tmp_path: Path) -> None:
     # Discovery found the probe file (2 tests), proving the positional path
     # was consumed as a root, not forwarded to pytest as a bad flag.
     assert "test_flagprobe.py" in proc.stdout, proc.stdout
+
+
+def test_print_progress_replaces_unencodable_status_glyphs(monkeypatch, tmp_path: Path) -> None:
+    """Legacy Windows stdout encodings must not crash progress callbacks."""
+    import importlib.util
+
+    repo_root = Path(__file__).resolve().parent.parent
+    runner_path = repo_root / "scripts" / "run_tests_parallel.py"
+    spec = importlib.util.spec_from_file_location("run_tests_parallel_for_test", runner_path)
+    assert spec and spec.loader
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    class Cp1250Stdout:
+        encoding = "cp1250"
+
+        def __init__(self):
+            self.parts: list[str] = []
+
+        def write(self, text: str) -> int:
+            # Match a real cp1250 stream: writing unsupported glyphs would raise.
+            text.encode(self.encoding)
+            self.parts.append(text)
+            return len(text)
+
+        def flush(self) -> None:
+            return None
+
+    stream = Cp1250Stdout()
+    monkeypatch.setattr(sys, "stdout", stream)
+
+    runner._print_progress(
+        tests_done=1,
+        approx_total_tests=2,
+        file=tmp_path / "test_progress.py",
+        rc=1,
+        dur=0.1,
+        repo_root=tmp_path,
+        tests_passed=1,
+        tests_failed=1,
+        test_counts={tmp_path / "test_progress.py": 2},
+        file_summary={"passed": 1, "failed": 1},
+    )
+
+    output = "".join(stream.parts)
+    assert "✓" not in output
+    assert "✗" not in output
+    assert "?" in output

@@ -58,8 +58,13 @@ _IS_WINDOWS = platform.system() == "Windows"
 logger = logging.getLogger(__name__)
 
 
-# Checkpoint file for crash recovery (gateway only)
-CHECKPOINT_PATH = get_hermes_home() / "processes.json"
+# Checkpoint file for crash recovery (gateway only). Resolve lazily so importing
+# this module still works in hermetic test subprocesses that scrub HOME/USERPROFILE.
+CHECKPOINT_PATH: Path | None = None
+
+
+def _checkpoint_path() -> Path:
+    return CHECKPOINT_PATH or (get_hermes_home() / "processes.json")
 
 # Limits
 MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer
@@ -1643,7 +1648,11 @@ class ProcessRegistry:
         """
         return session_id in self._completion_consumed or session_id in self._poll_observed
 
-    def drain_notifications(self) -> "list[tuple[dict, str]]":
+    def drain_notifications(
+        self,
+        *,
+        hermes_home: str | Path | None = None,
+    ) -> "list[tuple[dict, str]]":
         """Pop all pending notification events and return formatted pairs.
 
         Returns a list of (raw_event, formatted_text) tuples.
@@ -1659,6 +1668,17 @@ class ProcessRegistry:
             _evt_sid = evt.get("session_id", "")
             if evt.get("type") == "completion" and self._drain_should_skip(_evt_sid):
                 continue
+            if evt.get("type") == "async_delegation":
+                try:
+                    from tools.async_delegation import is_delivered as _async_is_delivered
+
+                    if _async_is_delivered(
+                        str(evt.get("delegation_id") or ""),
+                        hermes_home=hermes_home,
+                    ):
+                        continue
+                except Exception:
+                    pass
             text = format_process_notification(evt)
             if text:
                 results.append((evt, text))
@@ -2301,10 +2321,10 @@ class ProcessRegistry:
                             "notify_on_complete": s.notify_on_complete,
                             "watch_patterns": s.watch_patterns,
                         })
-            
+
             # Atomic write to avoid corruption on crash
             from utils import atomic_json_write
-            atomic_json_write(CHECKPOINT_PATH, entries)
+            atomic_json_write(_checkpoint_path(), entries)
         except Exception as e:
             logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
 
@@ -2314,11 +2334,12 @@ class ProcessRegistry:
 
         Returns the number of processes recovered as detached.
         """
-        if not CHECKPOINT_PATH.exists():
+        checkpoint_path = _checkpoint_path()
+        if not checkpoint_path.exists():
             return 0
 
         try:
-            entries = json.loads(CHECKPOINT_PATH.read_text(encoding="utf-8"))
+            entries = json.loads(checkpoint_path.read_text(encoding="utf-8"))
         except Exception:
             return 0
 
@@ -2423,6 +2444,43 @@ def _format_age(seconds: float) -> str:
     return f"{h}h" if m == 0 else f"{h}h{m}m"
 
 
+_ASYNC_SUMMARY_INLINE_LIMIT = 12_000
+_ASYNC_NOTIFICATION_TOTAL_LIMIT = 60_000
+
+
+def _bounded_async_text(text: str, full_path: Optional[str] = None) -> str:
+    """Bound a subagent summary before injecting it as a synthetic turn."""
+    if not isinstance(text, str) or len(text) <= _ASYNC_SUMMARY_INLINE_LIMIT:
+        return text
+    head_len = int(_ASYNC_SUMMARY_INLINE_LIMIT * 0.7)
+    tail_len = _ASYNC_SUMMARY_INLINE_LIMIT - head_len
+    head = text[:head_len]
+    tail = text[-tail_len:]
+    footer = [
+        "",
+        "──────── [ASYNC SUMMARY TRUNCATED] ────────",
+        f"Showing {len(head):,} chars (head) + {len(tail):,} chars (tail) of {len(text):,} total.",
+    ]
+    if full_path:
+        footer.append(f"Full subagent output saved to: {full_path}")
+    else:
+        footer.append("No full-output artifact path was provided with this result.")
+    footer.append("──────────────────────────────────────────")
+    return head + "\n\n[... middle omitted — see footer ...]\n\n" + tail + "\n".join(footer)
+
+
+def _cap_async_notification(text: str) -> str:
+    if len(text) <= _ASYNC_NOTIFICATION_TOTAL_LIMIT:
+        return text
+    head_len = int(_ASYNC_NOTIFICATION_TOTAL_LIMIT * 0.6)
+    tail_len = _ASYNC_NOTIFICATION_TOTAL_LIMIT - head_len
+    return (
+        text[:head_len]
+        + "\n\n[... async delegation notification truncated to protect context window ...]\n\n"
+        + text[-tail_len:]
+    )
+
+
 def _format_async_delegation(evt: dict) -> str:
     """Format an async-delegation completion into a self-contained re-injection.
 
@@ -2475,11 +2533,15 @@ def _format_async_delegation(evt: dict) -> str:
             lines.append(f"Context you provided: {context}")
         if toolsets:
             lines.append(f"Toolsets: {', '.join(toolsets)}")
+        if evt.get("child_session_ids"):
+            lines.append("Child sessions: " + ", ".join(str(x) for x in evt.get("child_session_ids") or []))
+        if evt.get("recovery_packet_path"):
+            lines.append(f"Recovery packet: {evt['recovery_packet_path']}")
         lines.append(f"Role: {role}   Model: {model}   Total duration: {total_dur}s")
         if error and not results:
             lines.append("--- ERROR ---")
             lines.append(f"The batch did not complete successfully: {error}")
-            return "\n".join(lines)
+            return _cap_async_notification("\n".join(lines))
         for r in sorted(results, key=lambda x: x.get("task_index", 0)):
             idx = r.get("task_index", 0)
             r_status = r.get("status", "?")
@@ -2498,20 +2560,22 @@ def _format_async_delegation(evt: dict) -> str:
                 header += f", {r['duration_seconds']}s"
             header += ") ---"
             lines.append(header)
+            if r.get("child_session_id"):
+                lines.append(f"Child session: {r['child_session_id']}")
             if r_status in ("completed", "success") and r_summary:
-                lines.append(r_summary)
+                lines.append(_bounded_async_text(r_summary, r.get("summary_full_path")))
             elif r_summary:
                 if r_error:
                     lines.append(f"({r_status}: {r_error})")
                 lines.append("Partial output:")
-                lines.append(r_summary)
+                lines.append(_bounded_async_text(r_summary, r.get("summary_full_path")))
             else:
                 lines.append(
                     f"(no summary — status={r_status}"
                     + (f": {r_error}" if r_error else "")
                     + ")"
                 )
-        return "\n".join(lines)
+        return _cap_async_notification("\n".join(lines))
 
     age = ""
     if isinstance(dispatched_at, (int, float)):
@@ -2532,11 +2596,15 @@ def _format_async_delegation(evt: dict) -> str:
         lines.append(f"Context you provided: {context}")
     if toolsets:
         lines.append(f"Toolsets: {', '.join(toolsets)}")
+    if evt.get("child_session_ids"):
+        lines.append("Child sessions: " + ", ".join(str(x) for x in evt.get("child_session_ids") or []))
+    if evt.get("recovery_packet_path"):
+        lines.append(f"Recovery packet: {evt['recovery_packet_path']}")
     lines.append(f"Role: {role}   Model: {model}")
     lines.append(f"Status: {status}   API calls: {api_calls}   Duration: {duration}s")
     lines.append("--- RESULT ---")
     if status in ("completed", "success") and summary:
-        lines.append(summary)
+        lines.append(_bounded_async_text(summary, evt.get("summary_full_path")))
     elif status == "interrupted":
         lines.append(
             "The subagent was interrupted before completing"
@@ -2544,7 +2612,7 @@ def _format_async_delegation(evt: dict) -> str:
         )
         if summary:
             lines.append("Partial output:")
-            lines.append(summary)
+            lines.append(_bounded_async_text(summary, evt.get("summary_full_path")))
     else:
         # error / timeout / failed
         lines.append(
@@ -2553,8 +2621,8 @@ def _format_async_delegation(evt: dict) -> str:
         )
         if summary:
             lines.append("Partial output:")
-            lines.append(summary)
-    return "\n".join(lines)
+            lines.append(_bounded_async_text(summary, evt.get("summary_full_path")))
+    return _cap_async_notification("\n".join(lines))
 
 
 def format_process_notification(evt: dict) -> "str | None":

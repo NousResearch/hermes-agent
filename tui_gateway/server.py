@@ -24,6 +24,7 @@ from hermes_constants import (
     set_hermes_home_override,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.subprocess_text import install_lossy_text_subprocess_defaults
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
@@ -42,6 +43,7 @@ _hermes_home = get_hermes_home()
 load_hermes_dotenv(
     hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env"
 )
+install_lossy_text_subprocess_defaults()
 
 
 # ── Panic logger ─────────────────────────────────────────────────────
@@ -8331,9 +8333,22 @@ def _notification_poller_loop(
     CLI/gateway behavior (single session per process).
     """
     from tools.process_registry import process_registry, format_process_notification
+    from tools.async_delegation import is_delivered, recover_pending_delegations
 
     _emitted = set()  # dedup re-queued events so same completion isn't emitted 50 times while session is busy
+    _next_recovery_scan = 0.0
+    async_home = session.get("profile_home") or None
     while not stop_event.is_set() and not session.get("_finalized"):
+        try:
+            _recovery_now = time.monotonic()
+            if _recovery_now >= _next_recovery_scan:
+                recover_pending_delegations(
+                    origin="tui notification poller",
+                    hermes_home=async_home,
+                )
+                _next_recovery_scan = _recovery_now + 2.0
+        except Exception:
+            pass
         try:
             evt = process_registry.completion_queue.get(timeout=0.5)
         except Exception:
@@ -8351,6 +8366,11 @@ def _notification_poller_loop(
 
         _evt_sid = evt.get("session_id", "")
         if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+            continue
+        if evt.get("type") == "async_delegation" and is_delivered(
+            str(evt.get("delegation_id") or ""),
+            hermes_home=async_home,
+        ):
             continue
 
         text = format_process_notification(evt)
@@ -8388,6 +8408,13 @@ def _notification_poller_loop(
     # Drain any remaining events after stop signal (process all pending
     # before exiting so nothing is lost on shutdown). Events owned by other
     # live sessions are set aside and re-queued so their poller still sees them.
+    try:
+        recover_pending_delegations(
+            origin="tui notification poller shutdown",
+            hermes_home=async_home,
+        )
+    except Exception:
+        pass
     deferred: list = []
     while not process_registry.completion_queue.empty():
         try:
@@ -8399,6 +8426,11 @@ def _notification_poller_loop(
             continue
         _evt_sid = evt.get("session_id", "")
         if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+            continue
+        if evt.get("type") == "async_delegation" and is_delivered(
+            str(evt.get("delegation_id") or ""),
+            hermes_home=async_home,
+        ):
             continue
         text = format_process_notification(evt)
         if not text:
@@ -8492,6 +8524,15 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
 
 
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+    _async_delegation_ids_to_mark = []
+    if isinstance(text, str):
+        try:
+            from tools.async_delegation import extract_delegation_ids_from_text
+
+            _async_delegation_ids_to_mark = extract_delegation_ids_from_text(text)
+        except Exception:
+            _async_delegation_ids_to_mark = []
+
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
@@ -8512,6 +8553,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
+        async_home = session.get("profile_home") or None
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -8520,7 +8562,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
             approval_token = set_current_session_key(session["session_key"])
             session_tokens = _set_session_context(session["session_key"])
-            _profile_home_str = session.get("profile_home")
+            _profile_home_str = async_home
             if _profile_home_str:
                 home_token = set_hermes_home_override(_profile_home_str)
             # The sudo password callback is thread-local (tools.terminal_tool
@@ -8757,6 +8799,14 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             with session["history_lock"]:
                 _clear_inflight_turn(session)
             _emit("message.complete", sid, payload)
+            if status == "complete" and _async_delegation_ids_to_mark:
+                try:
+                    from tools.async_delegation import mark_delivered
+
+                    for _deleg_id in _async_delegation_ids_to_mark:
+                        mark_delivered(_deleg_id, hermes_home=_profile_home_str)
+                except Exception:
+                    pass
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
             # After every TUI turn, if a /goal is active, ask the judge
@@ -8948,8 +8998,16 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         # the safety net for events that arrived mid-turn.
         try:
             from tools.process_registry import process_registry
+            from tools.async_delegation import recover_pending_delegations
 
-            for _evt, synth in process_registry.drain_notifications():
+            recover_pending_delegations(
+                origin="tui post-turn drain",
+                hermes_home=async_home,
+            )
+
+            for _evt, synth in process_registry.drain_notifications(
+                hermes_home=async_home,
+            ):
                 with session["history_lock"]:
                     if session.get("running"):
                         process_registry.completion_queue.put(_evt)

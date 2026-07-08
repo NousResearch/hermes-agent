@@ -2432,6 +2432,7 @@ def _run_single_child(
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
             "exit_reason": exit_reason,
+            "child_session_id": getattr(child, "session_id", None),
             "tokens": {
                 "input": (
                     _input_tokens if isinstance(_input_tokens, (int, float)) else 0
@@ -3262,6 +3263,10 @@ def delegate_task(
                     pass
 
         _goals = [t["goal"] for t in task_list]
+        _child_session_ids = [
+            getattr(_c, "session_id", "") for _c in _child_agents
+            if getattr(_c, "session_id", "")
+        ]
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
             context=context,
@@ -3274,6 +3279,9 @@ def delegate_task(
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
             max_async_children=_get_max_async_children(),
+            parent_session_id=getattr(parent_agent, "session_id", None),
+            parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
+            child_session_ids=_child_session_ids,
         )
 
         if dispatch.get("status") == "dispatched":
@@ -3281,14 +3289,18 @@ def delegate_task(
             note = (
                 "Subagent is running in the background. You and the user can "
                 "keep working; its full result re-enters the conversation as a "
-                "new message when it finishes. Do not wait or poll — just "
-                "continue."
+                "new message when it finishes. A durable recovery record has "
+                "also been written, so a parent restart surfaces a recovered "
+                "completion/loss notice instead of silently losing the handle. "
+                "Do not wait or poll — just continue."
                 if n == 1 else
                 f"{n} subagents are running in parallel in the background. You "
                 f"and the user can keep working; they wait on each other and "
                 f"their consolidated results re-enter the conversation as a "
-                f"single message once ALL of them finish. Do not wait or poll "
-                f"— just continue."
+                f"single message once ALL of them finish. A durable recovery "
+                f"record has also been written, so a parent restart surfaces a "
+                f"recovered completion/loss notice instead of silently losing "
+                f"the handle. Do not wait or poll — just continue."
             )
             payload = {
                 "status": "dispatched",
@@ -3310,11 +3322,12 @@ def delegate_task(
         )
         _cap_result = _execute_and_aggregate()
         if isinstance(_cap_result, dict):
+            _dispatch_error = dispatch.get("error", "rejected")
             _cap_result["note"] = (
-                "The background delegation pool was at capacity "
-                "(delegation.max_concurrent_children), so the subagent(s) ran "
-                "SYNCHRONOUSLY and the result is included above. Raise "
-                "delegation.max_concurrent_children in config.yaml to allow "
+                "The background delegation could not be dispatched safely "
+                f"({_dispatch_error}), so the subagent(s) ran SYNCHRONOUSLY "
+                "and the result is included above. If this was capacity-related, "
+                "raise delegation.max_concurrent_children in config.yaml to allow "
                 "more concurrent background delegations."
             )
         return json.dumps(_cap_result, ensure_ascii=False)

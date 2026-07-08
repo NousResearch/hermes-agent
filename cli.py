@@ -15108,6 +15108,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             # Check for background process notifications (completions
                             # and watch pattern matches) while agent is idle.
                             try:
+                                _recovery_now = time.monotonic()
+                                if _recovery_now >= getattr(self, "_async_delegation_next_recovery_scan", 0.0):
+                                    from tools.async_delegation import recover_pending_delegations
+                                    recover_pending_delegations(origin="cli idle drain")
+                                    self._async_delegation_next_recovery_scan = _recovery_now + 2.0
                                 from tools.process_registry import process_registry
                                 for _evt, _synth in process_registry.drain_notifications():
                                     self._pending_input.put(_synth)
@@ -15207,9 +15212,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self._pet_reasoning = False
                     app.invalidate()  # Refresh status line
 
+                    _async_delegation_ids_to_mark = []
+                    if isinstance(user_input, str):
+                        try:
+                            from tools.async_delegation import extract_delegation_ids_from_text
+                            _async_delegation_ids_to_mark = extract_delegation_ids_from_text(user_input)
+                        except Exception:
+                            _async_delegation_ids_to_mark = []
+                    _chat_completed = False
                     try:
                         self.chat(user_input, images=submit_images or None)
+                        _chat_completed = True
                     finally:
+                        if _chat_completed and _async_delegation_ids_to_mark:
+                            try:
+                                from tools.async_delegation import mark_delivered
+                                for _deleg_id in _async_delegation_ids_to_mark:
+                                    mark_delivered(_deleg_id)
+                            except Exception:
+                                pass
                         self._agent_running = False
                         self._spinner_text = ""
                         self._tool_start_time = 0.0
@@ -15270,6 +15291,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         # Drain process notifications (completions + watch matches)
                         # that arrived while the agent was running.
                         try:
+                            _recovery_now = time.monotonic()
+                            if _recovery_now >= getattr(self, "_async_delegation_next_recovery_scan", 0.0):
+                                from tools.async_delegation import recover_pending_delegations
+                                recover_pending_delegations(origin="cli post-turn drain")
+                                self._async_delegation_next_recovery_scan = _recovery_now + 2.0
                             from tools.process_registry import process_registry
                             for _evt, _synth in process_registry.drain_notifications():
                                 self._pending_input.put(_synth)

@@ -1,8 +1,7 @@
 // Completion sound bank for agent turn-end cues.
-// Fourteen curated presets for A/B in Settings → Appearance. Default is variant 1.
+// Fourteen curated presets for manual preview in Settings. Turn-end cues stay silent.
 
 import { $completionSoundVariantId, resolveCompletionSoundVariantId } from '@/store/completion-sound'
-import { $hapticsMuted } from '@/store/haptics'
 
 type OscType = OscillatorType
 
@@ -454,11 +453,7 @@ export function previewCompletionSound(variantId?: number) {
 
 // Plays the selected completion cue on any `message.complete`.
 export function playCompletionSound() {
-  if ($hapticsMuted.get()) {
-    return
-  }
-
-  playVariant($completionSoundVariantId.get())
+  // Keep automatic turn-end cues silent even if an old preset is still stored.
 }
 
 interface AirPuffSpec {

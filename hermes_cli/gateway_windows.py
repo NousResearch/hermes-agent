@@ -49,11 +49,12 @@ from hermes_cli._subprocess_compat import (
 _SCHTASKS_TIMEOUT_S = 15
 _SCHTASKS_NO_OUTPUT_TIMEOUT_S = 30
 # Patterns in schtasks stderr that mean "fall back to the Startup folder".
+_ACCESS_DENIED_PHRASES = r"access is denied|acceso denegado|odmowa dost.?pu|přístup byl odepřen"
 _FALLBACK_PATTERNS = re.compile(
-    r"(access is denied|acceso denegado|přístup byl odepřen|schtasks timed out|schtasks produced no output)",
+    rf"({_ACCESS_DENIED_PHRASES}|schtasks timed out|schtasks produced no output)",
     re.IGNORECASE,
 )
-_ACCESS_DENIED_PATTERN = re.compile(r"(access is denied|acceso denegado)", re.IGNORECASE)
+_ACCESS_DENIED_PATTERN = re.compile(rf"({_ACCESS_DENIED_PHRASES})", re.IGNORECASE)
 
 _TASK_NAME_DEFAULT = "Hermes_Gateway"
 _TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
@@ -117,15 +118,16 @@ def _preserve_hermes_home_path(path: str | Path) -> str:
 def _quote_cmd_script_arg(value: str) -> str:
     """Quote a single argument for use INSIDE a .cmd file, for cmd.exe parsing.
 
-    cmd.exe splits on spaces/tabs outside of double quotes. Embedded quotes
-    are doubled. We also refuse line breaks because they'd terminate the
-    logical command line mid-script.
+    cmd.exe splits on spaces/tabs and treats metacharacters such as ``&`` and
+    ``|`` as control operators outside of double quotes. Embedded quotes are
+    doubled. We also refuse line breaks because they'd terminate the logical
+    command line mid-script.
     """
     if "\r" in value or "\n" in value:
         raise ValueError(f"refusing to quote value containing newline: {value!r}")
     if not value:
         return '""'
-    if not re.search(r'[ \t"]', value):
+    if not re.search(r'[ \t"&|<>()^]', value):
         return value
     return '"' + value.replace('"', '""') + '"'
 
@@ -423,6 +425,69 @@ def _build_gateway_cmd_script(
     # should be idempotent, not churn parent/child takeover loops.
     lines.append(" ".join(_quote_cmd_script_arg(a) for a in prog_args))
     lines.append("exit /b 0")
+    return "\r\n".join(lines) + "\r\n"
+
+
+def _build_gateway_cmd_watchdog_script(
+    python_path: str,
+    working_dir: str,
+    hermes_home: str,
+    profile_arg: str,
+) -> str:
+    """Build a legacy ``gateway.cmd`` target that self-supervises the gateway.
+
+    Modern installs use the console-less .vbs task launcher. If Windows refuses
+    to replace an older Scheduled Task that still points at .cmd, this wrapper
+    keeps that legacy task useful by staying alive and relaunching gateway run
+    after crashes.
+    """
+    _pythonw_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
+    pythonpath_entries = [
+        _preserve_hermes_home_path(Path(__file__).resolve().parent.parent),
+        *[_preserve_hermes_home_path(entry) for entry in extra_pythonpath],
+    ]
+
+    prog_args = [python_path, "-m", "hermes_cli.main"]
+    if profile_arg:
+        prog_args.extend(profile_arg.split())
+    prog_args.extend(["gateway", "run"])
+    probe_args = [
+        python_path,
+        "-c",
+        "from gateway.status import get_running_pid; raise SystemExit(0 if get_running_pid() else 1)",
+    ]
+    logs_dir = f"{hermes_home}\\logs"
+
+    lines = [
+        "@echo off",
+        f"rem {_TASK_DESCRIPTION} - self-supervising legacy wrapper",
+        "setlocal",
+        "",
+        f"set \"HERMES_HOME={hermes_home}\"",
+        f"set \"HERMES_REPO={_preserve_hermes_home_path(Path(__file__).resolve().parent.parent)}\"",
+        f"set \"HERMES_PYTHON={_preserve_hermes_home_path(python_path)}\"",
+        f"set \"VIRTUAL_ENV={_preserve_hermes_home_path(venv_dir)}\"",
+        "set \"PYTHONIOENCODING=utf-8\"",
+        "set \"HERMES_GATEWAY_DETACHED=1\"",
+        f"set \"PYTHONPATH={';'.join([*pythonpath_entries, '%PYTHONPATH%'])}\"",
+        f"set \"HERMES_SUPERVISOR_LOG={hermes_home}\\logs\\gateway-supervisor.log\"",
+        "",
+        f"if not exist {_quote_cmd_script_arg(logs_dir)} mkdir {_quote_cmd_script_arg(logs_dir)}",
+        f"cd /d {_quote_cmd_script_arg(working_dir)}",
+        "",
+        ":watch",
+        f"{' '.join(_quote_cmd_script_arg(a) for a in probe_args)} >nul 2>nul",
+        "if \"%ERRORLEVEL%\"==\"0\" (",
+        "  timeout /t 30 /nobreak >nul",
+        "  goto watch",
+        ")",
+        "",
+        "echo [%DATE% %TIME%] gateway not running; starting foreground runtime >> \"%HERMES_SUPERVISOR_LOG%\"",
+        f"{' '.join(_quote_cmd_script_arg(a) for a in prog_args)} >> \"%HERMES_SUPERVISOR_LOG%\" 2>&1",
+        "echo [%DATE% %TIME%] gateway exited with code %ERRORLEVEL%; restarting after backoff >> \"%HERMES_SUPERVISOR_LOG%\"",
+        "timeout /t 10 /nobreak >nul",
+        "goto watch",
+    ]
     return "\r\n".join(lines) + "\r\n"
 
 
@@ -994,9 +1059,40 @@ def _prompt_install_choices(
     return start_now, start_on_login
 
 
+def _harden_legacy_cmd_task_script(script_path: Path) -> bool:
+    """Rewrite a legacy .cmd task target into a watchdog wrapper if possible."""
+    try:
+        from hermes_cli.config import get_hermes_home
+        from hermes_cli.gateway import (
+            PROJECT_ROOT,
+            _profile_arg,
+            get_python_path,
+        )
+
+        python_path = _preserve_hermes_home_path(get_python_path())
+        working_dir = _stable_gateway_working_dir(PROJECT_ROOT)
+        hermes_home = str(Path(get_hermes_home()))
+        profile_arg = _profile_arg(hermes_home)
+        content = _build_gateway_cmd_watchdog_script(
+            python_path,
+            working_dir,
+            hermes_home,
+            profile_arg,
+        )
+        tmp = script_path.with_suffix(".watchdog.tmp")
+        tmp.write_text(content, encoding="utf-8", newline="")
+        tmp.replace(script_path)
+        return True
+    except Exception as exc:
+        print(f"Warning: could not harden legacy Scheduled Task script: {exc}")
+        return False
+
+
 def _install_startup_fallback(script_path: Path, start_now: bool, detail: str) -> None:
     """Install the Startup-folder fallback and optionally start once."""
     print(f"↻ Scheduled Task install blocked ({detail.splitlines()[0]}) — using Startup folder fallback")
+    if _harden_legacy_cmd_task_script(script_path):
+        print("Hardened legacy Scheduled Task .cmd target with a watchdog loop")
     entry = _install_startup_entry(script_path)
     print(f"✓ Installed Windows login item: {entry}")
     print(f"  Task script: {script_path}")
@@ -1119,6 +1215,8 @@ def install(
     # schtasks create didn't work. See if it's a "fall back to startup" case.
     if _should_fall_back(1, detail):
         print(f"↻ Scheduled Task install blocked ({detail.splitlines()[0]}) — using Startup folder fallback")
+        if _harden_legacy_cmd_task_script(script_path):
+            print("Hardened legacy Scheduled Task .cmd target with a watchdog loop")
         entry = _install_startup_entry(script_path)
         print(f"✓ Installed Windows login item: {entry}")
         print(f"  Task script: {script_path}")

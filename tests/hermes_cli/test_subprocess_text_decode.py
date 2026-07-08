@@ -56,6 +56,24 @@ def test_popen_text_kwargs_force_lossy_utf8_text_mode():
     assert kwargs["bufsize"] == 1
 
 
+def test_install_lossy_text_subprocess_defaults_patches_text_popen(monkeypatch):
+    from hermes_cli import subprocess_text
+
+    class FakePopen:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+
+    subprocess_text.install_lossy_text_subprocess_defaults()
+
+    proc = subprocess.Popen(["cmd"], text=True)
+
+    assert proc.kwargs["encoding"] == "utf-8"
+    assert proc.kwargs["errors"] == "replace"
+
+
 def test_tui_slash_worker_uses_lossy_utf8_popen(monkeypatch):
     from tui_gateway import server
 

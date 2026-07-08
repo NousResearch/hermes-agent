@@ -364,6 +364,25 @@ def _format_file(file: Path, repo_root: Path) -> str:
         return str(file)
 
 
+def _safe_stream_text(text: str, stream=None) -> str:
+    """Return text encodable by *stream*, replacing unsupported glyphs.
+
+    Windows consoles often expose legacy encodings (for example cp1250) that
+    cannot encode the progress check/cross glyphs. The progress callback must
+    never raise UnicodeEncodeError and abort the runner after tests already ran.
+    """
+    target = stream or sys.stdout
+    encoding = getattr(target, "encoding", None) or "utf-8"
+    try:
+        return text.encode(encoding, errors="replace").decode(
+            encoding, errors="replace"
+        )
+    except LookupError:
+        return text.encode("utf-8", errors="replace").decode(
+            "utf-8", errors="replace"
+        )
+
+
 def _print_progress(
     tests_done: int,
     approx_total_tests: int,
@@ -434,7 +453,7 @@ def _print_progress(
             msg = msg[: cols - 1] + "…"
     except OSError:
         pass
-    print(msg, flush=True)
+    print(_safe_stream_text(msg), flush=True)
 
 
 def _print_inline_failure(
@@ -459,12 +478,12 @@ def _print_inline_failure(
     tail = "\n".join(lines[-30:])
 
     print(flush=True)
-    print(f"  ╔╍ Failed: {rel} ╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍", flush=True)
+    print(_safe_stream_text(f"  ╔╍ Failed: {rel} ╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍"), flush=True)
     for line in tail.splitlines():
-        print(f"  ║ {line}", flush=True)
-    print(f"  ║", flush=True)
-    print(f"  ║  Repro: {repro}", flush=True)
-    print(f"  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍", flush=True)
+        print(_safe_stream_text(f"  ║ {line}"), flush=True)
+    print(_safe_stream_text(f"  ║"), flush=True)
+    print(_safe_stream_text(f"  ║  Repro: {repro}"), flush=True)
+    print(_safe_stream_text(f"  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍"), flush=True)
     print(flush=True)
 
 

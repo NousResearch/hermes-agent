@@ -445,7 +445,9 @@ class TestGatewayRuntimeStatus:
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
         for cmdline in (
             "hermes -p coder gateway run --replace",
+            "hermes -p 'CoDer' gateway run --replace",
             "/opt/hermes/.venv/bin/hermes --profile coder gateway run --replace",
+            "/opt/hermes/.venv/bin/hermes --profile=CoDer gateway run --replace",
             "hermes_home=/opt/data/profiles/coder hermes gateway run --replace",
         ):
             monkeypatch.setattr(status, "_read_process_cmdline", lambda pid, c=cmdline: c)
@@ -453,6 +455,33 @@ class TestGatewayRuntimeStatus:
                 status.get_runtime_status_running_pid(payload, expected_home=coder_home)
                 == 139
             ), cmdline
+
+    def test_runtime_status_profile_home_match_normalizes_windows_slashes_and_case(self, monkeypatch):
+        """Windows command lines may spell HERMES_HOME with backslashes/case drift."""
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "start_time": 1000,
+        }
+        coder_home = Path("C:/Users/Admin/AppData/Local/hermes/profiles/Coder")
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda pid: (
+                r"python -m hermes_cli.main gateway run "
+                r"HERMES_HOME=C:\USERS\admin\AppData\Local\Hermes\profiles\coder"
+            ),
+        )
+
+        assert (
+            status.get_runtime_status_running_pid(payload, expected_home=coder_home)
+            == 139
+        )
 
     def test_runtime_status_running_pid_default_profile_rejects_named_cmdline(self, monkeypatch):
         """The default/root profile runs a bare gateway (no profile flag).  A
@@ -569,6 +598,23 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
 
+    def test_write_runtime_status_can_replace_stale_platform_snapshot(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="startup_failed",
+            platform="telegram",
+            platform_state="retrying",
+            error_code="telegram_connect_error",
+            error_message="stale token failure",
+        )
+
+        status.write_runtime_status(gateway_state="starting", platforms={})
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "starting"
+        assert payload["platforms"] == {}
+
 
 class TestGetProcessStartTime:
     """Start-time fingerprint backing the PID-reuse guard (#43846 / #50468).
@@ -622,8 +668,8 @@ class TestTerminatePid:
         calls = []
         monkeypatch.setattr(status, "_IS_WINDOWS", True)
 
-        def fake_run(cmd, capture_output=False, text=False, timeout=None, creationflags=0):
-            calls.append((cmd, capture_output, text, timeout, creationflags))
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(status.subprocess, "run", fake_run)
@@ -637,7 +683,17 @@ class TestTerminatePid:
         from hermes_cli._subprocess_compat import windows_hide_flags
 
         assert calls == [
-            (["taskkill", "/PID", "123", "/T", "/F"], True, True, 10, windows_hide_flags())
+            (
+                ["taskkill", "/PID", "123", "/T", "/F"],
+                {
+                    "capture_output": True,
+                    "text": True,
+                    "encoding": "utf-8",
+                    "errors": "replace",
+                    "timeout": 10,
+                    "creationflags": windows_hide_flags(),
+                },
+            )
         ]
 
     def test_force_falls_back_to_sigterm_when_taskkill_missing(self, monkeypatch):

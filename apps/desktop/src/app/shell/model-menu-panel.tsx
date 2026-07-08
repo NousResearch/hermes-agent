@@ -113,8 +113,15 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     [providers]
   )
 
+  // Same treatment for the Model Router's virtual `router` provider row:
+  // presets render in their own section, out of the main provider groups.
+  const routerPresets = useMemo(
+    () => providers?.find(provider => provider.slug.toLowerCase() === 'router')?.models ?? [],
+    [providers]
+  )
+
   const pickerProviders = useMemo(
-    () => providers?.filter(provider => provider.slug.toLowerCase() !== 'moa') ?? [],
+    () => providers?.filter(provider => !['moa', 'router'].includes(provider.slug.toLowerCase())) ?? [],
     [providers]
   )
 
@@ -195,6 +202,16 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     closeMenu()
   }
 
+  // Selecting a Router preset switches the session onto the Model Router
+  // virtual provider persistently — same path as MoA presets above.
+  const selectRouterPreset = async (preset: string) => {
+    if ((await switchTo(preset, 'router')) === false) {
+      return
+    }
+
+    closeMenu()
+  }
+
   const groups = useMemo(
     () =>
       groupModels(pickerProviders, search, { model: optionsModel, provider: optionsProvider }, effectiveVisibleModels),
@@ -224,7 +241,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {error}
         </DropdownMenuItem>
-      ) : groups.length === 0 && moaPresets.length === 0 ? (
+      ) : groups.length === 0 && moaPresets.length === 0 && routerPresets.length === 0 ? (
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {copy.noModels}
         </DropdownMenuItem>
@@ -341,6 +358,30 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
               >
                 <span className="min-w-0 flex-1 truncate">MoA: {preset}</span>
                 {isCurrentMoa ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
+              </DropdownMenuItem>
+            )
+          })}
+          <DropdownMenuSeparator className="mx-0" />
+        </>
+      ) : null}
+
+      {routerPresets.length > 0 ? (
+        <>
+          <DropdownMenuLabel className={dropdownMenuSectionLabel}>Model Router presets</DropdownMenuLabel>
+          {routerPresets.map(preset => {
+            const isCurrentRouter = optionsProvider === 'router' && optionsModel === preset
+
+            return (
+              <DropdownMenuItem
+                className={dropdownMenuRow}
+                key={`router:${preset}`}
+                onSelect={event => {
+                  event.preventDefault()
+                  void selectRouterPreset(preset)
+                }}
+              >
+                <span className="min-w-0 flex-1 truncate">Router: {preset}</span>
+                {isCurrentRouter ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
               </DropdownMenuItem>
             )
           })}

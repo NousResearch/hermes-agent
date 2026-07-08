@@ -80,6 +80,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/model/set",
   "/api/model/auxiliary",
   "/api/model/moa",
+  "/api/model/router",
   "/api/model/options",
 ];
 
@@ -512,6 +513,22 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  getRouterConfig: (profile = getManagementProfile()) =>
+    fetchJSON<RouterConfigResponse>(
+      appendProfileParam("/api/model/router", profile),
+    ),
+  saveRouterConfig: (
+    body: RouterConfigResponse,
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<RouterConfigResponse & { ok: boolean }>(
+      appendProfileParam("/api/model/router", profile),
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
   setModelAssignment: (
     body: ModelAssignmentRequest,
     profile = getManagementProfile(),
@@ -2333,6 +2350,33 @@ export interface MoaConfigResponse {
   aggregator_temperature: number;
   max_tokens: number;
   enabled: boolean;
+}
+
+export interface RouterConfigResponse {
+  default_preset: string;
+  active_preset: string;
+  save_traces: boolean;
+  trace_dir: string;
+  presets: Record<string, {
+    classifier: MoaModelSlot;
+    classifier_max_tokens: number;
+    classifier_context_messages: number;
+    default_route: string;
+    routes: Record<string, MoaModelSlot>;
+    fallbacks: MoaModelSlot[];
+    channel_hints: Record<string, string>;
+    enabled: boolean;
+    short_circuit_chars: number;
+  }>;
+  classifier: MoaModelSlot;
+  classifier_max_tokens: number;
+  classifier_context_messages: number;
+  default_route: string;
+  routes: Record<string, MoaModelSlot>;
+  fallbacks: MoaModelSlot[];
+  channel_hints: Record<string, string>;
+  enabled: boolean;
+  short_circuit_chars: number;
 }
 
 export interface ModelAssignmentRequest {

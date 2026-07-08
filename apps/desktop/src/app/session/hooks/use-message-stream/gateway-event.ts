@@ -303,6 +303,55 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         if (isActiveEvent) {
           setPetActivity({ reasoning: true })
         }
+      } else if (event.type === 'router.decision') {
+        // Model Router decision — append a persistent `router:` system note
+        // (rendered by SystemMessage as the same centered meta-line chrome as
+        // steer/slash notes) so the transcript shows which model served each
+        // turn. Cache-HIT repeats are not re-emitted by the facade, so this
+        // renders once per user turn.
+        if (sessionId) {
+          const label = coerceGatewayText(payload?.label)
+          const tier = coerceGatewayText(payload?.tier)
+
+          if (label) {
+            flushQueuedDeltas(sessionId)
+            updateSessionState(sessionId, state => ({
+              ...state,
+              messages: [
+                ...state.messages,
+                {
+                  id: `router-decision-${Date.now()}`,
+                  role: 'system',
+                  parts: [textPart(`router:routed ${tier || 'simple'}|${label}`)],
+                  timestamp: Math.floor(Date.now() / 1000)
+                }
+              ]
+            }))
+          }
+        }
+      } else if (event.type === 'router.fallback') {
+        // Fallback hop — persistent note showing which candidate failed and
+        // where the turn went, same chrome as the decision note.
+        if (sessionId) {
+          const from = coerceGatewayText(payload?.from)
+          const to = coerceGatewayText(payload?.to)
+
+          if (from && to) {
+            flushQueuedDeltas(sessionId)
+            updateSessionState(sessionId, state => ({
+              ...state,
+              messages: [
+                ...state.messages,
+                {
+                  id: `router-fallback-${Date.now()}`,
+                  role: 'system',
+                  parts: [textPart(`router:fallback ${from}|${to}`)],
+                  timestamp: Math.floor(Date.now() / 1000)
+                }
+              ]
+            }))
+          }
+        }
       } else if (event.type === 'message.complete') {
         if (!sessionId) {
           return

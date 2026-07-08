@@ -7,6 +7,7 @@ import {
   Eye,
   RefreshCw,
   Settings2,
+  Split,
   Star,
   Wrench,
   X,
@@ -20,6 +21,7 @@ import type {
   MoaModelSlot,
   ModelsAnalyticsModelEntry,
   ModelsAnalyticsResponse,
+  RouterConfigResponse,
 } from "@/lib/api";
 import { timeAgo, cn, themedBody } from "@/lib/utils";
 import { formatTokenCount } from "@/lib/format";
@@ -540,6 +542,11 @@ type MoaPickerTarget =
   | { kind: "reference"; index: number }
   | { kind: "aggregator" };
 
+type RouterPickerTarget =
+  | { kind: "classifier" }
+  | { kind: "route"; tier: string }
+  | { kind: "fallback"; index: number };
+
 function AuxiliaryTasksModal({
   aux,
   refreshKey,
@@ -866,6 +873,195 @@ function MoaModelsModal({
   );
 }
 
+function RouterModelsModal({
+  config,
+  refreshKey,
+  onClose,
+  onSaved,
+}: {
+  config: RouterConfigResponse;
+  refreshKey: number;
+  onClose(): void;
+  onSaved(next: RouterConfigResponse): void;
+}) {
+  const [draft, setDraft] = useState<RouterConfigResponse>(config);
+  const [selected, setSelected] = useState(config.default_preset || Object.keys(config.presets)[0] || "default");
+  const [newName, setNewName] = useState("");
+  const [picker, setPicker] = useState<RouterPickerTarget | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const presetNames = Object.keys(draft.presets || {});
+  const preset = draft.presets[selected] || draft.presets[presetNames[0]];
+  const slotLabel = (slot?: MoaModelSlot) => `${slot?.provider || "(provider)"} · ${slot?.model || "(model)"}`;
+
+  const updateSelectedPreset = (updater: (preset: RouterConfigResponse["presets"][string]) => RouterConfigResponse["presets"][string]) => {
+    setDraft((prev) => ({
+      ...prev,
+      presets: {
+        ...prev.presets,
+        [selected]: updater(prev.presets[selected]),
+      },
+    }));
+  };
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const saved = await api.saveRouterConfig(draft);
+      onSaved(saved);
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addPreset = () => {
+    const name = newName.trim();
+    if (!name || draft.presets[name]) return;
+    const seed = preset;
+    setDraft((prev) => ({
+      ...prev,
+      default_preset: prev.default_preset || name,
+      presets: { ...prev.presets, [name]: { ...seed, routes: { ...seed.routes }, fallbacks: [...seed.fallbacks] } },
+    }));
+    setSelected(name);
+    setNewName("");
+  };
+
+  const deletePreset = () => {
+    if (presetNames.length <= 1) return;
+    const remaining = presetNames.filter((name) => name !== selected);
+    const nextSelected = remaining[0];
+    setDraft((prev) => {
+      const next = { ...prev.presets };
+      delete next[selected];
+      return {
+        ...prev,
+        presets: next,
+        default_preset: prev.default_preset === selected ? nextSelected : prev.default_preset,
+        active_preset: prev.active_preset === selected ? "" : prev.active_preset,
+      };
+    });
+    setSelected(nextSelected);
+  };
+
+  if (!preset) return null;
+
+  const tiers = ["simple", "complex"];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4">
+      <Card className="max-h-[85vh] w-full max-w-2xl overflow-auto">
+        <CardHeader>
+          <CardTitle className="text-sm">Configure Model Router presets</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-xs text-text-secondary">
+            Presets appear as models under the Model Router provider. The classifier reads each prompt and picks a tier; the whole turn then runs on that tier's model, falling back down the chain on failure.
+          </p>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              className="border border-border bg-background px-2 py-1 text-xs"
+              value={selected}
+              onChange={(event) => setSelected(event.target.value)}
+            >
+              {presetNames.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+            <Button size="sm" outlined onClick={() => setDraft((prev) => ({ ...prev, default_preset: selected }))}>Set default</Button>
+            <Button size="sm" ghost disabled={presetNames.length <= 1} onClick={deletePreset}>Delete</Button>
+            <input
+              className="border border-border bg-background px-2 py-1 text-xs"
+              placeholder="new preset name"
+              value={newName}
+              onChange={(event) => setNewName(event.target.value)}
+            />
+            <Button size="sm" outlined disabled={!newName.trim() || !!draft.presets[newName.trim()]} onClick={addPreset}>Add preset</Button>
+          </div>
+
+          <div className="text-xs text-text-secondary">
+            Default: <span className="font-mono">{draft.default_preset}</span>
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-display text-xs font-medium tracking-wider">Classifier</div>
+            <div className="flex items-center gap-2 border border-border/50 bg-muted/20 px-3 py-2">
+              <div className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">{slotLabel(preset.classifier)}</div>
+              <Button size="sm" outlined onClick={() => setPicker({ kind: "classifier" })}>Change</Button>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-display text-xs font-medium tracking-wider">Routes</div>
+            {tiers.map((tier) => (
+              <div key={`${selected}-route-${tier}`} className="flex items-center gap-2 border border-border/50 bg-muted/20 px-3 py-2">
+                <div className="w-16 shrink-0 text-xs text-text-secondary">{tier}</div>
+                <div className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">{slotLabel(preset.routes[tier])}</div>
+                <label className="flex items-center gap-1 text-xs text-text-secondary">
+                  <input
+                    type="radio"
+                    name={`default-route-${selected}`}
+                    checked={preset.default_route === tier}
+                    onChange={() => updateSelectedPreset((prev) => ({ ...prev, default_route: tier }))}
+                  />
+                  fail-open
+                </label>
+                <Button size="sm" outlined onClick={() => setPicker({ kind: "route", tier })}>Change</Button>
+              </div>
+            ))}
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-display text-xs font-medium tracking-wider">Fallbacks (tried in order)</div>
+            {preset.fallbacks.map((slot, index) => (
+              <div key={`${selected}-fb-${slot.provider}-${slot.model}-${index}`} className="flex items-center gap-2 border border-border/50 bg-muted/20 px-3 py-2">
+                <div className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">{index + 1}. {slotLabel(slot)}</div>
+                <Button size="sm" outlined onClick={() => setPicker({ kind: "fallback", index })}>Change</Button>
+                <Button size="sm" ghost onClick={() => updateSelectedPreset((prev) => ({ ...prev, fallbacks: prev.fallbacks.filter((_, i) => i !== index) }))}>Remove</Button>
+              </div>
+            ))}
+            <Button size="sm" outlined onClick={() => updateSelectedPreset((prev) => ({ ...prev, fallbacks: [...prev.fallbacks, prev.routes.complex || prev.classifier] }))}>Add fallback</Button>
+          </div>
+
+          {error && <div className="text-xs text-destructive">{error}</div>}
+          <div className="flex justify-end gap-2 pt-2">
+            <Button ghost onClick={onClose} disabled={busy}>Cancel</Button>
+            <Button onClick={save} disabled={busy}>{busy ? "Saving…" : "Save"}</Button>
+          </div>
+        </CardContent>
+      </Card>
+      {picker && (
+        <ModelPickerDialog
+          key={`router-picker-${refreshKey}-${selected}-${picker.kind}-${picker.kind === "fallback" ? picker.index : picker.kind === "route" ? picker.tier : "cls"}`}
+          loader={api.getModelOptions}
+          alwaysGlobal
+          title="Select Router Model"
+          onApply={async ({ provider, model }) => {
+            if (["router", "moa"].includes((provider || "").toLowerCase())) {
+              setError("Router presets can't route to virtual providers (no recursive Router/MoA).");
+              return;
+            }
+            setError(null);
+            updateSelectedPreset((prev) => {
+              if (picker.kind === "classifier") return { ...prev, classifier: { provider, model } };
+              if (picker.kind === "route") return { ...prev, routes: { ...prev.routes, [picker.tier]: { provider, model } } };
+              return {
+                ...prev,
+                fallbacks: prev.fallbacks.map((slot, i) => i === picker.index ? { provider, model } : slot),
+              };
+            });
+          }}
+          onClose={() => setPicker(null)}
+        />
+      )}
+    </div>
+  );
+}
+
 function ModelSettingsPanel({
   aux,
   refreshKey,
@@ -878,6 +1074,8 @@ function ModelSettingsPanel({
   const [auxModalOpen, setAuxModalOpen] = useState(false);
   const [moaModalOpen, setMoaModalOpen] = useState(false);
   const [moa, setMoa] = useState<MoaConfigResponse | null>(null);
+  const [routerModalOpen, setRouterModalOpen] = useState(false);
+  const [router, setRouter] = useState<RouterConfigResponse | null>(null);
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const [pendingReloadModel, setPendingReloadModel] = useState<string | null>(
     null,
@@ -888,6 +1086,7 @@ function ModelSettingsPanel({
 
   useEffect(() => {
     api.getMoaModels().then(setMoa).catch(() => setMoa(null));
+    api.getRouterConfig().then(setRouter).catch(() => setRouter(null));
   }, [refreshKey]);
 
   const applyAssignment = async ({
@@ -1006,6 +1205,31 @@ function ModelSettingsPanel({
           </Button>
         </div>
 
+        <div className="flex min-w-0 flex-col gap-2 bg-muted/20 border border-border/50 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 mb-0.5">
+              <Split className="h-3 w-3 text-text-tertiary" />
+              <span className="text-display text-xs font-medium tracking-wider">
+                Model Router
+              </span>
+            </div>
+            <div className="text-xs font-mono text-text-secondary truncate">
+              {router
+                ? `simple → ${router.routes.simple?.provider}/${shortModelName(router.routes.simple?.model ?? "")} · complex → ${router.routes.complex?.provider}/${shortModelName(router.routes.complex?.model ?? "")} · ${router.fallbacks.length} fallback${router.fallbacks.length === 1 ? "" : "s"}`
+                : "not loaded"}
+            </div>
+          </div>
+          <Button
+            size="sm"
+            outlined
+            onClick={() => setRouterModalOpen(true)}
+            disabled={!router}
+            className="shrink-0 self-start text-xs uppercase sm:self-center"
+          >
+            Configure
+          </Button>
+        </div>
+
         {picker && (
           <ModelPickerDialog
             key={`picker-${refreshKey}`}
@@ -1051,6 +1275,17 @@ function ModelSettingsPanel({
               onSaved();
             }}
             onClose={() => setMoaModalOpen(false)}
+          />
+        )}
+        {routerModalOpen && router && (
+          <RouterModelsModal
+            config={router}
+            refreshKey={refreshKey}
+            onSaved={(next) => {
+              setRouter(next);
+              onSaved();
+            }}
+            onClose={() => setRouterModalOpen(false)}
           />
         )}
       </CardContent>

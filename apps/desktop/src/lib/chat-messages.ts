@@ -81,6 +81,12 @@ export type GatewayEventPayload = {
   label?: string
   index?: number
   aggregator?: string
+  // router.decision / router.fallback (Model Router routing relay)
+  tier?: string
+  classifier?: string
+  cached?: boolean
+  from?: string
+  to?: string
 }
 
 export function textPart(text: string): ChatMessagePart {

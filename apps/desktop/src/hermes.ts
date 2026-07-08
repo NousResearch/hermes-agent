@@ -42,6 +42,7 @@ import type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  RouterConfigResponse,
   SessionInfo,
   SessionMessagesResponse,
   SessionSearchResponse,
@@ -141,6 +142,8 @@ export type {
   ProjectFolder,
   ProjectInfo,
   ProjectsPayload,
+  RouterConfigResponse,
+  RouterPresetConfig,
   RpcEvent,
   SessionCreateResponse,
   SessionInfo,
@@ -946,6 +949,22 @@ export function saveMoaModels(body: MoaConfigResponse): Promise<MoaConfigRespons
   return window.hermesDesktop.api<MoaConfigResponse & { ok: boolean }>({
     ...profileScoped(),
     path: '/api/model/moa',
+    method: 'PUT',
+    body
+  })
+}
+
+export function getRouterConfig(): Promise<RouterConfigResponse> {
+  return window.hermesDesktop.api<RouterConfigResponse>({
+    ...profileScoped(),
+    path: '/api/model/router'
+  })
+}
+
+export function saveRouterConfig(body: RouterConfigResponse): Promise<RouterConfigResponse & { ok: boolean }> {
+  return window.hermesDesktop.api<RouterConfigResponse & { ok: boolean }>({
+    ...profileScoped(),
+    path: '/api/model/router',
     method: 'PUT',
     body
   })

@@ -878,6 +878,40 @@ export interface MoaConfigResponse {
   reference_temperature: number
 }
 
+export interface RouterPresetConfig {
+  classifier: MoaModelSlot
+  classifier_max_tokens: number
+  classifier_context_messages: number
+  default_route: string
+  /** Dispatch tiers — which model executes a turn per classifier verdict. */
+  routes: Record<string, MoaModelSlot>
+  /** Walked in order when the routed model fails at call time. */
+  fallbacks: MoaModelSlot[]
+  channel_hints: Record<string, string>
+  enabled: boolean
+  /** Experimental: user messages shorter than this (no code/URLs) skip the
+   *  classifier and route "simple". 0 = disabled. */
+  short_circuit_chars: number
+}
+
+export interface RouterConfigResponse {
+  default_preset: string
+  active_preset: string
+  presets: Record<string, RouterPresetConfig>
+  save_traces: boolean
+  trace_dir: string
+  // Flattened view of the default preset (compatibility for simple callers).
+  classifier: MoaModelSlot
+  classifier_max_tokens: number
+  classifier_context_messages: number
+  default_route: string
+  routes: Record<string, MoaModelSlot>
+  fallbacks: MoaModelSlot[]
+  channel_hints: Record<string, string>
+  enabled: boolean
+  short_circuit_chars: number
+}
+
 export interface ModelAssignmentRequest {
   /** Optional API key for a custom/local endpoint. Persisted to model.api_key
    *  (where the runtime reads it) for self-hosted endpoints that require auth.

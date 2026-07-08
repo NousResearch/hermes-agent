@@ -987,6 +987,27 @@ class MoaConfigPayload(BaseModel):
     profile: Optional[str] = None
 
 
+class RouterPresetPayload(BaseModel):
+    classifier: MoaModelSlot = MoaModelSlot()
+    classifier_max_tokens: int = 16
+    classifier_context_messages: int = 4
+    default_route: str = "simple"
+    routes: dict[str, MoaModelSlot] = {}
+    fallbacks: list[MoaModelSlot] = []
+    channel_hints: dict[str, str] = {}
+    enabled: bool = True
+    short_circuit_chars: int = 0
+
+
+class RouterConfigPayload(BaseModel):
+    default_preset: str = "default"
+    active_preset: str = ""
+    save_traces: bool = False
+    trace_dir: str = ""
+    presets: dict[str, RouterPresetPayload] = {}
+    profile: Optional[str] = None
+
+
 def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, str]:
     """Normalize a main-slot (provider, model) pair before persisting.
 
@@ -5348,6 +5369,61 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
     except Exception:
         _log.exception("PUT /api/model/moa failed")
         raise HTTPException(status_code=500, detail="Failed to save MoA config")
+
+
+@app.get("/api/model/router")
+def get_router_config(profile: Optional[str] = None):
+    """Return the configured Model Router presets."""
+    try:
+        from hermes_cli.router_config import normalize_router_config
+
+        with _profile_scope(profile):
+            cfg = load_config()
+            return normalize_router_config(cfg.get("router") if isinstance(cfg, dict) else {})
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/model/router failed")
+        raise HTTPException(status_code=500, detail="Failed to read Router config")
+
+
+@app.put("/api/model/router")
+def set_router_config(body: RouterConfigPayload, profile: Optional[str] = None):
+    """Persist the Model Router presets."""
+    try:
+        from hermes_cli.router_config import normalize_router_config
+
+        with _profile_scope(body.profile or profile):
+            cfg = load_config()
+            raw = {
+                "default_preset": body.default_preset,
+                "active_preset": body.active_preset,
+                "save_traces": body.save_traces,
+                "trace_dir": body.trace_dir,
+                "presets": {
+                    name: {
+                        "classifier": preset.classifier.dict(),
+                        "classifier_max_tokens": preset.classifier_max_tokens,
+                        "classifier_context_messages": preset.classifier_context_messages,
+                        "default_route": preset.default_route,
+                        "routes": {tier: slot.dict() for tier, slot in preset.routes.items()},
+                        "fallbacks": [slot.dict() for slot in preset.fallbacks],
+                        "channel_hints": preset.channel_hints,
+                        "enabled": preset.enabled,
+                        "short_circuit_chars": preset.short_circuit_chars,
+                    }
+                    for name, preset in body.presets.items()
+                },
+            }
+            normalized = normalize_router_config(raw)
+            cfg["router"] = normalized
+            save_config(cfg)
+            return {"ok": True, **normalized}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("PUT /api/model/router failed")
+        raise HTTPException(status_code=500, detail="Failed to save Router config")
 
 
 @app.post("/api/model/set")

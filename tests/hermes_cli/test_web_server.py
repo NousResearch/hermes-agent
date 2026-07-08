@@ -734,6 +734,51 @@ class TestWebServerEndpoints:
         assert cfg["moa"]["reference_models"] == payload["reference_models"]
         assert cfg["moa"]["aggregator"] == payload["aggregator"]
 
+    def test_get_router_config_returns_preset_shape(self):
+        resp = self.client.get("/api/model/router")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["presets"]
+        preset = data["presets"][data["default_preset"]]
+        assert set(preset["classifier"]) == {"provider", "model"}
+        assert set(preset["routes"]) == {"simple", "complex"}
+        assert isinstance(preset["fallbacks"], list)
+
+    def test_put_router_config_persists_routes_and_fallbacks(self):
+        from hermes_cli.config import load_config
+
+        payload = {
+            "default_preset": "default",
+            "active_preset": "",
+            "save_traces": True,
+            "trace_dir": "",
+            "presets": {
+                "default": {
+                    "classifier": {"provider": "openai-codex", "model": "gpt-5.5"},
+                    "classifier_max_tokens": 16,
+                    "classifier_context_messages": 4,
+                    "default_route": "simple",
+                    "routes": {
+                        "simple": {"provider": "lmstudio", "model": "qwen/qwen3-4b-thinking-2507"},
+                        "complex": {"provider": "openai-codex", "model": "gpt-5.5"},
+                    },
+                    "fallbacks": [{"provider": "openai-codex", "model": "gpt-5.5"}],
+                    "channel_hints": {"whatsapp": "simple"},
+                    "enabled": True,
+                }
+            },
+        }
+
+        resp = self.client.put("/api/model/router", json=payload)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        cfg = load_config()
+        preset = cfg["router"]["presets"]["default"]
+        assert preset["routes"] == payload["presets"]["default"]["routes"]
+        assert preset["fallbacks"] == payload["presets"]["default"]["fallbacks"]
+        assert cfg["router"]["save_traces"] is True
+
     # ── GET /api/media (remote image display) ───────────────────────────
 
     def test_get_media_serves_image_in_root(self):

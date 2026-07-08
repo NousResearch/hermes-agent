@@ -11,8 +11,10 @@ import {
   getGlobalModelOptions,
   getMoaModels,
   getRecommendedDefaultModel,
+  getRouterConfig,
   saveHermesConfig,
   saveMoaModels,
+  saveRouterConfig,
   setEnvVar,
   setModelAssignment
 } from '@/hermes'
@@ -21,10 +23,11 @@ import type {
   MoaConfigResponse,
   MoaModelSlot,
   ModelOptionProvider,
+  RouterConfigResponse,
   StaleAuxAssignment
 } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
+import { AlertTriangle, Cpu, GitBranch, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
@@ -182,6 +185,9 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const [moa, setMoa] = useState<MoaConfigResponse | null>(null)
   const [selectedMoaPreset, setSelectedMoaPreset] = useState('')
   const [newMoaPresetName, setNewMoaPresetName] = useState('')
+  const [router, setRouter] = useState<RouterConfigResponse | null>(null)
+  const [selectedRouterPreset, setSelectedRouterPreset] = useState('')
+  const [newRouterPresetName, setNewRouterPresetName] = useState('')
   // agent.* defaults round-trip through the shared config cache (read → write
   // back the whole record), so a save here shows in the MCP/config surfaces.
   const { data: config } = useHermesConfigRecord()
@@ -208,11 +214,12 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     setError('')
 
     try {
-      const [modelInfo, modelOptions, auxiliaryModels, moaModels] = await Promise.all([
+      const [modelInfo, modelOptions, auxiliaryModels, moaModels, routerConfig] = await Promise.all([
         getGlobalModelInfo(),
         getGlobalModelOptions(),
         getAuxiliaryModels(),
-        getMoaModels().catch(() => null)
+        getMoaModels().catch(() => null),
+        getRouterConfig().catch(() => null)
       ])
 
       if (profileEpoch.current !== epoch) {
@@ -228,6 +235,12 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
 
       if (moaModels) {
         setSelectedMoaPreset(prev => (prev && moaModels.presets[prev] ? prev : moaModels.default_preset))
+      }
+
+      setRouter(routerConfig)
+
+      if (routerConfig) {
+        setSelectedRouterPreset(prev => (prev && routerConfig.presets[prev] ? prev : routerConfig.default_preset))
       }
 
       // The config record loads via its own shared query; a model switch can
@@ -257,10 +270,13 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
 
   const providerOptions = providers.length ? providers : NO_PROVIDERS
 
-  // MoA reference/aggregator slots must never be the moa virtual provider —
-  // that would create a recursive MoA tree (the backend rejects it on save).
-  // Hide it from the slot selectors so it isn't offered as a dead choice.
-  const moaSlotProviderOptions = providerOptions.filter(provider => (provider.slug || '').toLowerCase() !== 'moa')
+  // MoA reference/aggregator and Router classifier/route/fallback slots must
+  // never be a virtual provider (moa/router) — that would create a recursive
+  // tree (the backend rejects it on save). Hide both from the slot selectors
+  // so they aren't offered as dead choices.
+  const moaSlotProviderOptions = providerOptions.filter(
+    provider => !['moa', 'router'].includes((provider.slug || '').toLowerCase())
+  )
 
   const selectedProviderRow = useMemo(
     () => providers.find(provider => provider.slug === selectedProvider),
@@ -340,6 +356,58 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       }
 
       setMoa(saved)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setApplying(false)
+    }
+  }, [])
+
+  const currentRouterPreset = useMemo(() => {
+    if (!router) {
+      return null
+    }
+
+    return (
+      router.presets[selectedRouterPreset] ||
+      router.presets[router.default_preset] ||
+      Object.values(router.presets)[0] ||
+      null
+    )
+  }, [router, selectedRouterPreset])
+
+  const updateRouterPreset = useCallback(
+    (updater: (preset: NonNullable<typeof currentRouterPreset>) => NonNullable<typeof currentRouterPreset>) => {
+      setRouter(prev => {
+        if (!prev || !selectedRouterPreset || !prev.presets[selectedRouterPreset]) {
+          return prev
+        }
+
+        return {
+          ...prev,
+          presets: {
+            ...prev.presets,
+            [selectedRouterPreset]: updater(prev.presets[selectedRouterPreset])
+          }
+        }
+      })
+    },
+    [selectedRouterPreset]
+  )
+
+  const saveRouter = useCallback(async (next: RouterConfigResponse) => {
+    const epoch = profileEpoch.current
+    setApplying(true)
+    setError('')
+
+    try {
+      const saved = await saveRouterConfig(next)
+
+      if (profileEpoch.current !== epoch) {
+        return
+      }
+
+      setRouter(saved)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -1075,6 +1143,349 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               }
               title="Aggregator"
             />
+          </div>
+        </section>
+      )}
+      {router && currentRouterPreset && (
+        <section>
+          <div className="mb-2.5 flex items-center justify-between">
+            <SectionHeading icon={GitBranch} title="Model Router" />
+            <Button disabled={applying} onClick={() => void saveRouter(router)} size="sm" variant="textStrong">
+              {applying ? m.applying : t.common.save}
+            </Button>
+          </div>
+          <p className="mb-2 text-xs text-muted-foreground">
+            A classifier reads each prompt and dispatches the turn to the matching tier&apos;s model. Fallbacks are
+            tried in order when the routed model fails.
+          </p>
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <Select onValueChange={setSelectedRouterPreset} value={selectedRouterPreset || router.default_preset}>
+              <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
+                <SelectValue placeholder="Preset" />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.keys(router.presets).map(name => (
+                  <SelectItem key={name} value={name}>
+                    {name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              disabled={applying}
+              onClick={() => {
+                const next: RouterConfigResponse = {
+                  ...router,
+                  default_preset: selectedRouterPreset || router.default_preset
+                }
+
+                void saveRouter(next)
+              }}
+              size="sm"
+              variant="text"
+            >
+              Set default
+            </Button>
+            <Button
+              disabled={Object.keys(router.presets).length <= 1 || applying}
+              onClick={() => {
+                if (Object.keys(router.presets).length <= 1) {
+                  return
+                }
+
+                const presets = { ...router.presets }
+                delete presets[selectedRouterPreset]
+                const fallback = Object.keys(presets)[0]
+
+                const next: RouterConfigResponse = {
+                  ...router,
+                  presets,
+                  default_preset: router.default_preset === selectedRouterPreset ? fallback : router.default_preset,
+                  active_preset: router.active_preset === selectedRouterPreset ? '' : router.active_preset
+                }
+
+                setSelectedRouterPreset(Object.keys(router.presets).find(name => name !== selectedRouterPreset) || '')
+                void saveRouter(next)
+              }}
+              size="sm"
+              variant="ghost"
+            >
+              Delete
+            </Button>
+            <Input
+              className={cn('w-40', CONTROL_TEXT)}
+              onChange={event => setNewRouterPresetName(event.target.value)}
+              placeholder="new preset"
+              value={newRouterPresetName}
+            />
+            <Button
+              disabled={!newRouterPresetName.trim() || !!router.presets[newRouterPresetName.trim()] || applying}
+              onClick={() => {
+                const name = newRouterPresetName.trim()
+
+                const next: RouterConfigResponse = {
+                  ...router,
+                  presets: {
+                    ...router.presets,
+                    [name]: {
+                      ...currentRouterPreset,
+                      routes: { ...currentRouterPreset.routes },
+                      fallbacks: [...currentRouterPreset.fallbacks]
+                    }
+                  }
+                }
+
+                setSelectedRouterPreset(name)
+                setNewRouterPresetName('')
+                void saveRouter(next)
+              }}
+              size="sm"
+              variant="textStrong"
+            >
+              Add preset
+            </Button>
+          </div>
+          <div className="mb-2 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-muted-foreground">
+            <span>
+              Default: <span className="font-mono">{router.default_preset}</span>
+            </span>
+            <label className="flex items-center gap-2">
+              <Switch
+                checked={currentRouterPreset.enabled}
+                disabled={applying}
+                onCheckedChange={checked => updateRouterPreset(prev => ({ ...prev, enabled: checked }))}
+              />
+              <span>Classify prompts</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <span>Default route</span>
+              <Select
+                onValueChange={value => updateRouterPreset(prev => ({ ...prev, default_route: value }))}
+                value={currentRouterPreset.default_route}
+              >
+                <SelectTrigger className={cn('min-w-28', CONTROL_TEXT)}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.keys(currentRouterPreset.routes).map(tier => (
+                    <SelectItem key={tier} value={tier}>
+                      {tier}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+          </div>
+          <div className="grid gap-1">
+            <ListRow
+              below={
+                <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
+                  <Select
+                    onValueChange={value =>
+                      updateRouterPreset(prev => ({
+                        ...prev,
+                        classifier: updateMoaSlot(prev.classifier, { provider: value })
+                      }))
+                    }
+                    value={currentRouterPreset.classifier.provider}
+                  >
+                    <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
+                      <SelectValue placeholder={m.provider} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {moaSlotProviderOptions.map(provider => (
+                        <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
+                          {provider.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    onValueChange={value =>
+                      updateRouterPreset(prev => ({
+                        ...prev,
+                        classifier: updateMoaSlot(prev.classifier, { model: value })
+                      }))
+                    }
+                    value={currentRouterPreset.classifier.model}
+                  >
+                    <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
+                      <SelectValue placeholder={m.model} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {withActive(
+                        modelsForProvider(currentRouterPreset.classifier.provider),
+                        currentRouterPreset.classifier.model
+                      ).map(model => (
+                        <SelectItem key={model} value={model}>
+                          {model}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              }
+              description={
+                <span className="font-mono text-[0.68rem]">
+                  {currentRouterPreset.classifier.provider} · {currentRouterPreset.classifier.model}
+                </span>
+              }
+              title="Classifier"
+            />
+            {Object.entries(currentRouterPreset.routes).map(([tier, slot]) => (
+              <ListRow
+                below={
+                  <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
+                    <Select
+                      onValueChange={value =>
+                        updateRouterPreset(prev => ({
+                          ...prev,
+                          routes: { ...prev.routes, [tier]: updateMoaSlot(prev.routes[tier], { provider: value }) }
+                        }))
+                      }
+                      value={slot.provider}
+                    >
+                      <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
+                        <SelectValue placeholder={m.provider} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {moaSlotProviderOptions.map(provider => (
+                          <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
+                            {provider.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Select
+                      onValueChange={value =>
+                        updateRouterPreset(prev => ({
+                          ...prev,
+                          routes: { ...prev.routes, [tier]: updateMoaSlot(prev.routes[tier], { model: value }) }
+                        }))
+                      }
+                      value={slot.model}
+                    >
+                      <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
+                        <SelectValue placeholder={m.model} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {withActive(modelsForProvider(slot.provider), slot.model).map(model => (
+                          <SelectItem key={model} value={model}>
+                            {model}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                }
+                description={
+                  <span className="font-mono text-[0.68rem]">
+                    {slot.provider} · {slot.model}
+                  </span>
+                }
+                key={`${selectedRouterPreset}-route-${tier}`}
+                title={`${tier.charAt(0).toUpperCase()}${tier.slice(1)} tier`}
+              />
+            ))}
+            {currentRouterPreset.fallbacks.map((slot, index) => (
+              <ListRow
+                below={
+                  <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
+                    <Select
+                      onValueChange={value =>
+                        updateRouterPreset(prev => ({
+                          ...prev,
+                          fallbacks: prev.fallbacks.map((s, i) =>
+                            i === index ? updateMoaSlot(s, { provider: value }) : s
+                          )
+                        }))
+                      }
+                      value={slot.provider}
+                    >
+                      <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
+                        <SelectValue placeholder={m.provider} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {moaSlotProviderOptions.map(provider => (
+                          <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
+                            {provider.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Select
+                      onValueChange={value =>
+                        updateRouterPreset(prev => ({
+                          ...prev,
+                          fallbacks: prev.fallbacks.map((s, i) => (i === index ? updateMoaSlot(s, { model: value }) : s))
+                        }))
+                      }
+                      value={slot.model}
+                    >
+                      <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
+                        <SelectValue placeholder={m.model} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {withActive(modelsForProvider(slot.provider), slot.model).map(model => (
+                          <SelectItem key={model} value={model}>
+                            {model}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      disabled={applying || index === 0}
+                      onClick={() =>
+                        updateRouterPreset(prev => {
+                          const fallbacks = [...prev.fallbacks]
+                          const [moved] = fallbacks.splice(index, 1)
+                          fallbacks.splice(index - 1, 0, moved)
+
+                          return { ...prev, fallbacks }
+                        })
+                      }
+                      size="sm"
+                      variant="ghost"
+                    >
+                      Move up
+                    </Button>
+                    <Button
+                      disabled={applying}
+                      onClick={() =>
+                        updateRouterPreset(prev => ({
+                          ...prev,
+                          fallbacks: prev.fallbacks.filter((_, i) => i !== index)
+                        }))
+                      }
+                      size="sm"
+                      variant="ghost"
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                }
+                description={
+                  <span className="font-mono text-[0.68rem]">
+                    {slot.provider} · {slot.model}
+                  </span>
+                }
+                key={`${selectedRouterPreset}-fallback-${slot.provider}-${slot.model}-${index}`}
+                title={`Fallback ${index + 1}`}
+              />
+            ))}
+            <Button
+              disabled={applying}
+              onClick={() =>
+                updateRouterPreset(prev => ({
+                  ...prev,
+                  fallbacks: [...prev.fallbacks, prev.routes[prev.default_route] || prev.classifier]
+                }))
+              }
+              size="sm"
+              variant="textStrong"
+            >
+              Add fallback
+            </Button>
           </div>
         </section>
       )}

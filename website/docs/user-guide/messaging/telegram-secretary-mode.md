@@ -5,7 +5,14 @@ your **personal account** — not to the bot directly. Clients DM you as usual;
 the bot processes the message behind the scenes and can reply as you.
 
 This is powered by Telegram's "Chat Automation in Profiles" feature (also known
-as "Secretary Bots" or "Connected Business Bots"), introduced in May 2026.
+as "Secretary Bots" or "Connected Business Bots"), introduced in May 2026 as
+part of the [AI Bot Revolution update](https://telegram.org/blog/ai-bot-revolution-11-new-features).
+
+**References:**
+- [Telegram blog: AI Bot Revolution (May 2026)](https://telegram.org/blog/ai-bot-revolution-11-new-features) — the launch announcement; "Chat Automation in Profiles" section
+- [Connected business bots (MTProto docs)](https://core.telegram.org/api/bots/connected-business-bots) — protocol reference, `BusinessBotRights`, connection lifecycle
+- [Bot API: business_message updates](https://core.telegram.org/bots/api#business-message) — the `business_connection_id` field and send-as-owner semantics
+- [Bot API changelog](https://core.telegram.org/bots/api-changelog) — track when each business feature landed by Bot API version
 
 ## Setup
 

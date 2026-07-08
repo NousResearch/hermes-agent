@@ -233,3 +233,53 @@ async def test_business_connection_removes_on_disconnect(lifecycle_adapter):
     await lifecycle_adapter._handle_business_connection(update, MagicMock())
 
     assert "conn_lifecycle1" not in lifecycle_adapter._business_connections
+
+
+# ---------------------------------------------------------------------------
+# #42400: bot-echo classification — _build_message_event returns None
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def classify_adapter(monkeypatch):
+    """Adapter wired for testing the bot-echo classification."""
+    _install_fake_telegram(monkeypatch)
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    a = TelegramAdapter(PlatformConfig(enabled=True, token="fake"))
+    return a
+
+
+def test_build_message_event_skips_bot_echo(classify_adapter):
+    """_build_message_event should return None for bot-echo business messages.
+
+    When the bot sends via business_connection, Telegram relays the message
+    back with sender_business_bot set. The gateway must not re-process its
+    own output (#42400).
+    """
+    msg = MagicMock()
+    msg.business_connection_id = "conn_echo1"
+    msg.sender_business_bot = MagicMock(id=8712662056)
+    msg.message_id = 123
+    msg.chat = MagicMock(id=456, type="private", full_name="Test")
+    msg.from_user = MagicMock(id=999, full_name="Client", is_bot=False)
+
+    result = classify_adapter._build_message_event(msg, MagicMock())
+    assert result is None, "Bot-echo business messages must return None"
+
+
+def test_build_message_event_keeps_customer_inbound(classify_adapter):
+    """_build_message_event should process customer inbound business messages."""
+    msg = MagicMock()
+    msg.business_connection_id = "conn_inbound1"
+    msg.sender_business_bot = None  # not a bot echo
+    msg.message_id = 124
+    msg.message_thread_id = None
+    msg.chat = MagicMock(id=456, type="private", full_name="Test")
+    msg.chat.message_thread_id = None
+    msg.from_user = MagicMock(id=999, full_name="Client", is_bot=False)
+    msg.reply_to_message = None
+    msg.quote = None
+
+    result = classify_adapter._build_message_event(msg, MagicMock())
+    assert result is not None, "Customer inbound business messages must be processed"

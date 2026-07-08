@@ -7945,6 +7945,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         try:
             event = event or self._build_message_event(message, msg_type, update_id=update_id)
+            if event is None:
+                return
             shared_source = self._telegram_group_observe_shared_source(event.source)
             session_entry = store.get_or_create_session(shared_source)
             entry = {
@@ -8134,6 +8136,8 @@ class TelegramAdapter(BasePlatformAdapter):
         await self._ensure_forum_commands(update.message)
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+        if event is None:
+            return
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
@@ -8156,6 +8160,8 @@ class TelegramAdapter(BasePlatformAdapter):
         await self._ensure_forum_commands(msg)
 
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
+        if event is None:
+            return
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
@@ -8204,6 +8210,8 @@ class TelegramAdapter(BasePlatformAdapter):
         parts.append("Ask what they'd like to find nearby (restaurants, cafes, etc.) and any preferences.")
 
         event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
+        if event is None:
+            return
         event.text = "\n".join(parts)
         event = self._apply_telegram_group_observe_attribution(event)
         await self.handle_message(event)
@@ -8382,6 +8390,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 _m = update.message
                 _observe_type = self._media_message_type(_m)
                 _event = self._build_message_event(_m, _observe_type, update_id=update.update_id)
+                if _event is None:
+                    return
                 if _m.caption:
                     _event.text = self._clean_bot_trigger_text(_m.caption)
                 await self._cache_observed_media(_m, _event)
@@ -8395,6 +8405,8 @@ class TelegramAdapter(BasePlatformAdapter):
         msg_type = self._media_message_type(msg)
 
         event = self._build_message_event(msg, msg_type, update_id=update.update_id)
+        if event is None:
+            return
         
         # Add caption as text
         if msg.caption:
@@ -8934,14 +8946,31 @@ class TelegramAdapter(BasePlatformAdapter):
         message: Message,
         msg_type: MessageType,
         update_id: Optional[int] = None,
-    ) -> MessageEvent:
+    ) -> Optional[MessageEvent]:
         """Build a MessageEvent from a Telegram message.
 
         ``update_id`` is the ``Update.update_id`` from PTB; passing it through
         lets ``/restart`` record the triggering offset so the new gateway
         process can advance past it (prevents ``/restart`` being re-delivered
         when PTB's graceful-shutdown ACK fails).
+
+        Returns ``None`` for bot-echo business messages (the bot's own sends
+        relayed back as ``business_message`` updates) so callers can skip
+        enqueue without duplicating the classification at every call site
+        (#42400).
         """
+        # Secretary Mode: skip bot-echo business messages (#42400).
+        # When the bot sends via business_connection, Telegram relays the
+        # message back as a business_message with sender_business_bot set.
+        # Without this guard the gateway re-processes its own output.
+        if getattr(message, "business_connection_id", None):
+            if getattr(message, "sender_business_bot", None) is not None:
+                logger.debug(
+                    "[Telegram] Skipping bot-echo business message %s",
+                    getattr(message, "message_id", None),
+                )
+                return None
+
         chat = message.chat
         user = message.from_user
         

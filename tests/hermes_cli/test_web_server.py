@@ -1138,6 +1138,29 @@ class TestWebServerEndpoints:
         assert worker_resp.status_code == 200
         assert worker_resp.json()["session_id"] == "worker-tip"
 
+    def test_latest_descendant_survives_parent_cycle(self):
+        """Regression for the #39140 CTE salvage: a corrupted parent chain
+        that loops (a -> b -> a) must terminate (UNION dedup) instead of
+        recursing forever like UNION ALL would."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="cyc-a", source="cli")
+            db.create_session(
+                session_id="cyc-b", source="cli", parent_session_id="cyc-a"
+            )
+            db._conn.execute(
+                "UPDATE sessions SET parent_session_id='cyc-b' WHERE id='cyc-a'"
+            )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/cyc-a/latest-descendant")
+        assert resp.status_code == 200
+        assert resp.json()["session_id"] == "cyc-b"
+
     def test_analytics_endpoints_read_requested_profile(self):
         from hermes_state import SessionDB
         from hermes_cli import profiles as profiles_mod

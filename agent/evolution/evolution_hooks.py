@@ -101,7 +101,10 @@ def on_session_end(agent: Any, **kwargs: Any) -> None:
     try:
         from agent.evolution.conversation_observer import get_observer
         observer = get_observer()
-        observer.end_session()
+        nudge = observer.end_session()
+        if nudge and hasattr(agent, "_emit_status"):
+            try: agent._emit_status(nudge)
+            except Exception: pass
     except Exception:
         pass
 

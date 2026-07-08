@@ -433,11 +433,11 @@ class ConversationObserver:
         )
 
         self._session_fingerprints.append(fp)
-
-        # Cluster this fingerprint
         self._cluster_session(fp)
         self._prune()
-        self._save()
+        # Save deferred — every 5th session to avoid I/O on every turn
+        if len(self._session_fingerprints) % 5 == 0:
+            self._save()
 
         # Track skill effectiveness for recursive evolution
         if self._current_user_messages:

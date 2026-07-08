@@ -354,9 +354,15 @@ def _cmd_run(args) -> int:
         total_score = 0.0
         passed_count = 0
 
+        store = None
+        try:
+            from agent.evolution.evolution_store import get_evolution_store
+            store = get_evolution_store()
+        except Exception: pass
+
         for i in range(iterations):
             start = _time.monotonic()
-            result = evaluator.evaluate(task, None, ctx)  # type: ignore[arg-type]
+            result = evaluator.evaluate(task, None, ctx)
             elapsed = _time.monotonic() - start
 
             icon = "✅" if result.passed else "❌"
@@ -364,6 +370,15 @@ def _cmd_run(args) -> int:
             total_score += result.score
             if result.passed:
                 passed_count += 1
+                if store:
+                    try:
+                        rid = store.create_run(task_name=task_name, task_domain=task.domain or "general",
+                                              task_complexity=task.complexity or 1)
+                        store.add_iteration(rid, i+1, "evaluating", score=result.score)
+                        store.update_run_status(rid, "succeeded", final_score=result.score)
+                        if result.passed:
+                            store.set_baseline(task_name, result.score)
+                    except Exception: pass
 
             if args.verbose:
                 for check in result.checks:
@@ -412,6 +427,11 @@ def _cmd_benchmark(args) -> int:
     try:
         from agent.evolution.evaluator import TaskEvaluator, EvaluationContext
         import time as _time
+        store = None
+        try:
+            from agent.evolution.evolution_store import get_evolution_store
+            store = get_evolution_store()
+        except Exception: pass
 
         evaluator = TaskEvaluator()
         total_passed = 0
@@ -433,6 +453,13 @@ def _cmd_benchmark(args) -> int:
 
             if result.passed:
                 total_passed += 1
+                if store:
+                    try:
+                        rid = store.create_run(task_name=task.name, task_domain=task.domain,
+                                              task_complexity=task.complexity)
+                        store.update_run_status(rid, "succeeded", final_score=result.score)
+                        store.set_baseline(task.name, result.score)
+                    except Exception: pass
             total_score += result.score
             total_time += elapsed
 

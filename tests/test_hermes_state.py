@@ -115,6 +115,15 @@ class TestSessionLifecycle:
         enriched = db.get_session("s1")
         assert enriched["model"] == "claude-opus-4-6"
         assert enriched["system_prompt"] == "SYS"
+        raw = db._conn.execute(
+            "SELECT system_prompt, system_prompt_hash FROM sessions WHERE id = 's1'"
+        ).fetchone()
+        assert raw["system_prompt"] is None
+        prompt_row = db._conn.execute(
+            "SELECT prompt FROM system_prompts WHERE hash = ?",
+            (raw["system_prompt_hash"],),
+        ).fetchone()
+        assert prompt_row["prompt"] == "SYS"
         # Gateway-owned fields preserved (NOT clobbered by source="cli").
         assert enriched["source"] == "telegram"
         assert enriched["user_id"] == "u1"
@@ -234,6 +243,52 @@ class TestSessionLifecycle:
 
         session = db.get_session("s1")
         assert session["system_prompt"] == "You are a helpful assistant."
+        raw = db._conn.execute(
+            "SELECT system_prompt, system_prompt_hash FROM sessions WHERE id = 's1'"
+        ).fetchone()
+        assert raw["system_prompt"] is None
+        assert raw["system_prompt_hash"]
+
+    def test_system_prompt_snapshots_are_content_addressed(self, db):
+        prompt = "You are Hermes.\n" + ("Follow the profile policy.\n" * 5)
+        db.create_session(session_id="s1", source="cli", system_prompt=prompt)
+        db.create_session(session_id="s2", source="telegram")
+        db.update_system_prompt("s2", prompt)
+
+        assert db.get_session("s1")["system_prompt"] == prompt
+        assert db.get_session("s2")["system_prompt"] == prompt
+
+        prompt_rows = db._conn.execute(
+            "SELECT hash, prompt FROM system_prompts"
+        ).fetchall()
+        assert len(prompt_rows) == 1
+        assert prompt_rows[0]["prompt"] == prompt
+
+        session_rows = db._conn.execute(
+            "SELECT system_prompt, system_prompt_hash FROM sessions ORDER BY id"
+        ).fetchall()
+        assert [row["system_prompt"] for row in session_rows] == [None, None]
+        assert {row["system_prompt_hash"] for row in session_rows} == {
+            prompt_rows[0]["hash"]
+        }
+
+    def test_system_prompt_hydrates_session_listing_and_gateway_readers(self, db):
+        prompt = "Shared prompt body"
+        db.create_session(
+            session_id="gw",
+            source="telegram",
+            session_key="agent:main:telegram:dm:c1",
+            chat_id="c1",
+            chat_type="dm",
+            system_prompt=prompt,
+        )
+        db.request_handoff("gw", "telegram")
+
+        assert db.list_sessions_rich()[0]["system_prompt"] == prompt
+        assert db.search_sessions()[0]["system_prompt"] == prompt
+        assert db.export_session("gw")["system_prompt"] == prompt
+        assert db.list_gateway_sessions()[0]["system_prompt"] == prompt
+        assert db.list_pending_handoffs()[0]["system_prompt"] == prompt
 
     def test_update_token_counts(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -378,6 +433,11 @@ class TestSessionLifecycle:
         assert sess["billing_mode"] == "local"
         assert sess["system_prompt"] is None, \
             "system_prompt must be nulled so the next turn rebuilds Model:/Provider:"
+        raw = db._conn.execute(
+            "SELECT system_prompt, system_prompt_hash FROM sessions WHERE id = 's1'"
+        ).fetchone()
+        assert raw["system_prompt"] is None
+        assert raw["system_prompt_hash"] is None
 
         # billing_mode defaults to COALESCE — omitting it preserves the value.
         db.update_session_billing_route(
@@ -2121,6 +2181,62 @@ class TestDeleteAndExport:
     def test_delete_nonexistent(self, db):
         assert db.delete_session("nope") is False
 
+    def test_system_prompt_gc_preserves_shared_references(self, db):
+        prompt = "shared deletion prompt"
+        db.create_session("s1", "cli", system_prompt=prompt)
+        db.create_session("s2", "cli", system_prompt=prompt)
+
+        assert db._conn.execute("SELECT COUNT(*) FROM system_prompts").fetchone()[0] == 1
+        assert db.delete_session("s1") is True
+        assert db._conn.execute("SELECT COUNT(*) FROM system_prompts").fetchone()[0] == 1
+        assert db.get_session("s2")["system_prompt"] == prompt
+
+        assert db.delete_session("s2") is True
+        assert db._conn.execute("SELECT COUNT(*) FROM system_prompts").fetchone()[0] == 0
+
+    def test_every_session_deletion_path_reclaims_orphan_prompts(self, db):
+        def seed(session_id, *, source="cli"):
+            db.create_session(
+                session_id, source, system_prompt=f"unique prompt for {session_id}"
+            )
+            assert db._conn.execute(
+                "SELECT COUNT(*) FROM system_prompts"
+            ).fetchone()[0] == 1
+
+        def assert_reclaimed():
+            assert db._conn.execute(
+                "SELECT COUNT(*) FROM system_prompts"
+            ).fetchone()[0] == 0
+
+        seed("single-empty")
+        assert db.delete_session_if_empty("single-empty") is True
+        assert_reclaimed()
+
+        seed("bulk")
+        assert db.delete_sessions(["bulk"]) == 1
+        assert_reclaimed()
+
+        seed("ended-empty")
+        db.end_session("ended-empty", "user_exit")
+        assert db.delete_empty_sessions() == 1
+        assert_reclaimed()
+
+        seed("pruned")
+        db.end_session("pruned", "user_exit")
+        assert db.prune_sessions(
+            older_than_days=None, started_before=time.time() + 1
+        ) == 1
+        assert_reclaimed()
+
+        seed("ghost", source="tui")
+        db.end_session("ghost", "user_exit")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = 0 WHERE id = 'ghost'"
+        )
+        db._conn.commit()
+        assert db.prune_empty_ghost_sessions() == 1
+        assert_reclaimed()
+
     def test_resolve_session_id_exact(self, db):
         db.create_session(session_id="20260315_092437_c9a6ff", source="cli")
         assert db.resolve_session_id("20260315_092437_c9a6ff") == "20260315_092437_c9a6ff"
@@ -3236,6 +3352,47 @@ class TestSchemaInit:
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
         assert version == SCHEMA_VERSION
+
+    def test_legacy_system_prompts_are_deduped_on_migration(self, tmp_path):
+        db_path = tmp_path / "legacy_prompts.db"
+        legacy_prompt = "Legacy system prompt\n" + ("same policy\n" * 20)
+
+        db = SessionDB(db_path=db_path)
+        db.create_session("s1", "cli")
+        db.create_session("s2", "telegram")
+        db._conn.execute(
+            "UPDATE sessions SET system_prompt = ?, system_prompt_hash = NULL",
+            (legacy_prompt,),
+        )
+        # Current main already uses v21. The prompt dedupe migration must
+        # still run for databases created by that exact schema version.
+        db._conn.execute("UPDATE schema_version SET version = 21")
+        db._conn.commit()
+        db.close()
+
+        migrated = SessionDB(db_path=db_path)
+        try:
+            assert migrated.get_session("s1")["system_prompt"] == legacy_prompt
+            assert migrated.get_session("s2")["system_prompt"] == legacy_prompt
+
+            prompt_rows = migrated._conn.execute(
+                "SELECT hash, prompt FROM system_prompts"
+            ).fetchall()
+            assert len(prompt_rows) == 1
+            assert prompt_rows[0]["prompt"] == legacy_prompt
+
+            session_rows = migrated._conn.execute(
+                "SELECT system_prompt, system_prompt_hash FROM sessions ORDER BY id"
+            ).fetchall()
+            assert [row["system_prompt"] for row in session_rows] == [None, None]
+            assert {row["system_prompt_hash"] for row in session_rows} == {
+                prompt_rows[0]["hash"]
+            }
+            assert migrated._conn.execute(
+                "SELECT version FROM schema_version LIMIT 1"
+            ).fetchone()[0] == SCHEMA_VERSION
+        finally:
+            migrated.close()
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -5927,7 +6084,7 @@ def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(d
 
 class TestCompactRows:
     """list_sessions_rich and _get_session_rich_row with compact_rows=True
-    must omit system_prompt but return all other metadata fields."""
+    must omit prompt storage internals but return all other metadata fields."""
 
     def _create(self, db, sid, *, system_prompt="big blob " * 500):
         db.create_session(session_id=sid, source="cli", model="m")
@@ -5939,6 +6096,26 @@ class TestCompactRows:
         rows = db.list_sessions_rich(compact_rows=True)
         assert len(rows) == 1
         assert "system_prompt" not in rows[0]
+        assert "system_prompt_hash" not in rows[0]
+
+    def test_compact_rows_do_not_read_system_prompts_table(self, db):
+        """Compact SQL must not materialize prompt text before projection."""
+        self._create(db, "s1", system_prompt="never materialize me")
+
+        def deny_prompt_reads(action, table, column, database, trigger):
+            if action == sqlite3.SQLITE_READ and table == "system_prompts":
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        db._conn.set_authorizer(deny_prompt_reads)
+        try:
+            assert db.list_sessions_rich(compact_rows=True)[0]["id"] == "s1"
+            assert db.list_sessions_rich(
+                compact_rows=True, order_by_last_active=True
+            )[0]["id"] == "s1"
+            assert db._get_session_rich_row("s1", compact_rows=True)["id"] == "s1"
+        finally:
+            db._conn.set_authorizer(None)
 
     def test_full_rows_include_system_prompt(self, db):
         self._create(db, "s1", system_prompt="keep me")
@@ -5990,12 +6167,13 @@ class TestCompactRows:
             row[1] for row in db._conn.execute("PRAGMA table_info(sessions)")
         }
         row = db.list_sessions_rich(compact_rows=True)[0]
-        # Hardcode the one sanctioned exclusion: if the excluded set ever
+        # Hardcode the sanctioned exclusions: if the excluded set ever
         # widens (or the projection silently drops a column), this fails and
         # forces a conscious review of what list consumers lose.
-        missing = live_cols - set(row) - {"system_prompt"}
+        missing = live_cols - set(row) - {"system_prompt", "system_prompt_hash"}
         assert not missing, f"compact projection lost schema columns: {missing}"
         assert "system_prompt" not in row
+        assert "system_prompt_hash" not in row
 
     def test_compact_rows_tip_projection_omits_system_prompt(self, db):
         """Compression-tip projection must not reintroduce the blob: the
@@ -6019,6 +6197,7 @@ class TestCompactRows:
         projected = [r for r in rows if r.get("_lineage_root_id") == "root"]
         assert projected, "compression root should be projected to its tip"
         assert all("system_prompt" not in r for r in rows)
+        assert all("system_prompt_hash" not in r for r in rows)
 
 
 # =========================================================================

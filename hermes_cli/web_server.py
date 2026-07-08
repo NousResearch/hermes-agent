@@ -15,6 +15,7 @@ import asyncio
 import atexit
 import base64
 import binascii
+from collections import deque
 import concurrent.futures
 import functools
 from dataclasses import dataclass
@@ -133,6 +134,8 @@ _log = logging.getLogger(__name__)
 # when the same module is used across TestClient instances or uvicorn reloads.
 # ---------------------------------------------------------------------------
 
+_EVENT_REPLAY_CAP = 512
+
 def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60) -> None:
     """Tick the cron scheduler from inside the desktop dashboard backend.
 
@@ -173,6 +176,8 @@ def _resolve_restart_drain_timeout() -> float:
 @asynccontextmanager
 async def _lifespan(app: "FastAPI"):
     app.state.event_channels = {}  # dict[str, set]
+    app.state.event_buffers = {}  # dict[str, deque[str]]
+    app.state.event_publishers = {}  # dict[str, int]
     app.state.event_lock = asyncio.Lock()
     app.state.pty_active_session_files = {}  # dict[str, Path]
     # Serializes chat-argv resolution so concurrent /api/pty connections
@@ -231,6 +236,24 @@ def _get_event_state(app: "FastAPI"):
         app.state.event_channels = {}
         app.state.event_lock = asyncio.Lock()
         return app.state.event_channels, app.state.event_lock
+
+
+def _get_event_buffers(app: "FastAPI"):
+    """Return channel -> recent publisher frames for refresh replay."""
+    try:
+        return app.state.event_buffers
+    except AttributeError:
+        app.state.event_buffers = {}
+        return app.state.event_buffers
+
+
+def _get_event_publishers(app: "FastAPI"):
+    """Return channel -> active /api/pub connection count."""
+    try:
+        return app.state.event_publishers
+    except AttributeError:
+        app.state.event_publishers = {}
+        return app.state.event_publishers
 
 
 def _get_chat_argv_lock(app: "FastAPI") -> asyncio.Lock:
@@ -14636,9 +14659,22 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
 
 
 async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
-    """Fan out one publisher frame to every subscriber on `channel`."""
+    """Fan out one publisher frame to every subscriber on `channel`.
+
+    The browser can refresh while the PTY child is still streaming.  During that
+    gap xterm output is safe (PtySession has its own byte ring buffer), but the
+    structured sidecar channel would otherwise drop tool/progress/reasoning
+    events emitted with no subscriber attached. Keep a small per-channel replay
+    buffer so the reloaded sidebar catches up before receiving live frames.
+    """
     event_channels, event_lock = _get_event_state(app)
+    event_buffers = _get_event_buffers(app)
     async with event_lock:
+        buf = event_buffers.setdefault(
+            channel,
+            deque(maxlen=_EVENT_REPLAY_CAP),
+        )
+        buf.append(payload)
         subs = list(event_channels.get(channel, ()))
 
     for sub in subs:
@@ -15509,11 +15545,28 @@ async def pub_ws(ws: WebSocket) -> None:
 
     await ws.accept()
 
+    event_channels, event_lock = _get_event_state(ws.app)
+    event_publishers = _get_event_publishers(ws.app)
+    event_buffers = _get_event_buffers(ws.app)
+    async with event_lock:
+        event_publishers[channel] = int(event_publishers.get(channel, 0)) + 1
+
     try:
         while True:
             await _broadcast_event(ws.app, channel, await ws.receive_text())
     except WebSocketDisconnect:
         pass
+    finally:
+        async with event_lock:
+            next_count = int(event_publishers.get(channel, 0)) - 1
+            if next_count > 0:
+                event_publishers[channel] = next_count
+            else:
+                event_publishers.pop(channel, None)
+
+            if not event_channels.get(channel):
+                event_channels.pop(channel, None)
+                event_buffers.pop(channel, None)
 
 
 @app.websocket("/api/events")
@@ -15538,10 +15591,16 @@ async def events_ws(ws: WebSocket) -> None:
     await ws.accept()
 
     event_channels, event_lock = _get_event_state(ws.app)
+    event_buffers = _get_event_buffers(ws.app)
+    event_publishers = _get_event_publishers(ws.app)
     async with event_lock:
         event_channels.setdefault(channel, set()).add(ws)
+        replay = list(event_buffers.get(channel, ()))
 
     try:
+        for payload in replay:
+            await ws.send_text(payload)
+
         while True:
             # Subscribers don't speak — the receive() just blocks until
             # disconnect so the connection stays open as long as the
@@ -15558,6 +15617,9 @@ async def events_ws(ws: WebSocket) -> None:
 
                 if not subs:
                     event_channels.pop(channel, None)
+
+            if not event_channels.get(channel) and not event_publishers.get(channel):
+                event_buffers.pop(channel, None)
 
 
 def _normalise_prefix(raw: Optional[str]) -> str:

@@ -46,6 +46,9 @@ def pty_client(monkeypatch, _isolate_hermes_home):
 
     monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
     monkeypatch.setattr(ws.PtyBridge, "spawn", _OneFrameBridge.spawn)
+    ws.app.state.event_channels = {}
+    ws.app.state.event_buffers = {}
+    ws.app.state.event_publishers = {}
     ws.app.state.pty_active_session_files = {}
 
     client = TestClient(ws.app)
@@ -129,6 +132,31 @@ def test_fresh_param_ignores_channel_active_session_file(pty_client, monkeypatch
     assert captured["resume"] is None
     assert captured["active_session_file"] == str(active_file)
     assert not active_file.exists()
+
+
+def test_event_subscriber_replays_frames_published_during_refresh_gap(pty_client):
+    """A refreshed sidebar catches up with PTY events emitted while detached.
+
+    The PTY byte stream already replays via PtySession's ring buffer. The
+    structured sidecar (/api/pub -> /api/events) needs its own short replay
+    buffer, otherwise a hard browser refresh can reattach the terminal but lose
+    the live tool/progress/thinking events that drive the sidebar animation.
+    """
+    _ws, client, token = pty_client
+    channel = "event-replay-chan"
+    frame_1 = '{"jsonrpc":"2.0","method":"event","params":{"type":"tool.start"}}'
+    frame_2 = '{"jsonrpc":"2.0","method":"event","params":{"type":"tool.complete"}}'
+
+    with client.websocket_connect(f"/api/pub?token={token}&channel={channel}") as pub:
+        # Simulate the refresh gap: the PTY-side publisher remains connected and
+        # emits while the browser-side /api/events subscriber is absent.
+        pub.send_text(frame_1)
+
+        with client.websocket_connect(f"/api/events?token={token}&channel={channel}") as events:
+            assert events.receive_text() == frame_1
+
+            pub.send_text(frame_2)
+            assert events.receive_text() == frame_2
 
 
 def test_child_eof_closes_socket_and_bridge(pty_client, monkeypatch):

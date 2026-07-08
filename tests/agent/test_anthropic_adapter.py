@@ -2,7 +2,9 @@
 
 import json
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
@@ -222,6 +224,36 @@ class TestBuildAnthropicClient:
             build_anthropic_bedrock_client("us-east-1")
             kwargs = mock_sdk.AnthropicBedrock.call_args[1]
             assert kwargs["max_retries"] == 0
+
+
+class TestClaudeCodeVersionCache:
+    def test_concurrent_get_claude_code_version_detects_once(self, monkeypatch):
+        import agent.anthropic_adapter as anthropic_adapter
+
+        worker_count = 8
+        start = threading.Barrier(worker_count)
+        detect_lock = threading.Lock()
+        detect_calls = 0
+
+        def fake_detect():
+            nonlocal detect_calls
+            with detect_lock:
+                detect_calls += 1
+            time.sleep(0.05)
+            return "9.9.9"
+
+        def get_version():
+            start.wait(timeout=10)
+            return anthropic_adapter._get_claude_code_version()
+
+        monkeypatch.setattr(anthropic_adapter, "_claude_code_version_cache", None)
+        monkeypatch.setattr(anthropic_adapter, "_detect_claude_code_version", fake_detect)
+
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            versions = list(pool.map(lambda _: get_version(), range(worker_count)))
+
+        assert versions == ["9.9.9"] * worker_count
+        assert detect_calls == 1
 
 
 class TestReadClaudeCodeCredentials:

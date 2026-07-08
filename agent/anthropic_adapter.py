@@ -18,6 +18,7 @@ import platform
 import secrets
 import stat
 import subprocess
+import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -344,6 +345,7 @@ _OAUTH_ONLY_BETAS = [
 # when the spoofed user-agent version is too far behind the actual release.
 _CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
 _claude_code_version_cache: Optional[str] = None
+_claude_code_version_lock = threading.Lock()
 
 
 def _detect_claude_code_version() -> str:
@@ -379,7 +381,9 @@ def _get_claude_code_version() -> str:
     """Lazily detect the installed Claude Code version when OAuth headers need it."""
     global _claude_code_version_cache
     if _claude_code_version_cache is None:
-        _claude_code_version_cache = _detect_claude_code_version()
+        with _claude_code_version_lock:
+            if _claude_code_version_cache is None:
+                _claude_code_version_cache = _detect_claude_code_version()
     return _claude_code_version_cache
 
 

@@ -5506,3 +5506,10 @@ class TestGetMessagesPagination:
         db._conn.commit()
         page = db.get_messages("s1", limit=3, offset=0)
         assert [m["content"] for m in page] == ["msg-2", "msg-3", "msg-4"]
+
+    def test_offset_without_limit_pages(self, db):
+        """offset alone must not be silently ignored (review finding):
+        SQLite needs LIMIT for OFFSET, emitted as LIMIT -1."""
+        self._seed(db, n=5)
+        rows = db.get_messages("s1", offset=3)
+        assert [m["content"] for m in rows] == ["msg-3", "msg-4"]

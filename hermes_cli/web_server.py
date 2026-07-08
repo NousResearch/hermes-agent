@@ -16,6 +16,7 @@ import atexit
 import base64
 import binascii
 import concurrent.futures
+import contextvars
 import functools
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -44,7 +45,7 @@ import zipfile
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -4035,7 +4036,7 @@ def _strip_session_list_rows(sessions: List[Dict[str, Any]]) -> List[Dict[str, A
 
 
 @app.get("/api/sessions")
-def get_sessions(
+async def get_sessions(
     limit: int = 20,
     offset: int = 0,
     min_messages: int = 0,
@@ -4072,12 +4073,11 @@ def get_sessions(
             status_code=400,
             detail="order must be one of: created, recent",
         )
-    profile_name: Optional[str] = None
-    if profile:
-        profile_name, _ = _cron_profile_home(profile)
     try:
-        db = _open_session_db_for_profile(profile)
-        try:
+        def _query(db):
+            profile_name: Optional[str] = None
+            if profile:
+                profile_name, _ = _cron_profile_home(profile)
             min_message_count = max(0, min_messages)
             archived_only = archived == "only"
             include_archived = archived == "include"
@@ -4124,8 +4124,8 @@ def get_sessions(
             if not full:
                 _strip_session_list_rows(sessions)
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
-        finally:
-            db.close()
+
+        return await _run_session_db(profile, _query)
     except HTTPException:
         raise
     except Exception:
@@ -4275,8 +4275,7 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
     if not q or not q.strip():
         return {"results": []}
     try:
-        db = _open_session_db_for_profile(profile)
-        try:
+        def _query(db):
             safe_limit = max(1, min(int(limit or 20), 100))
 
             # Walk parent_session_id to the compression root, memoized so a
@@ -4415,8 +4414,8 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
                     },
                 )
             return {"results": list(seen.values())}
-        finally:
-            db.close()
+
+        return await _run_session_db(profile, _query)
     except HTTPException:
         raise
     except Exception:
@@ -9894,14 +9893,6 @@ async def _read_session_import_body(request: Request) -> bytes:
     return bytes(body)
 
 
-def _import_sessions_for_profile(profile: Optional[str], sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
-    db = _open_session_db_for_profile(profile)
-    try:
-        return db.import_sessions(sessions)
-    finally:
-        db.close()
-
-
 @app.post("/api/sessions/bulk-delete")
 async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     """Delete every session in ``body.ids`` in a single DB transaction.
@@ -9944,15 +9935,11 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
             status_code=400,
             detail="ids must contain at most 500 entries",
         )
-    def _delete() -> int:
-        db = _open_session_db_for_profile(body.profile)
-        try:
-            return db.delete_sessions(body.ids)
-        finally:
-            db.close()
+    def _delete(db):
+        deleted = db.delete_sessions(body.ids)
+        return {"ok": True, "deleted": deleted}
 
-    deleted = await asyncio.to_thread(_delete)
-    return {"ok": True, "deleted": deleted}
+    return await _run_session_db(body.profile, _delete)
 
 
 @app.post("/api/sessions/import")
@@ -9972,7 +9959,10 @@ async def import_sessions_endpoint(request: Request):
         raise HTTPException(status_code=400, detail="Invalid session import payload") from exc
 
     try:
-        result = await asyncio.to_thread(_import_sessions_for_profile, body.profile, body.sessions)
+        result = await _run_session_db(
+            body.profile,
+            lambda db: db.import_sessions(body.sessions),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -9989,14 +9979,7 @@ async def count_empty_sessions_endpoint(profile: Optional[str] = None):
     UI hides the affordance so users aren't presented with a button
     that does nothing. Cheap, single-COUNT query.
     """
-    def _count() -> int:
-        db = _open_session_db_for_profile(profile)
-        try:
-            return db.count_empty_sessions()
-        finally:
-            db.close()
-
-    return {"count": await asyncio.to_thread(_count)}
+    return await _run_session_db(profile, lambda db: {"count": db.count_empty_sessions()})
 
 
 @app.delete("/api/sessions/empty")
@@ -10019,15 +10002,11 @@ async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
     prune-on-startup pass. Matching that pre-existing trade-off keeps
     the two delete endpoints' DB-vs-disk behaviour consistent.
     """
-    def _delete() -> int:
-        db = _open_session_db_for_profile(profile)
-        try:
-            return db.delete_empty_sessions()
-        finally:
-            db.close()
+    def _delete(db):
+        deleted = db.delete_empty_sessions()
+        return {"ok": True, "deleted": deleted}
 
-    deleted = await asyncio.to_thread(_delete)
-    return {"ok": True, "deleted": deleted}
+    return await _run_session_db(profile, _delete)
 
 
 @app.get("/api/sessions/stats")
@@ -10037,8 +10016,7 @@ async def get_session_stats(profile: Optional[str] = None):
     Registered before ``/api/sessions/{session_id}`` so the literal ``stats``
     path isn't captured as a session id by the parameterized route.
     """
-    db = _open_session_db_for_profile(profile)
-    try:
+    def _stats(db):
         total = db.session_count(include_archived=True)
         active_store = db.session_count(include_archived=False)
         archived = db.session_count(archived_only=True)
@@ -10057,8 +10035,8 @@ async def get_session_stats(profile: Optional[str] = None):
             "messages": messages,
             "by_source": by_source,
         }
-    finally:
-        db.close()
+
+    return await _run_session_db(profile, _stats)
 
 
 def _open_session_db_for_profile(profile: Optional[str]):
@@ -10076,10 +10054,40 @@ def _open_session_db_for_profile(profile: Optional[str]):
     return SessionDB(db_path=Path(home) / "state.db")
 
 
+_SESSION_DB_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4,
+    thread_name_prefix="hermes-session-db",
+)
+atexit.register(_SESSION_DB_EXECUTOR.shutdown, wait=False, cancel_futures=True)
+
+
+async def _run_session_db(
+    profile: Optional[str],
+    operation: Callable[[Any], Any],
+) -> Any:
+    """Run blocking SessionDB work off the FastAPI event loop.
+
+    Large state.db files with FTS indexes can make list/search/detail queries
+    hold the GIL for long enough to starve dashboard HTTP/WebSocket traffic.
+    Open, use, and close the SQLite connection inside the worker thread so the
+    connection never crosses thread boundaries.
+    """
+
+    def _run() -> Any:
+        db = _open_session_db_for_profile(profile)
+        try:
+            return operation(db)
+        finally:
+            db.close()
+
+    loop = asyncio.get_running_loop()
+    ctx = contextvars.copy_context()
+    return await loop.run_in_executor(_SESSION_DB_EXECUTOR, ctx.run, _run)
+
+
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str, profile: Optional[str] = None):
-    db = _open_session_db_for_profile(profile)
-    try:
+    def _detail(db):
         sid = db.resolve_session_id(session_id)
         session = db.get_session(sid) if sid else None
         if not session:
@@ -10087,8 +10095,8 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
         if profile:
             session["profile"] = _cron_profile_home(profile)[0]
         return session
-    finally:
-        db.close()
+
+    return await _run_session_db(profile, _detail)
 
 
 
@@ -10097,22 +10105,18 @@ async def get_session_latest_descendant(
     session_id: str,
     profile: Optional[str] = None,
 ):
-    def _lookup():
-        db = _open_session_db_for_profile(profile)
-        try:
-            return _session_latest_descendant(session_id, db)
-        finally:
-            db.close()
+    def _latest(db):
+        latest, path = _session_latest_descendant(session_id, db)
+        if not latest:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return {
+            "requested_session_id": path[0] if path else session_id,
+            "session_id": latest,
+            "path": path,
+            "changed": bool(path and latest != path[0]),
+        }
 
-    latest, path = await asyncio.to_thread(_lookup)
-    if not latest:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return {
-        "requested_session_id": path[0] if path else session_id,
-        "session_id": latest,
-        "path": path,
-        "changed": bool(path and latest != path[0]),
-    }
+    return await _run_session_db(profile, _latest)
 
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(
@@ -10121,32 +10125,25 @@ async def get_session_messages(
     limit: Optional[int] = None,
     offset: int = 0,
 ):
-    def _read():
-        db = _open_session_db_for_profile(profile)
-        try:
-            sid = db.resolve_session_id(session_id)
-            if not sid:
-                return None
-            sid = db.resolve_resume_session_id(sid)
-            # Clamp limit to prevent abuse (max 500 per page)
-            _limit = min(limit, 500) if limit is not None else None
-            return sid, _limit, db.get_messages(sid, limit=_limit, offset=offset)
-        finally:
-            db.close()
+    def _messages(db):
+        sid = db.resolve_session_id(session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+        sid = db.resolve_resume_session_id(sid)
+        # Clamp limit to prevent abuse (max 500 per page)
+        _limit = min(limit, 500) if limit is not None else None
+        messages = db.get_messages(sid, limit=_limit, offset=offset)
+        return {
+            "session_id": sid,
+            "messages": messages,
+            "pagination": {
+                "limit": _limit,
+                "offset": offset,
+                "returned": len(messages),
+            },
+        }
 
-    result = await asyncio.to_thread(_read)
-    if result is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    sid, _limit, messages = result
-    return {
-        "session_id": sid,
-        "messages": messages,
-        "pagination": {
-            "limit": _limit,
-            "offset": offset,
-            "returned": len(messages),
-        },
-    }
+    return await _run_session_db(profile, _messages)
 
 
 @app.delete("/api/sessions/{session_id}")
@@ -10154,27 +10151,23 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
     # ``profile`` deletes a session belonging to another (local) profile by
     # opening its state.db directly. Remote profiles never reach here — the
     # desktop routes their DELETE to the remote backend. Omit for current/default.
-    def _delete():
-        db = _open_session_db_for_profile(profile)
-        try:
-            # Resolve exact ids / unique prefixes like every other session endpoint
-            # (detail, messages, rename, export all do). A session that no longer
-            # exists is an idempotent success: DELETE's contract is "ensure it's
-            # gone", and the desktop optimistically removes the row then RESTORES it
-            # on any error — so a 404 on an already-absent row resurrected a ghost
-            # row and surfaced "session not found". /goal + auto-compression churn
-            # leaves transient empty rows (reaped by empty-session hygiene) that
-            # race the sidebar snapshot, which is exactly when this fired. Mirrors
-            # the bulk-delete endpoint, which already treats ghost ids as success.
-            sid = db.resolve_session_id(session_id)
-            if not sid:
-                return {"ok": True, "already_absent": True}
-            db.delete_session(sid)
-            return {"ok": True}
-        finally:
-            db.close()
+    def _delete(db):
+        # Resolve exact ids / unique prefixes like every other session endpoint
+        # (detail, messages, rename, export all do). A session that no longer
+        # exists is an idempotent success: DELETE's contract is "ensure it's
+        # gone", and the desktop optimistically removes the row then RESTORES it
+        # on any error — so a 404 on an already-absent row resurrected a ghost
+        # row and surfaced "session not found". /goal + auto-compression churn
+        # leaves transient empty rows (reaped by empty-session hygiene) that
+        # race the sidebar snapshot, which is exactly when this fired. Mirrors
+        # the bulk-delete endpoint, which already treats ghost ids as success.
+        sid = db.resolve_session_id(session_id)
+        if not sid:
+            return {"ok": True, "already_absent": True}
+        db.delete_session(sid)
+        return {"ok": True}
 
-    return await asyncio.to_thread(_delete)
+    return await _run_session_db(profile, _delete)
 
 
 class SessionRename(BaseModel):
@@ -10193,8 +10186,7 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
     restores the session. Either field may be omitted. ``profile`` targets
     another profile's session.
     """
-    db = _open_session_db_for_profile(body.profile)
-    try:
+    def _rename(db):
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -10215,25 +10207,23 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         if body.archived is not None:
             result["archived"] = bool(body.archived)
         return result
-    finally:
-        db.close()
+
+    return await _run_session_db(body.profile, _rename)
 
 
 @app.get("/api/sessions/{session_id}/export")
 async def export_session_endpoint(session_id: str, profile: Optional[str] = None):
     """Export a single session (metadata + messages) as JSON."""
-    def _export():
-        db = _open_session_db_for_profile(profile)
-        try:
-            sid = db.resolve_session_id(session_id)
-            return db.export_session(sid) if sid else None
-        finally:
-            db.close()
+    def _export(db):
+        sid = db.resolve_session_id(session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+        data = db.export_session(sid)
+        if data is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return data
 
-    data = await asyncio.to_thread(_export)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return data
+    return await _run_session_db(profile, _export)
 
 
 class SessionPrune(BaseModel):
@@ -10264,7 +10254,8 @@ class SessionPrune(BaseModel):
     dry_run: bool = False
 
 
-def _prune_sessions(body: SessionPrune):
+@app.post("/api/sessions/prune")
+async def prune_sessions_endpoint(body: SessionPrune):
     """Delete ended sessions matching filters (mirrors `hermes sessions prune`)."""
     has_window = (
         body.started_before is not None or body.started_after is not None
@@ -10288,9 +10279,9 @@ def _prune_sessions(body: SessionPrune):
     _effective_older_than = body.older_than_days
     if has_window or (_attr_filters_set and not _older_than_explicit):
         _effective_older_than = None
-    profile_home = _cron_profile_home(body.profile)[1] if body.profile else get_hermes_home()
-    db = _open_session_db_for_profile(body.profile)
-    try:
+
+    def _prune(db):
+        profile_home = _cron_profile_home(body.profile)[1] if body.profile else get_hermes_home()
         filters = dict(
             older_than_days=_effective_older_than,
             source=(body.source or None),
@@ -10342,14 +10333,8 @@ def _prune_sessions(body: SessionPrune):
             **filters,
         )
         return {"ok": True, "removed": removed}
-    finally:
-        db.close()
 
-
-@app.post("/api/sessions/prune")
-async def prune_sessions_endpoint(body: SessionPrune):
-    """Delete ended sessions matching filters without blocking the event loop."""
-    return await asyncio.to_thread(_prune_sessions, body)
+    return await _run_session_db(body.profile, _prune)
 
 
 # ---------------------------------------------------------------------------
@@ -10699,8 +10684,7 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
     except (TypeError, ValueError):
         limit_n = 20
 
-    db = _open_session_db_for_profile(selected)
-    try:
+    def _runs(db):
         runs = db.list_cron_job_runs(canonical, limit=limit_n, offset=0)
         now = time.time()
         for s in runs:
@@ -10712,6 +10696,10 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
             if selected:
                 s["profile"] = selected
         return {"runs": runs, "limit": limit_n}
+
+    db = _open_session_db_for_profile(selected)
+    try:
+        return _runs(db)
     finally:
         db.close()
 
@@ -14516,11 +14504,11 @@ def _aux_task_summary(aux_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return result
 
 
-def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
-    from agent.insights import InsightsEngine
+@app.get("/api/analytics/usage")
+async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
+    def _usage(db):
+        from agent.insights import InsightsEngine
 
-    db = _open_session_db_for_profile(profile)
-    try:
         cutoff = time.time() - (days * 86400)
         cur = db._conn.execute("""
             SELECT date(started_at, 'unixepoch') as day,
@@ -14593,23 +14581,18 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
             # the desktop Capabilities page aggregates these per toolset.
             "tools": insights_report.get("tools", []),
         }
-    finally:
-        db.close()
+
+    return await _run_session_db(profile, _usage)
 
 
-@app.get("/api/analytics/usage")
-async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
-    return await asyncio.to_thread(_get_usage_analytics, days, profile)
-
-
-def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
+@app.get("/api/analytics/models")
+async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
     """Rich per-model analytics for the Models dashboard page.
 
     Returns token/cost/session breakdown per model plus capability metadata
     from models.dev (context window, vision, tools, reasoning, etc.).
     """
-    db = _open_session_db_for_profile(profile)
-    try:
+    def _models(db):
         cutoff = time.time() - (days * 86400)
 
         cur = db._conn.execute("""
@@ -14774,14 +14757,8 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
             "totals": totals,
             "period_days": days,
         }
-    finally:
-        db.close()
 
-
-@app.get("/api/analytics/models")
-async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
-    """Return model analytics without blocking the serving event loop."""
-    return await asyncio.to_thread(_get_models_analytics, days, profile)
+    return await _run_session_db(profile, _models)
 
 
 # ---------------------------------------------------------------------------

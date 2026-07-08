@@ -1,73 +1,82 @@
-import ast
 import asyncio
+import contextvars
 import threading
-from pathlib import Path
+
+import pytest
 
 from hermes_cli import web_server
 
 
-TARGET_HANDLERS = {
-    "bulk_delete_sessions_endpoint",
-    "count_empty_sessions_endpoint",
-    "delete_empty_sessions_endpoint",
-    "get_session_latest_descendant",
-    "get_session_messages",
-    "delete_session_endpoint",
-    "export_session_endpoint",
-    "prune_sessions_endpoint",
-    "get_usage_analytics",
-    "get_models_analytics",
-}
+def test_sessiondb_runner_owns_connection_on_worker_and_preserves_context(monkeypatch):
+    loop_thread = threading.get_ident()
+    request_marker = contextvars.ContextVar("request_marker", default="missing")
+    request_marker.set("dashboard-request")
+    events: list[tuple[str, int, str]] = []
+
+    class _DB:
+        def close(self):
+            events.append(("close", threading.get_ident(), request_marker.get()))
+
+    def _open(profile=None):
+        assert profile == "work"
+        events.append(("open", threading.get_ident(), request_marker.get()))
+        return _DB()
+
+    def _operation(db):
+        assert isinstance(db, _DB)
+        events.append(("work", threading.get_ident(), request_marker.get()))
+        return "done"
+
+    monkeypatch.setattr(web_server, "_open_session_db_for_profile", _open)
+
+    result = asyncio.run(web_server._run_session_db("work", _operation))
+
+    assert result == "done"
+    assert [event[0] for event in events] == ["open", "work", "close"]
+    worker_threads = {event[1] for event in events}
+    assert len(worker_threads) == 1
+    assert loop_thread not in worker_threads
+    assert {event[2] for event in events} == {"dashboard-request"}
 
 
-def _call_name(call: ast.Call) -> str | None:
-    if isinstance(call.func, ast.Name):
-        return call.func.id
-    if isinstance(call.func, ast.Attribute):
-        return call.func.attr
-    return None
+@pytest.mark.parametrize(
+    "invoke",
+    [
+        lambda: web_server.get_sessions(limit=1),
+        lambda: web_server.search_sessions(q="needle", limit=1),
+        lambda: web_server.bulk_delete_sessions_endpoint(
+            web_server.BulkDeleteSessions(ids=["one"])
+        ),
+        lambda: web_server.count_empty_sessions_endpoint(),
+        lambda: web_server.delete_empty_sessions_endpoint(),
+        lambda: web_server.get_session_stats(),
+        lambda: web_server.get_session_detail("session"),
+        lambda: web_server.get_session_latest_descendant("session"),
+        lambda: web_server.get_session_messages("session"),
+        lambda: web_server.delete_session_endpoint("session"),
+        lambda: web_server.rename_session_endpoint(
+            "session", web_server.SessionRename(title="renamed")
+        ),
+        lambda: web_server.export_session_endpoint("session"),
+        lambda: web_server.prune_sessions_endpoint(
+            web_server.SessionPrune(dry_run=True)
+        ),
+        lambda: web_server.get_usage_analytics(),
+        lambda: web_server.get_models_analytics(),
+    ],
+)
+def test_sessiondb_handlers_route_through_shared_runner(monkeypatch, invoke):
+    sentinel = object()
+    calls = []
 
+    async def _run(profile, operation):
+        calls.append((profile, operation))
+        return sentinel
 
-def test_sessiondb_handlers_open_connections_inside_executor_helpers():
-    tree = ast.parse(Path(web_server.__file__).read_text(encoding="utf-8"))
-    handlers = {
-        node.name: node
-        for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef) and node.name in TARGET_HANDLERS
-    }
-    top_level_helpers = {
-        node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
-    }
-    assert handlers.keys() == TARGET_HANDLERS
+    monkeypatch.setattr(web_server, "_run_session_db", _run)
 
-    for name, handler in handlers.items():
-        helpers = {
-            **top_level_helpers,
-            **{
-                node.name: node
-                for node in handler.body
-                if isinstance(node, ast.FunctionDef)
-            },
-        }
-        offloaded = {
-            arg.id
-            for node in ast.walk(handler)
-            if isinstance(node, ast.Call)
-            and _call_name(node) == "to_thread"
-            for arg in node.args[:1]
-            if isinstance(arg, ast.Name)
-        }
-        db_open_owners = {
-            helper_name
-            for helper_name, helper in helpers.items()
-            if helper_name in offloaded
-            and any(
-                isinstance(node, ast.Call)
-                and _call_name(node) == "_open_session_db_for_profile"
-                for node in ast.walk(helper)
-            )
-        }
-        assert db_open_owners, f"{name} does not offload SessionDB open + work"
+    assert asyncio.run(invoke()) is sentinel
+    assert len(calls) == 1
 
 
 def test_bulk_delete_sessiondb_work_runs_off_event_loop(monkeypatch):

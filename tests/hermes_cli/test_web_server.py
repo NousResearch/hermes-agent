@@ -1259,6 +1259,75 @@ class TestWebServerEndpoints:
         full_rows = [s for s in full.json()["sessions"] if s["id"] == "lean-profiles-row"]
         assert full_rows and full_rows[0]["system_prompt"].startswith("# SOUL.md")
 
+    @pytest.mark.asyncio
+    async def test_get_sessions_does_not_block_event_loop(self, monkeypatch):
+        """Large SessionDB list/search work must run off the FastAPI loop."""
+        import threading
+
+        from hermes_cli import web_server as ws
+
+        loop_thread = threading.get_ident()
+        db_started = threading.Event()
+        release_db = threading.Event()
+        closed = threading.Event()
+        worker_threads: list[int] = []
+
+        class _BlockingDB:
+            def __init__(self, *args, **kwargs):
+                worker_threads.append(threading.get_ident())
+
+            def list_sessions_rich(self, **kwargs):
+                worker_threads.append(threading.get_ident())
+                db_started.set()
+                release_db.wait(timeout=5)
+                return []
+
+            def session_count(self, **kwargs):
+                worker_threads.append(threading.get_ident())
+                return 0
+
+            def close(self):
+                worker_threads.append(threading.get_ident())
+                closed.set()
+
+        monkeypatch.setattr("hermes_state.SessionDB", _BlockingDB)
+
+        ticks = {"n": 0}
+        stop = False
+
+        async def _heartbeat():
+            while not stop:
+                ticks["n"] += 1
+                await asyncio.sleep(0.005)
+
+        hb = asyncio.create_task(_heartbeat())
+        task = asyncio.create_task(ws.get_sessions(limit=5, offset=0))
+        try:
+            for _ in range(200):
+                if db_started.is_set():
+                    break
+                await asyncio.sleep(0.005)
+            assert db_started.is_set(), "blocking SessionDB call never started"
+
+            ticks_before = ticks["n"]
+            await asyncio.sleep(0.1)
+            ticks_while_blocked = ticks["n"] - ticks_before
+
+            release_db.set()
+            result = await task
+        finally:
+            stop = True
+            release_db.set()
+            await hb
+
+        assert result == {"sessions": [], "total": 0, "limit": 5, "offset": 0}
+        assert closed.is_set()
+        assert ticks_while_blocked >= 5, (
+            "event loop was blocked by synchronous SessionDB work"
+        )
+        assert worker_threads
+        assert all(thread_id != loop_thread for thread_id in worker_threads)
+
     def test_rename_session_updates_title(self):
         """PATCH /api/sessions/{id} renames a session (regression: the route
         was missing entirely, so the desktop rename dialog got a 405)."""

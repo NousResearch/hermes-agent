@@ -4518,7 +4518,15 @@ def resolve_provider_client(
         custom_base = ""
         custom_key = ""
         if explicit_base_url:
-            custom_base = _to_openai_base_url(explicit_base_url).strip()
+            # When api_mode is anthropic_messages, preserve the raw base_url
+            # (e.g. .../apps/anthropic) instead of transforming it with
+            # _to_openai_base_url(). The Anthropic SDK appends /v1/messages
+            # to the base_url it receives, so stripping /anthropic here would
+            # produce a non-existent path like /apps/v1/messages (#fix-aux-vision).
+            if api_mode == "anthropic_messages":
+                custom_base = explicit_base_url.strip().rstrip("/")
+            else:
+                custom_base = _to_openai_base_url(explicit_base_url).strip()
             custom_key = (
                 (explicit_api_key or "").strip()
                 or os.getenv("OPENAI_API_KEY", "").strip()

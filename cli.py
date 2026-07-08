@@ -5050,10 +5050,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             duration_label = snapshot["duration"]
 
             yolo_active = self._is_session_yolo_active()
+            auto_active = self._is_session_auto_active()
             if width < 52:
                 text = f"⚕ {snapshot['model_short']} · {duration_label}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
+                elif auto_active:
+                    text += " · 🤖 AUTO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
@@ -5072,6 +5075,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 parts.append(duration_label)
                 if yolo_active:
                     parts.append("⚠ YOLO")
+                elif auto_active:
+                    parts.append("🤖 AUTO")
                 return self._trim_status_bar_text(" · ".join(parts), width)
 
             if snapshot["context_length"]:
@@ -5103,6 +5108,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 parts.append(idle_since)
             if yolo_active:
                 parts.append("⚠ YOLO")
+            elif auto_active:
+                parts.append("🤖 AUTO")
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
@@ -5120,6 +5127,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
             yolo_active = self._is_session_yolo_active()
+            auto_active = self._is_session_auto_active()
 
             if width < 52:
                 frags = [
@@ -5131,6 +5139,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if yolo_active:
                     frags.append(("class:status-bar-dim", " · "))
                     frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                elif auto_active:
+                    frags.append(("class:status-bar-dim", " · "))
+                    frags.append(("class:status-bar-auto", "🤖 AUTO"))
                 frags.append(("class:status-bar", " "))
             else:
                 percent = snapshot["context_percent"]
@@ -5165,6 +5176,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                    elif auto_active:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append(("class:status-bar-auto", "🤖 AUTO"))
                     frags.append(("class:status-bar", " "))
                 else:
                     if snapshot["context_length"]:
@@ -5218,6 +5232,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                    elif auto_active:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-auto", "🤖 AUTO"))
                     frags.append(("class:status-bar", " "))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
@@ -8629,6 +8646,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_footer_command(cmd_original)
         elif canonical == "yolo":
             self._toggle_yolo()
+        elif canonical == "auto":
+            self._toggle_auto_mode()
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
         elif canonical == "fast":
@@ -9342,7 +9361,78 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 " — all commands auto-approved. Use with caution."
             )
 
+    def _transfer_session_auto(self, old_session_id: str, new_session_id: str) -> None:
+        """Move Auto Mode state from an old session key to a new one.
 
+        Mirrors ``_transfer_session_yolo`` — called whenever ``self.session_id``
+        is reassigned mid-run (``/branch``, auto-compression rotation) so an
+        ``/auto ON`` toggle doesn't silently revert on the session's next turn.
+        No-op when Auto Mode wasn't enabled or when the ids match.
+        """
+        if not old_session_id or not new_session_id or old_session_id == new_session_id:
+            return
+        try:
+            from tools.approval import (
+                disable_session_auto,
+                enable_session_auto,
+                is_session_auto_enabled,
+            )
+        except Exception:
+            return
+        if is_session_auto_enabled(old_session_id):
+            enable_session_auto(new_session_id)
+            disable_session_auto(old_session_id)
+
+    def _is_session_auto_active(self) -> bool:
+        """Whether Auto Mode is currently enabled for this CLI session.
+
+        Reads from ``tools.approval._session_auto`` the same way
+        ``_is_session_yolo_active`` reads ``_session_yolo``, so the status bar
+        reflects the actual toggle state.
+        """
+        try:
+            from tools.approval import is_session_auto_enabled
+        except Exception:
+            return False
+        session_key = getattr(self, "session_id", None) or "default"
+        return is_session_auto_enabled(session_key)
+
+    def _toggle_auto_mode(self):
+        """Toggle Auto Mode — a safety classifier decides approve/decline per
+        flagged command instead of prompting you.
+
+        Distinct from ``/yolo``: YOLO bypasses approval unconditionally with
+        no judgment call. Auto Mode still evaluates every flagged command
+        (via ``tools.approval._auto_mode_classify``) — it just never blocks
+        on an interactive prompt to get that judgment, which is what makes it
+        suitable for long, unattended sessions. Also distinct from the
+        persistent ``approvals.mode: smart`` config value: this is a runtime,
+        per-session toggle (mirrors ``/yolo``'s session-scoped bypass) with a
+        two-way approve/deny verdict — there is no escalate-to-manual-prompt
+        fallback, since Auto Mode exists specifically for when no human is
+        present to escalate to.
+        """
+        from hermes_cli.colors import Colors as _Colors
+        from tools.approval import (
+            disable_session_auto,
+            enable_session_auto,
+            is_session_auto_enabled,
+        )
+
+        session_key = self.session_id or "default"
+        if is_session_auto_enabled(session_key):
+            disable_session_auto(session_key)
+            _cprint(
+                f"  ⚠ Auto Mode {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}"
+                " — flagged commands will require approval."
+            )
+        else:
+            enable_session_auto(session_key)
+            _cprint(
+                f"  🤖 Auto Mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
+                " — flagged commands are approved or declined automatically"
+                " by a safety classifier. No prompts; use with awareness."
+            )
 
 
     def _on_reasoning(self, reasoning_text: str):
@@ -12457,6 +12547,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 and self.agent.session_id != self.session_id
             ):
                 self._transfer_session_yolo(self.session_id, self.agent.session_id)
+                self._transfer_session_auto(self.session_id, self.agent.session_id)
                 self.session_id = self.agent.session_id
                 self._pending_title = None
 
@@ -14886,6 +14977,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             'status-bar-bad': 'bg:#1a1a2e #FF8C00 bold',
             'status-bar-critical': 'bg:#1a1a2e #FF6B6B bold',
             'status-bar-yolo': 'bg:#1a1a2e #FF4444 bold',
+            'status-bar-auto': 'bg:#1a1a2e #8FBC8F bold',
             # Bronze horizontal rules around the input area
             'input-rule': '#CD7F32',
             # Clipboard image attachment badges

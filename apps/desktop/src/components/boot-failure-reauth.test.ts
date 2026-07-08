@@ -82,9 +82,9 @@ describe('deriveProviderShape', () => {
 })
 
 describe('signInLabel', () => {
-  it('password gateway gets the plain "Sign in to remote gateway" copy', () => {
+  it('password backend gets the plain "Sign in to remote backend" copy', () => {
     expect(signInLabel({ url: 'x', isPassword: true, providerLabel: 'Username & Password' })).toBe(
-      'Sign in to remote gateway'
+      'Sign in to remote backend'
     )
   })
 

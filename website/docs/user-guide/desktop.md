@@ -151,8 +151,8 @@ The packaged app ships the Electron shell and a native React chat surface. On fi
 
 By default the app starts and manages its own **local** backend. You can instead point it at a Hermes backend running on another machine — a VPS, a home server, or a Mini behind Tailscale.
 
-:::info The remote backend is a running `hermes serve` process
-"Remote backend" means a **`hermes serve`** server running on the remote machine — that is the process the desktop app connects to. Nothing in this section works unless that backend is actually up and reachable. The desktop app does not start it for you; you (or a `systemd` service) keep `hermes serve` running on the remote host, and the app attaches to it. If you also use messaging channels (Telegram, Discord, etc.), the **gateway** is a *separate* long-running process you start independently — see the note after the setup steps.
+:::info The remote backend is the dashboard server, usually headless
+"Remote backend" means a **`hermes serve`** server running on the remote machine — the same FastAPI/WebSocket server that `hermes dashboard` runs, but headless and without opening a browser UI. Nothing in this section works unless that backend is actually up and reachable. The desktop app does not start it for you; you (or a `systemd` service) keep `hermes serve` running on the remote host, and the app attaches to it. If you also use messaging channels (Telegram, Discord, etc.), the **gateway** is a *separate* long-running process you start independently — see [Messaging](./messaging/index.md).
 :::
 
 The connection has two halves: on the backend you protect it with an **auth provider**, and in the app you enter the backend's URL and sign in. Binding the backend to a non-loopback address automatically engages its auth gate, and the provider you configure is what lets the desktop app through.
@@ -180,8 +180,9 @@ HERMES_DASHBOARD_BASIC_AUTH_SECRET=$(openssl rand -base64 32)
 EOF
 chmod 600 ~/.hermes/.env
 
-# 2. Run the backend bound to a reachable address. The non-loopback bind
-#    engages the auth gate; the username/password provider handles login.
+# 2. Run the headless dashboard backend bound to a reachable address.
+#    The non-loopback bind engages the auth gate; the username/password
+#    provider handles login.
 hermes serve --host 0.0.0.0 --port 9119
 ```
 
@@ -199,7 +200,7 @@ The backend reads and writes your `.env` (API keys, secrets) and can run agent c
 
 ### In the app
 
-**Settings → Gateway → Remote gateway:**
+**Settings → Gateway → Remote dashboard backend:**
 
 1. **Remote URL** — `http://<backend-host>:9119` (path prefixes like `/hermes` work if you front it with a reverse proxy)
 2. **Sign in** — the app detects which provider the backend advertises and adapts the button. For a username/password backend it shows a **Sign in** button that opens a credential form (enter the credentials from step 1). For an OAuth backend it shows **Sign in with `<provider>`** (e.g. *Sign in with Nous Research*), which runs the provider's browser sign-in. Either way the app ends up with an authenticated session against the backend.
@@ -208,7 +209,7 @@ The backend reads and writes your `.env` (API keys, secrets) and can run agent c
 You can also set the backend URL without the UI via the `HERMES_DESKTOP_REMOTE_URL` environment variable before launching the app (it overrides the in-app setting); you still sign in from the Gateway settings panel.
 
 :::note Per-profile remote hosts
-The remote gateway host is configured per [profile](./profiles.md), so each profile can point at its own remote backend (or stay on its local one). Switching profiles switches which remote host the app connects to.
+The remote dashboard backend host is configured per [profile](./profiles.md), so each profile can point at its own remote backend (or stay on its local one). Switching profiles switches which remote host the app connects to.
 :::
 
 ### Troubleshooting

@@ -8,7 +8,7 @@ import type { DesktopAuthProvider, DesktopConnectionConfig } from '@/global'
 export interface RemoteReauth {
   url: string
   // True when every advertised provider is username/password — drives the
-  // button copy ("Sign in to remote gateway" vs "Sign in with <provider>"),
+  // button copy ("Sign in to remote backend" vs "Sign in with <provider>"),
   // mirroring the gateway-settings page. Probe is best-effort.
   isPassword: boolean
   providerLabel: string
@@ -22,7 +22,7 @@ interface SignInCopy {
 
 const DEFAULT_SIGN_IN_COPY: SignInCopy = {
   identityProvider: 'your identity provider',
-  remoteGateway: 'Sign in to remote gateway',
+  remoteGateway: 'Sign in to remote backend',
   withProvider: provider => `Sign in with ${provider}`
 }
 

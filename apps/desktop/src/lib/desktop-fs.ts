@@ -156,7 +156,7 @@ export async function copyTextToClipboard(text: string): Promise<void> {
 }
 
 // Working-tree-vs-HEAD diff for one file. Empty when unchanged / not a repo.
-// Remote gateway → backend git (/api/git/file-diff); local → Electron git.
+// Remote dashboard backend → backend git (/api/git/file-diff); local → Electron git.
 export async function desktopFileDiff(repoRoot: string, filePath: string): Promise<string> {
   if (isDesktopFsRemoteMode()) {
     const result = await remoteFsApi<{ diff: string }>(

@@ -16,7 +16,7 @@ import { deriveProviderShape, isRemoteReauthFailure, signInLabel } from './boot-
 
 type BusyAction = 'local' | 'repair' | 'retry' | 'signin' | null
 
-// A remote gateway whose access cookie has lapsed (e.g. the dashboard
+// A remote dashboard backend whose access cookie has lapsed (e.g. the dashboard
 // restarted on the remote box) boots into this overlay with a reauth-shaped
 // error. The local-recovery buttons (Retry resets the local bootstrap latch;
 // Repair re-runs the installer) are no-ops for that case — the only fix is to
@@ -26,7 +26,7 @@ type BusyAction = 'local' | 'repair' | 'retry' | 'signin' | null
 // Recovery surface for a hard boot failure (gateway never came up, backend
 // exited during startup, bootstrap latched, …). Without this the app shell
 // renders dead — "gateway offline", no composer, only a toast — with no way
-// to retry, repair the install, switch the gateway, or find the logs.
+// to retry, repair the install, switch the backend, or find the logs.
 export function BootFailureOverlay() {
   const boot = useStore($desktopBoot)
   const onboarding = useStore($desktopOnboarding)
@@ -53,7 +53,7 @@ export function BootFailureOverlay() {
       .catch(() => undefined)
   }, [visible])
 
-  // Resolve whether this boot failure is a remote-gateway reauth so we can
+  // Resolve whether this boot failure is a remote-backend reauth so we can
   // offer the actionable "Sign in" path instead of the local-only recovery
   // buttons. Runs whenever the overlay becomes visible.
   useEffect(() => {

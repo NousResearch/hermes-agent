@@ -522,6 +522,40 @@ class TestMergeCommand:
                    for m in session_db.get_messages_as_conversation("target_b"))
 
 
+    @pytest.mark.asyncio
+    async def test_merge_ledger_rolls_back_on_append_failure(self, session_db):
+        """If the fold append fails, the ledger entry is rolled back so a retry works."""
+        runner = self._runner_with_summary(session_db, adapter=None)
+        _seed_session(session_db, "target_sess", title="Target")
+        _seed_session(session_db, "current_sess", title="Here")
+        source = SessionSource(platform=Platform.TELEGRAM, user_id="u", chat_id="c",
+                               user_name="t", chat_type="dm")
+        current = _entry(build_session_key(source), "current_sess", source)
+        runner.session_store.get_or_create_session.return_value = current
+        runner.session_store.load_transcript.return_value = [{"role": "user", "content": "x"}]
+        runner.session_store.lookup_by_session_id.return_value = None
+
+        # Make the first append raise, then subsequent ones succeed.
+        real_append = session_db.append_message
+        calls = {"n": 0}
+        def flaky_append(*a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("boom")
+            return real_append(*a, **k)
+        session_db.append_message = flaky_append
+
+        first = await runner._handle_merge_command(_event("/merge Target", source))
+        assert "failed" in first.lower()
+        # Ledger must NOT record it (rolled back) — a retry is allowed and succeeds.
+        assert not await runner._merge_already_done("current_sess", "target_sess")
+        second = await runner._handle_merge_command(_event("/merge Target", source))
+        assert "merged into" in second.lower()
+        folds = [m for m in session_db.get_messages_as_conversation("target_sess")
+                 if "MERGED SESSION" in str(m.get("content", ""))]
+        assert len(folds) == 1
+
+
 class TestMergeCommandDef:
 
     def test_merge_in_registry_gateway_only(self):

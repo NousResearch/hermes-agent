@@ -4202,6 +4202,30 @@ class GatewaySlashCommandsMixin:
         except Exception as exc:
             logger.debug("merge: could not record merge ledger: %s", exc)
 
+    async def _unrecord_merge_done(self, source_session_id, target_id) -> None:
+        """Remove ``target_id`` from the source's ledger (rollback on failed fold)."""
+        try:
+            row = await self._session_db.get_session(source_session_id)
+            mc = (row or {}).get("model_config")
+            if isinstance(mc, str) and mc:
+                import json as _json
+                try:
+                    mc = _json.loads(mc)
+                except Exception:
+                    return
+            if not isinstance(mc, dict):
+                return
+            merged = mc.get("_merged_into")
+            if not isinstance(merged, list):
+                return
+            new = [x for x in merged if str(x) != str(target_id)]
+            if new != merged:
+                mc["_merged_into"] = new
+                import json as _json
+                await self._session_db.update_session_meta(source_session_id, _json.dumps(mc))
+        except Exception as exc:
+            logger.debug("merge: could not roll back merge ledger: %s", exc)
+
     async def _handle_merge_command(self, event: MessageEvent) -> str:
         """Handle /merge [name] — fold a summary of THIS session into a target.
 
@@ -4322,6 +4346,12 @@ class GatewaySlashCommandsMixin:
             return t("gateway.merge.no_summary")
 
         # --- Layer 1: fold ONE labeled user-role message into the TARGET. ---
+        # Record the (source → target) merge in the durable ledger BEFORE the
+        # append (Greptile P1 follow-up): this closes the check-then-act window
+        # so an overlapping/retried call can't both pass _merge_already_done and
+        # both append. If the append then fails, roll the ledger entry back so a
+        # genuinely-failed merge stays retryable.
+        await self._record_merge_done(source_session_id, target_id)
         fold_key = "gateway.merge.fold_body_thread" if is_thread_form else "gateway.merge.fold_body"
         fold_text = t(fold_key, title=source_title, summary=summary)
         try:
@@ -4332,10 +4362,10 @@ class GatewaySlashCommandsMixin:
             )
         except Exception as exc:
             logger.error("merge: failed to append fold to target %s: %s", target_id, exc)
+            # Roll back the ledger entry — the fold never landed, so a retry must
+            # be allowed to try again rather than being wrongly refused.
+            await self._unrecord_merge_done(source_session_id, target_id)
             return t("gateway.merge.fold_failed", error=exc)
-
-        # Record this (source → target) merge so a retry/reopen is a no-op.
-        await self._record_merge_done(source_session_id, target_id)
 
         # --- Layer 2: durable .md record (self-purging). ---
         record_path = self._write_merge_record(

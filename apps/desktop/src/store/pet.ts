@@ -39,6 +39,40 @@ export interface PetInfo {
   stateRows?: string[]
 }
 
+export interface PetInfoMeta {
+  enabled: boolean
+  slug?: string
+  displayName?: string
+  scale?: number
+  spritesheetRevision?: string
+}
+
+export function hasPetSpriteForMeta(info: PetInfo, meta: PetInfoMeta): boolean {
+  return (
+    meta.enabled &&
+    info.enabled &&
+    Boolean(info.spritesheetBase64) &&
+    info.slug === meta.slug &&
+    Boolean(info.spritesheetRevision) &&
+    info.spritesheetRevision === meta.spritesheetRevision
+  )
+}
+
+export function mergePetInfoMeta(info: PetInfo, meta: PetInfoMeta): PetInfo {
+  if (!meta.enabled) {
+    return { enabled: false }
+  }
+
+  return {
+    ...info,
+    enabled: true,
+    slug: meta.slug,
+    displayName: meta.displayName,
+    scale: meta.scale,
+    spritesheetRevision: meta.spritesheetRevision
+  }
+}
+
 export interface PetActivity {
   busy?: boolean
   awaitingInput?: boolean

@@ -82,9 +82,10 @@ def _ensure_utf8():
             pass
 
     # Only nudge child processes toward UTF-8 when we actually detected a
-    # non-UTF-8 locale. On a healthy UTF-8 host children inherit UTF-8 from the
-    # locale already, so leave the environment untouched (minimal footprint).
-    if repaired:
+    # non-UTF-8 locale. Windows is the exception: a detached pythonw gateway can
+    # have no stdio streams to repair, yet still inherit a legacy ANSI locale
+    # such as GBK for subprocess pipe decoding unless children get UTF-8 mode.
+    if repaired or sys.platform == "win32":
         os.environ.setdefault("PYTHONUTF8", "1")
         os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 

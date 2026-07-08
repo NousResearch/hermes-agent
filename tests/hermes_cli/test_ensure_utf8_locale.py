@@ -177,3 +177,17 @@ def test_none_streams_do_not_raise(monkeypatch):
     monkeypatch.setattr(sys, "stdout", None, raising=False)
     monkeypatch.setattr(sys, "stderr", None, raising=False)
     hermes_cli._ensure_utf8()
+
+
+def test_windows_none_streams_still_set_child_utf8_env(monkeypatch):
+    """Detached pythonw has no streams to repair but still needs UTF-8 children."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "stdout", None, raising=False)
+    monkeypatch.setattr(sys, "stderr", None, raising=False)
+    monkeypatch.delenv("PYTHONUTF8", raising=False)
+    monkeypatch.delenv("PYTHONIOENCODING", raising=False)
+
+    hermes_cli._ensure_utf8()
+
+    assert os.environ.get("PYTHONUTF8") == "1"
+    assert os.environ.get("PYTHONIOENCODING") == "utf-8"

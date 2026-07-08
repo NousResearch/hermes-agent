@@ -38,6 +38,7 @@ import {
 } from '@/store/session'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { recordToolDiff } from '@/store/tool-diffs'
+import { reportInstallMethodWarning } from '@/store/updates'
 import { notifyWorkspaceChanged, toolMayMutateFiles } from '@/store/workspace-events'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -213,6 +214,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (typeof payload?.credential_warning === 'string' && payload.credential_warning) {
           requestDesktopOnboarding(payload.credential_warning)
+        }
+
+        if (apply) {
+          reportInstallMethodWarning(payload?.install_warning)
         }
 
         void refreshHermesConfig()

@@ -3221,6 +3221,18 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "profile_name": _current_profile_name(),
     }
     try:
+        from hermes_cli.config import (
+            detect_install_method,
+            format_unsupported_install_warning,
+            is_unsupported_install_method,
+        )
+
+        _install_method = detect_install_method()
+        if is_unsupported_install_method(_install_method):
+            info["install_warning"] = format_unsupported_install_warning(_install_method)
+    except Exception:
+        pass
+    try:
         from hermes_cli import __version__, __release_date__
 
         info["version"] = __version__

@@ -3134,18 +3134,21 @@ def run_conversation(
 
                 # Eager fallback for rate-limit errors (429 or quota exhaustion)
                 # and transport errors (connection failure / timeout / provider
-                # overloaded).  Rate limits and billing: switch immediately —
+                # overloaded).  Rate limits, billing, and overload: switch immediately —
                 # the primary provider won't recover within the retry window.
-                # Transport errors: allow 1 retry first (transient hiccups
+                # (Overload errors (529) are treated like rate limits: Anthropic's
+                # own SDK fails over immediately rather than retrying.  The retry
+                # budget is for transient hiccups, not sustained overload.)
+                # Timeout errors: allow 1 retry first (transient network issues
                 # recover), then fall back if the provider is truly unreachable.
                 is_rate_limited = classified.reason in {
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
                     FailoverReason.upstream_rate_limit,
+                    FailoverReason.overloaded,
                 }
                 _is_transport_failure = classified.reason in {
                     FailoverReason.timeout,
-                    FailoverReason.overloaded,
                 }
                 # Z.AI Coding Plan GLM-5.2 overload 429s classify as
                 # `overloaded` (to spare the credential pool), but `overloaded`

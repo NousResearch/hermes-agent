@@ -51,6 +51,10 @@ _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
 # narrower non-rate-limit case.  See issue #24996.
 _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 
+# Time to suppress a fallback entry that fails once (e.g., transient
+# network issue).  After this TTL, the entry is retried.  See issue #60761.
+_FALLBACK_UNAVAILABLE_TTL_S = 300.0  # 5 minutes
+
 
 def _ra():
     """Lazy ``run_agent`` reference.
@@ -1272,11 +1276,20 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     fb_key = _fallback_entry_key(fb)
     unavailable = getattr(agent, "_unavailable_fallback_keys", None)
     if unavailable is None:
-        unavailable = set()
+        unavailable = {}  # {fb_key: suppressed_until_monotonic}
         agent._unavailable_fallback_keys = unavailable
-    if fb_key in unavailable:
-        logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
-        return agent._try_activate_fallback(reason)
+    # Check if entry is suppressed (TTL-based)
+    suppressed_until = unavailable.get(fb_key)
+    if suppressed_until is not None:
+        if time.monotonic() < suppressed_until:
+            logger.debug(
+                "Fallback skip: %s suppressed for %.1fs (ttl remaining)",
+                fb_key, suppressed_until - time.monotonic()
+            )
+            return agent._try_activate_fallback(reason)
+        else:
+            # TTL expired, clear entry
+            del unavailable[fb_key]
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
     if not fb_provider or not fb_model:
@@ -1284,12 +1297,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:
-        unavailable.add(fb_key)
+        unavailable[fb_key] = time.monotonic() + _FALLBACK_UNAVAILABLE_TTL_S
         logger.warning(
-            "Fallback skip: %s/%s is not locally usable (%s); suppressing for this session",
+            "Fallback skip: %s/%s is not locally usable (%s); suppressing for %.0fs",
             fb_provider,
             fb_model,
             local_skip_reason,
+            _FALLBACK_UNAVAILABLE_TTL_S,
         )
         return agent._try_activate_fallback(reason)
 
@@ -1348,7 +1362,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             logger.warning(
                 "Fallback to %s failed: provider not configured",
                 fb_provider)
-            unavailable.add(fb_key)
+            unavailable[fb_key] = time.monotonic() + _FALLBACK_UNAVAILABLE_TTL_S
             return agent._try_activate_fallback(reason)  # try next in chain
         try:
             from hermes_cli.model_normalize import normalize_model_for_provider
@@ -1556,7 +1570,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         return True
     except Exception as e:
         if fb_provider == "nous":
-            unavailable.add(fb_key)
+            unavailable[fb_key] = time.monotonic() + _FALLBACK_UNAVAILABLE_TTL_S
         logger.error("Failed to activate fallback %s: %s", fb_model, e)
         return agent._try_activate_fallback(reason)  # try next in chain
 

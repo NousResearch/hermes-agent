@@ -116,6 +116,75 @@ def estimate_request_context_tokens(api_payload: Any) -> int:
     return _chars(api_payload) // 4
 
 
+def _usage_token_value(usage: Any, *names: str) -> int | None:
+    for name in names:
+        try:
+            value = getattr(usage, name)
+        except Exception:
+            value = None
+        if value is None and isinstance(usage, dict):
+            value = usage.get(name)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _response_usage(response: Any) -> dict[str, int | None]:
+    usage = getattr(response, "usage", None)
+    if usage is None and isinstance(response, dict):
+        usage = response.get("usage")
+    return {
+        "context_units": _usage_token_value(usage, "prompt_tokens", "input_tokens"),
+        "output_units": _usage_token_value(usage, "completion_tokens", "output_tokens"),
+        "total_units": _usage_token_value(usage, "total_tokens"),
+    }
+
+
+def _emit_model_call_event(
+    agent,
+    api_kwargs: dict,
+    *,
+    response: Any = None,
+    error: Any = None,
+    duration_ms: int = 0,
+    streaming: bool = False,
+    partial_response: bool = False,
+) -> None:
+    """Emit best-effort privacy-preserving telemetry for provider calls."""
+    try:
+        from hermes_telemetry import error_fingerprint, safe_emit_event, stable_hash
+
+        usage = _response_usage(response)
+        payload = {
+            "provider_hash": stable_hash(getattr(agent, "provider", None)),
+            "model_hash": stable_hash(api_kwargs.get("model") or getattr(agent, "model", None)),
+            "api_mode": str(getattr(agent, "api_mode", "unknown") or "unknown"),
+            "streaming": bool(streaming),
+            "partial_response": bool(partial_response),
+            "duration_ms": max(0, int(duration_ms)),
+            "estimated_context_tokens": estimate_request_context_tokens(api_kwargs),
+            "message_count": len(api_kwargs.get("messages") or []) if isinstance(api_kwargs.get("messages"), list) else None,
+            "input_count": len(api_kwargs.get("input") or []) if isinstance(api_kwargs.get("input"), list) else None,
+            "tool_count": len(api_kwargs.get("tools") or []) if isinstance(api_kwargs.get("tools"), list) else None,
+            "response_id_hash": stable_hash(getattr(response, "id", None) or (response.get("id") if isinstance(response, dict) else None)),
+            "error_type": type(error).__name__ if error is not None else None,
+            "error_fingerprint": error_fingerprint(error),
+            **usage,
+        }
+        safe_emit_event(
+            "model_call",
+            payload,
+            status="error" if error is not None else "ok",
+            source="agent.chat_completion_helpers",
+        )
+    except Exception as exc:  # pragma: no cover - telemetry must never break model calls
+        logger.debug("Failed to emit model telemetry: %s", exc)
+
+
 def _is_openai_codex_backend(agent) -> bool:
     base_url_lower = str(getattr(agent, "_base_url_lower", "") or "")
     base_url_hostname = str(getattr(agent, "_base_url_hostname", "") or "")
@@ -568,6 +637,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
         agent._codex_stream_last_progress_ts = None
 
     _call_start = time.time()
+    _model_call_start = time.monotonic()
     agent._touch_activity("waiting for non-streaming API response")
 
     t = threading.Thread(target=_call, daemon=True)
@@ -765,11 +835,25 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 pass
             raise InterruptedError("Agent interrupted during API call")
     if result["error"] is not None:
+        _emit_model_call_event(
+            agent,
+            api_kwargs,
+            error=result["error"],
+            duration_ms=int((time.monotonic() - _model_call_start) * 1000),
+            streaming=False,
+        )
         raise result["error"]
     # Success — clear the circuit breaker (#58962): the provider proved
     # responsive.  See the canonical comment block above ``_stale_streak()``.
     if result["response"] is not None:
         _reset_stale_streak(agent)
+    _emit_model_call_event(
+        agent,
+        api_kwargs,
+        response=result["response"],
+        duration_ms=int((time.monotonic() - _model_call_start) * 1000),
+        streaming=False,
+    )
     return result["response"]
 
 
@@ -1974,6 +2058,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     if should_use_direct_api_call(agent):
         return agent._interruptible_api_call(api_kwargs)
 
+    _model_call_start = time.monotonic()
+
     if agent.api_mode == "codex_responses":
         # Codex streams internally via _run_codex_stream. The main dispatch
         # in _interruptible_api_call already calls it; we just need to
@@ -2085,7 +2171,21 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         if agent._interrupt_requested:
             raise InterruptedError("Agent interrupted during Bedrock API call (post-worker)")
         if result["error"] is not None:
+            _emit_model_call_event(
+                agent,
+                api_kwargs,
+                error=result["error"],
+                duration_ms=int((time.monotonic() - _model_call_start) * 1000),
+                streaming=True,
+            )
             raise result["error"]
+        _emit_model_call_event(
+            agent,
+            api_kwargs,
+            response=result["response"],
+            duration_ms=int((time.monotonic() - _model_call_start) * 1000),
+            streaming=True,
+        )
         return result["response"]
 
     result = {"response": None, "error": None, "partial_tool_names": []}
@@ -3208,12 +3308,35 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # the provider is demonstrably responsive — clear the circuit
             # breaker (#58962) just like the full-success return below.
             _reset_stale_streak(agent)
+            _emit_model_call_event(
+                agent,
+                api_kwargs,
+                response=_stub,
+                error=result["error"],
+                duration_ms=int((time.monotonic() - _model_call_start) * 1000),
+                streaming=True,
+                partial_response=True,
+            )
             return _stub
+        _emit_model_call_event(
+            agent,
+            api_kwargs,
+            error=result["error"],
+            duration_ms=int((time.monotonic() - _model_call_start) * 1000),
+            streaming=True,
+        )
         raise result["error"]
     # Success — clear the circuit breaker (#58962): the provider proved
     # responsive.  See the canonical comment block above ``_stale_streak()``.
     if result["response"] is not None:
         _reset_stale_streak(agent)
+    _emit_model_call_event(
+        agent,
+        api_kwargs,
+        response=result["response"],
+        duration_ms=int((time.monotonic() - _model_call_start) * 1000),
+        streaming=True,
+    )
     return result["response"]
 
 # ── Provider fallback ──────────────────────────────────────────────────

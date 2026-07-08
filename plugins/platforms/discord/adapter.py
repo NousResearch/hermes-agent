@@ -5819,6 +5819,58 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return None
 
+    async def archive_thread(
+        self,
+        thread_id: str,
+        *,
+        lock: bool = True,
+    ) -> bool:
+        """Archive (and optionally lock) a Discord thread.
+
+        Used by ``/merge`` to close out a branched thread after folding its
+        summary into the parent session. Non-destructive: the thread and its
+        transcript persist and unarchive on the next message (or manually),
+        so the branched session stays resumable.
+
+        Returns ``True`` on success, ``False`` if the id doesn't resolve to a
+        thread or Discord rejects the edit.
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return False
+
+        try:
+            tid = int(thread_id)
+        except (TypeError, ValueError):
+            return False
+
+        try:
+            channel = self._client.get_channel(tid)
+            if channel is None:
+                channel = await self._client.fetch_channel(tid)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Archive thread: cannot resolve %s: %s",
+                self.name, thread_id, exc,
+            )
+            return False
+
+        if not isinstance(channel, getattr(discord, "Thread", ())):
+            logger.info(
+                "[%s] Archive thread: %s is not a thread; nothing to archive",
+                self.name, thread_id,
+            )
+            return False
+
+        try:
+            await channel.edit(archived=True, locked=lock, reason="Hermes /merge")
+            return True
+        except Exception as exc:
+            logger.warning(
+                "[%s] Archive thread: edit failed for %s: %s",
+                self.name, thread_id, exc,
+            )
+            return False
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",

@@ -2883,6 +2883,27 @@ class BasePlatformAdapter(ABC):
         """
         return None
 
+    async def archive_thread(
+        self,
+        thread_id: str,
+        *,
+        lock: bool = True,
+    ) -> bool:
+        """Archive (and optionally lock) a thread/topic.
+
+        Used by ``/merge`` to close out a branched thread after folding its
+        summary back into the parent session. Archiving is non-destructive —
+        the thread and its transcript remain and can be reopened.
+
+        Returns ``True`` when the thread was archived, ``False`` when the
+        platform doesn't support thread archival or the attempt failed.
+
+        Default implementation returns ``False`` — adapters that support
+        threads override this (Discord: ``Thread.edit(archived=True,
+        locked=lock)``).
+        """
+        return False
+
 
     async def edit_message(
         self,

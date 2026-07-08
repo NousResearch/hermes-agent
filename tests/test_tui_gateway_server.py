@@ -4727,6 +4727,25 @@ def test_session_info_includes_session_title(monkeypatch):
     assert info["title"] == "Dashboard title"
 
 
+def test_session_info_includes_install_warning_for_pip(monkeypatch):
+    """pip installs surface install_warning; git installs don't (issue: pip/brew deprecation)."""
+    monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda: "pip")
+
+    info = server._session_info(types.SimpleNamespace(tools=[], model="", provider=""))
+
+    assert "install_warning" in info
+    assert "pip" in info["install_warning"]
+    assert "platform-support" in info["install_warning"]
+
+
+def test_session_info_omits_install_warning_for_git(monkeypatch):
+    monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda: "git")
+
+    info = server._session_info(types.SimpleNamespace(tools=[], model="", provider=""))
+
+    assert "install_warning" not in info
+
+
 # ---------------------------------------------------------------------------
 # History-mutating commands must reject while session.running is True.
 # Without these guards, prompt.submit's post-run history write either

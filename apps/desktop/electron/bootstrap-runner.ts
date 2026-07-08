@@ -38,15 +38,10 @@ import fsp from 'node:fs/promises'
 import https from 'node:https'
 import path from 'node:path'
 
+import { hiddenWindowsChildOptions } from './windows-child-options'
+
 const IS_WINDOWS = process.platform === 'win32'
 
-function hiddenWindowsChildOptions(options = {}) {
-  if (!IS_WINDOWS || Object.prototype.hasOwnProperty.call(options, 'windowsHide')) {
-    return options
-  }
-
-  return { ...options, windowsHide: true }
-}
 
 const STAMP_COMMIT_RE = /^[0-9a-f]{7,40}$/i
 

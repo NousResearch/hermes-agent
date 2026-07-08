@@ -1,5 +1,4 @@
-type Method = string
-import type { ExecFileSyncOptionsWithStringEncoding } from 'node:child_process'
+
 import { execFile, execFileSync, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -30,6 +29,7 @@ import {
 } from 'electron'
 import nodePty from 'node-pty'
 
+import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
 import { canImportHermesCli, verifyHermesCli } from './backend-probes'
@@ -125,6 +125,7 @@ import {
   MIN_HEIGHT as WINDOW_MIN_HEIGHT,
   MIN_WIDTH as WINDOW_MIN_WIDTH
 } from './window-state'
+import { hiddenWindowsChildOptions } from './windows-child-options'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
@@ -152,13 +153,6 @@ const APP_ROOT = app.getAppPath()
 // Dev (`npm run dev`) and prod both load the esbuild output from dist/.
 const PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'electron-preload.js')
 
-function hiddenWindowsChildOptions(options: any = {}): ExecFileSyncOptionsWithStringEncoding {
-  if (!IS_WINDOWS || Object.prototype.hasOwnProperty.call(options, 'windowsHide')) {
-    return options as any
-  }
-
-  return { ...options, windowsHide: true } as any
-}
 
 // Remote displays (SSH X11 forwarding, VNC, RDP) make Chromium's GPU
 // compositor flicker — accelerated layers can't be presented cleanly over the
@@ -6169,7 +6163,7 @@ async function fetchJsonForProfile(profile, path) {
 }
 
 // Issue an arbitrary method against a profile's resolved backend, parsed JSON.
-async function requestJsonForProfile(profile: string, path: string, method: Method, body?: string) {
+async function requestJsonForProfile(profile: string, path: string, method: string, body?: string) {
   const conn = await ensureBackend(profile)
   const url = `${conn.baseUrl}${path}`
   const opts = { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }
@@ -6322,19 +6316,7 @@ function resetBootProgressForReconnect() {
 }
 
 function stopBackendChild(child) {
-  if (!child || child.killed) {
-    return
-  }
-
-  try {
-    if (IS_WINDOWS && Number.isInteger(child.pid)) {
-      forceKillProcessTree(child.pid)
-    } else {
-      child.kill('SIGTERM')
-    }
-  } catch {
-    // Already gone.
-  }
+  stopBackendChildImpl(child, { forceKillProcessTree, isWindows: IS_WINDOWS })
 }
 
 // Soft gateway-mode apply: tear down the primary without resetting boot UI or

@@ -4062,6 +4062,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_kwargs["message_thread_id"] = None
                 effective_thread_id = thread_kwargs.get("message_thread_id")
 
+                # Secretary Mode: pass business_connection_id so the message
+                # is sent as the business owner's personal account, not as
+                # the bot. Extracted from metadata (set by the gateway from
+                # the session source).
+                business_conn_id = (metadata or {}).get("business_connection_id")
+                business_kwargs = {}
+                if business_conn_id:
+                    business_kwargs["business_connection_id"] = business_conn_id
+
                 msg = None
                 for _send_attempt in range(3):
                     try:
@@ -4073,6 +4082,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
                                 **thread_kwargs,
+                                **business_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
                             )
@@ -4087,6 +4097,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
                                     **thread_kwargs,
+                                    **business_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
                                 )

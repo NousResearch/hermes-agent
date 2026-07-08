@@ -569,6 +569,20 @@ class ChatCompletionsTransport(ProviderTransport):
             for k, v in overrides.items():
                 if k == "extra_body" and isinstance(v, dict):
                     extra_body.update(v)
+                elif k == "system" and sanitized:
+                    # system prompt as a top-level kwarg is invalid for
+                    # OpenAI Chat Completions — it must be part of the
+                    # messages array. Merge it into the first message when
+                    # the caller accidentally forwards it via overrides.
+                    # (#60821 — SiliconFlow/OpenRouter custom endpoints)
+                    if sanitized[0].get("role") == "system":
+                        sanitized[0] = {
+                            **sanitized[0],
+                            "content": (sanitized[0].get("content") or "")
+                                       + "\n" + str(v) if sanitized[0].get("content") else str(v),
+                        }
+                    else:
+                        sanitized.insert(0, {"role": "system", "content": str(v)})
                 else:
                     api_kwargs[k] = v
 

@@ -65,17 +65,56 @@ def test_workflow_dashboard_exposes_ui_only_builder_controls() -> None:
         "Start from blank workflow",
         "Add workflow cell",
         "Add trigger",
-        "Connect cells",
         "Delete selected cell",
         "Add switch case",
         "Validate draft",
         "Deploy draft",
         "workflow-cell-type-options",
-        "Switch selected cell to: ",
     ]
     for label in required_labels:
         assert label in text
     assert "No JSON/YAML required" in text
+    assert "Switch selected cell to: " not in text
+
+
+def test_workflow_dashboard_uses_palette_instead_of_form_toolbar_clutter() -> None:
+    text = BUNDLE.read_text(encoding="utf-8")
+    assert "Nodes library" in text
+    assert "Drag from here mentally: click a node type to add it, then configure it in the inspector." in text
+    assert "hermes-workflows-node-palette" in text
+    assert "Choose a node from the palette, select it on the canvas, then configure it in Properties." in text
+    for removed_marker in [
+        "placeholder: \"cell id\"",
+        "placeholder: \"after\"",
+        "placeholder: \"trigger id\"",
+        "placeholder: \"from\"",
+        "placeholder: \"to\"",
+        "Connect cells\")",
+    ]:
+        assert removed_marker not in text
+
+
+def test_workflow_dashboard_status_banners_are_dismissible_and_self_clearing() -> None:
+    text = BUNDLE.read_text(encoding="utf-8")
+    assert "function clearBanners" in text
+    assert "\"aria-label\": \"Dismiss alert\"" in text
+    assert "hermes-workflows-banner-close" in text
+    assert "setTimeout(clearBanners" in text
+    assert "formatApiError" in text
+
+
+def test_workflow_dashboard_shows_ai_draft_routing_context() -> None:
+    text = BUNDLE.read_text(encoding="utf-8")
+    assert "AI drafts use" in text
+    assert "hermes-workflows-ai-routing-note" in text
+    assert "agentRoutingOptions.default_provider" in text
+
+
+def test_workflow_dashboard_blocks_trigger_edges_that_backend_rejects() -> None:
+    text = BUNDLE.read_text(encoding="utf-8")
+    assert "function isTriggerSource" in text
+    assert "Triggers start workflows automatically; connect cells to other cells, not triggers." in text
+    assert "if (isTriggerSource(spec, connection.source))" in text
 
 
 def test_workflow_dashboard_uses_three_zone_builder_layout() -> None:

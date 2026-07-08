@@ -45,17 +45,31 @@
     return SDK.fetchJSON(API + path, options);
   }
 
-  function errorMessage(err) {
-    const detail = err && err.detail ? err.detail : err;
+  function formatApiError(err) {
+    let detail = err && err.detail ? err.detail : err;
+    if (typeof detail === "string") {
+      const jsonStart = detail.indexOf("{");
+      if (jsonStart !== -1) {
+        try {
+          const parsed = JSON.parse(detail.slice(jsonStart));
+          detail = parsed && parsed.detail ? parsed.detail : parsed;
+        } catch (_) {}
+      }
+    }
     if (detail && typeof detail === "object") {
       const parts = [];
       if (detail.message) parts.push(String(detail.message));
+      else if (detail.detail && typeof detail.detail === "string") parts.push(String(detail.detail));
       if (detail.hint) parts.push(String(detail.hint));
       if (detail.code) parts.push("(" + String(detail.code) + ")");
       return parts.join(" ");
     }
-    if (err && err.message) return String(err.message);
+    if (err && err.message) return formatApiError(err.message);
     return String(detail || err || "Unknown error");
+  }
+
+  function errorMessage(err) {
+    return formatApiError(err);
   }
 
   const ASSISTANT_ERROR_HINTS = {
@@ -138,6 +152,13 @@
 
   function graphNodeList(spec) {
     return triggerList(spec).concat(nodeList(spec));
+  }
+
+  function isTriggerSource(spec, sourceId) {
+    const requested = String(sourceId || "");
+    return triggerList(spec).some(function (trigger) {
+      return String(trigger.id || trigger.name || trigger.type || "") === requested;
+    });
   }
 
   function splitPort(value) {
@@ -1087,6 +1108,11 @@
       setError(errorMessage(err));
     }
 
+    function clearBanners() {
+      setError("");
+      setStatus("");
+    }
+
     function updateEditorText(text) {
       setEditorText(text);
       if (!parseJsonObject(text)) setDraftSpec(null);
@@ -1313,6 +1339,12 @@
       setFlowNodes(spec ? buildFlowNodes(spec, statuses, selectedNode, selectNodeForInspector) : []);
       setFlowEdges(spec ? buildFlowEdges(spec) : []);
     }, [draftSpec, editorText, events, selectedNode]);
+
+    useEffect(function () {
+      if (!error && !status) return undefined;
+      const timer = setTimeout(clearBanners, error ? 12000 : 6000);
+      return function () { clearTimeout(timer); };
+    }, [error, status]);
 
     function validateDefinition() {
       setValidating(true);
@@ -1712,6 +1744,28 @@
       const node = findSpecNode(nextSpec, id);
       if (node) selectNodeForInspector(node);
       setNewCellId("");
+    }
+
+    function addWorkflowCellOfType(type) {
+      const safeType = type || "pass";
+      const baseSpec = activeSpec() || newWorkflowSpec(newWorkflowName || goalText || "Workflow Draft");
+      const after = selectedNode && selectedNode.specKind !== "trigger" ? selectedNode.id : "";
+      const nextSpec = addSpecNodeAfter(baseSpec, safeType, safeType, after);
+      setActiveDraftSpec(nextSpec, "Added " + safeString(safeType) + " cell. Select it on the canvas to configure Properties.");
+      const id = Object.keys(nextSpec.nodes || {}).slice(-1)[0];
+      const node = findSpecNode(nextSpec, id);
+      if (node) selectNodeForInspector(node);
+      setNewCellType(safeType);
+    }
+
+    function addTriggerOfType(type) {
+      const safeType = type === "schedule" ? "schedule" : "manual";
+      const baseSpec = activeSpec() || newWorkflowSpec(newWorkflowName || goalText || "Workflow Draft");
+      const nextSpec = addSpecTrigger(baseSpec, safeType, safeType, newTriggerSchedule);
+      setActiveDraftSpec(nextSpec, "Added " + safeString(safeType) + " trigger.");
+      const trigger = asArray(nextSpec.triggers).slice(-1)[0];
+      if (trigger) selectNodeForInspector(Object.assign({}, trigger, { id: trigger.id || trigger.name, specKind: "trigger", trigger_type: trigger.type }));
+      setNewTriggerType(safeType);
     }
 
     function addTriggerFromUi() {
@@ -2189,46 +2243,7 @@
     }
 
     function renderBuilderActions(spec) {
-      const ids = nodeIdsForSpec(spec || {});
-      return h("section", { className: "hermes-workflows-builder-actions", "aria-label": "UI workflow builder controls" },
-        h("h3", null, "Build workflow visually"),
-        h("p", { className: "hermes-workflows-muted" }, "No JSON/YAML required: start from a blank workflow, add cells/triggers, connect cells, then edit the selected cell."),
-        h("div", { className: "hermes-workflows-row" },
-          h("input", { value: newWorkflowName, onChange: function (event) { setNewWorkflowName(event.target.value); }, placeholder: "New workflow name" }),
-          h("button", { type: "button", onClick: startBlankWorkflow }, "Start from blank workflow")
-        ),
-        h("div", { className: "hermes-workflows-row" },
-          h("input", { value: newCellId, onChange: function (event) { setNewCellId(event.target.value); }, placeholder: "New cell id" }),
-          h("input", { value: newCellType, onChange: function (event) { setNewCellType(event.target.value); }, placeholder: "Cell type", list: "workflow-cell-type-options" }),
-          h("input", { value: newCellAfter, onChange: function (event) { setNewCellAfter(event.target.value); }, placeholder: "Insert after source, e.g. review or switch.default", list: "workflow-node-source-options" }),
-          h("button", { type: "button", onClick: addWorkflowCellFromUi }, "Add workflow cell")
-        ),
-        h("div", { className: "hermes-workflows-row" }, ["pass", "switch", "agent_task", "wait", "parallel", "join", "fail"].map(function (type) {
-          return h("button", { key: type, type: "button", onClick: function () { setNewCellType(type); } }, "Cell type: " + type);
-        })),
-        h("datalist", { id: "workflow-cell-type-options" }, ["pass", "switch", "agent_task", "wait", "parallel", "join", "fail"].map(function (type) {
-          return h("option", { key: type, value: type });
-        })),
-        h("datalist", { id: "workflow-node-source-options" }, ids.map(function (id) { return h("option", { key: id, value: id }); })),
-        h("div", { className: "hermes-workflows-row" },
-          h("input", { value: newTriggerId, onChange: function (event) { setNewTriggerId(event.target.value); }, placeholder: "New trigger id" }),
-          h("input", { value: newTriggerType, onChange: function (event) { setNewTriggerType(event.target.value); }, placeholder: "Trigger type", list: "workflow-trigger-type-options" }),
-          newTriggerType === "schedule" ? h("input", { value: newTriggerSchedule, onChange: function (event) { setNewTriggerSchedule(event.target.value); }, placeholder: "0 9 * * *" }) : null,
-          h("button", { type: "button", onClick: addTriggerFromUi }, "Add trigger")
-        ),
-        h("div", { className: "hermes-workflows-row" }, ["manual", "schedule"].map(function (type) {
-          return h("button", { key: type, type: "button", onClick: function () { setNewTriggerType(type); } }, "Trigger type: " + type);
-        })),
-        h("datalist", { id: "workflow-trigger-type-options" }, ["manual", "schedule"].map(function (type) {
-          return h("option", { key: type, value: type });
-        })),
-        h("div", { className: "hermes-workflows-row" },
-          h("input", { value: edgeFrom, onChange: function (event) { setEdgeFrom(event.target.value); }, placeholder: "Connect from source or source.branch", list: "workflow-node-source-options" }),
-          h("input", { value: edgeTo, onChange: function (event) { setEdgeTo(event.target.value); }, placeholder: "Connect to target cell", list: "workflow-node-target-options" }),
-          h("button", { type: "button", onClick: connectCellsFromUi }, "Connect cells")
-        ),
-        h("datalist", { id: "workflow-node-target-options" }, ids.map(function (id) { return h("option", { key: id, value: id }); }))
-      );
+      return null;
     }
 
     function renderCellList(spec) {
@@ -2342,9 +2357,6 @@
           h("span", { className: "hermes-workflows-muted" }, "Cell type"),
           h("input", { value: cellType, onChange: function (event) { setCellType(event.target.value); }, placeholder: "agent_task", list: "workflow-cell-type-options" })
         ),
-        h("div", { className: "hermes-workflows-row" }, ["pass", "switch", "agent_task", "wait", "parallel", "join", "fail"].map(function (type) {
-          return h("button", { key: type, type: "button", onClick: function () { setCellType(type); } }, "Switch selected cell to: " + type);
-        })),
         cellType !== "agent_task" ? h("p", { className: "hermes-workflows-muted" }, "Changing away from agent_task removes agent-only routing and contract fields when you apply.") : null,
         h("label", null,
           h("span", { className: "hermes-workflows-muted" }, "Assigned profile"),
@@ -2405,9 +2417,6 @@
     }
 
     function renderBasicCellEditor() {
-      const typeOptions = selectedNode && selectedNode.specKind === "trigger"
-        ? ["manual", "schedule"]
-        : ["pass", "switch", "agent_task", "wait", "parallel", "join", "fail"];
       return h("div", { className: "hermes-workflows-stack" },
         h("h3", null, "Cell editor"),
         h("div", { className: "hermes-workflows-meta" }, "Edit common cell settings here. Advanced JSON is optional for uncommon fields."),
@@ -2419,9 +2428,6 @@
           h("span", { className: "hermes-workflows-muted" }, selectedNode && selectedNode.specKind === "trigger" ? "Trigger type" : "Cell type"),
           h("input", { value: cellType, onChange: function (event) { setCellType(event.target.value); }, placeholder: selectedNode && selectedNode.specKind === "trigger" ? "manual" : "pass", list: selectedNode && selectedNode.specKind === "trigger" ? "workflow-trigger-type-options" : "workflow-cell-type-options" })
         ),
-        h("div", { className: "hermes-workflows-row" }, typeOptions.map(function (type) {
-          return h("button", { key: type, type: "button", onClick: function () { setCellType(type); } }, (selectedNode && selectedNode.specKind === "trigger" ? "Switch trigger to: " : "Switch selected cell to: ") + type);
-        })),
         h("label", null,
           h("span", { className: "hermes-workflows-muted" }, "Title / description"),
           h("input", { value: agentTitle, onChange: function (event) { setAgentTitle(event.target.value); }, placeholder: "What this cell does" })
@@ -2472,7 +2478,7 @@
           h("button", { type: "button", onClick: deleteSelectedCell }, "Delete selected cell"),
           advancedJsonOpen ? renderAdvancedNodeJson(spec) : null,
           nodeMessage ? h("p", { className: "hermes-workflows-muted" }, nodeMessage) : null
-        ) : h("p", { className: "hermes-workflows-muted" }, "Select a node to edit its cell settings. Advanced JSON remains available after selecting a node.")
+        ) : h("p", { className: "hermes-workflows-muted" }, "Choose a node from the palette, select it on the canvas, then configure it in Properties.")
       );
     }
 
@@ -2494,8 +2500,12 @@
               onNodesChange: applyNodeChanges ? function (changes) { setFlowNodes(applyNodeChanges(changes, flowNodes)); } : undefined,
               onEdgesChange: applyEdgeChanges ? function (changes) { setFlowEdges(applyEdgeChanges(changes, flowEdges)); } : undefined,
               onConnect: addEdge ? function (connection) {
-                setFlowEdges(addEdge(Object.assign({ label: "draft", markerEnd: { type: MarkerType.ArrowClosed } }, connection), flowEdges));
                 const spec = activeSpec();
+                if (isTriggerSource(spec, connection.source)) {
+                  setStatus("Triggers start workflows automatically; connect cells to other cells, not triggers.");
+                  return;
+                }
+                setFlowEdges(addEdge(Object.assign({ label: "draft", markerEnd: { type: MarkerType.ArrowClosed } }, connection), flowEdges));
                 if (spec && connection.source && connection.target) {
                   const source = connection.sourceHandle ? connection.source + "." + connection.sourceHandle : connection.source;
                   const nextSpec = upsertSpecEdge(spec, source, connection.target);
@@ -2539,6 +2549,8 @@
       var goalCollapsed = sidebarCollapsed.goal === undefined ? !!spec : !!sidebarCollapsed.goal;
       var wfCollapsed = !!sidebarCollapsed.workflows;
       var execCollapsed = !!sidebarCollapsed.executions;
+      var aiDraftProvider = safeString(agentRoutingOptions.default_provider || "Hermes default provider");
+      var aiDraftModel = safeString(agentRoutingOptions.default_model || "profile default model");
       function toggleSection(key) {
         var next = Object.assign({}, sidebarCollapsed);
         next[key] = !(key === "goal" ? goalCollapsed : !!sidebarCollapsed[key]);
@@ -2548,6 +2560,7 @@
         h("div", { className: "hermes-workflows-sidebar-section hermes-workflows-goal-compact hermes-workflows-sidebar-collapsible" + (goalCollapsed ? " is-collapsed" : "") },
           h("h3", { onClick: function () { toggleSection("goal"); } }, spec ? "New workflow / prompt" : "New workflow"),
           h("p", { className: "hermes-workflows-muted", style: {fontSize: "0.78rem"} }, "Describe it or start from blank."),
+          h("div", { className: "hermes-workflows-ai-routing-note" }, "AI drafts use " + aiDraftProvider + " / " + aiDraftModel),
           h("input", {
             value: newWorkflowName,
             onChange: function (event) { setNewWorkflowName(event.target.value); },
@@ -2562,7 +2575,7 @@
           }),
           h("div", { className: "hermes-workflows-row", style: {marginTop: "0.3rem"} },
             h("button", { type: "button", disabled: drafting, onClick: draftFromGoal, className: "hermes-workflows-primary", style: {fontSize: "0.78rem"} }, drafting ? "Drafting…" : "Draft"),
-            h("button", { type: "button", onClick: startBlankWorkflow, style: {fontSize: "0.78rem"} }, "Blank")
+            h("button", { type: "button", "aria-label": "Start from blank workflow", onClick: startBlankWorkflow, style: {fontSize: "0.78rem"} }, "Blank")
           ),
           h("div", { className: "hermes-workflows-template-grid" },
             ["Code change + review", "Research triage", "Daily briefing", "Human approval loop"].map(function (label) {
@@ -2628,28 +2641,35 @@
     }
 
     function renderBuilderToolbar(spec) {
-      var ids = nodeIdsForSpec(spec || {});
+      var nodeTypes = [
+        ["pass", "Pass", "Shape or summarize data."],
+        ["agent_task", "Agent task", "Delegate work to a Hermes profile."],
+        ["switch", "Switch", "Branch based on a value."],
+        ["parallel", "Parallel", "Run independent branches."],
+        ["join", "Join", "Wait for branches to complete."],
+        ["wait", "Wait", "Pause before continuing."],
+        ["fail", "Fail", "Stop with an error message."]
+      ];
       return h("div", { className: "hermes-workflows-builder-toolbar" },
-        h("div", { className: "hermes-workflows-builder-toolbar-group" },
-          h("input", { value: newCellId, onChange: function (event) { setNewCellId(event.target.value); }, placeholder: "cell id", style: {width: "90px"} }),
-          h("input", { value: newCellType, onChange: function (event) { setNewCellType(event.target.value); }, placeholder: "type", list: "workflow-cell-type-options", style: {width: "75px"} }),
-          h("input", { value: newCellAfter, onChange: function (event) { setNewCellAfter(event.target.value); }, placeholder: "after", list: "workflow-node-source-options", style: {width: "75px"} }),
-          h("button", { type: "button", onClick: addWorkflowCellFromUi }, "+ Cell")
+        h("div", { className: "hermes-workflows-palette-header" },
+          h("div", null,
+            h("strong", null, "Nodes library"),
+            h("p", { className: "hermes-workflows-muted" }, "Drag from here mentally: click a node type to add it, then configure it in the inspector.")
+          ),
+          h("div", { className: "hermes-workflows-palette-help" }, "Connect cells by dragging between node handles on the canvas.")
         ),
-        h("div", { className: "hermes-workflows-builder-toolbar-group" },
-          h("input", { value: newTriggerId, onChange: function (event) { setNewTriggerId(event.target.value); }, placeholder: "trigger id", style: {width: "80px"} }),
-          h("input", { value: newTriggerType, onChange: function (event) { setNewTriggerType(event.target.value); }, placeholder: "trigger", list: "workflow-trigger-type-options", style: {width: "70px"} }),
-          newTriggerType === "schedule" ? h("input", { value: newTriggerSchedule, onChange: function (event) { setNewTriggerSchedule(event.target.value); }, placeholder: "0 9 * * *", style: {width: "80px"} }) : null,
-          h("button", { type: "button", onClick: addTriggerFromUi }, "+ Trigger")
-        ),
-        h("div", { className: "hermes-workflows-builder-toolbar-group" },
-          h("input", { value: edgeFrom, onChange: function (event) { setEdgeFrom(event.target.value); }, placeholder: "from", list: "workflow-node-source-options", style: {width: "80px"} }),
-          h("input", { value: edgeTo, onChange: function (event) { setEdgeTo(event.target.value); }, placeholder: "to", list: "workflow-node-target-options", style: {width: "80px"} }),
-          h("button", { type: "button", onClick: connectCellsFromUi }, "Connect")
-        ),
-        h("div", { className: "hermes-workflows-builder-toolbar-group" },
-          ["pass", "switch", "agent_task", "wait", "parallel", "join", "fail"].map(function (type) {
-            return h("button", { key: type, type: "button", className: "hermes-workflows-type-btn" + (newCellType === type ? " is-active" : ""), onClick: function () { setNewCellType(type); } }, type);
+        h("div", { className: "hermes-workflows-node-palette" },
+          h("button", { type: "button", className: "hermes-workflows-palette-card", "aria-label": "Add trigger", onClick: function () { addTriggerOfType("manual"); } },
+            h("span", { className: "hermes-workflows-palette-icon" }, "⚡"),
+            h("span", { className: "hermes-workflows-palette-title" }, "Manual trigger"),
+            h("span", { className: "hermes-workflows-palette-desc" }, "Start the workflow")
+          ),
+          nodeTypes.map(function (item) {
+            return h("button", { key: item[0], type: "button", className: "hermes-workflows-palette-card", "aria-label": "Add workflow cell: " + item[0], onClick: function () { addWorkflowCellOfType(item[0]); } },
+              h("span", { className: "hermes-workflows-palette-icon" }, item[0] === "agent_task" ? "🤖" : item[0] === "switch" ? "◇" : item[0] === "parallel" ? "⇉" : item[0] === "join" ? "⇥" : item[0] === "wait" ? "⏱" : item[0] === "fail" ? "!" : "▣"),
+              h("span", { className: "hermes-workflows-palette-title" }, item[1]),
+              h("span", { className: "hermes-workflows-palette-desc" }, item[2])
+            );
           })
         ),
         h("datalist", { id: "workflow-cell-type-options" }, ["pass", "switch", "agent_task", "wait", "parallel", "join", "fail"].map(function (type) {
@@ -2657,9 +2677,7 @@
         })),
         h("datalist", { id: "workflow-trigger-type-options" }, ["manual", "schedule"].map(function (type) {
           return h("option", { key: type, value: type });
-        })),
-        h("datalist", { id: "workflow-node-source-options" }, ids.map(function (id) { return h("option", { key: id, value: id }); })),
-        h("datalist", { id: "workflow-node-target-options" }, ids.map(function (id) { return h("option", { key: id, value: id }); }))
+        }))
       );
     }
 
@@ -2713,8 +2731,14 @@
       h("div", { className: "hermes-workflows-app" },
         renderTopBar(),
         (error || status) ? h("div", { className: "hermes-workflows-status-row" },
-          error ? h("div", { className: "hermes-workflows-banner is-error" }, error) : null,
-          status ? h("div", { className: "hermes-workflows-banner" }, status) : null
+          error ? h("div", { className: "hermes-workflows-banner is-error", role: "alert" },
+            h("span", null, error),
+            h("button", { type: "button", className: "hermes-workflows-banner-close", "aria-label": "Dismiss alert", onClick: clearBanners }, "×")
+          ) : null,
+          status ? h("div", { className: "hermes-workflows-banner", role: "status" },
+            h("span", null, status),
+            h("button", { type: "button", className: "hermes-workflows-banner-close", "aria-label": "Dismiss alert", onClick: clearBanners }, "×")
+          ) : null
         ) : null,
         h("div", { className: "hermes-workflows-body" },
           renderSidebar(),

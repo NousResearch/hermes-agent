@@ -3764,6 +3764,8 @@ class SessionDB:
         When ``limit`` is provided, returns at most ``limit`` messages
         starting from ``offset`` (0-based, in insertion order). Enables
         pagination for the API endpoint to avoid loading entire transcripts.
+        ``offset`` alone (without ``limit``) also pages — SQLite requires a
+        LIMIT clause for OFFSET, so it's emitted as ``LIMIT -1`` (unbounded).
         """
         active_clause = "" if include_inactive else " AND active = 1"
         sql = (
@@ -3771,9 +3773,10 @@ class SessionDB:
             f"{active_clause} ORDER BY id"
         )
         params: list = [session_id]
-        if limit is not None:
+        if limit is not None or offset:
+            # SQLite's OFFSET requires LIMIT; -1 means "no limit".
             sql += " LIMIT ? OFFSET ?"
-            params.extend([limit, offset])
+            params.extend([-1 if limit is None else limit, offset])
         with self._lock:
             cursor = self._conn.execute(sql, params)
             rows = cursor.fetchall()

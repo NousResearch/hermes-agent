@@ -857,6 +857,22 @@ platform_toolsets:
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
 
+# =============================================================================
+# Home Assistant Conversation Agent (Wyoming handle server)
+# =============================================================================
+# Hermes answers as a HA conversation agent: HA's Assist pipeline (Voice PE,
+# ESP32 boxes, the HA app) does wake/STT/TTS and sends the transcript here.
+# Add the Wyoming integration in HA pointing at this host:port, then pick
+# "hermes" as the conversation agent in your voice pipeline.
+# ha_conversation:
+#   enabled: true
+#   bind_host: 127.0.0.1     # use your tailnet/LAN address if HA is remote
+#   port: 10600
+#   ack_after_seconds: 8.0
+#   announce_mode: "off"     # off | last_active | default_device | broadcast
+#   announce_entity: ""      # e.g. assist_satellite.kitchen (default_device mode)
+#   max_transcript_chars: 2000
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)
 #

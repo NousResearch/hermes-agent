@@ -586,7 +586,23 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
         try:
             db = _get_db()
             if db is not None:
-                db.end_session(session_id, end_reason)
+                # Don't end gateway-originated sessions — the gateway owns their
+                # lifecycle.  The TUI is a viewer, not the owner.  Ending a
+                # gateway session in state.db triggers a Groundhog Day routing
+                # loop: the gateway's #54878 self-heal detects the stale entry,
+                # recovers to the parent session, context compression splits
+                # back to the reaped child, and the cycle repeats on every
+                # inbound message.  (#60609)
+                _GATEWAY_SOURCES = frozenset({
+                    "bluebubbles", "telegram", "discord", "signal",
+                    "whatsapp", "sms", "slack", "mattermost",
+                    "matrix", "line", "wechat", "facebook",
+                    "imessage", "googlechat",
+                })
+                row = db.get_session(session_id)
+                source = (row or {}).get("source", "")
+                if source not in _GATEWAY_SOURCES:
+                    db.end_session(session_id, end_reason)
         except Exception:
             pass
 

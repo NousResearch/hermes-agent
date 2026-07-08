@@ -2345,6 +2345,8 @@ def delegate_task(
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
@@ -2352,8 +2354,15 @@ def delegate_task(
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, role, model, provider)
+      - Batch:  provide tasks array [{goal, context, role, model, provider}, ...]
+
+    'model'/'provider' are optional per-delegation (or per-task) overrides of
+    the child's model/provider. When set, that child's credential bundle is
+    resolved from the global delegation config overlaid with the override, so a
+    batch can fan out to different models (e.g. a cheap model for simple
+    subtasks, a stronger one for hard ones). They fall back to
+    delegation.model / delegation.provider when omitted.
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
@@ -2446,7 +2455,13 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "role": top_role}]
+        task_list = [{
+            "goal": goal,
+            "context": context,
+            "role": top_role,
+            "model": model,
+            "provider": provider,
+        }]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -2485,6 +2500,32 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task model/provider override: when a task names its own model
+            # or provider, resolve that child's credential bundle independently
+            # (overlaying the global delegation config). Lets one batch fan out
+            # to different models — e.g. a cheap/fast model for simple subtasks
+            # and a stronger one for the hard ones — instead of every child
+            # sharing the single delegation.model/provider. Falls back to the
+            # global creds when a task specifies neither.
+            task_creds = creds
+            _t_model = t.get("model")
+            _t_model = _t_model.strip() if isinstance(_t_model, str) else None
+            _t_provider = t.get("provider")
+            _t_provider = _t_provider.strip() if isinstance(_t_provider, str) else None
+            if _t_model or _t_provider:
+                _task_cfg = dict(cfg)
+                if _t_model:
+                    _task_cfg["model"] = _t_model
+                if _t_provider:
+                    _task_cfg["provider"] = _t_provider
+                    # A different provider needs its own bundle re-derived, so
+                    # drop the global provider's resolved base_url/api_key/api_mode.
+                    for _k in ("base_url", "api_key", "api_mode"):
+                        _task_cfg.pop(_k, None)
+                try:
+                    task_creds = _resolve_delegation_credentials(_task_cfg, parent_agent)
+                except ValueError as exc:
+                    return tool_error(f"Task {i}: {exc}")
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -2492,16 +2533,16 @@ def delegate_task(
                 # Subagents always inherit the parent's toolsets; the model
                 # cannot choose or narrow them (no model-facing toolsets arg).
                 toolsets=None,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
+                override_acp_command=task_creds.get("command"),
+                override_acp_args=task_creds.get("args"),
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -3374,6 +3415,22 @@ DELEGATE_TASK_SCHEMA = {
                     "specific you are, the better the subagent performs."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional model override for a single (goal-mode) "
+                    "delegation -- e.g. a stronger model for a hard subtask or a "
+                    "cheaper/faster one for a simple subtask. Falls back to "
+                    "delegation.model; the resolved provider must be configured."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Optional provider override for a single (goal-mode) "
+                    "delegation. Falls back to delegation.provider."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -3388,6 +3445,14 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Per-task model override -- lets one batch fan out to different models. Falls back to delegation.model.",
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": "Per-task provider override. Falls back to delegation.provider.",
                         },
                     },
                     "required": ["goal"],
@@ -3472,6 +3537,8 @@ registry.register(
         tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
+        model=args.get("model"),
+        provider=args.get("provider"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
     ),

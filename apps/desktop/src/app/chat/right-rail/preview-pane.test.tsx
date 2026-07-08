@@ -1,6 +1,7 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $paneStates } from '@/store/panes'
 import { $connection } from '@/store/session'
 
 import { PreviewPane } from './preview-pane'
@@ -15,6 +16,7 @@ describe('PreviewPane console state', () => {
 
   afterEach(() => {
     cleanup()
+    $paneStates.set({})
     $connection.set(null)
     vi.unstubAllGlobals()
   })
@@ -80,5 +82,44 @@ describe('PreviewPane console state', () => {
     })
 
     expect(setTitlebarToolGroup).toHaveBeenCalledTimes(initialCalls)
+  })
+
+  it('widens web previews near full width and restores the default width', () => {
+    vi.stubGlobal('innerWidth', 1600)
+    const setTitlebarToolGroup = vi.fn()
+
+    render(
+      <PreviewPane
+        setTitlebarToolGroup={setTitlebarToolGroup}
+        target={{
+          kind: 'url',
+          label: 'Preview',
+          source: 'http://localhost:5174',
+          url: 'http://localhost:5174'
+        }}
+      />
+    )
+
+    const tools = setTitlebarToolGroup.mock.calls.at(-1)?.[1] ?? []
+    const wideTool = tools.find((tool: { id: string }) => tool.id === 'preview-wide')
+
+    expect(wideTool?.label).toBe('Maximize preview width')
+
+    act(() => {
+      wideTool?.onSelect()
+    })
+
+    expect($paneStates.get().preview?.widthOverride).toBe(1440)
+
+    const updatedTools = setTitlebarToolGroup.mock.calls.at(-1)?.[1] ?? []
+    const restoreTool = updatedTools.find((tool: { id: string }) => tool.id === 'preview-wide')
+
+    expect(restoreTool?.label).toBe('Restore preview width')
+
+    act(() => {
+      restoreTool?.onSelect()
+    })
+
+    expect($paneStates.get().preview?.widthOverride).toBeUndefined()
   })
 })

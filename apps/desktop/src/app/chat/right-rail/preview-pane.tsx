@@ -121,8 +121,8 @@ function PreviewLoadError({
 }
 
 const TITLEBAR_GROUP_ID = 'preview'
-const WIDE_PREVIEW_RATIO = 0.72
-const WIDE_PREVIEW_CHAT_RESERVE_PX = 320
+const WIDE_PREVIEW_RATIO = 0.9
+const WIDE_PREVIEW_CHAT_RESERVE_PX = 160
 const WIDE_PREVIEW_MIN_WIDTH_PX = 720
 
 function widePreviewWidth() {
@@ -327,7 +327,7 @@ export function PreviewPane({
               active: widePreviewActive,
               icon: <Maximize />,
               id: `${TITLEBAR_GROUP_ID}-wide`,
-              label: widePreviewActive ? 'Restore preview width' : 'Widen preview',
+              label: widePreviewActive ? copy.restorePreviewWidth : copy.maximizePreviewWidth,
               onSelect: toggleWidePreview
             },
             {

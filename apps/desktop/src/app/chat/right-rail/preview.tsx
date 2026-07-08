@@ -36,7 +36,7 @@ import { $dirtyPreviewUrls } from '@/store/preview-edit'
 import { PreviewPane } from './preview-pane'
 
 export const PREVIEW_RAIL_MIN_WIDTH = '18rem'
-export const PREVIEW_RAIL_MAX_WIDTH = '72vw'
+export const PREVIEW_RAIL_MAX_WIDTH = '90vw'
 
 const INTRINSIC = `clamp(${PREVIEW_RAIL_MIN_WIDTH}, 36vw, 32rem)`
 

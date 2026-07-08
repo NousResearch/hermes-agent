@@ -2356,6 +2356,8 @@ export const zh: Translations = {
       restartFailed: '服务器重启失败',
       hideConsole: '隐藏预览控制台',
       showConsole: '显示预览控制台',
+      maximizePreviewWidth: '最大化预览宽度',
+      restorePreviewWidth: '恢复预览宽度',
       hideDevTools: '隐藏预览 DevTools',
       openDevTools: '打开预览 DevTools',
       finishedRestarting: message => `Hermes 已完成预览服务器重启${message ? `: ${message}` : ''}`,

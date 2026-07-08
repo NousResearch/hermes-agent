@@ -1829,6 +1829,8 @@ export interface Translations {
       restartFailed: string
       hideConsole: string
       showConsole: string
+      maximizePreviewWidth: string
+      restorePreviewWidth: string
       hideDevTools: string
       openDevTools: string
       finishedRestarting: (message?: string) => string

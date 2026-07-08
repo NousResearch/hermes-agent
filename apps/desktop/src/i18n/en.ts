@@ -2189,6 +2189,8 @@ export const en: Translations = {
       restartFailed: 'Server restart failed',
       hideConsole: 'Hide preview console',
       showConsole: 'Show preview console',
+      maximizePreviewWidth: 'Maximize preview width',
+      restorePreviewWidth: 'Restore preview width',
       hideDevTools: 'Hide preview DevTools',
       openDevTools: 'Open preview DevTools',
       finishedRestarting: message => `Hermes finished restarting the preview server${message ? `: ${message}` : ''}`,

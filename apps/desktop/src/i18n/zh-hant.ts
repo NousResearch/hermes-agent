@@ -2104,6 +2104,8 @@ export const zhHant = defineLocale({
       restartFailed: '伺服器重新啟動失敗',
       hideConsole: '隱藏預覽主控台',
       showConsole: '顯示預覽主控台',
+      maximizePreviewWidth: '最大化預覽寬度',
+      restorePreviewWidth: '還原預覽寬度',
       hideDevTools: '隱藏預覽 DevTools',
       openDevTools: '開啟預覽 DevTools',
       finishedRestarting: message => `Hermes 已完成預覽伺服器重新啟動${message ? `：${message}` : ''}`,

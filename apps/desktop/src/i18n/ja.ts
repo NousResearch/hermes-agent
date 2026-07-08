@@ -2167,6 +2167,8 @@ export const ja = defineLocale({
       restartFailed: 'サーバーの再起動に失敗しました',
       hideConsole: 'プレビューコンソールを非表示',
       showConsole: 'プレビューコンソールを表示',
+      maximizePreviewWidth: 'プレビュー幅を最大化',
+      restorePreviewWidth: 'プレビュー幅を戻す',
       hideDevTools: 'プレビュー DevTools を非表示',
       openDevTools: 'プレビュー DevTools を開く',
       finishedRestarting: message =>

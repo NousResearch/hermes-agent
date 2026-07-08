@@ -342,7 +342,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         aria-controls="chat-side-panel"
         className={cn(
           "shrink-0 rounded border border-current/20",
-          "px-2 py-1 text-xs font-medium tracking-wide",
+          "min-h-10 px-3 py-2 text-xs font-medium tracking-wide",
           "text-text-secondary hover:text-midground hover:bg-midground/5",
         )}
       >
@@ -1021,7 +1021,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               size="icon"
               onClick={closeMobilePanel}
               aria-label={t.app.closeModelTools}
-              className="text-text-secondary hover:text-midground"
+              className="h-11 w-11 p-0 text-text-secondary hover:text-midground"
             >
               <X />
             </Button>

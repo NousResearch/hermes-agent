@@ -539,6 +539,7 @@ def interrupt_all(reason: str = "shutdown") -> int:
 def interrupt_for_session(
     session_key: str = "",
     origin_ui_session_id: str = "",
+    parent_session_id: str = "",
     reason: str = "session_end",
 ) -> int:
     """Signal running async delegations owned by ONE session to stop.
@@ -549,11 +550,17 @@ def interrupt_for_session(
     with no live owner, either leaking into another chat or burning tokens
     with no one listening (#55578).
 
-    Matches on ``origin_ui_session_id`` (the live UI session that
-    commissioned the work) and/or the durable ``session_key``; either
-    matching field claims the record. Returns how many were interrupted.
+    Selectors (any matching field claims the record):
+    - ``origin_ui_session_id``: the live TUI tab/window that commissioned it.
+    - ``session_key``: the durable routing key captured at dispatch.
+    - ``parent_session_id``: the spawning agent's durable session-db id —
+      the right selector for gateway chats, whose ``session_key`` (the
+      platform conversation key) SURVIVES a ``/new`` reset while the
+      session id rotates.
+
+    Returns how many were interrupted.
     """
-    if not session_key and not origin_ui_session_id:
+    if not session_key and not origin_ui_session_id and not parent_session_id:
         return 0
     count = 0
     with _records_lock:
@@ -563,6 +570,7 @@ def interrupt_for_session(
             and (
                 (origin_ui_session_id and str(r.get("origin_ui_session_id") or "") == origin_ui_session_id)
                 or (session_key and str(r.get("session_key") or "") == session_key)
+                or (parent_session_id and str(r.get("parent_session_id") or "") == parent_session_id)
             )
         ]
     for r in targets:

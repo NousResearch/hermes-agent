@@ -1321,3 +1321,7 @@ Always set `TELEGRAM_ALLOWED_USERS` to restrict who can interact with your bot. 
 Never share your bot token publicly. If compromised, revoke it immediately via BotFather's `/revoke` command.
 
 For more details, see the [Security documentation](/user-guide/security). You can also use [DM pairing](/user-guide/messaging#dm-pairing-alternative-to-allowlists) for a more dynamic approach to user authorization.
+
+## Secretary Mode (Chat Automation)
+
+Telegram's Chat Automation feature allows a bot to receive and respond to messages sent to your **personal account** — clients DM you as usual, and the bot can reply as you. See the dedicated [Secretary Mode guide](/user-guide/messaging/telegram-secretary-mode) for setup.

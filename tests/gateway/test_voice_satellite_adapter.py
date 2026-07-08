@@ -41,9 +41,22 @@ def make_config(port, **extra_overrides):
     return PlatformConfig(enabled=True, extra=extra)
 
 
-def test_validate_config_requires_satellites():
-    assert _mod.validate_config(PlatformConfig(extra={"satellites": [{}]})) is True
+def test_validate_config_requires_connectable_satellites():
+    ok = {"satellites": [{"name": "kitchen", "host": "192.168.1.40", "port": 10700}]}
+    assert _mod.validate_config(PlatformConfig(extra=ok)) is True
+    # port may be omitted (defaults to 10700 at connect time)
+    assert _mod.validate_config(
+        PlatformConfig(extra={"satellites": [{"host": "pi.local"}]})
+    ) is True
     assert _mod.validate_config(PlatformConfig(extra={})) is False
+    # entries missing a host would spin the reconnect loop against ""
+    assert _mod.validate_config(PlatformConfig(extra={"satellites": [{}]})) is False
+    assert _mod.validate_config(
+        PlatformConfig(extra={"satellites": [{"host": "  "}]})
+    ) is False
+    assert _mod.validate_config(
+        PlatformConfig(extra={"satellites": [{"host": "pi.local", "port": "not-a-port"}]})
+    ) is False
 
 
 def test_apply_yaml_config_translates_section():

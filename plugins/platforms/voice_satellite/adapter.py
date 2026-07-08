@@ -61,7 +61,9 @@ def check_requirements() -> bool:
     try:
         from tools.lazy_deps import ensure
 
-        ensure("platform.voice_satellite")
+        # prompt=False: called from the gateway's platform registry, which
+        # must never block on an interactive install confirmation.
+        ensure("platform.voice_satellite", prompt=False)
         import wyoming  # noqa: F401
         return True
     except Exception:
@@ -69,7 +71,21 @@ def check_requirements() -> bool:
 
 
 def validate_config(config) -> bool:
-    return bool((config.extra or {}).get("satellites"))
+    satellites = (config.extra or {}).get("satellites")
+    if not isinstance(satellites, list) or not satellites:
+        return False
+    for entry in satellites:
+        # Each entry must be dialable: connect() would otherwise spin the
+        # reconnect loop forever against an empty host.
+        if not isinstance(entry, dict) or not str(entry.get("host") or "").strip():
+            return False
+        try:
+            port = int(entry.get("port", 10700))
+        except (TypeError, ValueError):
+            return False
+        if not 0 < port < 65536:
+            return False
+    return True
 
 
 def _apply_yaml_config(yaml_cfg: dict, platform_cfg: dict) -> Optional[dict]:
@@ -224,9 +240,9 @@ class VoiceSatelliteAdapter(BasePlatformAdapter):
         if action[0] == "abort":
             await self._abort_turn(name)
         elif action[0] == "transcribe":
-            _, utterance, utt_rate = action
+            _, utterance, utt_rate, turn_id = action
             task = asyncio.create_task(
-                self._transcribe_and_dispatch(name, utterance, utt_rate)
+                self._transcribe_and_dispatch(name, utterance, utt_rate, turn_id)
             )
             self._transcribe_tasks.add(task)
             task.add_done_callback(self._transcribe_tasks.discard)
@@ -295,10 +311,10 @@ class VoiceSatelliteAdapter(BasePlatformAdapter):
         self._cancel_watchdog(name)
 
     async def _transcribe_and_dispatch(
-        self, name: str, utterance: bytes, rate: int
+        self, name: str, utterance: bytes, rate: int, turn_id: int
     ) -> None:
         try:
-            await self._transcribe_and_dispatch_inner(name, utterance, rate)
+            await self._transcribe_and_dispatch_inner(name, utterance, rate, turn_id)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -306,8 +322,12 @@ class VoiceSatelliteAdapter(BasePlatformAdapter):
                 "[voice_satellite:%s] transcription turn failed", name
             )
             machine = self._machines.get(name)
-            if machine is not None:
-                machine.to_idle()
+            if machine is None or machine.turn_id != turn_id:
+                # This failure belongs to a superseded turn (link dropped or
+                # a new wake started); the current turn owns the satellite
+                # stream — recovering here would clobber it.
+                return
+            machine.to_idle()
             link = self._links.get(name)
             if link is not None:
                 try:
@@ -316,7 +336,7 @@ class VoiceSatelliteAdapter(BasePlatformAdapter):
                     pass
 
     async def _transcribe_and_dispatch_inner(
-        self, name: str, utterance: bytes, rate: int
+        self, name: str, utterance: bytes, rate: int, turn_id: int
     ) -> None:
         from tools.transcription_tools import transcribe_audio
         from tools.voice_mode import is_whisper_hallucination
@@ -339,7 +359,11 @@ class VoiceSatelliteAdapter(BasePlatformAdapter):
         if text and is_whisper_hallucination(text):
             text = ""
 
-        action = machine.on_transcript_ready(text)
+        action = machine.on_transcript_ready(text, turn_id)
+        if action[0] == "stale":
+            # A newer turn (or a reset) superseded this one while STT ran;
+            # nothing here may touch the machine or the satellite stream.
+            return
         if action[0] == "abort":
             await self._abort_turn(name)
             return
@@ -500,7 +524,7 @@ def register(ctx) -> None:
         check_fn=check_requirements,
         validate_config=validate_config,
         apply_yaml_config_fn=_apply_yaml_config,
-        install_hint="pip install wyoming==1.10.0",
+        install_hint="pip install 'hermes-agent[satellite]'",
         emoji="🎙️",
         pii_safe=True,
         platform_hint=(

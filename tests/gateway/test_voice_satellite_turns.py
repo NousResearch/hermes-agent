@@ -28,9 +28,10 @@ def test_full_turn_lifecycle():
     action = m.on_audio(SILENCE, 0.1, 16000, now=0.3)
     assert action is not None and action[0] == "transcribe"
     assert action[2] == 16000
+    assert action[3] == m.turn_id
     assert m.phase is tm.TurnPhase.TRANSCRIBING
 
-    assert m.on_transcript_ready("hello") == ("dispatch", "hello")
+    assert m.on_transcript_ready("hello", action[3]) == ("dispatch", "hello")
     assert m.phase is tm.TurnPhase.THINKING
     m.on_reply_started()
     assert m.phase is tm.TurnPhase.SPEAKING
@@ -42,8 +43,8 @@ def test_empty_transcript_aborts_to_idle():
     m = make_machine()
     m.on_pipeline_start(now=0.0)
     m.on_audio(SPEECH, 0.1, 16000, now=0.1)
-    m.on_audio(SILENCE, 0.3, 16000, now=0.4)
-    assert m.on_transcript_ready("") == ("abort",)
+    action = m.on_audio(SILENCE, 0.3, 16000, now=0.4)
+    assert m.on_transcript_ready("", action[3]) == ("abort",)
     assert m.phase is tm.TurnPhase.IDLE
 
 
@@ -65,13 +66,36 @@ def test_audio_ignored_outside_listening_and_reentry_ignored():
     assert m.phase is tm.TurnPhase.IDLE
 
 
-def test_stale_transcript_callback_aborts_without_dispatch():
+def test_transcript_in_wrong_phase_is_ignored_without_state_change():
     m = make_machine()
-    assert m.on_transcript_ready("late result") == ("abort",)  # IDLE: stale
+    assert m.on_transcript_ready("late result", m.turn_id) == ("stale",)  # IDLE
     assert m.phase is tm.TurnPhase.IDLE
     m.on_pipeline_start(now=0.0)
-    assert m.on_transcript_ready("late result") == ("abort",)  # LISTENING: stale
-    assert m.phase is tm.TurnPhase.IDLE
+    assert m.on_transcript_ready("late result", m.turn_id) == ("stale",)  # LISTENING
+    # A wrong-phase callback must not tear down the live turn.
+    assert m.phase is tm.TurnPhase.LISTENING
+
+
+def test_stale_transcript_from_previous_turn_cannot_hijack_new_turn():
+    m = make_machine()
+    m.on_pipeline_start(now=0.0)
+    m.on_audio(SPEECH, 0.1, 16000, now=0.1)
+    old_action = m.on_audio(SILENCE, 0.3, 16000, now=0.4)
+    old_turn = old_action[3]
+    m.to_idle()  # link dropped / turn aborted while STT was in flight
+
+    m.on_pipeline_start(now=1.0)  # new wake before the old STT returns
+    m.on_audio(SPEECH, 0.1, 16000, now=1.1)
+    new_action = m.on_audio(SILENCE, 0.3, 16000, now=1.4)
+    assert m.phase is tm.TurnPhase.TRANSCRIBING
+
+    # The old turn's STT result lands now: rejected, new turn untouched.
+    assert m.on_transcript_ready("stale words", old_turn) == ("stale",)
+    assert m.phase is tm.TurnPhase.TRANSCRIBING
+    # The new turn's own transcript still dispatches normally.
+    assert m.on_transcript_ready("fresh words", new_action[3]) == (
+        "dispatch", "fresh words",
+    )
 
 
 def test_on_reply_started_allows_thinking_and_idle_dedups_speaking():

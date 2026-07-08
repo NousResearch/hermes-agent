@@ -29,11 +29,17 @@ class TurnMachine:
         self.phase = TurnPhase.IDLE
         self._detector = None
         self._listen_started: float = 0.0
+        # Monotonic turn generation. Bumped on every turn start AND every
+        # reset, so an STT callback carrying an old turn_id can always be
+        # recognized as stale — even if the machine has since re-entered
+        # TRANSCRIBING for a newer turn.
+        self.turn_id: int = 0
 
     def on_pipeline_start(self, now: float) -> bool:
         """Satellite reported wake + pipeline start. True if a turn began."""
         if self.phase is not TurnPhase.IDLE:
             return False
+        self.turn_id += 1
         self.phase = TurnPhase.LISTENING
         self._detector = self._detector_factory()
         self._listen_started = now
@@ -55,15 +61,15 @@ class TurnMachine:
         if utterance is None:
             return None
         self.phase = TurnPhase.TRANSCRIBING
-        return ("transcribe", utterance, rate)
+        return ("transcribe", utterance, rate, self.turn_id)
 
-    def on_transcript_ready(self, text: str) -> tuple:
-        if self.phase is not TurnPhase.TRANSCRIBING:
-            # Stale or duplicate STT callback (turn already aborted or a
-            # new turn started): reset and abort rather than fabricating
-            # a dispatch from a phase that never requested transcription.
-            self.to_idle()
-            return ("abort",)
+    def on_transcript_ready(self, text: str, turn_id: int) -> tuple:
+        if turn_id != self.turn_id or self.phase is not TurnPhase.TRANSCRIBING:
+            # STT callback from an earlier turn (aborted, disconnected, or
+            # superseded by a new wake) or a duplicate within this turn:
+            # ignore WITHOUT touching state, so a stale result can neither
+            # dispatch as the current turn nor tear a live turn down.
+            return ("stale",)
         if not text:
             self.to_idle()
             return ("abort",)
@@ -83,5 +89,6 @@ class TurnMachine:
         self.to_idle()
 
     def to_idle(self) -> None:
+        self.turn_id += 1  # invalidate any in-flight callbacks for this turn
         self.phase = TurnPhase.IDLE
         self._detector = None

@@ -1420,6 +1420,23 @@ class ShellFileOperations(FileOperations):
         # the atomic swap doesn't silently widen or narrow permissions, and
         # clean the temp up on any failure so we never leak a ``.hermes-tmp``
         # turd next to the user's file.
+        # Pre-write syntax gate for structured formats (JSON/YAML/TOML).
+        # Parse BEFORE writing so a syntax error prevents the write entirely
+        # — no temp file, no rename, no corrupted file on disk.  The
+        # top-level ``error`` key is set so downstream gating (e.g.
+        # ``files_modified`` reporting) correctly suppresses the write.
+        # Deliberately scoped to JSON/YAML/TOML (not .py) because the test
+        # suite writes non-Python text through *.py paths as generic
+        # write-mechanics fixtures (#60525).
+        ext = os.path.splitext(path)[1].lower()
+        inproc = LINTERS_INPROC.get(ext)
+        if inproc is not None:
+            ok, err = inproc(content)
+            if err != "__SKIP__" and not ok:
+                return WriteResult(
+                    error=f"Syntax check failed before write — file not modified. Parse error: {err}",
+                )
+
         write_result = self._atomic_write(path, content)
 
         if write_result.exit_code != 0:

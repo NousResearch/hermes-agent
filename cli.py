@@ -12745,7 +12745,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except (Exception, KeyboardInterrupt) as e:
             logger.debug("Could not persist active CLI session before close: %s", e)
 
-    def _print_exit_summary(self):
+    def _print_exit_summary(self, clear_screen=True):
         """Print session resume info on exit, similar to Claude Code."""
         # Clear the screen + scrollback before printing the summary so the
         # live bottom chrome (status bar, input box, separator rules) and the
@@ -12757,7 +12757,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # clean top-left. Falls back to the platform clear command if stdout
         # isn't a TTY-capable stream. Honors NO_COLOR/dumb terminals by
         # skipping silently when there's no real console.
-        self._clear_terminal_on_exit()
+        if clear_screen:
+            self._clear_terminal_on_exit()
         print()
         msg_count = len(self.conversation_history)
         if msg_count > 0:
@@ -16169,7 +16170,7 @@ def main(
                 # banner, doesn't depend on the welcome banner being shown.
                 cli._show_security_advisories()
                 cli.chat(query, images=single_query_images or None)
-                cli._print_exit_summary()
+                cli._print_exit_summary(clear_screen=False)
         finally:
             _finalize_single_query(cli)
         return

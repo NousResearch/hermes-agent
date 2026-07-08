@@ -245,6 +245,27 @@ def _request_gateway_self_restart(pid: int) -> bool:
     return True
 
 
+def _signal_gateway_sigusr1_restart(pid: int) -> bool:
+    """Signal a *known* gateway PID to perform its graceful SIGUSR1 restart.
+
+    Unlike :func:`_request_gateway_self_restart`, this does not require the
+    gateway to be an ancestor of the caller. ``launchd_restart()`` already
+    holds a verified gateway PID from :func:`get_running_pid`, so it is safe
+    to signal it directly. Delivering SIGUSR1 triggers the gateway's internal
+    ``restart_signal_handler`` -> ``request_restart(via_service=True)``: the
+    gateway drains in-flight runs, writes the ``.restart_pending.json`` marker
+    (so the next boot broadcasts "♻️ Gateway online"), then exits for launchd's
+    KeepAlive to respawn it. Returns True if the signal was delivered.
+    """
+    if not hasattr(signal, "SIGUSR1"):
+        return False
+    try:
+        os.kill(pid, signal.SIGUSR1)  # windows-footgun: ok — POSIX signal, guarded above
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+    return True
+
+
 def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
     """Send SIGUSR1 to a gateway PID and wait for it to exit gracefully.
 
@@ -4257,6 +4278,18 @@ def launchd_restart():
     try:
         pid = get_running_pid()
         if pid is not None and _request_gateway_self_restart(pid):
+            print("✓ Service restart requested")
+            _clear_launchd_unsupported_marker()
+            return
+        if pid is not None and _signal_gateway_sigusr1_restart(pid):
+            # Graceful drain-and-restart requested via SIGUSR1 (the gateway's
+            # own restart handler). launchd's KeepAlive respawns the gateway on
+            # exit, and the gateway writes .restart_pending.json so the next
+            # boot emits the "♻️ Gateway online" home-channel notice — matching
+            # the Linux systemd SIGUSR1 path. On macOS `hermes update` is not a
+            # child of the gateway, so the ancestor-guarded self-restart above
+            # is skipped and we previously fell through to SIGTERM, which never
+            # writes that marker (hence no "Gateway online" message).
             print("✓ Service restart requested")
             _clear_launchd_unsupported_marker()
             return

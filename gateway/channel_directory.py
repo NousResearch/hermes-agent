@@ -71,7 +71,10 @@ def _apply_channel_aliases(platforms: Dict[str, Any]) -> None:
 
 
 def _normalize_channel_query(value: str) -> str:
-    return value.lstrip("#").strip().lower()
+    # Strip surrounding whitespace *before* removing the leading ``#`` sigil,
+    # otherwise a leading space (common in copy-pasted targets like
+    # " #general") shields the ``#`` and it survives normalization.
+    return value.strip().lstrip("#").strip().lower()
 
 
 def _channel_target_name(platform_name: str, channel: Dict[str, Any]) -> str:
@@ -353,6 +356,13 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
             return ch["id"]
 
     query = _normalize_channel_query(name)
+
+    # An empty/whitespace/``#``-only query must not resolve to a channel: the
+    # prefix step below uses ``startswith(query)``, and every string starts
+    # with "", so a blank query would silently resolve to the only channel and
+    # misdeliver the message.
+    if not query:
+        return None
 
     # 1. Exact name match, including the display labels shown by send_message(action="list")
     for ch in channels:

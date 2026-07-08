@@ -144,6 +144,29 @@ class TestResolveChannelName:
         with self._setup(tmp_path, {}):
             assert resolve_channel_name("telegram", "someone") is None
 
+    def test_empty_query_does_not_resolve_to_only_channel(self, tmp_path):
+        # A blank/whitespace/#-only target must not prefix-match the only
+        # channel (startswith("") is always True) and misdeliver the message.
+        platforms = {
+            "telegram": [{"id": "123", "name": "Alice", "type": "dm"}]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("telegram", "") is None
+            assert resolve_channel_name("telegram", "   ") is None
+            assert resolve_channel_name("telegram", "#") is None
+            # A real prefix still resolves.
+            assert resolve_channel_name("telegram", "Ali") == "123"
+
+    def test_leading_space_hash_sigil_is_stripped(self, tmp_path):
+        # " #general" (copy-pasted with a leading space) must normalize the
+        # same as "#general"; the sigil must not survive the leading space.
+        platforms = {
+            "slack": [{"id": "C01", "name": "general", "type": "channel"}]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("slack", " #general") == "C01"
+            assert resolve_channel_name("slack", "#general") == "C01"
+
     def test_no_match_returns_none(self, tmp_path):
         platforms = {
             "telegram": [{"id": "123", "name": "John", "type": "dm"}]

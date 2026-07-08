@@ -42,16 +42,16 @@ def _ok_response():
     return {"ok": True}
 
 
-def _client_sync():
+def _client_sync(base_url="https://api.openai.com/v1"):
     client = MagicMock()
-    client.base_url = "https://api.openai.com/v1"
+    client.base_url = base_url
     client.chat.completions.create.return_value = _ok_response()
     return client
 
 
-def _client_async():
+def _client_async(base_url="https://api.openai.com/v1"):
     client = MagicMock()
-    client.base_url = "https://api.openai.com/v1"
+    client.base_url = base_url
     client.chat.completions.create = AsyncMock(return_value=_ok_response())
     return client
 
@@ -142,6 +142,23 @@ class TestCompressionTimeoutFloorSync:
             f"config timeout {high} above the floor must be unchanged, got {timeout}"
         )
 
+    def test_local_compression_endpoint_is_not_floored(self):
+        """Local compression endpoints may intentionally use a short timeout.
+
+        Hermes' MLX compressor is local and cheap to retry; forcing the cloud
+        300s floor turns a fast failure into a long stall.
+        """
+        client = _client_sync("http://127.0.0.1:10243/v1")
+        local = 60.0
+        p1, p2, p3, p4 = _patches(client, task_timeout=local)
+        with p1, p2, p3, p4:
+            call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "x"}],
+            )
+        timeout = client.chat.completions.create.call_args.kwargs["timeout"]
+        assert timeout == local
+
 
 class TestCompressionTimeoutFloorAsync:
     """Async ``async_call_llm`` mirrors the sync floor (Layer 2)."""
@@ -187,3 +204,16 @@ class TestCompressionTimeoutFloorAsync:
             )
         timeout = client.chat.completions.create.call_args.kwargs["timeout"]
         assert timeout == low
+
+    @pytest.mark.asyncio
+    async def test_async_local_compression_endpoint_is_not_floored(self):
+        client = _client_async("http://localhost:10243/v1")
+        local = 60.0
+        p1, p2, p3, p4 = _patches(client, task_timeout=local)
+        with p1, p2, p3, p4:
+            await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "x"}],
+            )
+        timeout = client.chat.completions.create.call_args.kwargs["timeout"]
+        assert timeout == local

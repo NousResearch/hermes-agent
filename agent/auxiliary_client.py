@@ -6360,6 +6360,16 @@ _DEFAULT_AUX_TIMEOUT = 30.0
 _COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
 
 
+def _is_local_aux_base_url(base_url: Optional[str]) -> bool:
+    """Return True for local auxiliary endpoints (mlx/ollama/lmstudio/etc.)."""
+    try:
+        host = base_url_hostname(str(base_url or ""))
+    except Exception:
+        return False
+    host = (host or "").strip().lower().strip("[]")
+    return host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
 def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     """Return the config dict for auxiliary.<task>, or {} when unavailable.
 
@@ -6418,7 +6428,12 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
     return default
 
 
-def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
+def _effective_aux_timeout(
+    task: str,
+    timeout: Optional[float],
+    *,
+    base_url: Optional[str] = None,
+) -> float:
     """Resolve the effective timeout for an auxiliary LLM call.
 
     Uses the caller-provided ``timeout`` when given; otherwise reads
@@ -6430,7 +6445,7 @@ def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
     and it is a minimum (``max``), so a config value already above it is kept.
     """
     effective = timeout if timeout is not None else _get_task_timeout(task)
-    if timeout is None and task == "compression":
+    if timeout is None and task == "compression" and not _is_local_aux_base_url(base_url):
         effective = max(effective, _COMPRESSION_TIMEOUT_FLOOR_SECONDS)
     return effective
 
@@ -7034,10 +7049,9 @@ def call_llm(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
-    effective_timeout = _effective_aux_timeout(task, timeout)
-
     # Log what we're about to do — makes auxiliary operations visible
     _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
+    effective_timeout = _effective_aux_timeout(task, timeout, base_url=_base_info or resolved_base_url)
     if task:
         logger.info("Auxiliary %s: using %s (%s)%s",
                      task, resolved_provider or "auto", final_model or "default",
@@ -7656,12 +7670,11 @@ async def async_call_llm(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
-    effective_timeout = _effective_aux_timeout(task, timeout)
-
     # Pass the client's actual base_url (not just resolved_base_url) so
     # endpoint-specific temperature overrides can distinguish
     # api.moonshot.ai vs api.kimi.com/coding even on auto-detected routes.
     _client_base = str(getattr(client, "base_url", "") or "")
+    effective_timeout = _effective_aux_timeout(task, timeout, base_url=_client_base or resolved_base_url)
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,

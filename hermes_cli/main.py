@@ -13123,6 +13123,23 @@ def main():
                 seen_plugin_commands.add(cmd_info["name"])
 
             discover_plugins()
+            # Bundled *platform* plugins (photon, raft, ...) register their
+            # CLI subcommand lazily via platform_registry.register_deferred()
+            # to avoid importing every channel adapter (grpc, aiohttp, etc.)
+            # on every invocation. That means their entry in
+            # PluginManager._cli_commands is only populated once the
+            # deferred loader actually runs. Nothing upstream of this point
+            # ever asks platform_registry for a platform, so without this
+            # resolve, `hermes photon ...` / `hermes raft ...` never appear
+            # as subcommands no matter how the plugin is enabled. Resolve
+            # every pending loader now — cheap because we're already inside
+            # the `_plugin_cli_discovery_needed()` branch, so this cost is
+            # only paid on invocations that already need plugin discovery.
+            try:
+                from gateway.platform_registry import platform_registry as _plat_registry
+                _plat_registry._resolve_all()
+            except Exception:
+                pass
             for cmd_info in get_plugin_manager()._cli_commands.values():
                 if cmd_info["name"] in seen_plugin_commands:
                     continue

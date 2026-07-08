@@ -348,7 +348,10 @@ class WeComAdapter(BasePlatformAdapter):
                     self._mark_connected()
                     logger.info("[%s] Reconnected", self.name)
                 except Exception as reconnect_exc:
-                    logger.warning("[%s] Reconnect failed: %s", self.name, reconnect_exc)
+                    logger.warning(
+                        "[%s] Reconnect failed (attempt %d, next backoff %ds): %s",
+                        self.name, backoff_idx, RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)], reconnect_exc,
+                    )
 
     async def _read_events(self) -> None:
         """Read websocket frames until the connection closes."""
@@ -487,7 +490,18 @@ class WeComAdapter(BasePlatformAdapter):
         if not isinstance(body, dict):
             return
 
-        msg_id = str(body.get("msgid") or self._payload_req_id(payload) or uuid.uuid4().hex)
+        msg_id = str(body.get("msgid") or "")
+        if not msg_id:
+            # No msgid — fall back to req_id for dedup.  If req_id is also
+            # absent, synthesise a stable key from chat+sender+content so
+            # WeCom re-deliveries (ACK loss) are still deduplicated (#47573).
+            req_id = self._payload_req_id(payload)
+            if req_id:
+                msg_id = req_id
+            else:
+                _sender = body.get("from") if isinstance(body.get("from"), dict) else {}
+                msg_id = f"synthetic:{body.get('chatid','')}:{_sender.get('userid','')}:{body.get('content','')[:64]}"
+                logger.debug("[%s] No msgid or req_id — synthesised dedup key: %s", self.name, msg_id)
         if self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate message %s ignored", self.name, msg_id)
             return
@@ -1228,11 +1242,17 @@ class WeComAdapter(BasePlatformAdapter):
         return response
 
     async def _send_reply_markdown(self, reply_req_id: str, content: str) -> Dict[str, Any]:
+        truncated = content[:self.MAX_MESSAGE_LENGTH]
+        if len(content) > self.MAX_MESSAGE_LENGTH:
+            logger.warning(
+                "[%s] Markdown content truncated from %d to %d chars (reply %s)",
+                self.name, len(content), self.MAX_MESSAGE_LENGTH, reply_req_id,
+            )
         response = await self._send_reply_request(
             reply_req_id,
             {
                 "msgtype": "markdown",
-                "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
+                "markdown": {"content": truncated},
             },
         )
         self._raise_for_wecom_error(response, "send reply markdown")
@@ -1372,12 +1392,18 @@ class WeComAdapter(BasePlatformAdapter):
             if reply_req_id:
                 response = await self._send_reply_markdown(reply_req_id, content)
             else:
+                truncated = content[:self.MAX_MESSAGE_LENGTH]
+                if len(content) > self.MAX_MESSAGE_LENGTH:
+                    logger.warning(
+                        "[%s] Markdown content truncated from %d to %d chars (chat %s)",
+                        self.name, len(content), self.MAX_MESSAGE_LENGTH, chat_id,
+                    )
                 response = await self._send_request(
                     APP_CMD_SEND,
                     {
                         "chatid": chat_id,
                         "msgtype": "markdown",
-                        "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
+                        "markdown": {"content": truncated},
                     },
                 )
         except asyncio.TimeoutError:
@@ -1388,6 +1414,20 @@ class WeComAdapter(BasePlatformAdapter):
 
         error = self._response_error(response)
         if error:
+            # errcode 846609 ("aibot websocket not subscribed") indicates the
+            # server-side WebSocket subscription has been lost.  Close the
+            # local socket so _listen_loop triggers a reconnect (#47564).
+            errcode = response.get("errcode", 0)
+            if errcode == 846609 and self._ws and not self._ws.closed:
+                logger.warning(
+                    "[%s] errcode 846609 received — closing stale WebSocket to trigger reconnect",
+                    self.name,
+                )
+                self._mark_disconnected()
+                try:
+                    await self._ws.close()
+                except Exception:
+                    pass
             return SendResult(success=False, error=error)
 
         return SendResult(

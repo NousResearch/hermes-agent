@@ -1477,6 +1477,13 @@ if _config_path.exists():
         # config.yaml overrides .env for these since it's the documented config path.
         _terminal_cfg = _cfg.get("terminal", {})
         if _terminal_cfg and isinstance(_terminal_cfg, dict):
+            # Normalize legacy env_type key to backend for gateway-mode parity
+            # with cli.py's config bridge, which maps env_type → TERMINAL_ENV.
+            # The documented key is "backend"; accept `env_type` as a fallback
+            # so existing profiles written with the legacy key work the same
+            # when served by the gateway (serve / dashboard / desktop app).
+            if "backend" not in _terminal_cfg and "env_type" in _terminal_cfg:
+                _terminal_cfg["backend"] = _terminal_cfg["env_type"]
             _terminal_backend = str(
                 _terminal_cfg.get("backend") or os.environ.get("TERMINAL_ENV") or ""
             ).strip().lower()

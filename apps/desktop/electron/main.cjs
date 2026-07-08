@@ -4802,6 +4802,24 @@ function readActiveDesktopProfile() {
   return null
 }
 
+// Returns the CLI's sticky active profile from ~/.hermes/active_profile, or
+// null when unset / invalid.  Used as a fallback when readActiveDesktopProfile()
+// returns null (no desktop-specific preference), so the Desktop honours the
+// same profile the user selected via `hermes profile use <name>` in the CLI.
+function readCliActiveProfile() {
+  try {
+    const activePath = path.join(HERMES_HOME, 'active_profile')
+    if (!fs.existsSync(activePath)) return null
+    const name = fs.readFileSync(activePath, 'utf8').trim()
+    if (name && name !== 'default' && PROFILE_NAME_RE.test(name)) {
+      return name
+    }
+  } catch {
+    // Missing, unreadable, or invalid → no fallback.
+  }
+  return null
+}
+
 function writeActiveDesktopProfile(name) {
   const value = typeof name === 'string' ? name.trim() : ''
 
@@ -5252,7 +5270,17 @@ async function waitForBackendExit(child, timeoutMs = 5000) {
 // returns the desktop's stored preference, or null when unset (legacy launch
 // that defers to active_profile / default).
 function primaryProfileKey() {
-  return readActiveDesktopProfile() || 'default'
+  // 1. Desktop-specific preference (active-profile.json in userData).
+  const desktopProfile = readActiveDesktopProfile()
+  if (desktopProfile) return desktopProfile
+  // 2. Fall back to the CLI's sticky active_profile so the Desktop
+  //    automatically uses the profile the user selected via
+  //    `hermes profile use <name>` without requiring a separate
+  //    Desktop-side configuration step.
+  const cliProfile = readCliActiveProfile()
+  if (cliProfile) return cliProfile
+  // 3. No preference → legacy behaviour (default HERMES_HOME).
+  return 'default'
 }
 
 // Resolve a backend connection for the given profile. Routes the primary
@@ -5572,9 +5600,10 @@ async function startHermes() {
     // Pin the desktop's chosen profile via the global --profile flag. This is
     // deterministic (it wins over the sticky ~/.hermes/active_profile file) and
     // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
-    // unset preference keeps the legacy launch so existing installs are
-    // unaffected.
-    const activeProfile = readActiveDesktopProfile()
+    // unset preference falls back to the CLI's active_profile so the Desktop
+    // automatically honours `hermes profile use <name>` without a separate
+    // Desktop-side configuration step.
+    const activeProfile = readActiveDesktopProfile() || readCliActiveProfile()
     if (activeProfile) {
       backendArgs.unshift('--profile', activeProfile)
     }

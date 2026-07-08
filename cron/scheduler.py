@@ -2213,7 +2213,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     # Inject output from referenced cron jobs as context.
     context_from = job.get("context_from")
     if context_from:
-        from cron.jobs import OUTPUT_DIR
+        from cron.jobs import _job_output_dir
         if isinstance(context_from, str):
             context_from = [context_from]
         for source_job_id in context_from:
@@ -2228,7 +2228,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 )
                 continue
             try:
-                job_output_dir = OUTPUT_DIR / source_job_id
+                job_output_dir = _job_output_dir(source_job_id)
                 if not job_output_dir.exists():
                     continue  # silent skip — no output yet
                 output_files = sorted(

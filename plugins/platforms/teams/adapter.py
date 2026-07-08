@@ -23,6 +23,7 @@ Configuration in config.yaml:
 from __future__ import annotations
 
 import asyncio
+import base64
 import html
 import inspect
 import json
@@ -712,6 +713,13 @@ class TeamsAdapter(BasePlatformAdapter):
         # Maps chat_id → ConversationReference captured from incoming messages.
         # Used to send cards with the correct conversation type (personal/group/channel).
         self._conv_refs: Dict[str, Any] = {}
+        self._graph_ingest_enabled = _parse_bool(
+            extra.get("graph_ingest_attachments")
+            or os.getenv("TEAMS_GRAPH_INGEST_ATTACHMENTS", ""),
+            default=True,
+        )
+        self._graph_ingest_client: Any | None = None
+        self._graph_ingest_warning_logged = False
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
@@ -911,6 +919,291 @@ class TeamsAdapter(BasePlatformAdapter):
             return None
         return cached_path, content_type, "image"
 
+    @staticmethod
+    def _object_field(value: Any, *names: str) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            for name in names:
+                if name in value:
+                    return value[name]
+            return None
+        data = getattr(value, "__dict__", None)
+        if isinstance(data, dict):
+            for name in names:
+                if name in data:
+                    return data[name]
+        if type(value).__module__.startswith("unittest.mock"):
+            return None
+        for name in names:
+            try:
+                current = getattr(value, name)
+            except Exception:
+                continue
+            if type(current).__module__.startswith("unittest.mock"):
+                continue
+            return current
+        return None
+
+    @classmethod
+    def _nested_field(cls, value: Any, *paths: tuple[str, ...]) -> Any:
+        for path in paths:
+            current = value
+            for name in path:
+                current = cls._object_field(current, name)
+                if current is None:
+                    break
+            else:
+                return current
+        return None
+
+    @staticmethod
+    def _string_value(value: Any) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, (int, float)):
+            return str(value).strip()
+        return ""
+
+    @staticmethod
+    def _clean_mime_type(value: Any) -> str:
+        raw = str(value or "").split(";", 1)[0].strip().lower()
+        return raw if "/" in raw else ""
+
+    @staticmethod
+    def _sharing_url_to_graph_token(url: str) -> str:
+        encoded = base64.urlsafe_b64encode(url.encode("utf-8")).decode("ascii")
+        return f"u!{encoded.rstrip('=')}"
+
+    def _graph_message_path_for_activity(
+        self,
+        activity: Any,
+        conv_type: str,
+    ) -> Optional[str]:
+        msg_id = self._string_value(self._object_field(activity, "id"))
+        if not msg_id:
+            return None
+
+        conversation = self._object_field(activity, "conversation")
+        channel_data = (
+            self._object_field(activity, "channel_data", "channelData")
+            or self._object_field(activity, "channeldata")
+            or {}
+        )
+
+        if conv_type == "groupChat":
+            chat_id = self._string_value(self._object_field(conversation, "id"))
+            if not chat_id:
+                return None
+            return f"/chats/{quote(chat_id, safe='')}/messages/{quote(msg_id, safe='')}"
+
+        if conv_type != "channel":
+            return None
+
+        team_id = self._string_value(
+            self._nested_field(
+                channel_data,
+                ("team", "aadGroupId"),
+                ("team", "aad_group_id"),
+                ("team", "id"),
+            )
+        )
+        channel_id = self._string_value(
+            self._nested_field(
+                channel_data,
+                ("channel", "id"),
+                ("teamsChannelId",),
+                ("channelId",),
+            )
+        ) or self._string_value(self._object_field(conversation, "id"))
+        if not team_id or not channel_id:
+            return None
+
+        reply_to_id = self._string_value(
+            self._object_field(activity, "reply_to_id", "replyToId")
+            or self._nested_field(channel_data, ("replyToId",), ("reply_to_id",))
+        )
+        base = (
+            f"/teams/{quote(team_id, safe='')}/channels/"
+            f"{quote(channel_id, safe='')}/messages"
+        )
+        if reply_to_id and reply_to_id != msg_id:
+            return (
+                f"{base}/{quote(reply_to_id, safe='')}/replies/"
+                f"{quote(msg_id, safe='')}"
+            )
+        return f"{base}/{quote(msg_id, safe='')}"
+
+    def _build_graph_ingest_client(self) -> Any | None:
+        if self._graph_ingest_client is not None:
+            return self._graph_ingest_client
+
+        try:
+            from tools.microsoft_graph_auth import (
+                GraphCredentials,
+                MicrosoftGraphTokenProvider,
+            )
+            from tools.microsoft_graph_client import MicrosoftGraphClient
+
+            credentials = GraphCredentials.from_env(required=False)
+            if credentials is None:
+                if not (self._tenant_id and self._client_id and self._client_secret):
+                    return None
+                credentials = GraphCredentials(
+                    tenant_id=self._tenant_id,
+                    client_id=self._client_id,
+                    client_secret=self._client_secret,
+                )
+            self._graph_ingest_client = MicrosoftGraphClient(
+                MicrosoftGraphTokenProvider(credentials),
+                user_agent="Hermes-Agent/teams-attachment-ingest",
+            )
+            return self._graph_ingest_client
+        except Exception as exc:
+            if not self._graph_ingest_warning_logged:
+                logger.info("[teams] Graph attachment ingest unavailable: %s", exc)
+                self._graph_ingest_warning_logged = True
+            return None
+
+    @staticmethod
+    def _message_may_have_graph_media(
+        *,
+        text: str,
+        saw_attachment: bool,
+    ) -> bool:
+        if saw_attachment:
+            return True
+        lowered = (text or "").lower()
+        return (
+            "<img" in lowered
+            or "<attachment" in lowered
+            or "hostedcontents" in lowered
+        )
+
+    async def _cache_graph_reference_attachment(
+        self,
+        graph_client: Any,
+        attachment: dict[str, Any],
+    ) -> Optional[tuple[str, str, str]]:
+        content_url = self._string_value(attachment.get("contentUrl"))
+        if not content_url:
+            return None
+
+        content_type = str(attachment.get("contentType") or "").strip().lower()
+        filename = self._string_value(attachment.get("name")) or "teams-attachment"
+        share_token = self._sharing_url_to_graph_token(content_url)
+        binary = await graph_client.get_bytes(
+            f"/shares/{quote(share_token, safe='!')}/driveItem/content"
+        )
+        mime_type = self._clean_mime_type(binary.content_type)
+        if content_type and content_type != "reference" and "/" in content_type:
+            mime_type = mime_type or content_type
+        cached = cache_media_bytes(
+            binary.content,
+            filename=filename,
+            mime_type=mime_type,
+        )
+        if not cached:
+            return None
+        return cached.path, cached.media_type, cached.kind
+
+    async def _cache_graph_hosted_content(
+        self,
+        graph_client: Any,
+        message_path: str,
+        hosted: dict[str, Any],
+        index: int,
+    ) -> Optional[tuple[str, str, str]]:
+        hosted_id = self._string_value(hosted.get("id"))
+        if not hosted_id:
+            return None
+        binary = await graph_client.get_bytes(
+            f"{message_path}/hostedContents/{quote(hosted_id, safe='')}/$value"
+        )
+        cached = cache_media_bytes(
+            binary.content,
+            filename=f"teams-hosted-content-{index}",
+            mime_type=self._clean_mime_type(binary.content_type),
+            default_kind="image",
+        )
+        if not cached:
+            return None
+        return cached.path, cached.media_type, cached.kind
+
+    async def _cache_graph_message_media(
+        self,
+        activity: Any,
+        conv_type: str,
+    ) -> list[tuple[str, str, str]]:
+        """Cache Teams channel/group media that only Graph exposes reliably."""
+        if not self._graph_ingest_enabled or conv_type not in {"channel", "groupChat"}:
+            return []
+
+        message_path = self._graph_message_path_for_activity(activity, conv_type)
+        if not message_path:
+            return []
+
+        graph_client = self._build_graph_ingest_client()
+        if graph_client is None:
+            return []
+
+        cached_media: list[tuple[str, str, str]] = []
+        try:
+            message = await graph_client.get_json(message_path)
+        except Exception as exc:
+            logger.debug("[teams] Failed to read Teams message via Graph: %s", exc)
+            return []
+
+        for attachment in (message or {}).get("attachments") or []:
+            if not isinstance(attachment, dict):
+                continue
+            content_type = str(attachment.get("contentType") or "").strip().lower()
+            content_url = self._string_value(attachment.get("contentUrl"))
+            if not content_url or content_type == "forwardedmessagereference":
+                continue
+            try:
+                cached = await self._cache_graph_reference_attachment(
+                    graph_client,
+                    attachment,
+                )
+                if cached:
+                    cached_media.append(cached)
+            except Exception as exc:
+                logger.warning(
+                    "[teams] Failed to cache Graph message attachment '%s': %s",
+                    attachment.get("name") or content_url,
+                    exc,
+                )
+
+        try:
+            hosted_contents = await graph_client.collect_paginated(
+                f"{message_path}/hostedContents"
+            )
+        except Exception as exc:
+            logger.debug("[teams] Failed to list Teams hosted content via Graph: %s", exc)
+            hosted_contents = []
+
+        for index, hosted in enumerate(hosted_contents, start=1):
+            if not isinstance(hosted, dict):
+                continue
+            try:
+                cached = await self._cache_graph_hosted_content(
+                    graph_client,
+                    message_path,
+                    hosted,
+                    index,
+                )
+                if cached:
+                    cached_media.append(cached)
+            except Exception as exc:
+                logger.warning(
+                    "[teams] Failed to cache Graph hosted content '%s': %s",
+                    hosted.get("id"),
+                    exc,
+                )
+
+        return cached_media
+
     async def _on_message(self, ctx: ActivityContext[MessageActivity]) -> None:
         """Process an incoming Teams message and dispatch to the gateway."""
         activity = ctx.activity
@@ -969,6 +1262,7 @@ class TeamsAdapter(BasePlatformAdapter):
         media_urls = []
         media_types = []
         media_kinds = []
+        saw_media_attachment = False
         for att in getattr(activity, "attachments", None) or []:
             content_url = getattr(att, "content_url", None)
             content_type = (getattr(att, "content_type", None) or "").lower()
@@ -981,6 +1275,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 continue
             if content_type.startswith("application/vnd.microsoft.card"):
                 continue
+            saw_media_attachment = True
 
             if content_type == "application/vnd.microsoft.teams.file.download.info":
                 # File consent-free download: content carries a pre-authed
@@ -1041,6 +1336,18 @@ class TeamsAdapter(BasePlatformAdapter):
                         "[teams] Failed to cache attachment '%s' (%s): %s",
                         att_name or content_url, content_type, e,
                     )
+
+        if not media_urls and self._message_may_have_graph_media(
+            text=text,
+            saw_attachment=saw_media_attachment,
+        ):
+            for path, media_type, kind in await self._cache_graph_message_media(
+                activity,
+                conv_type,
+            ):
+                media_urls.append(path)
+                media_types.append(media_type)
+                media_kinds.append(kind)
 
         # Classification: DOCUMENT wins over PHOTO/VIDEO/AUDIO for mixed
         # attachments — run.py's image handling keys off the per-path image/*

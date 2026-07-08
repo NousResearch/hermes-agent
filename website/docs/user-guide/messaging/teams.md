@@ -177,6 +177,31 @@ When the agent needs to run a potentially dangerous command, it sends an Adaptiv
 
 Clicking a button resolves the approval inline and replaces the card with the decision.
 
+### Channel and Group Chat Media
+
+Teams delivers personal-chat attachments through the normal Bot Framework attachment payload. Channel and group-chat messages can be more fragmented: inline images may be exposed as Graph hosted content, while file attachments are often SharePoint or OneDrive references.
+
+Hermes handles this in layers:
+
+1. Cache the Bot Framework attachment payload first.
+2. If a channel or group-chat message looked like it had media but no media was cached, read the message through Microsoft Graph.
+3. Download inline images from the message's `hostedContents`.
+4. Download reference attachments through the Graph Drive `/shares/{shareId}/driveItem/content` endpoint and cache them as images, documents, video, or audio based on the returned bytes and filename.
+
+Graph media fallback is enabled by default. Disable it if you only want Bot Framework attachment handling:
+
+```yaml
+platforms:
+  teams:
+    enabled: true
+    extra:
+      graph_ingest_attachments: false
+```
+
+To use channel or group-chat Graph media fallback, configure the Teams app manifest with `webApplicationInfo` and `authorization.permissions.resourceSpecific` entries for `ChannelMessage.Read.Group` and/or `ChatMessage.Read.Chat`. The Entra app ID can be the same as the bot ID. Microsoft documents this manifest shape in [Receive all messages for bots and agents](https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/channel-messages-for-bots-and-agents).
+
+For Graph authentication, Hermes uses `MSGRAPH_TENANT_ID`, `MSGRAPH_CLIENT_ID`, and `MSGRAPH_CLIENT_SECRET` when present. If those are not set, it falls back to the Teams bot credentials. Reading SharePoint or OneDrive file bytes through Graph Drive content can require app-level file permissions such as `Files.Read.All` or `Sites.Read.All`, depending on your tenant policy; see Microsoft's [Download driveItem content](https://learn.microsoft.com/en-us/graph/api/driveitem-get-content) permissions table.
+
 ### Meeting Summary Delivery (Teams Meeting Pipeline)
 
 When the [Teams meeting pipeline plugin](/user-guide/messaging/msgraph-webhook) is enabled, this adapter also handles outbound delivery of meeting summaries — one Teams integration surface, not two. After a meeting's transcript is summarized, the writer posts the summary into your chosen Teams target.
@@ -240,6 +265,7 @@ Make sure your configured port (`TEAMS_PORT`, default `3978`) is reachable from 
 | `No inference provider configured` | Check that `ANTHROPIC_API_KEY` (or another provider key) is set in `~/.hermes/.env` |
 | Bot receives messages but ignores them | Your AAD object ID may not be in `TEAMS_ALLOWED_USERS`. Run `teams status --verbose` to find it |
 | Image attachments do not reach the agent and logs show `[teams] Failed to cache image attachment` | Update Hermes to a version with authenticated Teams image fetches. Teams image `contentUrl` values can require the bot's Bot Framework token, so also verify `TEAMS_CLIENT_ID`, `TEAMS_CLIENT_SECRET`, and `TEAMS_TENANT_ID` are correct |
+| Channel or group-chat images/files still do not reach the agent | Verify the manifest has `ChannelMessage.Read.Group` and/or `ChatMessage.Read.Chat` under `authorization.permissions.resourceSpecific`, reinstall or update the app in that conversation, and make sure the Graph app can read hosted content and SharePoint/OneDrive file bytes |
 | Tunnel URL changes on restart | devtunnel URLs are persistent if you use a named tunnel (`devtunnel create hermes-bot`). ngrok and cloudflared generate a new URL each run unless you have a paid plan — update the bot endpoint with `teams app update` when it changes |
 | Teams shows "This bot is not responding" | The webhook returned an error. Check `docker logs hermes` for tracebacks |
 | `[teams] Failed to connect` in logs | The SDK failed to authenticate. Double-check your credentials and that the tenant ID matches the account you used in `teams login` |

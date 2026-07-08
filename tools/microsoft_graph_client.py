@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
@@ -17,6 +18,14 @@ DEFAULT_GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 
 class MicrosoftGraphClientError(RuntimeError):
     """Base class for Graph client failures."""
+
+
+@dataclass(frozen=True)
+class MicrosoftGraphBinaryResponse:
+    """Binary response returned by Microsoft Graph."""
+
+    content: bytes
+    content_type: str | None = None
 
 
 class MicrosoftGraphAPIError(MicrosoftGraphClientError):
@@ -112,6 +121,26 @@ class MicrosoftGraphClient:
         if response.status_code == 204 or not response.content:
             return {"deleted": True, "status_code": response.status_code}
         return self._decode_json(response)
+
+    async def get_bytes(
+        self,
+        path: str,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> MicrosoftGraphBinaryResponse:
+        response_headers = {"Accept": "*/*"}
+        if headers:
+            response_headers.update(headers)
+        response = await self._request(
+            "GET",
+            path,
+            headers=response_headers,
+            follow_redirects=True,
+        )
+        return MicrosoftGraphBinaryResponse(
+            content=response.content,
+            content_type=response.headers.get("content-type"),
+        )
 
     async def iterate_pages(
         self,
@@ -264,6 +293,7 @@ class MicrosoftGraphClient:
         params: dict[str, Any] | None = None,
         json_body: Any | None = None,
         headers: dict[str, str] | None = None,
+        follow_redirects: bool = False,
     ) -> httpx.Response:
         url = self._resolve_url(path_or_url)
         attempt = 0
@@ -287,6 +317,7 @@ class MicrosoftGraphClient:
                 async with httpx.AsyncClient(
                     timeout=httpx.Timeout(self.timeout),
                     transport=self._transport,
+                    follow_redirects=follow_redirects,
                 ) as client:
                     response = await client.request(
                         method,

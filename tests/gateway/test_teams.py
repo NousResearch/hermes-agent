@@ -764,20 +764,33 @@ class TestTeamsAttachmentClassification:
         adapter.handle_message = AsyncMock()
         return adapter
 
-    def _make_activity(self, attachments, text="see attached"):
+    def _make_activity(
+        self,
+        attachments,
+        text="see attached",
+        *,
+        activity_id="activity-att-001",
+        conversation_type="personal",
+        channel_data=None,
+        reply_to_id=None,
+    ):
         activity = MagicMock()
         activity.text = text
-        activity.id = "activity-att-001"
+        activity.id = activity_id
         activity.from_ = MagicMock()
         activity.from_.id = "user-123"
         activity.from_.aad_object_id = "aad-456"
         activity.from_.name = "Test User"
         activity.conversation = MagicMock()
         activity.conversation.id = "19:abc@thread.v2"
-        activity.conversation.conversation_type = "personal"
+        activity.conversation.conversation_type = conversation_type
         activity.conversation.name = "Test Chat"
         activity.conversation.tenant_id = "tenant-789"
         activity.attachments = attachments
+        if channel_data is not None:
+            activity.channel_data = channel_data
+        if reply_to_id is not None:
+            activity.reply_to_id = reply_to_id
         return activity
 
     def _make_ctx(self, activity):
@@ -929,6 +942,166 @@ class TestTeamsAttachmentClassification:
         adapter._fetch_attachment_bytes = AsyncMock(side_effect=Exception("boom"))
 
         activity = self._make_activity([self._file_download_attachment()])
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.TEXT
+        assert event.media_urls == []
+
+    @pytest.mark.anyio
+    async def test_channel_hosted_image_falls_back_to_graph(self):
+        from gateway.platforms.base import MessageType
+
+        class FakeGraphClient:
+            def __init__(self):
+                self.paths = []
+
+            async def get_json(self, path):
+                self.paths.append(("get_json", path))
+                return {"attachments": []}
+
+            async def collect_paginated(self, path):
+                self.paths.append(("collect_paginated", path))
+                return [{"id": "hosted-id"}]
+
+            async def get_bytes(self, path):
+                self.paths.append(("get_bytes", path))
+                return SimpleNamespace(content=b"image-bytes", content_type="image/png")
+
+        adapter = self._make_adapter()
+        graph_client = FakeGraphClient()
+        adapter._build_graph_ingest_client = MagicMock(return_value=graph_client)
+
+        cached_media = SimpleNamespace(
+            path="/tmp/graph-img.png",
+            media_type="image/png",
+            kind="image",
+        )
+        channel_data = {
+            "team": {"aadGroupId": "team-guid"},
+            "channel": {"id": "19:channel@thread.tacv2"},
+        }
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(_teams_mod, "cache_image_from_url", AsyncMock(return_value=None))
+            cache_media = MagicMock(return_value=cached_media)
+            mp.setattr(_teams_mod, "cache_media_bytes", cache_media)
+
+            activity = self._make_activity(
+                [self._image_attachment()],
+                activity_id="1614618259349",
+                conversation_type="channel",
+                channel_data=channel_data,
+            )
+            await adapter._on_message(self._make_ctx(activity))
+
+        message_path = (
+            "/teams/team-guid/channels/19%3Achannel%40thread.tacv2/"
+            "messages/1614618259349"
+        )
+        assert graph_client.paths == [
+            ("get_json", message_path),
+            ("collect_paginated", f"{message_path}/hostedContents"),
+            ("get_bytes", f"{message_path}/hostedContents/hosted-id/$value"),
+        ]
+        cache_media.assert_called_once_with(
+            b"image-bytes",
+            filename="teams-hosted-content-1",
+            mime_type="image/png",
+            default_kind="image",
+        )
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/graph-img.png"]
+
+    @pytest.mark.anyio
+    async def test_channel_reference_attachment_uses_graph_shares_download(self):
+        from gateway.platforms.base import MessageType
+
+        class FakeGraphClient:
+            def __init__(self):
+                self.paths = []
+
+            async def get_json(self, path):
+                self.paths.append(("get_json", path))
+                return {
+                    "attachments": [
+                        {
+                            "contentType": "reference",
+                            "contentUrl": "https://contoso.sharepoint.com/sites/team/Shared Documents/file.pdf",
+                            "name": "file.pdf",
+                        }
+                    ]
+                }
+
+            async def collect_paginated(self, path):
+                self.paths.append(("collect_paginated", path))
+                return []
+
+            async def get_bytes(self, path):
+                self.paths.append(("get_bytes", path))
+                return SimpleNamespace(content=b"%PDF-1.4 graph", content_type="application/pdf")
+
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(side_effect=Exception("bot download failed"))
+        graph_client = FakeGraphClient()
+        adapter._build_graph_ingest_client = MagicMock(return_value=graph_client)
+
+        cached_media = SimpleNamespace(
+            path="/tmp/file.pdf",
+            media_type="application/pdf",
+            kind="document",
+        )
+        channel_data = {
+            "team": {"aadGroupId": "team-guid"},
+            "channel": {"id": "19:channel@thread.tacv2"},
+        }
+
+        with pytest.MonkeyPatch.context() as mp:
+            cache_media = MagicMock(return_value=cached_media)
+            mp.setattr(_teams_mod, "cache_media_bytes", cache_media)
+
+            activity = self._make_activity(
+                [self._file_download_attachment()],
+                activity_id="1614618259349",
+                conversation_type="channel",
+                channel_data=channel_data,
+            )
+            await adapter._on_message(self._make_ctx(activity))
+
+        share_token = adapter._sharing_url_to_graph_token(
+            "https://contoso.sharepoint.com/sites/team/Shared Documents/file.pdf"
+        )
+        assert (
+            "get_bytes",
+            f"/shares/{share_token}/driveItem/content",
+        ) in graph_client.paths
+        cache_media.assert_called_once_with(
+            b"%PDF-1.4 graph",
+            filename="file.pdf",
+            mime_type="application/pdf",
+        )
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_urls == ["/tmp/file.pdf"]
+
+    @pytest.mark.anyio
+    async def test_plain_channel_text_does_not_call_graph(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._make_adapter()
+        adapter._build_graph_ingest_client = MagicMock(side_effect=AssertionError("Graph should not run"))
+
+        activity = self._make_activity(
+            [],
+            text="plain channel message",
+            activity_id="1614618259349",
+            conversation_type="channel",
+            channel_data={
+                "team": {"aadGroupId": "team-guid"},
+                "channel": {"id": "19:channel@thread.tacv2"},
+            },
+        )
         await adapter._on_message(self._make_ctx(activity))
 
         event = adapter.handle_message.call_args[0][0]

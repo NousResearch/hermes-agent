@@ -3,8 +3,8 @@
   "productName": "Hermes",
   "private": true,
   "version": "0.17.0",
-  "description": "Native desktop shell for Hermes Agent.",
-  "author": "Nous Research",
+  "description": "Native desktop shell for HT AI Agent.",
+  "author": "HT AI",
   "type": "module",
   "main": "electron/main.cjs",
   "engines": {
@@ -200,11 +200,11 @@
       "entitlements": "electron/entitlements.mac.plist",
       "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
       "extendInfo": {
-        "CFBundleDisplayName": "Hermes",
+        "CFBundleDisplayName": "HT AI Agent",
         "CFBundleExecutable": "Hermes",
-        "CFBundleName": "Hermes",
-        "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
-        "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations."
+        "CFBundleName": "HT AI Agent",
+        "NSAudioCaptureUsageDescription": "HT AI Agent uses audio capture for voice conversations.",
+        "NSMicrophoneUsageDescription": "HT AI Agent uses the microphone for voice input and voice conversations."
       },
       "gatekeeperAssess": false,
       "hardenedRuntime": true,
@@ -214,7 +214,7 @@
       ]
     },
     "dmg": {
-      "title": "Install Hermes",
+      "title": "Install HT AI Agent",
       "backgroundColor": "#f5f5f7",
       "iconSize": 96,
       "window": {
@@ -236,7 +236,7 @@
       ]
     },
     "win": {
-      "legalTrademarks": "Hermes",
+      "legalTrademarks": "HT AI Agent",
       "target": [
         "nsis",
         "msi"
@@ -245,8 +245,8 @@
     },
     "linux": {
       "category": "Development",
-      "maintainer": "Nous Research <support@nousresearch.com>",
-      "synopsis": "Native desktop shell for Hermes Agent.",
+      "maintainer": "HT AI <noreply@example.com>",
+      "synopsis": "Native desktop shell for HT AI Agent.",
       "target": [
         "AppImage",
         "deb",
@@ -257,8 +257,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
-      "shortcutName": "Hermes",
-      "uninstallDisplayName": "Hermes",
+      "shortcutName": "HT AI Agent",
+      "uninstallDisplayName": "HT AI Agent",
       "warningsAsErrors": false
     }
   }

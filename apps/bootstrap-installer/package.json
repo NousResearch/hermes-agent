@@ -2,7 +2,7 @@
   "name": "@hermes/bootstrap-installer",
   "private": true,
   "version": "0.0.1",
-  "description": "Hermes Setup — signed installer that drives scripts/install.ps1 with a polished native UI.",
+  "description": "HT AI Agent Setup — signed installer that drives scripts/install.ps1 with a polished native UI.",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5175",

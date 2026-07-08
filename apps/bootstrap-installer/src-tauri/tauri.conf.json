@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Hermes",
+  "productName": "HT AI Agent Setup",
   "version": "0.0.1",
   "identifier": "com.nousresearch.hermes.setup",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Hermes",
+        "title": "HT AI Agent",
         "width": 880,
         "height": 620,
         "minWidth": 720,
@@ -34,10 +34,10 @@
   "bundle": {
     "active": true,
     "category": "DeveloperTool",
-    "shortDescription": "Hermes",
-    "longDescription": "Installs Hermes Agent on your machine. Drives scripts/install.ps1 (Windows) and scripts/install.sh (macOS/Linux).",
-    "publisher": "Nous Research",
-    "copyright": "Copyright © 2026 Nous Research",
+    "shortDescription": "HT AI Agent Setup",
+    "longDescription": "Installs HT AI Agent on your machine. Drives scripts/install.ps1 (Windows) and scripts/install.sh (macOS/Linux).",
+    "publisher": "HT AI",
+    "copyright": "© 2026 HT AI. Portions © 2025-2026 Nous Research (MIT).",
     "targets": [
       "app",
       "dmg",

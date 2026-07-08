@@ -22,7 +22,7 @@
         name="NousResearch.Hermes.Setup"
         type="win32"
     />
-    <description>Hermes Setup</description>
+    <description>HT AI Agent Setup</description>
 
     <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
         <security>

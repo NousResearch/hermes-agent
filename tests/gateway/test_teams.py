@@ -686,6 +686,83 @@ class TestTeamsMessageHandling:
         assert event.source.chat_type == "channel"
 
     @pytest.mark.anyio
+    async def test_channel_reply_uses_root_message_as_thread_id(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            conversation_type="channel",
+            activity_id="reply-message-1",
+        )
+        activity.reply_to_id = "cron-root-message-1"
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.source.thread_id == "cron-root-message-1"
+        assert event.reply_to_message_id == "cron-root-message-1"
+        assert event.source.message_id == "reply-message-1"
+
+    @pytest.mark.anyio
+    async def test_channel_message_uses_recent_cron_context_when_reply_id_missing(self, monkeypatch):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        monkeypatch.setattr(
+            TeamsAdapter,
+            "_cron_reply_context",
+            staticmethod(lambda _conversation_id, _thread_id: {
+                "thread_id": "cron-message-id",
+                "content": "Cron message body",
+            }),
+        )
+
+        activity = self._make_activity(
+            conversation_type="channel",
+            activity_id="user-reply-1",
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.source.thread_id == "cron-message-id"
+        assert event.reply_to_message_id == "cron-message-id"
+        assert event.reply_to_text == "Cron message body"
+
+    @pytest.mark.anyio
+    async def test_channel_message_uses_messageid_conversation_as_thread_id(self, monkeypatch):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        monkeypatch.setattr(
+            TeamsAdapter,
+            "_cron_reply_context",
+            staticmethod(lambda _conversation_id, _thread_id: {
+                "thread_id": _thread_id,
+                "content": "New-thread cron context",
+            }),
+        )
+
+        activity = self._make_activity(
+            conversation_id="19:channel@thread.tacv2;messageid=1780267076971",
+            conversation_type="channel",
+            activity_id="user-reply-2",
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.source.thread_id == "1780267076971"
+        assert event.reply_to_text == "New-thread cron context"
+
+    @pytest.mark.anyio
     async def test_user_id_uses_aad_object_id(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",

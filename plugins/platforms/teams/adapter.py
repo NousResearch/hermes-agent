@@ -874,6 +874,18 @@ class TeamsAdapter(BasePlatformAdapter):
         from_account = activity.from_
         user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
         user_name = getattr(from_account, "name", None) or ""
+        thread_id = self._teams_thread_id(activity)
+        if not thread_id:
+            thread_id = self._thread_id_from_conversation_id(conv.id)
+        cron_reply_context = self._cron_reply_context(conv.id, thread_id)
+        reply_to_text = None
+        if cron_reply_context:
+            if not thread_id:
+                thread_id = (
+                    cron_reply_context.get("thread_id")
+                    or cron_reply_context.get("message_id")
+                )
+            reply_to_text = cron_reply_context.get("content")
 
         source = self.build_source(
             chat_id=conv.id,
@@ -882,6 +894,8 @@ class TeamsAdapter(BasePlatformAdapter):
             user_id=str(user_id),
             user_name=user_name,
             guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
+            thread_id=thread_id,
+            message_id=msg_id,
         )
 
         # Handle attachments (images, documents, video, audio)
@@ -979,8 +993,67 @@ class TeamsAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
             message_id=msg_id,
+            reply_to_message_id=thread_id,
+            reply_to_text=reply_to_text,
         )
         await self.handle_message(event)
+
+    @classmethod
+    def _teams_thread_id(cls, activity: Any) -> Optional[str]:
+        """Return the root Teams activity ID when this message is a reply."""
+        channel_data = getattr(activity, "channel_data", None)
+        candidates = (
+            getattr(activity, "reply_to_id", None),
+            getattr(activity, "replyToId", None),
+            cls._nested_value(channel_data, "replyToId"),
+            cls._nested_value(channel_data, "reply_to_id"),
+            cls._nested_value(channel_data, "message", "replyToId"),
+            cls._nested_value(channel_data, "message", "reply_to_id"),
+            cls._nested_value(channel_data, "legacy", "replyToId"),
+            cls._nested_value(channel_data, "legacy", "reply_to_id"),
+        )
+        for value in candidates:
+            if isinstance(value, (str, int, float)) and value not in (None, ""):
+                text = str(value).strip()
+                if text:
+                    return text
+        return None
+
+    @staticmethod
+    def _nested_value(value: Any, *keys: str) -> Any:
+        current = value
+        for key in keys:
+            if current is None:
+                return None
+            if isinstance(current, dict):
+                current = current.get(key)
+            else:
+                current = getattr(current, key, None)
+        return current
+
+    @staticmethod
+    def _thread_id_from_conversation_id(conversation_id: Any) -> Optional[str]:
+        if not isinstance(conversation_id, str):
+            return None
+        marker = ";messageid="
+        if marker not in conversation_id:
+            return None
+        message_id = conversation_id.split(marker, 1)[1].strip()
+        return message_id or None
+
+    @staticmethod
+    def _cron_reply_context(conversation_id: str, thread_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        try:
+            from gateway.cron_reply_context import find_cron_reply_context
+
+            return find_cron_reply_context(
+                "teams",
+                str(conversation_id),
+                thread_id=str(thread_id) if thread_id else None,
+            )
+        except Exception:
+            logger.debug("[teams] failed to load cron reply context", exc_info=True)
+            return None
 
     async def _send_card(self, chat_id: str, card: "AdaptiveCard") -> "Any":
         """Send an AdaptiveCard, using a stored ConversationReference when available."""

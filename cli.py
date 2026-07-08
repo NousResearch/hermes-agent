@@ -38,11 +38,73 @@ import time
 import uuid
 import textwrap
 from collections import deque
+from typing import Dict, Optional, Any
+
+# --- quota snapshot cache (avoids HTTP on every status-bar tick) ---
+_quota_cache: Optional[Dict[str, Any]] = None
+_quota_cache_ts: float = 0
+QUOTA_CACHE_TTL = 60  # seconds — refresh quota once per minute
+
+def _get_quota_snapshot(agent) -> Dict[str, Any]:
+    """Fetch provider quota with a TTL cache to avoid blocking the render loop."""
+    global _quota_cache, _quota_cache_ts
+    now = time.monotonic()
+    if _quota_cache is not None and (now - _quota_cache_ts) < QUOTA_CACHE_TTL:
+        return _quota_cache
+    result: Dict[str, Any] = {}
+    try:
+        from agent.account_usage import fetch_account_usage
+        _provider = (getattr(agent, "model", None) or "").split("/")[0]
+        _base_url = getattr(agent, "base_url", None)
+        _api_key = getattr(agent, "api_key", None)
+        normalized = (_provider or "").strip().lower()
+        if normalized not in {"openai-codex", "anthropic", "openrouter", "zai", "nous"}:
+            _host = (_base_url or "").lower()
+            if "api.z.ai" in _host or "open.bigmodel.cn" in _host:
+                normalized = "zai"
+        if normalized in {"", "auto", "custom"}:
+            normalized = None
+        snap_acc = fetch_account_usage(
+            provider=normalized or _provider,
+            base_url=_base_url,
+            api_key=_api_key,
+        )
+        if snap_acc and snap_acc.windows:
+            best_w = max(snap_acc.windows, key=lambda w: w.used_percent)
+            result["quota_pct"] = round(best_w.used_percent)
+            if best_w.reset_at:
+                from datetime import datetime, timezone
+                _now = datetime.now(timezone.utc)
+                _reset = best_w.reset_at if best_w.reset_at.tzinfo else best_w.reset_at.replace(tzinfo=timezone.utc)
+                _secs = max(0, (_reset - _now).total_seconds())
+                if _secs > 0:
+                    h, rem = divmod(int(_secs), 3600)
+                    m, s = divmod(rem, 60)
+                    result["quota_reset"] = f"{h}h{m}m"
+            else:
+                result["quota_reset"] = "see /usage"
+    except Exception:
+        pass
+    # Fallback: rate-limit headers from last response
+    if "quota_pct" not in result:
+        try:
+            from agent.rate_limit_tracker import format_rate_limit_compact
+            rl_state = getattr(agent, "get_rate_limit_state", lambda: getattr(agent, "_rate_limit_state", None))()
+            if rl_state and rl_state.has_data:
+                rl = format_rate_limit_compact(rl_state)
+                if rl and rl != "No rate limit data.":
+                    result["quota_rl_text"] = rl
+        except Exception:
+            pass
+    _quota_cache = result
+    _quota_cache_ts = now
+    return result
+
 from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
 from pathlib import Path
-from datetime import datetime
-from typing import List, Dict, Any, Optional
+from datetime import datetime, timezone
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -4635,6 +4697,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
 
+        # --- quota / cost (cached, avoids HTTP on every tick) ---
+        try:
+            snapshot.update(_get_quota_snapshot(agent))
+        except Exception:
+            pass
+
         return snapshot
 
     @staticmethod
@@ -5094,6 +5162,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             bg_subagent_count = snapshot.get("active_background_subagents", 0)
             if bg_subagent_count:
                 parts.append(f"⛓ {bg_subagent_count}")
+            # Quota / cost indicator (cached fetch, may be absent)
+            quota_label = None
+            qp = snapshot.get("quota_pct")
+            if qp is not None:
+                qr = snapshot.get("quota_reset", "")
+                quota_label = f"💰 {qp}%{(' ' + qr) if qr else ''}"
+            elif snapshot.get("quota_rl_text"):
+                quota_label = f"💰 {snapshot['quota_rl_text']}"
+            if quota_label:
+                parts.append(quota_label)
             parts.append(duration_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
@@ -5162,6 +5240,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         ("class:status-bar-dim", " · "),
                         ("class:status-bar-dim", duration_label),
                     ])
+                    # Quota (compact view — percentage only)
+                    qp = snapshot.get("quota_pct")
+                    if qp is not None:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append((self._status_bar_context_style(qp), f"💰{qp}%"))
+                    elif snapshot.get("quota_rl_text"):
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append(("class:status-bar-dim", f"💰{snapshot['quota_rl_text']}"))
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
@@ -5205,6 +5291,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
                     ])
+                    # Quota / cost indicator (cached fetch, may be absent)
+                    qp = snapshot.get("quota_pct")
+                    if qp is not None:
+                        _q_style = self._status_bar_context_style(qp)
+                        qr = snapshot.get("quota_reset", "")
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append((_q_style, f"💰 {qp}%"))
+                        if qr:
+                            frags.append(("class:status-bar-dim", f" {qr}"))
+                    elif snapshot.get("quota_rl_text"):
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-dim", f"💰 {snapshot['quota_rl_text']}"))
                     # Position 7: per-prompt elapsed timer (live or frozen)
                     prompt_elapsed = snapshot.get("prompt_elapsed")
                     if prompt_elapsed:

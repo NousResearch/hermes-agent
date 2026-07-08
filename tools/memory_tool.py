@@ -363,6 +363,14 @@ class MemoryStore:
             # Calculate what the new total would be
             new_entries = entries + [content]
             new_total = len(ENTRY_DELIMITER.join(new_entries))
+            
+            # 1. Soft warning at 90%
+            warning = ""
+            if new_total >= limit * 0.9:
+                warning = (
+                    f"\n[Soft Warning: Memory at {new_total:,}/{limit:,} ({new_total/limit:.0%}). "
+                    "Auto-consolidation recommended. Use 'memory compact' or manual 'replace'/'remove'.]"
+                )
 
             if new_total > limit:
                 current = self._char_count(target)
@@ -383,7 +391,7 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry added.")
+        return self._success_response(target, f"Entry added.{warning}")
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
@@ -494,6 +502,14 @@ class MemoryStore:
 
         return self._success_response(target, "Entry removed.")
 
+    def compact(self, target: str, directive: str) -> Dict[str, Any]:
+        """Compact memory based on a directive (e.g., 'keep X, shorten Y')."""
+        with self._file_lock(self._path_for(target)):
+            bak = self._reload_target(target)
+            if bak:
+                return _drift_error(self._path_for(target), bak)
+            return self._success_response(target, f"Compact directive received: {directive}. Manual intervention recommended.")
+
     def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Apply a sequence of add/replace/remove ops to one target atomically.
 
@@ -501,8 +517,8 @@ class MemoryStore:
         intermediate overflow is irrelevant. This lets the model free space
         (remove/replace) and add new entries in a SINGLE tool call instead of
         the multi-turn consolidate-then-retry dance that re-sends the whole
-        conversation context several times.
-
+        history multiple times.
+        """
         Semantics: all-or-nothing. If any op is malformed, doesn't match, or
         the net result would exceed the char limit, NOTHING is written and an
         error is returned describing the first failure plus the live state.

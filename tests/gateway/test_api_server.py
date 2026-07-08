@@ -4073,3 +4073,59 @@ class TestModelRoutesAgentCreation:
         assert adapter._session_model_override_for("chan-1") == {"model": "user/model"}
         assert adapter._session_model_override_for("chan-2") is None
         assert adapter._session_model_override_for(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Event-loop offloading for synchronous SessionDB calls (P1)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionDbOffEventLoop:
+    """Regression: synchronous SessionDB calls in the OpenAI-compatible API
+    server must run OFF the aiohttp event loop. A blocking SQLite read/write on
+    the loop freezes every in-flight request under load (same class of bug as
+    gateway build_channel_directory, #60794 / #60810), so each call is wrapped
+    in asyncio.to_thread.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_existing_session_or_404_offloads(self, auth_adapter):
+        import threading
+
+        captured = {}
+
+        class FakeDB:
+            def get_session(self, session_id):
+                captured["thread"] = threading.current_thread()
+                return {"id": session_id, "source": "api_server"}
+
+        auth_adapter._session_db = FakeDB()
+        session, err = await auth_adapter._get_existing_session_or_404("sess-x")
+        assert err is None
+        assert session["id"] == "sess-x"
+        # The blocking DB call must NOT execute on the event-loop thread.
+        assert captured["thread"] is not None
+        assert captured["thread"] != threading.current_thread()
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_offloads_db_off_event_loop(self, auth_adapter):
+        import threading
+
+        captured = {}
+
+        class FakeDB:
+            def list_sessions_rich(self, **kwargs):
+                captured["thread"] = threading.current_thread()
+                return []
+
+        auth_adapter._session_db = FakeDB()
+        app = _create_app(auth_adapter)
+        app.router.add_get("/api/sessions", auth_adapter._handle_list_sessions)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                "/api/sessions",
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+        assert resp.status == 200
+        assert captured["thread"] is not None
+        assert captured["thread"] != threading.current_thread()

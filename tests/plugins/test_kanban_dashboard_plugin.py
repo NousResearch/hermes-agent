@@ -79,6 +79,28 @@ def test_board_empty(client):
     assert data["latest_event_id"] == 0
 
 
+def test_board_returns_typed_conflict_for_corrupt_db(client, monkeypatch, tmp_path):
+    corrupt_db = tmp_path / "kanban.db"
+    backup = tmp_path / "kanban.db.corrupt.test.bak"
+
+    def _raise_corrupt(*args, **kwargs):
+        raise kb.KanbanDbCorruptError(corrupt_db, backup, "database disk image is malformed")
+
+    monkeypatch.setattr(kb, "connect", _raise_corrupt)
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 409
+    assert r.json() == {
+        "detail": {
+            "code": "kanban_db_corrupt",
+            "message": (
+                "Refusing to open corrupt kanban board database. "
+                "Switch to another board or check the dashboard logs to restore the preserved backup."
+            ),
+        }
+    }
+
+
 # ---------------------------------------------------------------------------
 # POST /tasks then GET /board sees it
 # ---------------------------------------------------------------------------

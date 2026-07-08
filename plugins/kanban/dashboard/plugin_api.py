@@ -127,12 +127,31 @@ def _conn(board: Optional[str] = None):
     ``board`` is the query-param slug (already normalised by
     :func:`_resolve_board`). When ``None`` the active board is used
     via the resolution chain (env var → ``current`` file → ``default``).
+
+    Important: if a board DB is corrupt, ``kanban_db.connect`` raises
+    ``KanbanDbCorruptError``. Without handling this here FastAPI returns
+    a generic 500, which is opaque in the dashboard. Surface a typed HTTP
+    error instead so users can recover (switch board / restore backup).
     """
     try:
         kanban_db.init_db(board=board)
     except Exception as exc:
         log.warning("kanban init_db failed: %s", exc)
-    return kanban_db.connect(board=board)
+    try:
+        return kanban_db.connect(board=board)
+    except kanban_db.KanbanDbCorruptError as exc:
+        log.warning("kanban corrupt DB refused for board %r: %s", board, exc)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "kanban_db_corrupt",
+                "message": (
+                    "Refusing to open corrupt kanban board database. "
+                    "Switch to another board or check the dashboard logs to restore the preserved backup."
+                ),
+            },
+        ) from exc
+
 
 
 # ---------------------------------------------------------------------------

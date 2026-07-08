@@ -72,18 +72,29 @@
   // FastAPI bodies look like ``{"detail":"<message>"}``.  Pull the
   // human-readable message out so banners/toasts don't have to leak HTTP
   // plumbing at the user (e.g. ``409: {"detail":"…"}``).  See #26744.
-  function parseApiErrorMessage(err) {
+  function parseApiErrorDetail(err) {
     const raw = (err && err.message) ? String(err.message) : String(err || "");
     const m = raw.match(/^(\d{3}):\s*(.*)$/s);
+    const status = m ? Number(m[1]) : null;
     const body = m ? m[2] : raw;
     try {
       const parsed = JSON.parse(body);
-      if (parsed && typeof parsed.detail === "string") return parsed.detail;
+      if (parsed && typeof parsed.detail === "string") {
+        return { status, message: parsed.detail, code: null };
+      }
       if (parsed && parsed.detail && typeof parsed.detail.message === "string") {
-        return parsed.detail.message;
+        return {
+          status,
+          message: parsed.detail.message,
+          code: typeof parsed.detail.code === "string" ? parsed.detail.code : null,
+        };
       }
     } catch (_e) { /* not JSON — fall through to raw body */ }
-    return body || raw;
+    return { status, message: body || raw, code: null };
+  }
+
+  function parseApiErrorMessage(err) {
+    return parseApiErrorDetail(err).message;
   }
 
   // Order matches BOARD_COLUMNS in plugin_api.py.
@@ -522,6 +533,7 @@
     const [config, setConfig] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [errorCode, setErrorCode] = useState(null);
 
     const [tenantFilter, setTenantFilter] = useState("");
     const [assigneeFilter, setAssigneeFilter] = useState("");
@@ -575,9 +587,12 @@
           setBoardData(data);
           cursorRef.current = data.latest_event_id || 0;
           setError(null);
+          setErrorCode(null);
         })
         .catch(function (err) {
-          setError(String(err && err.message ? err.message : err));
+          const detail = parseApiErrorDetail(err);
+          setError(String(detail.message || ""));
+          setErrorCode(detail.code || null);
         })
         .finally(function () { setLoading(false); });
     }, [tenantFilter, includeArchived, board]);
@@ -1013,13 +1028,34 @@
         tx(t, "loading", "Loading Kanban board…"));
     }
     if (error && !boardData) {
-      return h(Card, null,
-        h(CardContent, { className: "p-6" },
-          h("div", { className: "text-sm text-destructive" },
-            tx(t, "loadFailed", "Failed to load Kanban board: "), error),
-          h("div", { className: "text-xs text-muted-foreground mt-2" },
-            tx(t, "loadFailedHint",
-              "The backend auto-creates kanban.db on first read. If this persists, check the dashboard logs.")),
+      const isCorruptBoardError = errorCode === "kanban_db_corrupt";
+      const loadFailedHint = isCorruptBoardError
+        ? tx(t, "loadFailedCorruptHint",
+          "This board's database looks corrupt. Switch to another board, or restore the preserved backup path shown above.")
+        : tx(t, "loadFailedHint",
+          "The backend auto-creates kanban.db on first read. If this persists, check the dashboard logs.");
+      return h(ErrorBoundary, null,
+        h("div", { className: "hermes-kanban flex flex-col gap-4" },
+          h(BoardSwitcher, {
+            board: board,
+            boardList: boardList,
+            onSwitch: switchBoard,
+            onNewClick: function () { setShowNewBoard(true); },
+            onDeleteBoard: deleteBoard,
+          }),
+          showNewBoard ? h(NewBoardDialog, {
+            onCancel: function () { setShowNewBoard(false); },
+            onCreate: function (payload) {
+              return createNewBoard(payload).then(function () { setShowNewBoard(false); });
+            },
+          }) : null,
+          h(Card, null,
+            h(CardContent, { className: "p-6" },
+              h("div", { className: "text-sm text-destructive" },
+                tx(t, "loadFailed", "Failed to load Kanban board: "), error),
+              h("div", { className: "text-xs text-muted-foreground mt-2" }, loadFailedHint),
+            ),
+          ),
         ),
       );
     }
@@ -2997,7 +3033,7 @@
           fd.append("file", f, f.name);
           // SDK.authedFetch handles auth in BOTH modes (loopback token header /
           // gated cookie) and applies the dashboard base-path prefix. The old
-          // hand-rolled Authorization:Bearer + credentials:'same-origin' sent
+          // hand-rolled Authorization:Bearer *** credentials:'same-origin' sent
           // an empty token and 401'd in gated mode.
           return SDK.authedFetch(url, { method: "POST", body: fd })
             .then(function (resp) {
@@ -3231,7 +3267,7 @@
     function downloadAttachment(a) {
       // SDK.authedFetch handles auth in BOTH modes (loopback token header /
       // gated cookie) and applies the dashboard base-path prefix. The old
-      // hand-rolled Authorization:Bearer + credentials:'same-origin' sent an
+      // hand-rolled Authorization:Bearer *** credentials:'same-origin' sent an
       // empty token and 401'd in gated mode.
       const url = withBoard(`${API}/attachments/${a.id}`, props.boardSlug);
       setDlErr(null);

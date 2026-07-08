@@ -15,7 +15,7 @@ import { cn } from '@/lib/utils'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
-import { getSessionMessages, type SessionMessage, triggerCronJob } from '../hermes'
+import { getSessionMessages, getHermesConfigRecord, type SessionMessage, triggerCronJob } from '../hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import { storedSessionIdForNotification } from '../lib/session-ids'
 import { isMessagingSource } from '../lib/session-source'
@@ -280,18 +280,37 @@ export function DesktopController() {
   // Restore that chat once, on cold start only (we're at the new-chat route and
   // haven't navigated yet). A dead/deleted id self-clears via the exhausted latch
   // below, so we never boot-loop into an error screen.
+  //
+  // Governed by display.resume_last_session (default true). When false the app
+  // always starts on a fresh new-chat instead of reopening the last session (#60812).
+  // The config fetch is async; on error we fall back to true (preserve old behavior).
   const restoredLastSessionRef = useRef(false)
   useEffect(() => {
     if (restoredLastSessionRef.current) {
       return
     }
 
-    restoredLastSessionRef.current = true
     const last = getRememberedSessionId()
-
-    if (last && location.pathname === NEW_CHAT_ROUTE) {
-      navigate(sessionRoute(last), { replace: true })
+    if (!last || location.pathname !== NEW_CHAT_ROUTE) {
+      return
     }
+
+    restoredLastSessionRef.current = true
+    void (async () => {
+      let resume = true
+      try {
+        const config = await getHermesConfigRecord()
+        const display = config.display as Record<string, unknown> | undefined
+        if (display && typeof display.resume_last_session === 'boolean') {
+          resume = display.resume_last_session
+        }
+      } catch {
+        // Config unavailable — preserve existing behavior (resume).
+      }
+      if (resume) {
+        navigate(sessionRoute(last), { replace: true })
+      }
+    })()
   }, [location.pathname, navigate])
 
   useEffect(() => {

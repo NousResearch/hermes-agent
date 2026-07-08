@@ -87,9 +87,13 @@ dependencies = [
   # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
   # and GHSA-qccp-gfcp-xxvc (header leak across origins).
   "urllib3>=2.7.0,<3",
-  # cryptography is pulled in transitively by PyJWT[crypto]; pin it explicitly
-  # so the WeCom/Weixin crypto paths can't drift below the CVE-fixed floor.
-  "cryptography==46.0.7",  # CVE-2026-39892, CVE-2026-34073
+  # cryptography is pulled in transitively by PyJWT[crypto]; pin a floor so
+  # the WeCom/Weixin crypto paths can't drift below the CVE-fixed
+  # minimum, but leave the upper bound open so security patches
+  # (>=48.0.1, fixing GHSA-537c-gmf6-5ccf) flow through automatically
+  # (#61098). Hard-pinning to a single vulnerable release trapped Hermes
+  # at CVE-2026-39892 / CVE-2026-34073 every pip cycle.
+  "cryptography>=46.0.7,<50",  # CVE-2026-39892, CVE-2026-34073
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package

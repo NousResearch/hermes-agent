@@ -129,6 +129,7 @@ import { hiddenWindowsChildOptions } from './windows-child-options'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
+import { buildPathExtCandidates, chooseUpdaterArgs, resolveVenvHermesCommand } from './windows-hermes-path'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
@@ -1415,9 +1416,7 @@ function findOnPath(command) {
   // shell-script shim named `hermes` — must not shadow `hermes.cmd`/`hermes.exe`.
   // The empty entry is kept LAST so callers that already include the extension
   // (py.exe, pwsh.exe, powershell.exe) still resolve.
-  const extensions = IS_WINDOWS
-    ? [...(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean), '']
-    : ['']
+  const extensions = buildPathExtCandidates(process.env.PATHEXT, IS_WINDOWS)
 
   for (const entry of pathEntries) {
     for (const extension of extensions) {
@@ -1437,71 +1436,21 @@ function isCommandScript(command) {
 }
 
 function unwrapWindowsVenvHermesCommand(command, backendArgs) {
-  if (!IS_WINDOWS || !command || isCommandScript(command)) {
-    return null
-  }
-
-  const resolved = path.resolve(String(command))
-
-  if (!/^hermes(?:\.exe)?$/i.test(path.basename(resolved))) {
-    return null
-  }
-
-  const scriptsDir = path.dirname(resolved)
-
-  if (path.basename(scriptsDir).toLowerCase() !== 'scripts') {
-    return null
-  }
-
-  const venvRoot = path.dirname(scriptsDir)
-  const python = getVenvPython(venvRoot)
-
-  if (!fileExists(python)) {
-    return null
-  }
-
-  const root = path.dirname(venvRoot)
-
-  // Smoke-test the venv interpreter before trusting it. A venv whose update
-  // died mid-`pip install` still has python.exe + hermes.exe on disk, but the
-  // backend dies on its first import (e.g. ModuleNotFoundError: dotenv) before
-  // the gateway ever binds. Returning it here also BYPASSED the caller's
-  // `--version` probe, so Retry/"Repair install" re-resolved the same broken
-  // venv forever instead of falling through to the bootstrap installer.
-  // Mirror isActiveRuntimeUsable(): probe with the checkout on PYTHONPATH so a
-  // healthy source-tree venv passes.
-  if (
-    !canImportHermesCli(python, {
-      env: {
-        PYTHONPATH: [...(directoryExists(root) ? [root] : []), process.env.PYTHONPATH]
-          .filter(Boolean)
-          .join(path.delimiter)
-      }
-    })
-  ) {
-    rememberLog(
-      `Ignoring venv Hermes at ${python}: runtime import probe failed (broken/partial venv); falling through to bootstrap.`
-    )
-
-    return null
-  }
-
-  return {
-    label: `existing Hermes Python at ${python}`,
-    command: python,
-    args: ['-m', 'hermes_cli.main', ...backendArgs],
-    bootstrap: false,
-    env: buildDesktopBackendEnv({
-      hermesHome: HERMES_HOME,
-      pythonPathEntries: [...(directoryExists(root) ? [root] : []), ...getVenvSitePackagesEntries(venvRoot)],
-      venvRoot
-    }),
-    kind: 'python',
-    // Surfaced so backendSupportsServe() can read this runtime's source for the
-    // `serve` capability check instead of falling back to a heavyweight probe.
-    root,
-    shell: false
-  }
+  return resolveVenvHermesCommand(command, backendArgs, {
+    isWindows: IS_WINDOWS,
+    isCommandScript,
+    fileExists,
+    directoryExists,
+    canImportHermesCli,
+    getVenvPython,
+    getVenvSitePackagesEntries,
+    buildDesktopBackendEnv,
+    hermesHome: HERMES_HOME,
+    resolvePath: (...segments) => path.resolve(...segments),
+    dirname: p => path.dirname(p),
+    basename: p => path.basename(p),
+    rememberLog
+  })
 }
 
 // Does the resolved runtime understand the `serve` subcommand? The desktop
@@ -2656,7 +2605,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
   const haveRealInstall =
     fileExists(venvPython) || fileExists(venvHermes) || fileExists(path.join(updateRoot, '.hermes-bootstrap-complete'))
 
-  const updaterArgs = haveRealInstall ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
+  const updaterArgs = chooseUpdaterArgs(haveRealInstall, branch)
 
   await releaseBackendLockForUpdate(updateRoot)
 

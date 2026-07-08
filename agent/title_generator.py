@@ -5,6 +5,7 @@ adds latency to the user-facing reply.
 """
 
 import logging
+import re
 import threading
 from typing import Callable, Optional
 
@@ -38,6 +39,39 @@ _TITLE_PROMPT_PINNED_LANGUAGE = (
     "Write the title in {language}. "
     "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
 )
+
+
+def provisional_title_from_message(
+    message: str,
+    max_length: int = 80,
+) -> Optional[str]:
+    """Derive an immediate local title from the first meaningful line."""
+    if not message:
+        return None
+
+    for line in str(message).splitlines():
+        candidate = re.sub(r"\s+", " ", line).strip()
+        if not candidate:
+            continue
+        candidate = re.sub(
+            r"^(user|human|prompt|question)\s*:\s*",
+            "",
+            candidate,
+            flags=re.I,
+        )
+        candidate = candidate.strip("`\"'[](){} ")
+        if candidate:
+            break
+    else:
+        return None
+
+    if len(candidate) <= max_length:
+        return candidate
+
+    shortened = candidate[:max_length].rstrip()
+    if " " in shortened:
+        shortened = shortened.rsplit(" ", 1)[0].rstrip()
+    return (shortened or candidate[:max_length]).rstrip(" .,;:!?") + "..."
 
 
 def _title_language() -> str:
@@ -160,26 +194,35 @@ def generate_title(
         return None
 
 
-def _persist_session_title(session_db, session_id, title):
+def _persist_session_title(
+    session_db,
+    session_id,
+    title,
+    *,
+    expected_title: Optional[str] = None,
+):
     """Persist a generated title, recovering from duplicate-title collisions.
 
-    The write goes through ``set_auto_title_if_empty`` (predicate + write in
-    one transaction) so a manual ``/title`` set while LLM generation was in
-    flight is never overwritten — a plain ``set_session_title`` fallback keeps
-    older stores working. ``set_session_title`` raises ValueError when the
-    title would collide with another session (the unique-title index). Rather
-    than swallow it and leave the session untitled (#50537), append a #N
-    suffix via get_next_title_in_lineage() when the store supports lineage
-    dedup; otherwise re-raise so the caller can decide.
+    Without a provisional title, the write uses ``set_auto_title_if_empty``.
+    With one, it uses ``compare_and_set_session_title`` so a concurrent manual
+    rename wins. Duplicate generated titles still retry through lineage
+    numbering before the same predicate is attempted again.
 
     Returns the title actually persisted, or None when a concurrent manual
     title won the race (nothing was written).
     """
-    atomic_fn = getattr(session_db, "set_auto_title_if_empty", None)
+    if expected_title is None:
+        atomic_fn = getattr(session_db, "set_auto_title_if_empty", None)
+    else:
+        atomic_fn = getattr(session_db, "compare_and_set_session_title", None)
 
     def _set(t):
-        if atomic_fn is not None:
-            if not atomic_fn(session_id, t):
+        if callable(atomic_fn):
+            if expected_title is None:
+                stored = atomic_fn(session_id, t)
+            else:
+                stored = atomic_fn(session_id, expected_title, t)
+            if not stored:
                 # Predicate failed: a title appeared while generation was in
                 # flight (manual /title wins), or the session vanished.
                 logger.debug(
@@ -188,6 +231,10 @@ def _persist_session_title(session_db, session_id, title):
                 )
                 return None
             return t
+        if expected_title is not None:
+            # Stores that can persist the provisional title must provide an
+            # atomic replacement primitive before it is safe to refine it.
+            return None
         ok = session_db.set_session_title(session_id, t)
         if ok is False:
             raise RuntimeError(
@@ -216,6 +263,7 @@ def auto_title_session(
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    provisional_title: Optional[str] = None,
 ) -> None:
     """Generate and set a session title if one doesn't already exist.
 
@@ -245,6 +293,7 @@ def auto_title_session(
             main_runtime=main_runtime,
             title_callback=title_callback,
             runtime_validator=runtime_validator,
+            provisional_title=provisional_title,
         )
     except Exception as e:
         # WARNING (not debug) so operators see it in agent.log; the message
@@ -271,6 +320,7 @@ def _auto_title_session(
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    provisional_title: Optional[str] = None,
 ) -> None:
     """Body of :func:`auto_title_session` — see its docstring."""
     if not session_db or not session_id:
@@ -279,7 +329,7 @@ def _auto_title_session(
     # Check if title already exists (user may have set one via /title before first response)
     try:
         existing = session_db.get_session_title(session_id)
-        if existing:
+        if existing != provisional_title:
             return
     except Exception:
         return
@@ -314,7 +364,12 @@ def _auto_title_session(
         return
 
     try:
-        persisted = _persist_session_title(session_db, session_id, title)
+        persisted = _persist_session_title(
+            session_db,
+            session_id,
+            title,
+            expected_title=provisional_title,
+        )
         if persisted is None:
             return
         logger.debug("Auto-generated session title: %s", persisted)
@@ -337,6 +392,7 @@ def maybe_auto_title(
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    provisional_title_callback: Optional[TitleCallback] = None,
 ) -> None:
     """Fire-and-forget title generation after the first exchange.
 
@@ -361,6 +417,24 @@ def maybe_auto_title(
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return
 
+    provisional_title = None
+    try:
+        candidate = provisional_title_from_message(user_message)
+        set_if_empty = getattr(session_db, "set_auto_title_if_empty", None)
+        if candidate and callable(set_if_empty) and set_if_empty(session_id, candidate):
+            provisional_title = candidate
+            if provisional_title_callback is not None:
+                try:
+                    provisional_title_callback(provisional_title)
+                except Exception:
+                    logger.debug(
+                        "Provisional title callback failed",
+                        exc_info=True,
+                    )
+    except Exception:
+        logger.debug("Could not set provisional session title", exc_info=True)
+        provisional_title = None
+
     thread = threading.Thread(
         target=auto_title_session,
         args=(session_db, session_id, user_message, assistant_response),
@@ -369,6 +443,7 @@ def maybe_auto_title(
             "main_runtime": main_runtime,
             "title_callback": title_callback,
             "runtime_validator": runtime_validator,
+            "provisional_title": provisional_title,
         },
         daemon=True,
         name="auto-title",

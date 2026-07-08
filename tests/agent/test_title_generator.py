@@ -8,6 +8,7 @@ from agent.title_generator import (
     generate_title,
     auto_title_session,
     maybe_auto_title,
+    provisional_title_from_message,
     _title_language,
 )
 from hermes_state import SessionDB
@@ -225,6 +226,30 @@ class TestGenerateTitle:
         mock_call_llm.assert_not_called()
 
 
+class TestProvisionalTitle:
+    """Unit tests for immediate local titles."""
+
+    def test_uses_first_meaningful_line(self):
+        title = provisional_title_from_message(
+            "\n\nQuestion: fix the broken import\nmore detail"
+        )
+        assert title == "fix the broken import"
+
+    def test_strips_common_wrapping(self):
+        title = provisional_title_from_message('  "`Debug this auth failure`"  ')
+        assert title == "Debug this auth failure"
+
+    def test_truncates_at_word_boundary(self):
+        title = provisional_title_from_message(
+            "Investigate the websocket reconnect loop after compression rotates sessions",
+            max_length=42,
+        )
+        assert title == "Investigate the websocket reconnect loop..."
+
+    def test_empty_message_returns_none(self):
+        assert provisional_title_from_message(" \n\t") is None
+
+
 class TestAutoTitleSession:
     """Tests for auto_title_session() — the sync worker function."""
 
@@ -297,6 +322,45 @@ class TestAutoTitleSession:
         with patch("agent.title_generator.generate_title", return_value=None):
             auto_title_session(db, "sess-1", "hi", "hello")
             db.set_auto_title_if_empty.assert_not_called()
+
+    def test_replaces_matching_provisional_title(self):
+        db = MagicMock()
+        db.get_session_title.return_value = "fix import"
+        db.compare_and_set_session_title.return_value = True
+
+        with patch("agent.title_generator.generate_title", return_value="Debugging Imports"):
+            auto_title_session(
+                db,
+                "sess-1",
+                "fix import",
+                "hello",
+                provisional_title="fix import",
+            )
+
+        db.compare_and_set_session_title.assert_called_once_with(
+            "sess-1", "fix import", "Debugging Imports"
+        )
+
+    def test_preserves_manual_rename_after_provisional_title(self):
+        db = MagicMock()
+        db.get_session_title.return_value = "fix import"
+        db.compare_and_set_session_title.return_value = False
+        seen = []
+
+        with patch("agent.title_generator.generate_title", return_value="Debugging Imports"):
+            auto_title_session(
+                db,
+                "sess-1",
+                "fix import",
+                "hello",
+                provisional_title="fix import",
+                title_callback=seen.append,
+            )
+
+        db.compare_and_set_session_title.assert_called_once_with(
+            "sess-1", "fix import", "Debugging Imports"
+        )
+        assert seen == []
 
     def test_never_raises_when_body_throws(self):
         """Daemon-thread target must swallow ALL exceptions (e.g. the
@@ -391,6 +455,7 @@ class TestMaybeAutoTitle:
                 main_runtime=None,
                 title_callback=None,
                 runtime_validator=None,
+                provisional_title="hello",
             )
 
     def test_skips_when_title_generation_disabled(self):
@@ -409,6 +474,7 @@ class TestMaybeAutoTitle:
             maybe_auto_title(db, "sess-1", "hello", "hi there", history)
 
         mock_auto.assert_not_called()
+        db.set_auto_title_if_empty.assert_not_called()
 
     def test_forwards_failure_callback_to_worker(self):
         """maybe_auto_title must forward failure_callback into the thread."""
@@ -437,7 +503,38 @@ class TestMaybeAutoTitle:
                 main_runtime=None,
                 title_callback=None,
                 runtime_validator=None,
+                provisional_title="hello",
             )
+
+    def test_sets_provisional_title_before_background_generation(self):
+        db = MagicMock()
+        db.set_auto_title_if_empty.return_value = True
+        provisional_seen = []
+        final_seen = []
+        history = [
+            {"role": "user", "content": "fix zed titles"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(
+                db,
+                "sess-1",
+                "fix zed titles",
+                "hi there",
+                history,
+                title_callback=final_seen.append,
+                provisional_title_callback=provisional_seen.append,
+            )
+            import time
+            time.sleep(0.3)
+
+        db.set_auto_title_if_empty.assert_called_once_with(
+            "sess-1", "fix zed titles"
+        )
+        assert provisional_seen == ["fix zed titles"]
+        assert final_seen == []
+        assert mock_auto.call_args.kwargs["provisional_title"] == "fix zed titles"
 
     def test_skips_if_no_response(self):
         db = MagicMock()
@@ -510,6 +607,30 @@ class TestAutoTitleDuplicateHandling:
         db.set_auto_title_if_empty.return_value = False
         assert _persist_session_title(db, "sess-1", "Some Title") is None
         db.set_session_title.assert_not_called()
+
+    def test_dedupes_refined_title_without_losing_provisional_guard(self):
+        from agent.title_generator import _persist_session_title
+
+        db = MagicMock()
+        db.compare_and_set_session_title.side_effect = [
+            ValueError("in use"),
+            True,
+        ]
+        db.get_next_title_in_lineage.return_value = "Debugging Import Error #2"
+
+        persisted = _persist_session_title(
+            db,
+            "sess-1",
+            "Debugging Import Error",
+            expected_title="fix import",
+        )
+
+        assert persisted == "Debugging Import Error #2"
+        assert db.compare_and_set_session_title.call_args_list[-1].args == (
+            "sess-1",
+            "fix import",
+            "Debugging Import Error #2",
+        )
 
     def test_not_found_raises_runtime_error_internally(self):
         # Legacy store (no atomic write): set_session_title returning False

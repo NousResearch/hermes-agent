@@ -7921,6 +7921,11 @@ def test_prompt_submit_auto_titles_session_on_complete(monkeypatch):
         "api_key": _Agent.api_key,
         "api_mode": "codex_responses",
     }
+    assert callable(mock_title.call_args.kwargs["title_callback"])
+    assert (
+        mock_title.call_args.kwargs["provisional_title_callback"]
+        is mock_title.call_args.kwargs["title_callback"]
+    )
 
 
 def test_prompt_submit_skips_auto_title_when_interrupted(monkeypatch):

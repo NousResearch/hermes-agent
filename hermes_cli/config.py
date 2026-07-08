@@ -2101,6 +2101,13 @@ DEFAULT_CONFIG = {
     "memory": {
         "memory_enabled": True,
         "user_profile_enabled": True,
+        # Imprints — one-tap 👍/👎 on Hermes' replies in the desktop app. Each
+        # tap is a standing "remember I liked/disliked this" signal (no reply,
+        # no model call) kept in memories/imprints.jsonl and surfaced as a
+        # compact preference block at the next session start. On by default; it
+        # is inert until the user actually taps a thumb. Turn it off to hide the
+        # controls and stop recording. See tools/imprint_store.py.
+        "imprints_enabled": True,
         # Approval gate for memory writes (add/replace/remove), applied to BOTH
         # foreground agent turns and the background self-improvement review fork
         # (the source of unprompted "wrong assumption" saves users reported).

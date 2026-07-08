@@ -434,6 +434,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             if user_block:
                 volatile_parts.append(user_block)
 
+    # Imprints (desktop 👍/👎) — a compact preference block, self-gating on the
+    # log file so it costs nothing until the user has actually tapped a thumb.
+    if getattr(agent, "_imprints_enabled", False):
+        try:
+            from tools.imprint_store import render_imprints_block
+            imprint_block = render_imprints_block()
+            if imprint_block:
+                volatile_parts.append(imprint_block)
+        except Exception:
+            pass
+
     # External memory provider system prompt block (additive to built-in)
     if agent._memory_manager:
         try:

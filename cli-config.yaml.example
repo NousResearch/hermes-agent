@@ -546,7 +546,12 @@ memory:
   
   # User profile: preferences, communication style, expectations
   user_profile_enabled: true
-  
+
+  # Imprints: one-tap 👍/👎 on Hermes' replies in the desktop app. Each tap is a
+  # standing "remember I liked/disliked this" (no reply, no model call) that
+  # Hermes reads as a preference at the next session start. Inert until tapped.
+  imprints_enabled: true
+
   # Character limits (~2.75 chars per token, model-independent)
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens

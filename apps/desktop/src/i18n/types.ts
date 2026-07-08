@@ -1866,6 +1866,10 @@ export interface Translations {
       refresh: string
       moreActions: string
       branchNewChat: string
+      imprintUp: string
+      imprintUpActive: string
+      imprintDown: string
+      imprintDownActive: string
       dismissError: string
       readAloudFailed: string
       preparingAudio: string

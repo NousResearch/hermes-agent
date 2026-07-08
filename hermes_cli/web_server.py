@@ -664,6 +664,15 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Input behavior while agent is running",
         "options": ["interrupt", "queue", "steer"],
     },
+    "memory.imprints_enabled": {
+        # Type is inferred as "boolean" from the DEFAULT_CONFIG value; only the
+        # description is overridden so the Settings switch reads clearly.
+        "description": (
+            "Imprints — show 👍/👎 on Hermes' replies. A tap is a one-click "
+            "\"remember I liked/disliked this\" with no reply and no model call; "
+            "Hermes reads it as a preference at the next session start."
+        ),
+    },
     "approvals.mode": {
         "type": "select",
         "description": "Dangerous command approval mode",
@@ -11252,6 +11261,26 @@ class MemoryReset(BaseModel):
     target: str = "all"
 
 
+class ImprintBody(BaseModel):
+    # The assistant message being reacted to, and the reaction.
+    message_id: str
+    # "up" (👍), "down" (👎), or "none" to clear an existing reaction.
+    valence: str
+    # A short slice of the reply, for the preference block. Re-bounded and
+    # threat-scanned server-side; safe to leave empty.
+    excerpt: str = ""
+    session_id: str = ""
+
+
+def _imprints_enabled() -> bool:
+    """Whether the imprints feature is on (memory.imprints_enabled, default on)."""
+    cfg = load_config()
+    mem = cfg.get("memory")
+    if isinstance(mem, dict) and "imprints_enabled" in mem:
+        return bool(mem.get("imprints_enabled"))
+    return True
+
+
 @app.get("/api/memory")
 async def get_memory_status():
     cfg = load_config()
@@ -11310,6 +11339,50 @@ async def reset_memory(body: MemoryReset):
             except OSError as exc:
                 raise HTTPException(status_code=500, detail=f"Could not delete {fname}: {exc}")
     return {"ok": True, "deleted": deleted}
+
+
+@app.get("/api/memory/imprints")
+async def list_imprints():
+    """Current 👍/👎 per message, so the desktop can restore thumb state on load."""
+    from tools.imprint_store import imprint_states
+
+    return {"enabled": _imprints_enabled(), "imprints": imprint_states()}
+
+
+@app.post("/api/memory/imprint")
+async def record_imprint_route(body: ImprintBody):
+    """Record (or clear) an imprint. Zero-LLM: this only touches the log file.
+
+    valence "up"/"down" records; "none" clears. When the feature is disabled the
+    call is accepted but nothing is written, so a stale client can't keep
+    recording after the user turns imprints off.
+    """
+    from tools.imprint_store import clear_imprint, record_imprint
+
+    message_id = (body.message_id or "").strip()
+    if not message_id:
+        raise HTTPException(status_code=400, detail="message_id is required")
+    valence = (body.valence or "").strip().lower()
+    if valence not in {"up", "down", "none"}:
+        raise HTTPException(status_code=400, detail="valence must be up, down, or none")
+
+    if not _imprints_enabled():
+        return {"ok": True, "recorded": False, "reason": "disabled"}
+
+    if valence == "none":
+        cleared = clear_imprint(message_id)
+        return {"ok": True, "recorded": False, "cleared": cleared}
+
+    try:
+        record_imprint(
+            message_id,
+            valence,
+            excerpt=body.excerpt or "",
+            session_id=body.session_id or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, "recorded": True, "valence": valence}
 
 
 # ---------------------------------------------------------------------------

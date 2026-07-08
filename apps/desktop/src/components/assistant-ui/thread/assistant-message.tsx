@@ -30,11 +30,22 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon, XIcon } from '@/lib/icons'
+import {
+  GitBranchIcon,
+  Loader2Icon,
+  ThumbDown,
+  ThumbDownFilled,
+  ThumbUp,
+  ThumbUpFilled,
+  Volume2Icon,
+  VolumeXIcon,
+  XIcon
+} from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import { $imprints, $imprintsEnabled, toggleImprint } from '@/store/imprints'
 import { notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
 
@@ -158,6 +169,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
         )}
         data-slot="aui_msg-actions"
       >
+        <ImprintButtons getMessageText={getMessageText} messageId={messageId} />
         <CopyButton appearance="icon" buttonSize="icon" label={copy.copy} text={getMessageText} />
         <ActionBarPrimitive.Reload asChild>
           <TooltipIconButton onClick={() => triggerHaptic('submit')} tooltip={copy.refresh}>
@@ -181,6 +193,54 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
         </DropdownMenu>
       </ActionBarPrimitive.Root>
     </div>
+  )
+}
+
+// Imprints — one-tap 👍/👎 that Hermes remembers as a preference. Tapping the
+// active thumb again clears it. Zero-LLM: this never starts an agent turn. The
+// controls only render when the feature is enabled (memory.imprints_enabled).
+const ImprintButtons: FC<{ messageId: string; getMessageText: () => string }> = ({ messageId, getMessageText }) => {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
+  const enabled = useStore($imprintsEnabled)
+  const imprints = useStore($imprints)
+  const current = imprints[messageId]
+
+  const tap = useCallback(
+    (valence: 'up' | 'down') => {
+      triggerHaptic('submit')
+      // Send a short slice of the reply; the backend re-bounds and threat-scans it.
+      void toggleImprint(messageId, valence, { excerpt: getMessageText().slice(0, 280) })
+    },
+    [messageId, getMessageText]
+  )
+
+  if (!enabled) {
+    return null
+  }
+
+  const liked = current === 'up'
+  const disliked = current === 'down'
+
+  return (
+    <>
+      <TooltipIconButton
+        aria-pressed={liked}
+        className={cn(liked && 'text-primary')}
+        onClick={() => tap('up')}
+        tooltip={liked ? copy.imprintUpActive : copy.imprintUp}
+      >
+        {liked ? <ThumbUpFilled /> : <ThumbUp />}
+      </TooltipIconButton>
+      <TooltipIconButton
+        aria-pressed={disliked}
+        className={cn(disliked && 'text-primary')}
+        onClick={() => tap('down')}
+        tooltip={disliked ? copy.imprintDownActive : copy.imprintDown}
+      >
+        {disliked ? <ThumbDownFilled /> : <ThumbDown />}
+      </TooltipIconButton>
+    </>
   )
 }
 

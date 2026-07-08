@@ -1149,6 +1149,43 @@ export function resetMemory(target: 'all' | 'memory' | 'user'): Promise<{ ok: bo
   })
 }
 
+// Imprints — durable 👍/👎 on Hermes' replies. See store/imprints.ts.
+export type ImprintValence = 'up' | 'down'
+export interface ImprintState {
+  message_id: string
+  valence: ImprintValence
+}
+
+export function listImprints(): Promise<{ enabled: boolean; imprints: ImprintState[] }> {
+  return window.hermesDesktop.api<{ enabled: boolean; imprints: ImprintState[] }>({
+    ...profileScoped(),
+    path: '/api/memory/imprints'
+  })
+}
+
+/**
+ * Record, flip, or clear an imprint. valence "none" clears it. Zero-LLM on the
+ * backend — this only writes the imprint log, it never starts an agent turn.
+ */
+export function recordImprint(input: {
+  messageId: string
+  valence: ImprintValence | 'none'
+  excerpt?: string
+  sessionId?: string
+}): Promise<{ ok: boolean; recorded: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean; recorded: boolean }>({
+    ...profileScoped(),
+    path: '/api/memory/imprint',
+    method: 'POST',
+    body: {
+      message_id: input.messageId,
+      valence: input.valence,
+      excerpt: input.excerpt ?? '',
+      session_id: input.sessionId ?? ''
+    }
+  })
+}
+
 export function getCuratorStatus(): Promise<CuratorStatusResponse> {
   return window.hermesDesktop.api<CuratorStatusResponse>({
     ...profileScoped(),

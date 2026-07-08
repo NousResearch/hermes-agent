@@ -84,6 +84,29 @@ def _format_duration(seconds: float | int | None) -> str:
     return f"{secs}s"
 
 
+def _clean_progress_text(value: Any, *, fallback: str = "working", max_len: int = 96) -> str:
+    """Return a compact user-facing status string without raw identifiers."""
+    text = str(value or "").strip() or fallback
+    text = re.sub(r"\s+", " ", text)
+    # Drop common machine identifiers from progress cards; these are noisy in
+    # Telegram and are still available in logs for diagnostics.
+    text = re.sub(r"\b(?:taskId|task_id|agent|session_id|subagent_id)=[^\s|,;]+", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b\d{8}_\d{6}_[0-9a-f]{6,}(?::\d+)?\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" -|,;") or fallback
+    if len(text) > max_len:
+        text = text[: max_len - 1].rstrip() + "…"
+    return text
+
+
+def _worker_label(index: int, child: dict) -> str:
+    """Prefer human labels; fall back to Worker N instead of raw IDs."""
+    for key in ("name", "persona", "title", "role"):
+        value = _clean_progress_text(child.get(key), fallback="", max_len=40)
+        if value:
+            return value
+    return f"Worker {index}"
+
+
 def _format_gateway_workstream_progress(
     *,
     activity: dict | None,
@@ -91,64 +114,59 @@ def _format_gateway_workstream_progress(
     session_id: str | None,
     run_generation: int | None,
 ) -> str:
-    """Format long-running gateway updates as adaptive workstream cards.
+    """Format every long-running gateway update as a clean workstream card.
 
-    Replaces the generic "Still working..." bubble with a Telegram-friendly
-    status card that shows the active top-level workstream plus any active
-    child subagents known to the parent AIAgent.
+    The card is intentionally user-facing: it avoids raw task/agent IDs in the
+    main body, groups work into a summary + worker list, and keeps only a short
+    reference line when a session/run value exists for troubleshooting.
     """
     activity = activity or {}
     pct = _activity_percent(activity)
     bar = _progress_bar(pct)
     status = "running"
-    icon = "🔄"
-    taskflow = session_id or "gateway-run"
-    if run_generation is not None:
-        taskflow = f"{taskflow}:{run_generation}"
     updated = datetime.now().strftime("%Y-%m-%d %H:%M")
-    children = activity.get("active_children") or []
-    active = 1 + len(children)
-    current = activity.get("current_tool") or activity.get("last_activity_desc") or "working"
-    main_tasks = [str(current)]
-    if activity.get("current_tool") and activity.get("last_activity_desc") and activity.get("last_activity_desc") != activity.get("current_tool"):
-        main_tasks.append(str(activity.get("last_activity_desc")))
+    children = [child for child in (activity.get("active_children") or []) if isinstance(child, dict)]
+    worker_count = len(children)
+    current = _clean_progress_text(activity.get("current_tool") or activity.get("last_activity_desc"))
+    latest = _clean_progress_text(activity.get("last_activity_desc") or current)
 
     lines = [
-        f"## Workstream 1: {icon} Hermes",
-        f"Progress: [{bar}] {pct}% | status: {status}",
-        f"TaskFlow: {taskflow}",
-        f"Updated: {updated} | tasks: {active} | active: {active} | failures: 0",
+        "## 🔄 Hermes is working",
+        f"[{bar}] {pct}% · {status} · {_format_duration(elapsed_seconds)} elapsed",
         "",
-        "Subagents / workers:",
-        "  1. 🔄 Hermes",
-        "     Job title: Main agent / orchestrator",
-        f"     Progress: [{bar}] {pct}% | status: {status}",
-        f"     Time spent: {_format_duration(elapsed_seconds)} | runtime: gateway-agent",
-        "     Main tasks:",
+        "Work summary",
+        f"• Current focus: {current}",
+        f"• Latest update: {latest}",
+        f"• Team: 1 orchestrator + {worker_count} worker{'s' if worker_count != 1 else ''} · 0 failures",
+        f"• Updated: {updated}",
+        "",
+        "Workers",
+        "1. 🔄 Orchestrator",
+        f"   [{bar}] {pct}% · gateway · {_format_duration(elapsed_seconds)}",
+        "   Role: Main agent",
+        f"   Doing: {latest}",
     ]
-    for task in main_tasks[:3]:
-        lines.append(f"     - {task}")
-    lines.extend([
-        f"     IDs: agent=main | taskId={activity.get('task_id') or session_id or 'current'}",
-        f"     Latest update: {activity.get('last_activity_desc') or current}",
-    ])
 
-    for idx, child in enumerate(children, 2):
+    for idx, child in enumerate(children, 1):
         cpct = _activity_percent(child)
         cbar = _progress_bar(cpct)
-        child_name = child.get("subagent_id") or f"Subagent {idx - 1}"
-        child_current = child.get("current_tool") or child.get("last_activity_desc") or "working"
-        child_model = child.get("model") or "subagent"
+        label = _worker_label(idx, child)
+        child_current = _clean_progress_text(child.get("last_activity_desc") or child.get("current_tool"))
+        child_model = _clean_progress_text(child.get("model"), fallback="subagent", max_len=56)
         lines.extend([
-            f"  {idx}. 🔄 {child_name}",
-            f"     Job title: Subagent worker ({child_model})",
-            f"     Progress: [{cbar}] {cpct}% | status: running",
-            f"     Time spent: {_format_duration(child.get('seconds_since_activity'))} since update | runtime: subagent",
-            "     Main tasks:",
-            f"     - {child_current}",
-            f"     IDs: agent={child_name} | taskId={child.get('task_id') or child.get('session_id') or 'child'}",
-            f"     Latest update: {child.get('last_activity_desc') or child_current}",
+            f"{idx + 1}. 🔄 {label}",
+            f"   [{cbar}] {cpct}% · subagent · {_format_duration(child.get('seconds_since_activity'))} since update",
+            f"   Role: Subagent · model: {child_model}",
+            f"   Updated: {_format_duration(child.get('seconds_since_activity'))} ago",
+            f"   Doing: {child_current}",
         ])
+
+    if session_id:
+        reference = _clean_progress_text(session_id, fallback="session", max_len=48)
+        if run_generation is not None:
+            reference = f"{reference} · run {run_generation}"
+        lines.extend(["", f"Reference: {reference}"])
+
     return "\n".join(lines)
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by

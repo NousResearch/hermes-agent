@@ -31,7 +31,7 @@ def test_format_duration_uses_compact_human_units():
     assert _format_duration(None) == "0s"
 
 
-def test_workstream_progress_card_includes_main_agent_and_child_subagents():
+def test_workstream_progress_card_uses_clean_user_facing_layout_without_raw_ids():
     card = _format_gateway_workstream_progress(
         activity={
             "budget_used": 3,
@@ -41,7 +41,7 @@ def test_workstream_progress_card_includes_main_agent_and_child_subagents():
             "task_id": "parent-task",
             "active_children": [
                 {
-                    "subagent_id": "sa-reviewer",
+                    "subagent_id": "20260708_043811_d27c98:30",
                     "model": "qwen/qwen3-coder:free",
                     "budget_used": 1,
                     "budget_max": 5,
@@ -57,19 +57,26 @@ def test_workstream_progress_card_includes_main_agent_and_child_subagents():
         run_generation=4,
     )
 
-    assert "## Workstream 1: 🔄 Hermes" in card
-    assert "Progress: [███░░░░░░░] 30% | status: running" in card
-    assert "TaskFlow: telegram-session:4" in card
-    assert "Updated:" in card
-    assert "tasks: 2 | active: 2 | failures: 0" in card
-    assert "Subagents / workers:" in card
-    assert "Job title: Main agent / orchestrator" in card
-    assert "- delegate_task" in card
-    assert "- coordinating production readiness" in card
-    assert "sa-reviewer" in card
-    assert "Job title: Subagent worker (qwen/qwen3-coder:free)" in card
-    assert "Time spent: 12s since update | runtime: subagent" in card
-    assert "IDs: agent=sa-reviewer | taskId=child-task" in card
+    assert "## 🔄 Hermes is working" in card
+    assert "[███░░░░░░░] 30% · running · 2m 5s elapsed" in card
+    assert "Work summary" in card
+    assert "• Current focus: delegate_task" in card
+    assert "• Latest update: coordinating production readiness" in card
+    assert "• Team: 1 orchestrator + 1 worker · 0 failures" in card
+    assert "Workers" in card
+    assert "1. 🔄 Orchestrator" in card
+    assert "Role: Main agent" in card
+    assert "2. 🔄 Worker 1" in card
+    assert "Role: Subagent · model: qwen/qwen3-coder:free" in card
+    assert "Updated: 12s ago" in card
+    assert "Doing: running targeted tests" in card
+    assert "Reference: telegram-session · run 4" in card
+    assert "TaskFlow:" not in card
+    assert "IDs:" not in card
+    assert "taskId=" not in card
+    assert "parent-task" not in card
+    assert "child-task" not in card
+    assert "20260708_043811_d27c98:30" not in card
 
 
 def test_workstream_progress_card_handles_missing_activity_defensively():
@@ -80,6 +87,9 @@ def test_workstream_progress_card_handles_missing_activity_defensively():
         run_generation=None,
     )
 
-    assert "TaskFlow: gateway-run" in card
-    assert "Progress: [█░░░░░░░░░] 10% | status: running" in card
-    assert "Latest update: working" in card
+    assert "## 🔄 Hermes is working" in card
+    assert "[█░░░░░░░░░] 10% · running · 0s elapsed" in card
+    assert "• Current focus: working" in card
+    assert "Reference:" not in card
+    assert "TaskFlow:" not in card
+    assert "IDs:" not in card

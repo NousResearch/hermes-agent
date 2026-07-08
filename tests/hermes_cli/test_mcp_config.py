@@ -132,6 +132,23 @@ class TestMcpList:
         assert "key=***" in out
         assert "supersecret" not in out
 
+    def test_redact_url_preserves_fragments(self):
+        from hermes_cli.mcp_config import _redact_url
+
+        url = "https://example.test/mcp?access_token=supersecret#frag"
+
+        assert _redact_url(url) == "https://example.test/mcp?access_token=***#frag"
+
+    def test_list_handles_non_string_url_values(self, tmp_path, capsys):
+        _seed_config(tmp_path, {
+            "remote": {"url": 12345},
+        })
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list()
+        out = capsys.readouterr().out
+        assert "12345" in out
+
 
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_remove
@@ -511,6 +528,24 @@ class TestMcpTest:
         out = capsys.readouterr().out
         assert "access_token=***" in out
         assert "supersecret" not in out
+
+    def test_test_handles_non_string_url_values(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {
+            "ink": {"url": 12345},
+        })
+
+        def mock_probe(name, config, **kw):
+            return []
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        cmd_mcp_test(_make_args(name="ink"))
+        out = capsys.readouterr().out
+        assert "Transport: HTTP → 12345" in out
+
 
 # ---------------------------------------------------------------------------
 # Tests: env var interpolation

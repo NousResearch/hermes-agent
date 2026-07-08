@@ -323,8 +323,55 @@ def _require_tty(command_name: str) -> None:
         sys.exit(1)
 
 
+# ---------------------------------------------------------------------------
+# Find project root — handles both development and package installations
+# (Brew, pip install, etc.) where the repository structure may differ.
+# ---------------------------------------------------------------------------
+def _find_hermes_root() -> Path:
+    """Find the hermes repository root.
+
+    Tries multiple strategies:
+    1. Conventional PROJECT_ROOT (works in development environment)
+    2. Search upward for pyproject.toml (works in package installations)
+    3. HERMES_ROOT environment variable (manual override)
+
+    Returns a Path pointing to the repository root (contains pyproject.toml).
+    """
+    # Strategy 1: Try the conventional PROJECT_ROOT
+    # This works in development: hermes_cli/main.py → hermes_cli/ → repo root
+    project_root = Path(__file__).parent.parent.resolve()
+    if (project_root / "apps" / "desktop" / "package.json").exists():
+        return project_root
+
+    # Strategy 2: Search upward for pyproject.toml
+    # This works in package installations (Brew, pip, etc.) where the file
+    # layout may differ. Start from the main.py file and walk up.
+    path = Path(__file__).resolve()
+    for _ in range(10):  # Don't search too far up
+        # Check if this directory is the repo root
+        if (path / "pyproject.toml").exists():
+            if (path / "apps" / "desktop" / "package.json").exists():
+                return path
+        parent = path.parent
+        if parent == path:  # Reached filesystem root
+            break
+        path = parent
+
+    # Strategy 3: Fallback to HERMES_ROOT environment variable
+    # Users can set HERMES_ROOT=/path/to/hermes-repo to override
+    if "HERMES_ROOT" in os.environ:
+        root = Path(os.environ["HERMES_ROOT"]).resolve()
+        if (root / "pyproject.toml").exists():
+            if (root / "apps" / "desktop" / "package.json").exists():
+                return root
+
+    # Final fallback: return the original PROJECT_ROOT
+    # This will trigger the "Desktop GUI source not found" error later
+    return project_root
+
+
 # Add project root to path
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+PROJECT_ROOT = _find_hermes_root()
 sys.path.insert(0, str(PROJECT_ROOT))
 
 

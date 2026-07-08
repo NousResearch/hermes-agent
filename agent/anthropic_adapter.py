@@ -1112,18 +1112,64 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
         logger.debug("No refresh token available — cannot refresh")
         return None
 
+    # Claude Code OAuth refresh tokens are single-use. Multiple concurrent
+    # callers (every anthropic_messages API call runs
+    # _try_refresh_anthropic_client_credentials, plus auxiliary tasks, plus
+    # the credential pool) can otherwise each POST the same refresh token,
+    # invalidate one another, and drive Anthropic's refresh endpoint into
+    # 429s — after which the sole Anthropic credential is marked exhausted
+    # and every live turn silently falls back to another provider.
+    #
+    # Serialize the read→POST→write-back through the shared cross-process
+    # auth-store flock (reentrant, so the credential-pool refresh path that
+    # already holds it does not deadlock). Once inside the lock, re-read the
+    # live credential file: if the winner already rotated the token, adopt it
+    # and skip the POST entirely.
     try:
-        refreshed = refresh_anthropic_oauth_pure(refresh_token, use_json=False)
-        _write_claude_code_credentials(
-            refreshed["access_token"],
-            refreshed["refresh_token"],
-            refreshed["expires_at_ms"],
-        )
-        logger.debug("Successfully refreshed Claude Code OAuth token")
-        return refreshed["access_token"]
-    except Exception as e:
-        logger.debug("Failed to refresh Claude Code token: %s", e)
-        return None
+        from hermes_cli.auth import _auth_store_lock, AUTH_LOCK_TIMEOUT_SECONDS
+        from utils import env_float
+
+        refresh_timeout_seconds = env_float("HERMES_ANTHROPIC_REFRESH_TIMEOUT_SECONDS", 30)
+        lock_timeout = max(float(AUTH_LOCK_TIMEOUT_SECONDS), float(refresh_timeout_seconds) + 5.0)
+        _lock_cm = _auth_store_lock(timeout_seconds=lock_timeout)
+    except Exception:
+        # If the lock helper is unavailable for any reason, fall back to the
+        # unserialized path rather than failing the refresh outright.
+        _lock_cm = None
+
+    def _do_refresh() -> Optional[str]:
+        # Re-read inside the lock: the winner may have already rotated the
+        # token while we waited, in which case adopt it and skip the POST.
+        latest = read_claude_code_credentials()
+        if latest:
+            latest_token = latest.get("accessToken", "")
+            latest_exp = latest.get("expiresAt", 0) or 0
+            if (
+                latest_token
+                and latest_token != creds.get("accessToken", "")
+                and latest_exp > 0
+                and is_claude_code_token_valid(latest)
+            ):
+                logger.debug("Adopted concurrently-refreshed Claude Code OAuth token (in-lock)")
+                return latest_token
+        effective_refresh = (latest or {}).get("refreshToken", "") or refresh_token
+        try:
+            refreshed = refresh_anthropic_oauth_pure(effective_refresh, use_json=False)
+            _write_claude_code_credentials(
+                refreshed["access_token"],
+                refreshed["refresh_token"],
+                refreshed["expires_at_ms"],
+            )
+            logger.debug("Successfully refreshed Claude Code OAuth token")
+            return refreshed["access_token"]
+        except Exception as e:
+            logger.debug("Failed to refresh Claude Code token: %s", e)
+            return None
+
+    if _lock_cm is None:
+        return _do_refresh()
+    with _lock_cm:
+        return _do_refresh()
 
 
 def _write_claude_code_credentials(

@@ -8,7 +8,7 @@ or [websockets.md](websockets.md).
 ## Setup
 
 ```bash
-npm install -g agentmail-cli
+npm install -g agentmail-cli@latest
 export AGENTMAIL_API_KEY="am_..."
 agentmail inboxes list --format json
 ```
@@ -22,7 +22,7 @@ agentmail inboxes create \
   --client-id support-agent-primary \
   --format json
 
-agentmail inboxes retrieve --inbox-id support@agentmail.to --format json
+agentmail inboxes get --inbox-id support@agentmail.to --format json
 ```
 
 Omit `domain` to use `@agentmail.to`. Use stable `client_id` values for
@@ -48,8 +48,8 @@ Send both `text` and `html` when possible. Recipient limit is 50 total across
 
 ```bash
 agentmail inboxes:messages list --inbox-id support@agentmail.to --label unread --format json
-agentmail inboxes:messages retrieve --inbox-id support@agentmail.to --message-id <message_id> --format json
-agentmail inboxes:threads retrieve --inbox-id support@agentmail.to --thread-id <thread_id> --format json
+agentmail inboxes:messages get --inbox-id support@agentmail.to --message-id <message_id> --format json
+agentmail inboxes:threads get --inbox-id support@agentmail.to --thread-id <thread_id> --format json
 ```
 
 For LLM input, prefer `extracted_text` or `extracted_html`. Some email has
@@ -83,8 +83,8 @@ Use labels as lightweight state: `unread`, `handled`, `needs-review`.
 agentmail inboxes:messages update \
   --inbox-id support@agentmail.to \
   --message-id <message_id> \
-  --add-label handled \
-  --remove-label unread \
+  --add-labels handled \
+  --remove-labels unread \
   --format json
 ```
 

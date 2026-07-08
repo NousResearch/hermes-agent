@@ -34,7 +34,7 @@ use REST only when the CLI is missing a required operation.
 - Install the CLI:
 
 ```bash
-npm install -g agentmail-cli
+npm install -g agentmail-cli@latest
 ```
 
 - Export an API key:
@@ -67,7 +67,7 @@ agentmail inboxes list --format json
 
 ## Procedure
 
-1. Install `agentmail-cli` and verify `agentmail inboxes list --format json`.
+1. Install `agentmail-cli@latest` and verify `agentmail inboxes list --format json`.
 2. If no API key is available, complete [signup.md](references/signup.md).
 3. Use [core.md](references/core.md) for inbox, send, read, reply, forward,
    label, thread, and attachment flows.

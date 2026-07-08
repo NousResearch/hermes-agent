@@ -6,7 +6,7 @@ and provide the OTP.
 ## Sign Up
 
 ```bash
-npm install -g agentmail-cli
+npm install -g agentmail-cli@latest
 agentmail agent sign-up \
   --human-email you@example.com \
   --username my-agent \

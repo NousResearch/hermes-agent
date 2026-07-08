@@ -608,6 +608,7 @@ _agent_browser_resolved = False
 # agent-browser v0.25.3+ supports ``--engine lightpanda`` natively.
 _cached_browser_engine: Optional[str] = None
 _browser_engine_resolved = False
+_VALID_BROWSER_ENGINES = {"auto", "lightpanda", "chrome"}
 
 
 def _is_legacy_provider_registry_overridden() -> bool:
@@ -865,15 +866,30 @@ def _get_browser_engine() -> str:
             _cached_browser_engine = env_val
 
     # Validate: agent-browser only accepts "chrome" and "lightpanda".
-    _VALID_ENGINES = {"auto", "lightpanda", "chrome"}
-    if _cached_browser_engine not in _VALID_ENGINES:
+    if _cached_browser_engine not in _VALID_BROWSER_ENGINES:
         logger.warning(
             "Unknown browser engine %r (valid: %s), falling back to 'auto'",
-            _cached_browser_engine, ", ".join(sorted(_VALID_ENGINES)),
+            _cached_browser_engine, ", ".join(sorted(_VALID_BROWSER_ENGINES)),
         )
         _cached_browser_engine = "auto"
 
     return _cached_browser_engine
+
+
+def _effective_browser_engine(_engine_override: Optional[str] = None) -> str:
+    """Return the engine value for a single browser command."""
+    if _engine_override is None:
+        return _get_browser_engine()
+    engine = str(_engine_override).strip().lower()
+    if not engine:
+        return _get_browser_engine()
+    if engine not in _VALID_BROWSER_ENGINES:
+        logger.warning(
+            "Unknown browser engine override %r; falling back to 'auto'",
+            _engine_override,
+        )
+        return "auto"
+    return engine
 
 
 def _should_inject_engine(engine: str) -> bool:
@@ -1393,6 +1409,7 @@ def _socket_safe_tmpdir() -> str:
 # Stores: session_name (always), bb_session_id + cdp_url (cloud mode only)
 _active_sessions: Dict[str, Dict[str, Any]] = {}  # session_key -> {session_name, ...}
 _recording_sessions: set = set()  # session_keys with active recordings
+_browser_command_context_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
 # Tracks the most recent session_key used per task_id. Set by browser_navigate()
 # after it chooses a backend for a URL; read by every non-nav browser tool
@@ -1443,6 +1460,122 @@ _cleanup_running = False
 _cleanup_lock = threading.Lock()
 
 
+def _copy_browser_command_context(context: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a defensive copy of cached browser command context."""
+    return {
+        "cmd_prefix": list(context["cmd_prefix"]),
+        "backend_args": list(context["backend_args"]),
+        "task_socket_dir": context["task_socket_dir"],
+        "browser_env": dict(context["browser_env"]),
+    }
+
+
+def _invalidate_browser_command_context_cache(task_id: Optional[str] = None) -> None:
+    """Drop cached argv/env context for one browser session or all sessions."""
+    with _cleanup_lock:
+        if task_id is None:
+            _browser_command_context_cache.clear()
+            return
+        for cache_key in list(_browser_command_context_cache):
+            if cache_key[0] == task_id:
+                _browser_command_context_cache.pop(cache_key, None)
+
+
+def _browser_command_context_signature(session_info: Dict[str, Any]) -> Tuple[str, str]:
+    return (
+        str(session_info.get("session_name") or ""),
+        str(session_info.get("cdp_url") or ""),
+    )
+
+
+def _get_browser_command_context(
+    task_id: str,
+    session_info: Dict[str, Any],
+    browser_cmd: str,
+    engine: str,
+) -> Dict[str, Any]:
+    """Build or reuse immutable-ish per-session command context.
+
+    The returned lists/dict are always fresh copies so callers can append the
+    per-command subcommand/args or pass env to subprocess without mutating the
+    cached base context for subsequent browser tool calls.
+    """
+    session_key = str(session_info.get("session_key") or task_id)
+    cache_key = (session_key, engine)
+    session_signature = _browser_command_context_signature(session_info)
+
+    with _cleanup_lock:
+        cached = _browser_command_context_cache.get(cache_key)
+        if cached and cached.get("session_signature") == session_signature:
+            return _copy_browser_command_context(cached)
+        if cached:
+            _browser_command_context_cache.pop(cache_key, None)
+
+    # Keep concrete executable paths intact, even when they contain spaces.
+    # Only the synthetic npx fallback needs to expand into multiple argv items.
+    # shutil.which resolves npx → npx.cmd on Windows; bare "npx" stays on POSIX.
+    if browser_cmd == "npx agent-browser":
+        _npx_bin = shutil.which("npx") or "npx"
+        cmd_prefix = [_npx_bin, "agent-browser"]
+    else:
+        cmd_prefix = [browser_cmd]
+
+    if session_info.get("cdp_url"):
+        # Cloud mode — connect to remote Browserbase browser via CDP.
+        # IMPORTANT: Do NOT use --session with --cdp. In agent-browser >=0.13,
+        # --session creates a local browser instance and silently ignores --cdp.
+        backend_args = ["--cdp", session_info["cdp_url"]]
+    else:
+        backend_args = ["--session", session_info["session_name"]]
+
+    if engine != "auto" and not _is_camofox_mode() and not session_info.get("cdp_url"):
+        backend_args += ["--engine", engine]
+
+    task_socket_dir = os.path.join(
+        _socket_safe_tmpdir(),
+        f"agent-browser-{session_info['session_name']}"
+    )
+
+    browser_env = _build_browser_env()
+    browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
+    browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
+
+    if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
+        idle_ms = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
+        browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = idle_ms
+
+    if (
+        "AGENT_BROWSER_ARGS" not in browser_env
+        and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
+    ):
+        if _needs_chromium_sandbox_bypass():
+            logger.debug(
+                "browser: sandbox bypass needed (root/docker/AppArmor userns) — "
+                "injecting --no-sandbox"
+            )
+            browser_env["AGENT_BROWSER_ARGS"] = (
+                "--no-sandbox,--disable-dev-shm-usage"
+            )
+
+    context = {
+        "session_signature": session_signature,
+        "cmd_prefix": cmd_prefix,
+        "backend_args": backend_args,
+        "task_socket_dir": task_socket_dir,
+        "browser_env": browser_env,
+    }
+
+    with _cleanup_lock:
+        current_session = _active_sessions.get(session_key)
+        if current_session and _browser_command_context_signature(current_session) == session_signature:
+            existing = _browser_command_context_cache.get(cache_key)
+            if existing and existing.get("session_signature") == session_signature:
+                return _copy_browser_command_context(existing)
+            _browser_command_context_cache[cache_key] = context
+
+    return _copy_browser_command_context(context)
+
+
 def _emergency_cleanup_all_sessions():
     """
     Emergency cleanup of all active browser sessions.
@@ -1471,6 +1604,10 @@ def _emergency_cleanup_all_sessions():
                 _active_sessions.clear()
                 _session_last_activity.clear()
                 _recording_sessions.clear()
+                _browser_command_context_cache.clear()
+    else:
+        with _cleanup_lock:
+            _browser_command_context_cache.clear()
 
     # Sweep orphans from other crashed hermes processes.  Safe even if we
     # never used the browser — uses owner_pid liveness to avoid reaping
@@ -2280,6 +2417,7 @@ def _run_browser_command(
     if timeout is None:
         timeout = _safe_command_timeout()
     args = args or []
+    engine = _effective_browser_engine(_engine_override)
 
     # Build the command
     try:
@@ -2328,49 +2466,22 @@ def _run_browser_command(
         logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
 
-    # Build the command with the appropriate backend flag.
-    # Cloud mode: --cdp <websocket_url> connects to Browserbase.
-    # Local mode: --session <name> launches a local headless Chromium.
-    # The rest of the command (--json, command, args) is identical.
-    if session_info.get("cdp_url"):
-        # Cloud mode — connect to remote Browserbase browser via CDP
-        # IMPORTANT: Do NOT use --session with --cdp. In agent-browser >=0.13,
-        # --session creates a local browser instance and silently ignores --cdp.
-        backend_args = ["--cdp", session_info["cdp_url"]]
-    else:
-        # Local mode — launch a headless Chromium instance
-        backend_args = ["--session", session_info["session_name"]]
-
-    # Lightpanda engine injection (local mode only, agent-browser v0.25.3+).
-    # Use the resolved session backend rather than global cloud-provider state:
-    # hybrid private-URL routing can create a local sidecar while a cloud
-    # provider remains configured for public URLs.
-    engine = _engine_override or _get_browser_engine()
-    if engine != "auto" and not _is_camofox_mode() and not session_info.get("cdp_url"):
-        backend_args += ["--engine", engine]
-
-    # Keep concrete executable paths intact, even when they contain spaces.
-    # Only the synthetic npx fallback needs to expand into multiple argv items.
-    # shutil.which resolves npx → npx.cmd on Windows; bare "npx" stays on POSIX.
-    if browser_cmd == "npx agent-browser":
-        _npx_bin = shutil.which("npx") or "npx"
-        cmd_prefix = [_npx_bin, "agent-browser"]
-    else:
-        cmd_prefix = [browser_cmd]
-
-    cmd_parts = cmd_prefix + backend_args + [
-        "--json",
-        command
-    ] + args
-
     try:
+        command_context = _get_browser_command_context(
+            task_id,
+            session_info,
+            browser_cmd,
+            engine,
+        )
+        cmd_parts = command_context["cmd_prefix"] + command_context["backend_args"] + [
+            "--json",
+            command
+        ] + args
+
         # Give each task its own socket directory to prevent concurrency conflicts.
         # Without this, parallel workers fight over the same default socket path,
         # causing "Failed to create socket directory: Permission denied" errors.
-        task_socket_dir = os.path.join(
-            _socket_safe_tmpdir(),
-            f"agent-browser-{session_info['session_name']}"
-        )
+        task_socket_dir = command_context["task_socket_dir"]
         os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
         # Record this hermes PID as the session owner (cross-process safe
         # orphan detection — see _write_owner_pid).
@@ -2378,42 +2489,7 @@ def _run_browser_command(
         logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                      command, task_id, task_socket_dir, len(task_socket_dir))
 
-        browser_env = _build_browser_env()
-
-        # Ensure subprocesses inherit the same browser-specific PATH fallbacks
-        # used during CLI discovery.
-        browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
-        browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
-
-        # Tell the agent-browser daemon to self-terminate after being idle
-        # for our configured inactivity timeout.  This is the daemon-side
-        # counterpart to our Python-side _cleanup_inactive_browser_sessions
-        # — the daemon kills itself and its Chrome children when no CLI
-        # commands arrive within the window.  Added in agent-browser 0.24.
-        if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
-            idle_ms = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
-            browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = idle_ms
-
-        # Inject --no-sandbox when needed (issue #15765):
-        # - Running as root: Chromium always refuses to start without it
-        # - Ubuntu 23.10+ / AppArmor systems: unprivileged user namespaces
-        #   are restricted, causing Chromium to exit with "No usable sandbox"
-        #   even for non-root users running under systemd or containers.
-        # Honour either the legacy AGENT_BROWSER_CHROME_FLAGS (never consumed by
-        # agent-browser itself, but documented in older notes) or the real
-        # AGENT_BROWSER_ARGS — if the user pre-sets either, don't overwrite it.
-        if (
-            "AGENT_BROWSER_ARGS" not in browser_env
-            and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
-        ):
-            if _needs_chromium_sandbox_bypass():
-                logger.debug(
-                    "browser: sandbox bypass needed (root/docker/AppArmor userns) — "
-                    "injecting --no-sandbox"
-                )
-                browser_env["AGENT_BROWSER_ARGS"] = (
-                    "--no-sandbox,--disable-dev-shm-usage"
-                )
+        browser_env = command_context["browser_env"]
 
         # Use temp files for stdout/stderr instead of pipes.
         # agent-browser starts a background daemon that inherits file
@@ -4270,6 +4346,8 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
 
     for session_key in session_keys:
         _cleanup_single_browser_session(session_key)
+    if not _is_local_sidecar_key(task_id):
+        _invalidate_browser_command_context_cache(f"{task_id}{_LOCAL_SUFFIX}")
 
     # Drop stale last-active ownership. Cleaning a bare task drops its binding;
     # cleaning a sidecar drops the binding only if that sidecar was still the
@@ -4326,6 +4404,7 @@ def _cleanup_single_browser_session(task_id: str) -> None:
         with _cleanup_lock:
             _active_sessions.pop(task_id, None)
             _session_last_activity.pop(task_id, None)
+        _invalidate_browser_command_context_cache(task_id)
 
         # Cloud mode: close the cloud browser session via provider API.
         # Local sidecars have bb_session_id=None so this no-ops for them.
@@ -4356,6 +4435,7 @@ def _cleanup_single_browser_session(task_id: str) -> None:
 
         logger.debug("Removed task %s from active sessions", task_id)
     else:
+        _invalidate_browser_command_context_cache(task_id)
         logger.debug("No active session found for task_id: %s", task_id)
 
 
@@ -4394,6 +4474,7 @@ def cleanup_all_browsers() -> None:
     _chromium_autoinstall_attempted = False
     _cached_browser_engine = None
     _browser_engine_resolved = False
+    _invalidate_browser_command_context_cache()
 
 # ============================================================================
 # Requirements Check

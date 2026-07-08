@@ -6,7 +6,7 @@ set -u
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 INSTALL_SH="$ROOT_DIR/bop/install.sh"
 SKILLS_DIR="$ROOT_DIR/bop/skills"
-SKILLS="ledger-writer capture-intake transcript-followup booking email-triage followup-drafter osr-intake"
+SKILLS="ledger-writer capture-intake transcript-followup booking email-triage followup-drafter osr-intake dsm-reporter herk2-specforge herk2-watchdog claude-code-delegate"
 
 TMP_DIR=$(mktemp -d) && [ -n "$TMP_DIR" ] || exit 1
 
@@ -157,10 +157,10 @@ else
 fi
 
 installed_lines=$(grep -c '^installed skill:' "$TMP_DIR/install-1.out" || true)
-if [ "$installed_lines" -eq 7 ]; then
-  pass "install.sh prints seven installed skill lines"
+if [ "$installed_lines" -eq 11 ]; then
+  pass "install.sh prints eleven installed skill lines"
 else
-  fail "install.sh prints seven installed skill lines" "got $installed_lines"
+  fail "install.sh prints eleven installed skill lines" "got $installed_lines"
 fi
 
 for skill in $SKILLS; do

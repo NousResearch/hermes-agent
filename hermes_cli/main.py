@@ -4816,10 +4816,11 @@ def _run_npm_install_deterministic(
     # --silent/capture_output). It no-ops when CI is set — same as the TUI
     # install path and nix/lib.nix npm ci hooks.
     run_env = {**os.environ, **(env or {}), "CI": "1"}
+    from hermes_cli._subprocess_compat import resolve_node_command
 
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():
-        ci_cmd = [npm, "ci", *extra_args]
+        ci_cmd = resolve_node_command(npm, ("ci", *extra_args))
         ci_result = subprocess.run(
             ci_cmd,
             cwd=cwd,
@@ -4834,7 +4835,7 @@ def _run_npm_install_deterministic(
             return ci_result
         # Fall through to `npm install` — lockfile may be out of sync on a
         # WIP fork/branch, or `npm ci` may not be available on very old npm.
-    install_cmd = [npm, "install", *extra_args]
+    install_cmd = resolve_node_command(npm, ("install", *extra_args))
     return subprocess.run(
         install_cmd,
         cwd=cwd,

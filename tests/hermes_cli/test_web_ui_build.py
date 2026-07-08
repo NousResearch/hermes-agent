@@ -156,6 +156,19 @@ class TestBuildWebUISkipsWhenFresh:
         assert kwargs["env"]["CI"] == "1"
         assert kwargs["env"]["PYTHON"] == "/nix/store/python"
 
+    def test_npm_install_resolves_bare_npm_command_before_subprocess(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+
+        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        npm_cmd = r"C:\nodejs\npm.cmd"
+        with patch("hermes_cli._subprocess_compat.shutil.which", return_value=npm_cmd), \
+             patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run:
+            result = _run_npm_install_deterministic("npm", web_dir)
+
+        assert result.returncode == 0
+        assert mock_run.call_args[0][0] == [npm_cmd, "ci"]
+
     def test_npm_install_uses_workspace_web_scope(self, tmp_path):
         web_dir, _ = _make_web_dir(tmp_path)
         # Real workspace checkout: the single lockfile lives at the root, so

@@ -59,6 +59,30 @@ def test_parse_bare_file_id_as_file_ref():
     )
 
 
+def test_parse_slack_canvas_doc_link_as_canvas_ref():
+    ref = parse_slack_source_ref("https://ffxivkr.slack.com/docs/T01234567/F0AC9G3PYE9/project-canvas")
+    assert ref == SlackSourceRef(
+        source_type="canvas",
+        permalink="https://ffxivkr.slack.com/docs/T01234567/F0AC9G3PYE9/project-canvas",
+        channel_id=None,
+        message_ts=None,
+        thread_ts=None,
+        file_id="F0AC9G3PYE9",
+    )
+
+
+def test_parse_slack_list_link_as_list_ref():
+    ref = parse_slack_source_ref("이 리스트 봐줘 https://ffxivkr.slack.com/lists/T01234567/F0LIST3PYE9/tasks")
+    assert ref == SlackSourceRef(
+        source_type="list",
+        permalink="https://ffxivkr.slack.com/lists/T01234567/F0LIST3PYE9/tasks",
+        channel_id=None,
+        message_ts=None,
+        thread_ts=None,
+        file_id="F0LIST3PYE9",
+    )
+
+
 def test_work_item_append_lookup_and_update(tmp_path):
     path = tmp_path / "slack_work_items.jsonl"
     ref = parse_slack_source_ref(

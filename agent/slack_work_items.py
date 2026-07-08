@@ -44,6 +44,16 @@ def _pstamp_to_ts(pstamp: str) -> str:
     return f"{pstamp[:10]}.{pstamp[10:]}"
 
 
+def _classify_file_link_source_type(link: str) -> SourceType:
+    parsed = urlparse(link if link.startswith("http") else "")
+    path = parsed.path.lower()
+    if "/lists/" in path or "/list/" in path:
+        return "list"
+    if "/docs/" in path or "/canvas/" in path or "/canvases/" in path:
+        return "canvas"
+    return "file"
+
+
 def parse_slack_source_ref(text: str) -> SlackSourceRef | None:
     link = _clean_link(text)
     file_match = _FILE_ID_RE.search(link)
@@ -66,7 +76,7 @@ def parse_slack_source_ref(text: str) -> SlackSourceRef | None:
 
     if file_match:
         return SlackSourceRef(
-            source_type="file",
+            source_type=_classify_file_link_source_type(link),
             permalink=link if link.startswith("http") else "",
             channel_id=None,
             message_ts=None,

@@ -5,6 +5,7 @@ adds latency to the user-facing reply.
 """
 
 import logging
+import re
 import threading
 from typing import Callable, Optional
 
@@ -20,18 +21,32 @@ FailureCallback = Callable[[str, BaseException], None]
 TitleCallback = Callable[[str], None]
 
 _TITLE_PROMPT = (
-    "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
-    "following exchange. The title should capture the main topic or intent. "
+    "Generate a short title for this chat, like a messenger thread header. "
+    "The title should reflect the user's question; use the assistant response only as context "
+    "when the request is too short or ambiguous. "
+    "Use 3-7 words, one line, no longer than 40 characters. "
     "Write the title in the same language the user is writing in. "
-    "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
+    "Prefer specific titles over generic ones. Do not use empty placeholders like "
+    "New Chat, Новый чат, Chat, Dialog, or Help. Return ONLY the title text: no quotes, no prefixes, "
+    "no JSON, and no explanation."
 )
 
 _TITLE_PROMPT_PINNED_LANGUAGE = (
-    "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
-    "following exchange. The title should capture the main topic or intent. "
+    "Generate a short title for this chat, like a messenger thread header. "
+    "The title should reflect the user's question; use the assistant response only as context "
+    "when the request is too short or ambiguous. "
+    "Use 3-7 words, one line, no longer than 40 characters. "
     "Write the title in {language}. "
-    "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
+    "Prefer specific titles over generic ones. Do not use empty placeholders like "
+    "New Chat, Новый чат, Chat, Dialog, or Help. Return ONLY the title text: no quotes, no prefixes, "
+    "no JSON, and no explanation."
 )
+
+_DEFAULT_CHAT_NAMES = frozenset({"Новый чат", "New Chat"})
+_DEFAULT_CHAT_NAMES_CASEFOLD = frozenset(name.casefold() for name in _DEFAULT_CHAT_NAMES)
+_TITLE_SIZE = 40
+_TITLE_PROMPT_USER_MAX = 512
+_TITLE_PROMPT_ASSISTANT_MAX = 200
 
 
 def _title_language() -> str:
@@ -46,6 +61,28 @@ def _title_language() -> str:
         ).strip()
     except Exception:
         return ""
+
+
+def _sanitize_generated_title(raw_title: str) -> Optional[str]:
+    """Clean generated title text using the same conservative rules as chat rename."""
+    title = (raw_title or "").strip().split("\n", 1)[0].strip()
+    title = title.replace("\u200b", "").replace("\ufeff", "")
+    title = "".join(char for char in title if ord(char) >= 32 or char.isspace())
+    title = re.sub(r"^(?:название|title)\s*:\s*", "", title, flags=re.IGNORECASE)
+    title = re.sub(r"^[\"'«»]+|[\"'«»]+$", "", title)
+    title = re.sub(r"\s+", " ", title).strip()
+    if not title:
+        return None
+    if title.casefold() in _DEFAULT_CHAT_NAMES_CASEFOLD:
+        return None
+    if len(title) > _TITLE_SIZE:
+        content_limit = _TITLE_SIZE - len("...")
+        boundary = title[: content_limit + 1].rfind(" ")
+        if boundary > 0:
+            title = title[:boundary].rstrip() + "..."
+        else:
+            title = title[:content_limit].rstrip() + "..."
+    return title or None
 
 
 def generate_title(
@@ -66,9 +103,10 @@ def generate_title(
     ``AIAgent._emit_auxiliary_failure`` so the user sees a warning instead
     of silently accumulating untitled sessions.
     """
-    # Truncate long messages to keep the request small
-    user_snippet = user_message[:500] if user_message else ""
-    assistant_snippet = assistant_response[:500] if assistant_response else ""
+    # Truncate long messages to keep the request small; the assistant response
+    # is context only, so keep it shorter than the user's request.
+    user_snippet = user_message[:_TITLE_PROMPT_USER_MAX] if user_message else ""
+    assistant_snippet = assistant_response[:_TITLE_PROMPT_ASSISTANT_MAX] if assistant_response else ""
 
     language = _title_language()
     prompt = _TITLE_PROMPT_PINNED_LANGUAGE.format(language=language) if language else _TITLE_PROMPT
@@ -82,8 +120,8 @@ def generate_title(
         response = call_llm(
             task="title_generation",
             messages=messages,
-            max_tokens=500,
-            temperature=0.3,
+            max_tokens=80,
+            temperature=0.1,
             timeout=timeout,
             main_runtime=main_runtime,
         )
@@ -95,14 +133,7 @@ def generate_title(
         # tag variants (unterminated blocks, orphan closes, mixed case)
         # are handled, not just a single literal <think> pair.
         from agent.agent_runtime_helpers import strip_think_blocks
-        title = strip_think_blocks(None, content).strip()
-        # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
-        title = title.strip('"\'')
-        if title.lower().startswith("title:"):
-            title = title[6:].strip()
-        # Enforce reasonable length
-        if len(title) > 80:
-            title = title[:77] + "..."
+        title = _sanitize_generated_title(strip_think_blocks(None, content))
         return title if title else None
     except Exception as e:
         # Log at WARNING so this shows up in agent.log without debug mode.

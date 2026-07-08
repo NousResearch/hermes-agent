@@ -74,6 +74,8 @@ class TestGenerateTitle:
 
         assert captured_kwargs["task"] == "title_generation"
         assert captured_kwargs["timeout"] is None
+        assert captured_kwargs["max_tokens"] == 80
+        assert captured_kwargs["temperature"] == 0.1
 
     def test_explicit_timeout_still_overrides_config(self):
         captured_kwargs = {}
@@ -89,6 +91,25 @@ class TestGenerateTitle:
             assert generate_title("question", "answer", timeout=123.0) == "Explicit Timeout"
 
         assert captured_kwargs["timeout"] == 123.0
+
+    def test_truncates_user_and_assistant_context_for_prompt(self):
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Short Title"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title("u" * 600, "a" * 300) == "Short Title"
+
+        user_prompt = captured_kwargs["messages"][1]["content"]
+        assert "u" * 512 in user_prompt
+        assert "u" * 513 not in user_prompt
+        assert "a" * 200 in user_prompt
+        assert "a" * 201 not in user_prompt
 
     def test_strips_quotes(self):
         mock_response = MagicMock()
@@ -139,15 +160,62 @@ class TestGenerateTitle:
             title = generate_title("my pod keeps crashing", "Let me look...")
             assert title == "Kubernetes Pod Debugging"
 
-    def test_truncates_long_titles(self):
+    def test_strips_russian_title_prefix(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Название: Починка падающих CI тестов"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("тесты падают", "Посмотрим CI")
+            assert title == "Починка падающих CI тестов"
+
+    def test_strips_guillemet_quotes_and_control_chars(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "\ufeff«Debug\u0007 failing CI tests»\u200b"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("tests are failing", "Let's inspect CI")
+            assert title == "Debug failing CI tests"
+
+    def test_normalizes_whitespace_control_chars(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Debug\tCI\rPipeline"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("tests are failing", "Let's inspect CI")
+            assert title == "Debug CI Pipeline"
+
+    def test_rejects_placeholder_title_output(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "New Chat"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("hello", "hi") is None
+
+    def test_truncates_long_titles_at_word_boundary(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "Investigate failing integration tests after provider routing changes"
+        )
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("question", "answer")
+            assert title == "Investigate failing integration tests..."
+            assert title.endswith("...")
+
+    def test_truncates_unbroken_title_to_inclusive_limit(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "A" * 100
 
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             title = generate_title("question", "answer")
-            assert len(title) == 80
-            assert title.endswith("...")
+            assert title == "A" * 37 + "..."
+            assert len(title) == 40
 
     def test_returns_none_on_empty_response(self):
         mock_response = MagicMock()

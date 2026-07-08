@@ -1280,7 +1280,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent._unavailable_fallback_keys = unavailable
     # Check if entry is suppressed (TTL-based)
     suppressed_until = unavailable.get(fb_key)
-    if suppressed_until is not None:
+    if suppressed_until is not None and isinstance(suppressed_until, (int, float)):
         if time.monotonic() < suppressed_until:
             logger.debug(
                 "Fallback skip: %s suppressed for %.1fs (ttl remaining)",

@@ -20,7 +20,7 @@ def test_configured_models_merged_with_live_models():
     ]
     
     # Patch fetch_api_models in hermes_cli.model_switch (where it's imported locally)
-    with patch('hermes_cli.model_switch.fetch_api_models', return_value=live_models):
+    with patch('hermes_cli.models.fetch_api_models', return_value=live_models):
         providers = list_authenticated_providers(
             custom_providers=[
                 {
@@ -61,7 +61,7 @@ def test_configured_models_preserved_when_live_discovery_fails():
     ]
     
     # Mock fetch_api_models to raise an exception
-    with patch('hermes_cli.model_switch.fetch_api_models', side_effect=Exception("Network error")):
+    with patch('hermes_cli.models.fetch_api_models', side_effect=Exception("Network error")):
         providers = list_authenticated_providers(
             custom_providers=[
                 {
@@ -100,7 +100,7 @@ def test_no_duplicates_when_live_returns_same_model():
         {"slug": "only-live", "name": "Only Live"}
     ]
     
-    with patch('hermes_cli.model_switch.fetch_api_models', return_value=live_models):
+    with patch('hermes_cli.models.fetch_api_models', return_value=live_models):
         providers = list_authenticated_providers(
             custom_providers=[
                 {

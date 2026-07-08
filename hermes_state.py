@@ -2477,6 +2477,59 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def most_recent_interrupt_close_session(
+        self, *, source: str = "cli", within_seconds: Optional[float] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Return the most-recent human-facing session whose LAST active message
+        was closed by an interrupted turn (``finish_reason='interrupt_close'``),
+        or ``None``.
+
+        Used by the CLI launch banner to nudge ``hermes chat -c`` when a prior
+        turn was cut off mid-flight by a restart/reboot/terminal-close — the
+        tool+API work is already persisted (the incremental flush +
+        :meth:`update_message_finish_reason` re-persist the marker), so the user
+        can resume without re-running it. Only the session whose newest message
+        carries the marker qualifies; a session that was interrupted but then
+        resumed and completed normally will have a later non-marker tail and is
+        correctly skipped.
+
+        ``within_seconds`` bounds recency (skip a stale interrupt from days ago).
+        Returns ``{"id", "title", "last_ts"}`` for the newest qualifying session.
+        """
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    """
+                    SELECT s.id AS id, s.title AS title, m.timestamp AS last_ts
+                    FROM sessions s
+                    JOIN messages m ON m.id = (
+                        SELECT m2.id FROM messages m2
+                        WHERE m2.session_id = s.id AND m2.active = 1
+                        ORDER BY m2.timestamp DESC, m2.id DESC
+                        LIMIT 1
+                    )
+                    WHERE s.source = ?
+                      AND s.archived = 0
+                      AND m.finish_reason = ?
+                    ORDER BY m.timestamp DESC, m.id DESC
+                    LIMIT 1
+                    """,
+                    (source, "interrupt_close"),
+                ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        if not row:
+            return None
+        last_ts = row["last_ts"] if isinstance(row, sqlite3.Row) else row[2]
+        if within_seconds is not None and last_ts is not None:
+            if (time.time() - float(last_ts)) > float(within_seconds):
+                return None
+        return {
+            "id": row["id"] if isinstance(row, sqlite3.Row) else row[0],
+            "title": row["title"] if isinstance(row, sqlite3.Row) else row[1],
+            "last_ts": last_ts,
+        }
+
     def update_session_model(self, session_id: str, model: str) -> None:
         """Update the model for a session after a mid-session switch.
 

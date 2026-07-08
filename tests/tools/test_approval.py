@@ -150,14 +150,18 @@ class TestWindowsShellDestructiveCommands:
         assert dangerous is True
         assert desc == "Windows PowerShell destructive delete"
 
-    def test_powershell_benign_path_containing_del_not_flagged(self):
-        # A benign file path that merely contains "del" must NOT trip the guard
-        # (verb-position anchoring prevents matching inside a -File arg).
+    def test_powershell_benign_path_containing_del_not_matched_by_delete_pattern(self):
+        # A benign file path that merely contains "del" must NOT trip the
+        # destructive-delete guard specifically (verb-position anchoring
+        # prevents matching "del" inside a -File path argument). It IS
+        # correctly flagged by the tokenizer-based inline-script-execution
+        # check instead — running any .ps1 script via -File requires
+        # approval, regardless of what its path happens to contain.
         dangerous, key, desc = detect_dangerous_command(
             r"powershell -File C:\del-logs\run.ps1"
         )
-        assert dangerous is False
-        assert key is None
+        assert dangerous is True
+        assert key != "Windows PowerShell destructive delete"
 
     def test_plain_text_does_not_trigger_windows_delete(self):
         dangerous, key, desc = detect_dangerous_command(
@@ -619,11 +623,18 @@ class TestHermesConfigWriteProtection:
 
     def test_perl_eval_no_inplace_safe(self):
         # `perl -e` with no -i flag is code evaluation, not file mutation —
-        # the perl/ruby -i pattern must not fire on it.
+        # the perl/ruby -i (in-place edit) pattern specifically must not
+        # fire on it, since there is no file to protect from a mutation
+        # that isn't happening. `-wne` combines -w -n -e, so this
+        # genuinely is inline code execution ('print' run as Perl per
+        # input line) and IS correctly caught by the tokenizer-based
+        # inline-script-execution check — that's correct; this test only
+        # asserts the -i in-place pattern isn't the one doing the
+        # catching.
         dangerous, key, desc = detect_dangerous_command(
             "perl -wne 'print' ~/.hermes/config.yaml"
         )
-        assert dangerous is False
+        assert key != "in-place edit of Hermes config/env (perl/ruby)"
 
     def test_read_is_safe(self):
         # Reading config is not a write — must not trip.
@@ -1373,6 +1384,244 @@ class TestHeredocScriptExecution:
         """Plain 'bash script.sh' without heredoc must stay safe."""
         dangerous, _, _ = detect_dangerous_command("bash my_script.sh")
         assert dangerous is False
+
+
+class TestTokenizerInlineScriptExecution:
+    """_detect_inline_script_execution() (tokenizer-based, shlex.split() +
+    a language-specific exec-flag table) replaces the regex rules that went
+    through three rounds of external review, each finding a shape the
+    regex missed. These tests pin every previously-missed shape plus the
+    benign cases that must stay unflagged.
+
+    Round 1 (combined short flags, no-space gluing, long-form flags,
+    versioned binaries) and round 2 (glued-without-quote values) are
+    already covered by the pre-existing TestHeredocScriptExecution class
+    and the -File tests elsewhere in this file; this class covers what
+    those rounds could NOT close with more regex — flags that consume
+    their own argument, long-form intervening flags, and an entirely
+    different flag letter for the same behavior — plus PowerShell, which
+    a pure regex-per-interpreter approach could not share without
+    duplicating the same bugs a third time.
+    """
+
+    # --- Round 3: flags with their own argument, intervening long-form ---
+
+    def test_python_short_flag_with_own_argument_before_c(self):
+        # -W takes its own argument ("ignore") as a separate token before
+        # -c — a regex modeling "skip N other flags" has no way to know
+        # -W consumes the next token without also knowing every possible
+        # flag's arity. The tokenizer doesn't need to know this at all:
+        # it just scans every token for a recognized flag.
+        dangerous, key, desc = detect_dangerous_command(
+            'python3 -W ignore -c "print(1)"'
+        )
+        assert dangerous is True
+
+    def test_python_capital_x_flag_with_own_argument_before_c(self):
+        dangerous, key, desc = detect_dangerous_command(
+            'python3 -X dev -c "print(1)"'
+        )
+        assert dangerous is True
+
+    def test_node_long_form_intervening_flag(self):
+        dangerous, key, desc = detect_dangerous_command(
+            'node --no-warnings --eval="require(\'fs\')"'
+        )
+        assert dangerous is True
+
+    # --- Round 3: node -p/--print, a different flag letter entirely ---
+
+    def test_node_short_print_flag(self):
+        # -p evaluates and prints — same risk class as -e, but contains
+        # neither 'e' nor 'c', so no char-class regex built around those
+        # two letters could ever catch it.
+        dangerous, key, desc = detect_dangerous_command('node -p "1+1"')
+        assert dangerous is True
+
+    def test_node_long_print_flag(self):
+        dangerous, key, desc = detect_dangerous_command('node --print "1+1"')
+        assert dangerous is True
+
+    def test_node_check_flag_not_flagged(self):
+        # -c/--check is syntax-check-only (nodejs/node#2411) — the exact
+        # opposite of -p/--print despite the visual similarity. Must not
+        # be flagged; including it would be a pure false positive.
+        dangerous, key, desc = detect_dangerous_command("node -c script.js")
+        assert dangerous is False
+
+    def test_node_long_check_flag_not_flagged(self):
+        dangerous, key, desc = detect_dangerous_command("node --check script.js")
+        assert dangerous is False
+
+    def test_ruby_check_flag_not_flagged(self):
+        # ruby -c is also syntax-check-only, same reasoning as node above.
+        dangerous, key, desc = detect_dangerous_command("ruby -c script.rb")
+        assert dangerous is False
+
+    # --- PowerShell: -File and -Command share the same tokenizer path ---
+
+    def test_powershell_file_flag(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "powershell -File helper.ps1"
+        )
+        assert dangerous is True
+
+    def test_powershell_execution_policy_bypass_file(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "powershell -ExecutionPolicy Bypass -File helper.ps1"
+        )
+        assert dangerous is True
+
+    def test_powershell_command_flag_with_inline_code(self):
+        # -Command runs inline PowerShell — genuinely the same risk class
+        # as -c/-e for other languages, so this SHOULD require approval.
+        # The tokenizer correctly attributes it to -Command; the old regex
+        # this replaces mislabeled it as a -File match instead (still
+        # flagged, but for the wrong stated reason).
+        dangerous, key, desc = detect_dangerous_command(
+            'powershell -Command "Get-Process"'
+        )
+        assert dangerous is True
+        assert "command" in desc.lower()
+
+    def test_powershell_dash_f_inside_command_payload_not_misattributed(self):
+        # Regression test for the exact false-positive-attribution the
+        # regex version had: a -f flag belonging to Write-Host, INSIDE the
+        # quoted -Command payload, must not be picked up as a top-level
+        # PowerShell flag. shlex.split() puts the whole quoted payload in
+        # one token, so "-f" here is just text inside that token, not a
+        # separate flag token the way a real "-f"/"-File" would be.
+        dangerous, key, desc = detect_dangerous_command(
+            'powershell -Command "Write-Host -f Green ok"'
+        )
+        # Still True (via -Command, which IS a real inline-exec flag) —
+        # but the reason must name -Command, not -File.
+        assert dangerous is True
+        assert "file" not in desc.lower()
+
+    # --- Versioned interpreter binaries across all covered languages ---
+
+    def test_versioned_python_still_detected(self):
+        dangerous, key, desc = detect_dangerous_command(
+            'python3.11 -c "print(1)"'
+        )
+        assert dangerous is True
+
+    def test_versioned_ruby_still_detected(self):
+        dangerous, key, desc = detect_dangerous_command('ruby3.2 -e "puts 1"')
+        assert dangerous is True
+
+    def test_versioned_perl_still_detected(self):
+        dangerous, key, desc = detect_dangerous_command('perl5.36 -e "print 1"')
+        assert dangerous is True
+
+    def test_versioned_python_heredoc_still_detected(self):
+        cmd = "python3.11 << 'EOF'\nprint(1)\nEOF"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_full_path_versioned_interpreter_still_detected(self):
+        dangerous, key, desc = detect_dangerous_command(
+            '/usr/bin/python3.11 -c "print(1)"'
+        )
+        assert dangerous is True
+
+    # --- Hermes config/env-specific messaging ---
+
+    def test_config_yaml_reference_gets_specific_message(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "python3 -c \"open('~/.hermes/config.yaml','a').write(1)\""
+        )
+        assert dangerous is True
+        assert key == "inline_script_hermes_config"
+
+    def test_env_reference_gets_specific_message(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "python3 -c \"open('~/.hermes/.env','a').write(1)\""
+        )
+        assert dangerous is True
+        assert key == "inline_script_hermes_config"
+
+    def test_unrelated_payload_gets_generic_message(self):
+        dangerous, key, desc = detect_dangerous_command(
+            'python3 -c "print(\'unrelated\')"'
+        )
+        assert dangerous is True
+        assert key == "inline_script_execution"
+
+    # --- Malformed input must not crash ---
+
+    def test_unclosed_quote_does_not_crash(self):
+        dangerous, key, desc = detect_dangerous_command(
+            'python3 -c "unclosed quote'
+        )
+        assert dangerous is False
+
+    def test_unclosed_single_quote_does_not_crash(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "node --eval='unclosed"
+        )
+        assert dangerous is False
+
+    # --- Benign, unrelated commands must stay unflagged ---
+
+    def test_module_invocation_not_flagged(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "python3 -m my_mcp_server"
+        )
+        assert dangerous is False
+
+    def test_version_check_not_flagged(self):
+        dangerous, key, desc = detect_dangerous_command("python3 --version")
+        assert dangerous is False
+
+    def test_plain_script_file_not_flagged(self):
+        dangerous, key, desc = detect_dangerous_command("node server.js")
+        assert dangerous is False
+
+    def test_unrecognized_command_not_flagged(self):
+        dangerous, key, desc = detect_dangerous_command("vim file.txt")
+        assert dangerous is False
+
+    # --- Regression tests for issues found in code review of this class ---
+
+    def test_exec_flag_wins_over_heredoc_in_same_command(self):
+        # An exec flag AND heredoc syntax present in the same command must
+        # report the exec flag, not heredoc — it's the more specific,
+        # actionable finding (heredoc could be entirely unused stdin).
+        dangerous, key, desc = detect_dangerous_command(
+            'python3 -c "print(1)" << EOF'
+        )
+        assert dangerous is True
+        assert key == "inline_script_execution"
+
+    def test_pure_heredoc_still_detected_without_exec_flag(self):
+        dangerous, key, desc = detect_dangerous_command("python3 << EOF")
+        assert dangerous is True
+        assert key == "inline_script_heredoc"
+
+    def test_new_pattern_key_aliases_to_legacy_regex_description(self):
+        # An operator who permanently allowlisted the old regex rule (by
+        # its description string, used as the historical pattern_key)
+        # before this tokenizer replaced it must not be silently
+        # re-prompted — the new tokenizer keys must alias to the old
+        # description strings that used to live in DANGEROUS_PATTERNS.
+        from tools.approval import _approval_key_aliases
+
+        aliases = _approval_key_aliases("inline_script_execution")
+        assert "script execution via -e/-c flag" in aliases
+
+    def test_legacy_regex_description_aliases_to_new_pattern_key(self):
+        from tools.approval import _approval_key_aliases
+
+        aliases = _approval_key_aliases("script execution via -e/-c flag")
+        assert "inline_script_execution" in aliases
+
+    def test_heredoc_pattern_key_aliases_to_legacy_description(self):
+        from tools.approval import _approval_key_aliases
+
+        aliases = _approval_key_aliases("inline_script_heredoc")
+        assert "script execution via heredoc" in aliases
 
 
 class TestPgrepKillExpansion:

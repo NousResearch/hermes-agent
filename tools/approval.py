@@ -225,6 +225,150 @@ _HERMES_CONFIG_PATH = (
     r'(?:\$hermes_home|\$\{hermes_home\})/)'
     r'config\.yaml\b'
 )
+
+# ---------------------------------------------------------------------------
+# Tokenizer-based inline-script-execution detection.
+#
+# Replaces three regex rules ("script execution via -e/-c flag", the
+# Hermes-config/env-specific variant of it, and "script execution via
+# heredoc") that went through three rounds of external review, each finding
+# a new command shape the regex missed: combined short flags, no-space
+# flag gluing, long-form flags, versioned interpreter binaries (round 1);
+# intervening standalone flags, glued-without-quote values (round 2);
+# flags that consume their own argument (-W ignore, -X dev), long-form
+# intervening flags (--no-warnings), and an entirely different flag letter
+# for the same behavior (node -p/--print, which contains neither 'e' nor
+# 'c') (round 3).
+#
+# A regex matching flag characters in a flat string cannot reliably model
+# "skip past any number of other flags, some of which consume their own
+# following token as an argument, in short or long form" — that is
+# argument parsing, and argument parsing needs an actual tokenizer, not a
+# pattern. shlex.split() is already used the same way elsewhere in this
+# file (_literal_command_substitution_output) and in
+# hermes_cli/mcp_security.py's _command_basename().
+#
+# Deliberately narrower than a full CLI parser: this only asks "does any
+# token look like an inline-eval flag for a recognized interpreter", not
+# "parse this command's full argument grammar". False positives (flagging
+# something that turns out to be safe) cost the operator one extra
+# approval prompt; false negatives (missing a real inline-eval flag) are
+# the actual security gap, so ambiguous cases lean toward flagging.
+# ---------------------------------------------------------------------------
+
+_INTERPRETER_FAMILY_PATTERN = re.compile(
+    r'^(?P<python>python[23]?(?:\.\d+)*(?:\.exe)?)$'
+    r'|^(?P<node>node(?:js)?(?:\.exe)?)$'
+    r'|^(?P<perl>perl[0-9]*(?:\.\d+)*(?:\.exe)?)$'
+    r'|^(?P<ruby>ruby[0-9]*(?:[0-9.]+)*(?:\.exe)?)$'
+    r'|^(?P<php>php(?:\.exe)?)$'
+    r'|^(?P<powershell>powershell(?:\.exe)?|pwsh(?:\.exe)?)$',
+    re.IGNORECASE,
+)
+
+# flag -> "inline" (code passed directly on the command line) or "file"
+# (runs an external script file — same approval-worthy category, distinct
+# wording since the risk is "what's in that file", not "what's in this
+# argument"). This value is used ONLY for the approval message text; it
+# must never gate whether a match fires at all — both kinds always require
+# approval identically.
+#
+# Deliberately excluded (checked, not just omitted by oversight): node/ruby
+# "-c"/"--check" perform a syntax check only, without executing anything —
+# see nodejs/node#2411 and `ruby -h`. Including them would be a pure
+# false-positive with no security value.
+_EXEC_FLAGS: dict[str, dict[str, str]] = {
+    "python": {"-c": "inline"},
+    "node": {"-e": "inline", "--eval": "inline", "-p": "inline", "--print": "inline"},
+    "perl": {"-e": "inline", "--eval": "inline"},
+    "ruby": {"-e": "inline"},
+    "php": {"-r": "inline"},
+    "powershell": {"-command": "inline", "-c": "inline", "-file": "file", "-f": "file"},
+}
+
+
+def _interpreter_family(basename: str) -> Optional[str]:
+    m = _INTERPRETER_FAMILY_PATTERN.match(basename.lower())
+    return m.lastgroup if m else None
+
+
+def _detect_inline_script_execution(command: str) -> tuple:
+    """Tokenizer-based replacement for the regex inline-exec-flag rules.
+
+    Returns (is_dangerous, pattern_key, description), matching
+    detect_dangerous_command()'s contract, so it can be called as a
+    fallback after the regex loop there.
+    """
+    try:
+        tokens = shlex.split(command, posix=(os.name != "nt"))
+    except ValueError:
+        # Unbalanced quotes etc. — not a shell string this tokenizer can
+        # parse. The regex loop above already ran on this same command and
+        # would have caught anything it recognizes; falling through to
+        # (False, None, None) here does not weaken that.
+        return (False, None, None)
+    if not tokens:
+        return (False, None, None)
+
+    family = _interpreter_family(os.path.basename(tokens[0]))
+    if family is None:
+        return (False, None, None)
+
+    exec_flags = _EXEC_FLAGS.get(family)
+    heredoc_tok: Optional[str] = None
+    for tok in tokens[1:]:
+        # Heredoc (`python3 << EOF`, `ruby3.2 <<RUBY`) feeds arbitrary code
+        # via stdin with no -c/-e/--eval flag at all. shlex tokenizes this
+        # inconsistently depending on whitespace: `<< EOF` (with a space)
+        # is its own token, `<<EOF`/`<<'EOF'` (glued to the delimiter) is
+        # not, so check for the `<<` prefix rather than an exact-token
+        # match. Recorded but not returned immediately — an exec flag
+        # elsewhere in the same command (`python3 -c "..." << EOF`) is the
+        # more specific, actionable finding and should win the message if
+        # both are present; heredoc is the fallback when no flag matches.
+        if heredoc_tok is None and tok.startswith("<<"):
+            heredoc_tok = tok
+        if not exec_flags or not tok.startswith("-"):
+            continue
+        # Long-form `--eval=value` and short `-c=value` both split cleanly
+        # on the first `=`; a flag with no `=` is unaffected.
+        flag_part = tok.split("=", 1)[0].lower()
+        if flag_part in exec_flags:
+            return _inline_exec_result(family, exec_flags[flag_part], flag_part, command)
+        # Combined short flags (`-uc`, `-pe`) or a value glued directly
+        # onto the flag with no separator (`-copen(...)`): shlex has
+        # already isolated this as one token, so check each character
+        # after the dash against the known single-character flags for
+        # this family. Long-form flags (`--eval`) are never combined this
+        # way, so this branch is skipped for anything starting with `--`.
+        if not flag_part.startswith("--") and len(flag_part) > 2:
+            for ch in flag_part[1:]:
+                short = f"-{ch}"
+                if len(short) == 2 and short in exec_flags:
+                    return _inline_exec_result(family, exec_flags[short], short, command)
+    if heredoc_tok is not None:
+        return (
+            True,
+            "inline_script_heredoc",
+            f"{family} script execution via heredoc",
+        )
+    return (False, None, None)
+
+
+def _inline_exec_result(family: str, kind: str, flag: str, command: str) -> tuple:
+    if re.search(rf'(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', command, re.IGNORECASE):
+        return (
+            True,
+            "inline_script_hermes_config",
+            f"{family} interpreter script referencing Hermes config/env (via {flag})",
+        )
+    return (
+        True,
+        "inline_script_execution",
+        f"{family} {kind} script execution via {flag} flag",
+    )
+
+
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = (
@@ -586,7 +730,10 @@ DANGEROUS_PATTERNS = [
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Any shell invocation via -c or combined flags like -lc, -ic, etc.
     (r'\b(bash|sh|zsh|ksh)\s+-[^\s]*c(\s+|$)', "shell command via -c/-lc flag"),
-    (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
+    # `_detect_inline_script_execution()` (tokenizer-based, see its
+    # docstring above) replaces the regex rule that used to sit here for
+    # python/node/perl/ruby -c/-e/--eval detection — see
+    # detect_dangerous_command() below.
     (r'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)', "pipe remote content to shell"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # Remote content executed via command substitution: eval/source/. $(curl ...)
@@ -693,9 +840,11 @@ DANGEROUS_PATTERNS = [
     # anywhere in the args, not just the first token — `perl -e '...'` (code
     # eval, no -i) does not trip because it has no `-...i` flag token.
     (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (perl/ruby)"),
-    # Script execution via heredoc — bypasses the -e/-c flag patterns above.
-    # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
-    (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
+    # `_detect_inline_script_execution()` (tokenizer-based, see its
+    # docstring near _HERMES_CONFIG_PATH above) replaces the regex rule
+    # that used to sit here for python/perl/ruby/node heredoc detection —
+    # see detect_dangerous_command() below. Shell heredoc detection
+    # (bash/sh <<'EOF' ...) is unrelated and stays regex-based just below.
     # Shell execution via heredoc — `bash <<'EOF' ... EOF` runs arbitrary
     # shell commands without triggering the `bash -c` pattern above. The
     # inner commands may not individually match any dangerous pattern (e.g.
@@ -776,6 +925,33 @@ for _pattern, _description in DANGEROUS_PATTERNS:
     _canonical_key = _description
     _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).update({_canonical_key, _legacy_key})
     _PATTERN_KEY_ALIASES.setdefault(_legacy_key, set()).update({_legacy_key, _canonical_key})
+
+# _detect_inline_script_execution() (tokenizer-based) replaced three regex
+# rules that used to live in DANGEROUS_PATTERNS above, each with its own
+# description string used as the approval pattern_key. Those descriptions
+# no longer appear in DANGEROUS_PATTERNS, so the auto-built aliasing loop
+# above never links them to the new tokenizer keys. Without this, an
+# operator who permanently allowlisted the old regex rule (e.g. "script
+# execution via -e/-c flag") would be silently re-prompted after this
+# change — not a security bypass (fail-safe direction: re-prompting is
+# strictly more conservative than the old behavior), but it would look
+# like their existing allowlist entry stopped working.
+for _new_key, _old_descriptions in (
+    ("inline_script_execution", (
+        "script execution via -e/-c flag",
+        "interpreter script referencing Hermes config/env",
+    )),
+    ("inline_script_hermes_config", (
+        "script execution via -e/-c flag",
+        "interpreter script referencing Hermes config/env",
+    )),
+    ("inline_script_heredoc", (
+        "script execution via heredoc",
+    )),
+):
+    _PATTERN_KEY_ALIASES.setdefault(_new_key, set()).update({_new_key, *_old_descriptions})
+    for _old_description in _old_descriptions:
+        _PATTERN_KEY_ALIASES.setdefault(_old_description, set()).add(_new_key)
 
 
 def _approval_key_aliases(pattern_key: str) -> set[str]:
@@ -1395,6 +1571,16 @@ def detect_dangerous_command(command: str) -> tuple:
             if pattern_re.search(command_lower):
                 pattern_key = description
                 return (True, pattern_key, description)
+    # Tokenizer-based fallback for inline-script execution (-c/-e/--eval,
+    # heredoc) — see _detect_inline_script_execution()'s docstring above
+    # for why this needs a real tokenizer rather than another regex.
+    # Runs on the same normalized (deobfuscated) command text the regex
+    # loop above already used for its first variant, so it benefits from
+    # the same ANSI/unicode/backslash/$IFS hardening without redoing it.
+    normalized = _normalize_command_for_detection(command)
+    result = _detect_inline_script_execution(normalized)
+    if result[0]:
+        return result
     return (False, None, None)
 
 

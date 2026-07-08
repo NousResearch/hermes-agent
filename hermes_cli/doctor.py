@@ -1066,6 +1066,24 @@ def run_doctor(args):
     except Exception as _xai_check_err:
         check_warn("xAI retirement check skipped", f"({_xai_check_err})")
 
+    # fN provider-alias collision lint (A4 C-2): surface an accidental
+    # duplicate provider name/alias/base_url/env-key — the copy-paste drift
+    # that silently shadows a real failover lane. Edge-triggered: silent when
+    # the registry is clean (no per-boot spam), loud naming both plugins on a
+    # real collision. Does NOT change routing — pure observability.
+    try:
+        from providers import lint_provider_collisions
+
+        _collisions = lint_provider_collisions(emit_log=False)
+        if _collisions:
+            for _c in _collisions:
+                check_warn("Provider collision", _c)
+                manual_issues.append(f"Provider collision: {_c}")
+        else:
+            check_ok("Provider aliases", "(no name/alias/base_url/env-key collisions)")
+    except Exception as _coll_err:
+        check_warn("Provider collision lint", f"(could not check: {_coll_err})")
+
     _section("Auth Providers")
 
     try:

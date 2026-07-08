@@ -2908,6 +2908,61 @@ class GatewaySlashCommandsMixin:
             enable_session_yolo(session_key)
             return EphemeralReply(t("gateway.yolo.enabled"))
 
+    async def _handle_auto_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Handle /auto — toggle Auto Mode (safety-classifier approve/decline) for this session.
+
+        Usage:
+            /auto           -> toggle
+            /auto on|off    -> explicit
+            /auto status    -> show current state (does not change it)
+
+        Distinct from /yolo: YOLO bypasses approval unconditionally with no
+        judgment call. Auto Mode still evaluates every flagged command via a
+        lightweight classifier (tools.approval._auto_mode_classify) — it just
+        never blocks on a prompt to get that judgment, which is what makes it
+        suitable for unattended messaging sessions. Session-scoped only, same
+        as /yolo — not persisted to config.yaml. See cli.py's
+        _handle_auto_command for the CLI-side twin of this handler.
+        """
+        from tools.approval import (
+            disable_session_auto,
+            enable_session_auto,
+            is_session_auto_enabled,
+        )
+
+        session_key = self._session_key_for_source(event.source)
+        current = is_session_auto_enabled(session_key)
+
+        arg = ""
+        try:
+            text = (getattr(event, "text", None) or "").strip()
+            if text.startswith("/"):
+                parts = text.split(None, 1)
+                if len(parts) > 1:
+                    arg = parts[1].strip().lower()
+        except Exception:
+            arg = ""
+
+        if arg in {"status", "?"}:
+            state = t("gateway.auto.state_on") if current else t("gateway.auto.state_off")
+            return EphemeralReply(t("gateway.auto.status", state=state))
+
+        if arg in {"on", "enable", "true", "1"}:
+            new_state = True
+        elif arg in {"off", "disable", "false", "0"}:
+            new_state = False
+        elif arg == "":
+            new_state = not current
+        else:
+            return EphemeralReply(t("gateway.auto.usage"))
+
+        if new_state:
+            enable_session_auto(session_key)
+            return EphemeralReply(t("gateway.auto.enabled"))
+        else:
+            disable_session_auto(session_key)
+            return EphemeralReply(t("gateway.auto.disabled"))
+
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
         """Handle /verbose command — cycle tool progress display mode.
 

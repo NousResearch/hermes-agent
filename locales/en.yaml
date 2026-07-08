@@ -407,6 +407,14 @@ gateway:
     disabled:                   "⚠️ YOLO mode **OFF** for this session — dangerous commands will require approval."
     enabled:                    "⚡ YOLO mode **ON** for this session — all commands auto-approved. Use with caution."
 
+  auto:
+    disabled:                   "⚠️ Auto Mode **OFF** for this session — flagged commands will require approval."
+    enabled:                    "🤖 Auto Mode **ON** for this session — flagged commands are approved or declined automatically by a safety classifier. No prompts; use with awareness."
+    state_on:                   "ON"
+    state_off:                  "OFF"
+    status:                     "🤖 Auto Mode: **{state}**"
+    usage:                      "Usage: `/auto [on|off|status]`"
+
   shared:
     session_db_unavailable:      "Session database not available."
     session_db_unavailable_prefix: "Session database not available"

@@ -136,6 +136,21 @@ async def test_verbose_dispatches_mid_run(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_auto_dispatches_mid_run(monkeypatch):
+    """/auto mid-run must dispatch to its handler, not hit the catch-all —
+    same allowlist entry as /yolo, since Auto Mode exists for the same
+    "don't make me wait for the agent to finish" reason."""
+    runner = _make_runner()
+    runner._handle_auto_command = AsyncMock(return_value="🤖 Auto Mode **ON** for this session")
+
+    result = await runner._handle_message(_make_event("/auto"))
+
+    runner._handle_auto_command.assert_awaited_once()
+    assert result == "🤖 Auto Mode **ON** for this session"
+    assert "can't run mid-turn" not in (result or "")
+
+
+@pytest.mark.asyncio
 async def test_fast_rejected_mid_run():
     """/fast mid-run must hit the busy catch-all — config-only, next message."""
     runner = _make_runner()

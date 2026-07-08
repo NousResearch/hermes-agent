@@ -2182,6 +2182,27 @@ class TestVoiceTimeoutCleansRunnerState:
         mock_vc.disconnect.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_timeout_skips_disconnect_when_voice_mode_context(self, adapter):
+        """Voice-context mode is a persistent listen-only collector."""
+        disconnect_calls = []
+        adapter._on_voice_disconnect = lambda chat_id: disconnect_calls.append(chat_id)
+        adapter._voice_mode_getter = lambda chat_id: "context"
+
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.disconnect = AsyncMock()
+        adapter._voice_clients[111] = mock_vc
+        adapter._voice_text_channels[111] = 999
+        adapter._voice_timeout_tasks[111] = MagicMock()
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await adapter._voice_timeout_handler(111)
+
+        assert 111 in adapter._voice_clients
+        assert disconnect_calls == []
+        mock_vc.disconnect.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_timeout_still_disconnects_when_voice_mode_active(self, adapter):
         """A non-off mode still auto-disconnects on genuine inactivity."""
         disconnect_calls = []

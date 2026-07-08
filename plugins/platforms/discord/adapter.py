@@ -3061,16 +3061,17 @@ class DiscordAdapter(BasePlatformAdapter):
             return
         text_ch_id = self._voice_text_channels.get(guild_id)
         # ``/voice off`` mutes spoken replies but deliberately keeps the bot in
-        # the channel (leaving is ``/voice leave``). The inactivity timer only
-        # counts the bot's OWN audio as activity, so under voice-off mode it
-        # fires every VOICE_TIMEOUT seconds, yanks the bot out, and spams the
-        # text channel with "Left voice channel (inactivity timeout)." Honor the
-        # user's choice: skip the auto-disconnect while voice replies are off.
+        # the channel (leaving is ``/voice leave``). ``/voice context`` is also
+        # explicitly long-lived: it is a listen-only context collector, not an
+        # interactive voice session. The inactivity timer only counts resets it
+        # sees locally, so these modes can otherwise be yanked out of the channel
+        # and leave the runner state as ``off``. Honor the user's choice: skip
+        # the auto-disconnect for persistent non-speaking modes.
         # (The timer re-arms when the bot next speaks or hears a user.)
         _mode_getter = getattr(self, "_voice_mode_getter", None)
         if text_ch_id is not None and _mode_getter is not None:
             try:
-                if _mode_getter(str(text_ch_id)) == "off":
+                if _mode_getter(str(text_ch_id)) in {"off", "context"}:
                     return
             except Exception:
                 pass

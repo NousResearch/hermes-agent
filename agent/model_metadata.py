@@ -289,11 +289,13 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Premium+); /v1/responses additionally enforces a ~262144 input+output
     # budget, but the usable context (what we track here) is 200k.
     "grok-composer": 200000,    # grok-composer-2.5-fast (Grok Build CLI)
+    "grok-build-latest": 500000,  # alias of grok-4.5 (early access)
     "grok-build": 256000,       # grok-build-0.1
     "grok-code-fast": 256000,   # grok-code-fast-1
     "grok-2-vision": 8192,      # grok-2-vision, -1212, -latest
     "grok-4-fast": 2000000,     # grok-4-fast-(non-)reasoning, also matches -reasoning
     "grok-4.20": 2000000,       # grok-4.20-0309-(non-)reasoning, -multi-agent-0309
+    "grok-4.5": 500000,         # grok-4.5, grok-4.5-latest — 500K context per docs.x.ai
     "grok-4.3": 1000000,        # grok-4.3, grok-4.3-latest — 1M context per docs.x.ai
     "grok-4": 256000,           # grok-4, grok-4-0709
     "grok-3": 131072,           # grok-3, grok-3-mini, grok-3-fast, grok-3-mini-fast
@@ -347,6 +349,11 @@ _GROK_EFFORT_CAPABLE_PREFIXES = (
     "grok-3-mini",
     "grok-4.20-multi-agent",
     "grok-4.3",
+    # grok-4.5 (early access): verified live against /v1/responses 2026-07-08 —
+    # accepts effort low/medium/high (default: high when omitted) but REJECTS
+    # "none" ("This model does not support `reasoning_effort` value `none`"),
+    # unlike grok-4.3.
+    "grok-4.5",
 )
 
 

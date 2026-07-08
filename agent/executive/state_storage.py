@@ -32,6 +32,7 @@ from .types import (
     objective_archive_key,
     objective_approval_request_key,
     objective_evaluation_key,
+    objective_evidence_pack_key,
     objective_goal_link_key,
     objective_kanban_apply_key,
     objective_kanban_tasks_key,
@@ -492,6 +493,75 @@ class ObjectiveStateStorage:
         db = self._get_db()
         try:
             key = objective_approval_request_key(objective_id)
+            existed = db.get_meta(key) is not None
+            if hasattr(db, "delete_meta"):
+                db.delete_meta(key)
+            else:
+                self._fallback_delete(key)
+            return existed
+        except Exception:
+            return False
+        finally:
+            self._close_db(db)
+
+    # ── Phase 7 B1 Knowledge Discovery storage methods (Gate C; default OFF) ──
+
+    def save_evidence_pack(self, objective_id: str, pack_dict: dict) -> str:
+        """Persist a B1 EvidencePack (as dict) for an objective.
+
+        Writes to ``state_meta[objective_knowledge_discovery:<oid>:v2]``.
+        Returns the state_meta key written.
+
+        The caller is responsible for passing an EvidencePack-like dict
+        (e.g. ``EvidencePack.to_dict()``). The engine routes the
+        call through its injected storage; this public method exists
+        for direct callers and for tests.
+        """
+        db = self._get_db()
+        try:
+            payload = json.dumps(pack_dict, default=str, sort_keys=True)
+            key = objective_evidence_pack_key(objective_id)
+            db.set_meta(key, payload)
+            return key
+        except Exception as exc:
+            raise StateStorageError(f"save_evidence_pack failed: {exc}") from exc
+        finally:
+            self._close_db(db)
+
+    def load_evidence_pack(self, objective_id: str) -> dict | None:
+        """Load the B1 EvidencePack dict for an objective, or ``None``.
+
+        Tolerant: if the stored value is a JSON string it is parsed; if
+        already a dict it is returned as a copy; if missing or
+        unparseable, returns ``None``.
+        """
+        db = self._get_db()
+        try:
+            raw = db.get_meta(objective_evidence_pack_key(objective_id))
+            if raw is None:
+                return None
+            if isinstance(raw, str):
+                try:
+                    return json.loads(raw)
+                except ValueError:
+                    return None
+            if isinstance(raw, dict):
+                return dict(raw)
+            return None
+        except Exception as exc:
+            raise StateStorageError(f"load_evidence_pack failed: {exc}") from exc
+        finally:
+            self._close_db(db)
+
+    def delete_evidence_pack(self, objective_id: str) -> bool:
+        """Delete the B1 EvidencePack for an objective. Idempotent.
+
+        Returns ``True`` if a pack existed before deletion; ``False``
+        otherwise. Used by rollback paths.
+        """
+        db = self._get_db()
+        try:
+            key = objective_evidence_pack_key(objective_id)
             existed = db.get_meta(key) is not None
             if hasattr(db, "delete_meta"):
                 db.delete_meta(key)

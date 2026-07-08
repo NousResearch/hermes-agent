@@ -233,6 +233,16 @@ class ExecutionContractV1:
     evidence_required: bool
     created_at: str
     created_by: str
+    # ── Phase 7 B1 Knowledge Discovery (Gate C wiring; default OFF) ──
+    # These fields are additive and only populated when an
+    # EvidencePack is provided to build_execution_contract_v1.
+    # When the feature is OFF (default), they keep the pre-wiring
+    # defaults (None / "" / 0.0 / 0.0) and the contract dict stays
+    # byte-identical to the pre-extension version.
+    evidence_pack_ref: str | None = None
+    evidence_pack_summary: str = ""
+    evidence_pack_confidence: float = 0.0
+    evidence_pack_freshness: float = 0.0
 
 
 @dataclass
@@ -252,6 +262,12 @@ class ObjectiveStateData:
     last_error: str | None = None
     last_transition_at: str | None = None
     last_transition_id: str | None = None
+    # ── Phase 7 B1 Knowledge Discovery (Gate C wiring; default OFF) ──
+    # Additive: when B1 is on and discover_evidence_pack succeeds, these
+    # are populated. When B1 is off (default), they stay None / None and
+    # do not affect any existing behavior.
+    evidence_pack_ref: str | None = None
+    evidence_pack_summary: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -313,6 +329,23 @@ def objective_plan_key(objective_id: str) -> str:
 def objective_orchestrator_preview_key(objective_id: str) -> str:
     """Build the state_meta key for the Phase 3 orchestrator preview."""
     return f"{OBJECTIVE_ORCHESTRATOR_PREVIEW_PREFIX}{objective_id}"
+
+
+# ── Phase 7 B1 Knowledge Discovery types ──────────────────────────
+# (Gate C wiring; default-OFF; no behavior change when feature is off.)
+
+OBJECTIVE_EVIDENCE_PACK_PREFIX = "objective_knowledge_discovery:"
+OBJECTIVE_EVIDENCE_PACK_VERSION = "v2"
+
+
+def objective_evidence_pack_key(objective_id: str) -> str:
+    """Build the state_meta key for the B1 EvidencePack of an objective.
+
+    Pattern: ``objective_knowledge_discovery:<oid>:v2``. Reserved
+    namespace; only the wiring in ``agent.executive`` (and the engine
+    via DI) writes here. Parallel to ``objective:`` and ``objective_plan:``.
+    """
+    return f"{OBJECTIVE_EVIDENCE_PACK_PREFIX}{objective_id}:{OBJECTIVE_EVIDENCE_PACK_VERSION}"
 
 
 @dataclass(frozen=True)

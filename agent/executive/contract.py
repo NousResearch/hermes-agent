@@ -25,6 +25,7 @@ from .types import (
     compute_contract_fingerprint,
     new_uuid,
     now_iso8601,
+    objective_evidence_pack_key,
 )
 
 
@@ -94,10 +95,18 @@ def build_execution_contract_v1(
     discovered: CapabilityDiscovery,
     *,
     user_id: str,
+    evidence_pack: "object | None" = None,  # EvidencePack | None (optional, B1 Gate C)
 ) -> ExecutionContractV1:
     """Build the ExecutionContract.v1 DRAFT from Phase 1 inputs.
 
     Pure function. No side effects. No LLM.
+
+    When ``evidence_pack`` is provided, the contract carries the
+    EvidencePack's ref/summary/confidence/freshness and may add a
+    ``knowledge_review`` (or ``knowledge_freshness_review``) approval
+    requirement based on the summary prefix. When ``evidence_pack`` is
+    ``None`` (default), the contract is byte-identical to the
+    pre-wiring version.
     """
     risk_components = compute_risk_components(classified, normalized)
     budget = COMPLEXITY_BUDGET[classified.estimated_complexity]
@@ -133,6 +142,46 @@ def build_execution_contract_v1(
         c for c in normalized.constraints
         if c not in hard_constraints
     )
+
+    # ── B1 EvidencePack fields (Gate C; default OFF; default-empty when None) ──
+    if evidence_pack is not None:
+        # Clamp summary to SUMMARY_TEXT_MAX_LEN to match design contract.
+        try:
+            from .knowledge_discovery import SUMMARY_TEXT_MAX_LEN  # type: ignore
+            _summary_max = SUMMARY_TEXT_MAX_LEN
+        except Exception:
+            _summary_max = 2000
+        ep_ref = objective_evidence_pack_key(normalized.objective_id)
+        ep_summary = (getattr(evidence_pack, "summary_text", "") or "")[:_summary_max]
+        try:
+            ep_conf = float(getattr(evidence_pack, "overall_confidence", 0.0))
+        except Exception:
+            ep_conf = 0.0
+        try:
+            ep_fresh = float(getattr(evidence_pack, "overall_freshness_score", 0.0))
+        except Exception:
+            ep_fresh = 0.0
+        # Approval requirements driven by summary prefix.
+        ep_summary_stripped = ep_summary.strip()
+        if ep_summary_stripped.startswith(("[REQUIRES_HUMAN]", "[NEEDS_EXPERT_REVIEW]")):
+            approvals = approvals + (
+                ApprovalRequirement(
+                    gate="knowledge_review", approver="human", ttl_hours=24
+                ),
+            )
+        if ep_summary_stripped.startswith("[DEGRADED_FRESHNESS]"):
+            approvals = approvals + (
+                ApprovalRequirement(
+                    gate="knowledge_freshness_review",
+                    approver="human",
+                    ttl_hours=48,
+                ),
+            )
+    else:
+        ep_ref = None
+        ep_summary = ""
+        ep_conf = 0.0
+        ep_fresh = 0.0
 
     return ExecutionContractV1(
         contract_version="1.0",
@@ -175,4 +224,8 @@ def build_execution_contract_v1(
         evidence_required=True,
         created_at=now_iso8601(),
         created_by=user_id,
+        evidence_pack_ref=ep_ref,
+        evidence_pack_summary=ep_summary,
+        evidence_pack_confidence=ep_conf,
+        evidence_pack_freshness=ep_fresh,
     )

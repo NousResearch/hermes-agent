@@ -171,15 +171,30 @@ def decompose_goal_to_subgoals(
     timeout_per = _derive_timeout(budget.get("max_duration_minutes"), count)
 
     subgoals: list[PlannerSubgoal] = []
+    # ── B1 EvidencePack gate (Gate C; default OFF; no-op when absent) ──
+    # When the execution contract carries an evidence_pack_summary whose
+    # prefix signals human/expert review is required, every subgoal
+    # gets a [GATED: ...] marker appended to expected_output. The
+    # marker is deterministic and contributes to the plan fingerprint.
+    ep_summary = (execution_contract.get("evidence_pack_summary") or "").strip()
+    ep_gated = ep_summary.startswith(
+        ("[REQUIRES_HUMAN]", "[NEEDS_EXPERT_REVIEW]")
+    )
+    gated_suffix = " [GATED: evidence pack requires human review]"
     for i, criterion in enumerate(success_criteria[:count]):
         # Classify intent from the full criterion text (not the
         # truncated title), so the classifier sees the full context.
+        expected_output_base = (
+            (criterion or "").strip()[:200] or "(no output defined)"
+        )
+        if ep_gated:
+            expected_output_base = expected_output_base + gated_suffix
         sg = PlannerSubgoal(
             id=f"sg-{i}",
             title=_derive_title(criterion),
             intent=_classify_intent(criterion),
             constraints=constraints,
-            expected_output=(criterion or "").strip()[:200] or "(no output defined)",
+            expected_output=expected_output_base,
             risk_level=_classify_risk(criterion, base_risk),
             approval_required=_approval_required(
                 criterion, base_risk, approval_requirements

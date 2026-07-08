@@ -82,6 +82,19 @@ def render_dry_run(state: Any) -> str:
                 f"max_dur={b.get('max_duration_minutes', '?')}min "
                 f"max=${b.get('max_cost_usd', '?')}"
             )
+        # ── B1 EvidencePack section (Gate C; default OFF; omitted when absent) ──
+        ep_summary = (
+            c.get("evidence_pack_summary")
+            or getattr(state, "evidence_pack_summary", None)
+        )
+        ep_ref = (
+            c.get("evidence_pack_ref")
+            or getattr(state, "evidence_pack_ref", None)
+        )
+        if ep_summary:
+            lines.append("│ Evidence Pack:")
+            lines.append(f"│   ref:      {ep_ref or '(none)'}")
+            lines.append(f"│   summary:  {ep_summary}")
 
     lines.append("│")
     lines.append("│ /objective persist <objective_id>  to save this")

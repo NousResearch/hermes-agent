@@ -592,6 +592,30 @@ class APIServerAdapter(BasePlatformAdapter):
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        self._revoked_token_sha256: frozenset[str] = self._parse_sha256_digest_set(
+            extra.get("revoked_token_sha256", os.getenv("API_SERVER_REVOKED_TOKEN_SHA256", "")),
+        )
+        self._max_bearer_token_age_seconds: int = max(
+            0,
+            _coerce_port(
+                extra.get(
+                    "max_bearer_token_age_seconds",
+                    os.getenv("API_SERVER_MAX_BEARER_TOKEN_AGE_SECONDS", "0"),
+                ),
+                0,
+            ),
+        )
+        self._auth_cookie_name: str = str(
+            extra.get("cookie_name", os.getenv("API_SERVER_COOKIE_NAME", "")) or ""
+        ).strip()
+        self._csrf_header: str = str(
+            extra.get("csrf_header", os.getenv("API_SERVER_CSRF_HEADER", "X-CSRF-Token"))
+            or "X-CSRF-Token"
+        ).strip()
+        self._csrf_cookie: str = str(
+            extra.get("csrf_cookie", os.getenv("API_SERVER_CSRF_COOKIE", "hermes_csrf"))
+            or "hermes_csrf"
+        ).strip()
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -686,27 +710,100 @@ class APIServerAdapter(BasePlatformAdapter):
     # Auth helper
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _parse_sha256_digest_set(value: Any) -> frozenset[str]:
+        """Normalize configured SHA-256 token revocation digests.
+
+        Operators should store token revocations as SHA-256 digests rather
+        than raw API keys.  Accepts comma-separated strings or iterables, with
+        optional ``sha256:`` prefixes for readability.
+        """
+        if not value:
+            return frozenset()
+        if isinstance(value, str):
+            raw_items = value.split(",")
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            raw_items = value
+        else:
+            raw_items = [value]
+
+        digests: set[str] = set()
+        for item in raw_items:
+            digest = str(item or "").strip().lower()
+            if digest.startswith("sha256:"):
+                digest = digest.split(":", 1)[1].strip()
+            if len(digest) == 64 and all(ch in "0123456789abcdef" for ch in digest):
+                digests.add(digest)
+        return frozenset(digests)
+
+    @staticmethod
+    def _is_mutating_method(method: str) -> bool:
+        return str(method or "").upper() in {"POST", "PUT", "PATCH", "DELETE"}
+
+    @staticmethod
+    def _token_sha256(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _auth_error(message: str, *, status: int = 401, code: str = "invalid_api_key") -> "web.Response":
+        headers = {"WWW-Authenticate": f'Bearer realm="hermes-api", error="{code}"'} if status == 401 else None
+        return web.json_response(
+            {"error": {"message": message, "type": "invalid_request_error", "code": code}},
+            status=status,
+            headers=headers,
+        )
+
+    def _check_cookie_csrf(self, request: "web.Request") -> Optional["web.Response"]:
+        """Enforce double-submit CSRF only for cookie-authenticated mutations."""
+        if not self._is_mutating_method(getattr(request, "method", "")):
+            return None
+        csrf_header = request.headers.get(self._csrf_header, "") if self._csrf_header else ""
+        csrf_cookie = request.cookies.get(self._csrf_cookie, "") if self._csrf_cookie else ""
+        if csrf_header and csrf_cookie and hmac.compare_digest(str(csrf_header), str(csrf_cookie)):
+            return None
+        return self._auth_error(
+            "CSRF token required for cookie-authenticated mutating requests",
+            status=403,
+            code="csrf_required",
+        )
+
+    def _extract_auth_token(self, request: "web.Request") -> tuple[str, str]:
+        """Return ``(token, source)`` where source is ``bearer`` or ``cookie``."""
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            return auth_header[7:].strip(), "bearer"
+        if self._auth_cookie_name:
+            token = request.cookies.get(self._auth_cookie_name, "")
+            if token:
+                return str(token).strip(), "cookie"
+        return "", ""
+
     def _check_auth(self, request: "web.Request") -> Optional["web.Response"]:
         """
-        Validate Bearer token from Authorization header.
+        Validate Bearer token from Authorization header, or an explicitly
+        configured auth cookie for browser deployments.
 
-        Returns None if auth is OK, or a 401 web.Response on failure.
-        If no API key is configured, all requests are allowed (only when API
-        server is local).
+        Cookie-authenticated mutating requests require a matching CSRF header
+        and CSRF cookie (double-submit pattern).  If no API key is configured,
+        all requests are allowed only for local-only deployments; connect()
+        refuses network-accessible binds without a key.
         """
         if not self._api_key:
             return None  # No key configured — allow all (local-only use)
 
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:].strip()
-            if hmac.compare_digest(token, self._api_key):
-                return None  # Auth OK
+        token, source = self._extract_auth_token(request)
+        if not token:
+            return self._auth_error("Invalid API key")
 
-        return web.json_response(
-            {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
-            status=401,
-        )
+        if self._token_sha256(token) in self._revoked_token_sha256:
+            return self._auth_error("API key has been revoked", code="token_revoked")
+
+        if hmac.compare_digest(token, self._api_key):
+            if source == "cookie":
+                return self._check_cookie_csrf(request)
+            return None  # Auth OK
+
+        return self._auth_error("Invalid API key")
 
     # ------------------------------------------------------------------
     # Session header helpers
@@ -926,6 +1023,14 @@ class APIServerAdapter(BasePlatformAdapter):
             "auth": {
                 "type": "bearer",
                 "required": bool(self._api_key),
+            },
+            "security": {
+                "bearer_auth_required": bool(self._api_key),
+                "token_revocation_supported": True,
+                "revoked_token_count": len(self._revoked_token_sha256),
+                "cookie_auth_configured": bool(self._auth_cookie_name),
+                "csrf_required_for_cookie_mutations": bool(self._auth_cookie_name),
+                "recommended_max_bearer_token_age_seconds": self._max_bearer_token_age_seconds,
             },
             "runtime": {
                 "mode": "server_agent",

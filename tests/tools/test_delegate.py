@@ -69,6 +69,9 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("model", props)
+        task_props = props["tasks"]["items"]["properties"]
+        self.assertIn("model", task_props)
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -215,6 +218,65 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][0]["summary"], "Result A")
         self.assertEqual(result["results"][1]["summary"], "Result B")
         self.assertIn("total_duration_seconds", result)
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    def test_single_task_model_override_reaches_child_agent(self, mock_build, mock_run):
+        child = MagicMock()
+        mock_build.return_value = child
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done!",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+        parent = _make_mock_parent()
+
+        result = json.loads(
+            delegate_task(
+                goal="Fix tests",
+                model="qwen/qwen3-coder:free",
+                parent_agent=parent,
+            )
+        )
+
+        self.assertIn("results", result)
+        self.assertEqual(mock_build.call_args.kwargs["model"], "qwen/qwen3-coder:free")
+        mock_run.assert_called_once_with(0, "Fix tests", child, parent)
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    def test_batch_per_task_model_overrides_toplevel_model(self, mock_build, mock_run):
+        children = [MagicMock(), MagicMock()]
+        mock_build.side_effect = children
+        mock_run.side_effect = [
+            {"task_index": 0, "status": "completed", "summary": "A", "api_calls": 1, "duration_seconds": 1.0},
+            {"task_index": 1, "status": "completed", "summary": "B", "api_calls": 1, "duration_seconds": 1.0},
+        ]
+        parent = _make_mock_parent()
+        tasks = [
+            {"goal": "Coding task", "model": "qwen/qwen3-coder:free"},
+            {"goal": "Research task", "model": "nvidia/nemotron-3-ultra-550b-a55b:free"},
+        ]
+
+        result = json.loads(
+            delegate_task(
+                tasks=tasks,
+                model="openrouter/owl-alpha",
+                parent_agent=parent,
+            )
+        )
+
+        self.assertIn("results", result)
+        models = [call.kwargs["model"] for call in mock_build.call_args_list]
+        self.assertEqual(
+            models,
+            [
+                "qwen/qwen3-coder:free",
+                "nvidia/nemotron-3-ultra-550b-a55b:free",
+            ],
+        )
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode_accepts_json_string_tasks(self, mock_run):

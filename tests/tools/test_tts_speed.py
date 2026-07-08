@@ -46,6 +46,74 @@ class TestEdgeTtsSpeed:
         kwargs = comm_cls.call_args[1]
         assert kwargs["rate"] == "+100%"
 
+    def test_language_voice_map_selects_arabic_voice_for_arabic_text(self, tmp_path):
+        """Arabic reply text should use the configured Arabic Edge voice."""
+        mock_comm = MagicMock()
+        mock_comm.save = AsyncMock()
+        mock_edge = MagicMock()
+        mock_edge.Communicate = MagicMock(return_value=mock_comm)
+
+        tts_config = {
+            "edge": {
+                "voice": "en-US-AriaNeural",
+                "voices_by_language": {
+                    "ar": "ar-SA-ZariyahNeural",
+                    "en": "en-US-AriaNeural",
+                },
+            }
+        }
+        with patch("tools.tts_tool._import_edge_tts", return_value=mock_edge):
+            from tools.tts_tool import _generate_edge_tts
+            asyncio.run(_generate_edge_tts("هلا والله كيف حالك", str(tmp_path / "out.mp3"), tts_config))
+
+        kwargs = mock_edge.Communicate.call_args[1]
+        assert kwargs["voice"] == "ar-SA-ZariyahNeural"
+
+    def test_language_voice_map_keeps_english_voice_for_english_text(self, tmp_path):
+        """English reply text should keep the configured English Edge voice."""
+        comm_cls = self._run(
+            {
+                "edge": {
+                    "voice": "en-US-AriaNeural",
+                    "voices_by_language": {
+                        "ar": "ar-SA-ZariyahNeural",
+                        "en": "en-US-AriaNeural",
+                    },
+                }
+            },
+            tmp_path,
+        )
+        kwargs = comm_cls.call_args[1]
+        assert kwargs["voice"] == "en-US-AriaNeural"
+
+    def test_invalid_language_voice_map_falls_back_to_configured_voice(self, tmp_path):
+        """Invalid voices_by_language should not break Edge TTS voice selection."""
+        comm_cls = self._run(
+            {
+                "edge": {
+                    "voice": "en-US-AriaNeural",
+                    "voices_by_language": ["ar-SA-ZariyahNeural"],
+                }
+            },
+            tmp_path,
+        )
+        kwargs = comm_cls.call_args[1]
+        assert kwargs["voice"] == "en-US-AriaNeural"
+
+    def test_blank_language_voice_falls_back_to_configured_voice(self, tmp_path):
+        """Blank language-specific voices should fall back to the configured voice."""
+        comm_cls = self._run(
+            {
+                "edge": {
+                    "voice": "en-US-AriaNeural",
+                    "voices_by_language": {"en": "   "},
+                }
+            },
+            tmp_path,
+        )
+        kwargs = comm_cls.call_args[1]
+        assert kwargs["voice"] == "en-US-AriaNeural"
+
     def test_speed_below_one(self, tmp_path):
         """Speed < 1.0 produces a negative rate string."""
         comm_cls = self._run({"speed": 0.5}, tmp_path)

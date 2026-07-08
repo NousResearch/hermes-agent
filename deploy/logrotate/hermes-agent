@@ -1,0 +1,20 @@
+# Install as /etc/logrotate.d/hermes-agent and replace USER/GROUP if needed.
+# For Docker deployments, rotate logs on the host volume path instead.
+
+/home/hermes/.hermes/logs/*.log /data/hermes/logs/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    create 0640 hermes hermes
+    sharedscripts
+    postrotate
+        # copytruncate avoids requiring Hermes to reopen files. If you manage
+        # Hermes with systemd and prefer reopen-on-restart, replace with:
+        # systemctl reload-or-restart hermes-gateway.service >/dev/null 2>&1 || true
+        true
+    endscript
+}

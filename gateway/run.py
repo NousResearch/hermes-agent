@@ -43,6 +43,114 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List, Union
 
+
+def _progress_bar(percent: int, width: int = 10) -> str:
+    """Return a compact unicode progress bar for gateway status cards."""
+    try:
+        pct = max(0, min(100, int(percent)))
+    except Exception:
+        pct = 0
+    filled = int(round((pct / 100) * width))
+    return "█" * filled + "░" * (width - filled)
+
+
+def _activity_percent(activity: dict) -> int:
+    """Best-effort percent for an active agent/workstream.
+
+    Gateway long-running notifications fire while work is still in progress,
+    so never report 100% unless the caller explicitly marks a terminal state.
+    """
+    try:
+        used = int(activity.get("budget_used") or activity.get("api_call_count") or 0)
+        total = int(activity.get("budget_max") or activity.get("max_iterations") or 0)
+        if total > 0:
+            return max(5, min(95, round((used / total) * 100)))
+    except Exception:
+        pass
+    return 10
+
+
+def _format_duration(seconds: float | int | None) -> str:
+    try:
+        total = max(0, int(seconds or 0))
+    except Exception:
+        total = 0
+    hours, rem = divmod(total, 3600)
+    mins, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {mins}m {secs}s"
+    if mins:
+        return f"{mins}m {secs}s"
+    return f"{secs}s"
+
+
+def _format_gateway_workstream_progress(
+    *,
+    activity: dict | None,
+    elapsed_seconds: float,
+    session_id: str | None,
+    run_generation: int | None,
+) -> str:
+    """Format long-running gateway updates as adaptive workstream cards.
+
+    Replaces the generic "Still working..." bubble with a Telegram-friendly
+    status card that shows the active top-level workstream plus any active
+    child subagents known to the parent AIAgent.
+    """
+    activity = activity or {}
+    pct = _activity_percent(activity)
+    bar = _progress_bar(pct)
+    status = "running"
+    icon = "🔄"
+    taskflow = session_id or "gateway-run"
+    if run_generation is not None:
+        taskflow = f"{taskflow}:{run_generation}"
+    updated = datetime.now().strftime("%Y-%m-%d %H:%M")
+    children = activity.get("active_children") or []
+    active = 1 + len(children)
+    current = activity.get("current_tool") or activity.get("last_activity_desc") or "working"
+    main_tasks = [str(current)]
+    if activity.get("current_tool") and activity.get("last_activity_desc") and activity.get("last_activity_desc") != activity.get("current_tool"):
+        main_tasks.append(str(activity.get("last_activity_desc")))
+
+    lines = [
+        f"## Workstream 1: {icon} Hermes",
+        f"Progress: [{bar}] {pct}% | status: {status}",
+        f"TaskFlow: {taskflow}",
+        f"Updated: {updated} | tasks: {active} | active: {active} | failures: 0",
+        "",
+        "Subagents / workers:",
+        "  1. 🔄 Hermes",
+        "     Job title: Main agent / orchestrator",
+        f"     Progress: [{bar}] {pct}% | status: {status}",
+        f"     Time spent: {_format_duration(elapsed_seconds)} | runtime: gateway-agent",
+        "     Main tasks:",
+    ]
+    for task in main_tasks[:3]:
+        lines.append(f"     - {task}")
+    lines.extend([
+        f"     IDs: agent=main | taskId={activity.get('task_id') or session_id or 'current'}",
+        f"     Latest update: {activity.get('last_activity_desc') or current}",
+    ])
+
+    for idx, child in enumerate(children, 2):
+        cpct = _activity_percent(child)
+        cbar = _progress_bar(cpct)
+        child_name = child.get("subagent_id") or f"Subagent {idx - 1}"
+        child_current = child.get("current_tool") or child.get("last_activity_desc") or "working"
+        child_model = child.get("model") or "subagent"
+        lines.extend([
+            f"  {idx}. 🔄 {child_name}",
+            f"     Job title: Subagent worker ({child_model})",
+            f"     Progress: [{cbar}] {cpct}% | status: running",
+            f"     Time spent: {_format_duration(child.get('seconds_since_activity'))} since update | runtime: subagent",
+            "     Main tasks:",
+            f"     - {child_current}",
+            f"     IDs: agent={child_name} | taskId={child.get('task_id') or child.get('session_id') or 'child'}",
+            f"     Latest update: {child.get('last_activity_desc') or child_current}",
+        ])
+    return "\n".join(lines)
+
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
 # patches (tests/gateway/test_usage_command.py) target
@@ -8759,13 +8867,12 @@ class GatewayRunner:
         recorded_uid = data.get("update_id")
         if not isinstance(recorded_uid, int):
             return False
-        # Staleness guard: ignore markers older than 5 minutes.  A legitimately
-        # old marker (e.g. crash recovery where notify never fired) should not
-        # swallow a fresh /restart from the user.
-        requested_at = data.get("requested_at")
-        if isinstance(requested_at, (int, float)):
-            if time.time() - requested_at > 300:
-                return False
+        # Do not expire Telegram restart dedup markers by wall-clock time.
+        # Telegram can re-deliver an old /restart update after a gateway
+        # replacement; if we age out the marker after 5 minutes, that stale
+        # update can trigger a restart loop every ~5 minutes. A future fresh
+        # /restart has a larger update_id, so update ordering is enough to
+        # distinguish it from a redelivery.
         return event.platform_update_id <= recorded_uid
 
 
@@ -15615,25 +15722,25 @@ class GatewayRunner:
                 return
             while True:
                 await asyncio.sleep(_NOTIFY_INTERVAL)
-                _elapsed_mins = int((time.time() - _notify_start) // 60)
-                # Include agent activity context if available.
+                _elapsed_seconds = time.time() - _notify_start
+                # Include agent and active subagent activity context if available.
                 _agent_ref = agent_holder[0]
-                _status_detail = ""
+                _activity = {}
                 if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                     try:
-                        _a = _agent_ref.get_activity_summary()
-                        _parts = [f"iteration {_a['api_call_count']}/{_a['max_iterations']}"]
-                        if _a.get("current_tool"):
-                            _parts.append(f"running: {_a['current_tool']}")
-                        else:
-                            _parts.append(_a.get("last_activity_desc", ""))
-                        _status_detail = " — " + ", ".join(_parts)
+                        _activity = _agent_ref.get_activity_summary() or {}
                     except Exception:
-                        pass
+                        _activity = {}
                 try:
+                    _notify_text = _format_gateway_workstream_progress(
+                        activity=_activity,
+                        elapsed_seconds=_elapsed_seconds,
+                        session_id=session_id,
+                        run_generation=run_generation,
+                    )
                     _notify_res = await _notify_adapter.send(
                         source.chat_id,
-                        f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
+                        _notify_text,
                         metadata=_status_thread_metadata,
                     )
                     if (

@@ -5542,10 +5542,38 @@ class AIAgent:
     def get_activity_summary(self) -> dict:
         """Return a snapshot of the agent's current activity for diagnostics.
 
-        Called by the gateway timeout handler to report what the agent was doing
-        when it was killed, and by the periodic "still working" notifications.
+        Called by the gateway timeout handler and by periodic gateway progress
+        notifications.  Keep this payload JSON-ish and defensive: it is read
+        from the asyncio gateway thread while the agent itself is running in a
+        worker thread.
         """
         elapsed = time.time() - self._last_activity_ts
+        active_children = []
+        try:
+            with self._active_children_lock:
+                child_refs = list(self._active_children)
+            for idx, child in enumerate(child_refs, 1):
+                child_elapsed = time.time() - getattr(child, "_last_activity_ts", time.time())
+                child_budget = getattr(child, "iteration_budget", None)
+                active_children.append({
+                    "index": idx,
+                    "subagent_id": getattr(child, "_subagent_id", None),
+                    "model": getattr(child, "model", None),
+                    "provider": getattr(child, "provider", None),
+                    "session_id": getattr(child, "session_id", None),
+                    "task_id": getattr(child, "_current_task_id", None),
+                    "last_activity_ts": getattr(child, "_last_activity_ts", None),
+                    "last_activity_desc": getattr(child, "_last_activity_desc", ""),
+                    "seconds_since_activity": round(child_elapsed, 1),
+                    "current_tool": getattr(child, "_current_tool", None),
+                    "api_call_count": getattr(child, "_api_call_count", 0),
+                    "max_iterations": getattr(child, "max_iterations", 0),
+                    "budget_used": getattr(child_budget, "used", 0),
+                    "budget_max": getattr(child_budget, "max_total", 0),
+                })
+        except Exception:
+            active_children = []
+
         return {
             "last_activity_ts": self._last_activity_ts,
             "last_activity_desc": self._last_activity_desc,
@@ -5555,6 +5583,11 @@ class AIAgent:
             "max_iterations": self.max_iterations,
             "budget_used": self.iteration_budget.used,
             "budget_max": self.iteration_budget.max_total,
+            "task_id": getattr(self, "_current_task_id", None),
+            "session_id": getattr(self, "session_id", None),
+            "model": getattr(self, "model", None),
+            "provider": getattr(self, "provider", None),
+            "active_children": active_children,
         }
 
     def shutdown_memory_provider(self, messages: list = None) -> None:
@@ -6909,7 +6942,37 @@ class AIAgent:
                                 sum(len(p) for p in self._codex_streamed_text_parts),
                                 self._client_log_context(),
                             )
-                    final_response = stream.get_final_response()
+                    try:
+                        final_response = stream.get_final_response()
+                    except TypeError as exc:
+                        # ChatGPT Codex backend sometimes emits terminal stream
+                        # metadata with `response.output = null`. The OpenAI
+                        # SDK parser then raises before returning a final
+                        # response, even though we already collected valid
+                        # `response.output_item.done` events and text deltas.
+                        if "NoneType" not in str(exc) or (
+                            not collected_output_items and not self._codex_streamed_text_parts
+                        ):
+                            raise
+                        final_response = SimpleNamespace(
+                            output=list(collected_output_items),
+                            status="completed",
+                            usage=None,
+                        )
+                        if not final_response.output and self._codex_streamed_text_parts and not has_tool_calls:
+                            assembled = "".join(self._codex_streamed_text_parts)
+                            final_response.output = [SimpleNamespace(
+                                type="message",
+                                role="assistant",
+                                status="completed",
+                                content=[SimpleNamespace(type="output_text", text=assembled)],
+                            )]
+                        logger.debug(
+                            "Codex stream: recovered final response after SDK parse error "
+                            "(%d collected items, %d streamed chars)",
+                            len(collected_output_items),
+                            sum(len(p) for p in self._codex_streamed_text_parts),
+                        )
                     # PATCH: ChatGPT Codex backend streams valid output items
                     # but get_final_response() can return an empty output list.
                     # Backfill from collected items or synthesize from deltas.
@@ -6934,6 +6997,35 @@ class AIAgent:
                                 len(self._codex_streamed_text_parts), len(assembled),
                             )
                     return final_response
+            except TypeError as exc:
+                # ChatGPT Codex backend can send a terminal SSE event whose
+                # embedded response has `output: null`. The OpenAI SDK raises
+                # while iterating the stream, before get_final_response() can
+                # run. Recover from the output items/text deltas already seen.
+                if "NoneType" not in str(exc) or (
+                    not collected_output_items and not self._codex_streamed_text_parts
+                ):
+                    raise
+                recovered = SimpleNamespace(
+                    output=list(collected_output_items),
+                    status="completed",
+                    usage=None,
+                )
+                if not recovered.output and self._codex_streamed_text_parts and not has_tool_calls:
+                    assembled = "".join(self._codex_streamed_text_parts)
+                    recovered.output = [SimpleNamespace(
+                        type="message",
+                        role="assistant",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text=assembled)],
+                    )]
+                logger.debug(
+                    "Codex stream: recovered from SDK stream iteration error "
+                    "(%d collected items, %d streamed chars)",
+                    len(collected_output_items),
+                    sum(len(p) for p in self._codex_streamed_text_parts),
+                )
+                return recovered
             except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
                 if attempt < max_stream_retries:
                     logger.debug(

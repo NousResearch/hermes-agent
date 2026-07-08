@@ -1,0 +1,28 @@
+# Production Caddy reverse proxy for Hermes Agent API server.
+# Replace hermes.example.com before use. Caddy provisions TLS automatically.
+
+hermes.example.com {
+    encode zstd gzip
+
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        X-Frame-Options DENY
+    }
+
+    reverse_proxy 127.0.0.1:8642 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up Authorization {header.Authorization}
+        header_up X-Hermes-Session-Id {header.X-Hermes-Session-Id}
+        header_up X-Hermes-Session-Key {header.X-Hermes-Session-Key}
+        header_up X-CSRF-Token {header.X-CSRF-Token}
+        transport http {
+            read_timeout 1h
+            write_timeout 1h
+        }
+    }
+
+    # SSE streams are supported by reverse_proxy; keep proxy buffering off by not adding cache/buffer middleware.
+}

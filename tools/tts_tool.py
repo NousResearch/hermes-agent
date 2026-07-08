@@ -172,6 +172,10 @@ DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+DEFAULT_EDGE_LANGUAGE_VOICES = {
+    "ar": "ar-SA-ZariyahNeural",
+    "en": DEFAULT_EDGE_VOICE,
+}
 # PCM output specs for Gemini TTS (fixed by the API)
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
@@ -766,6 +770,36 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
 # ===========================================================================
 # Provider: Edge TTS (free)
 # ===========================================================================
+def _detect_tts_language(text: str) -> str:
+    """Best-effort language bucket for voice selection.
+
+    This intentionally stays lightweight and deterministic for gateway auto-TTS:
+    if Arabic-script characters are present, prefer Arabic; otherwise use
+    English as the default voice bucket. The LLM normally replies in the same
+    language as the user's voice transcript, so response-text detection gives
+    the requested Arabic/English switching without relying on STT provider
+    language metadata (not all providers expose it consistently).
+    """
+    if re.search(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]", text or ""):
+        return "ar"
+    return "en"
+
+
+def _select_edge_voice(text: str, edge_config: Dict[str, Any]) -> str:
+    """Return the Edge voice for *text*, honoring voices_by_language mapping."""
+    default_voice = edge_config.get("voice", DEFAULT_EDGE_VOICE)
+    voices_by_language = edge_config.get("voices_by_language")
+    if voices_by_language is None:
+        voices_by_language = DEFAULT_EDGE_LANGUAGE_VOICES
+    if not isinstance(voices_by_language, dict):
+        return default_voice
+    language = _detect_tts_language(text)
+    voice = voices_by_language.get(language)
+    if isinstance(voice, str) and voice.strip():
+        return voice.strip()
+    return default_voice
+
+
 async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """
     Generate audio using Edge TTS.
@@ -780,7 +814,7 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
     """
     _edge_tts = _import_edge_tts()
     edge_config = tts_config.get("edge", {})
-    voice = edge_config.get("voice", DEFAULT_EDGE_VOICE)
+    voice = _select_edge_voice(text, edge_config)
     speed = float(edge_config.get("speed", tts_config.get("speed", 1.0)))
 
     kwargs = {"voice": voice}

@@ -1900,6 +1900,7 @@ def delegate_task(
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
+    model: Optional[str] = None,
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
@@ -1910,8 +1911,8 @@ def delegate_task(
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, toolsets, role, model)
+      - Batch:  provide tasks array [{goal, context, toolsets, role, model}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
@@ -1997,7 +1998,13 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "role": top_role,
+                "model": model,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2038,12 +2045,13 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            task_model = str(t.get("model") or model or creds["model"] or "").strip() or None
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_model,
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
@@ -2546,6 +2554,12 @@ def _build_top_level_description() -> str:
         f"user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
+        "- Prefer free OpenRouter model overrides when a task-specific specialist is useful: "
+        "coding/software -> qwen/qwen3-coder:free; UI/visualization/architecture/design -> "
+        "moonshotai/kimi-k2.6:free; long-context analysis/planning -> openrouter/owl-alpha "
+        "or nvidia/nemotron-3-ultra-550b-a55b:free; OCR/vision/document understanding -> "
+        "moonshotai/kimi-k2.6:free or google/gemma-4-31b-it:free; fast/simple text -> "
+        "liquid/lfm-2.5-1.2b-instruct:free.\n"
         "- Results are always returned as an array, one entry per task."
     )
 
@@ -2669,6 +2683,17 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional per-call model override for Hermes subagents. "
+                    "Use OpenRouter free models to reduce paid-key usage. "
+                    "Recommended: qwen/qwen3-coder:free for coding/software; "
+                    "moonshotai/kimi-k2.6:free for UI/visualization/design and OCR/vision; "
+                    "openrouter/owl-alpha or nvidia/nemotron-3-ultra-550b-a55b:free for "
+                    "agentic long-context reasoning; liquid/lfm-2.5-1.2b-instruct:free for simple text."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -2683,6 +2708,16 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model override. Prefer OpenRouter free models: "
+                                "qwen/qwen3-coder:free for coding/software; "
+                                "moonshotai/kimi-k2.6:free for UI/visualization/design/OCR/vision; "
+                                "openrouter/owl-alpha or nvidia/nemotron-3-ultra-550b-a55b:free for "
+                                "long-context reasoning; liquid/lfm-2.5-1.2b-instruct:free for simple text."
+                            ),
                         },
                         "acp_command": {
                             "type": "string",
@@ -2755,6 +2790,7 @@ registry.register(
         context=args.get("context"),
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
+        model=args.get("model"),
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),

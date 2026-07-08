@@ -41,6 +41,49 @@ hermes gateway → plugins/platforms/voice_satellite/
   (e.g. `--wake-uri` pointing at openWakeWord). See its docs for the
   hardware-side install.
 
+## Quick start: first smoke test
+
+What you need: any Linux box with a microphone and speaker (a laptop works;
+no Pi required), plus Hermes with an `stt:` and `tts:` provider already
+configured in `~/.hermes/config.yaml` — the round trip uses both.
+
+On the satellite machine:
+
+```bash
+# 1. The wake-word service (separate process, its own Wyoming server)
+git clone https://github.com/rhasspy/wyoming-openwakeword.git
+cd wyoming-openwakeword && script/setup
+script/run --uri 'tcp://127.0.0.1:10400' &
+
+# 2. The satellite itself
+git clone https://github.com/rhasspy/wyoming-satellite.git
+cd wyoming-satellite && script/setup
+script/run \
+  --name kitchen \
+  --uri 'tcp://0.0.0.0:10700' \
+  --mic-command 'arecord -r 16000 -c 1 -f S16_LE -t raw' \
+  --snd-command 'aplay -r 22050 -c 1 -f S16_LE -t raw' \
+  --wake-uri 'tcp://127.0.0.1:10400' \
+  --wake-word-name 'ok_nabu'
+```
+
+Notes:
+- There is no "Hey Hermes" wake model; test with a stock openWakeWord model
+  such as `ok_nabu` ("Okay Nabu"). Custom wake words can be trained later.
+- The `aplay -r 22050` rate must match `tts_sample_rate` below (both default
+  to 22050).
+- Wrong mic or speaker? List devices with `arecord -L` / `aplay -L` and pass
+  `-D plughw:...` inside the respective command.
+
+On the Hermes machine: add the `voice_satellite:` block below with the
+satellite's address, then `hermes gateway start`.
+
+Success looks like: the gateway log shows the Wyoming handshake for
+`kitchen` at startup; saying "Okay Nabu" logs `listening`; your question
+logs `heard: <transcript>`; the reply plays through the satellite speaker.
+If the handshake never appears, test reachability first:
+`python -c "import socket; socket.create_connection(('<satellite>', 10700), timeout=5)"`.
+
 ## Configuration
 
 In `~/.hermes/config.yaml`:

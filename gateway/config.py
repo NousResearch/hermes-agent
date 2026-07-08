@@ -1603,7 +1603,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if feishu_app_id and feishu_app_secret:
         if Platform.FEISHU not in config.platforms:
             config.platforms[Platform.FEISHU] = PlatformConfig()
-        config.platforms[Platform.FEISHU].enabled = True
+            config.platforms[Platform.FEISHU].enabled = True
+        else:
+            feishu_config = config.platforms[Platform.FEISHU]
+            enabled_was_explicit = bool(feishu_config.extra.pop("_enabled_explicit", False))
+            if not feishu_config.enabled and not enabled_was_explicit:
+                feishu_config.enabled = True
         config.platforms[Platform.FEISHU].extra.update({
             "app_id": feishu_app_id,
             "app_secret": feishu_app_secret,
@@ -1631,7 +1636,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if wecom_bot_id and wecom_secret:
         if Platform.WECOM not in config.platforms:
             config.platforms[Platform.WECOM] = PlatformConfig()
-        config.platforms[Platform.WECOM].enabled = True
+            config.platforms[Platform.WECOM].enabled = True
+        else:
+            wecom_config = config.platforms[Platform.WECOM]
+            enabled_was_explicit = bool(wecom_config.extra.pop("_enabled_explicit", False))
+            if not wecom_config.enabled and not enabled_was_explicit:
+                wecom_config.enabled = True
         config.platforms[Platform.WECOM].extra.update({
             "bot_id": wecom_bot_id,
             "secret": wecom_secret,

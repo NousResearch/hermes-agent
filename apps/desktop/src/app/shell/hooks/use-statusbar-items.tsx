@@ -90,6 +90,13 @@ export function useStatusbarItems({
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
 
+  // Decode-only token speed from backend's first-token timing (#60583).
+  // Only shown while the turn is running so the user sees live rate.
+  const tokenSpeed = useMemo(() => {
+    const tps = currentUsage.tokens_per_second
+    return tps && tps > 0 ? `${tps.toFixed(1)} tok/s` : null
+  }, [currentUsage.tokens_per_second])
+
   // Per-session approval bypass (same scope as the TUI's Shift+Tab). On a
   // new-chat draft (no runtime session yet) we arm locally; the session-create
   // path applies it once the backend session exists.
@@ -373,6 +380,13 @@ export function useStatusbarItems({
         ),
         title: copy.openContextUsage,
         variant: 'menu'
+      },
+      {
+        detail: tokenSpeed,
+        hidden: !tokenSpeed,
+        id: 'token-speed',
+        label: copy.tokenSpeed,
+        variant: 'text'
       },
       {
         detail: <LiveDuration since={sessionStartedAt} />,

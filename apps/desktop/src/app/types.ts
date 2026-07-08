@@ -158,4 +158,8 @@ export interface ClientSessionState {
    *  focused, and switching sessions doesn't zero a still-running turn's clock.
    *  The global $turnStartedAt mirrors whichever session is currently viewed. */
   turnStartedAt: number | null
+  /** Epoch ms the first content/reasoning delta of the current turn arrived,
+   *  or null before the first token.  Used to compute decode-only token speed
+   *  for the statusbar (#60583). */
+  firstTokenAt: number | null
 }

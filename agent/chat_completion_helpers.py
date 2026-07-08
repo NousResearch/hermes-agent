@@ -2026,6 +2026,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     def _fire_first_delta():
         if not first_delta_fired["done"] and on_first_delta:
             first_delta_fired["done"] = True
+            # Record the wall-clock time the first token arrived so
+            # tokens_per_second can be computed from decode-only time
+            # (excluding prompt prefill).  Read in _get_usage / CLI
+            # status-bar snapshots.  (#60583)
+            try:
+                agent._first_token_timestamp = time.time()
+            except Exception:
+                pass
             try:
                 on_first_delta()
             except Exception:

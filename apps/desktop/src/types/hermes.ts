@@ -422,6 +422,8 @@ export interface UsageStats {
   input: number
   output: number
   total: number
+  /** Provider-measured or decode-window-estimated tokens per second (#60583). */
+  tokens_per_second?: number
 }
 
 /** One graph node in the star map (learned skill or memory chunk). */

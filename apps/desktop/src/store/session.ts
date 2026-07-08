@@ -275,7 +275,8 @@ export const $currentUsage = atom<UsageStats>({
   calls: 0,
   input: 0,
   output: 0,
-  total: 0
+  total: 0,
+  tokens_per_second: undefined
 })
 export const $sessionStartedAt = atom<number | null>(null)
 export const $turnStartedAt = atom<number | null>(null)

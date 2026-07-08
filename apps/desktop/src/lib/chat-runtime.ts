@@ -55,7 +55,8 @@ export function createClientSessionState(
     pendingBranchGroup: null,
     interrupted: false,
     needsInput: false,
-    turnStartedAt: null
+    turnStartedAt: null,
+    firstTokenAt: null
   }
 }
 

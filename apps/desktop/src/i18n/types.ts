@@ -1694,6 +1694,7 @@ export interface Translations {
       openStarmap: string
       turnRunning: string
       currentTurnElapsed: string
+      tokenSpeed: string
       contextUsage: string
       contextUsagePanel: {
         categories: {

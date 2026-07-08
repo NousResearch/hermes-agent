@@ -3248,6 +3248,15 @@ def _get_usage(agent) -> dict:
                 usage["dev_credits_spent_micros"] = int(spent)
         except Exception:
             pass
+    # Compute tokens_per_second from first-token decode-only timing when
+    # the provider doesn't return a measured rate (e.g. local OpenAI-
+    # compatible endpoints like LM Studio / Ollama).  Uses the timestamp
+    # recorded when the first streaming token arrived, excluding prompt
+    # prefill time, to give a decode-only speed estimate.  (#60583)
+    _fts = getattr(agent, "_first_token_timestamp", None)
+    if _fts and usage.get("output"):
+        _elapsed = max(0.001, time.time() - _fts)
+        usage["tokens_per_second"] = round(usage["output"] / _elapsed, 1)
     return usage
 
 

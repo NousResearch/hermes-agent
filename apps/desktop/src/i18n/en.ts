@@ -2054,6 +2054,7 @@ export const en: Translations = {
       openStarmap: 'Open memory graph',
       turnRunning: 'Running',
       currentTurnElapsed: 'Current turn elapsed',
+      tokenSpeed: 'Token speed',
       contextUsage: 'Context usage',
       contextUsagePanel: {
         categories: {

@@ -243,13 +243,18 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           triggerHaptic('streamStart')
         }
 
+        // Clear the previous turn's token speed so the statusbar doesn't
+        // show a stale rate during the new turn (#60583).
+        setCurrentUsage(current => ({ ...current, tokens_per_second: undefined }))
+
         updateSessionState(sessionId, state => ({
           ...state,
           busy: true,
           awaitingResponse: true,
           sawAssistantPayload: false,
           interrupted: false,
-          turnStartedAt: Date.now()
+          turnStartedAt: Date.now(),
+          firstTokenAt: null
         }))
 
         if (isActiveEvent) {
@@ -257,6 +262,15 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
       } else if (event.type === 'message.delta') {
         if (sessionId) {
+          // Record the first-token arrival time on the session state so the
+          // frontend can compute a decode-only speed estimate as a fallback
+          // when the backend doesn't provide tokens_per_second (#60583).
+          updateSessionState(sessionId, state =>
+            state.firstTokenAt
+              ? state
+              : { ...state, firstTokenAt: Date.now() }
+          )
+
           appendAssistantDelta(sessionId, coerceGatewayText(payload?.text))
         }
       } else if (event.type === 'thinking.delta') {

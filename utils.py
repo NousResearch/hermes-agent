@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+_CONFIG_YAML_MODE = 0o600
 
 
 def is_truthy_value(value: Any, default: bool = False) -> bool:
@@ -86,6 +87,15 @@ def _restore_file_mode(path: Path, mode: "int | None") -> None:
         os.chmod(path, mode)
     except OSError:
         pass
+
+
+def _yaml_write_restore_mode(
+    requested_path: Path, resolved_path: Path, original_mode: "int | None"
+) -> "int | None":
+    """Return the final mode for YAML atomic writes."""
+    if requested_path.name == "config.yaml" or resolved_path.name == "config.yaml":
+        return _CONFIG_YAML_MODE
+    return original_mode
 
 
 def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
@@ -282,7 +292,9 @@ def atomic_yaml_write(
         real_path = atomic_replace(tmp_path, path)
         real_path_obj = Path(real_path)
         _restore_file_owner(real_path_obj, original_owner)
-        _restore_file_mode(real_path_obj, original_mode)
+        _restore_file_mode(
+            real_path_obj, _yaml_write_restore_mode(path, real_path_obj, original_mode)
+        )
     except BaseException:
         # Match atomic_json_write: cleanup must also happen for process-level
         # interruptions before we re-raise them.
@@ -351,7 +363,9 @@ def atomic_roundtrip_yaml_update(
         real_path = atomic_replace(tmp_path, path)
         real_path_obj = Path(real_path)
         _restore_file_owner(real_path_obj, original_owner)
-        _restore_file_mode(real_path_obj, original_mode)
+        _restore_file_mode(
+            real_path_obj, _yaml_write_restore_mode(path, real_path_obj, original_mode)
+        )
     except BaseException:
         try:
             os.unlink(tmp_path)

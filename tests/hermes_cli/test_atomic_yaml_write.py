@@ -1,11 +1,13 @@
 """Tests for utils.atomic_yaml_write — crash-safe YAML file writes."""
 
+import os
+import stat
 from unittest.mock import patch
 
 import pytest
 import yaml
 
-from utils import atomic_yaml_write
+from utils import atomic_roundtrip_yaml_update, atomic_yaml_write
 
 
 class TestAtomicYamlWrite:
@@ -16,6 +18,60 @@ class TestAtomicYamlWrite:
         atomic_yaml_write(target, data)
 
         assert yaml.safe_load(target.read_text(encoding="utf-8")) == data
+
+    def test_config_yaml_write_forces_owner_only_permissions(self, tmp_path):
+        if os.name != "posix":
+            pytest.skip("POSIX-only")
+
+        target = tmp_path / "config.yaml"
+        target.write_text("old: true\n", encoding="utf-8")
+        target.chmod(0o666)
+
+        atomic_yaml_write(target, {"new": True})
+
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    def test_config_yaml_write_secures_symlink_target(self, tmp_path):
+        if os.name != "posix":
+            pytest.skip("POSIX-only")
+
+        real = tmp_path / "real.yaml"
+        link = tmp_path / "config.yaml"
+        real.write_text("old: true\n", encoding="utf-8")
+        real.chmod(0o666)
+        link.symlink_to(real)
+
+        atomic_yaml_write(link, {"new": True})
+
+        assert link.is_symlink()
+        assert stat.S_IMODE(real.stat().st_mode) == 0o600
+
+    def test_roundtrip_config_yaml_update_forces_owner_only_permissions(self, tmp_path):
+        if os.name != "posix":
+            pytest.skip("POSIX-only")
+
+        target = tmp_path / "config.yaml"
+        target.write_text("model:\n  provider: openrouter\n", encoding="utf-8")
+        target.chmod(0o666)
+
+        atomic_roundtrip_yaml_update(target, "model.provider", "nvidia")
+
+        assert yaml.safe_load(target.read_text(encoding="utf-8")) == {
+            "model": {"provider": "nvidia"}
+        }
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    def test_non_config_yaml_preserves_existing_permissions(self, tmp_path):
+        if os.name != "posix":
+            pytest.skip("POSIX-only")
+
+        target = tmp_path / "state.yaml"
+        target.write_text("old: true\n", encoding="utf-8")
+        target.chmod(0o664)
+
+        atomic_yaml_write(target, {"new": True})
+
+        assert stat.S_IMODE(target.stat().st_mode) == 0o664
 
     def test_cleans_up_temp_file_on_baseexception(self, tmp_path):
         class SimulatedAbort(BaseException):

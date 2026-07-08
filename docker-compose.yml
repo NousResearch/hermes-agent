@@ -1,5 +1,5 @@
 #
-# docker-compose.yml for Hermes Agent
+# docker-compose.yml for HT AI Agent
 #
 # Usage:
 #   HERMES_UID=$(id -u) HERMES_GID=$(id -g) docker compose up -d
@@ -29,7 +29,7 @@
 services:
   gateway:
     build: .
-    image: hermes-agent
+    image: ht-ai-agent
     container_name: hermes
     restart: unless-stopped
     network_mode: host
@@ -61,7 +61,7 @@ services:
     command: ["gateway", "run"]
 
   dashboard:
-    image: hermes-agent
+    image: ht-ai-agent
     container_name: hermes-dashboard
     restart: unless-stopped
     network_mode: host

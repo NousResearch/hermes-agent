@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 SourceType = Literal["thread", "canvas", "list", "file", "unknown"]
 
 _SLACK_LINK_RE = re.compile(r"<(?P<url>https?://[^>|]+)(?:\|[^>]+)?>")
+_URL_RE = re.compile(r"https?://\S+")
 _ARCHIVE_RE = re.compile(r"/archives/(?P<channel>[A-Z0-9]+)/p(?P<pstamp>\d{16})")
 _FILE_ID_RE = re.compile(r"\bF[A-Z0-9]{8,}\b")
 
@@ -33,6 +34,9 @@ def _clean_link(text: str) -> str:
     match = _SLACK_LINK_RE.search(raw)
     if match:
         return unquote(match.group("url").replace("&amp;", "&"))
+    url_match = _URL_RE.search(raw)
+    if url_match:
+        return unquote(url_match.group(0).rstrip(">).,]").replace("&amp;", "&"))
     return unquote(raw.replace("&amp;", "&"))
 
 

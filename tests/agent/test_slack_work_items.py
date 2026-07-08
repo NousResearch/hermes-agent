@@ -36,6 +36,17 @@ def test_parse_thread_permalink_without_thread_ts_uses_message_ts():
     assert ref.thread_ts == "1783498191.737439"
 
 
+def test_parse_thread_permalink_embedded_in_natural_text():
+    ref = parse_slack_source_ref(
+        "이거 처리됐어? https://ffxivkr.slack.com/archives/C0B7QVCLQF9/p1783498191737439?thread_ts=1783489727.804269&cid=C0B7QVCLQF9"
+    )
+    assert ref is not None
+    assert ref.permalink == "https://ffxivkr.slack.com/archives/C0B7QVCLQF9/p1783498191737439?thread_ts=1783489727.804269&cid=C0B7QVCLQF9"
+    assert ref.channel_id == "C0B7QVCLQF9"
+    assert ref.message_ts == "1783498191.737439"
+    assert ref.thread_ts == "1783489727.804269"
+
+
 def test_parse_bare_file_id_as_file_ref():
     ref = parse_slack_source_ref("F0AC9G3PYE9")
     assert ref == SlackSourceRef(

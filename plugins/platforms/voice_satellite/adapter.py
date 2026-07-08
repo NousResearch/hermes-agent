@@ -70,19 +70,16 @@ def validate_config(config) -> bool:
 def _apply_yaml_config(yaml_cfg: dict, platform_cfg: dict) -> Optional[dict]:
     """Translate the top-level `voice_satellite:` config.yaml section.
 
-    Only seeds ``PlatformConfig.extra`` (satellites, endpointing, timeouts) —
-    it does NOT enable the platform. ``load_gateway_config()`` invokes this
-    hook with ``platform_cfg`` bound to the raw ``yaml_cfg["voice_satellite"]``
-    dict, and only merges this function's *return value* into ``extra``; any
-    in-place mutation of ``platform_cfg`` (including an ``"enabled"`` key) is
-    discarded and never reaches ``PlatformConfig.enabled``. Enablement instead
-    goes through the loader's dedicated per-platform map, so users must add:
+    Only seeds ``PlatformConfig.extra`` (satellites, endpointing, timeouts).
+    Enablement comes from the section's own ``enabled: true`` key, which the
+    loader's generic shared-key loop bridges onto ``PlatformConfig.enabled``.
+    Alternatively, users may add a ``platforms: voice_satellite: enabled: true``
+    map entry if preferred.
 
-        platforms:
-          voice_satellite:
-            enabled: true
-
-    alongside the `voice_satellite:` section.
+    ``load_gateway_config()`` invokes this hook with ``platform_cfg`` bound to
+    the raw ``yaml_cfg["voice_satellite"]`` dict, and only merges this function's
+    *return value* into ``extra``; any in-place mutation of ``platform_cfg`` is
+    discarded and never reaches ``PlatformConfig.enabled``.
     """
     section = yaml_cfg.get("voice_satellite") or {}
     if not isinstance(section, dict) or not section.get("satellites"):

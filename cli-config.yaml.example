@@ -1010,10 +1010,8 @@ stt:
 # Satellites run wyoming-satellite with local wake word detection on your LAN
 # (Raspberry Pi, ReSpeaker, etc). Hermes connects out to them, transcribes with
 # your `stt` provider above, and speaks replies with your `tts` provider.
-# The `voice_satellite:` section below seeds the satellite list and tuning;
-# the platform is only started once the `platforms.voice_satellite.enabled`
-# flag is also set to true (both blocks are required).
 # voice_satellite:
+#   enabled: true
 #   satellites:
 #     - name: kitchen
 #       host: 192.168.1.40
@@ -1025,10 +1023,6 @@ stt:
 #     silence_duration: 1.2
 #     min_speech_seconds: 0.5
 #     max_utterance_seconds: 20.0
-#
-# platforms:
-#   voice_satellite:
-#     enabled: true
 
 # =============================================================================
 # Response Pacing (Messaging Platforms)

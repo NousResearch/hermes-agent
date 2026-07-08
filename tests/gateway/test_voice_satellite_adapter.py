@@ -57,9 +57,9 @@ def test_apply_yaml_config_translates_section():
     extra = _mod._apply_yaml_config(yaml_cfg, platform_cfg)
     assert extra["satellites"][0]["host"] == "10.0.0.5"
     assert extra["tts_sample_rate"] == 16000
-    # This hook only seeds `extra` — enablement is the loader's
-    # `platforms: voice_satellite: enabled: true` map entry (see
-    # test_voice_satellite_config.py::test_gateway_config_chain_enables_platform).
+    # This hook only seeds `extra`; enablement comes from the section's own
+    # `enabled: true` key or via a `platforms: voice_satellite: enabled: true`
+    # entry (see test_voice_satellite_config.py::test_gateway_config_chain_enables_platform).
     assert "enabled" not in platform_cfg
     # absent/empty section -> None, no enablement
     assert _mod._apply_yaml_config({}, {}) is None

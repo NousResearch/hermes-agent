@@ -24,26 +24,10 @@ def test_gateway_config_chain_enables_platform(tmp_path, monkeypatch):
     """A real config.yaml reaches PlatformConfig.extra + enabled via the
     actual gateway loader (no mocking of load_gateway_config internals).
 
-    Resolved against the real loader (gateway/config.py):
-    - ``load_gateway_config()`` takes no arguments; it always reads
-      ``$HERMES_HOME/config.yaml`` (gateway/config.py:964-974).
-    - The ``apply_yaml_config_fn`` hook (gateway/config.py ~1253-1290) is
-      called as ``entry.apply_yaml_config_fn(yaml_cfg, platform_cfg)`` where
-      ``platform_cfg`` is the *raw* ``yaml_cfg["voice_satellite"]`` dict, and
-      only the function's *return value* is merged into
-      ``PlatformConfig.extra`` (``extra.update(seeded)``). Any in-place
-      mutation of ``platform_cfg`` (e.g. setting ``platform_cfg["enabled"]``)
-      is discarded — it never reaches ``plat_data["enabled"]`` or
-      ``PlatformConfig.enabled``. Verified empirically: a config.yaml with
-      only a top-level ``voice_satellite:`` block (no ``platforms:`` map)
-      loads with ``enabled=False`` even though the old hook code mutated
-      ``platform_cfg["enabled"] = True``.
-    - The loader's actual enablement path is the top-level ``platforms:``
-      map (``_merge_platform_map``, gateway/config.py ~1085-1105), which
-      copies ``enabled`` straight into ``platforms_data[name]`` by dict key
-      (no ``Platform`` enum membership required at that point). So
-      enablement requires a ``platforms: voice_satellite: enabled: true``
-      entry alongside the ``voice_satellite:`` section.
+    The loader's enablement path reads the top-level ``voice_satellite: enabled:``
+    key via the generic shared-key loop (gateway/config.py ~1253-1290), which
+    bridges it onto ``PlatformConfig.enabled``. Alternatively, users may add a
+    ``platforms: voice_satellite: enabled: true`` entry.
     """
     from gateway import config as gw_config
 
@@ -54,14 +38,11 @@ def test_gateway_config_chain_enables_platform(tmp_path, monkeypatch):
         textwrap.dedent(
             """
             voice_satellite:
+              enabled: true
               satellites:
                 - name: kitchen
                   host: 192.168.1.40
                   port: 10700
-
-            platforms:
-              voice_satellite:
-                enabled: true
             """
         ),
         encoding="utf-8",

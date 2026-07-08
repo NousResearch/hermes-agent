@@ -120,7 +120,31 @@ describe('usePreviewRouting', () => {
     expect(window.hermesDesktop.normalizePreviewTarget).not.toHaveBeenCalled()
   })
 
-  it('does not auto-open a preview from tool results', async () => {
+  it('registers structured tool-result preview targets', async () => {
+    render(
+      <PreviewRoutingHarness
+        onEvent={handler => {
+          handleEvent = handler
+        }}
+      />
+    )
+
+    act(() =>
+      handleEvent({
+        payload: { path: './dist/index.html' },
+        session_id: 'session-1',
+        type: 'tool.complete'
+      })
+    )
+
+    await waitFor(() => {
+      expect($previewTarget.get()?.source).toBe('./dist/index.html')
+    })
+
+    expect(window.localStorage.getItem('hermes.desktop.sessionPreviews.v1')).toContain('./dist/index.html')
+  })
+
+  it('registers html previews from edit inline diffs', async () => {
     render(
       <PreviewRoutingHarness
         onEvent={handler => {
@@ -136,9 +160,9 @@ describe('usePreviewRouting', () => {
         type: 'tool.complete'
       })
     )
-    act(() => handleEvent({ payload: { path: './dist/index.html' }, session_id: 'session-1', type: 'tool.complete' }))
 
-    expect($previewTarget.get()).toBeNull()
-    expect(window.localStorage.getItem('hermes.desktop.sessionPreviews.v1')).toBeNull()
+    await waitFor(() => {
+      expect($previewTarget.get()?.source).toBe('preview-demo.html')
+    })
   })
 })

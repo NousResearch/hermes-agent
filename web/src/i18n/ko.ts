@@ -158,7 +158,6 @@ export const ko: Translations = {
     selectedSessionsDeleted: "{count}개 세션이 삭제되었습니다",
     failedToDeleteSelected: "선택한 세션 삭제에 실패했습니다",
     resumeInChat: "채팅에서 다시 시작",
-    newChat: "새 채팅",
     previousPage: "이전 페이지",
     nextPage: "다음 페이지",
     roles: {
@@ -432,14 +431,6 @@ export const ko: Translations = {
     replaceCurrentValue: "현재 값 교체 ({preview})",
     showValue: "실제 값 표시",
     hideValue: "값 숨기기",
-    customTitle: "사용자 지정 키",
-    customHint: "Hermes가 인식하지 못하는, .env에 저장된 임의의 환경 변수입니다. 스킬, MCP 서버 또는 자체 도구를 위한 환경 변수를 주입하는 데 사용하세요.",
-    customConfigured: "사용자 지정 키 {count}개 설정됨",
-    addCustomKey: "사용자 지정 키 추가",
-    customKeyName: "변수 이름",
-    customKeyNamePlaceholder: "예: MY_SERVICE_API_KEY",
-    add: "추가",
-    invalidKeyName: "문자, 숫자, 밑줄만 사용하세요(문자 또는 밑줄로 시작해야 합니다).",
   },
 
   oauth: {

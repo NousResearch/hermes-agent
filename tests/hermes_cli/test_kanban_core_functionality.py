@@ -1701,68 +1701,6 @@ def test_build_worker_context_uses_parent_run_summary(kanban_home):
         conn.close()
 
 
-def test_relative_age_renders_coarse_buckets():
-    """Freshness helper turns epoch seconds into coarse human ages, and
-    degrades safely on missing / future timestamps."""
-    now = 1_000_000
-    assert kb._relative_age(now, now) == "just now"
-    assert kb._relative_age(now - 30, now) == "just now"
-    assert kb._relative_age(now - 5 * 60, now) == "5m ago"
-    assert kb._relative_age(now - 18 * 3600, now) == "18h ago"
-    assert kb._relative_age(now - 2 * 86400, now) == "2d ago"
-    # Clock skew across machines/profiles must not claim "in the future".
-    assert kb._relative_age(now + 500, now) == "just now"
-    # Missing / unparseable timestamps render empty so callers can append
-    # unconditionally.
-    assert kb._relative_age(None, now) == ""
-    # Defensive: an unparseable value (e.g. a stray string) renders empty
-    # rather than raising.
-    assert kb._relative_age("garbage", now) == ""  # type: ignore[arg-type]
-
-
-def test_build_worker_context_stamps_parent_freshness(kanban_home):
-    """Parent handoffs carry a relative age + a 'verify against source'
-    frame so a worker doesn't read a day-old result as live state.
-
-    This is the multi-agent staleness gap: an orchestrator + sibling
-    workers leave reports/handoffs that the next worker reads as current
-    truth. The age stamp is the signal that prompts re-verification.
-    """
-    conn = kb.connect()
-    try:
-        parent = kb.create_task(conn, title="research", assignee="researcher")
-        child = kb.create_task(
-            conn, title="write", assignee="writer", parents=[parent],
-        )
-        kb.claim_task(conn, parent)
-        kb.complete_task(
-            conn, parent,
-            result="done",
-            summary="meeting ingest workflow finished; pipeline ready",
-        )
-        # Backdate the parent's completion to 18h ago — both the task row
-        # and its completed run row, which is where build_worker_context
-        # reads the handoff timestamp from.
-        old = int(time.time()) - 18 * 3600
-        with kb.write_txn(conn):
-            conn.execute(
-                "UPDATE tasks SET completed_at = ? WHERE id = ?", (old, parent),
-            )
-            conn.execute(
-                "UPDATE task_runs SET ended_at = ? WHERE task_id = ?",
-                (old, parent),
-            )
-
-        ctx = kb.build_worker_context(conn, child)
-        # The handoff still appears...
-        assert "meeting ingest workflow finished" in ctx
-        # ...now stamped with its age and framed as a point-in-time snapshot.
-        assert "completed 18h ago" in ctx
-        assert "point-in-time snapshots, not live state" in ctx
-    finally:
-        conn.close()
-
-
 def test_migration_backfills_inflight_run_for_legacy_db(kanban_home):
     """An existing 'running' task from before task_runs existed should
     get a synthesized run row so subsequent operations (complete,
@@ -2765,17 +2703,20 @@ def test_build_worker_context_caps_huge_summary(kanban_home):
         conn.close()
 
 
-def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
-    """The dispatcher no longer auto-loads a bundled kanban skill.
-
-    The kanban lifecycle (formerly the kanban-worker/kanban-orchestrator
-    skills) is now injected into every worker's system prompt via
-    KANBAN_GUIDANCE, so _default_spawn must NOT append a `--skills` flag
-    when the task carries no per-task skills.
+def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
+    """The dispatcher's _default_spawn must include --skills kanban-worker
+    in its argv so every worker loads the skill automatically, even if
+    the profile hasn't wired it into its default skills config.
 
     We intercept Popen to capture the argv without actually spawning a
     hermes subprocess (which would hang trying to call an LLM).
     """
+    # Pretend the bundled kanban-worker skill resolves for this isolated
+    # HERMES_HOME — the fixture creates an empty tmpdir without the
+    # devops/kanban-worker tree, and _default_spawn gates the --skills
+    # flag on actual resolvability.
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+
     captured = {}
 
     class FakeProc:
@@ -2801,8 +2742,10 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
         conn.close()
 
     cmd = captured["cmd"]
-    assert "--skills" not in cmd, (
-        f"spawn argv should not auto-load any skill: {cmd}"
+    assert "--skills" in cmd, f"spawn argv missing --skills: {cmd}"
+    idx = cmd.index("--skills")
+    assert cmd[idx + 1] == "kanban-worker", (
+        f"expected 'kanban-worker', got {cmd[idx + 1]!r}"
     )
     assert "--accept-hooks" in cmd, f"spawn argv missing --accept-hooks: {cmd}"
     assert cmd.index("--accept-hooks") < cmd.index("chat"), (
@@ -3042,7 +2985,8 @@ def test_create_task_skills_lists_all_toolset_typos(kanban_home):
 
 def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     """Dispatcher argv must carry one `--skills X` pair per task skill,
-    in declared order. No skill is auto-loaded anymore."""
+    in addition to the built-in kanban-worker."""
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
     captured = {}
 
     class FakeProc:
@@ -3075,8 +3019,10 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     for i, tok in enumerate(cmd):
         if tok == "--skills" and i + 1 < len(cmd):
             skill_names.append(cmd[i + 1])
-    # Only the per-task skills, in declared order — nothing auto-loaded.
-    assert skill_names == ["translation", "github-code-review"], skill_names
+    # kanban-worker first (built-in), then per-task extras in order.
+    assert skill_names[0] == "kanban-worker", skill_names
+    assert "translation" in skill_names
+    assert "github-code-review" in skill_names
     # --skills must appear BEFORE the `chat` subcommand so argparse
     # attaches them to the top-level parser, not the subcommand.
     chat_idx = cmd.index("chat")
@@ -3088,9 +3034,9 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     )
 
 
-def test_default_spawn_passes_task_skills_verbatim(kanban_home, monkeypatch):
-    """Per-task skills are passed through verbatim — there is no built-in
-    kanban skill to dedupe against anymore."""
+def test_default_spawn_dedupes_kanban_worker_from_task_skills(kanban_home, monkeypatch):
+    """If a task explicitly lists 'kanban-worker', we don't double-pass it."""
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
     captured = {}
 
     class FakeProc:
@@ -3106,7 +3052,7 @@ def test_default_spawn_passes_task_skills_verbatim(kanban_home, monkeypatch):
     try:
         tid = kb.create_task(
             conn, title="dup", assignee="x",
-            skills=["translation", "github-code-review"],
+            skills=["kanban-worker", "translation"],
         )
         task = kb.get_task(conn, tid)
         workspace = kb.resolve_workspace(task)
@@ -3115,14 +3061,12 @@ def test_default_spawn_passes_task_skills_verbatim(kanban_home, monkeypatch):
         conn.close()
 
     cmd = captured["cmd"]
-    skill_names = [
-        cmd[i + 1]
-        for i, tok in enumerate(cmd)
-        if tok == "--skills" and i + 1 < len(cmd)
+    worker_pairs = [
+        i for i, tok in enumerate(cmd)
+        if tok == "--skills" and i + 1 < len(cmd) and cmd[i + 1] == "kanban-worker"
     ]
-    # Exactly the task's skills, once each, in order — no auto-loaded extras.
-    assert skill_names == ["translation", "github-code-review"], (
-        f"unexpected --skills in argv: {cmd}"
+    assert len(worker_pairs) == 1, (
+        f"kanban-worker appeared {len(worker_pairs)} times in argv: {cmd}"
     )
 
 

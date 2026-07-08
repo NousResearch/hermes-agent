@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.platforms.base import utf16_len
 from plugins.platforms.discord.adapter import ModelPickerView
 
 
@@ -81,58 +80,6 @@ async def test_model_picker_clears_controls_before_running_switch_callback():
     interaction.response.edit_message.assert_awaited_once()
     interaction.response.defer.assert_not_called()
     interaction.edit_original_response.assert_awaited_once()
-
-
-def test_model_picker_provider_labels_fit_discord_utf16_limit():
-    provider_name = "Provider " + ("\U0001f600" * 80)
-
-    view = ModelPickerView(
-        providers=[
-            {
-                "slug": "emoji",
-                "name": provider_name,
-                "models": ["gpt-5-mini"],
-                "total_models": 1,
-                "is_current": False,
-            }
-        ],
-        current_model="gpt-5-mini",
-        current_provider="emoji",
-        session_key="session-1",
-        on_model_selected=AsyncMock(return_value="ok"),
-        allowed_user_ids={"123"},
-    )
-
-    provider_select = view.children[0]
-    option = provider_select.options[0]
-    assert utf16_len(option.label) <= 100
-
-
-def test_model_picker_model_labels_and_values_fit_discord_utf16_limit():
-    model_id = "emoji/" + ("\U0001f600" * 80)
-
-    view = ModelPickerView(
-        providers=[
-            {
-                "slug": "emoji",
-                "name": "Emoji",
-                "models": [model_id],
-                "total_models": 1,
-                "is_current": False,
-            }
-        ],
-        current_model="gpt-5-mini",
-        current_provider="emoji",
-        session_key="session-1",
-        on_model_selected=AsyncMock(return_value="ok"),
-        allowed_user_ids={"123"},
-    )
-
-    view._build_model_select("emoji")
-    model_select = view.children[0]
-    option = model_select.options[0]
-    assert utf16_len(option.label) <= 100
-    assert utf16_len(option.value) <= 100
 
 
 @pytest.mark.asyncio

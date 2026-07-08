@@ -379,14 +379,13 @@ def install_deps() -> bool:
 
     print("Installing Google Chat OAuth dependencies...")
     try:
-        from hermes_cli.tools_config import _pip_install
-
-        result = _pip_install(["--quiet"] + _REQUIRED_PACKAGES)
-        if result.returncode != 0:
-            raise RuntimeError((result.stderr or "install failed").strip()[:300])
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--quiet"] + _REQUIRED_PACKAGES,
+            stdout=subprocess.DEVNULL,
+        )
         print("Dependencies installed.")
         return True
-    except Exception as exc:
+    except subprocess.CalledProcessError as exc:
         print(f"ERROR: Failed to install dependencies: {exc}")
         print("Or install via the optional extra:")
         print("  pip install 'hermes-agent[google_chat]'")

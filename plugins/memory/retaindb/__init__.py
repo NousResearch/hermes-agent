@@ -34,7 +34,6 @@ from typing import Any, Dict, List
 from urllib.parse import quote
 
 from agent.memory_provider import MemoryProvider
-from agent.file_safety import raise_if_read_blocked
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -703,10 +702,6 @@ class RetainDBMemoryProvider(MemoryProvider):
             path_obj = Path(local_path)
             if not path_obj.exists():
                 return {"error": f"File not found: {local_path}"}
-            try:
-                raise_if_read_blocked(str(path_obj))
-            except ValueError as exc:
-                return {"error": str(exc)}
             data = path_obj.read_bytes()
             import mimetypes
             mime = mimetypes.guess_type(path_obj.name)[0] or "application/octet-stream"

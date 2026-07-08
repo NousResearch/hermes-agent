@@ -88,7 +88,6 @@ gateway:
     not_enough:            "No hay suficiente conversación para comprimir (se necesitan al menos 4 mensajes)."
     no_provider:           "No hay proveedor configurado — no se puede comprimir."
     nothing_to_do:         "Aún no hay nada que comprimir (la transcripción sigue siendo todo contexto protegido)."
-    aggressive_unsupported: "--aggressive no es compatible; usa '/compress here [N]' para conservar solo los intercambios recientes, o /undo para eliminar turnos."
     focus_line:            "Enfoque: \"{topic}\""
     summary_failed:        "⚠️ Falló la generación del resumen ({error}). Se eliminaron {count} mensaje(s) históricos y se reemplazaron por un marcador; el contexto anterior ya no se puede recuperar. Considera revisar la configuración del modelo auxiliary.compression."
     aborted:               "⚠️ Compresión abortada ({error}). No se eliminó ningún mensaje — la conversación está intacta. Ejecuta /compress para reintentar, /reset para una sesión limpia, o revisa la configuración de tu modelo auxiliary.compression."
@@ -107,8 +106,6 @@ gateway:
     no_pending:            "No hay ningún comando pendiente que denegar."
     denied_singular:       "❌ Comando denegado."
     denied_plural:         "❌ Comandos denegados ({count} comandos)."
-    denied_reason_singular: "❌ Comando denegado. Motivo transmitido al agente: \"{reason}\""
-    denied_reason_plural:  "❌ Comandos denegados ({count} comandos). Motivo transmitido al agente: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast solo está disponible para modelos de OpenAI que admiten Priority Processing."
@@ -152,15 +149,6 @@ gateway:
     subscribed_suffix:     "(suscrito — recibirás una notificación cuando {task_id} termine o se bloquee)"
     truncated_suffix:      "… (truncado; usa `hermes kanban …` en tu terminal para la salida completa)"
     no_output:             "(sin salida)"
-    wake:
-      completed:           "completed"
-      gave_up:             "gave up (retries exhausted)"
-      crashed:             "crashed (worker exited); dispatcher will retry"
-      timed_out:           "timed out; dispatcher will retry"
-      blocked:             "blocked; needs attention"
-      status_default:      "status changed"
-      status_joiner:       ", "
-      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "No hay personalidades configuradas en `{path}/config.yaml`"
@@ -231,12 +219,14 @@ gateway:
 
   resume:
     db_unavailable:        "Base de datos de sesiones no disponible."
-    parse_error:           "⚠️ No se pudo analizar los argumentos de `/resume`: {error}.\nUsa comillas alrededor de títulos con espacios, por ejemplo: `/resume \"Proyecto A Plan\"`."
-    matrix_no_named_sessions: "No se encontraron sesiones con nombre para esta sala de Matrix.\nUsa `/title Mi Sesión` para nombrar la sesión de la sala actual, `/resume --all` para listar todas las sesiones de Matrix, o `/resume --cross-room <nombre de sesión>` para cruzar límites de sala explícitamente."
-    matrix_blocked_no_origin: "⚠️ Matrix /resume bloqueado: esta sesión con nombre no tiene sala de origen registrada, por lo que Hermes no la reanudará dentro de la sala actual por defecto. Usa `/resume --cross-room {name}` si quieres cruzar los límites de sala intencionadamente."
-    matrix_blocked_other_room: "⚠️ Matrix /resume bloqueado: esa sesión pertenece a una sala de Matrix diferente ({room}). Usa `/resume --cross-room {name}` si quieres reanudarla aquí intencionadamente."
-    matrix_cross_room_success: "⚠️ Reanudación entre salas: **{title}** reanudada dentro de la sala de Matrix **{room}**.\nLos próximos mensajes en esta sala usarán esa transcripción hasta `/reset` u otro `/resume`.{msg_part}"
-    blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
+Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.
+Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     no_named_sessions:     "No se encontraron sesiones con nombre.\nUsa `/title Mi sesión` para nombrar la sesión actual y luego `/resume Mi sesión` para volver a ella."
     list_header:           "📋 **Sesiones con nombre**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -342,16 +332,6 @@ gateway:
     label_cost_included:      "Costo: incluido"
     label_context:            "Contexto: {used} / {total} ({pct}%)"
     label_compressions:       "Compresiones: {count}"
-    breakdown_header: "🧩 **Desglose del contexto** _(estimado)_"
-    breakdown_line: "• {label}: ~{count} ({pct}%)"
-    breakdown_cat_system_prompt: "Prompt del sistema"
-    breakdown_cat_tool_definitions: "Definiciones de herramientas"
-    breakdown_cat_rules: "Reglas"
-    breakdown_cat_skills: "Habilidades"
-    breakdown_cat_mcp: "MCP"
-    breakdown_cat_subagent_definitions: "Definiciones de subagentes"
-    breakdown_cat_memory: "Memoria"
-    breakdown_cat_conversation: "Conversación"
     header_session_info:      "📊 **Información de la sesión**"
     label_messages:           "Mensajes: {count}"
     label_estimated_context:  "Contexto estimado: ~{count} tokens"
@@ -367,7 +347,6 @@ gateway:
     mode_new:              "⚙️ Progreso de herramientas: **NEW** — se muestra al cambiar de herramienta (longitud de vista previa: `display.tool_preview_length`, por defecto 40)."
     mode_all:              "⚙️ Progreso de herramientas: **ALL** — se muestra cada llamada a herramienta (longitud de vista previa: `display.tool_preview_length`, por defecto 40)."
     mode_verbose:          "⚙️ Progreso de herramientas: **VERBOSE** — cada llamada a herramienta con sus argumentos completos."
-    mode_log:              "⚙️ Progreso de herramientas: **LOG** — silencioso en el chat; las llamadas a herramientas se escriben en ~/.hermes/logs/tool_calls.log."
     saved_suffix:          "_(guardado para **{platform}** — se aplica en el próximo mensaje)_"
     save_failed:           "_(no se pudo guardar en la configuración: {error})_"
 

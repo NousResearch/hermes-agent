@@ -334,9 +334,7 @@ describe('parseVoiceRecordKey (#18994)', () => {
     // Some terminals surface bare Esc as meta=true + escape=true.
     expect(isVoiceToggleKey({ ctrl: false, escape: true, meta: true, super: false }, '', altEscape)).toBe(false)
     // Explicit alt bit (kitty-style) still fires the configured chord.
-    expect(isVoiceToggleKey({ alt: true, ctrl: false, escape: true, meta: false, super: false }, '', altEscape)).toBe(
-      true
-    )
+    expect(isVoiceToggleKey({ alt: true, ctrl: false, escape: true, meta: false, super: false }, '', altEscape)).toBe(true)
   })
 
   it('rejects matches when Shift is held (different chord than configured)', async () => {
@@ -350,9 +348,7 @@ describe('parseVoiceRecordKey (#18994)', () => {
     const ctrlO = parseVoiceRecordKey('ctrl+o')
 
     expect(isVoiceToggleKey({ ctrl: true, meta: false, shift: true, super: false, tab: true }, '', ctrlTab)).toBe(false)
-    expect(
-      isVoiceToggleKey({ alt: true, ctrl: false, meta: false, return: true, shift: true, super: false }, '', altEnter)
-    ).toBe(false)
+    expect(isVoiceToggleKey({ alt: true, ctrl: false, meta: false, return: true, shift: true, super: false }, '', altEnter)).toBe(false)
     expect(isVoiceToggleKey({ ctrl: true, meta: false, shift: true, super: false }, 'o', ctrlO)).toBe(false)
 
     // Sanity: same events without Shift still fire.

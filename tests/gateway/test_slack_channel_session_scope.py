@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import PlatformConfig
-from plugins.platforms.slack.adapter import SlackAdapter
+from gateway.platforms.slack import SlackAdapter
 
 
 @pytest.fixture

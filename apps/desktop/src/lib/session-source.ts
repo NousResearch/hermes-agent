@@ -1,5 +1,3 @@
-import { normalize } from '@/lib/text'
-
 const SOURCE_LABELS: Record<string, string> = {
   api_server: 'API',
   bluebubbles: 'iMessage',
@@ -78,7 +76,9 @@ export function isMessagingSource(source: null | string | undefined): boolean {
 }
 
 export function normalizeSessionSource(source: null | string | undefined): string | null {
-  return normalize(source) || null
+  const id = source?.trim().toLowerCase()
+
+  return id || null
 }
 
 /**

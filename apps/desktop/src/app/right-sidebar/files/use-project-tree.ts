@@ -3,7 +3,6 @@ import { atom } from 'nanostores'
 import { useCallback, useEffect, useMemo } from 'react'
 
 import { $connection } from '@/store/session'
-import { $workspaceChangeTick } from '@/store/workspace-events'
 
 import { clearProjectDirCache, readProjectDir } from './ipc'
 
@@ -220,52 +219,6 @@ export function resetProjectTreeState() {
   clearProjectDirCache()
 }
 
-// Non-destructive refresh: re-read every currently-loaded directory and merge
-// entries (add new files/folders, drop deleted ones) while preserving expansion
-// and already-loaded subtrees. Unlike `loadRoot({force})` this never collapses
-// the tree, so it's safe to run live as the agent edits — and because node ids
-// (absolute paths) stay stable across merges, rows can animate in/out.
-async function revalidateTree(cwd: string): Promise<void> {
-  const state = $projectTree.get()
-
-  if (!cwd || state.cwd !== cwd || !state.loaded) {
-    return
-  }
-
-  const rootPath = state.resolvedCwd || cwd
-  clearProjectDirCache()
-
-  const reconcile = async (dirPath: string, existing: TreeNode[]): Promise<TreeNode[]> => {
-    const { entries, error } = await readProjectDir(dirPath, rootPath)
-
-    if (error) {
-      return existing // keep the last-known children on a transient read error
-    }
-
-    const byId = new Map(existing.filter(node => !node.placeholder).map(node => [node.id, node]))
-    const merged: TreeNode[] = []
-
-    for (const entry of entries) {
-      const prev = byId.get(entry.path)
-
-      if (prev?.isDirectory && prev.children) {
-        // Loaded folder: recurse so deep edits surface without a re-expand.
-        merged.push({ ...prev, children: await reconcile(prev.id, prev.children) })
-      } else if (prev) {
-        merged.push(prev)
-      } else {
-        merged.push(makeNode(entry.path, entry.name, entry.isDirectory))
-      }
-    }
-
-    return merged
-  }
-
-  const nextData = await reconcile(rootPath, state.data)
-
-  setProjectTree(latest => (latest.cwd === cwd && latest.loaded ? { ...latest, data: nextData } : latest))
-}
-
 /**
  * Lazy-loads a directory tree rooted at `cwd`. Children are fetched on first
  * expand and cached in this feature-owned atom so unrelated chat rerenders or
@@ -276,7 +229,6 @@ async function revalidateTree(cwd: string): Promise<void> {
 export function useProjectTree(cwd: string): UseProjectTreeResult {
   const state = useStore($projectTree)
   const connection = useStore($connection)
-  const workspaceTick = useStore($workspaceChangeTick)
   const connectionKey = `${connection?.mode || 'local'}:${connection?.profile || ''}:${connection?.baseUrl || ''}`
 
   const refreshRoot = useCallback(() => loadRoot(cwd, { force: true }), [cwd])
@@ -355,14 +307,6 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
     },
     [cwd]
   )
-
-  // Live, non-destructive refresh when the agent touches the tree (skip the
-  // very first render: tick 0 is the initial value, not a real change).
-  useEffect(() => {
-    if (workspaceTick > 0) {
-      void revalidateTree(cwd)
-    }
-  }, [workspaceTick, cwd])
 
   useEffect(() => {
     const connectionChanged = lastConnectionKey !== '' && lastConnectionKey !== connectionKey

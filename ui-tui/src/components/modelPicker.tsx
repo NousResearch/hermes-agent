@@ -17,25 +17,7 @@ const MAX_WIDTH = 90
 
 type Stage = 'provider' | 'key' | 'model' | 'disconnect'
 
-type ProviderRow = { name: string; provider: ModelOptionProvider }
-
-export function providerIndexAfterClearingFilter(providerRows: ProviderRow[], provider: ModelOptionProvider | undefined) {
-  if (!provider) {
-    return -1
-  }
-
-  return providerRows.findIndex(row => row.provider.slug === provider.slug)
-}
-
-export function ModelPicker({
-  allowPersistGlobal = true,
-  gw,
-  initialRefresh = false,
-  onCancel,
-  onSelect,
-  sessionId,
-  t
-}: ModelPickerProps) {
+export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect, sessionId, t }: ModelPickerProps) {
   const [providers, setProviders] = useState<ModelOptionProvider[]>([])
   const [currentModel, setCurrentModel] = useState('')
   const [err, setErr] = useState('')
@@ -58,15 +40,7 @@ export function ModelPicker({
   const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
 
   useEffect(() => {
-    gw.request<ModelOptionsResponse>('model.options', {
-      ...(sessionId ? { session_id: sessionId } : {}),
-      ...(initialRefresh ? { refresh: true } : {}),
-      // The TUI picker shows the full provider universe with setup
-      // affordances ("paste KEY to activate"), so opt into unconfigured
-      // rows — the backend now defaults to the configured subset for
-      // desktop chat pickers (#56974).
-      include_unconfigured: true
-    })
+    gw.request<ModelOptionsResponse>('model.options', sessionId ? { session_id: sessionId } : {})
       .then(raw => {
         const r = asRpcResult<ModelOptionsResponse>(raw)
 
@@ -95,7 +69,7 @@ export function ModelPicker({
         setErr(rpcErrorMessage(e))
         setLoading(false)
       })
-  }, [gw, initialRefresh, sessionId])
+  }, [gw, sessionId])
 
   const names = useMemo(() => providerDisplayNames(providers), [providers])
 
@@ -150,17 +124,8 @@ export function ModelPicker({
   const back = () => {
     // Esc first clears an active filter on the list stages, before navigating.
     if ((stage === 'provider' || stage === 'model') && filter.trim()) {
-      // Preserve the selected provider across filter clear (same fix as
-      // Enter→key/model and Ctrl+D transitions above).
-      const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
-
-      if (fullProviderIdx >= 0) {
-        setProviderIdx(fullProviderIdx)
-      } else if (stage === 'provider') {
-        setProviderIdx(0)
-      }
-
       setFilter('')
+      setProviderIdx(stage === 'provider' ? 0 : providerIdx)
       setModelIdx(0)
 
       return
@@ -342,12 +307,6 @@ export function ModelPicker({
         if (provider.authenticated === false) {
           // api_key providers: prompt for key inline
           if (provider.auth_type === 'api_key' && provider.key_env) {
-            const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
-
-            if (fullProviderIdx >= 0) {
-              setProviderIdx(fullProviderIdx)
-            }
-
             setStage('key')
             setKeyInput('')
             setKeyError('')
@@ -356,12 +315,6 @@ export function ModelPicker({
 
           // Other auth types: no-op (warning shown tells them to run hermes model)
           return
-        }
-
-        const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
-
-        if (fullProviderIdx >= 0) {
-          setProviderIdx(fullProviderIdx)
         }
 
         setStage('model')
@@ -412,14 +365,7 @@ export function ModelPicker({
 
     // Disconnect (Ctrl+D): only in provider stage, only for authenticated providers.
     if (key.ctrl && ch === 'd' && stage === 'provider' && provider?.authenticated !== false) {
-      const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
-
-      if (fullProviderIdx >= 0) {
-        setProviderIdx(fullProviderIdx)
-      }
-
       setStage('disconnect')
-      setFilter('')
 
       return
     }
@@ -693,7 +639,6 @@ export function ModelPicker({
 interface ModelPickerProps {
   allowPersistGlobal?: boolean
   gw: GatewayClient
-  initialRefresh?: boolean
   onCancel: () => void
   onSelect: (value: string) => void
   sessionId: string | null

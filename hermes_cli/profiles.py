@@ -27,10 +27,9 @@ import shutil
 import stat
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from agent.skill_utils import is_excluded_skill_path
 
@@ -224,25 +223,6 @@ _DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
     "logs",                 # gateway logs
 })
 
-# Allow-list for ``export_profile("default")``: when HERMES_HOME equals the
-# cwd (Docker/custom deployments), the default profile home is the working
-# directory and contains arbitrary user files that should NOT be bundled
-# into the export. The set below identifies the *known Hermes profile
-# artifacts* at the root of HERMES_HOME; everything else is excluded.
-# Sensitive runtime infrastructure (``state.db``, ``logs/``, ``auth.*``,
-# other profiles) is intentionally *not* in this list so the export stays
-# a portable, credential-free snapshot of the user-facing surface
-# (#58394). Add new artifacts here when introduced in ``hermes_constants``.
-_DEFAULT_EXPORT_INCLUDE_ROOT = frozenset({
-    # Configuration / persona
-    "config.yaml", "SOUL.md", "MEMORY.md", "USER.md", "todo.json",
-    "system_prompt.md", "AGENTS.md", "CLAUDE.md", ".cursorrules",
-    # User-facing skill, cron, and session artifacts
-    "skills", "cron", "scripts", "sessions",
-    # Plugin / memory surfaces (per-profile overrides live here)
-    "plugins", "memories", "knowledge", "preferences",
-})
-
 # Names that cannot be used as profile aliases
 _RESERVED_NAMES = frozenset({
     "hermes", "default", "test", "tmp", "root", "sudo",
@@ -348,22 +328,6 @@ def validate_profile_name(name: str) -> None:
         )
 
 
-def validate_alias_name(name: str) -> None:
-    """Raise ``ValueError`` if *name* is not a safe wrapper-alias identifier.
-
-    The alias is used verbatim as a filename under :func:`_get_wrapper_dir`
-    (``~/.local/bin``), so it must be a single safe command name with no path
-    separators or traversal segments — otherwise a value like ``../../.bashrc``
-    would escape the wrapper directory and clobber arbitrary user files. We
-    reuse the profile id regex, which already forbids ``/``, ``.``, and ``..``.
-    """
-    if not _PROFILE_ID_RE.match(name):
-        raise ValueError(
-            f"Invalid alias name {name!r}. Must match "
-            f"[a-z0-9][a-z0-9_-]{{0,63}}"
-        )
-
-
 def get_profile_dir(name: str) -> Path:
     """Resolve a profile name to its HERMES_HOME directory."""
     canon = normalize_profile_name(name)
@@ -387,14 +351,9 @@ def profile_exists(name: str) -> bool:
 def check_alias_collision(name: str) -> Optional[str]:
     """Return a human-readable collision message, or None if the name is safe.
 
-    Checks: alias-name validity, reserved names, hermes subcommands, existing
-    binaries in PATH.
+    Checks: reserved names, hermes subcommands, existing binaries in PATH.
     """
     canon = normalize_profile_name(name)
-    try:
-        validate_alias_name(canon)
-    except ValueError as exc:
-        return str(exc)
     if canon in _RESERVED_NAMES:
         return f"'{canon}' is a reserved name"
     if canon in _HERMES_SUBCOMMANDS:
@@ -444,9 +403,6 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
     """
     canon = normalize_profile_name(name)
     profile = normalize_profile_name(target) if target else canon
-    # The alias is used verbatim as a filename under the wrapper dir; reject
-    # any value that isn't a single safe identifier so it can't traverse out.
-    validate_alias_name(canon)
     wrapper_dir = _get_wrapper_dir()
     try:
         wrapper_dir.mkdir(parents=True, exist_ok=True)
@@ -479,12 +435,6 @@ def remove_wrapper_script(name: str) -> bool:
     """Remove the wrapper script for a profile. Returns True if removed."""
     wrapper_dir = _get_wrapper_dir()
     canon = normalize_profile_name(name)
-    # A traversal-shaped name could point unlink() at a file outside the
-    # wrapper dir; refuse it rather than acting on an arbitrary path.
-    try:
-        validate_alias_name(canon)
-    except ValueError:
-        return False
     is_windows = sys.platform == "win32"
 
     # Check both the extensionless path (POSIX) and .bat (Windows)
@@ -548,40 +498,16 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
     A custom alias (name != profile) is preferred over the profile-named wrapper
     so ``profile list``/``show`` surface the command the user actually typed.
     Results are sorted for deterministic output when several aliases match.
-
-    For listing ALL profiles at once, prefer :func:`build_alias_map` — calling
-    this per-profile re-reads every wrapper file N times (O(N*M)); on a wrapper
-    dir like ``~/.local/bin`` that also holds large unrelated binaries (ffmpeg
-    etc.) that meant multi-second ``list_profiles`` latency and desktop timeouts.
-    """
-    return build_alias_map().get(normalize_profile_name(profile_name))
-
-
-# Cap how much of a wrapper file we read when reverse-looking-up its profile.
-# Real wrappers are a few hundred bytes of shell; the needle (``hermes -p X``)
-# sits near the top. The wrapper dir (e.g. ``~/.local/bin``) commonly also holds
-# large unrelated binaries (ffmpeg, node, …) — reading those whole, N times, was
-# the dominant cost in ``list_profiles`` (~4.5s). Reading a small head slice and
-# skipping NUL-bearing (binary) content keeps the scan to a single cheap pass.
-_WRAPPER_READ_LIMIT = 8192
-
-
-def build_alias_map() -> dict[str, str]:
-    """Single-pass reverse map ``{canonical_profile -> alias_name}``.
-
-    Scans the wrapper dir ONCE (vs. :func:`find_alias_for_profile` per profile)
-    and reads only a small head slice of each candidate wrapper, skipping
-    binaries. A custom alias (file name != profile) wins over the profile-named
-    wrapper, matching ``find_alias_for_profile``'s preference; deterministic via
-    sorted iteration.
     """
     wrapper_dir = _get_wrapper_dir()
-    result: dict[str, str] = {}
     if not wrapper_dir.is_dir():
-        return result
+        return None
+    canon = normalize_profile_name(profile_name)
     is_windows = sys.platform == "win32"
-    prefix = "hermes -p "
+    needle = f"hermes -p {canon}"
 
+    custom: Optional[str] = None
+    profile_named: Optional[str] = None
     for entry in sorted(wrapper_dir.iterdir()):
         if not entry.is_file():
             continue
@@ -591,28 +517,17 @@ def build_alias_map() -> dict[str, str]:
         if not is_windows and entry.suffix:
             continue
         try:
-            with open(entry, "r", encoding="utf-8", errors="strict") as f:
-                content = f.read(_WRAPPER_READ_LIMIT)
+            content = entry.read_text()
         except (OSError, UnicodeDecodeError):
-            # UnicodeDecodeError = a binary on PATH (ffmpeg etc.) — not a wrapper.
             continue
-        idx = content.find(prefix)
-        if idx == -1:
+        if needle not in content:
             continue
-        rest = content[idx + len(prefix):]
-        # Profile id is the first whitespace-delimited token after the flag.
-        canon = rest.split(None, 1)[0].strip() if rest.strip() else ""
-        if not canon:
-            continue
-        canon = normalize_profile_name(canon)
         alias = entry.stem if is_windows else entry.name
-        # Custom alias (name != profile) preferred; otherwise keep the
-        # profile-named wrapper. Don't overwrite a custom alias already found.
         if alias == canon:
-            result.setdefault(canon, alias)
-        else:
-            result[canon] = alias
-    return result
+            profile_named = alias
+        elif custom is None:
+            custom = alias
+    return custom if custom is not None else profile_named
 
 
 # ---------------------------------------------------------------------------
@@ -697,100 +612,24 @@ def _read_config_model(profile_dir: Path) -> tuple:
 
 
 def _check_gateway_running(profile_dir: Path) -> bool:
-    """Check if a gateway is running for a given profile directory.
-
-    Primary signal is the profile's ``gateway.pid`` (verified against the
-    runtime lock).  That check fails closed whenever the lock isn't held by
-    *this* reader — which is exactly the case for a dashboard process that is
-    a separate s6 service from the gateway it's reporting on (Docker), or any
-    launch-service-managed gateway that left a fresh ``gateway_state.json`` but
-    no live PID file.  In those cases fall back to validating the PID recorded
-    in the profile's own ``gateway_state.json`` against the live process table,
-    mirroring the ``/api/status`` sidebar's liveness logic so the two surfaces
-    agree.  Parameterized by ``profile_dir`` so it never mutates ``HERMES_HOME``.
-    """
+    """Check if a gateway is running for a given profile directory."""
     try:
         from gateway.status import get_running_pid
-        if (
-            get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False)
-            is not None
-        ):
-            return True
-    except Exception:
-        pass
-    try:
-        from gateway.status import (
-            get_runtime_status_running_pid,
-            read_runtime_status,
-        )
-        runtime = read_runtime_status(profile_dir / "gateway_state.json")
-        return get_runtime_status_running_pid(runtime, expected_home=profile_dir) is not None
+        return get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False) is not None
     except Exception:
         return False
 
 
-# In-process cache for skill counts. Walking ``skills_dir.rglob("SKILL.md")``
-# recurses the entire skill tree (each skill carries references/scripts/assets
-# sub-trees); the default profile alone has ~270 skills, and ``list_profiles``
-# calls this for EVERY profile (16+), so an uncached scan costs ~6s — long
-# enough that the desktop's per-request backend calls time out and the sidebar
-# renders "全部智能体 0". We cache the count keyed by the skills dir, invalidated
-# when the dir tree's signature (skills_dir + immediate category dirs mtimes)
-# changes (catches skill add/remove) or after a short TTL (catches deep edits).
-_SKILL_COUNT_CACHE: dict[str, tuple[float, float, int]] = {}
-_SKILL_COUNT_TTL_SECONDS = 30.0
-
-
-def _skills_dir_signature(skills_dir: Path) -> float:
-    """Cheap change-signature for a skills tree.
-
-    Max mtime of ``skills_dir`` and its immediate children (category dirs).
-    Adding/removing a category bumps ``skills_dir``'s mtime; adding/removing a
-    skill inside a category bumps that category dir's mtime. One ``scandir``
-    (not a recursive walk) keeps this O(#categories), not O(#files).
-    """
-    try:
-        sig = skills_dir.stat().st_mtime
-    except OSError:
-        return 0.0
-    try:
-        with os.scandir(skills_dir) as it:
-            for entry in it:
-                try:
-                    if entry.is_dir(follow_symlinks=False):
-                        m = entry.stat(follow_symlinks=False).st_mtime
-                        if m > sig:
-                            sig = m
-                except OSError:
-                    continue
-    except OSError:
-        pass
-    return sig
-
-
 def _count_skills(profile_dir: Path) -> int:
-    """Count installed skills in a profile (cached by skills-dir signature)."""
+    """Count installed skills in a profile."""
     skills_dir = profile_dir / "skills"
     if not skills_dir.is_dir():
         return 0
-
-    key = str(skills_dir)
-    signature = _skills_dir_signature(skills_dir)
-    now = time.time()
-    cached = _SKILL_COUNT_CACHE.get(key)
-    if (
-        cached is not None
-        and cached[0] == signature
-        and (now - cached[1]) < _SKILL_COUNT_TTL_SECONDS
-    ):
-        return cached[2]
-
     count = 0
     for md in skills_dir.rglob("SKILL.md"):
         if is_excluded_skill_path(md):
             continue
         count += 1
-    _SKILL_COUNT_CACHE[key] = (signature, now, count)
     return count
 
 
@@ -904,10 +743,6 @@ def list_profiles() -> List[ProfileInfo]:
     # Named profiles
     profiles_root = _get_profiles_root()
     if profiles_root.is_dir():
-        # Build the {profile -> alias} map ONCE here instead of calling
-        # find_alias_for_profile() per profile (which re-scanned the whole
-        # wrapper dir each time — O(N*M), the dominant cost in this function).
-        alias_map = build_alias_map()
         for entry in sorted(profiles_root.iterdir()):
             if not entry.is_dir():
                 continue
@@ -917,7 +752,7 @@ def list_profiles() -> List[ProfileInfo]:
             if not _PROFILE_ID_RE.match(name):
                 continue
             model, provider = _read_config_model(entry)
-            alias_name = alias_map.get(normalize_profile_name(name))
+            alias_name = find_alias_for_profile(name)
             if alias_name:
                 is_windows = sys.platform == "win32"
                 alias_path = wrapper_dir / (f"{alias_name}.bat" if is_windows else alias_name)
@@ -944,47 +779,6 @@ def list_profiles() -> List[ProfileInfo]:
             ))
 
     return profiles
-
-
-def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
-    """Return the ``(profile_name, hermes_home)`` pairs a gateway should serve.
-
-    This is the single chokepoint for "which profiles does the inbound gateway
-    handle" so later multiplexing phases never re-derive the set.
-
-    - ``multiplex=False`` (default): returns exactly one entry for the *active*
-      profile — byte-for-byte the single-profile behavior the gateway has
-      always had. The name is ``"default"`` for the default profile or the
-      active named profile's id.
-    - ``multiplex=True``: returns the default profile plus every valid named
-      profile under ``profiles/``, each paired with its own HERMES_HOME.
-
-    Intentionally lightweight (a directory scan + name validation only): no
-    per-profile config reads, gateway-running probes, or skill counts like
-    :func:`list_profiles`. It runs on gateway startup and must stay cheap.
-
-    The returned ``hermes_home`` is the path to pass to
-    ``set_hermes_home_override`` when scoping a turn to that profile.
-    """
-    active = get_active_profile_name() or "default"
-    if not multiplex:
-        return [(active, get_profile_dir(active))]
-
-    serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
-
-    profiles_root = _get_profiles_root()
-    if profiles_root.is_dir():
-        for entry in sorted(profiles_root.iterdir()):
-            if not entry.is_dir():
-                continue
-            name = entry.name
-            if name == "default":
-                continue  # default is the built-in entry already added above
-            if not _PROFILE_ID_RE.match(name):
-                continue
-            serve.append((name, entry))
-
-    return serve
 
 
 def create_profile(
@@ -1061,7 +855,6 @@ def create_profile(
         shutil.copytree(
             source_dir,
             profile_dir,
-            symlinks=True,
             ignore=_clone_all_copytree_ignore(source_dir),
         )
         # Strip runtime files
@@ -1096,7 +889,7 @@ def create_profile(
             # same agent capabilities as the source profile.
             source_skills = source_dir / "skills"
             if source_skills.is_dir():
-                shutil.copytree(source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True)
+                shutil.copytree(source_skills, profile_dir / "skills", dirs_exist_ok=True)
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:
@@ -1277,189 +1070,6 @@ def backfill_profile_envs(quiet: bool = False) -> List[str]:
     return backfilled
 
 
-def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[int]:
-    """PIDs of running Hermes *backends* bound to this profile.
-
-    The ``gateway.pid`` file only tracks the messaging gateway.  A Desktop app
-    spawns a headless ``serve`` (or legacy ``dashboard --no-open``) backend per
-    profile that holds the profile's SQLite connection open and keeps writing
-    sessions/WAL/sandbox files — the writer that makes ``rmtree`` hit
-    ``ENOTEMPTY`` (and, pre-fix, resurrected the tree).  ``gateway.pid`` never
-    names it, so find it by inspection: a Hermes backend subcommand
-    (``serve``/``dashboard``/``gateway``) that is bound to *this* profile either
-    by a ``--profile <canon>`` / ``-p <canon>`` selector or by a ``HERMES_HOME``
-    that resolves to ``profile_dir``.
-
-    Best-effort and tightly scoped: current-user processes only, backend
-    subcommands only (never an interactive ``chat``/``tui``), and never this
-    process or its ancestors.  Returns an empty list if ``psutil`` can't
-    inspect anything.
-    """
-    try:
-        import psutil  # type: ignore
-    except Exception:
-        return []
-
-    try:
-        resolved_dir = profile_dir.resolve()
-    except OSError:
-        resolved_dir = profile_dir
-
-    # Never terminate ourselves or a parent (e.g. `hermes -p <canon> profile
-    # delete` runs under the very profile it's deleting).
-    skip: set[int] = {os.getpid()}
-    try:
-        parent = psutil.Process(os.getpid()).parent()
-        while parent is not None:
-            skip.add(parent.pid)
-            parent = parent.parent()
-    except Exception:
-        pass
-
-    try:
-        current_user = psutil.Process(os.getpid()).username()
-    except Exception:
-        current_user = None
-
-    backend_tokens = {"serve", "dashboard", "gateway"}
-    hermes_markers = ("hermes_cli.main", "hermes-gateway", "tui_gateway")
-    pids: list[int] = []
-
-    for proc in psutil.process_iter(["pid", "name", "username", "cmdline"]):
-        try:
-            info = proc.info
-            pid = info.get("pid")
-            if pid is None or pid in skip:
-                continue
-            if current_user is not None and info.get("username") != current_user:
-                continue
-
-            argv = info.get("cmdline") or []
-            if not argv:
-                continue
-
-            # Must be a Hermes process: either an entrypoint marker in argv, or
-            # a resolved executable named `hermes`.
-            joined = " ".join(argv)
-            exe_name = os.path.basename(argv[0]).lower()
-            is_hermes = (
-                any(marker in joined for marker in hermes_markers)
-                or exe_name == "hermes"
-                or exe_name.startswith("hermes")
-            )
-            if not is_hermes:
-                continue
-
-            # Restrict to backend subcommands so we never kill an interactive
-            # session the user is deliberately running.
-            tokens = {tok.lower() for tok in argv}
-            if not (tokens & backend_tokens):
-                continue
-
-            # Bound to THIS profile — by selector flag in argv...
-            bound = False
-            for i, tok in enumerate(argv):
-                if tok in {"--profile", "-p"} and i + 1 < len(argv):
-                    if normalize_profile_name(argv[i + 1]) == canon:
-                        bound = True
-                        break
-                elif tok.startswith("--profile="):
-                    if normalize_profile_name(tok.split("=", 1)[1]) == canon:
-                        bound = True
-                        break
-
-            # ...or by HERMES_HOME env pointing at this profile dir.
-            if not bound:
-                try:
-                    env_home = (proc.environ() or {}).get("HERMES_HOME", "")
-                    if env_home and Path(env_home).resolve() == resolved_dir:
-                        bound = True
-                except Exception:
-                    # environ() can raise AccessDenied even same-user on some
-                    # platforms; fall back to the argv signal only.
-                    pass
-
-            if bound:
-                pids.append(pid)
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            continue
-        except Exception:
-            continue
-
-    return pids
-
-
-def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
-    """Terminate any Desktop-spawned / stray backends bound to this profile.
-
-    Complements ``_stop_gateway_process`` (which only knows ``gateway.pid``):
-    without this, a live ``serve``/``dashboard`` backend keeps creating files
-    under the profile dir while ``rmtree`` walks it, so the final ``rmdir``
-    fails with ``ENOTEMPTY`` and the delete doesn't converge.  Best-effort:
-    any failure is reported and swallowed so it never makes delete worse.
-    """
-    pids = _profile_bound_backend_pids(canon, profile_dir)
-    if not pids:
-        return
-
-    try:
-        from gateway.status import _pid_exists, terminate_pid as _terminate_pid
-    except Exception:
-        return
-
-    for pid in pids:
-        try:
-            _terminate_pid(pid)  # graceful first
-        except (ProcessLookupError, PermissionError, OSError):
-            continue
-
-    # Wait up to 10s for graceful exit, then force-kill stragglers.
-    deadline = time.time() + 10.0
-    while time.time() < deadline:
-        if not any(_pid_exists(pid) for pid in pids):
-            break
-        time.sleep(0.5)
-
-    for pid in pids:
-        if _pid_exists(pid):
-            try:
-                _terminate_pid(pid, force=True)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
-
-    print(f"✓ Stopped {len(pids)} profile backend process(es)")
-
-
-def _rmtree_with_retry(profile_dir: Path, onexc_handler) -> None:
-    """``shutil.rmtree`` with a short retry loop for transient races.
-
-    Even after stopping the gateway and profile backends, a just-terminated
-    process can leave in-flight writes (SQLite ``-wal``/``-shm`` checkpoints,
-    sandbox temp files) that land after ``rmtree`` has walked past a directory,
-    surfacing as ``ENOTEMPTY`` (POSIX) or a transient ``PermissionError``
-    (Windows file lock still releasing).  A few spaced retries let those settle
-    instead of failing the whole delete on a race the next attempt would win.
-    """
-    attempts = 3
-    last_exc: OSError | None = None
-    for attempt in range(attempts):
-        try:
-            # ``onexc`` was added in 3.12; fall back to ``onerror`` on 3.11.
-            try:
-                shutil.rmtree(profile_dir, onexc=onexc_handler)
-            except TypeError:
-                shutil.rmtree(profile_dir, onerror=onexc_handler)
-            return
-        except OSError as e:
-            last_exc = e
-            if not profile_dir.exists():
-                return
-            if attempt < attempts - 1:
-                time.sleep(0.3 * (attempt + 1))
-    if last_exc is not None:
-        raise last_exc
-
-
 def delete_profile(name: str, yes: bool = False) -> Path:
     """Delete a profile, its wrapper script, and its gateway service.
 
@@ -1508,11 +1118,11 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     if has_wrapper:
         items.append(f"Command alias ({wrapper_path})")
 
-    print("\nThis will permanently delete:")
+    print(f"\nThis will permanently delete:")
     for item in items:
         print(f"  • {item}")
     if gw_running:
-        print("  ⚠ Gateway is running — it will be stopped.")
+        print(f"  ⚠ Gateway is running — it will be stopped.")
 
     # Confirmation
     if not yes:
@@ -1536,13 +1146,6 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     # 2. Stop running gateway
     if gw_running:
         _stop_gateway_process(profile_dir)
-
-    # 2b. Stop any other backends bound to this profile (Desktop-spawned
-    # serve/dashboard processes the gateway.pid file never names). They hold
-    # the profile's SQLite connection open and keep writing files, which makes
-    # the rmtree below fail with ENOTEMPTY and — before the ensure_hermes_home
-    # guard — resurrected the deleted tree.
-    _stop_profile_backends(canon, profile_dir)
 
     # 3. Remove wrapper script
     if has_wrapper:
@@ -1589,7 +1192,11 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             else:
                 raise
 
-        _rmtree_with_retry(profile_dir, _make_writable)
+        # ``onexc`` was added in 3.12; fall back to ``onerror`` on 3.11.
+        try:
+            shutil.rmtree(profile_dir, onexc=_make_writable)
+        except TypeError:
+            shutil.rmtree(profile_dir, onerror=_make_writable)
         print(f"✓ Removed {profile_dir}")
     except Exception as e:
         print(f"⚠ Could not remove {profile_dir}: {e}")
@@ -1736,7 +1343,7 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
                     capture_output=True, check=False, timeout=10,
                 )
                 plist_path.unlink(missing_ok=True)
-                print("✓ Launchd service removed")
+                print(f"✓ Launchd service removed")
     except Exception as e:
         print(f"⚠ Service cleanup: {e}")
     finally:
@@ -1863,18 +1470,8 @@ def get_active_profile_name() -> str:
 def _default_export_ignore(root_dir: Path):
     """Return an *ignore* callable for :func:`shutil.copytree`.
 
-    Two-tier filtering:
-
-    * **Root-level allow-list** — only entries whose name appears in
-      ``_DEFAULT_EXPORT_INCLUDE_ROOT`` survive. Everything else (such as
-      an unrelated ``x11-dev/`` directory in a Docker deployment where
-      HERMES_HOME equals the cwd) is excluded. Blacklisting was tried
-      first and proved unable to anticipate every non-Hermes file the
-      user may have lying alongside HERMES_HOME (#58394).
-    * **Universal exclusions at any depth** — ``__pycache__``, sockets,
-      temp files; plus npm lockfiles, which may appear at the root.
-
-    All other profile artifacts are copied through untouched.
+    At the root level it excludes everything in ``_DEFAULT_EXPORT_EXCLUDE_ROOT``.
+    At all levels it excludes ``__pycache__``, sockets, and temp files.
     """
 
     def _ignore(directory: str, contents: list) -> set:
@@ -1886,12 +1483,9 @@ def _default_export_ignore(root_dir: Path):
             # npm lockfiles can appear at root
             elif entry in {"package.json", "package-lock.json"}:
                 ignored.add(entry)
-        # Root-level allow-list: drop everything that isn't a known
-        # Hermes profile artifact.
+        # Root-level exclusions
         if Path(directory) == root_dir:
-            ignored.update(
-                entry for entry in contents if entry not in _DEFAULT_EXPORT_INCLUDE_ROOT
-            )
+            ignored.update(c for c in contents if c in _DEFAULT_EXPORT_EXCLUDE_ROOT)
         return ignored
 
     return _ignore
@@ -1923,7 +1517,6 @@ def export_profile(name: str, output_path: str) -> Path:
             shutil.copytree(
                 profile_dir,
                 staged,
-                symlinks=True,
                 ignore=_default_export_ignore(profile_dir),
             )
             result = shutil.make_archive(base, "gztar", tmpdir, "default")
@@ -1936,7 +1529,6 @@ def export_profile(name: str, output_path: str) -> Path:
         shutil.copytree(
             profile_dir,
             staged,
-            symlinks=True,
             ignore=lambda d, contents: _CREDENTIAL_FILES & set(contents),
         )
         result = shutil.make_archive(base, "gztar", tmpdir, canon)

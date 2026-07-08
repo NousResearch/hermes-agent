@@ -31,7 +31,7 @@ def make_slow_response(delay=2.0):
     def create(**kwargs):
         log.info(f"   🌐 Mock API call starting (will take {delay}s)...")
         time.sleep(delay)
-        log.info("   🌐 Mock API call completed")
+        log.info(f"   🌐 Mock API call completed")
         resp = MagicMock()
         resp.choices = [MagicMock()]
         resp.choices[0].message.content = "Done with the task"

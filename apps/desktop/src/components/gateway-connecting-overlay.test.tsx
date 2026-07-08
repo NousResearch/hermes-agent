@@ -54,19 +54,13 @@ afterEach(cleanup)
 // "Lost connection…" copy doesn't read as a false positive.
 const isConnectingShown = () =>
   screen.queryAllByText((_, el) => /^CONN[/\\|\-_=+<>~:*A-Z]*$/.test(el?.textContent?.trim() ?? '')).length > 0
-
 const isRecoveryShown = () =>
   Boolean(screen.queryByText(/use local gateway/i) || screen.queryByText(/retry/i) || screen.queryByText(/sign in/i))
 
 describe('connecting overlay vs recovery surface', () => {
   it('hard initial-boot failure surfaces the recovery overlay (the working path)', () => {
     // failDesktopBoot() ran: error set, gateway never opened.
-    $desktopBoot.set({
-      ...$desktopBoot.get(),
-      error: 'Hermes backend did not become ready',
-      running: false,
-      visible: true
-    })
+    $desktopBoot.set({ ...$desktopBoot.get(), error: 'Hermes backend did not become ready', running: false, visible: true })
     setGatewayState('error')
 
     render(
@@ -84,14 +78,12 @@ describe('connecting overlay vs recovery surface', () => {
   it('post-boot socket drops do not re-cover the app with the initial CONNECTING overlay', () => {
     // 1. Initial boot succeeded: gateway opened, boot completed (no error).
     setGatewayState('open')
-
     const { rerender } = render(
       <>
         <GatewayConnectingOverlay />
         <BootFailureOverlay />
       </>
     )
-
     expect(isConnectingShown()).toBe(false)
 
     // 2. The remote VPS socket drops (sleep/wake, remote restart, network).

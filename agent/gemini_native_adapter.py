@@ -27,7 +27,6 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import httpx
 
-from agent.bounded_response import read_streaming_error_body
 from agent.gemini_schema import sanitize_gemini_tool_parameters
 
 logger = logging.getLogger(__name__)
@@ -337,22 +336,6 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
 
         if parts:
             contents.append({"role": gemini_role, "parts": parts})
-
-    # Gemini's generateContent requires strict user/model alternation;
-    # consecutive same-role contents are rejected with HTTP 400 "Please ensure
-    # that multiturn requests alternate between user and model". The loop above
-    # emits one content per source message, so parallel tool calls (N tool
-    # results become N user functionResponse contents), back-to-back user turns,
-    # or merged assistant turns would each violate that. Merge adjacent
-    # same-role contents by concatenating their parts. For parallel calls this
-    # also produces the grouped multi-functionResponse turn Gemini expects.
-    merged_contents: List[Dict[str, Any]] = []
-    for content in contents:
-        if merged_contents and merged_contents[-1]["role"] == content["role"]:
-            merged_contents[-1]["parts"].extend(content["parts"])
-        else:
-            merged_contents.append(content)
-    contents = merged_contents
 
     system_instruction = None
     joined_system = "\n".join(part for part in system_text_parts if part).strip()
@@ -743,17 +726,14 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
     return chunks
 
 
-def gemini_http_error(
-    response: httpx.Response, *, body_text: Optional[str] = None
-) -> GeminiAPIError:
+def gemini_http_error(response: httpx.Response) -> GeminiAPIError:
     status = response.status_code
+    body_text = ""
     body_json: Dict[str, Any] = {}
-    if body_text is None:
-        try:
-            body_text = response.text
-        except Exception:
-            body_text = ""
-    body_text = body_text or ""
+    try:
+        body_text = response.text
+    except Exception:
+        body_text = ""
     if body_text:
         try:
             parsed = json.loads(body_text)
@@ -972,8 +952,8 @@ class GeminiNativeClient:
             try:
                 with self._http.stream("POST", url, json=request, headers=stream_headers, timeout=timeout) as response:
                     if response.status_code != 200:
-                        body_text = read_streaming_error_body(response)
-                        raise gemini_http_error(response, body_text=body_text)
+                        response.read()
+                        raise gemini_http_error(response)
                     tool_call_indices: Dict[str, Dict[str, Any]] = {}
                     for event in _iter_sse_events(response):
                         for chunk in translate_stream_event(event, model, tool_call_indices):

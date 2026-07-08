@@ -102,25 +102,13 @@ class TestAutoResetBlockReSyncsBinding:
         """The block must re-sync the topic binding so the next inbound message
         cannot ``switch_session`` back onto the bloated compressed child."""
         block = _find_compression_exhausted_reset_block()
-
-        def _references_helper(node):
-            # Direct call: self._sync_telegram_topic_binding(...)
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "_sync_telegram_topic_binding"
-            ):
-                return True
-            # Offloaded: await asyncio.to_thread(self._sync_telegram_topic_binding, ...)
-            # — the helper is passed as an argument, not the call's func.
-            if (
-                isinstance(node, ast.Attribute)
-                and node.attr == "_sync_telegram_topic_binding"
-            ):
-                return True
-            return False
-
-        sync_calls = [sub for sub in ast.walk(block) if _references_helper(sub)]
+        sync_calls = [
+            sub
+            for sub in ast.walk(block)
+            if isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Attribute)
+            and sub.func.attr == "_sync_telegram_topic_binding"
+        ]
         assert sync_calls, (
             "gateway/run.py auto-reset block does not call "
             "_sync_telegram_topic_binding after reset_session. Without it the "

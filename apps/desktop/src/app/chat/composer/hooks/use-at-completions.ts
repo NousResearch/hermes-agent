@@ -2,7 +2,6 @@ import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-u
 import { useCallback } from 'react'
 
 import type { HermesGateway } from '@/hermes'
-import { normalize } from '@/lib/text'
 
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
 import { useLiveCompletionAdapter } from './use-live-completion-adapter'
@@ -20,7 +19,7 @@ const STARTER_META: Record<string, string> = {
 }
 
 function starterEntries(query: string): CompletionEntry[] {
-  const q = normalize(query)
+  const q = query.trim().toLowerCase()
   const kinds = Array.from(REF_STARTERS)
   const filtered = q ? kinds.filter(kind => kind.startsWith(q)) : kinds
 

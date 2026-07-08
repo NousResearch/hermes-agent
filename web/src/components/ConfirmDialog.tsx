@@ -66,7 +66,7 @@ export function ConfirmDialog({
       onClick={(e) => {
         if (e.target === e.currentTarget) onCancel();
       }}
-      className="fixed inset-0 z-[200] flex items-center justify-center bg-background/85 p-4"
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
     >
       <div
         ref={dialogRef}

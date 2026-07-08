@@ -96,56 +96,6 @@ class TestApply:
         assert r.success
         assert r.message == "openai_runtime already set to auto"
 
-    def test_reapply_codex_app_server_runs_migration(self):
-        """Re-applying codex_app_server when already enabled must still
-        run the migration. Common footgun: user pre-sets
-        `openai_runtime: codex_app_server` in config.yaml, then runs
-        /codex-runtime codex_app_server expecting the migration. Without
-        this, the slash command short-circuits with "already set" and
-        ~/.codex/config.toml never gets the hermes-tools MCP callback
-        or plugin migration — silent partial setup.
-        """
-        cfg = {
-            "model": {"openai_runtime": "codex_app_server"},
-            "mcp_servers": {
-                "filesystem": {"command": "npx", "args": ["-y", "fs-server"]},
-            },
-        }
-        persisted = {}
-
-        def persist(c):
-            persisted.update(c)
-
-        with patch.object(crs, "check_codex_binary_ok",
-                          return_value=(True, "0.130.0")), \
-             patch("hermes_cli.codex_runtime_plugin_migration.migrate") as mig:
-            mig.return_value.migrated = ["filesystem", "hermes-tools"]
-            mig.return_value.migrated_plugins = []
-            mig.return_value.plugin_query_error = None
-            mig.return_value.wrote_permissions_default = ":workspace"
-            mig.return_value.errors = []
-            mig.return_value.target_path = "/fake/.codex/config.toml"
-            r = crs.apply(cfg, "codex_app_server",
-                          persist_callback=persist)
-        assert r.success
-        assert mig.called, "migration must run on reapply, not just first enable"
-        # Re-apply should signal "already set" but still announce migration ran
-        assert "already set" in r.message
-        assert "re-applying migration" in r.message
-        # Migration output still surfaces
-        assert "Migrated 1 MCP server" in r.message
-        assert "filesystem" in r.message
-        assert "Default sandbox: :workspace" in r.message
-        # No config write needed when value is unchanged — the persist
-        # callback should NOT have fired (avoids spurious config.yaml mtimes
-        # on every re-apply).
-        assert persisted == {}, (
-            "persist_callback fired despite no config-value change"
-        )
-        # Caller still needs a fresh session for the cached agent to pick
-        # up any migration-driven changes.
-        assert r.requires_new_session is True
-
     def test_enable_blocked_when_codex_missing(self):
         cfg = {}
         with patch.object(crs, "check_codex_binary_ok",

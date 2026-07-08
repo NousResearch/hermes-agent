@@ -69,15 +69,6 @@
   overflow-x: auto;
 }
 
-.hermes-kanban-columns--scrollable {
-  cursor: grab;
-}
-
-.hermes-kanban-columns--panning,
-.hermes-kanban-columns--panning * {
-  cursor: grabbing !important;
-}
-
 .hermes-kanban-column {
   flex: 0 0 280px;
   display: flex;

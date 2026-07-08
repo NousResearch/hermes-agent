@@ -21,7 +21,7 @@ class StubAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
 
-    async def connect(self, *, is_reconnect: bool = False):
+    async def connect(self):
         return True
 
     async def disconnect(self):

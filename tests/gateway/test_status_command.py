@@ -1,4 +1,3 @@
-from hermes_state import AsyncSessionDB
 """Tests for gateway /status behavior and token persistence."""
 
 from datetime import datetime
@@ -54,11 +53,11 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     runner._session_run_generation = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
-    runner._session_db = AsyncSessionDB(MagicMock())
-    runner._session_db._db.get_session_title.return_value = None
+    runner._session_db = MagicMock()
+    runner._session_db.get_session_title.return_value = None
     # Default: no DB row → /status reports 0 tokens.  Tests that exercise
     # the populated path override this.
-    runner._session_db._db.get_session.return_value = None
+    runner._session_db.get_session.return_value = None
     runner._reasoning_config = None
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -87,7 +86,7 @@ async def test_status_command_reports_running_agent_without_interrupt(monkeypatc
     )
     runner = _make_runner(session_entry)
     # Token total comes from the SQLite SessionDB, not SessionEntry.
-    runner._session_db._db.get_session.return_value = {
+    runner._session_db.get_session.return_value = {
         "input_tokens": 200,
         "output_tokens": 121,
         "cache_read_tokens": 0,
@@ -119,7 +118,7 @@ async def test_status_command_includes_session_title_when_present():
         total_tokens=321,
     )
     runner = _make_runner(session_entry)
-    runner._session_db._db.get_session_title.return_value = "My titled session"
+    runner._session_db.get_session_title.return_value = "My titled session"
 
     result = await runner._handle_message(_make_event("/status"))
 
@@ -142,7 +141,7 @@ async def test_status_command_reads_token_totals_from_session_db():
         total_tokens=0,  # SessionEntry never gets written to — always 0.
     )
     runner = _make_runner(session_entry)
-    runner._session_db._db.get_session.return_value = {
+    runner._session_db.get_session.return_value = {
         "input_tokens": 1000,
         "output_tokens": 250,
         "cache_read_tokens": 500,
@@ -170,7 +169,7 @@ async def test_status_command_tokens_zero_when_session_db_row_missing():
         total_tokens=999,  # This should be ignored.
     )
     runner = _make_runner(session_entry)
-    runner._session_db._db.get_session.return_value = None
+    runner._session_db.get_session.return_value = None
 
     result = await runner._handle_message(_make_event("/status"))
 
@@ -189,7 +188,7 @@ async def test_status_command_includes_live_agent_model_and_context():
         total_tokens=0,
     )
     runner = _make_runner(session_entry)
-    runner._session_db._db.get_session.return_value = {
+    runner._session_db.get_session.return_value = {
         "input_tokens": 1000,
         "output_tokens": 250,
         "cache_read_tokens": 0,
@@ -229,7 +228,7 @@ async def test_status_command_includes_persisted_model_and_context_when_agent_no
         last_prompt_tokens=24_000,
     )
     runner = _make_runner(session_entry)
-    runner._session_db._db.get_session.return_value = {
+    runner._session_db.get_session.return_value = {
         "input_tokens": 2000,
         "output_tokens": 500,
         "cache_read_tokens": 0,
@@ -612,7 +611,7 @@ async def test_status_command_bypasses_active_session_guard():
     class _ConcreteAdapter(BasePlatformAdapter):
         platform = Platform.TELEGRAM
 
-        async def connect(self, *, is_reconnect: bool = False): pass
+        async def connect(self): pass
         async def disconnect(self): pass
         async def send(self, chat_id, content, **kwargs): pass
         async def get_chat_info(self, chat_id): return {}
@@ -693,7 +692,7 @@ async def test_post_delivery_callback_generation_snapshot_happens_after_bind():
     class _ConcreteAdapter(BasePlatformAdapter):
         platform = Platform.TELEGRAM
 
-        async def connect(self, *, is_reconnect: bool = False): pass
+        async def connect(self): pass
         async def disconnect(self): pass
         async def send(self, chat_id, content, **kwargs): pass
         async def get_chat_info(self, chat_id): return {}

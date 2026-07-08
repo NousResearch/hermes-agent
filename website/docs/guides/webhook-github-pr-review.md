@@ -325,5 +325,5 @@ platforms:
 
 - **[Cron-Based PR Reviews](./github-pr-review-agent.md)** — poll for PRs on a schedule, no public endpoint needed
 - **[Webhook Reference](/user-guide/messaging/webhooks)** — full config reference for the webhook platform
-- **[Build a Plugin](/developer-guide/plugins)** — package review logic into a shareable plugin
+- **[Build a Plugin](/guides/build-a-hermes-plugin)** — package review logic into a shareable plugin
 - **[Profiles](/user-guide/profiles)** — run a dedicated reviewer profile with its own memory and config

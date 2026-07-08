@@ -2,7 +2,7 @@ name: Docker / shell lint
 
 # Lints the container build inputs: Dockerfile (via hadolint) and any shell
 # scripts under docker/ (via shellcheck). These catch the class of regression
-# the behavioral docker smoke test can't — unquoted variable
+# the behavioral docker-publish smoke test can't — unquoted variable
 # expansions, silently-failing RUN commands, etc.
 #
 # Rules and ignores are documented in .hadolint.yaml at the repo root.
@@ -11,7 +11,19 @@ name: Docker / shell lint
 # activate script doesn't exist at lint time.
 
 on:
-  workflow_call:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - docker/**
+      - .hadolint.yaml
+      - .github/workflows/docker-lint.yml
+
+  # No paths filter — the job must always run so the required check
+  # reports a status (path-gated workflows leave checks "pending" forever
+  # when no matching files change, which blocks merge).
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read

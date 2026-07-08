@@ -26,11 +26,7 @@ const REQUEST_TIMEOUT_MS = 20_000
 const ID_RE = /^[\w-]+\.[\w-]+$/
 
 /** Minimal HTTPS helper with redirect-following, timeout, and a size cap. */
-function request(
-  url,
-  { method = 'GET', headers = {}, body = null, maxBytes = MAX_VSIX_BYTES } = {},
-  redirectsLeft = MAX_REDIRECTS
-) {
+function request(url, { method = 'GET', headers = {}, body = null, maxBytes = MAX_VSIX_BYTES } = {}, redirectsLeft = MAX_REDIRECTS) {
   return new Promise((resolve, reject) => {
     const req = https.request(url, { method, headers }, res => {
       const status = res.statusCode ?? 0
@@ -46,13 +42,7 @@ function request(
         const next = new URL(res.headers.location, url).toString()
         res.resume()
         // Redirects to the CDN are plain GETs (drop the POST body).
-        resolve(
-          request(
-            next,
-            { method: 'GET', headers: { 'User-Agent': headers['User-Agent'] }, maxBytes },
-            redirectsLeft - 1
-          )
-        )
+        resolve(request(next, { method: 'GET', headers: { 'User-Agent': headers['User-Agent'] }, maxBytes }, redirectsLeft - 1))
 
         return
       }

@@ -136,13 +136,6 @@ class TestGuessCategory:
         p.write_text("x")
         assert dg.guess_category(p) == "cron-output"
 
-    def test_cron_output_root_not_tracked(self, _isolate_env):
-        """The cron/output root is durable container state, not an artifact."""
-        dg = _load_lib()
-        output_root = _isolate_env / "cron" / "output"
-        output_root.mkdir(parents=True)
-        assert dg.guess_category(output_root) is None
-
     def test_cron_jobs_json_not_tracked(self, _isolate_env):
         """Regression for #32164: the cron registry must never be tracked."""
         dg = _load_lib()
@@ -234,29 +227,6 @@ class TestStaleCronEntryMigration:
         summary = dg.quick()
         assert summary["deleted"] == 0, "cron/ dir must not be deleted"
         assert cron_dir.exists()
-
-    def test_quick_skips_stale_cron_output_for_output_root(self, _isolate_env):
-        """Stale entry for cron/output itself must not delete all job output."""
-        dg = _load_lib()
-        output_root = _isolate_env / "cron" / "output"
-        job_dir = output_root / "job_1"
-        job_dir.mkdir(parents=True)
-        run_md = job_dir / "run.md"
-        run_md.write_text("x")
-
-        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
-        tracked_file.parent.mkdir(parents=True, exist_ok=True)
-        tracked_file.write_text(json.dumps([{
-            "path": str(output_root),
-            "category": "cron-output",
-            "timestamp": "2025-01-01T00:00:00+00:00",
-            "size": 0,
-        }]))
-
-        summary = dg.quick()
-        assert summary["deleted"] == 0, "cron/output root must not be deleted"
-        assert output_root.exists()
-        assert run_md.exists()
 
     def test_quick_skips_protected_cron_paths_defense_in_depth(self, _isolate_env):
         """Defense-in-depth: even if guess_category returned cron-output

@@ -4,7 +4,6 @@ import json
 
 import pytest
 
-from hermes_cli.auth import AuthError
 from plugins.spotify import client as spotify_mod
 from plugins.spotify import tools as spotify_tool
 
@@ -298,25 +297,3 @@ def test_spotify_playback_recently_played_action(monkeypatch: pytest.MonkeyPatch
     payload = json.loads(spotify_tool._handle_spotify_playback({"action": "recently_played", "limit": 5}))
     assert seen and seen[0]["limit"] == 5
     assert isinstance(payload, dict)
-
-
-def test_client_wraps_invalid_grant_as_spotify_auth_required_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """SpotifyClient._resolve_runtime wraps AuthError(code=spotify_refresh_invalid_grant) into SpotifyAuthRequiredError."""
-
-    def _raise_invalid_grant(**kwargs):
-        raise AuthError(
-            "Spotify refresh token has expired or was revoked. Run `hermes auth spotify` again.",
-            provider="spotify",
-            code="spotify_refresh_invalid_grant",
-            relogin_required=True,
-        )
-
-    monkeypatch.setattr(
-        spotify_mod,
-        "resolve_spotify_runtime_credentials",
-        _raise_invalid_grant,
-    )
-    with pytest.raises(spotify_mod.SpotifyAuthRequiredError, match="expired or was revoked"):
-        spotify_mod.SpotifyClient()

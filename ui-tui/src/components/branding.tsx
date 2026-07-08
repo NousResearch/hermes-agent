@@ -50,7 +50,8 @@ const TAG_TINY = 'Nous Research'
 const HIDE_BELOW = 34
 const COMPACT_FROM = 58
 
-const clip = (s: string, w: number) => (w <= 0 ? '' : s.length > w ? `${s.slice(0, Math.max(0, w - 1))}…` : s)
+const clip = (s: string, w: number) =>
+  w <= 0 ? '' : s.length > w ? `${s.slice(0, Math.max(0, w - 1))}…` : s
 
 const centerIn = (s: string, w: number) => {
   const f = clip(s, w)
@@ -74,9 +75,7 @@ function CompactBanner({ cols, t }: { cols: number; t: Theme }) {
 
   return (
     <Box flexDirection="column" height={3} marginBottom={1} opaque width={w}>
-      <Text bold color={t.color.primary}>
-        {ruleIn(t.brand.name, w)}
-      </Text>
+      <Text bold color={t.color.primary}>{ruleIn(t.brand.name, w)}</Text>
       <Text color={t.color.muted}>{centerIn(TAG_FULL, w)}</Text>
       <Text color={t.color.primary}>{'─'.repeat(w)}</Text>
     </Box>
@@ -114,12 +113,8 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
 
   return (
     <Box flexDirection="column" marginBottom={1}>
-      <Text bold color={t.color.primary} wrap="truncate-end">
-        {t.brand.icon} {name}
-      </Text>
-      <Text color={t.color.muted} wrap="truncate-end">
-        {t.brand.icon} {tag}
-      </Text>
+      <Text bold color={t.color.primary} wrap="truncate-end">{t.brand.icon} {name}</Text>
+      <Text color={t.color.muted} wrap="truncate-end">{t.brand.icon} {tag}</Text>
     </Box>
   )
 }
@@ -147,8 +142,12 @@ function CollapseToggle({
       <Text bold color={t.color.accent}>
         {title}
       </Text>
-      {typeof count === 'number' ? <Text color={t.color.muted}> ({count})</Text> : null}
-      {suffix ? <Text color={t.color.muted}> {suffix}</Text> : null}
+      {typeof count === 'number' ? (
+        <Text color={t.color.muted}> ({count})</Text>
+      ) : null}
+      {suffix ? (
+        <Text color={t.color.muted}> {suffix}</Text>
+      ) : null}
     </Box>
   )
 }
@@ -213,7 +212,9 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
           </Text>
         ))}
-        {overflow > 0 && <Text color={t.color.muted}>(and {overflow} more categories…)</Text>}
+        {overflow > 0 && (
+          <Text color={t.color.muted}>(and {overflow} more categories…)</Text>
+        )}
       </>
     )
   }
@@ -221,12 +222,6 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   // ── Collapsible tools section ──
   const toolEntries = Object.entries(info.tools).sort()
   const toolsTotal = flat(info.tools).length
-
-  // MCP headline counts *connected* servers, not configured-but-disabled ones,
-  // so it matches the classic CLI banner (`sum(s.connected)` in
-  // hermes_cli/banner.py) and the "connected" label on the collapse toggle.
-  const mcpServers = info.mcp_servers ?? []
-  const mcpConnected = mcpServers.filter(s => s.connected).length
 
   const toolsBody = () => {
     const shown = toolEntries.slice(0, TOOLSETS_MAX)
@@ -240,7 +235,9 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
           </Text>
         ))}
-        {overflow > 0 && <Text color={t.color.muted}>(and {overflow} more toolsets…)</Text>}
+        {overflow > 0 && (
+          <Text color={t.color.muted}>(and {overflow} more toolsets…)</Text>
+        )}
       </>
     )
   }
@@ -279,7 +276,11 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
       return <Text color={t.color.muted}>No system prompt loaded.</Text>
     }
 
-    return <Text color={t.color.muted}>{info.system_prompt}</Text>
+    return (
+      <Text color={t.color.muted}>
+        {info.system_prompt}
+      </Text>
+    )
   }
 
   return (
@@ -338,7 +339,12 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
         {/* ── Tools (expanded by default) ── */}
         <Box flexDirection="column" marginTop={1}>
-          <CollapseToggle onToggle={() => setToolsOpen(v => !v)} open={toolsOpen} t={t} title="Available Tools" />
+          <CollapseToggle
+            onToggle={() => setToolsOpen(v => !v)}
+            open={toolsOpen}
+            t={t}
+            title="Available Tools"
+          />
           {toolsOpen && toolsBody()}
         </Box>
 
@@ -348,9 +354,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             count={skillsTotal}
             onToggle={() => setSkillsOpen(v => !v)}
             open={skillsOpen}
-            suffix={
-              skillsCatCount > 0 ? `in ${skillsCatCount} categor${skillsCatCount === 1 ? 'y' : 'ies'}` : undefined
-            }
+            suffix={skillsCatCount > 0 ? `in ${skillsCatCount} categor${skillsCatCount === 1 ? 'y' : 'ies'}` : undefined}
             t={t}
             title="Available Skills"
           />
@@ -372,10 +376,10 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         )}
 
         {/* ── MCP Servers (collapsed by default) ── */}
-        {mcpServers.length > 0 && (
+        {info.mcp_servers && info.mcp_servers.length > 0 && (
           <Box flexDirection="column" marginTop={1}>
             <CollapseToggle
-              count={mcpConnected}
+              count={info.mcp_servers.length}
               onToggle={() => setMcpOpen(v => !v)}
               open={mcpOpen}
               suffix="connected"
@@ -391,7 +395,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         <Text color={t.color.text}>
           {toolsTotal} tools{' · '}
           {skillsTotal} skills
-          {mcpConnected ? ` · ${mcpConnected} MCP` : ''}
+          {info.mcp_servers?.length ? ` · ${info.mcp_servers.length} MCP` : ''}
           {' · '}
           <Text color={t.color.muted}>/help for commands</Text>
         </Text>
@@ -410,12 +414,6 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
               {' '}
               to update
             </Text>
-          </Text>
-        )}
-
-        {info.install_warning && (
-          <Text bold color={t.color.warn} wrap="wrap">
-            ! {info.install_warning}
           </Text>
         )}
       </Box>

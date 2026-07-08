@@ -154,79 +154,6 @@ describe('GatewayClient websocket attach mode', () => {
     gw.kill()
   })
 
-  it('drains buffered events on a later microtask, not synchronously inside drain()', async () => {
-    // Regression for #36658: in attach mode the already-running gateway
-    // replays `gateway.ready` the instant the socket connects, so it lands in
-    // bufferedEvents BEFORE the consumer's mount-time subscribe effect runs.
-    // If drain() emitted those synchronously, the gateway.ready handler's
-    // setState cascade would run inside React's first commit -> "Too many
-    // re-renders" (#301). drain() must defer the buffered flush so the first
-    // commit settles first.
-    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
-    const gw = new GatewayClient()
-
-    gw.start()
-    const gatewaySocket = FakeWebSocket.instances[0]!
-
-    gatewaySocket.open()
-    // Server replays ready BEFORE the consumer subscribes (attach-mode timing):
-    gatewaySocket.message(
-      JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
-    )
-
-    const order: string[] = []
-
-    gw.on('event', ev => order.push(`event:${ev.type}`))
-    gw.drain()
-    order.push('after-drain')
-
-    // Buffered event must NOT have fired synchronously inside drain():
-    expect(order).toEqual(['after-drain'])
-
-    // ...and must arrive on the next microtask.
-    await vi.waitFor(() => expect(order).toContain('event:gateway.ready'))
-    expect(order).toEqual(['after-drain', 'event:gateway.ready'])
-
-    gw.kill()
-  })
-
-  it('preserves FIFO order when a live event arrives before the deferred flush', async () => {
-    // #36658 hardening: `subscribed` must NOT flip synchronously in drain().
-    // A live event delivered in the window between drain() returning and the
-    // deferred microtask running must still queue BEHIND the chronologically
-    // earlier buffered events, not jump ahead of them.
-    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
-    const gw = new GatewayClient()
-
-    gw.start()
-    const gatewaySocket = FakeWebSocket.instances[0]!
-
-    gatewaySocket.open()
-    // Buffered first (replayed on connect, before subscribe):
-    gatewaySocket.message(
-      JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
-    )
-
-    const order: string[] = []
-
-    gw.on('event', ev => order.push(ev.type))
-    gw.drain()
-
-    // A LIVE event arrives synchronously in the post-drain / pre-microtask gap:
-    gatewaySocket.message(
-      JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'session.info', payload: {} } })
-    )
-
-    // Nothing emitted yet (subscribed stays false until the microtask):
-    expect(order).toEqual([])
-
-    await vi.waitFor(() => expect(order.length).toBe(2))
-    // FIFO preserved: the earlier-buffered gateway.ready precedes the live one.
-    expect(order).toEqual(['gateway.ready', 'session.info'])
-
-    gw.kill()
-  })
-
   it('mirrors event frames to sidecar websocket when configured', async () => {
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
     process.env.HERMES_TUI_SIDECAR_URL = 'ws://gateway.test/api/pub?token=abc&channel=demo'
@@ -245,9 +172,6 @@ describe('GatewayClient websocket attach mode', () => {
 
     sidecarSocket.open()
     gw.drain()
-    // drain() flips `subscribed` on a microtask now (#36658); let it settle so
-    // the subsequent live event takes the synchronous publish path.
-    await Promise.resolve()
 
     const eventFrame = JSON.stringify({
       jsonrpc: '2.0',
@@ -263,49 +187,7 @@ describe('GatewayClient websocket attach mode', () => {
     gw.kill()
   })
 
-  it('publishes local dashboard-control events to the sidecar websocket', async () => {
-    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
-    process.env.HERMES_TUI_SIDECAR_URL = 'ws://gateway.test/api/pub?token=abc&channel=demo'
-
-    const gw = new GatewayClient()
-    const seen: string[] = []
-
-    gw.on('event', ev => seen.push(ev.type))
-    gw.start()
-
-    const gatewaySocket = FakeWebSocket.instances[0]!
-
-    gatewaySocket.open()
-    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2))
-
-    const sidecarSocket = FakeWebSocket.instances[1]!
-
-    sidecarSocket.open()
-    gw.drain()
-    // drain() flips `subscribed` on a microtask now (#36658); let it settle.
-    await Promise.resolve()
-
-    gw.publishLocalEvent({
-      payload: { reason: 'idle_exit_hotkey' },
-      session_id: 'sid-old',
-      type: 'dashboard.new_session_requested'
-    })
-
-    expect(seen).toContain('dashboard.new_session_requested')
-    expect(JSON.parse(sidecarSocket.sent.at(-1) ?? '{}')).toEqual({
-      jsonrpc: '2.0',
-      method: 'event',
-      params: {
-        payload: { reason: 'idle_exit_hotkey' },
-        session_id: 'sid-old',
-        type: 'dashboard.new_session_requested'
-      }
-    })
-
-    gw.kill()
-  })
-
-  it('emits exit when attached websocket closes', async () => {
+  it('emits exit when attached websocket closes', () => {
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
     const gw = new GatewayClient()
     const exits: Array<null | number> = []
@@ -317,9 +199,6 @@ describe('GatewayClient websocket attach mode', () => {
 
     gatewaySocket.open()
     gw.drain()
-    // drain() flips `subscribed` on a microtask now (#36658); let it settle so
-    // the close below takes the synchronous exit path.
-    await Promise.resolve()
     gatewaySocket.close(1011)
 
     expect(exits).toEqual([1011])

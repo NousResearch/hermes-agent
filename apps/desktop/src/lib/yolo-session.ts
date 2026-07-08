@@ -32,7 +32,10 @@ export async function setSessionYolo(
  * the CLI, the TUI, and cron — and it survives restarts. Triggered by
  * Shift+clicking the status-bar zap.
  */
-export async function setGlobalYolo(requestGateway: GatewayRequester, enabled: boolean): Promise<boolean> {
+export async function setGlobalYolo(
+  requestGateway: GatewayRequester,
+  enabled: boolean
+): Promise<boolean> {
   const result = await requestGateway<{ value?: string }>('config.set', {
     key: 'yolo',
     scope: 'global',

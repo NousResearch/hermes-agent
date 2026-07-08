@@ -159,12 +159,7 @@ export const DIRECTIVE_CHIP_CLASS =
 const CANONICAL_DIRECTIVE_RE = /:([\w-]{1,64})\[([^\]\n]{1,1024})\](?:\{name=([^}\n]{1,1024})\})?/g
 
 const HERMES_DIRECTIVE_RE = new RegExp(
-  '@(file|folder|url|image|tool|line|terminal|session):(' +
-    '`[^`\\n]+`' +
-    '|"[^"\\n]+"' +
-    "|'[^'\\n]+'" +
-    '|\\S+' +
-    ')',
+  '@(file|folder|url|image|tool|line|terminal|session):(' + '`[^`\\n]+`' + '|"[^"\\n]+"' + "|'[^'\\n]+'" + '|\\S+' + ')',
   'g'
 )
 
@@ -327,29 +322,13 @@ function shortLabel(type: HermesRefType, id: string): string {
   return tail || id
 }
 
-function safeEmbeddedImages(text: string) {
-  try {
-    return extractEmbeddedImages(text)
-  } catch {
-    return { cleanedText: text, images: [] as string[] }
-  }
-}
-
-function safeDirectiveSegments(text: string): Unstable_DirectiveSegment[] {
-  try {
-    return [...hermesDirectiveFormatter.parse(text)]
-  } catch {
-    return [{ kind: 'text', text }]
-  }
-}
-
 /**
  * Renders text containing Hermes directives (`@file:...`, `@image:...`) as
  * inline chips. Embedded MEDIA images render below as a thumbnail row.
  */
 export function DirectiveContent({ text }: { text: string }) {
-  const { cleanedText, images } = useMemo(() => safeEmbeddedImages(text ?? ''), [text])
-  const segments = useMemo(() => safeDirectiveSegments(cleanedText), [cleanedText])
+  const { cleanedText, images } = useMemo(() => extractEmbeddedImages(text ?? ''), [text])
+  const segments = useMemo(() => hermesDirectiveFormatter.parse(cleanedText), [cleanedText])
 
   return (
     <span className="whitespace-pre-line" data-slot="aui_directive-text">
@@ -403,7 +382,9 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
     // Remote gateway: the image lives on the gateway's disk, not ours — fetch
     // it over the authenticated API. Local: read it straight off this disk.
     const load =
-      window.hermesDesktop && isRemoteGateway() ? gatewayMediaDataUrl(id) : window.hermesDesktop?.readFileDataUrl(id)
+      window.hermesDesktop && isRemoteGateway()
+        ? gatewayMediaDataUrl(id)
+        : window.hermesDesktop?.readFileDataUrl(id)
 
     void Promise.resolve(load)
       .then(url => alive && url && setSrc(url))

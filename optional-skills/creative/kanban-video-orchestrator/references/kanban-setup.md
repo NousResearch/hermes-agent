@@ -101,7 +101,7 @@ default-config schema drift:
 configure_profile() {
     local profile="$1"
     local toolsets_json="$2"     # JSON array, e.g. '["kanban","terminal","file"]'
-    local skills_json="$3"       # JSON array, e.g. '["ascii-video"]'
+    local skills_json="$3"       # JSON array, e.g. '["kanban-worker","ascii-video"]'
     python3 - "$profile" "$toolsets_json" "$skills_json" <<'PY'
 import json, os, sys, yaml
 profile, ts_json, sk_json = sys.argv[1:4]
@@ -133,16 +133,16 @@ the entire production. **Critical content for the director's SOUL.md:**
 
 - **Anti-temptation rules:** "Do not execute the work yourself. For every
   concrete task, create a kanban task and assign it. Decompose, route, comment,
-  approve — that's the whole job." (The kanban orchestration guidance is
-  auto-injected into every kanban worker's system prompt — no skill to load.)
+  approve — that's the whole job." (The `kanban-orchestrator` skill provides
+  the deeper playbook; load it.)
 - **Decomposition steps:** Read `brief.md`, `TEAM.md`, `taste/`. Use the team
   graph in `TEAM.md` to fan out tasks.
 - **The workspace_path rule** (see below).
 
 Other profiles' SOUL.md is briefer; mostly mechanical: who you are, what you
 read, what you produce, what skills/tools to use, where to write outputs.
-The kanban lifecycle guidance is auto-injected into every kanban worker's
-system prompt, so no profile needs to load a kanban skill.
+Most non-director profiles should `always_load: kanban-worker` for the
+deeper-than-baseline kanban guidance.
 
 ### Initial kanban task
 

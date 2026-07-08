@@ -26,12 +26,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from utils import (
-    atomic_json_write,
-    atomic_replace,
-    atomic_roundtrip_yaml_update,
-    atomic_yaml_write,
-)
+from utils import atomic_json_write, atomic_replace, atomic_yaml_write
 
 
 # ─── Direct helper ────────────────────────────────────────────────────────────
@@ -142,79 +137,6 @@ def test_atomic_json_write_preserves_symlink_permissions(tmp_path: Path) -> None
     import stat as _stat
     mode = _stat.S_IMODE(real.stat().st_mode)
     assert mode == 0o644, f"permissions drifted after symlinked write: {oct(mode)}"
-
-
-def test_atomic_yaml_write_restores_owner_on_real_symlink_target(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Config writes through symlinks must restore the real file's owner.
-
-    Docker support hit this when a root-run setup wizard rewrote a
-    hermes-owned /opt/data/config.yaml via atomic replace, leaving the new file
-    root-owned. The test forces a preserved uid/gid so it does not need root.
-    """
-    if os.name != "posix":
-        pytest.skip("POSIX-only")
-
-    real = tmp_path / "config.yaml"
-    link = tmp_path / "link.yaml"
-    real.write_text("old: true\n", encoding="utf-8")
-    link.symlink_to(real)
-
-    chown_calls: list[tuple[Path, int, int]] = []
-    monkeypatch.setattr("utils._preserve_file_owner", lambda _path: (123, 456))
-    monkeypatch.setattr(
-        "utils.os.chown",
-        lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
-    )
-
-    atomic_yaml_write(link, {"new": True})
-
-    assert chown_calls == [(real, 123, 456)]
-
-
-def test_atomic_json_write_restores_owner_with_explicit_mode(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    if os.name != "posix":
-        pytest.skip("POSIX-only")
-
-    target = tmp_path / "state.json"
-    target.write_text("{}", encoding="utf-8")
-
-    chown_calls: list[tuple[Path, int, int]] = []
-    monkeypatch.setattr("utils._preserve_file_owner", lambda _path: (234, 567))
-    monkeypatch.setattr(
-        "utils.os.chown",
-        lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
-    )
-
-    atomic_json_write(target, {"api_key": "secret"}, mode=0o600)
-
-    assert chown_calls == [(target, 234, 567)]
-    assert target.stat().st_mode & 0o777 == 0o600
-
-
-def test_atomic_roundtrip_yaml_update_restores_owner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    if os.name != "posix":
-        pytest.skip("POSIX-only")
-
-    target = tmp_path / "config.yaml"
-    target.write_text("model:\n  provider: openrouter\n", encoding="utf-8")
-
-    chown_calls: list[tuple[Path, int, int]] = []
-    monkeypatch.setattr("utils._preserve_file_owner", lambda _path: (345, 678))
-    monkeypatch.setattr(
-        "utils.os.chown",
-        lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
-    )
-
-    atomic_roundtrip_yaml_update(target, "model.provider", "nvidia")
-
-    assert chown_calls == [(target, 345, 678)]
-    assert yaml.safe_load(target.read_text(encoding="utf-8"))["model"]["provider"] == "nvidia"
 
 
 # ─── Broken-symlink edge case ─────────────────────────────────────────────

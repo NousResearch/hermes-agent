@@ -82,9 +82,7 @@ describe('mergeSessionPage', () => {
     const previous = [session({ id: 'a' }), session({ id: 'b' })]
     const incoming = [session({ id: 'a' })]
 
-    // Content, not identity: the title-carry map rebuilds the array even when
-    // nothing is carried, and `incoming` is a fresh server page every fetch.
-    expect(mergeSessionPage(previous, incoming, [])).toEqual(incoming)
+    expect(mergeSessionPage(previous, incoming, [])).toBe(incoming)
   })
 
   it('keeps a still-working session the server omitted', () => {
@@ -150,9 +148,13 @@ describe('mergeSessionPage', () => {
     // the sidebar showed both the old tip and the new tip as separate rows.
     // The old tip must be evicted because its lineage key matches the incoming
     // new tip's lineage key.
-    const previous = [session({ id: 'tip-4', _lineage_root_id: 'root' }), session({ id: 'other' })] as SessionInfo[]
-
-    const incoming = [session({ id: 'tip-5', _lineage_root_id: 'root' })] as SessionInfo[]
+    const previous = [
+      session({ id: 'tip-4', _lineage_root_id: 'root' }),
+      session({ id: 'other' }),
+    ] as SessionInfo[]
+    const incoming = [
+      session({ id: 'tip-5', _lineage_root_id: 'root' }),
+    ] as SessionInfo[]
 
     // 'tip-4' is in the keep set (e.g. it was the active/working session),
     // but should still be evicted because the incoming page carries the same
@@ -169,10 +171,11 @@ describe('mergeSessionPage', () => {
     // from a different lineage that happen to be in the keep set.
     const previous = [
       session({ id: 'a-old', _lineage_root_id: 'lineage-a' }),
-      session({ id: 'b', _lineage_root_id: 'lineage-b' })
+      session({ id: 'b', _lineage_root_id: 'lineage-b' }),
     ] as SessionInfo[]
-
-    const incoming = [session({ id: 'a-new', _lineage_root_id: 'lineage-a' })] as SessionInfo[]
+    const incoming = [
+      session({ id: 'a-new', _lineage_root_id: 'lineage-a' }),
+    ] as SessionInfo[]
 
     const merged = mergeSessionPage(previous, incoming, ['b'])
 
@@ -198,14 +201,16 @@ describe('workspaceCwdForNewSession', () => {
     expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
   })
 
-  it('starts detached (no inherited cwd) when no default project dir is configured', () => {
-    // A bare new chat must NOT inherit the sticky/remembered or live workspace —
-    // that's the "why is my new session already on a branch" bug. Only an
-    // explicit configured default pre-attaches.
+  it('falls back to the remembered workspace when no configured default is set', () => {
     window.localStorage.setItem('hermes.desktop.workspace-cwd', '/home/user/sticky')
+
+    expect(workspaceCwdForNewSession()).toBe('/home/user/sticky')
+  })
+
+  it('falls back to the live cwd when neither configured nor remembered values exist', () => {
     $currentCwd.set('/home/user/live')
 
-    expect(workspaceCwdForNewSession()).toBe('')
+    expect(workspaceCwdForNewSession()).toBe('/home/user/live')
   })
 
   it('does not rewrite the live cwd while a session is active', () => {
@@ -233,10 +238,8 @@ describe('workspaceCwdForNewSession', () => {
     setCurrentCwd('/backend/project-b')
     expect(workspaceCwdForNewSession()).toBe('/backend/project-b')
 
-    // Back on local with no configured default: a bare new chat is detached and
-    // never reads the remote keys (nor inherits the sticky local workspace).
     $connection.set(null)
-    expect(workspaceCwdForNewSession()).toBe('')
+    expect(workspaceCwdForNewSession()).toBe('/local/project')
   })
 })
 

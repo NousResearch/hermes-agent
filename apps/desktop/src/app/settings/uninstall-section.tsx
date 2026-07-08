@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import type { DesktopUninstallMode, DesktopUninstallSummary } from '@/global'
 import { AlertTriangle, Loader2, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import type { DesktopUninstallMode, DesktopUninstallSummary } from '@/global'
 
 import { SectionHeading } from './primitives'
 
@@ -55,13 +55,10 @@ export function UninstallSection() {
   useEffect(() => {
     let alive = true
     const bridge = window.hermesDesktop?.uninstall
-
     if (!bridge) {
       setLoading(false)
-
       return
     }
-
     void bridge
       .summary()
       .then(result => {
@@ -77,14 +74,12 @@ export function UninstallSection() {
           setLoading(false)
         }
       })
-
     return () => {
       alive = false
     }
   }, [])
 
   const bridge = window.hermesDesktop?.uninstall
-
   if (!bridge) {
     return null
   }
@@ -98,13 +93,10 @@ export function UninstallSection() {
     if (!pending) {
       return
     }
-
     setRunning(true)
     setError(null)
-
     try {
       const result = await bridge.run(pending)
-
       if (!result.ok) {
         setError(result.message || result.error || 'Uninstall could not start.')
         setRunning(false)
@@ -137,11 +129,18 @@ export function UninstallSection() {
               This removes {pendingOption.consequence}. This can&apos;t be undone.
             </p>
             {summary?.running_app_path && (
-              <p className="mt-1 font-mono text-[0.68rem] text-muted-foreground/60">App: {summary.running_app_path}</p>
+              <p className="mt-1 font-mono text-[0.68rem] text-muted-foreground/60">
+                App: {summary.running_app_path}
+              </p>
             )}
             {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
             <div className="mt-3 flex flex-wrap items-center gap-3">
-              <Button disabled={running} onClick={() => void handleConfirm()} size="sm" variant="destructive">
+              <Button
+                disabled={running}
+                onClick={() => void handleConfirm()}
+                size="sm"
+                variant="destructive"
+              >
                 {running && <Loader2 className="size-3 animate-spin" />}
                 {running ? 'Uninstalling…' : 'Yes, uninstall'}
               </Button>

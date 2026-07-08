@@ -261,7 +261,12 @@ function cookiesHaveSession(cookies) {
  */
 function cookiesHaveLiveSession(cookies) {
   if (!Array.isArray(cookies)) return false
-  return cookies.some(c => c && c.value && (AT_COOKIE_VARIANTS.includes(c.name) || RT_COOKIE_VARIANTS.includes(c.name)))
+  return cookies.some(
+    c =>
+      c &&
+      c.value &&
+      (AT_COOKIE_VARIANTS.includes(c.name) || RT_COOKIE_VARIANTS.includes(c.name))
+  )
 }
 
 module.exports = {

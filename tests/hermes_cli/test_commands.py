@@ -27,7 +27,6 @@ from hermes_cli.commands import (
     slack_subcommand_map,
     telegram_bot_commands,
     telegram_menu_commands,
-    telegram_menu_max_commands,
 )
 
 
@@ -616,75 +615,6 @@ class TestSlashCommandCompleter:
         assert "Skill command" in completions[0].display_meta_text
 
 
-# ── Stacked slash-skill completion ──────────────────────────────────────
-
-
-def _stacked_completer(**extra_skills):
-    skills = {
-        "/skill-a": {"description": "Skill A"},
-        "/skill-b": {"description": "Skill B"},
-        "/skill-c": {"description": "Skill C"},
-        **extra_skills,
-    }
-    return SlashCommandCompleter(skill_commands_provider=lambda: skills)
-
-
-class TestStackedSkillCompletion:
-    """Second+ leading skill tokens keep getting completions (stacked
-    slash-skill invocations, Claude Code v2.1.199 port follow-up)."""
-
-    def test_second_skill_token_completes(self):
-        completions = _completions(_stacked_completer(), "/skill-a /skill-")
-        displays = {c.display_text for c in completions}
-        assert displays == {"/skill-b", "/skill-c"}
-
-    def test_already_typed_skill_not_reoffered(self):
-        completions = _completions(_stacked_completer(), "/skill-a /skill-a")
-        displays = {c.display_text for c in completions}
-        assert "/skill-a" not in displays
-
-    def test_replacement_spans_whole_token(self):
-        completions = _completions(_stacked_completer(), "/skill-a /skill-b")
-        # Exact match gets trailing space (keeps dropdown flowing)
-        assert [c.text for c in completions] == ["/skill-b "]
-        assert completions[0].start_position == -len("/skill-b")
-
-    def test_no_completions_for_instruction_text(self):
-        assert _completions(_stacked_completer(), "/skill-a do the") == []
-        assert _completions(_stacked_completer(), "/skill-a ") == []
-
-    def test_chain_broken_by_non_skill_token_stops_completion(self):
-        completions = _completions(
-            _stacked_completer(), "/skill-a nope /skill-"
-        )
-        assert completions == []
-
-    def test_underscore_form_counts_toward_chain(self):
-        """Telegram underscore form is interchangeable with hyphens."""
-        completions = _completions(_stacked_completer(), "/skill_a /skill-")
-        displays = {c.display_text for c in completions}
-        assert displays == {"/skill-b", "/skill-c"}
-
-    def test_cap_stops_completions(self):
-        skills = {f"/stk-{i}": {"description": f"S{i}"} for i in range(8)}
-        completer = SlashCommandCompleter(skill_commands_provider=lambda: skills)
-        text = " ".join(f"/stk-{i}" for i in range(5)) + " /stk-"
-        assert _completions(completer, text) == []
-
-    def test_below_cap_still_completes(self):
-        skills = {f"/stk-{i}": {"description": f"S{i}"} for i in range(8)}
-        completer = SlashCommandCompleter(skill_commands_provider=lambda: skills)
-        text = " ".join(f"/stk-{i}" for i in range(4)) + " /stk-"
-        displays = {c.display_text for c in _completions(completer, text)}
-        assert displays == {"/stk-4", "/stk-5", "/stk-6", "/stk-7"}
-
-    def test_non_skill_base_command_unaffected(self):
-        """/skills (builtin) still completes its subcommands, not skills."""
-        completions = _completions(_stacked_completer(), "/skills ins")
-        texts = [c.text for c in completions]
-        assert "install" in texts
-
-
 # ── SUBCOMMANDS extraction ──────────────────────────────────────────────
 
 
@@ -976,27 +906,6 @@ class TestGhostText:
     def test_no_suggestion_for_non_slash(self):
         assert _suggestion("hello") is None
 
-    # -- stacked slash-skill ghost text -----------------------------------
-
-    def test_stacked_skill_ghost_text(self):
-        """/skill-a /ski → ghost-suggest rest of next unused skill name."""
-        assert _suggestion("/skill-a /ski", completer=_stacked_completer()) == "ll-b"
-        # Exact token already typed — nothing left to ghost
-        assert _suggestion("/skill-a /skill-b", completer=_stacked_completer()) is None
-
-    def test_stacked_skill_ghost_text_skips_used(self):
-        completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: {
-                "/alpha": {"description": "A"},
-                "/beta": {"description": "B"},
-            }
-        )
-        assert _suggestion("/alpha /a", completer=completer) is None
-        assert _suggestion("/alpha /b", completer=completer) == "eta"
-
-    def test_stacked_skill_no_ghost_for_instruction(self):
-        assert _suggestion("/skill-a do", completer=_stacked_completer()) is None
-
 
 # ---------------------------------------------------------------------------
 # Telegram command name sanitization
@@ -1244,149 +1153,6 @@ class TestTelegramMenuCommands:
             "status",
         ):
             assert name in names
-
-    def test_configured_priority_prepends_plugin_commands(self, tmp_path, monkeypatch):
-        """Configured Telegram priorities keep local/plugin commands visible."""
-        from unittest.mock import patch
-        import hermes_cli.plugins as plugins_mod
-
-        plugin_dir = tmp_path / "plugins" / "cmd-plugin"
-        plugin_dir.mkdir(parents=True, exist_ok=True)
-        (plugin_dir / "plugin.yaml").write_text(
-            "name: cmd-plugin\nversion: 0.1.0\ndescription: Test plugin\n"
-        )
-        (plugin_dir / "__init__.py").write_text(
-            "def register(ctx):\n"
-            "    ctx.register_command('lcm', lambda args: 'ok', description='LCM status and diagnostics')\n"
-        )
-        (tmp_path / "config.yaml").write_text(
-            "plugins:\n"
-            "  enabled:\n"
-            "    - cmd-plugin\n"
-            "platforms:\n"
-            "  telegram:\n"
-            "    extra:\n"
-            "      command_menu:\n"
-            "        priority_mode: prepend\n"
-            "        priority:\n"
-            "          - lcm\n"
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        with patch.object(plugins_mod, "_plugin_manager", None):
-            menu, _hidden = telegram_menu_commands(max_commands=30)
-
-        names = [name for name, _desc in menu]
-        assert names[0] == "lcm"
-        assert "help" in names[1:]
-
-    def test_configured_priority_append_keeps_defaults_before_user_priority(self, tmp_path, monkeypatch):
-        """append mode preserves built-in defaults ahead of configured names."""
-        from unittest.mock import patch
-        import hermes_cli.plugins as plugins_mod
-
-        plugin_dir = tmp_path / "plugins" / "cmd-plugin"
-        plugin_dir.mkdir(parents=True, exist_ok=True)
-        (plugin_dir / "plugin.yaml").write_text(
-            "name: cmd-plugin\nversion: 0.1.0\ndescription: Test plugin\n"
-        )
-        (plugin_dir / "__init__.py").write_text(
-            "def register(ctx):\n"
-            "    ctx.register_command('lcm', lambda args: 'ok', description='LCM status and diagnostics')\n"
-        )
-        (tmp_path / "config.yaml").write_text(
-            "plugins:\n"
-            "  enabled:\n"
-            "    - cmd-plugin\n"
-            "platforms:\n"
-            "  telegram:\n"
-            "    extra:\n"
-            "      command_menu:\n"
-            "        priority_mode: append\n"
-            "        priority:\n"
-            "          - lcm\n"
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        with patch.object(plugins_mod, "_plugin_manager", None):
-            menu, _hidden = telegram_menu_commands(max_commands=30)
-
-        names = [name for name, _desc in menu]
-        assert names.index("help") < names.index("lcm")
-
-    def test_configured_priority_replace_ignores_builtin_priority_order(self, tmp_path, monkeypatch):
-        (tmp_path / "config.yaml").write_text(
-            "platforms:\n"
-            "  telegram:\n"
-            "    extra:\n"
-            "      command_menu:\n"
-            "        priority_mode: replace\n"
-            "        priority:\n"
-            "          - status\n"
-            "          - help\n"
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        menu, _hidden = telegram_menu_commands(max_commands=5)
-        names = [name for name, _desc in menu]
-
-        assert names[:2] == ["status", "help"]
-
-    def test_telegram_menu_max_commands_uses_config_with_safe_bounds(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        assert telegram_menu_max_commands() == 60
-
-        (tmp_path / "config.yaml").write_text(
-            "platforms:\n"
-            "  telegram:\n"
-            "    extra:\n"
-            "      command_menu:\n"
-            "        max_commands: 12\n"
-        )
-        assert telegram_menu_max_commands() == 12
-
-        (tmp_path / "config.yaml").write_text(
-            "platforms:\n"
-            "  telegram:\n"
-            "    extra:\n"
-            "      command_menu:\n"
-            "        max_commands: 250\n"
-        )
-        assert telegram_menu_max_commands() == 100
-
-        (tmp_path / "config.yaml").write_text(
-            "platforms:\n"
-            "  telegram:\n"
-            "    extra:\n"
-            "      command_menu:\n"
-            "        max_commands: 0\n"
-        )
-        assert telegram_menu_max_commands() == 1
-
-        (tmp_path / "config.yaml").write_text(
-            "platforms:\n"
-            "  telegram:\n"
-            "    extra:\n"
-            "      command_menu:\n"
-            "        max_commands: nope\n"
-        )
-        assert telegram_menu_max_commands() == 60
-
-    def test_telegram_menu_ignores_undocumented_command_menu_paths(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        (tmp_path / "config.yaml").write_text(
-            "telegram:\n"
-            "  command_menu:\n"
-            "    max_commands: 12\n"
-            "gateway:\n"
-            "  platforms:\n"
-            "    telegram:\n"
-            "      command_menu:\n"
-            "        max_commands: 9\n"
-        )
-
-        assert telegram_menu_max_commands() == 60
 
     def test_includes_plugin_commands_via_lazy_discovery(self, tmp_path, monkeypatch):
         """Telegram menu generation should discover plugin slash commands on first access."""

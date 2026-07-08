@@ -1,18 +1,24 @@
-import { Fragment, memo, type ReactNode } from 'react'
+import { Fragment, memo, type ReactNode, useState } from 'react'
 
-import { openAgentTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { StatusRow } from '@/components/chat/status-row'
+import { TerminalOutput } from '@/components/chat/terminal-output'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
-import { capitalize } from '@/lib/text'
+import { ArrowUpRight, X } from '@/lib/icons'
 import type { TodoStatus } from '@/lib/todos'
 import { cn } from '@/lib/utils'
 import type { ComposerStatusItem } from '@/store/composer-status'
 
-const toolLabel = (name: string) => name.split('_').filter(Boolean).map(capitalize).join(' ') || name
+const toolLabel = (name: string) =>
+  name
+    .split('_')
+    .filter(Boolean)
+    .map(part => part[0]!.toUpperCase() + part.slice(1))
+    .join(' ') || name
 
 // Todo rows speak checkbox, not spinner-and-dot: a dashed ring while the item
 // is still open (pending), codicons once it resolves, a live spinner only on
@@ -44,7 +50,7 @@ function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack']):
     return (
       <GlyphSpinner
         ariaLabel={s.running}
-        className="text-[0.85rem] leading-none text-muted-foreground/80"
+        className="text-[0.9rem] leading-none text-muted-foreground/80"
         spinner="braille"
       />
     )
@@ -77,6 +83,7 @@ interface StatusItemRowProps {
 export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOpen, onStop }: StatusItemRowProps) {
   const { t } = useI18n()
   const s = t.statusStack
+  const [outputOpen, setOutputOpen] = useState(false)
   const failed = item.state === 'failed'
   const running = item.state === 'running'
 
@@ -88,10 +95,8 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
       : null
 
   const canOpen = item.type === 'subagent' && !!onOpen
-
-  // Background rows link to their read-only terminal tab; subagents open their session.
-  const onActivate =
-    item.type === 'background' ? () => openAgentTerminal(item.id, item.title) : canOpen ? onOpen : undefined
+  const hasOutput = item.type === 'background' && !!item.output
+  const onActivate = canOpen ? onOpen : hasOutput ? () => setOutputOpen(open => !open) : undefined
 
   return (
     <Fragment>
@@ -112,11 +117,11 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
                 type="button"
                 variant="ghost"
               >
-                <Codicon name="close" size="0.75rem" />
+                <X size={12} />
               </Button>
             </Tip>
           ) : canOpen ? (
-            <Codicon aria-hidden className="text-muted-foreground/55" name="link-external" size="0.85rem" />
+            <ArrowUpRight aria-hidden className="size-3.5 text-muted-foreground/55" />
           ) : undefined
         }
       >
@@ -142,7 +147,9 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
             {s.exit(item.exitCode)}
           </span>
         )}
+        {hasOutput && <DisclosureCaret className="shrink-0 text-muted-foreground/45" open={outputOpen} size="0.8em" />}
       </StatusRow>
+      {hasOutput && outputOpen && <TerminalOutput className="mx-auto mb-1 max-w-[90%]" text={item.output!} />}
     </Fragment>
   )
 })

@@ -57,12 +57,4 @@ def build_slack_parser(subparsers, *, cmd_slack: Callable) -> None:
         help="Emit only the features.slash_commands array (for merging "
         "into an existing manifest manually).",
     )
-    slack_manifest.add_argument(
-        "--no-assistant",
-        action="store_true",
-        help="Omit Slack AI Assistant mode (assistant_view, assistant:write "
-        "scope, assistant_thread_* events). DMs then render as a flat chat "
-        "where bare slash commands (/help, /new) work inline instead of "
-        "Slack's Assistant thread pane.",
-    )
     slack_parser.set_defaults(func=cmd_slack)

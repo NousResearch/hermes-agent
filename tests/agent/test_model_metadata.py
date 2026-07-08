@@ -12,7 +12,6 @@ Coverage levels:
 
 import time
 
-import pytest
 import yaml
 from unittest.mock import patch, MagicMock
 
@@ -143,7 +142,6 @@ class TestDefaultContextLengths:
                 ("grok-4", 256000),
                 ("grok-4-0709", 256000),
                 ("grok-build-0.1", 256000),
-                ("grok-composer-2.5-fast", 200000),
                 ("grok-code-fast-1", 256000),
                 ("grok-3", 131072),
                 ("grok-3-mini", 131072),
@@ -1374,43 +1372,6 @@ class TestParseContextLimitFromError:
         msg = "Error: context window of 4096 tokens exceeded"
         assert parse_context_limit_from_error(msg) == 4096
 
-    def test_vllm_max_model_len_format(self):
-        msg = (
-            "The engine prompt length 1327246 exceeds the max_model_len 32768. "
-            "Please reduce prompt."
-        )
-        assert parse_context_limit_from_error(msg) == 32768
-
-    def test_vllm_maximum_model_length_format(self):
-        msg = "prompt length 200000 exceeds maximum model length 131072"
-        assert parse_context_limit_from_error(msg) == 131072
-
-    @pytest.mark.parametrize("msg,expected", [
-        ("max_model_len 32768", 32768),
-        ("max_model_len: 32768", 32768),
-        ("max_model_len=32768", 32768),
-        ("max_model_len (32768)", 32768),
-        ("max_model_len is 32768", 32768),
-        ("maximum model length 131072", 131072),
-        ("maximum model length is 131072", 131072),
-        ("maximum model length: 131072", 131072),
-    ])
-    def test_vllm_delimiter_variants(self, msg, expected):
-        """vLLM emits the limit with various delimiters (space/colon/equals/
-        paren/'is'). The parser must catch all of them — the original
-        space-only patterns silently missed ':', '=', '(' and 'is' forms and
-        fell through to None."""
-        assert parse_context_limit_from_error(msg) == expected
-
-    def test_get_context_length_from_vllm_max_model_len_error(self):
-        from agent.model_metadata import get_context_length_from_provider_error
-
-        msg = (
-            "The engine prompt length 90000 exceeds the max_model_len 32768. "
-            "Please reduce prompt."
-        )
-        assert get_context_length_from_provider_error(msg, 131072) == 32768
-
     def test_minimax_delta_only_message_returns_none(self):
         msg = "invalid params, context window exceeds limit (2013)"
         assert parse_context_limit_from_error(msg) is None
@@ -1562,51 +1523,3 @@ class TestGrok43StaleCacheGuard:
                 slug, base_url=base, api_key="", provider="xai"
             )
             assert ctx == 256_000, f"{slug} should stay 256000, got {ctx}"
-
-
-class TestMoAContextLength:
-    """MoA virtual provider resolves context from the aggregator slot, not 256K default."""
-
-    def _write_moa_config(self, home, aggregator):
-        import os
-        os.makedirs(home, exist_ok=True)
-        with open(os.path.join(home, "config.yaml"), "w") as f:
-            yaml.safe_dump(
-                {
-                    "moa": {
-                        "default_preset": "p",
-                        "presets": {
-                            "p": {
-                                "enabled": True,
-                                "reference_models": [
-                                    {"provider": "openrouter", "model": "openai/gpt-5.5"}
-                                ],
-                                "aggregator": aggregator,
-                            }
-                        },
-                    }
-                },
-                f,
-            )
-
-    def test_moa_resolves_from_aggregator(self, tmp_path, monkeypatch):
-        home = str(tmp_path / ".hermes")
-        monkeypatch.setenv("HERMES_HOME", home)
-        self._write_moa_config(home, {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"})
-
-        # The MoA preset name + virtual base_url would otherwise fall through to
-        # the 256K default; instead it mirrors the aggregator's real window.
-        agg_ctx = get_model_context_length(
-            "anthropic/claude-opus-4.8", base_url="https://openrouter.ai/api/v1", provider="openrouter"
-        )
-        moa_ctx = get_model_context_length("p", base_url="http://127.0.0.1/v1", provider="moa")
-        assert moa_ctx == agg_ctx
-
-    def test_moa_config_override_still_wins(self, tmp_path, monkeypatch):
-        home = str(tmp_path / ".hermes")
-        monkeypatch.setenv("HERMES_HOME", home)
-        self._write_moa_config(home, {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"})
-        ctx = get_model_context_length(
-            "p", base_url="http://127.0.0.1/v1", provider="moa", config_context_length=500_000
-        )
-        assert ctx == 500_000

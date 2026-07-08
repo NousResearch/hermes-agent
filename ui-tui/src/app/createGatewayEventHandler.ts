@@ -9,8 +9,6 @@ import type {
   GatewaySkin,
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
-import { isTodoDone } from '../lib/liveProgress.js'
-import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
@@ -20,9 +18,7 @@ import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
-import { flashPet } from './petFlashStore.js'
 import { turnController } from './turnController.js'
-import { getTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
@@ -537,32 +533,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         turnController.clearNotice(ev.payload?.key)
 
         return
-      case 'billing.step_up.verification': {
-        // The billing step-up device flow runs in the headless gateway, so it
-        // can't open a browser or print the URL where the user sees it. Surface
-        // the link here (clickable/copyable in the transcript) and best-effort
-        // open it via the TUI process's own opener. This event arrives while the
-        // billing.step_up RPC is still polling (and may even outlive the RPC's
-        // 120s timeout), so the link — not the RPC result — is the source of truth.
-        const url = ev.payload.verification_url
-        const code = ev.payload.user_code
-
-        if (!url) {
-          return
-        }
-
-        sys('💳 Open this link to grant terminal billing access:')
-        sys(url)
-
-        if (code) {
-          sys(`If prompted, enter code: ${code}`)
-        }
-
-        void openExternalUrl(url)
-
-        return
-      }
-
       case 'gateway.stderr': {
         const line = String(ev.payload.line).slice(0, 120)
 
@@ -686,21 +656,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'reasoning.available':
         turnController.recordReasoningAvailable(String(ev.payload?.text ?? ''), Boolean(ev.payload?.verbose))
 
-        return
-
-      case 'moa.reference':
-        turnController.recordMoaReference(
-          String(ev.payload?.label ?? 'reference'),
-          String(ev.payload?.text ?? ''),
-          typeof ev.payload?.index === 'number' ? ev.payload.index : undefined,
-          typeof ev.payload?.count === 'number' ? ev.payload.count : undefined
-        )
-
-        return
-
-      case 'moa.aggregating':
-        // Spinner/status transition only — the aggregator's response follows
-        // through the normal message stream. No committed transcript entry.
         return
 
       case 'tool.progress':
@@ -929,9 +884,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           const msgs: Msg[] = finalMessages.length ? finalMessages : [{ role: 'assistant', text: finalText }]
           msgs.forEach(appendMessage)
 
-          // Pet beat: celebrate a finished plan, otherwise a clean-finish wave.
-          flashPet(isTodoDone(getTurnState().todos) ? 'jump' : 'wave')
-
           if (bellOnComplete && stdout?.isTTY) {
             stdout.write('\x07')
           }
@@ -948,7 +900,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'error':
         turnController.recordError()
-        flashPet('failed')
 
         {
           const message = String(ev.payload?.message || 'unknown error')

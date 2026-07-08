@@ -122,9 +122,7 @@ export const estimatedMsgHeight = (
     const hasVisibleDetails = hasVisibleTools || hasVisibleThinking
 
     if (hasVisibleDetails) {
-      h +=
-        (hasVisibleTools ? (msg.tools?.length ?? 0) : 0) +
-        (hasVisibleThinking ? wrappedLines(msg.thinking ?? '', bodyWidth) : 0)
+      h += (hasVisibleTools ? (msg.tools?.length ?? 0) : 0) + (hasVisibleThinking ? wrappedLines(msg.thinking ?? '', bodyWidth) : 0)
 
       if (msg.role === 'assistant' && /\S/.test(msg.text)) {
         h += 2

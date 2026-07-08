@@ -76,10 +76,7 @@ describe('session drafts', () => {
   it('persists draft text (not attachments) to localStorage', () => {
     stashSessionDraft('session-a', 'survives reload', [attachment({ id: 'file:a' })])
 
-    const persisted = JSON.parse(window.localStorage.getItem(SESSION_DRAFTS_STORAGE_KEY) ?? '{}') as Record<
-      string,
-      string
-    >
+    const persisted = JSON.parse(window.localStorage.getItem(SESSION_DRAFTS_STORAGE_KEY) ?? '{}') as Record<string, string>
 
     expect(persisted['session-a']).toBe('survives reload')
   })

@@ -1,8 +1,6 @@
 // Heuristic JSON → human summary for tool results. Default view; technical
 // mode still gets the raw JSON section.
 
-import { capitalize, normalize } from '@/lib/text'
-
 const WRAPPER_KEYS = ['data', 'result', 'output', 'response', 'payload'] as const
 
 const PRIORITY_KEYS = [
@@ -57,7 +55,7 @@ const titleCase = (k: string) =>
   k
     .split(/[_\-.]+/)
     .filter(Boolean)
-    .map(capitalize)
+    .map(p => `${p[0]?.toUpperCase() ?? ''}${p.slice(1)}`)
     .join(' ')
 
 const pluralize = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
@@ -347,7 +345,7 @@ function hasMeaningfulErrorValue(value: unknown): boolean {
   }
 
   if (typeof v === 'string') {
-    return !NON_ERROR_TEXT.has(normalize(v))
+    return !NON_ERROR_TEXT.has(v.trim().toLowerCase())
   }
 
   if (typeof v === 'boolean') {

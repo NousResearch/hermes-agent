@@ -102,7 +102,7 @@ See the [Messaging Gateway overview](/user-guide/messaging) for the platform com
 ## Plugins
 
 - **[Plugin System](/user-guide/features/plugins)** — Extend Hermes with custom tools, lifecycle hooks, and CLI commands without modifying core code. Plugins are discovered from `~/.hermes/plugins/`, project-local `.hermes/plugins/`, and pip-installed entry points.
-- **[Build a Plugin](/developer-guide/plugins)** — Step-by-step guide for creating Hermes plugins with tools, hooks, and CLI commands.
+- **[Build a Plugin](/guides/build-a-hermes-plugin)** — Step-by-step guide for creating Hermes plugins with tools, hooks, and CLI commands.
 
 ## Training & Evaluation
 

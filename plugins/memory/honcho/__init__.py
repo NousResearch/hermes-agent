@@ -191,19 +191,6 @@ ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, REASONING_SCHEMA, CONTEXT_SCH
 class HonchoMemoryProvider(MemoryProvider):
     """Honcho AI-native memory with dialectic Q&A and persistent user modeling."""
 
-    def backup_paths(self) -> List[str]:
-        """Honcho keeps its peer/session config under ~/.honcho when no
-        profile-local honcho.json exists (see client.resolve_config_path)."""
-        paths: List[str] = []
-        try:
-            from .client import resolve_global_config_path
-            global_cfg = resolve_global_config_path()
-            # Capture the whole ~/.honcho dir so sibling state travels with it.
-            paths.append(str(global_cfg.parent))
-        except Exception:
-            pass
-        return paths
-
     def __init__(self):
         self._manager = None   # HonchoSessionManager
         self._config = None    # HonchoClientConfig

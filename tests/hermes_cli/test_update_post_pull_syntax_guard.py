@@ -116,15 +116,6 @@ def test_validate_critical_files_syntax_detects_break_in_main_py(tmp_path):
     assert failing_path is not None and failing_path.endswith("hermes_cli/main.py")
 
 
-def test_validate_critical_files_syntax_detects_break_in_web_server(tmp_path):
-    _populate_critical_tree(tmp_path, broken_file="hermes_cli/web_server.py")
-
-    ok, failing_path, _ = hermes_main._validate_critical_files_syntax(tmp_path)
-
-    assert ok is False
-    assert failing_path is not None and failing_path.endswith("hermes_cli/web_server.py")
-
-
 def test_validate_critical_files_syntax_tolerates_missing_files(tmp_path):
     """A refactor may legitimately remove one of the critical files — the
     guard should skip missing files, not falsely flag the install as broken."""

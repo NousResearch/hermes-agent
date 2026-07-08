@@ -28,8 +28,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from agent.context_compressor import ContextCompressor
-from hermes_state import SessionDB
+
 from run_agent import AIAgent
 
 
@@ -157,43 +156,6 @@ def test_reset_session_state_default_call_only_resets():
     assert engine.on_session_reset.called
     assert not engine.on_session_end.called
     assert not engine.on_session_start.called
-
-
-def test_reset_session_state_rebinds_builtin_compressor_after_session_switch(tmp_path, monkeypatch):
-    """Reset-only session switches must rebind durable cooldown state to the new session."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("old-sid", source="cli")
-    db.create_session("new-sid", source="cli")
-    db.record_compression_failure_cooldown("old-sid", 4_000_000_000.0, "old-timeout")
-
-    monkeypatch.setattr(
-        "agent.context_compressor.get_model_context_length",
-        lambda *_a, **_k: 100_000,
-    )
-    compressor = ContextCompressor(
-        model="fake-model",
-        threshold_percent=0.85,
-        protect_first_n=2,
-        protect_last_n=2,
-        quiet_mode=True,
-    )
-    compressor.bind_session_state(db, "old-sid")
-
-    agent = _bare_agent()
-    agent._session_db = db
-    agent.context_compressor = compressor
-    agent.session_id = "new-sid"
-
-    agent.reset_session_state()
-
-    assert compressor._session_id == "new-sid"
-    assert compressor.get_active_compression_failure_cooldown() is None
-    assert db.get_compression_failure_cooldown("old-sid") is not None
-
-    compressor._record_compression_failure_cooldown(30.0, "new-timeout")
-
-    assert db.get_compression_failure_cooldown("new-sid") is not None
-    assert db.get_compression_failure_cooldown("old-sid")["error"] == "old-timeout"
 
 
 def test_update_from_response_forwards_canonical_cache_buckets():

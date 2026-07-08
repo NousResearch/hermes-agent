@@ -1,5 +1,3 @@
-import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
-import { capitalize } from '@/lib/text'
 import { $connection } from '@/store/session'
 
 export type MediaKind = 'audio' | 'image' | 'video' | 'file'
@@ -116,39 +114,23 @@ export function isRemoteGateway(): boolean {
   return $connection.get()?.mode === 'remote'
 }
 
-// Fetch gateway-local media as a data URL via the authenticated desktop FS
-// bridge. Remote Desktop artifacts can live anywhere the gateway can read
-// (workspace, skills, ~/.hermes/cache, etc.); /api/media is intentionally
-// narrower and rejects non-images plus images outside its media roots.
+// Fetch a gateway-local image as a data URL via the authenticated REST bridge.
+// Used in remote mode where readFileDataUrl (which reads THIS machine's disk)
+// can't see files the agent wrote on the gateway. Requires the gateway to
+// expose GET /api/media (hermes_cli/web_server.py).
 export async function gatewayMediaDataUrl(path: string): Promise<string> {
-  return readDesktopFileDataUrl(filePathFromMediaPath(path))
-}
+  const file = filePathFromMediaPath(path)
 
-// Remote-mode replacement for opening gateway-local file paths with file://.
-// The file lives on the gateway, so fetch it over the authenticated fs bridge
-// and hand the bytes to the local browser shell as a download.
-export async function downloadGatewayMediaFile(path: string): Promise<void> {
-  const dataUrl = await readDesktopFileDataUrl(filePathFromMediaPath(path))
+  const result = await window.hermesDesktop!.api<{ data_url: string }>({
+    path: `/api/media?path=${encodeURIComponent(file)}`
+  })
 
-  if (!dataUrl) {
-    throw new Error('Gateway returned no file data')
-  }
-
-  const response = await fetch(dataUrl)
-  const blobUrl = URL.createObjectURL(await response.blob())
-  const anchor = document.createElement('a')
-  anchor.href = blobUrl
-  anchor.download = mediaName(path)
-  anchor.rel = 'noopener noreferrer'
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
-  window.setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000)
+  return result.data_url
 }
 
 export function mediaDisplayLabel(path: string): string {
   const escaped = mediaName(path).replace(/[[\]\\]/g, '\\$&')
   const kind = mediaKind(path)
 
-  return `${capitalize(kind)}: ${escaped}`
+  return `${kind[0].toUpperCase()}${kind.slice(1)}: ${escaped}`
 }

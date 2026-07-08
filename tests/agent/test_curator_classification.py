@@ -240,7 +240,7 @@ def test_classify_no_false_positive_short_name_in_file_path(curator_env):
         ],
     )
     assert result["consolidated"] == [], (
-        "Short name 'api' should NOT match file_path 'references/api-design.md'"
+        f"Short name 'api' should NOT match file_path 'references/api-design.md'"
     )
     assert len(result["pruned"]) == 1
     assert result["pruned"][0]["name"] == "api"
@@ -266,7 +266,7 @@ def test_classify_no_false_positive_short_name_in_content(curator_env):
         ],
     )
     assert result["consolidated"] == [], (
-        "Short name 'test' should NOT match 'latest' via word boundary"
+        f"Short name 'test' should NOT match 'latest' via word boundary"
     )
     assert len(result["pruned"]) == 1
 
@@ -290,7 +290,7 @@ def test_classify_still_matches_exact_word_in_content(curator_env):
         ],
     )
     assert len(result["consolidated"]) == 1, (
-        "'api' should match as a standalone word in content"
+        f"'api' should match as a standalone word in content"
     )
     assert result["consolidated"][0]["into"] == "gateway"
 

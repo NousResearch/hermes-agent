@@ -2,14 +2,12 @@ import { act, cleanup, render } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ChatMessage } from '@/lib/chat-messages'
 import {
   $currentFastMode,
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
   $currentServiceTier,
-  $messages,
   $turnStartedAt,
   setCurrentFastMode,
   setCurrentModel,
@@ -31,7 +29,6 @@ interface HarnessProps {
 
 function Harness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessProps) {
   const busyRef: MutableRefObject<boolean> = { current: false }
-
   const cache = useSessionStateCache({
     activeSessionId,
     busyRef,
@@ -83,12 +80,18 @@ describe('useSessionStateCache — per-session turn timer', () => {
   it("keeps a background session's running turn clock and never mirrors it to the view", () => {
     let cache!: Cache
     // Active session is "fg-runtime"; the turn starts on the BACKGROUND session.
-    render(<Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />)
+    render(
+      <Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />
+    )
 
     const startedAt = 1_700_000_000_000
 
     act(() => {
-      cache.updateSessionState('bg-runtime', state => ({ ...state, busy: true, turnStartedAt: startedAt }), 'bg-stored')
+      cache.updateSessionState(
+        'bg-runtime',
+        state => ({ ...state, busy: true, turnStartedAt: startedAt }),
+        'bg-stored'
+      )
     })
 
     // The background session's own cache entry holds the clock...
@@ -107,7 +110,11 @@ describe('useSessionStateCache — per-session turn timer', () => {
     // A turn on the ACTIVE session stages into the view; the flush mirrors its
     // turnStartedAt into the global atom the statusbar reads.
     act(() => {
-      cache.updateSessionState('fg-runtime', state => ({ ...state, busy: true, turnStartedAt: startedAt }), 'fg-stored')
+      cache.updateSessionState(
+        'fg-runtime',
+        state => ({ ...state, busy: true, turnStartedAt: startedAt }),
+        'fg-stored'
+      )
     })
 
     expect($turnStartedAt.get()).toBe(startedAt)
@@ -134,7 +141,6 @@ describe('useSessionStateCache — per-session turn timer', () => {
 
   it('mirrors the focused session model metadata when switching from a cached session', () => {
     let cache!: Cache
-
     const { rerender } = render(
       <Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />
     )
@@ -183,7 +189,6 @@ describe('useSessionStateCache — per-session turn timer', () => {
     setCurrentFastMode(true)
 
     let cache!: Cache
-
     const { rerender } = render(
       <Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />
     )
@@ -206,116 +211,5 @@ describe('useSessionStateCache — per-session turn timer', () => {
     expect($currentReasoningEffort.get()).toBe('')
     expect($currentServiceTier.get()).toBe('')
     expect($currentFastMode.get()).toBe(false)
-  })
-})
-
-function userMessage(id: string, text: string): ChatMessage {
-  return { id, role: 'user', parts: [{ type: 'text', text }] }
-}
-
-function assistantText(id: string, text: string): ChatMessage {
-  return { id, role: 'assistant', parts: [{ type: 'text', text }] }
-}
-
-function assistantError(id: string, error: string): ChatMessage {
-  return { id, role: 'assistant', parts: [], error, pending: false }
-}
-
-interface ViewHarnessProps {
-  activeSessionId: string | null
-  onReady: (cache: Cache) => void
-}
-
-function ViewHarness({ activeSessionId, onReady }: ViewHarnessProps) {
-  const busyRef: MutableRefObject<boolean> = { current: false }
-
-  const cache = useSessionStateCache({
-    activeSessionId,
-    busyRef,
-    selectedStoredSessionId: null,
-    setAwaitingResponse: () => undefined,
-    setBusy: () => undefined,
-    // Wire the published view back into the real $messages atom the flush
-    // reads from, so the round-trip matches production.
-    setMessages: messages => $messages.set(messages)
-  })
-
-  onReady(cache)
-
-  return null
-}
-
-describe('useSessionStateCache — cross-thread error isolation', () => {
-  afterEach(() => {
-    cleanup()
-    $messages.set([])
-  })
-
-  it('does not leak a failed turn into another thread on switch', () => {
-    $messages.set([])
-    let cache!: Cache
-    const { rerender } = render(<ViewHarness activeSessionId="thread-A" onReady={c => (cache = c)} />)
-
-    // Thread A ends its turn with an out-of-funds error and is on screen.
-    act(() => {
-      cache.updateSessionState(
-        'thread-A',
-        state => ({
-          ...state,
-          busy: false,
-          messages: [userMessage('user-a', 'do the thing'), assistantError('assistant-a-error', 'Out of funds')]
-        }),
-        'stored-A'
-      )
-    })
-
-    expect($messages.get().some(message => message.error === 'Out of funds')).toBe(true)
-
-    // Switch to thread B (which completed cleanly). Its cached state syncs to
-    // the view while $messages still holds thread A's transcript.
-    rerender(<ViewHarness activeSessionId="thread-B" onReady={c => (cache = c)} />)
-    act(() => {
-      cache.updateSessionState(
-        'thread-B',
-        state => ({
-          ...state,
-          busy: false,
-          messages: [userMessage('user-b', 'hello'), assistantText('assistant-b', 'hi there')]
-        }),
-        'stored-B'
-      )
-    })
-
-    expect($messages.get().map(message => message.id)).toEqual(['user-b', 'assistant-b'])
-    expect($messages.get().some(message => message.error === 'Out of funds')).toBe(false)
-  })
-
-  it('still preserves a same-session local error a heartbeat dropped', () => {
-    $messages.set([])
-    let cache!: Cache
-    render(<ViewHarness activeSessionId="thread-A" onReady={c => (cache = c)} />)
-
-    // First paint establishes thread A as the on-screen session.
-    act(() => {
-      cache.updateSessionState(
-        'thread-A',
-        state => ({ ...state, busy: false, messages: [userMessage('user-a', 'do the thing')] }),
-        'stored-A'
-      )
-    })
-
-    // A local error lands in the view (e.g. failAssistantMessage wrote it).
-    $messages.set([userMessage('user-a', 'do the thing'), assistantError('assistant-a-error', 'OpenRouter 403')])
-
-    // A later same-session heartbeat carries cached state that lost the error.
-    act(() => {
-      cache.updateSessionState('thread-A', state => ({
-        ...state,
-        busy: false,
-        messages: [userMessage('user-a', 'do the thing')]
-      }))
-    })
-
-    expect($messages.get().some(message => message.error === 'OpenRouter 403')).toBe(true)
   })
 })

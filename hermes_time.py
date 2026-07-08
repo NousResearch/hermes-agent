@@ -47,29 +47,11 @@ def _resolve_timezone_name() -> str:
 
     # 2. config.yaml ``timezone`` key
     try:
-        # Prefer the shared cached raw-config reader (mtime/size-keyed cache +
-        # libyaml C loader) — a direct yaml.safe_load of a large config.yaml
-        # costs ~100ms+ and this used to run inside the FIRST system prompt
-        # build, on the time-to-first-token critical path.
-        try:
-            from hermes_cli.config import read_raw_config
-            cfg = read_raw_config() or {}
-        except Exception:
-            import yaml
-            config_path = get_config_path()
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    cfg = yaml.safe_load(f) or {}
-            else:
-                cfg = {}
-        if cfg:
-            # Managed scope: an administrator can pin ``timezone`` too. Overlay
-            # via the shared helper (fail-open) since this reads config.yaml directly.
-            try:
-                from hermes_cli import managed_scope
-                cfg = managed_scope.apply_managed_overlay(cfg)
-            except Exception:
-                pass
+        import yaml
+        config_path = get_config_path()
+        if config_path.exists():
+            with open(config_path, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
             tz_cfg = cfg.get("timezone", "")
             if isinstance(tz_cfg, str) and tz_cfg.strip():
                 return tz_cfg.strip()

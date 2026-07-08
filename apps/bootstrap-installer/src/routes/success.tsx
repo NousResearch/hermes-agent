@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { type CSSProperties } from 'react'
-import { HackeryButton } from '../components/hackery-button'
+import { Button } from '../components/button'
 import { launchHermesDesktop } from '../store'
-import { AlertCircle } from 'lucide-react'
+import { Rocket, AlertCircle } from 'lucide-react'
 
 /*
  * Success screen. HERMES AGENT wordmark stays as the visual anchor
@@ -53,23 +53,32 @@ export default function Success() {
 
         <p className="m-0 text-center text-base leading-normal tracking-tight text-muted-foreground">
           You can launch from here, or any time from your terminal with{' '}
-          <code className="font-mono text-sm text-foreground/80">hermes desktop</code>.
+          <code className="rounded bg-muted/60 px-1 py-0.5 font-mono text-sm">
+            hermes desktop
+          </code>
+          .
         </p>
       </div>
 
-      <HackeryButton
-        disabled={launching}
-        label={launching ? 'Launching' : 'Launch'}
-        loading={launching}
+      <Button
         onClick={() => void handleLaunch()}
-      />
+        size="lg"
+        disabled={launching}
+        className="inline-flex items-center gap-2 px-6"
+      >
+        <Rocket size={18} />
+        {launching ? 'Launching…' : 'Launch Hermes'}
+      </Button>
 
       {error && (
-        <div role="alert" className="flex max-w-2xl items-start gap-2 text-sm">
-          <AlertCircle size={16} className="mt-0.5 shrink-0 text-destructive" />
+        <div
+          role="alert"
+          className="flex max-w-2xl items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+        >
+          <AlertCircle size={16} className="mt-0.5 shrink-0" />
           <div className="min-w-0">
-            <div className="font-medium text-destructive">Couldn&rsquo;t launch the desktop app</div>
-            <div className="mt-0.5 text-muted-foreground">{error}</div>
+            <div className="font-medium">Couldn&rsquo;t launch the desktop app</div>
+            <div className="mt-1 text-destructive/80">{error}</div>
           </div>
         </div>
       )}

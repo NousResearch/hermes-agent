@@ -1,4 +1,3 @@
-from hermes_state import AsyncSessionDB
 """Regression tests for approval-state cleanup on session boundaries."""
 
 from datetime import datetime
@@ -87,13 +86,9 @@ def _make_resume_runner():
     runner.session_store.get_or_create_session.return_value = current_entry
     runner.session_store.switch_session.return_value = resumed_entry
     runner.session_store.load_transcript.return_value = []
-    runner._session_db = AsyncSessionDB(MagicMock())
-    runner._session_db._db.resolve_session_by_title.return_value = "resumed-session"
-    runner._session_db._db.get_session_title.return_value = "Resumed Work"
-    # The resumed session is live and shares the caller's origin, so the
-    # /resume IDOR guard authorizes it (this test covers the post-resume
-    # security-state clearing, not the ownership check).
-    runner._gateway_session_origin_for_id = lambda sid: source
+    runner._session_db = MagicMock()
+    runner._session_db.resolve_session_by_title.return_value = "resumed-session"
+    runner._session_db.get_session_title.return_value = "Resumed Work"
     return runner, session_key
 
 
@@ -121,9 +116,9 @@ def _make_branch_runner():
         {"role": "assistant", "content": "world"},
     ]
     runner.session_store.switch_session.return_value = branched_entry
-    runner._session_db = AsyncSessionDB(MagicMock())
-    runner._session_db._db.get_session_title.return_value = "Current Work"
-    runner._session_db._db.get_next_title_in_lineage.return_value = "Current Work #2"
+    runner._session_db = MagicMock()
+    runner._session_db.get_session_title.return_value = "Current Work"
+    runner._session_db.get_next_title_in_lineage.return_value = "Current Work #2"
     return runner, session_key
 
 
@@ -213,7 +208,7 @@ async def test_branch_preserves_persisted_assistant_metadata():
     result = await runner._handle_branch_command(_make_event("/branch"))
 
     assert "Branched to" in result
-    append_calls = runner._session_db._db.append_message.call_args_list
+    append_calls = runner._session_db.append_message.call_args_list
     assert len(append_calls) == 2
     assistant_kwargs = append_calls[1].kwargs
     assert assistant_kwargs["role"] == "assistant"

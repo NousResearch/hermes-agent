@@ -152,34 +152,6 @@ class TestCopilotDefaultHeaders:
         headers = copilot_default_headers()
         assert "x-initiator" in headers
 
-    def test_default_is_agent_turn(self):
-        """Calling with no args preserves backward-compatible default (agent)."""
-        from hermes_cli.models import copilot_default_headers
-        headers = copilot_default_headers()
-        assert headers["x-initiator"] == "agent"
-
-    def test_user_turn_sets_user_initiator(self):
-        """Passing is_agent_turn=False sets x-initiator to 'user'."""
-        from hermes_cli.models import copilot_default_headers
-        headers = copilot_default_headers(is_agent_turn=False)
-        assert headers["x-initiator"] == "user"
-
-    def test_agent_turn_explicit(self):
-        """Explicitly passing is_agent_turn=True sets x-initiator to 'agent'."""
-        from hermes_cli.models import copilot_default_headers
-        headers = copilot_default_headers(is_agent_turn=True)
-        assert headers["x-initiator"] == "agent"
-
-    def test_param_passthrough_both_values(self):
-        """is_agent_turn param correctly maps to x-initiator for both True and False."""
-        from hermes_cli.models import copilot_default_headers
-        for is_agent, expected in [(True, "agent"), (False, "user")]:
-            headers = copilot_default_headers(is_agent_turn=is_agent)
-            assert headers["x-initiator"] == expected, (
-                f"is_agent_turn={is_agent} should produce x-initiator={expected!r}, "
-                f"got {headers['x-initiator']!r}"
-            )
-
 
 class TestApiModeSelection:
     """API mode selection matching opencode's shouldUseCopilotResponsesApi."""

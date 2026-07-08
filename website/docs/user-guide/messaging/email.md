@@ -142,15 +142,14 @@ When enabled, attachment and inline parts are skipped before payload decoding. T
 
 ## Access Control
 
-Email access is stricter by default than chat-style platforms:
+Email access follows the same pattern as all other Hermes platforms:
 
 1. **`EMAIL_ALLOWED_USERS` set** → only emails from those addresses are processed
-2. **No allowlist set** → unknown senders are ignored silently
+2. **No allowlist set** → unknown senders get a pairing code
 3. **`EMAIL_ALLOW_ALL_USERS=true`** → any sender is accepted (use with caution)
-4. **`platforms.email.unauthorized_dm_behavior: pair`** → unknown senders receive a pairing code
 
 :::warning
-**Use a dedicated inbox and configure `EMAIL_ALLOWED_USERS` for normal operation.** Email pairing is opt-in because shared inboxes often contain unrelated unread messages, and Hermes should not reply to those contacts by default.
+**Always configure `EMAIL_ALLOWED_USERS`.** Without it, anyone who knows the agent's email address could send commands. The agent has terminal access by default.
 :::
 
 ---

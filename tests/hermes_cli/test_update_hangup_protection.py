@@ -18,8 +18,6 @@ from hermes_cli.main import (
     _UpdateOutputStream,
     _finalize_update_output,
     _install_hangup_protection,
-    _log_only_write,
-    _run_logged_subprocess,
 )
 
 
@@ -322,68 +320,3 @@ class TestFinalizeUpdateOutput:
 
         assert sys.stdout is before_out
         assert sys.stderr is before_err
-
-
-# -----------------------------------------------------------------------------
-# _log_only_write / _run_logged_subprocess (spam suppression)
-# -----------------------------------------------------------------------------
-
-
-class TestLogOnlyWrite:
-    def test_writes_to_log_not_terminal(self, monkeypatch):
-        """During an update, loud output should land in update.log only —
-        never on the mirroring terminal stream."""
-        terminal = io.StringIO()
-        log = io.StringIO()
-        stream = _UpdateOutputStream(terminal, log)
-        monkeypatch.setattr(sys, "stdout", stream)
-
-        _log_only_write("npm warn deprecated foo\nadded 1302 packages")
-
-        assert terminal.getvalue() == ""  # terminal stays quiet
-        assert "npm warn deprecated foo" in log.getvalue()
-        assert "added 1302 packages" in log.getvalue()
-
-    def test_noop_without_update_stream(self, monkeypatch):
-        """When stdout isn't the mirroring update stream (no ``_log``), it must
-        be a silent no-op rather than crash."""
-        plain = io.StringIO()
-        monkeypatch.setattr(sys, "stdout", plain)
-        _log_only_write("something")  # should not raise
-        assert plain.getvalue() == ""
-
-    def test_empty_text_is_noop(self, monkeypatch):
-        terminal = io.StringIO()
-        log = io.StringIO()
-        monkeypatch.setattr(sys, "stdout", _UpdateOutputStream(terminal, log))
-        _log_only_write("")
-        assert log.getvalue() == ""
-
-
-class TestRunLoggedSubprocess:
-    def test_captures_output_to_log_only(self, monkeypatch):
-        terminal = io.StringIO()
-        log = io.StringIO()
-        monkeypatch.setattr(sys, "stdout", _UpdateOutputStream(terminal, log))
-
-        result = _run_logged_subprocess(
-            [sys.executable, "-c", "print('LOUD BUILD OUTPUT')"]
-        )
-
-        assert result.returncode == 0
-        assert "LOUD BUILD OUTPUT" in (result.stdout or "")
-        assert terminal.getvalue() == ""  # not echoed to terminal
-        assert "LOUD BUILD OUTPUT" in log.getvalue()  # but kept in the log
-
-    def test_nonzero_exit_still_captures(self, monkeypatch):
-        terminal = io.StringIO()
-        log = io.StringIO()
-        monkeypatch.setattr(sys, "stdout", _UpdateOutputStream(terminal, log))
-
-        result = _run_logged_subprocess(
-            [sys.executable, "-c", "import sys; print('boom'); sys.exit(3)"]
-        )
-
-        assert result.returncode == 3
-        assert "boom" in (result.stdout or "")
-        assert terminal.getvalue() == ""

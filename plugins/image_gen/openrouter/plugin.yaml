@@ -1,7 +1,0 @@
-name: openrouter
-version: 1.0.0
-description: "OpenRouter + Nous Portal image generation (chat-completions image output; reference-grounded). Text-to-image and image-to-image."
-author: Hermes Agent
-kind: backend
-requires_env:
-  - OPENROUTER_API_KEY

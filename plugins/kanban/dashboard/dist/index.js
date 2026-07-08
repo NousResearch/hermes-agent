@@ -334,48 +334,6 @@
     );
     return html;
   }
-  const MARKDOWN_ALLOWED_TAGS = new Set([
-    "a",
-    "code",
-    "em",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "li",
-    "p",
-    "pre",
-    "strong",
-    "ul",
-  ]);
-  function escapeAttribute(value) {
-    return escapeHtml(value).replace(/`/g, "&#96;");
-  }
-  function sanitizeMarkdownAttrs(tag, attrs) {
-    if (tag === "a") {
-      const hrefMatch =
-        /\shref=(["'])(.*?)\1/i.exec(attrs) ||
-        /\shref=([^\s>]+)/i.exec(attrs);
-      const href = hrefMatch ? (hrefMatch[2] || hrefMatch[1] || "").trim() : "";
-      if (!/^(https?:\/\/|mailto:)/i.test(href)) return "";
-      return ` href="${escapeAttribute(href)}" target="_blank" rel="noopener noreferrer"`;
-    }
-    if (tag === "pre" && /\sclass=(["'])hermes-kanban-md-code\1/i.test(attrs)) {
-      return ' class="hermes-kanban-md-code"';
-    }
-    return "";
-  }
-  function sanitizeMarkdownHtml(html) {
-    return String(html || "").replace(
-      /<\/?([a-zA-Z][A-Za-z0-9-]*)([^>]*)>/g,
-      (match, rawTag, attrs) => {
-        const tag = rawTag.toLowerCase();
-        if (!MARKDOWN_ALLOWED_TAGS.has(tag)) return "";
-        if (/^<\s*\//.test(match)) return `</${tag}>`;
-        return `<${tag}${sanitizeMarkdownAttrs(tag, attrs || "")}>`;
-      },
-    );
-  }
 
   function MarkdownBlock(props) {
     const enabled = props.enabled !== false;
@@ -384,7 +342,7 @@
     }
     return h("div", {
       className: "hermes-kanban-md",
-      dangerouslySetInnerHTML: { __html: sanitizeMarkdownHtml(renderMarkdown(props.source || "")) },
+      dangerouslySetInnerHTML: { __html: renderMarkdown(props.source || "") },
     });
   }
 
@@ -2273,93 +2231,6 @@
   // -------------------------------------------------------------------------
 
   function BoardColumns(props) {
-    const columnsRef = useRef(null);
-    const panRef = useRef({ isPanning: false, startX: 0, scrollLeft: 0 });
-    const [isPanning, setIsPanning] = useState(false);
-    const [isScrollable, setIsScrollable] = useState(false);
-
-    const checkScrollable = useCallback(function () {
-      const el = columnsRef.current;
-      setIsScrollable(!!el && el.scrollWidth > el.clientWidth + 1);
-    }, []);
-
-    useEffect(function () {
-      checkScrollable();
-      const el = columnsRef.current;
-      if (!el) return undefined;
-      if (typeof ResizeObserver !== "undefined") {
-        const observer = new ResizeObserver(checkScrollable);
-        observer.observe(el);
-        return function () { observer.disconnect(); };
-      }
-      window.addEventListener("resize", checkScrollable);
-      return function () { window.removeEventListener("resize", checkScrollable); };
-    }, [checkScrollable, props.board]);
-
-    const isPanBlockedTarget = useCallback(function (target) {
-      if (!target) return true;
-      if (target.closest && target.closest(".hermes-kanban-card")) return true;
-      if (target.closest && target.closest(".hermes-kanban-column-add")) return true;
-      if (target.closest && target.closest(".hermes-kanban-col-check")) return true;
-      if (target.closest && target.closest("button,input,textarea,select,a,[role='button']")) return true;
-      return false;
-    }, []);
-
-    const stopPan = useCallback(function () {
-      const el = columnsRef.current;
-      if (!panRef.current.isPanning) return;
-      panRef.current.isPanning = false;
-      setIsPanning(false);
-      if (el) {
-        // Keep cursor feedback instant even before React flushes the state update.
-        el.classList.remove("hermes-kanban-columns--panning");
-        el.style.userSelect = "";
-      }
-      if (panRef.current.cleanup) panRef.current.cleanup();
-      panRef.current.cleanup = null;
-    }, []);
-
-    useEffect(function () {
-      return function () { stopPan(); };
-    }, [stopPan]);
-
-    const handleMouseDown = useCallback(function (e) {
-      if (e.button !== 0) return;
-      if (isPanBlockedTarget(e.target)) return;
-      const el = columnsRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      // Preserve the native horizontal scrollbar as a fallback; grab-pan starts above it.
-      if (e.clientY >= rect.bottom - 20) return;
-      if (el.scrollWidth <= el.clientWidth) return;
-
-      panRef.current.isPanning = true;
-      panRef.current.startX = e.clientX;
-      panRef.current.scrollLeft = el.scrollLeft;
-      setIsPanning(true);
-      el.classList.add("hermes-kanban-columns--panning");
-      el.style.userSelect = "none";
-
-      function onMouseMove(ev) {
-        if (!panRef.current.isPanning) return;
-        const dx = ev.clientX - panRef.current.startX;
-        el.scrollLeft = panRef.current.scrollLeft - dx;
-        ev.preventDefault();
-      }
-      function onMouseUp() { stopPan(); }
-
-      if (panRef.current.cleanup) panRef.current.cleanup();
-      window.addEventListener("mousemove", onMouseMove);
-      window.addEventListener("mouseup", onMouseUp, { once: true });
-      window.addEventListener("blur", onMouseUp, { once: true });
-      panRef.current.cleanup = function () {
-        window.removeEventListener("mousemove", onMouseMove);
-        window.removeEventListener("mouseup", onMouseUp);
-        window.removeEventListener("blur", onMouseUp);
-      };
-      e.preventDefault();
-    }, [isPanBlockedTarget, stopPan]);
-
     const handleDragStart = useCallback(function (e) {
       const card = e.target.closest && e.target.closest(".hermes-kanban-card");
       if (!card) return;
@@ -2369,17 +2240,7 @@
     const handleDragEnd = useCallback(function () {
       if (props.onDragEnd) props.onDragEnd();
     }, [props.onDragEnd]);
-    return h("div", {
-      ref: columnsRef,
-      className: cn(
-        "hermes-kanban-columns",
-        isScrollable ? "hermes-kanban-columns--scrollable" : "",
-        isPanning ? "hermes-kanban-columns--panning" : "",
-      ),
-      onDragStart: handleDragStart,
-      onDragEnd: handleDragEnd,
-      onMouseDown: handleMouseDown,
-    },
+    return h("div", { className: "hermes-kanban-columns", onDragStart: handleDragStart, onDragEnd: handleDragEnd },
       props.board.columns.map(function (col) {
         return h(Column, {
           key: col.name,

@@ -14,7 +14,7 @@ those contexts.
 from types import SimpleNamespace
 
 from gateway.config import Platform, PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from gateway.platforms.telegram import TelegramAdapter
 
 
 def _make_adapter():

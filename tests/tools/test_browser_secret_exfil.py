@@ -28,34 +28,6 @@ class TestBrowserSecretExfil:
         parsed = json.loads(result)
         assert parsed["success"] is False
 
-    def test_cloud_blocks_opaque_sensitive_query_param(self):
-        """Cloud browser providers must not receive opaque token query params."""
-        from tools.browser_tool import browser_navigate
-
-        with patch("tools.browser_tool._is_local_backend", return_value=False), \
-             patch("tools.browser_tool._navigation_session_key", return_value="default"), \
-             patch("tools.browser_tool._run_browser_command") as mock_run:
-            result = browser_navigate("https://example.com/callback?token=opaque-oauth-code")
-
-        parsed = json.loads(result)
-        assert parsed["success"] is False
-        assert "credential-like query parameter" in parsed["error"]
-        assert "token" in parsed["error"]
-        mock_run.assert_not_called()
-
-    def test_local_browser_allows_opaque_sensitive_query_param(self):
-        """Local browser/CDP sessions may navigate magic-link style URLs."""
-        from tools.browser_tool import browser_navigate
-
-        mock_result = {"success": True, "data": {"title": "ok", "url": "https://example.com/callback?token=opaque-oauth-code"}}
-        with patch("tools.browser_tool._run_browser_command", return_value=mock_result), \
-             patch("tools.browser_tool._get_session_info", return_value={"_first_nav": False}), \
-             patch("tools.browser_tool._is_local_backend", return_value=True):
-            result = browser_navigate("https://example.com/callback?token=opaque-oauth-code")
-
-        parsed = json.loads(result)
-        assert parsed["success"] is True
-
     def test_allows_normal_url(self):
         """Normal URLs pass the secret check (may fail for other reasons)."""
         from tools.browser_tool import browser_navigate
@@ -102,42 +74,6 @@ class TestWebExtractSecretExfil:
         parsed = json.loads(result)
         assert parsed["success"] is False
         assert "Blocked" in parsed["error"]
-
-    @pytest.mark.asyncio
-    async def test_blocks_opaque_sensitive_query_param(self):
-        from tools.web_tools import web_extract_tool
-
-        result = await web_extract_tool(
-            urls=["https://example.com/callback?access_token=opaque-oauth-value"],
-        )
-
-        parsed = json.loads(result)
-        assert parsed["success"] is False
-        assert "credential-like query parameter" in parsed["error"]
-        assert "access_token" in parsed["error"]
-
-    @pytest.mark.asyncio
-    async def test_allows_ambiguous_english_word_query_param(self):
-        """Generic query names that double as normal page facets must NOT block.
-
-        ``?code=`` (promo/challenge pages), ``?key=`` (search facets),
-        ``?session=`` etc. are ordinary browsing params. Only unambiguously
-        credential-named params are blocked, so web_extract stays usable.
-        """
-        from tools.web_tools import web_extract_tool
-
-        for url in (
-            "https://leetcode.com/problems/two-sum/?code=twosum",
-            "https://github.com/search?q=hermes&code=1",
-            "https://example.com/blog?session=summer",
-        ):
-            result = await web_extract_tool(urls=[url])
-            parsed = json.loads(result)
-            # Not blocked by the credential-query guard (may fail for other
-            # reasons like a missing backend, but never with this specific
-            # error string).
-            if parsed.get("success") is False:
-                assert "credential-like query parameter" not in parsed.get("error", ""), url
 
     @pytest.mark.asyncio
     async def test_allows_normal_url(self):
@@ -190,6 +126,7 @@ class TestWebExtractSecretExfil:
         try:
             result = await web_tools.web_extract_tool(
                 urls=["https://wttr.in/Köln"],
+                use_llm_processing=False,
             )
         finally:
             web_search_registry._reset_for_tests()
@@ -322,42 +259,3 @@ class TestCamofoxAnnotationRedaction:
         assert "ANTHROPICFAKEKEY123456789" not in result
         assert "OPENAIFAKEKEY99887766" not in result
         assert "PATH=/usr/local/bin" in result
-
-
-class TestBrowserSupervisorRedaction:
-    """Verify supervisor dialog snapshots redact page-originated secrets."""
-
-    def test_pending_and_recent_dialog_messages_redacted(self):
-        from tools.browser_supervisor import DialogRecord, PendingDialog, SupervisorSnapshot
-
-        fake_key = "sk-" + "SUPERVISORDIALOGSECRET1234567890"
-        snapshot = SupervisorSnapshot(
-            pending_dialogs=(PendingDialog(
-                id="d1",
-                type="prompt",
-                message=f"Enter API key {fake_key}",
-                default_prompt=fake_key,
-                opened_at=1.0,
-                cdp_session_id="session-1",
-            ),),
-            recent_dialogs=(DialogRecord(
-                id="d2",
-                type="alert",
-                message=f"Recent key {fake_key}",
-                opened_at=1.0,
-                closed_at=2.0,
-                closed_by="agent",
-            ),),
-            frame_tree={"top": {"frame_id": "f1", "url": "about:blank", "origin": "null", "is_oopif": False}},
-            console_errors=(),
-            active=True,
-            cdp_url="ws://example.invalid/devtools/browser/mock",
-            task_id="test",
-        )
-
-        result = snapshot.to_dict()
-        serialized = str(result)
-        assert "SUPERVISORDIALOGSECRET" not in serialized
-        assert result["pending_dialogs"][0]["message"].startswith("Enter API key sk-")
-        assert result["pending_dialogs"][0]["default_prompt"].startswith("sk-")
-        assert result["recent_dialogs"][0]["message"].startswith("Recent key sk-")

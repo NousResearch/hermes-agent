@@ -325,5 +325,5 @@ platforms:
 
 - **[基于 Cron 的 PR 审查](./github-pr-review-agent.md)** —— 按计划轮询 PR，无需公网端点
 - **[Webhook 参考](/user-guide/messaging/webhooks)** —— webhook 平台的完整配置参考
-- **[构建 Plugin](/developer-guide/plugins)** —— 将审查逻辑打包为可共享的 plugin
+- **[构建 Plugin](/guides/build-a-hermes-plugin)** —— 将审查逻辑打包为可共享的 plugin
 - **[Profiles](/user-guide/profiles)** —— 运行一个拥有独立内存和配置的专属审查者 profile

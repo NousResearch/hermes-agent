@@ -102,9 +102,6 @@ LANGUAGE_BY_EXT: Dict[str, str] = {
     ".zig": "zig",
     ".zon": "zig",
     ".dockerfile": "dockerfile",
-    ".ps1": "powershell",
-    ".psm1": "powershell",
-    ".psd1": "powershell",
 }
 
 
@@ -679,131 +676,6 @@ def _spawn_astro(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     )
 
 
-_PSES_BUNDLE_WARNED = False
-
-
-def _find_pses_bundle(ctx: ServerContext) -> Optional[str]:
-    """Locate the PowerShellEditorServices module bundle directory.
-
-    PSES ships as a GitHub release zip (not an npm/go/pip package), so
-    there's no auto-install recipe — the user downloads it and points us
-    at the extracted bundle.  Resolution order:
-
-    1. ``command`` override in config (``lsp.servers.powershell.command``) —
-       the FIRST element is treated as the bundle path when it's a
-       directory.  This is the documented config knob.
-    2. ``init_overrides["powershell"]["bundlePath"]``.
-    3. ``PSES_BUNDLE_PATH`` env var.
-    4. ``<HERMES_HOME>/lsp/PowerShellEditorServices`` staging dir (where a
-       user-run unzip would naturally land).
-
-    Returns the bundle directory containing ``PowerShellEditorServices/``,
-    or ``None`` when it can't be found.
-    """
-    candidates: List[str] = []
-    override = ctx.binary_overrides.get("powershell")
-    if override and override[0]:
-        candidates.append(override[0])
-    init = ctx.init_overrides.get("powershell", {})
-    if isinstance(init, dict) and init.get("bundlePath"):
-        candidates.append(str(init["bundlePath"]))
-    env_path = os.environ.get("PSES_BUNDLE_PATH")
-    if env_path:
-        candidates.append(env_path)
-    home = os.environ.get("HERMES_HOME") or os.path.join(
-        os.path.expanduser("~"), ".hermes"
-    )
-    candidates.append(os.path.join(home, "lsp", "PowerShellEditorServices"))
-
-    for cand in candidates:
-        if not cand:
-            continue
-        # Accept either the bundle root or the inner module dir.
-        start_script = os.path.join(
-            cand, "PowerShellEditorServices", "Start-EditorServices.ps1"
-        )
-        if os.path.isfile(start_script):
-            return cand
-        inner = os.path.join(cand, "Start-EditorServices.ps1")
-        if os.path.isfile(inner):
-            return os.path.dirname(cand)
-    return None
-
-
-def _spawn_powershell_es(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
-    """Spawn PowerShellEditorServices over stdio.
-
-    Unlike the single-binary servers, PSES is a PowerShell module driven
-    by a bootstrap script.  We need both a PowerShell host (``pwsh`` for
-    PowerShell 7+, or Windows ``powershell``) and the PSES module bundle.
-    The bundle is manual-install (release zip) — see ``_find_pses_bundle``.
-    """
-    pwsh = _which("pwsh", "powershell")
-    if pwsh is None:
-        return None
-    bundle = _find_pses_bundle(ctx)
-    if bundle is None:
-        global _PSES_BUNDLE_WARNED
-        if not _PSES_BUNDLE_WARNED:
-            _PSES_BUNDLE_WARNED = True
-            logger.warning(
-                "powershell: pwsh found but the PowerShellEditorServices "
-                "bundle is missing. Download the release zip from "
-                "https://github.com/PowerShell/PowerShellEditorServices/releases, "
-                "extract it, and either set lsp.servers.powershell.command "
-                "to the bundle path or unzip it to "
-                "<HERMES_HOME>/lsp/PowerShellEditorServices."
-            )
-        return None
-    start_script = os.path.join(
-        bundle, "PowerShellEditorServices", "Start-EditorServices.ps1"
-    )
-    # Session details file: PSES writes connection info here on startup.
-    session_path = os.path.join(
-        hermes_lsp_session_dir(), f"pses-session-{os.getpid()}.json"
-    )
-    log_path = os.path.join(hermes_lsp_session_dir(), "pses.log")
-    inner = (
-        f"& '{start_script}' "
-        f"-BundledModulesPath '{bundle}' "
-        f"-LogPath '{log_path}' "
-        f"-SessionDetailsPath '{session_path}' "
-        f"-FeatureFlags @() -AdditionalModules @() "
-        f"-HostName Hermes -HostProfileId hermes -HostVersion 1.0.0 "
-        f"-Stdio -LogLevel Normal"
-    )
-    return SpawnSpec(
-        command=[
-            pwsh,
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            inner,
-        ],
-        workspace_root=root,
-        cwd=root,
-        env=ctx.env_overrides.get("powershell", {}),
-        initialization_options={
-            k: v
-            for k, v in ctx.init_overrides.get("powershell", {}).items()
-            if k != "bundlePath"
-        },
-    )
-
-
-def hermes_lsp_session_dir() -> str:
-    """Return (and create) the dir for PSES session/log scratch files."""
-    home = os.environ.get("HERMES_HOME") or os.path.join(
-        os.path.expanduser("~"), ".hermes"
-    )
-    d = os.path.join(home, "lsp", "pses")
-    os.makedirs(d, exist_ok=True)
-    return d
-
-
 def _resolve_override(ctx: ServerContext, server_id: str) -> Optional[str]:
     """User can pin a binary path in config."""
     override = ctx.binary_overrides.get(server_id)
@@ -948,18 +820,6 @@ def _root_java(file_path: str, workspace: str) -> Optional[str]:
         file_path,
         workspace,
         ["pom.xml", "build.gradle", "build.gradle.kts", ".project", ".classpath", "settings.gradle"],
-    )
-
-
-def _root_powershell(file_path: str, workspace: str) -> Optional[str]:
-    # PowerShell projects rarely have a universal root marker. Use the
-    # PSScriptAnalyzer settings file when present, otherwise fall back to
-    # the git workspace root (nearest_root does exact-name matching only,
-    # so no globs here).
-    return _root_or_workspace(
-        file_path,
-        workspace,
-        ["PSScriptAnalyzerSettings.psd1"],
     )
 
 
@@ -1151,13 +1011,6 @@ SERVERS: List[ServerDef] = [
         resolve_root=_root_java,
         build_spawn=_spawn_jdtls,
         description="Java — Eclipse JDT Language Server",
-    ),
-    ServerDef(
-        server_id="powershell",
-        extensions=(".ps1", ".psm1", ".psd1"),
-        resolve_root=_root_powershell,
-        build_spawn=_spawn_powershell_es,
-        description="PowerShell — PowerShellEditorServices (manual bundle)",
     ),
 ]
 

@@ -1,6 +1,7 @@
 import { type CSSProperties } from 'react'
-import { HackeryButton } from '../components/hackery-button'
+import { Button } from '../components/button'
 import { startInstall } from '../store'
+import { ArrowRight } from 'lucide-react'
 
 /*
  * Welcome screen.
@@ -41,7 +42,17 @@ export default function Welcome() {
         </p>
       </div>
 
-      <HackeryButton label="Install" onClick={() => void startInstall()} />
+      <Button
+        onClick={() => void startInstall()}
+        size="lg"
+        className="group inline-flex items-center gap-2 px-6"
+      >
+        Install Hermes
+        <ArrowRight
+          size={18}
+          className="transition-transform group-hover:translate-x-0.5"
+        />
+      </Button>
     </div>
   )
 }

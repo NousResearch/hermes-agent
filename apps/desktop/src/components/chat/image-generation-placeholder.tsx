@@ -1,7 +1,6 @@
 import { type FC, useCallback, useEffect, useRef } from 'react'
 
 import { useResizeObserver } from '@/hooks/use-resize-observer'
-import { onThemeRepaint } from '@/hooks/use-theme-epoch'
 
 type Rgb = { r: number; g: number; b: number }
 
@@ -42,11 +41,7 @@ const parseColor = (value: string, fallback: Rgb): Rgb => {
   const srgb = v.match(/color\(\s*srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/i)
 
   return srgb
-    ? {
-        r: Math.round(Number(srgb[1]) * 255),
-        g: Math.round(Number(srgb[2]) * 255),
-        b: Math.round(Number(srgb[3]) * 255)
-      }
+    ? { r: Math.round(Number(srgb[1]) * 255), g: Math.round(Number(srgb[2]) * 255), b: Math.round(Number(srgb[3]) * 255) }
     : fallback
 }
 
@@ -279,10 +274,11 @@ export const DiffusionCanvas: FC = () => {
 
     // Re-resolve when the theme repaints (`applyTheme` toggles `.dark` and
     // rewrites inline custom props on the root) instead of per animation frame.
-    const unsubscribe = onThemeRepaint(sync)
+    const observer = new MutationObserver(sync)
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-hermes-mode'] })
 
     return () => {
-      unsubscribe()
+      observer.disconnect()
       probe.remove()
     }
   }, [])

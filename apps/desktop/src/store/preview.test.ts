@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { $rightRailActiveTabId, PREVIEW_PANE_ID, RIGHT_RAIL_PREVIEW_TAB_ID } from './layout'
-import { $paneOpen } from './panes'
+import { $rightRailActiveTabId, RIGHT_RAIL_PREVIEW_TAB_ID } from './layout'
 import {
   $filePreviewTabs,
   $filePreviewTarget,
@@ -70,14 +69,12 @@ describe('preview store', () => {
     setCurrentSessionPreviewTarget(target, 'tool-result')
 
     expect($previewTarget.get()).toEqual(withRenderMode(target, 'preview'))
-    expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(true)
     expect(getSessionPreviewRecord('session-1')?.normalized).toEqual(withRenderMode(target, 'preview'))
     expect(window.localStorage.getItem('hermes.desktop.sessionPreviews.v1')).toContain('/work/demo.html')
 
     dismissPreviewTarget()
 
     expect($previewTarget.get()).toBeNull()
-    expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(false)
     expect(getSessionPreviewRecord('session-1')).toBeNull()
     expect($sessionPreviewRegistry.get()['session-1']?.[0]?.dismissedAt).toEqual(expect.any(Number))
 

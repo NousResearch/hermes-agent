@@ -24,11 +24,6 @@ const replacement = `    // ${marker}: electron-builder 26.8.x can sometimes cop
     if (!fs.existsSync(bundledElectronBinary)) {
         const candidates = [
             path.join(packager.info.framework.distMacOsAppName, "Contents", "MacOS", electronBranding.productName),
-            // npm may nest the workspace-only electron devDep under
-            // apps/desktop/node_modules (process.cwd() during pack), or hoist
-            // it to the repo root. Try the workspace-local install first, then
-            // the root hoist, so the fallback works under either layout.
-            path.join(process.cwd(), "node_modules", "electron", "dist", "Electron.app", "Contents", "MacOS", electronBranding.productName),
             path.join(process.cwd(), "..", "..", "node_modules", "electron", "dist", "Electron.app", "Contents", "MacOS", electronBranding.productName),
         ];
         const sourceBinary = candidates.find(candidate => fs.existsSync(candidate));

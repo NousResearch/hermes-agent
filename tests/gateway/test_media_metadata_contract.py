@@ -33,8 +33,8 @@ def _accepts_metadata(method) -> bool:
 @pytest.mark.parametrize(
     "module_name, class_name",
     [
-        ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
-        ("plugins.platforms.email.adapter", "EmailAdapter"),
+        ("gateway.platforms.whatsapp", "WhatsAppAdapter"),
+        ("gateway.platforms.email", "EmailAdapter"),
     ],
 )
 def test_send_image_accepts_metadata(module_name, class_name):
@@ -50,18 +50,18 @@ def test_send_image_accepts_metadata(module_name, class_name):
 # whose override drops metadata is a hard failure.
 _ALL_ADAPTERS = [
     ("gateway.platforms.bluebubbles", "BlueBubblesAdapter"),
-    ("plugins.platforms.dingtalk.adapter", "DingTalkAdapter"),
+    ("gateway.platforms.dingtalk", "DingTalkAdapter"),
     ("gateway.platforms.discord", "DiscordAdapter"),
-    ("plugins.platforms.email.adapter", "EmailAdapter"),
-    ("plugins.platforms.feishu.adapter", "FeishuAdapter"),
-    ("plugins.platforms.matrix.adapter", "MatrixAdapter"),
+    ("gateway.platforms.email", "EmailAdapter"),
+    ("gateway.platforms.feishu", "FeishuAdapter"),
+    ("gateway.platforms.matrix", "MatrixAdapter"),
     ("gateway.platforms.mattermost", "MattermostAdapter"),
     ("gateway.platforms.signal", "SignalAdapter"),
-    ("plugins.platforms.slack.adapter", "SlackAdapter"),
-    ("plugins.platforms.telegram.adapter", "TelegramAdapter"),
-    ("plugins.platforms.wecom.adapter", "WeComAdapter"),
+    ("gateway.platforms.slack", "SlackAdapter"),
+    ("gateway.platforms.telegram", "TelegramAdapter"),
+    ("gateway.platforms.wecom", "WeComAdapter"),
     ("gateway.platforms.weixin", "WeixinAdapter"),
-    ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
+    ("gateway.platforms.whatsapp", "WhatsAppAdapter"),
     ("gateway.platforms.yuanbao", "YuanbaoAdapter"),
 ]
 

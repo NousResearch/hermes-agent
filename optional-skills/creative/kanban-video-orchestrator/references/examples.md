@@ -39,8 +39,8 @@ T8  reviewer         final QA                                 (parent: T7)
 **Key choices:**
 - Local ComfyUI via `comfyui` skill is preferred over external API for
   cost/control — but external APIs are fine if ComfyUI isn't installed
-- `editor` profile is ffmpeg-only, no Hermes skill required (kanban guidance
-  is auto-injected into every kanban worker)
+- `editor` profile is ffmpeg-only, no Hermes skill required beyond
+  `kanban-worker`
 - Storyboarder produces `storyboard.excalidraw` alongside the markdown
 
 ## Example 2 — Product / marketing teaser

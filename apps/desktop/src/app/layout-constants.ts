@@ -12,12 +12,6 @@ export const PAGE_INSET_X = 'px-[clamp(1.25rem,4vw,4rem)]'
 // out to the gutter edges before re-applying PAGE_INSET_X.
 export const PAGE_INSET_NEG_X = '-mx-[clamp(1.25rem,4vw,4rem)]'
 
-// Readable cap for overlay "inner page" bodies (settings, command center). Wide
-// enough to breathe, tight enough that content doesn't sprawl on ultrawide
-// displays. Pair with `mx-auto w-full` to center within the pane. Literal string
-// for Tailwind's scanner (see PAGE_INSET_X note).
-export const PAGE_MAX_W = 'max-w-[75rem]'
-
 // Below this viewport width a docked sidebar leaves no room for content, so both
 // rails auto-collapse into the hover-reveal overlay. Single source of truth for
 // the responsive collapse point.

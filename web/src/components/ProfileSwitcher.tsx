@@ -1,9 +1,4 @@
-import { useMemo } from "react";
 import { Users } from "lucide-react";
-import {
-  Select,
-  SelectOption,
-} from "@nous-research/ui/ui/components/select";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -15,24 +10,14 @@ import { cn } from "@/lib/utils";
  * Keys, Skills, MCP, Models) reads/writes the selected profile via the
  * fetchJSON ?profile= injection. Hidden when only one profile exists.
  */
-export function ProfileSwitcher({ collapsed }: ProfileSwitcherProps) {
+export function ProfileSwitcher({ collapsed }: { collapsed?: boolean }) {
   const { profile, currentProfile, profiles, setProfile } = useProfileScope();
   const { t } = useI18n();
-
-  const currentDashboardLabel = useMemo(
-    () =>
-      (t.app.currentProfileOption ?? "this dashboard ({name})").replace(
-        "{name}",
-        currentProfile || "default",
-      ),
-    [currentProfile, t.app.currentProfileOption],
-  );
 
   if (profiles.length < 2) return null;
 
   const managed = profile || currentProfile || "default";
   const isOther = !!profile && profile !== currentProfile;
-  const managingLabel = t.app.managingProfile ?? "Managing profile";
 
   return (
     <div
@@ -40,7 +25,7 @@ export function ProfileSwitcher({ collapsed }: ProfileSwitcherProps) {
         "flex items-center gap-2 border-b border-current/10 px-3 py-2",
         collapsed && "lg:justify-center lg:px-0",
       )}
-      title={managingLabel}
+      title={t.app.managingProfile ?? "Managing profile"}
     >
       <Users
         className={cn(
@@ -48,38 +33,35 @@ export function ProfileSwitcher({ collapsed }: ProfileSwitcherProps) {
           isOther ? "text-amber-300" : "text-text-tertiary",
         )}
       />
-
-      <Select
+      <select
+        aria-label={t.app.managingProfile ?? "Managing profile"}
         className={cn(
-          "min-w-0 flex-1",
+          "h-7 w-full min-w-0 rounded-none border bg-background px-1 text-xs",
+          isOther
+            ? "border-amber-500/50 text-amber-300"
+            : "border-border text-text-secondary",
           collapsed && "lg:hidden",
-          "[&_button]:h-7 [&_button]:border-border [&_button]:bg-background [&_button]:px-2 [&_button]:text-xs",
-          "[&_button]:font-sans [&_button]:normal-case [&_button]:tracking-normal",
-          "[&_[role=listbox]>div]:font-sans [&_[role=listbox]>div]:text-xs",
-          "[&_[role=listbox]>div]:normal-case [&_[role=listbox]>div]:tracking-normal",
-          isOther &&
-            "[&_button]:border-amber-500/50 [&_button]:text-amber-300",
         )}
-        id="hermes-profile-switcher"
-        onValueChange={setProfile}
         value={profile}
+        onChange={(e) => setProfile(e.target.value)}
       >
-        <SelectOption value="">{currentDashboardLabel}</SelectOption>
-
+        <option value="">
+          {(t.app.currentProfileOption ?? "this dashboard ({name})").replace(
+            "{name}",
+            currentProfile || "default",
+          )}
+        </option>
         {profiles
           .filter((name) => name !== currentProfile)
           .map((name) => (
-            <SelectOption key={name} value={name}>
+            <option key={name} value={name}>
               {name}
-            </SelectOption>
+            </option>
           ))}
-      </Select>
-
-      {collapsed && <span className="sr-only">{managed}</span>}
+      </select>
+      {collapsed && (
+        <span className="sr-only">{managed}</span>
+      )}
     </div>
   );
-}
-
-interface ProfileSwitcherProps {
-  collapsed?: boolean;
 }

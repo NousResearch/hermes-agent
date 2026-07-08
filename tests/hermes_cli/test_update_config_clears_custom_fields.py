@@ -16,7 +16,7 @@ from __future__ import annotations
 import yaml
 
 from hermes_cli.auth import _update_config_for_provider
-from hermes_cli.config import clear_model_endpoint_credentials, get_config_path
+from hermes_cli.config import get_config_path
 
 
 def _read_model_cfg() -> dict:
@@ -49,23 +49,6 @@ def _seed_custom_provider_config(api_mode: str = "anthropic_messages") -> None:
 
 
 class TestUpdateConfigForProviderClearsStaleCustomFields:
-    def test_clear_model_endpoint_credentials_removes_key_alias_and_mode(self):
-        model_cfg = {
-            "provider": "openrouter",
-            "default": "anthropic/claude-sonnet-4.6",
-            "api_key": "sk-stale",
-            "api": "sk-legacy-stale",
-            "api_mode": "anthropic_messages",
-        }
-
-        returned = clear_model_endpoint_credentials(model_cfg)
-
-        assert returned is model_cfg
-        assert "api_key" not in model_cfg
-        assert "api" not in model_cfg
-        assert "api_mode" not in model_cfg
-        assert model_cfg["provider"] == "openrouter"
-
     def test_switching_to_openrouter_clears_api_key_and_api_mode(self):
         _seed_custom_provider_config()
 

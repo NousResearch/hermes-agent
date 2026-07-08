@@ -293,9 +293,8 @@ class TestCLIStatusBar:
         """When _status_bar_suppressed_after_resize is set, both rules hide.
 
         See _recover_after_resize — column shrink reflows already-rendered
-        bars into scrollback, so we hide the separators while the reflow
-        settles, then clear the flag (either via the scheduled unsuppress
-        timer or the next submitted input).
+        bars into scrollback, so we hide the separators until the user
+        submits the next input, at which point the flag is cleared.
         """
         cli_obj = _make_cli()
         cli_obj._status_bar_suppressed_after_resize = True
@@ -306,48 +305,6 @@ class TestCLIStatusBar:
         cli_obj._status_bar_suppressed_after_resize = False
         assert cli_obj._tui_input_rule_height("top", width=90) == 1
         assert cli_obj._tui_input_rule_height("bottom", width=90) == 1
-
-    def test_scheduled_unsuppress_clears_flag_and_repaints_without_input(self):
-        """The status bar returns during idle after a resize, without a keypress.
-
-        Regression: the suppression flag was only cleared on the next
-        *submitted* input, so a resize/reflow followed by idle left the bar
-        hidden indefinitely even while the refresh clock kept ticking. The
-        scheduled unsuppress timer must clear the flag and invalidate the app
-        on its own.
-        """
-        cli_obj = _make_cli()
-        cli_obj._status_bar_unsuppress_timer = None
-        cli_obj._status_bar_suppressed_after_resize = True
-        app = MagicMock()
-        app.loop = None  # force the synchronous _clear path
-
-        # Schedule with ~0 delay so the timer fires promptly under test.
-        cli_obj._schedule_status_bar_unsuppress(app, delay=0.01)
-        time.sleep(0.1)
-
-        assert cli_obj._status_bar_suppressed_after_resize is False
-        app.invalidate.assert_called()
-        # Bar chrome is visible again with no submitted input.
-        assert cli_obj._tui_input_rule_height("top", width=90) == 1
-
-    def test_scheduled_unsuppress_debounces_resize_storm(self):
-        """A fresh resize cancels the pending unsuppress and restarts it."""
-        cli_obj = _make_cli()
-        cli_obj._status_bar_unsuppress_timer = None
-        cli_obj._status_bar_suppressed_after_resize = True
-        app = MagicMock()
-        app.loop = None
-
-        # First schedule (long delay) then a second should cancel the first.
-        cli_obj._schedule_status_bar_unsuppress(app, delay=5.0)
-        first_timer = cli_obj._status_bar_unsuppress_timer
-        assert first_timer is not None
-        cli_obj._schedule_status_bar_unsuppress(app, delay=0.01)
-        assert first_timer is not cli_obj._status_bar_unsuppress_timer
-        assert not first_timer.is_alive() or first_timer.finished.is_set()
-        time.sleep(0.1)
-        assert cli_obj._status_bar_suppressed_after_resize is False
 
     def test_scrollback_box_width_returns_viewport_width(self):
         """Decorative scrollback boxes use the full viewport width.
@@ -400,20 +357,13 @@ class TestCLIStatusBar:
         cli_obj = _make_cli()
         cli_obj._spinner_text = "running tool"
 
-        # Pin the clock: time.monotonic()'s epoch is arbitrary (often near
-        # boot), so deriving _tool_start_time from the real monotonic clock
-        # made the test fail on hosts where monotonic() < 65.2 — the start
-        # time went negative, the (t0 > 0) guard in _render_spinner_text
-        # dropped the "(elapsed)" suffix entirely, and the split below hit an
-        # IndexError. A fixed clock keeps both elapsed paths deterministic.
-        with patch.object(cli_mod.time, "monotonic", return_value=1000.0):
-            # <60s path
-            cli_obj._tool_start_time = 1000.0 - 9.2
-            short = cli_obj._render_spinner_text()
+        # <60s path
+        cli_obj._tool_start_time = time.monotonic() - 9.2
+        short = cli_obj._render_spinner_text()
 
-            # >=60s path
-            cli_obj._tool_start_time = 1000.0 - 65.2
-            long = cli_obj._render_spinner_text()
+        # >=60s path
+        cli_obj._tool_start_time = time.monotonic() - 65.2
+        long = cli_obj._render_spinner_text()
 
         short_elapsed = short.split("(", 1)[1].rstrip(")")
         long_elapsed = long.split("(", 1)[1].rstrip(")")
@@ -507,7 +457,7 @@ class TestCLIStatusBar:
 
 
 class TestCLIUsageReport:
-    def test_show_usage_omits_cost_reporting(self, capsys):
+    def test_show_usage_includes_estimated_cost(self, capsys):
         cli_obj = _attach_agent(
             _make_cli(),
             prompt_tokens=10_230,
@@ -523,19 +473,52 @@ class TestCLIUsageReport:
         cli_obj._show_usage()
         output = capsys.readouterr().out
 
-        # Token counts and session metadata still shown.
         assert "Model:" in output
-        assert "Input tokens:" in output
-        assert "Output tokens:" in output
-        assert "Total tokens:" in output
+        assert "Cost status:" in output
+        assert "Cost source:" in output
+        assert "Total cost:" in output
+        assert "$" in output
+        assert "0.064" in output
         assert "Session duration:" in output
         assert "Compressions:" in output
-        # Cost and cache-hit reporting is removed everywhere.
-        assert "Total cost:" not in output
-        assert "Cost status:" not in output
-        assert "Cost source:" not in output
-        assert "Cache read tokens:" not in output
-        assert "Cache write tokens:" not in output
+
+    def test_show_usage_marks_unknown_pricing(self, capsys):
+        cli_obj = _attach_agent(
+            _make_cli(model="local/my-custom-model"),
+            prompt_tokens=1_000,
+            completion_tokens=500,
+            total_tokens=1_500,
+            api_calls=1,
+            context_tokens=1_000,
+            context_length=32_000,
+        )
+        cli_obj.verbose = False
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "Total cost:" in output
+        assert "n/a" in output
+        assert "Pricing unknown for local/my-custom-model" in output
+
+    def test_zero_priced_provider_models_stay_unknown(self, capsys):
+        cli_obj = _attach_agent(
+            _make_cli(model="glm-5"),
+            prompt_tokens=1_000,
+            completion_tokens=500,
+            total_tokens=1_500,
+            api_calls=1,
+            context_tokens=1_000,
+            context_length=32_000,
+        )
+        cli_obj.verbose = False
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "Total cost:" in output
+        assert "n/a" in output
+        assert "Pricing unknown for glm-5" in output
 
 
 class TestStatusBarWidthSource:

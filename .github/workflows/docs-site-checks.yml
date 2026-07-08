@@ -1,7 +1,13 @@
 name: Docs Site Checks
 
 on:
-  workflow_call:
+  # No paths filter — the job must always run so the required check
+  # reports a status (path-gated workflows leave checks "pending" forever
+  # when no matching files change, which blocks merge).
+  pull_request:
+    branches: [main]
+
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -19,19 +25,15 @@ jobs:
           cache-dependency-path: website/package-lock.json
 
       - name: Install website dependencies
-        uses: ./.github/actions/retry
-        with:
-          command: npm ci
-          working-directory: website
+        run: npm ci
+        working-directory: website
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.11"
 
       - name: Install ascii-guard
-        uses: ./.github/actions/retry
-        with:
-          command: python -m pip install ascii-guard==2.3.0 pyyaml==6.0.3
+        run: python -m pip install ascii-guard==2.3.0 pyyaml==6.0.3
 
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py

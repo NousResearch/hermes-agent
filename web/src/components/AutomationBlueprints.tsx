@@ -149,11 +149,8 @@ function BlueprintCard({
               </p>
             ) : null}
             <div className="flex items-center gap-2">
-              <Button
-                onClick={() => void submit()}
-                disabled={submitting}
-                prefix={submitting ? <Spinner /> : <Clock />}
-              >
+              <Button onClick={() => void submit()} disabled={submitting}>
+                {submitting ? <Spinner className="h-4 w-4" /> : <Clock className="h-4 w-4" />}
                 Schedule it
               </Button>
             </div>

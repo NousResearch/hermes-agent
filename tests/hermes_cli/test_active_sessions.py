@@ -113,33 +113,6 @@ def test_active_session_registry_prunes_dead_pids(tmp_path, monkeypatch):
     lease.release()
 
 
-def test_transfer_active_session_reanchors_existing_lease(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
-    monkeypatch.setenv("HERMES_HOME", str(home))
-
-    lease, message = active_sessions.try_acquire_active_session(
-        session_id="session-old",
-        surface="tui",
-        config={"max_concurrent_sessions": 1},
-        metadata={"live_session_id": "ui-1"},
-    )
-
-    assert message is None
-    assert lease is not None
-    assert active_sessions.transfer_active_session(
-        lease,
-        session_id="session-new",
-        metadata={"live_session_id": "ui-1"},
-    )
-
-    snapshot = active_sessions.active_session_registry_snapshot()
-    assert lease.session_id == "session-new"
-    assert len(snapshot) == 1
-    assert snapshot[0]["session_id"] == "session-new"
-    assert snapshot[0]["metadata"] == {"live_session_id": "ui-1"}
-    lease.release()
-
-
 def test_pid_alive_uses_safe_pid_exists_without_signalling(monkeypatch):
     checked: list[int] = []
 
@@ -235,8 +208,6 @@ def test_cross_process_acquire_claims_only_one_last_slot(tmp_path, monkeypatch):
     repo_root = Path(__file__).resolve().parents[2]
     ready_dir = tmp_path / "ready"
     ready_dir.mkdir()
-    results_dir = tmp_path / "results"
-    results_dir.mkdir()
     go_file = tmp_path / "go"
     env = os.environ.copy()
     env["HERMES_HOME"] = str(home)
@@ -246,10 +217,7 @@ def test_cross_process_acquire_claims_only_one_last_slot(tmp_path, monkeypatch):
         "from pathlib import Path\n"
         "from hermes_cli.active_sessions import try_acquire_active_session\n"
         "idx = os.environ['WORKER_INDEX']\n"
-        "worker_count = int(os.environ['WORKER_COUNT'])\n"
-        "delayed_worker = os.environ.get('DELAYED_WORKER_INDEX')\n"
         "ready_dir = Path(os.environ['READY_DIR'])\n"
-        "results_dir = Path(os.environ['RESULTS_DIR'])\n"
         "go_file = Path(os.environ['GO_FILE'])\n"
         "(ready_dir / idx).write_text('ready', encoding='utf-8')\n"
         "deadline = time.time() + 10\n"
@@ -257,24 +225,16 @@ def test_cross_process_acquire_claims_only_one_last_slot(tmp_path, monkeypatch):
         "    if time.time() > deadline:\n"
         "        raise RuntimeError('timed out waiting for go file')\n"
         "    time.sleep(0.01)\n"
-        "if idx == delayed_worker:\n"
-        "    time.sleep(2.5)\n"
         "lease, message = try_acquire_active_session(\n"
         "    session_id=f'process-{idx}',\n"
         "    surface='cli',\n"
         "    config={'max_concurrent_sessions': 1},\n"
         ")\n"
         "if lease is None:\n"
-        "    (results_dir / idx).write_text('BLOCK', encoding='utf-8')\n"
         "    print('BLOCK', flush=True)\n"
         "else:\n"
-        "    (results_dir / idx).write_text('OK', encoding='utf-8')\n"
         "    print('OK', flush=True)\n"
-        "    deadline = time.time() + 10\n"
-        "    while len(list(results_dir.iterdir())) < worker_count:\n"
-        "        if time.time() > deadline:\n"
-        "            raise RuntimeError('timed out waiting for all workers to attempt acquire')\n"
-        "        time.sleep(0.01)\n"
+        "    time.sleep(2.0)\n"
         "    lease.release()\n"
     )
     workers: list[subprocess.Popen[str]] = []
@@ -282,10 +242,7 @@ def test_cross_process_acquire_claims_only_one_last_slot(tmp_path, monkeypatch):
         for index in range(6):
             worker_env = env.copy()
             worker_env["WORKER_INDEX"] = str(index)
-            worker_env["WORKER_COUNT"] = "6"
-            worker_env["DELAYED_WORKER_INDEX"] = "5"
             worker_env["READY_DIR"] = str(ready_dir)
-            worker_env["RESULTS_DIR"] = str(results_dir)
             worker_env["GO_FILE"] = str(go_file)
             workers.append(
                 subprocess.Popen(

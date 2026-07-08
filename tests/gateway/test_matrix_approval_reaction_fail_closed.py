@@ -17,7 +17,7 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Stub mautrix so plugins.platforms.matrix.adapter can be imported without the SDK.
+# Stub mautrix so gateway.platforms.matrix can be imported without the SDK.
 # ---------------------------------------------------------------------------
 
 def _stub_mautrix():
@@ -64,7 +64,7 @@ def _stub_mautrix():
 
 _stub_mautrix()
 
-from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt  # noqa: E402
+from gateway.platforms.matrix import MatrixAdapter, _MatrixApprovalPrompt  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

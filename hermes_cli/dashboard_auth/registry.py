@@ -52,29 +52,6 @@ def list_providers() -> List[DashboardAuthProvider]:
         return list(_providers.values())
 
 
-def list_token_providers() -> List[DashboardAuthProvider]:
-    """Registered providers that support non-interactive token auth.
-
-    The subset of ``list_providers()`` whose ``supports_token`` flag is True,
-    in registration order. The ``token_auth`` middleware seam consults these
-    (and only these) when a token-authable route is hit, so OAuth/password-only
-    providers are never asked to ``verify_token``. Returns an empty list when
-    no token provider is registered — a token-authable route then fails
-    closed (401), never open.
-    """
-    with _lock:
-        return [p for p in _providers.values() if getattr(p, "supports_token", False)]
-
-
-def list_session_providers() -> List[DashboardAuthProvider]:
-    """Registered providers with supports_session True (interactive cookie
-    sessions). The login page, /auth/login, and the gate's verify/refresh loops
-    consult only these. Mirror of list_token_providers.
-    """
-    with _lock:
-        return [p for p in _providers.values() if getattr(p, "supports_session", True)]
-
-
 def clear_providers() -> None:
     """Test-only: drop all registrations."""
     with _lock:

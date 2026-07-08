@@ -66,31 +66,6 @@ const NATIVE_DEPS = [
   }
 ]
 
-// Pure-JS runtime dependencies that the packaged electron main require()s but
-// that workspace dedup hoists into the repo-root node_modules -- out of reach
-// of electron-builder's file collector, exactly like node-pty above.  Unlike
-// node-pty there is no native binary to select; we stage each package's whole
-// directory into build/native-deps/vendor/node_modules/<name> so the dep's own
-// internal require()s resolve against a real node_modules tree, and the
-// requiring file (electron/git-review-ops.cjs) falls back to that path via
-// process.resourcesPath when the normal require() fails.  See issue #52735
-// (packaged app crashed at launch on `Cannot find module 'simple-git'`).
-//
-// The closure is resolved at stage time by walking dependencies +
-// optionalDependencies, so a simple-git version bump that pulls in a new
-// transitive dep can't silently re-introduce the crash.
-//
-// Layout note: the closure lands in build/native-deps/vendor/node_modules/,
-// NOT build/native-deps/node_modules/.  electron-builder's file collector
-// hard-drops a `node_modules` directory that sits at the ROOT of an
-// extraResources copy (app-builder-lib/out/util/filter.js: `if (relative ===
-// "node_modules") return false`), but keeps a NESTED one.  Nesting under
-// `vendor/` makes node_modules a subdirectory so it survives packing; the
-// require() fallback in git-review-ops.cjs resolves the matching
-// vendor/node_modules path.
-const JS_DEP_ROOTS = ['simple-git']
-const JS_DEP_STAGE_ROOT = path.join(STAGE_ROOT, 'vendor', 'node_modules')
-
 function rmrf(target) {
   fs.rmSync(target, { recursive: true, force: true })
 }
@@ -173,111 +148,12 @@ function stageOne(spec) {
   console.log(`[stage-native-deps] ${path.relative(APP_ROOT, spec.to)}: ${copied} files`)
 }
 
-// Resolve a package's directory by name, searching the repo-root node_modules
-// first (where workspace dedup hoists everything) and then the requiring
-// package's own node_modules for any non-hoisted nested copy.
-//
-// We deliberately do NOT use require.resolve(`${name}/package.json`): packages
-// with an "exports" map that doesn't list "./package.json" (e.g. simple-git
-// 3.x) make that subpath unresolvable under Node's exports enforcement
-// (ERR_PACKAGE_PATH_NOT_EXPORTED), which fails on CI even though it happened to
-// work locally.  Instead resolve the package's main entry (exports-aware) and
-// walk up to the directory whose package.json's "name" matches.
-function resolvePkgDir(name, fromDir) {
-  const searchPaths = [fromDir, REPO_ROOT, path.join(REPO_ROOT, 'node_modules')]
-  let entry
-  try {
-    entry = require.resolve(name, { paths: searchPaths })
-  } catch {
-    return null
-  }
-  // Walk up from the resolved entry file to the package root: the first
-  // ancestor dir whose package.json declares this package's name.
-  let dir = path.dirname(entry)
-  while (true) {
-    const pjPath = path.join(dir, 'package.json')
-    try {
-      const pj = JSON.parse(fs.readFileSync(pjPath, 'utf8'))
-      if (pj.name === name) {
-        return dir
-      }
-    } catch {
-      // no package.json here (or unreadable) — keep walking up
-    }
-    const parent = path.dirname(dir)
-    if (parent === dir) {
-      return null
-    }
-    dir = parent
-  }
-}
-
-// Walk dependencies + optionalDependencies from each root package and return
-// the set of resolved package directories in the runtime closure.  Keyed by
-// package name so a dep reached via two paths is staged once.
-function resolveJsClosure(roots) {
-  const closure = new Map() // name -> absolute package dir
-  const stack = roots.map(name => ({ name, fromDir: REPO_ROOT }))
-  while (stack.length) {
-    const { name, fromDir } = stack.pop()
-    if (closure.has(name)) continue
-    const dir = resolvePkgDir(name, fromDir)
-    if (!dir) {
-      throw new Error(
-        `stage-native-deps: could not resolve '${name}' for the simple-git ` +
-          `closure.  Run \`npm install\` at the workspace root first.`
-      )
-    }
-    closure.set(name, dir)
-    let pj
-    try {
-      pj = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'))
-    } catch {
-      continue
-    }
-    const deps = { ...(pj.dependencies || {}), ...(pj.optionalDependencies || {}) }
-    for (const depName of Object.keys(deps)) {
-      stack.push({ name: depName, fromDir: dir })
-    }
-  }
-  return closure
-}
-
-// Stage the resolved JS dependency closure into build/native-deps/vendor/node_modules/
-// so the packaged app (and the nix output) can require() it from
-// process.resourcesPath when the hoisted-root require() isn't reachable.  Each
-// package is copied whole (minus node_modules/ — the closure is flattened so
-// every dep already has its own top-level entry) into a real node_modules
-// layout, which keeps the deps' own internal require()s working unchanged.
-function stageJsClosure(roots) {
-  const closure = resolveJsClosure(roots)
-  rmrf(JS_DEP_STAGE_ROOT)
-  ensureDir(JS_DEP_STAGE_ROOT)
-  let staged = 0
-  for (const [name, fromDir] of closure) {
-    const dest = path.join(JS_DEP_STAGE_ROOT, name)
-    ensureDir(path.dirname(dest))
-    // Copy the package directory but skip any nested node_modules/ — the
-    // closure is flattened, so nested copies would just bloat the bundle.
-    fs.cpSync(fromDir, dest, {
-      recursive: true,
-      filter: src => path.basename(src) !== 'node_modules'
-    })
-    staged += 1
-  }
-  console.log(
-    `[stage-native-deps] vendor/node_modules/: ${staged} package(s) ` +
-      `(${[...closure.keys()].sort().join(', ')})`
-  )
-}
-
 function main() {
   rmrf(STAGE_ROOT)
   ensureDir(STAGE_ROOT)
   for (const spec of NATIVE_DEPS) {
     stageOne(spec)
   }
-  stageJsClosure(JS_DEP_ROOTS)
 }
 
 main()

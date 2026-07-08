@@ -11,14 +11,7 @@ function renderPopover(kind: '@' | '/', loading = false) {
 
   const rendered = render(
     <I18nProvider configClient={null} initialLocale="zh">
-      <ComposerTriggerPopover
-        activeIndex={0}
-        items={[]}
-        kind={kind}
-        loading={loading}
-        onHover={onHover}
-        onPick={onPick}
-      />
+      <ComposerTriggerPopover activeIndex={0} items={[]} kind={kind} loading={loading} onHover={onHover} onPick={onPick} />
     </I18nProvider>
   )
 

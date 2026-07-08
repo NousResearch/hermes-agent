@@ -88,7 +88,6 @@ gateway:
     not_enough:            "Conversation insuffisante pour la compression (au moins 4 messages nécessaires)."
     no_provider:           "Aucun fournisseur configuré — compression impossible."
     nothing_to_do:         "Rien à compresser pour l'instant (la transcription est encore entièrement du contexte protégé)."
-    aggressive_unsupported: "--aggressive n'est pas pris en charge ; utilisez '/compress here [N]' pour ne conserver que les échanges récents, ou /undo pour supprimer des tours."
     focus_line:            "Focus : \"{topic}\""
     summary_failed:        "⚠️ Échec de la génération du résumé ({error}). {count} message(s) historique(s) ont été supprimés et remplacés par un espace réservé ; le contexte antérieur n'est plus récupérable. Vérifiez la configuration du modèle auxiliary.compression."
     aborted:               "⚠️ Compression interrompue ({error}). Aucun message n'a été supprimé — la conversation est inchangée. Lancez /compress pour réessayer, /reset pour une nouvelle session, ou vérifiez la configuration de votre modèle auxiliary.compression."
@@ -107,8 +106,6 @@ gateway:
     no_pending:            "Aucune commande en attente de refus."
     denied_singular:       "❌ Commande refusée."
     denied_plural:         "❌ Commandes refusées ({count} commandes)."
-    denied_reason_singular: "❌ Commande refusée. Raison transmise à l'agent: \"{reason}\""
-    denied_reason_plural:  "❌ Commandes refusées ({count} commandes). Raison transmise à l'agent: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast n'est disponible que pour les modèles OpenAI qui prennent en charge Priority Processing."
@@ -152,15 +149,6 @@ gateway:
     subscribed_suffix:     "(abonné — vous serez notifié lorsque {task_id} se terminera ou sera bloqué)"
     truncated_suffix:      "… (tronqué ; utilisez `hermes kanban …` dans votre terminal pour la sortie complète)"
     no_output:             "(aucune sortie)"
-    wake:
-      completed:           "completed"
-      gave_up:             "gave up (retries exhausted)"
-      crashed:             "crashed (worker exited); dispatcher will retry"
-      timed_out:           "timed out; dispatcher will retry"
-      blocked:             "blocked; needs attention"
-      status_default:      "status changed"
-      status_joiner:       ", "
-      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "Aucune personnalité configurée dans `{path}/config.yaml`"
@@ -239,7 +227,6 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
     matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
-    blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Aucune session nommée trouvée.\nUtilisez `/title Ma session` pour nommer la session actuelle, puis `/resume Ma session` pour y revenir plus tard."
     list_header:           "📋 **Sessions nommées**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -345,16 +332,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_cost_included:      "Coût : inclus"
     label_context:            "Contexte : {used} / {total} ({pct}%)"
     label_compressions:       "Compressions : {count}"
-    breakdown_header: "🧩 **Répartition du contexte** _(estimée)_"
-    breakdown_line: "• {label} : ~{count} ({pct} %)"
-    breakdown_cat_system_prompt: "Invite système"
-    breakdown_cat_tool_definitions: "Définitions des outils"
-    breakdown_cat_rules: "Règles"
-    breakdown_cat_skills: "Compétences"
-    breakdown_cat_mcp: "MCP"
-    breakdown_cat_subagent_definitions: "Définitions des sous-agents"
-    breakdown_cat_memory: "Mémoire"
-    breakdown_cat_conversation: "Conversation"
     header_session_info:      "📊 **Infos de session**"
     label_messages:           "Messages : {count}"
     label_estimated_context:  "Contexte estimé : ~{count} jetons"
@@ -370,7 +347,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     mode_new:              "⚙️ Progression des outils : **NEW** — affichée lors d'un changement d'outil (longueur d'aperçu : `display.tool_preview_length`, par défaut 40)."
     mode_all:              "⚙️ Progression des outils : **ALL** — chaque appel d'outil est affiché (longueur d'aperçu : `display.tool_preview_length`, par défaut 40)."
     mode_verbose:          "⚙️ Progression des outils : **VERBOSE** — chaque appel d'outil avec ses arguments complets."
-    mode_log:              "⚙️ Progression des outils : **LOG** — silencieux dans le chat ; les appels d'outils sont écrits dans ~/.hermes/logs/tool_calls.log."
     saved_suffix:          "_(enregistré pour **{platform}** — prend effet au prochain message)_"
     save_failed:           "_(impossible d'enregistrer dans la configuration : {error})_"
 

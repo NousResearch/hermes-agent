@@ -5,7 +5,7 @@ Semantic long-term memory with profile recall, semantic search, explicit memory 
 ## Requirements
 
 - `pip install supermemory`
-- Supermemory API key from [app.supermemory.ai/integrations?connect=hermes](http://app.supermemory.ai/integrations?connect=hermes)
+- Supermemory API key from [supermemory.ai](https://supermemory.ai)
 
 ## Setup
 

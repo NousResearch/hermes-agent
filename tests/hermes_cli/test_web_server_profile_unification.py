@@ -188,7 +188,7 @@ class TestProfileScopedMcp:
         )
         seen = {}
 
-        def fake_probe(name, config, connect_timeout=30, details=None):
+        def fake_probe(name, config, connect_timeout=30):
             seen["home"] = str(get_hermes_home())
             return [("tool-a", "desc")]
 
@@ -199,39 +199,6 @@ class TestProfileScopedMcp:
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
         assert seen["home"] == str(isolated_profiles["worker_beta"])
-
-    def test_mcp_test_oauth_server_without_token_is_not_ok(
-        self, client, isolated_profiles, monkeypatch
-    ):
-        """An `auth: oauth` server that serves tools/list anonymously must not
-        false-green: a successful probe with no token on disk reports needs-auth."""
-        import hermes_cli.mcp_config as mcp_config
-
-        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
-            "mcp_servers:\n  oauth-srv:\n    url: http://x/sse\n    auth: oauth\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(
-            mcp_config,
-            "_probe_single_server",
-            lambda name, config, connect_timeout=30, details=None: [("tool-a", "desc")],
-        )
-        monkeypatch.setattr(mcp_config, "_oauth_tokens_present", lambda name: False)
-
-        resp = client.post(
-            "/api/mcp/servers/oauth-srv/test", params={"profile": "worker_beta"}
-        )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["ok"] is False
-        assert "oauth" in body["error"].lower()
-
-        # With a token present, the same probe is genuinely authenticated.
-        monkeypatch.setattr(mcp_config, "_oauth_tokens_present", lambda name: True)
-        resp = client.post(
-            "/api/mcp/servers/oauth-srv/test", params={"profile": "worker_beta"}
-        )
-        assert resp.json()["ok"] is True
 
     def test_mcp_remove_scoped(self, client, isolated_profiles):
         (isolated_profiles["worker_beta"] / "config.yaml").write_text(
@@ -316,36 +283,6 @@ class TestProfileScopedModel:
         resp = client.get("/api/model/options", params={"profile": "ghost"})
         assert resp.status_code == 404
 
-    def test_model_options_hides_unconfigured_providers_by_default(self, client, monkeypatch):
-        calls = []
-
-        monkeypatch.setattr(
-            "hermes_cli.inventory.load_picker_context",
-            lambda: object(),
-        )
-
-        def _fake_build_models_payload(_ctx, **kwargs):
-            calls.append(kwargs)
-            return {"providers": [], "model": "", "provider": ""}
-
-        monkeypatch.setattr(
-            "hermes_cli.inventory.build_models_payload",
-            _fake_build_models_payload,
-        )
-
-        resp = client.get("/api/model/options")
-        assert resp.status_code == 200
-        assert calls[-1]["explicit_only"] is False
-        assert calls[-1]["include_unconfigured"] is False
-
-        resp = client.get("/api/model/options", params={"explicit_only": "1"})
-        assert resp.status_code == 200
-        assert calls[-1]["explicit_only"] is True
-
-        resp = client.get("/api/model/options", params={"include_unconfigured": "1"})
-        assert resp.status_code == 200
-        assert calls[-1]["include_unconfigured"] is True
-
     def test_model_info_unknown_profile_404(self, client, isolated_profiles):
         """Regression: the broad except used to convert the 404 into a 200
         with empty model info ("no model set" — silently wrong)."""
@@ -414,167 +351,6 @@ class TestProfileScopedPostSetup:
         )
         assert resp.status_code == 200
         assert calls == [["tools", "post-setup", "agent_browser"]]
-
-
-class TestProfileScopedGateway:
-    def test_lifecycle_spawns_with_profile_flag(
-        self, client, isolated_profiles, monkeypatch
-    ):
-        import hermes_cli.web_server as web_server
-
-        calls = []
-
-        class _FakeProc:
-            pid = 888
-
-        monkeypatch.setattr(
-            web_server,
-            "_spawn_hermes_action",
-            lambda subcommand, name: calls.append((list(subcommand), name)) or _FakeProc(),
-        )
-        web_server._ACTION_PROCS.pop("gateway-restart", None)
-        web_server._ACTION_COMMANDS.pop("gateway-restart", None)
-
-        for verb in ("start", "stop", "restart"):
-            resp = client.post(f"/api/gateway/{verb}", params={"profile": "worker_beta"})
-            assert resp.status_code == 200
-
-        assert calls == [
-            (["-p", "worker_beta", "gateway", "start"], "gateway-start"),
-            (["-p", "worker_beta", "gateway", "stop"], "gateway-stop"),
-            (["-p", "worker_beta", "gateway", "restart"], "gateway-restart"),
-        ]
-
-    def test_status_reads_requested_profile_home(
-        self, client, isolated_profiles, monkeypatch
-    ):
-        import hermes_cli.web_server as web_server
-        from hermes_constants import get_hermes_home
-
-        seen_homes = []
-
-        def fake_get_running_pid():
-            seen_homes.append(str(get_hermes_home()))
-            return None
-
-        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
-        monkeypatch.setattr(web_server, "get_running_pid", fake_get_running_pid)
-        monkeypatch.setattr(
-            web_server,
-            "read_runtime_status",
-            lambda: {"gateway_state": "startup_failed", "platforms": {}},
-        )
-        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
-
-        resp = client.get("/api/status", params={"profile": "worker_beta"})
-
-        assert resp.status_code == 200
-        assert seen_homes[0] == str(isolated_profiles["worker_beta"])
-        assert resp.json()["hermes_home"] == str(isolated_profiles["worker_beta"])
-
-    def test_status_uses_runtime_pid_when_profile_pid_file_is_missing(
-        self, client, isolated_profiles, monkeypatch
-    ):
-        import hermes_cli.web_server as web_server
-
-        worker_home = isolated_profiles["worker_beta"]
-        (worker_home / ".env").write_text(
-            "TELEGRAM_BOT_TOKEN=worker-token\n", encoding="utf-8"
-        )
-        (worker_home / "config.yaml").write_text(
-            yaml.safe_dump({"platforms": {"telegram": {"enabled": True}}}),
-            encoding="utf-8",
-        )
-        runtime = {
-            "pid": 4242,
-            "gateway_state": "running",
-            "platforms": {"telegram": {"state": "connected"}},
-            "exit_reason": None,
-            "updated_at": "2026-06-17T00:00:00+00:00",
-        }
-        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
-        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
-        monkeypatch.setattr(web_server, "read_runtime_status", lambda: runtime)
-        monkeypatch.setattr(
-            web_server, "get_runtime_status_running_pid", lambda payload: 4242
-        )
-        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
-        from gateway.config import Platform
-
-        class _FakeGatewayConfig:
-            def get_connected_platforms(self):
-                return [Platform.TELEGRAM]
-
-        monkeypatch.setattr(
-            "gateway.config.load_gateway_config", lambda: _FakeGatewayConfig()
-        )
-
-        resp = client.get("/api/status", params={"profile": "worker_beta"})
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["gateway_running"] is True
-        assert data["gateway_pid"] == 4242
-        assert data["gateway_state"] == "running"
-        assert data["gateway_platforms"] == {"telegram": {"state": "connected"}}
-
-
-class TestProfileScopedTelegramOnboarding:
-    def test_apply_writes_target_profile_and_restarts_target(
-        self, client, isolated_profiles, monkeypatch
-    ):
-        import time
-        import hermes_cli.web_server as web_server
-
-        with web_server._telegram_onboarding_lock:
-            web_server._telegram_onboarding_pairings.clear()
-            web_server._telegram_onboarding_pairings["pair-worker"] = (
-                web_server._TelegramOnboardingPairing(
-                    poll_token="poll-secret",
-                    expires_at="2027-05-18T00:00:00.000Z",
-                    expires_at_ts=time.time() + 600,
-                    bot_token="123456:SECRET",
-                    bot_username="worker_bot",
-                    owner_user_id="123456789",
-                )
-            )
-
-        calls = []
-
-        class _FakeProc:
-            pid = 889
-
-        monkeypatch.setattr(
-            web_server,
-            "_spawn_hermes_action",
-            lambda subcommand, name: calls.append((list(subcommand), name)) or _FakeProc(),
-        )
-        web_server._ACTION_PROCS.pop("gateway-restart", None)
-        web_server._ACTION_COMMANDS.pop("gateway-restart", None)
-
-        resp = client.post(
-            "/api/messaging/telegram/onboarding/pair-worker/apply",
-            params={"profile": "worker_beta"},
-            json={"allowed_user_ids": ["123456789"]},
-        )
-
-        assert resp.status_code == 200
-        assert resp.json()["restart_started"] is True
-        assert calls == [
-            (["-p", "worker_beta", "gateway", "restart"], "gateway-restart")
-        ]
-
-        worker_env = (isolated_profiles["worker_beta"] / ".env").read_text()
-        assert "TELEGRAM_BOT_TOKEN=123456:SECRET" in worker_env
-        assert "TELEGRAM_ALLOWED_USERS=123456789" in worker_env
-        default_env_path = isolated_profiles["default"] / ".env"
-        if default_env_path.exists():
-            assert "TELEGRAM_BOT_TOKEN" not in default_env_path.read_text()
-
-        worker_cfg = _cfg(isolated_profiles["worker_beta"])
-        default_cfg = _cfg(isolated_profiles["default"])
-        assert worker_cfg["platforms"]["telegram"]["enabled"] is True
-        assert default_cfg.get("platforms", {}).get("telegram", {}).get("enabled") is not True
 
 
 class TestProfileScopedChatPty:

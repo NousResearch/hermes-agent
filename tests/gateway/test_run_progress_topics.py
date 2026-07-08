@@ -22,7 +22,7 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         self.edits = []
         self.typing = []
 
-    async def connect(self, *, is_reconnect: bool = False) -> bool:
+    async def connect(self) -> bool:
         return True
 
     async def disconnect(self) -> None:
@@ -145,29 +145,6 @@ class FakeAgent:
         }
 
 
-class ThinkingAgent:
-    """Agent that emits _thinking scratch text (no tool calls).
-
-    Used to prove the progress callback relays _thinking bubbles when
-    thinking_progress is enabled but tool_progress is off.
-    """
-
-    def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback")
-        self.tools = []
-
-    def run_conversation(self, message, conversation_history=None, task_id=None):
-        cb = self.tool_progress_callback
-        if cb is not None:
-            cb("_thinking", "weighing the options here")
-            time.sleep(0.35)
-        return {
-            "final_response": "done",
-            "messages": [],
-            "api_calls": 1,
-        }
-
-
 class LongPreviewAgent:
     """Agent that emits a tool call with a very long preview string."""
     LONG_CMD = "cd /home/teknium/.hermes/hermes-agent/.worktrees/hermes-d8860339 && source .venv/bin/activate && python -m pytest tests/gateway/test_run_progress_topics.py -n0 -q"
@@ -260,7 +237,6 @@ def _make_runner(adapter):
     runner._session_db = None
     runner._running_agents = {}
     runner._session_run_generation = {}
-    runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None)
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
         thread_sessions_per_user=False,
@@ -308,7 +284,7 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     assert adapter.sent == [
         {
             "chat_id": "-1001",
-            "content": '💻 Running pwd',
+            "content": '💻 terminal: "pwd"',
             "reply_to": None,
             "metadata": {"thread_id": "17585"},
         }
@@ -496,27 +472,6 @@ async def test_run_agent_feishu_progress_replies_inside_existing_thread(monkeypa
 # ---------------------------------------------------------------------------
 
 
-def _extract_progress_preview(content: str) -> str | None:
-    """Extract the argument-preview portion from a tool-progress message.
-
-    Handles both render styles:
-    - Legacy / custom tools:  ``🔧 tool_name: "<preview>"`` (quoted)
-    - Friendly built-in verb: ``💻 Running <preview>`` (verb prefix, no quotes)
-    """
-    import re
-
-    # Legacy quoted form takes precedence when present.
-    match = re.search(r'"(.+)"', content)
-    if match:
-        return match.group(1)
-    # Friendly form: "<emoji> <verb> <preview>". The terminal verb is "Running".
-    marker = " Running "
-    idx = content.find(marker)
-    if idx != -1:
-        return content[idx + len(marker):].strip()
-    return None
-
-
 def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     """Shared setup for long-preview truncation tests.
 
@@ -573,10 +528,13 @@ def test_all_mode_default_truncation_40_chars(monkeypatch, tmp_path):
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # The long command should be truncated — the preview portion <= 40 chars.
+    # The long command should be truncated — total preview <= 40 chars
     assert "..." in content
-    preview_text = _extract_progress_preview(content)
-    assert preview_text is not None, f"No preview found in: {content}"
+    # Extract the preview part between quotes
+    import re
+    match = re.search(r'"(.+)"', content)
+    assert match, f"No quoted preview found in: {content}"
+    preview_text = match.group(1)
     assert len(preview_text) <= 40, f"Preview too long ({len(preview_text)}): {preview_text}"
 
 
@@ -586,9 +544,11 @@ def test_all_mode_respects_custom_preview_length(monkeypatch, tmp_path):
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # With 120-char cap, the command (165 chars) should still be truncated but longer.
-    preview_text = _extract_progress_preview(content)
-    assert preview_text is not None, f"No preview found in: {content}"
+    # With 120-char cap, the command (165 chars) should still be truncated but longer
+    import re
+    match = re.search(r'"(.+)"', content)
+    assert match, f"No quoted preview found in: {content}"
+    preview_text = match.group(1)
     # Should be longer than the 40-char default
     assert len(preview_text) > 40, f"Preview suspiciously short ({len(preview_text)}): {preview_text}"
     # But still capped at 120
@@ -636,24 +596,6 @@ class PreviewedResponseAgent:
             self.interim_assistant_callback("You're welcome.", already_streamed=False)
         return {
             "final_response": "You're welcome.",
-            "response_previewed": True,
-            "messages": [],
-            "api_calls": 1,
-        }
-
-
-class PreviewedSplitAfterCommentaryAgent:
-    def __init__(self, **kwargs):
-        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
-        self.session_id = kwargs.get("session_id")
-        self.tools = []
-
-    def run_conversation(self, message, conversation_history=None, task_id=None):
-        if self.interim_assistant_callback:
-            self.interim_assistant_callback("I'll inspect the repo first.", already_streamed=False)
-        self.session_id = f"{self.session_id}-child"
-        return {
-            "final_response": "Final answer after compression.",
             "response_previewed": True,
             "messages": [],
             "api_calls": 1,
@@ -975,21 +917,6 @@ async def test_run_agent_previewed_final_marks_already_sent(monkeypatch, tmp_pat
 
     assert result.get("already_sent") is True
     assert [call["content"] for call in adapter.sent] == ["You're welcome."]
-
-
-@pytest.mark.asyncio
-async def test_run_agent_previewed_split_keeps_final_delivery_pending(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        PreviewedSplitAfterCommentaryAgent,
-        session_id="sess-split",
-        config_data={"display": {"interim_assistant_messages": True}},
-    )
-
-    assert result["session_id"] == "sess-split-child"
-    assert result.get("already_sent") is not True
-    assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
 
 
 @pytest.mark.asyncio
@@ -1638,49 +1565,3 @@ async def test_consecutive_terminal_progress_collapses_headers(monkeypatch, tmp_
     # Exactly TWO terminal headers: one for the first run of three calls,
     # one for the terminal call after web_search broke the streak.
     assert final.count("terminal\n```") == 2
-
-
-@pytest.mark.asyncio
-async def test_run_agent_relays_thinking_when_tool_progress_off(monkeypatch, tmp_path):
-    """_thinking scratch text relays as a bubble when thinking_progress is on,
-    even with tool_progress off.
-
-    Regression: agent.tool_progress_callback used to be gated on
-    tool_progress_enabled alone, so enabling only thinking_progress left the
-    callback None and _thinking never relayed — despite the progress queue
-    being created for it (needs_progress_queue = tool OR thinking).
-    """
-    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        ThinkingAgent,
-        session_id="sess-thinking-on",
-        config_data={"display": {"thinking_progress": True, "tool_progress": "off"}},
-    )
-
-    assert result["final_response"] == "done"
-    blob = "\n".join(
-        [c["content"] for c in adapter.sent] + [c["content"] for c in adapter.edits]
-    )
-    assert "weighing the options here" in blob
-
-
-@pytest.mark.asyncio
-async def test_run_agent_suppresses_thinking_when_thinking_off(monkeypatch, tmp_path):
-    """With thinking_progress off and tool_progress off, _thinking is suppressed
-    (no callback wired → no relay)."""
-    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        ThinkingAgent,
-        session_id="sess-thinking-off",
-        config_data={"display": {"thinking_progress": False, "tool_progress": "off"}},
-    )
-
-    assert result["final_response"] == "done"
-    blob = "\n".join(
-        [c["content"] for c in adapter.sent] + [c["content"] for c in adapter.edits]
-    )
-    assert "weighing the options here" not in blob

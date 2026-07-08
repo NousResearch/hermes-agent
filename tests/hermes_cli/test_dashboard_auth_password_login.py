@@ -16,6 +16,11 @@ import time
 
 import pytest
 
+# These tests mutate ``web_server.app.state.auth_required`` at module level,
+# so they share the dashboard-auth app-state xdist group to avoid racing
+# other gate tests.
+pytestmark = pytest.mark.xdist_group("dashboard_auth_app_state")
+
 from fastapi.testclient import TestClient
 
 from hermes_cli import web_server

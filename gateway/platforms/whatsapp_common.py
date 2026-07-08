@@ -56,24 +56,6 @@ class WhatsAppBehaviorMixin:
 
     DEFAULT_REPLY_PREFIX: str = "⚕ *Hermes Agent*\n────────────\n"
 
-    _OUTBOUND_INVISIBLE_CHARS_RE = re.compile(r"[\u200b\u2060\u2063\ufeff]")
-    _OUTBOUND_ODD_SPACE_RE = re.compile(r"[\u00a0\u1680\u180e\u2000-\u200a\u202f\u205f\u3000]")
-
-    @classmethod
-    def _sanitize_outbound_text(cls, content: str) -> str:
-        """Remove invisible formatting chars that leak badly in WhatsApp.
-
-        Some provider/gateway formatting paths can emit unicode like WORD
-        JOINER (U+2060) plus NARROW NO-BREAK SPACE (U+202F). WhatsApp may
-        render those as mojibake-looking prefixes (``⁠ text``) instead of
-        invisible spacing. Keep normal text and emoji joiners intact, but
-        strip known zero-width format chars and normalize odd unicode spaces.
-        """
-        if not content:
-            return content
-        content = cls._OUTBOUND_INVISIBLE_CHARS_RE.sub("", content)
-        return cls._OUTBOUND_ODD_SPACE_RE.sub(" ", content)
-
     @property
     def enforces_own_access_policy(self) -> bool:
         """WhatsApp gates DM/group access at intake via dm_policy/group_policy."""
@@ -165,86 +147,23 @@ class WhatsAppBehaviorMixin:
         return False
 
     # ------------------------------------------------------------------ gating
-    def _open_dm_opted_in(self) -> bool:
-        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
-            return True
-        return os.getenv("WHATSAPP_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
-
-    @staticmethod
-    def _matches_whatsapp_allowlist(candidate: str, allow_from) -> bool:
-        """Match a WhatsApp identifier against an allowlist across phone/LID forms.
-
-        WhatsApp delivers inbound senders in LID form (``<id>@lid``) while
-        operators usually configure allowlists with phone numbers, and vice
-        versa. A raw set-membership check therefore never matches a known
-        contact. Resolve both the candidate and each allowlist entry through
-        the bridge's ``lid-mapping-*.json`` files (the shared
-        ``gateway.whatsapp_identity`` helper that the gateway authz and
-        session-key paths already use) so either configured form resolves to
-        the inbound form.
-        """
-        if not allow_from:
-            return False
-        # Fast path: exact match against the raw configured value (e.g. a full
-        # ``@g.us`` group JID or an entry that already matches verbatim).
-        if candidate in allow_from:
-            return True
-
-        from gateway.whatsapp_identity import (
-            expand_whatsapp_aliases,
-            normalize_whatsapp_identifier,
-        )
-
-        candidate_aliases = expand_whatsapp_aliases(candidate)
-        if not candidate_aliases:
-            return False
-        for entry in allow_from:
-            if entry == "*":
-                return True
-            if normalize_whatsapp_identifier(entry) in candidate_aliases:
-                return True
-            # Entry may itself be an unmapped form; expand it too so a phone
-            # allowlist entry resolves when the inbound sender arrived as a LID.
-            if expand_whatsapp_aliases(entry) & candidate_aliases:
-                return True
-        return False
-
     def _is_dm_allowed(self, sender_id: str) -> bool:
-        """Strict DM authorization — pairing does not imply access."""
+        """Check whether a DM from the given sender should be processed."""
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(sender_id, self._allow_from)
-        if self._dm_policy == "open":
-            return self._open_dm_opted_in()
-        return False
-
-    def _is_dm_intake_allowed(self, sender_id: str) -> bool:
-        """Whether a DM may reach the gateway intake (pairing handshake path)."""
-        principal = str(sender_id or "").strip()
-        if not principal:
-            return False
-        if self._dm_policy == "disabled":
-            return False
-        if self._dm_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(principal, self._allow_from)
-        if self._dm_policy == "pairing":
-            return True
-        if self._dm_policy == "open":
-            return self._open_dm_opted_in()
-        return False
+            return sender_id in self._allow_from
+        # "open" — all DMs allowed
+        return True
 
     def _is_group_allowed(self, chat_id: str) -> bool:
         """Check whether a group chat should be processed."""
         if self._group_policy == "disabled":
             return False
         if self._group_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(chat_id, self._group_allow_from)
-        if self._group_policy == "pairing":
-            return False
-        if self._group_policy == "open":
-            return True
-        return False
+            return chat_id in self._group_allow_from
+        # "open" — all groups allowed
+        return True
 
     def _compile_mention_patterns(self):
         patterns = self.config.extra.get("mention_patterns")
@@ -360,7 +279,7 @@ class WhatsAppBehaviorMixin:
                 return False
         else:
             sender_id = str(data.get("senderId") or data.get("from") or "")
-            if not self._is_dm_intake_allowed(sender_id):
+            if not self._is_dm_allowed(sender_id):
                 return False
             # DMs that pass the policy gate are always processed
             return True
@@ -393,8 +312,6 @@ class WhatsAppBehaviorMixin:
         if not content:
             return content
 
-        content = self._sanitize_outbound_text(content)
-
         # --- 1. Protect fenced code blocks from formatting changes ---
         _FENCE_PH = "\x00FENCE"
         fences: list[str] = []
@@ -416,19 +333,12 @@ class WhatsAppBehaviorMixin:
         result = re.sub(r"`[^`\n]+`", _save_code, result)
 
         # --- 3. Convert markdown formatting to WhatsApp syntax ---
-        # Italic: standard Markdown *text* → WhatsApp _text_.  Do this before
-        # bold conversion so **bold** does not become italic by accident.  The
-        # lookarounds avoid list bullets and bold delimiters.
-        result = re.sub(
-            r"(?<!\*)\*(?!\s|\*)([^*\n]*?\S[^*\n]*?)\*(?!\*)",
-            r"_\1_",
-            result,
-        )
         # Bold: **text** or __text__ → *text*
         result = re.sub(r"\*\*(.+?)\*\*", r"*\1*", result)
         result = re.sub(r"__(.+?)__", r"*\1*", result)
         # Strikethrough: ~~text~~ → ~text~
         result = re.sub(r"~~(.+?)~~", r"~\1~", result)
+        # Italic: *text* is already WhatsApp italic — leave as-is
         # _text_ is already WhatsApp italic — leave as-is
 
         # --- 4. Convert markdown headers to bold text ---
@@ -455,56 +365,3 @@ class WhatsAppBehaviorMixin:
             result = result.replace(f"{_CODE_PH}{i}\x00", code)
 
         return result
-
-
-# ---------------------------------------------------------------------------
-# Shared bridge directory resolution for CLI and adapter
-# ---------------------------------------------------------------------------
-
-def resolve_whatsapp_bridge_dir() -> Path:
-    """Resolve the WhatsApp bridge directory, mirroring to HERMES_HOME if needed.
-
-    When the install tree is read-only (e.g., Docker /opt/hermes), this function
-    mirrors the bridge source to a writable HERMES_HOME location and returns that
-    path. This ensures npm install works in Docker environments.
-
-    Returns the resolved bridge directory path.
-    """
-    import shutil
-    from pathlib import Path as _Path
-
-    # Default location in install tree (may be read-only)
-    from hermes_constants import get_hermes_home
-    install_bridge = _Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
-
-    # Try HERMES_HOME location first
-    hermes_home = get_hermes_home()
-    hermes_home_bridge = hermes_home / "scripts" / "whatsapp-bridge"
-
-    # Check if install dir is writable
-    try:
-        test_file = install_bridge / ".write_test"
-        test_file.touch()
-        test_file.unlink()
-        install_writable = True
-    except (OSError, PermissionError):
-        install_writable = False
-
-    if install_writable:
-        return install_bridge
-
-    # Install dir is read-only, mirror to HERMES_HOME if needed
-    if hermes_home_bridge.exists():
-        return hermes_home_bridge
-
-    # Mirror the bridge source to HERMES_HOME
-    try:
-        hermes_home_bridge.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(
-            install_bridge,
-            hermes_home_bridge,
-            dirs_exist_ok=False,
-        )
-        return hermes_home_bridge
-    except Exception:
-        return install_bridge

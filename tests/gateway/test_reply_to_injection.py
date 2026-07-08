@@ -100,29 +100,6 @@ async def test_reply_prefix_still_injected_when_text_in_history():
 
 
 @pytest.mark.asyncio
-async def test_own_message_reply_prefix_marks_assistant_message():
-    runner = _make_runner()
-    source = _source()
-    event = MessageEvent(
-        text="this one",
-        source=source,
-        reply_to_message_id="42",
-        reply_to_text="Use the direct train.",
-        reply_to_is_own_message=True,
-    )
-
-    result = await runner._prepare_inbound_message_text(
-        event=event,
-        source=source,
-        history=[],
-    )
-
-    assert result is not None
-    assert result.startswith('[Replying to your previous message: "Use the direct train."]')
-    assert result.endswith("this one")
-
-
-@pytest.mark.asyncio
 async def test_no_prefix_without_reply_context():
     runner = _make_runner()
     source = _source()

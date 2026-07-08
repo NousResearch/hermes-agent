@@ -7,7 +7,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from gateway.platforms.telegram import TelegramAdapter
 from gateway.stream_consumer import GatewayStreamConsumer
 
 

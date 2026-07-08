@@ -2,13 +2,11 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './app.tsx'
 import './styles.css'
-import { watchTheme } from './theme'
 
-// Follow the OS light/dark appearance. theme.ts paints the first frame on
-// import (synchronously, from the media query); this subscribes to live OS
-// theme changes via the authoritative Tauri window theme.
-void watchTheme()
-
+// Default to LIGHT mode — matches the Hermes desktop's default. The
+// desktop's runtime theme system can switch to .dark later, but our
+// installer ships in light mode only since we don't carry the theme
+// provider machinery.
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />

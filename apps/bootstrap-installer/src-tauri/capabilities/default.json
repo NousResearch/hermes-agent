@@ -7,7 +7,6 @@
     "core:default",
     "core:window:allow-close",
     "core:window:allow-minimize",
-    "core:window:allow-theme",
     "core:event:default",
     "opener:default",
     "dialog:default",

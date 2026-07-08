@@ -58,6 +58,18 @@ function formatBytes(size: number | null): string {
   return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+function readAsDataUrl(file: globalThis.File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      if (typeof reader.result === "string") resolve(reader.result);
+      else reject(new Error("Could not read file"));
+    });
+    reader.addEventListener("error", () => reject(reader.error ?? new Error("Could not read file")));
+    reader.readAsDataURL(file);
+  });
+}
+
 function downloadDataUrl(dataUrl: string, name: string) {
   const link = document.createElement("a");
   link.href = dataUrl;
@@ -193,7 +205,8 @@ export default function FilesPage() {
     setUploading(true);
     try {
       for (const file of Array.from(files)) {
-        await api.uploadFile(joinPath(activePath, file.name), file, true);
+        const dataUrl = await readAsDataUrl(file);
+        await api.uploadFile(joinPath(activePath, file.name), dataUrl, true);
       }
       showToast(`${files.length} file${files.length === 1 ? "" : "s"} uploaded`, "success");
       await load();

@@ -1,4 +1,4 @@
-import { type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
+import { type ReactNode } from 'react'
 
 import { cn } from '@/lib/utils'
 
@@ -8,10 +8,8 @@ interface StatusRowProps {
   /** Leading glyph slot (spinner / status dot / selection circle). */
   leading?: ReactNode
   /** Makes the whole row activatable (adds `cursor-pointer` + keyboard a11y).
-   *  Receives the originating event so consumers can branch on modifier keys
-   *  (e.g. ⌘/Ctrl-click). Trailing-slot buttons should `stopPropagation` so
-   *  they don't also fire it. */
-  onActivate?: (event: KeyboardEvent | MouseEvent) => void
+   *  Trailing-slot buttons should `stopPropagation` so they don't also fire it. */
+  onActivate?: () => void
   /** Right-aligned actions. Revealed on row hover/focus unless `trailingVisible`. */
   trailing?: ReactNode
   trailingVisible?: boolean
@@ -35,9 +33,8 @@ export function StatusRow({
   return (
     <div
       className={cn(
-        'group/status-row flex min-h-6 items-center gap-2 rounded-md px-1.5 py-1',
-        // row-hover bundles cursor:pointer — only when the row actually activates.
-        onActivate ? 'row-hover' : 'hover:bg-(--ui-row-hover-background)',
+        'group/status-row flex min-h-6 items-center gap-2 rounded-md px-1.5 py-1 hover:bg-(--ui-row-hover-background)',
+        onActivate && 'cursor-pointer',
         className
       )}
       onClick={onActivate}
@@ -46,7 +43,7 @@ export function StatusRow({
           ? event => {
               if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault()
-                onActivate(event)
+                onActivate()
               }
             }
           : undefined
@@ -54,7 +51,9 @@ export function StatusRow({
       role={onActivate ? 'button' : undefined}
       tabIndex={onActivate ? 0 : undefined}
     >
-      {leading !== undefined && <span className="flex size-3.5 shrink-0 items-center justify-center">{leading}</span>}
+      {leading !== undefined && (
+        <span className="flex size-3.5 shrink-0 items-center justify-center">{leading}</span>
+      )}
       <div className="flex min-w-0 flex-1 items-center gap-2">{children}</div>
       {trailing && (
         <div

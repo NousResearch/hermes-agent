@@ -89,12 +89,7 @@ export function ImageLightbox({
             onClick={() => onOpenChange(false)}
             src={src}
           />
-          <ImageActionButton
-            className="group-hover/lightbox:opacity-100"
-            copy={copy}
-            onClick={onClick}
-            saving={saving}
-          />
+          <ImageActionButton className="group-hover/lightbox:opacity-100" copy={copy} onClick={onClick} saving={saving} />
         </div>
       </DialogContent>
     </Dialog>

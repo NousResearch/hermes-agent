@@ -19,7 +19,7 @@ from gateway.session import SessionSource, build_session_key
 
 
 class _StubAdapter(BasePlatformAdapter):
-    async def connect(self, *, is_reconnect: bool = False):
+    async def connect(self):
         pass
 
     async def disconnect(self):

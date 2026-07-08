@@ -115,7 +115,6 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
 
   try {
     const result = await readDesktopFileText(target.path || target.source)
-
     return {
       ...target,
       binary: result.binary,

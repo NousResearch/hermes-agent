@@ -25,7 +25,6 @@ from __future__ import annotations
 import logging
 import os
 import time
-import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -34,7 +33,6 @@ from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
     error_response,
-    normalize_reference_images,
     resolve_aspect_ratio,
     save_url_image,
     success_response,
@@ -64,13 +62,6 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "price": "$0.060 (text) / $0.065 (style refs) / $0.070 (moodboards)",
         "path": "large",
     },
-    "krea-2-medium-turbo": {
-        "display": "Krea 2 Medium Turbo",
-        "speed": "~8-15s",
-        "strengths": "Fastest Krea 2 — medium quality at lower latency / cost.",
-        "price": "$0.015 (text) / $0.0175 (style refs)",
-        "path": "medium-turbo",
-    },
 }
 
 DEFAULT_MODEL = "krea-2-medium"
@@ -85,11 +76,6 @@ _ASPECT_MAP = {
 
 # Only resolution Krea currently supports.
 DEFAULT_RESOLUTION = "1K"
-
-# Krea's image_style_references entries are objects ({"url", "strength"}), not
-# bare URL strings. When the caller supplies a URL without an explicit strength
-# we apply Krea's recommended starting value. Range per Krea docs is -2..2.
-_DEFAULT_STYLE_REFERENCE_STRENGTH = 0.6
 
 # Valid creativity levels per Krea docs. Default is "medium".
 _VALID_CREATIVITY = {"raw", "low", "medium", "high"}
@@ -129,16 +115,8 @@ def _load_krea_config() -> Dict[str, Any]:
         return {}
 
 
-def _resolve_model(explicit: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
-    """Decide which model to use and return ``(model_id, meta)``.
-
-    Precedence: explicit caller override (e.g. managed-mode routing or a direct
-    ``model`` kwarg) → ``KREA_IMAGE_MODEL`` env → ``image_gen.krea.model`` →
-    ``image_gen.model`` → :data:`DEFAULT_MODEL`.
-    """
-    if isinstance(explicit, str) and explicit.strip() in _MODELS:
-        return explicit.strip(), _MODELS[explicit.strip()]
-
+def _resolve_model() -> Tuple[str, Dict[str, Any]]:
+    """Decide which model to use and return ``(model_id, meta)``."""
     env_override = os.environ.get("KREA_IMAGE_MODEL")
     if env_override and env_override in _MODELS:
         return env_override, _MODELS[env_override]
@@ -159,44 +137,6 @@ def _resolve_model(explicit: Optional[str] = None) -> Tuple[str, Dict[str, Any]]
         return candidate, _MODELS[candidate]
 
     return DEFAULT_MODEL, _MODELS[DEFAULT_MODEL]
-
-
-def _resolve_managed_krea_gateway():
-    """Return managed Krea gateway config when the user is on the managed path.
-
-    Mirrors ``_resolve_managed_fal_gateway`` in ``tools/image_generation_tool.py``:
-    the Nous-hosted Krea gateway wins when it is resolvable AND either no direct
-    ``KREA_API_KEY`` is configured or the user explicitly opted into the gateway
-    for ``image_gen``. Returns ``None`` (direct/BYO path) otherwise, and never
-    raises — plugin discovery and availability scans must stay robust.
-    """
-    try:
-        from tools.managed_tool_gateway import resolve_managed_tool_gateway
-        from tools.tool_backend_helpers import prefers_gateway
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Managed Krea gateway resolution unavailable: %s", exc)
-        return None
-
-    if os.environ.get("KREA_API_KEY") and not prefers_gateway("image_gen"):
-        return None
-
-    try:
-        return resolve_managed_tool_gateway("krea")
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Managed Krea gateway resolution failed: %s", exc)
-        return None
-
-
-def _managed_krea_gateway_ready() -> bool:
-    """Cheap, offline-friendly probe for managed Krea availability."""
-    try:
-        from tools.managed_tool_gateway import is_managed_tool_gateway_ready
-    except Exception:  # noqa: BLE001
-        return False
-    try:
-        return bool(is_managed_tool_gateway_ready("krea"))
-    except Exception:  # noqa: BLE001
-        return False
 
 
 def _resolve_creativity(value: Optional[str]) -> str:
@@ -230,10 +170,7 @@ class KreaImageGenProvider(ImageGenProvider):
         return "Krea"
 
     def is_available(self) -> bool:
-        # Available with a direct Krea key OR via the managed Nous gateway
-        # (Nous Subscription), so portal users with no Krea key can still
-        # reach Krea 2 through the gateway.
-        return bool(os.environ.get("KREA_API_KEY")) or _managed_krea_gateway_ready()
+        return bool(os.environ.get("KREA_API_KEY"))
 
     def list_models(self) -> List[Dict[str, Any]]:
         return [
@@ -254,7 +191,7 @@ class KreaImageGenProvider(ImageGenProvider):
         return {
             "name": "Krea",
             "badge": "paid",
-            "tag": "Krea 2 foundation model — Medium ($0.03), Large ($0.06), Medium Turbo ($0.015). Style transfer, moodboards, reference-guided generation. Direct key or managed Nous Subscription gateway.",
+            "tag": "Krea 2 foundation model — Medium ($0.03) + Large ($0.06). Strong style transfer + moodboards.",
             "env_vars": [
                 {
                     "key": "KREA_API_KEY",
@@ -264,11 +201,6 @@ class KreaImageGenProvider(ImageGenProvider):
             ],
         }
 
-    def capabilities(self) -> Dict[str, Any]:
-        # Krea supports reference-guided generation (image-to-image style
-        # transfer) via image_style_references — up to 10 refs.
-        return {"modalities": ["text", "image"], "max_reference_images": 10}
-
     # ------------------------------------------------------------------
     # generate()
     # ------------------------------------------------------------------
@@ -277,47 +209,11 @@ class KreaImageGenProvider(ImageGenProvider):
         self,
         prompt: str,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
-        *,
-        image_url: Optional[str] = None,
-        reference_image_urls: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         prompt = (prompt or "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
         krea_ar = _ASPECT_MAP.get(aspect, "1:1")
-
-        # Collect reference images for reference-guided generation (image-to-
-        # image style transfer). Sources, in order:
-        #   1. unified image_url (primary source) + reference_image_urls (strings)
-        #   2. legacy image_style_references kwarg — may be plain URL strings OR
-        #      Krea's richer ref objects (e.g. {"url": ..., "strength": ...}),
-        #      which are passed through verbatim for backward compatibility.
-        style_refs: List[Any] = []
-        if isinstance(image_url, str) and image_url.strip():
-            style_refs.append(image_url.strip())
-        for ref in (normalize_reference_images(reference_image_urls) or []):
-            style_refs.append(ref)
-        legacy_refs = kwargs.get("image_style_references")
-        if isinstance(legacy_refs, list):
-            for ref in legacy_refs:
-                if isinstance(ref, str):
-                    if ref.strip():
-                        style_refs.append(ref.strip())
-                elif ref:
-                    # Non-string ref object (dict, etc.) — pass through as-is.
-                    style_refs.append(ref)
-        # Dedupe string entries while preserving order (dict refs aren't
-        # hashable, so they're kept verbatim); Krea caps at 10.
-        seen: set = set()
-        deduped: List[Any] = []
-        for r in style_refs:
-            if isinstance(r, str):
-                if r in seen:
-                    continue
-                seen.add(r)
-            deduped.append(r)
-        style_refs = deduped[:10]
-        modality = "image" if style_refs else "text"
 
         if not prompt:
             return error_response(
@@ -327,66 +223,21 @@ class KreaImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        # Route through the managed Nous gateway (Nous Subscription) when the
-        # user is on the managed path; otherwise use the direct Krea API with a
-        # BYO ``KREA_API_KEY``. The gateway owns the shared Krea credential and
-        # meters/bills per generation, so the caller token is the Nous access
-        # token, not a Krea key.
-        managed = _resolve_managed_krea_gateway()
-        if managed is not None:
-            base_url = managed.gateway_origin.rstrip("/")
-            auth_token = managed.nous_user_token
-        else:
-            base_url = BASE_URL
-            auth_token = os.environ.get("KREA_API_KEY")
-            if not auth_token:
-                return error_response(
-                    error=(
-                        "KREA_API_KEY not set. Run `hermes tools` → Image "
-                        "Generation → Krea to configure, get a key at "
-                        "https://www.krea.ai/settings/api-tokens, or sign in to "
-                        "a Nous account with the managed Krea gateway enabled "
-                        "(`hermes setup`)."
-                    ),
-                    error_type="auth_required",
-                    provider="krea",
-                    aspect_ratio=aspect,
-                )
+        api_key = os.environ.get("KREA_API_KEY")
+        if not api_key:
+            return error_response(
+                error=(
+                    "KREA_API_KEY not set. Run `hermes tools` → Image "
+                    "Generation → Krea to configure, or get a key at "
+                    "https://www.krea.ai/settings/api-tokens."
+                ),
+                error_type="auth_required",
+                provider="krea",
+                aspect_ratio=aspect,
+            )
 
-        model_id, meta = _resolve_model(kwargs.get("model"))
+        model_id, meta = _resolve_model()
         creativity = _resolve_creativity(kwargs.get("creativity"))
-
-        # The managed gateway only prices base text-to-image and URL
-        # ``image_style_references`` tiers. Trained styles (LoRAs) and
-        # moodboards have no managed price and are rejected at the gateway, so
-        # fail fast here with actionable guidance instead of a raw 400.
-        if managed is not None:
-            if isinstance(kwargs.get("styles"), list) and kwargs.get("styles"):
-                return error_response(
-                    error=(
-                        "Managed Krea (Nous Subscription) does not support "
-                        "trained styles (LoRAs). Set KREA_API_KEY to use Krea "
-                        "directly, or omit `styles`."
-                    ),
-                    error_type="unsupported_argument",
-                    provider="krea",
-                    model=model_id,
-                    prompt=prompt,
-                    aspect_ratio=aspect,
-                )
-            if isinstance(kwargs.get("moodboards"), list) and kwargs.get("moodboards"):
-                return error_response(
-                    error=(
-                        "Managed Krea (Nous Subscription) does not support "
-                        "moodboards. Set KREA_API_KEY to use Krea directly, or "
-                        "omit `moodboards`."
-                    ),
-                    error_type="unsupported_argument",
-                    provider="krea",
-                    model=model_id,
-                    prompt=prompt,
-                    aspect_ratio=aspect,
-                )
 
         payload: Dict[str, Any] = {
             "prompt": prompt,
@@ -405,21 +256,10 @@ class KreaImageGenProvider(ImageGenProvider):
         if isinstance(styles, list) and styles:
             payload["styles"] = styles
 
-        if style_refs:
-            # Reference-guided generation (image-to-image style transfer).
-            # Krea requires each entry to be an object ({"url", "strength"}),
-            # NOT a bare URL string — a string yields a 422 "Expected object,
-            # received string". Convert URL strings to the object form and pass
-            # already-object refs through verbatim (clamped to 10 above).
-            normalized_refs: List[Any] = []
-            for ref in style_refs:
-                if isinstance(ref, str):
-                    normalized_refs.append(
-                        {"url": ref, "strength": _DEFAULT_STYLE_REFERENCE_STRENGTH}
-                    )
-                else:
-                    normalized_refs.append(ref)
-            payload["image_style_references"] = normalized_refs
+        image_style_references = kwargs.get("image_style_references")
+        if isinstance(image_style_references, list) and image_style_references:
+            # Krea caps at 10 refs per request.
+            payload["image_style_references"] = image_style_references[:10]
 
         moodboards = kwargs.get("moodboards")
         if isinstance(moodboards, list) and moodboards:
@@ -427,19 +267,13 @@ class KreaImageGenProvider(ImageGenProvider):
             payload["moodboards"] = moodboards[:1]
 
         headers = {
-            "Authorization": f"Bearer {auth_token}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "User-Agent": "Hermes-Agent/1.0 (krea-image-gen)",
         }
-        if managed is not None:
-            # The gateway derives the per-generation billing idempotency
-            # boundary from this header (else it falls back to a body
-            # fingerprint). A fresh key per submit keeps each generation a
-            # distinct billable execution.
-            headers["x-idempotency-key"] = str(uuid.uuid4())
 
         # 1. Submit job.
-        submit_url = f"{base_url}/generate/image/krea/krea-2/{meta['path']}"
+        submit_url = f"{BASE_URL}/generate/image/krea/krea-2/{meta['path']}"
         try:
             response = requests.post(
                 submit_url,
@@ -461,32 +295,6 @@ class KreaImageGenProvider(ImageGenProvider):
             except Exception:  # noqa: BLE001
                 err_msg = resp.text[:300] if resp is not None else str(exc)
             logger.error("Krea submit failed (%d): %s", status, err_msg)
-            # On a managed 4xx, surface actionable remediation mirroring the
-            # FAL managed gateway path: the model may not be enabled/priced on
-            # the Nous Portal, or the gateway's shared Krea key hit its
-            # concurrency cap (429).
-            if managed is not None and 400 <= status < 500:
-                hint = (
-                    "Krea's shared-key concurrency cap was hit — retry shortly."
-                    if status == 429
-                    else (
-                        f"Model '{model_id}' may not be enabled/priced on the "
-                        "Nous Portal's Krea gateway. Set KREA_API_KEY to use "
-                        "Krea directly, or pick a different model via "
-                        "`hermes tools` → Image Generation."
-                    )
-                )
-                return error_response(
-                    error=(
-                        f"Nous Subscription Krea gateway rejected '{model_id}' "
-                        f"(HTTP {status}): {err_msg}. {hint}"
-                    ),
-                    error_type="api_error",
-                    provider="krea",
-                    model=model_id,
-                    prompt=prompt,
-                    aspect_ratio=aspect,
-                )
             return error_response(
                 error=f"Krea image generation failed ({status}): {err_msg}",
                 error_type="api_error",
@@ -537,12 +345,10 @@ class KreaImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        # 2. Poll for completion. Status/result polling is bound to the same
-        # principal at the gateway, so the managed path polls the gateway's
-        # ``/jobs/{id}`` with the Nous token (404 on cross-user/unknown jobs).
-        job_url = f"{base_url}/jobs/{job_id}"
+        # 2. Poll for completion.
+        job_url = f"{BASE_URL}/jobs/{job_id}"
         poll_headers = {
-            "Authorization": f"Bearer {auth_token}",
+            "Authorization": f"Bearer {api_key}",
             "User-Agent": "Hermes-Agent/1.0 (krea-image-gen)",
         }
         interval = _POLL_INITIAL_INTERVAL
@@ -677,19 +483,19 @@ class KreaImageGenProvider(ImageGenProvider):
         # Per Krea's job-lifecycle docs the completed payload exposes
         # ``result.urls`` (an array). Fall back to a single ``url`` field
         # for forward/backward compatibility.
-        result_image_url: Optional[str] = None
+        image_url: Optional[str] = None
         urls = result.get("urls")
         if isinstance(urls, list) and urls:
             for candidate in urls:
                 if isinstance(candidate, str) and candidate.strip():
-                    result_image_url = candidate.strip()
+                    image_url = candidate.strip()
                     break
-        if result_image_url is None:
+        if image_url is None:
             single = result.get("url")
             if isinstance(single, str) and single.strip():
-                result_image_url = single.strip()
+                image_url = single.strip()
 
-        if result_image_url is None:
+        if image_url is None:
             return error_response(
                 error="Krea result contained no image URL",
                 error_type="empty_response",
@@ -702,14 +508,14 @@ class KreaImageGenProvider(ImageGenProvider):
         # Materialise locally — Krea result URLs may expire, mirroring
         # what we do for xAI / OpenAI URL responses (#26942).
         try:
-            saved_path = save_url_image(result_image_url, prefix=f"krea_{model_id}")
+            saved_path = save_url_image(image_url, prefix=f"krea_{model_id}")
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Krea image URL %s could not be cached (%s); falling back to bare URL.",
-                result_image_url,
+                image_url,
                 exc,
             )
-            image_ref = result_image_url
+            image_ref = image_url
         else:
             image_ref = str(saved_path)
 
@@ -728,7 +534,6 @@ class KreaImageGenProvider(ImageGenProvider):
             prompt=prompt,
             aspect_ratio=aspect,
             provider="krea",
-            modality=modality,
             extra=extra,
         )
 

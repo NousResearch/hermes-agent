@@ -73,7 +73,14 @@ export function AlternateScreen(t0: Props) {
       // 1003 hover events asserted, picking 'wheel' or 'buttons' without
       // an unconditional DISABLE would silently leave hover on and defeat
       // the point of the preset.
-      writeRaw(ENTER_ALT_SCREEN + ERASE_SCROLLBACK + ERASE_SCREEN + CURSOR_HOME + DISABLE_MOUSE_TRACKING + enableMouse)
+      writeRaw(
+        ENTER_ALT_SCREEN +
+          ERASE_SCROLLBACK +
+          ERASE_SCREEN +
+          CURSOR_HOME +
+          DISABLE_MOUSE_TRACKING +
+          enableMouse
+      )
       ink?.setAltScreenActive(true, mouseTracking)
       // setAltScreenActive(true, mouseTracking) above stores the mode for
       // SIGCONT/resize/stdin-gap re-assertion. We don't also call

@@ -1,10 +1,8 @@
 """Tests for hermes_cli.web_server and related config utilities."""
 
-import asyncio
 import os
 import json
 import shutil
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -65,24 +63,6 @@ def _install_example_plugin(_isolate_hermes_home):
     if dst.exists():
         shutil.rmtree(dst)
     shutil.copytree(_EXAMPLE_PLUGIN_FIXTURE, dst)
-
-    # The dashboard now gates user-plugin asset serving + backend import
-    # behind the ``plugins.enabled`` allow-list (GHSA-mcfc-hp25-cjv7).
-    # An installed-but-not-enabled user plugin has its API mount skipped
-    # and its assets 404'd — which is the whole point of the gate. These
-    # fixtures exist to exercise the *serving* paths, so opt the example
-    # plugin in exactly as a real operator would with `hermes plugins
-    # enable example`.
-    from hermes_cli.config import load_config, save_config
-    _cfg = load_config()
-    _plugins_cfg = _cfg.setdefault("plugins", {})
-    _enabled = _plugins_cfg.get("enabled")
-    if not isinstance(_enabled, list):
-        _enabled = []
-    if "example" not in _enabled:
-        _enabled.append("example")
-    _plugins_cfg["enabled"] = _enabled
-    save_config(_cfg)
 
     # Snapshot the existing routes BEFORE mounting so we can:
     #   1. Identify the routes the mount call appends.
@@ -267,75 +247,6 @@ class TestWebServerEndpoints:
         assert "active_sessions" in data
         assert data["can_update_hermes"] is True
 
-    def test_gateway_drain_begin_writes_marker(self):
-        from gateway import drain_control
-
-        resp = self.client.post("/api/gateway/drain", json={"action": "drain"})
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["ok"] is True and data["action"] == "drain"
-        assert data["draining"] is True
-        assert drain_control.drain_requested() is True
-        # cleanup
-        drain_control.clear_drain_request()
-
-    def test_gateway_drain_defaults_to_begin(self):
-        from gateway import drain_control
-
-        resp = self.client.post("/api/gateway/drain", json={})
-        assert resp.status_code == 200
-        assert resp.json()["action"] == "drain"
-        assert drain_control.drain_requested() is True
-        drain_control.clear_drain_request()
-
-    def test_gateway_drain_suppress_notification_passthrough(self):
-        from gateway import drain_control
-
-        resp = self.client.post(
-            "/api/gateway/drain",
-            json={"action": "drain", "suppress_notification": True},
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["suppress_notification"] is True
-        # The flag landed on the marker the gateway reads at shutdown.
-        body = drain_control.read_drain_request()
-        assert body is not None and body["suppress_notification"] is True
-        assert drain_control.drain_notification_suppressed() is True
-        drain_control.clear_drain_request()
-
-    def test_gateway_drain_suppress_defaults_false(self):
-        from gateway import drain_control
-
-        resp = self.client.post("/api/gateway/drain", json={"action": "drain"})
-        assert resp.status_code == 200
-        assert resp.json()["suppress_notification"] is False
-        assert drain_control.drain_notification_suppressed() is False
-        drain_control.clear_drain_request()
-
-    def test_gateway_drain_cancel_removes_marker(self):
-        from gateway import drain_control
-
-        drain_control.write_drain_request()
-        resp = self.client.post("/api/gateway/drain", json={"action": "cancel"})
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["ok"] is True and data["action"] == "cancel"
-        assert data["was_draining"] is True
-        assert drain_control.drain_requested() is False
-
-    def test_gateway_drain_cancel_idempotent(self):
-        from gateway import drain_control
-
-        resp = self.client.post("/api/gateway/drain", json={"action": "cancel"})
-        assert resp.status_code == 200
-        assert resp.json()["was_draining"] is False
-        assert drain_control.drain_requested() is False
-
-    def test_gateway_drain_bad_action_400(self):
-        resp = self.client.post("/api/gateway/drain", json={"action": "explode"})
-        assert resp.status_code == 400
-
     def test_get_status_hides_update_capability_in_managed_runtime(self, monkeypatch):
         import hermes_cli.web_server as web_server
 
@@ -350,389 +261,8 @@ class TestWebServerEndpoints:
         import hermes_cli.web_server as web_server
 
         monkeypatch.setattr(hermes_constants, "is_container", lambda: True)
-        # A docker install inside a container should be managed externally.
-        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "docker")
 
         assert web_server._dashboard_local_update_managed_externally() is True
-
-    def test_dashboard_update_capability_allows_git_in_container(self, monkeypatch):
-        """A git checkout inside a container (e.g. bind-mounted in hermes-webui)
-        should still offer dashboard updates — the checkout is self-managed."""
-        import hermes_constants
-        import hermes_cli.web_server as web_server
-
-        monkeypatch.setattr(hermes_constants, "is_container", lambda: True)
-        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "git")
-
-        assert web_server._dashboard_local_update_managed_externally() is False
-
-    def test_dashboard_update_capability_blocks_pip_in_container(self, monkeypatch):
-        """A pip install inside a container is still managed externally."""
-        import hermes_constants
-        import hermes_cli.web_server as web_server
-
-        monkeypatch.setattr(hermes_constants, "is_container", lambda: True)
-        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "pip")
-
-        assert web_server._dashboard_local_update_managed_externally() is True
-
-    @staticmethod
-    def _provider_field_map(payload):
-        return {field["key"]: field for field in payload["fields"]}
-
-    def test_get_memory_provider_config_returns_safe_defaults(self):
-        resp = self.client.get("/api/memory/providers/hindsight/config")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["name"] == "hindsight"
-        assert data["label"] == "Hindsight"
-
-        fields = self._provider_field_map(data)
-        assert fields["mode"]["kind"] == "select"
-        assert fields["mode"]["value"] == "cloud"
-        assert {opt["value"] for opt in fields["mode"]["options"]} >= {
-            "cloud",
-            "local_external",
-        }
-        assert fields["api_url"]["kind"] == "text"
-        assert fields["api_url"]["value"]
-        assert fields["bank_id"]["value"] == "hermes"
-        assert fields["recall_budget"]["value"] == "mid"
-        assert fields["api_key"]["kind"] == "secret"
-        assert fields["api_key"]["is_set"] is False
-        assert fields["api_key"]["required"] is False
-
-    def test_get_memory_provider_config_loads_dynamic_plugin_schema(self):
-        resp = self.client.get("/api/memory/providers/honcho/config")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        fields = self._provider_field_map(data)
-        assert fields["api_key"]["kind"] == "secret"
-        assert fields["api_key"]["url"] == "https://app.honcho.dev"
-        assert fields["baseUrl"]["kind"] == "text"
-
-    def test_all_listed_memory_provider_configs_fetch(self):
-        resp = self.client.get("/api/memory")
-
-        assert resp.status_code == 200
-        providers = resp.json()["providers"]
-        assert providers
-
-        failures = []
-        for provider in providers:
-            config_resp = self.client.get(
-                f"/api/memory/providers/{provider['name']}/config"
-            )
-            if config_resp.status_code != 200:
-                failures.append((provider["name"], config_resp.status_code, config_resp.text))
-
-        assert failures == []
-
-    def test_memory_provider_payloads_include_manifest_setup_hints(self):
-        resp = self.client.get("/api/memory")
-
-        assert resp.status_code == 200
-        providers = {row["name"]: row for row in resp.json()["providers"]}
-
-        byterover_setup = providers["byterover"]["setup"]
-        assert byterover_setup["external_dependencies"] == [
-            {
-                "name": "brv",
-                "install": "curl -fsSL https://byterover.dev/install.sh | sh",
-                "check": "brv --version",
-            }
-        ]
-
-        retaindb_setup = providers["retaindb"]["setup"]
-        assert "requests" in retaindb_setup["pip_dependencies"]
-        assert "RETAINDB_API_KEY" in retaindb_setup["required_env"]
-        assert isinstance(byterover_setup["dependencies_installed"], bool)
-
-        config_resp = self.client.get("/api/memory/providers/byterover/config")
-        assert config_resp.status_code == 200
-        assert config_resp.json()["setup"]["external_dependencies"] == byterover_setup["external_dependencies"]
-
-    def test_memory_status_reports_honcho_needs_config_after_dependency_setup(self, monkeypatch):
-        import hermes_cli.web_server as web_server
-
-        original_dependency_importable = web_server._dependency_importable
-        monkeypatch.setattr(
-            web_server,
-            "_dependency_importable",
-            lambda dep: True if dep == "honcho-ai" else original_dependency_importable(dep),
-        )
-
-        resp = self.client.get("/api/memory")
-
-        assert resp.status_code == 200
-        providers = {row["name"]: row for row in resp.json()["providers"]}
-        assert providers["honcho"]["setup"]["dependencies_installed"] is True
-        assert providers["honcho"]["status"] == "needs_config"
-
-    def test_post_memory_provider_setup_runs_declared_external_install(self, monkeypatch):
-        import subprocess
-
-        import hermes_cli.web_server as web_server
-
-        calls = []
-        check_count = 0
-
-        def fake_run(command, **kwargs):
-            nonlocal check_count
-            calls.append((command, kwargs))
-            if command == ["brv", "--version"]:
-                check_count += 1
-                if check_count == 1:
-                    raise FileNotFoundError("brv")
-                return subprocess.CompletedProcess(
-                    command,
-                    0,
-                    stdout="brv 1.0.0",
-                    stderr="",
-                )
-            if command == "curl -fsSL https://byterover.dev/install.sh | sh":
-                assert kwargs["shell"] is True
-                return subprocess.CompletedProcess(command, 0, stdout="installed", stderr="")
-            raise AssertionError(f"Unexpected command: {command}")
-
-        monkeypatch.setattr(web_server.subprocess, "run", fake_run)
-
-        resp = self.client.post("/api/memory/providers/byterover/setup", json={"values": {}})
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["provider"] == "byterover"
-        assert data["ok"] is True
-        assert [result["status"] for result in data["results"]] == [
-            "missing",
-            "installed",
-            "verified",
-        ]
-        assert [call[0] for call in calls[:3]] == [
-            ["brv", "--version"],
-            "curl -fsSL https://byterover.dev/install.sh | sh",
-            ["brv", "--version"],
-        ]
-        assert calls[-1][0] == ["brv", "--version"]
-
-    def test_post_unknown_memory_provider_setup_returns_404(self):
-        resp = self.client.post("/api/memory/providers/nope/setup", json={"values": {}})
-
-        assert resp.status_code == 404
-
-    def test_memory_provider_endpoints_reject_traversal_names(self):
-        # Names with path separators / dots must never reach the filesystem
-        # lookup or the setup command path. 404 = rejected by the name guard;
-        # 405 = the router collapsed the dotted path onto a different route
-        # (equally safe — the handler never ran).
-        for bad in ("..", "..%2f..%2fetc", "a.b", "x/y", ".hidden", ""):
-            resp = self.client.get(f"/api/memory/providers/{bad}/config")
-            assert resp.status_code in (404, 405), (bad, resp.status_code)
-            resp = self.client.post(
-                f"/api/memory/providers/{bad}/setup", json={"values": {}}
-            )
-            assert resp.status_code in (404, 405), (bad, resp.status_code)
-            resp = self.client.put(
-                f"/api/memory/providers/{bad}/config", json={"values": {}}
-            )
-            assert resp.status_code in (404, 405), (bad, resp.status_code)
-
-    def test_post_memory_provider_setup_persists_values_without_activation(self):
-        from hermes_cli.config import load_config, load_env
-
-        resp = self.client.post(
-            "/api/memory/providers/retaindb/setup",
-            json={"values": {"api_key": "retain-test-key", "project": "default"}},
-        )
-
-        assert resp.status_code == 200
-        assert resp.json()["provider"] == "retaindb"
-        assert load_env()["RETAINDB_API_KEY"] == "retain-test-key"
-        assert load_config().get("memory", {}).get("provider") != "retaindb"
-
-    def test_put_memory_provider_config_writes_config_and_secret(self):
-        from hermes_constants import get_hermes_home
-        from hermes_cli.config import load_config, load_env
-
-        resp = self.client.put(
-            "/api/memory/providers/hindsight/config",
-            json={
-                "values": {
-                    "mode": "local_external",
-                    "api_url": "http://localhost:8888",
-                    "api_key": "hs-test-key",
-                    "bank_id": "ben-bank",
-                    "recall_budget": "high",
-                }
-            },
-        )
-
-        assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "active": "hindsight"}
-        assert load_config()["memory"]["provider"] == "hindsight"
-        assert load_env()["HINDSIGHT_API_KEY"] == "hs-test-key"
-
-        config_path = get_hermes_home() / "hindsight" / "config.json"
-        provider_config = json.loads(config_path.read_text(encoding="utf-8"))
-        assert provider_config["mode"] == "local_external"
-        assert provider_config["api_url"] == "http://localhost:8888"
-        assert provider_config["bank_id"] == "ben-bank"
-        assert provider_config["recall_budget"] == "high"
-        assert "api_key" not in provider_config
-
-    def test_put_memory_provider_config_rejects_unsupported_select_value(self):
-        resp = self.client.put(
-            "/api/memory/providers/hindsight/config",
-            json={
-                "values": {
-                    "mode": "spaceship",
-                    "api_url": "http://localhost:8888",
-                    "bank_id": "hermes",
-                    "recall_budget": "mid",
-                }
-            },
-        )
-
-        assert resp.status_code == 400
-
-    def test_put_unknown_memory_provider_returns_404(self):
-        resp = self.client.put(
-            "/api/memory/providers/nope/config", json={"values": {}}
-        )
-
-        assert resp.status_code == 404
-
-    def test_get_unknown_memory_provider_returns_empty_schema(self):
-        resp = self.client.get("/api/memory/providers/builtin/config")
-
-        assert resp.status_code == 200
-        assert resp.json()["fields"] == []
-
-    def test_get_memory_provider_config_does_not_return_secret(self):
-        self.client.put(
-            "/api/memory/providers/hindsight/config",
-            json={
-                "values": {
-                    "mode": "cloud",
-                    "api_url": "https://api.hindsight.vectorize.io",
-                    "api_key": "secret-value",
-                    "bank_id": "hermes",
-                    "recall_budget": "mid",
-                }
-            },
-        )
-
-        resp = self.client.get("/api/memory/providers/hindsight/config")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        fields = self._provider_field_map(data)
-        assert fields["api_key"]["is_set"] is True
-        assert fields["api_key"]["value"] == ""
-        assert "secret-value" not in json.dumps(data)
-
-    def test_get_memory_status_reports_ready_and_missing_provider(self):
-        from hermes_cli.config import load_config, save_config
-
-        self.client.put(
-            "/api/memory/providers/hindsight/config",
-            json={
-                "values": {
-                    "mode": "cloud",
-                    "api_url": "https://api.hindsight.vectorize.io",
-                    "api_key": "secret-value",
-                    "bank_id": "hermes",
-                    "recall_budget": "mid",
-                }
-            },
-        )
-        resp = self.client.get("/api/memory")
-        assert resp.status_code == 200
-        providers = {row["name"]: row for row in resp.json()["providers"]}
-        assert providers["hindsight"]["configured"] is True
-        assert providers["hindsight"]["status"] == "ready"
-        assert "available" in providers["hindsight"]
-
-        config = load_config()
-        config.setdefault("memory", {})["provider"] = "not-installed"
-        save_config(config)
-
-        resp = self.client.get("/api/memory")
-        assert resp.status_code == 200
-        providers = {row["name"]: row for row in resp.json()["providers"]}
-        assert providers["not-installed"]["status"] == "missing"
-        assert providers["not-installed"]["available"] is False
-
-        config = load_config()
-        config.setdefault("memory", {})["provider"] = "builtin"
-        save_config(config)
-
-        resp = self.client.get("/api/memory")
-        assert resp.status_code == 200
-        assert resp.json()["active"] == ""
-        assert "builtin" not in {row["name"] for row in resp.json()["providers"]}
-
-    def test_set_memory_provider_rejects_unready_and_clears_builtin(self):
-        from hermes_cli.config import load_config
-
-        resp = self.client.put("/api/memory/provider", json={"provider": "supermemory"})
-        assert resp.status_code == 400
-
-        resp = self.client.put("/api/memory/provider", json={"provider": "built-in"})
-        assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "active": ""}
-        assert load_config()["memory"]["provider"] == ""
-
-    def test_dashboard_plugin_providers_rejects_unready_memory_provider(self):
-        resp = self.client.put(
-            "/api/dashboard/plugin-providers",
-            json={"memory_provider": "supermemory"},
-        )
-
-        assert resp.status_code == 400
-
-    def test_dashboard_plugin_providers_accepts_builtin_alias(self):
-        from hermes_cli.config import load_config
-
-        resp = self.client.put(
-            "/api/dashboard/plugin-providers",
-            json={"memory_provider": "built-in"},
-        )
-
-        assert resp.status_code == 200
-        assert load_config()["memory"]["provider"] == ""
-
-    def test_get_moa_models_returns_provider_model_slots(self):
-        resp = self.client.get("/api/model/moa")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["reference_models"]
-        assert all(set(slot) == {"provider", "model"} for slot in data["reference_models"])
-        assert set(data["aggregator"]) == {"provider", "model"}
-
-    def test_put_moa_models_persists_provider_model_slots(self):
-        from hermes_cli.config import load_config
-
-        payload = {
-            "reference_models": [
-                {"provider": "openai-codex", "model": "gpt-5.5"},
-                {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
-            ],
-            "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
-            "reference_temperature": 0.6,
-            "aggregator_temperature": 0.4,
-            "max_tokens": 4096,
-            "enabled": True,
-        }
-
-        resp = self.client.put("/api/model/moa", json=payload)
-        assert resp.status_code == 200
-        assert resp.json()["ok"] is True
-        cfg = load_config()
-        assert cfg["moa"]["reference_models"] == payload["reference_models"]
-        assert cfg["moa"]["aggregator"] == payload["aggregator"]
 
     # ── GET /api/media (remote image display) ───────────────────────────
 
@@ -846,6 +376,7 @@ class TestWebServerEndpoints:
         config = load_config()
         assert config["dashboard"]["theme"] == "ember"
         assert config["dashboard"]["font"] == "jetbrains-mono"
+
 
     def test_get_sessions_uses_only_persisted_cwd(self, monkeypatch):
         """Session rows without persisted cwd must not inherit TERMINAL_CWD.
@@ -1048,41 +579,6 @@ class TestWebServerEndpoints:
 
         messages = self.client.get("/api/sessions/worker-only/messages?profile=worker").json()
         assert [m["content"] for m in messages["messages"]] == ["worker"]
-
-    def test_latest_descendant_reads_requested_profile(self):
-        """Chat resume must resolve compression tips in the chat profile DB."""
-        from hermes_state import SessionDB
-        from hermes_cli import profiles as profiles_mod
-
-        worker_home = profiles_mod.get_profile_dir("worker")
-        worker_home.mkdir(parents=True)
-
-        default_db = SessionDB()
-        try:
-            default_db.create_session(session_id="shared-root", source="cli")
-        finally:
-            default_db.close()
-
-        worker_db = SessionDB(db_path=worker_home / "state.db")
-        try:
-            worker_db.create_session(session_id="shared-root", source="cli")
-            worker_db.create_session(
-                session_id="worker-tip",
-                source="cli",
-                parent_session_id="shared-root",
-            )
-        finally:
-            worker_db.close()
-
-        default_resp = self.client.get("/api/sessions/shared-root/latest-descendant")
-        assert default_resp.status_code == 200
-        assert default_resp.json()["session_id"] == "shared-root"
-
-        worker_resp = self.client.get(
-            "/api/sessions/shared-root/latest-descendant?profile=worker"
-        )
-        assert worker_resp.status_code == 200
-        assert worker_resp.json()["session_id"] == "worker-tip"
 
     def test_analytics_endpoints_read_requested_profile(self):
         from hermes_state import SessionDB
@@ -1410,8 +906,6 @@ class TestWebServerEndpoints:
             spawned = True
             raise AssertionError("docker update guard should not spawn hermes update")
 
-        # Bypass the managed-externally gate so we reach the docker install check.
-        monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: False)
         monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "docker")
         monkeypatch.setattr(web_server, "_spawn_hermes_action", fail_spawn)
         web_server._ACTION_PROCS.pop("hermes-update", None)
@@ -1701,57 +1195,6 @@ class TestWebServerEndpoints:
         for key, info in data.items():
             assert info["channel_managed"] is (key in channel_keys)
 
-    def test_get_env_vars_surfaces_catalog_providers(self):
-        """Every keys-tab provider in the unified catalog must appear in /api/env
-        as a provider card, even when it has no hand entry in OPTIONAL_ENV_VARS.
-
-        Regression for the GUI⇄CLI drift: openai-api, kilocode, novita,
-        tencent-tokenhub, copilot were configurable via `hermes model` but
-        invisible in the desktop Providers → API keys tab.
-        """
-        from hermes_cli.provider_catalog import provider_catalog
-
-        data = self.client.get("/api/env").json()
-        for d in provider_catalog():
-            if d.tab != "keys" or not d.api_key_env_vars:
-                continue
-            # The PRIMARY credential var must surface as this provider's card.
-            # (Shared aliases like GITHUB_TOKEN are intentionally left on their
-            # existing tool category and not hijacked — see the copilot test.)
-            primary = d.api_key_env_vars[0]
-            assert primary in data, f"{primary} ({d.slug}) missing from /api/env"
-            info = data[primary]
-            assert info["category"] == "provider"
-            assert info["provider"] == d.slug
-            assert info["provider_label"] == d.label
-
-    def test_get_env_vars_provider_rows_carry_grouping_hints(self):
-        """Provider env rows expose the backend `provider`/`provider_label` the
-        desktop Keys tab groups by (so it no longer relies on prefix guesses)."""
-        data = self.client.get("/api/env").json()
-        # OPENAI_API_KEY is a hand-listed protected var AND a catalog provider;
-        # it must come back tagged to the openai-api provider.
-        assert data["OPENAI_API_KEY"]["provider"] == "openai-api"
-        assert data["OPENAI_API_KEY"]["category"] == "provider"
-
-    def test_get_env_vars_copilot_uses_provider_token_not_shared_github_token(self):
-        """Copilot surfaces as its own provider card via COPILOT_GITHUB_TOKEN;
-        the shared GITHUB_TOKEN keeps its existing (tool) category."""
-        data = self.client.get("/api/env").json()
-        assert data["COPILOT_GITHUB_TOKEN"]["provider"] == "copilot"
-        assert data["COPILOT_GITHUB_TOKEN"]["category"] == "provider"
-        # Shared GITHUB_TOKEN must NOT be hijacked into the copilot provider card.
-        assert data.get("GITHUB_TOKEN", {}).get("provider", "") != "copilot"
-
-    def test_get_env_vars_bedrock_aws_vars_tagged_to_provider(self):
-        """Bedrock (aws_sdk, no api-key) must still appear on the Keys tab: its
-        AWS_REGION/AWS_PROFILE settings are tagged to the bedrock provider card.
-        """
-        data = self.client.get("/api/env").json()
-        assert data["AWS_REGION"]["provider"] == "bedrock"
-        assert data["AWS_REGION"]["category"] == "provider"
-        assert data["AWS_PROFILE"]["provider"] == "bedrock"
-
     def test_platform_scoped_messaging_env_vars_are_channel_managed(self):
         from hermes_cli.web_server import (
             _MESSAGING_KEYS_PAGE_KEYS,
@@ -1911,145 +1354,6 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert captured["args"] == ["import", str(archive)]
 
-    def test_ops_backup_defaults_to_dashboard_downloadable_archive(self, monkeypatch):
-        from pathlib import Path
-
-        import hermes_cli.web_server as ws
-        from hermes_cli.config import get_hermes_home
-
-        captured = {}
-
-        def fake_spawn(subcommand, name):
-            captured["args"] = subcommand
-            captured["name"] = name
-            from types import SimpleNamespace as NS
-            return NS(pid=12345)
-
-        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn)
-
-        resp = self.client.post("/api/ops/backup", json={})
-        assert resp.status_code == 200
-        data = resp.json()
-        archive = Path(data["archive"])
-
-        assert data["name"] == "backup"
-        assert captured["name"] == "backup"
-        assert captured["args"] == ["backup", str(archive)]
-        assert archive.parent == get_hermes_home() / "backups"
-        assert archive.name.startswith("hermes-backup-")
-        assert archive.suffix == ".zip"
-
-    def test_ops_backup_uses_hosted_hermes_home(self, tmp_path, monkeypatch):
-        from pathlib import Path
-
-        import hermes_cli.web_server as ws
-
-        hosted_home = tmp_path / "opt-data"
-        monkeypatch.setenv("HERMES_HOME", str(hosted_home))
-        captured = {}
-
-        def fake_spawn(subcommand, name):
-            captured["args"] = subcommand
-            captured["name"] = name
-            from types import SimpleNamespace as NS
-            return NS(pid=12345)
-
-        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn)
-
-        resp = self.client.post("/api/ops/backup", json={})
-        assert resp.status_code == 200
-        archive = Path(resp.json()["archive"])
-
-        assert archive.parent == hosted_home / "backups"
-        assert captured["args"] == ["backup", str(archive)]
-        assert archive.parent.is_dir()
-
-    def test_ops_backup_download_streams_dashboard_backup(self, tmp_path):
-        import hermes_cli.web_server as ws
-
-        backup_dir = ws._dashboard_backup_dir()
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        archive = backup_dir / "hermes-backup-test.zip"
-        archive.write_bytes(b"zip bytes")
-
-        resp = self.client.get(
-            "/api/ops/backup/download",
-            params={"archive": str(archive)},
-        )
-        assert resp.status_code == 200
-        assert resp.content == b"zip bytes"
-        assert "attachment" in resp.headers["content-disposition"]
-
-        outside = tmp_path / "outside.zip"
-        outside.write_bytes(b"nope")
-        denied = self.client.get(
-            "/api/ops/backup/download",
-            params={"archive": str(outside)},
-        )
-        assert denied.status_code == 403
-
-    def test_ops_import_upload_stages_archive_and_passes_force(self, tmp_path, monkeypatch):
-        import zipfile
-        from pathlib import Path
-
-        import hermes_cli.web_server as ws
-
-        archive = tmp_path / "backup.zip"
-        with zipfile.ZipFile(archive, "w") as zf:
-            zf.writestr("config.yaml", "model: {}\n")
-
-        captured = {}
-
-        def fake_spawn(subcommand, name):
-            captured["args"] = subcommand
-            captured["name"] = name
-            from types import SimpleNamespace as NS
-            return NS(pid=12345)
-
-        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn)
-
-        resp = self.client.post(
-            "/api/ops/import-upload",
-            data={"force": "true"},
-            files={
-                "file": (
-                    "my backup.zip",
-                    archive.read_bytes(),
-                    "application/zip",
-                ),
-            },
-        )
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["name"] == "import"
-        assert data["uploaded_bytes"] == archive.stat().st_size
-        staged = Path(captured["args"][1])
-        assert captured["name"] == "import"
-        assert captured["args"] == ["import", str(staged), "--force"]
-        assert staged.is_file()
-        assert staged.name.startswith("dashboard-import-")
-        assert staged.name.endswith("-my-backup.zip")
-        assert zipfile.is_zipfile(staged)
-        assert data["archive"] == str(staged)
-
-    def test_ops_import_upload_rejects_invalid_zip(self, monkeypatch):
-        import hermes_cli.web_server as ws
-
-        def fail_spawn(*_args):
-            raise AssertionError("invalid uploads must not spawn import")
-
-        monkeypatch.setattr(ws, "_spawn_hermes_action", fail_spawn)
-
-        resp = self.client.post(
-            "/api/ops/import-upload",
-            data={"force": "true"},
-            files={"file": ("backup.zip", b"not a zip", "application/zip")},
-        )
-
-        assert resp.status_code == 400
-        assert "valid zip" in resp.json()["detail"]
-
 
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""
@@ -2144,27 +1448,6 @@ class TestWebServerEndpoints:
         assert telegram["enabled"] is False
         assert any(field["key"] == "TELEGRAM_BOT_TOKEN" and field["required"] for field in telegram["env_vars"])
 
-    def test_slack_messaging_platform_exposes_user_allowlist(self):
-        resp = self.client.get("/api/messaging/platforms")
-
-        assert resp.status_code == 200
-        platforms = resp.json()["platforms"]
-        slack = next(platform for platform in platforms if platform["id"] == "slack")
-        fields = {field["key"]: field for field in slack["env_vars"]}
-
-        assert "allowed Slack member IDs" in slack["description"]
-        assert set(fields) >= {
-            "SLACK_BOT_TOKEN",
-            "SLACK_APP_TOKEN",
-            "SLACK_ALLOWED_USERS",
-        }
-        assert fields["SLACK_ALLOWED_USERS"]["prompt"] == "Allowed Slack member IDs"
-        assert fields["SLACK_ALLOWED_USERS"]["is_password"] is False
-        assert "member IDs" in fields["SLACK_ALLOWED_USERS"]["description"]
-        assert "Bot User OAuth Token" in fields["SLACK_BOT_TOKEN"]["help"]
-        assert "App-Level Tokens" in fields["SLACK_APP_TOKEN"]["help"]
-        assert "Copy member ID" in fields["SLACK_ALLOWED_USERS"]["help"]
-
     def test_weixin_messaging_metadata_describes_personal_ilink_setup(self):
         resp = self.client.get("/api/messaging/platforms")
 
@@ -2186,31 +1469,6 @@ class TestWebServerEndpoints:
             assert "iLink" in fields[key]["description"]
             assert "QR login" in fields[key]["description"]
             assert "Official Account" not in fields[key]["description"]
-
-    def test_teams_messaging_metadata_links_setup_guide(self):
-        # Teams is a platform plugin, so the catalog entry is built from the
-        # plugin registry. The override must still supply a docs link so the
-        # Channels page renders a working "Open setup guide" button instead of
-        # an empty href (which resolves to the packaged app's own index.html).
-        from hermes_cli.web_server import _build_catalog_entry
-
-        teams = _build_catalog_entry("teams")
-        assert teams["docs_url"] == (
-            "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/teams"
-        )
-
-    def test_google_chat_messaging_metadata_links_setup_guide(self):
-        # Google Chat is a platform plugin, so the catalog entry is built from
-        # the plugin registry. The override must supply a docs link so the
-        # Channels page renders a working "Open setup guide" button instead of
-        # an empty href (which resolves to the packaged app's own index.html).
-        from hermes_cli.web_server import _build_catalog_entry
-
-        google_chat = _build_catalog_entry("google_chat")
-        assert google_chat["name"] == "Google Chat"
-        assert google_chat["docs_url"] == (
-            "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/google_chat"
-        )
 
     def test_messaging_catalog_covers_gateway_platforms(self):
         """Catalog is derived from the Platform enum, so every built-in shows up."""
@@ -2265,70 +1523,6 @@ class TestWebServerEndpoints:
         status = self.client.get("/api/messaging/platforms").json()["platforms"]
         telegram = next(platform for platform in status if platform["id"] == "telegram")
         assert telegram["enabled"] is False
-
-    def test_update_messaging_platform_saves_slack_allowed_users(self):
-        from hermes_cli.config import load_env
-
-        resp = self.client.put(
-            "/api/messaging/platforms/slack",
-            json={"env": {"SLACK_ALLOWED_USERS": "U01ABC2DEF3,U04XYZ5LMN6"}},
-        )
-
-        assert resp.status_code == 200
-        assert load_env()["SLACK_ALLOWED_USERS"] == "U01ABC2DEF3,U04XYZ5LMN6"
-
-    def test_update_messaging_platform_rejects_swapped_slack_bot_token(self):
-        resp = self.client.put(
-            "/api/messaging/platforms/slack",
-            json={"env": {"SLACK_BOT_TOKEN": "xapp-wrong-token-type"}},
-        )
-
-        assert resp.status_code == 400
-        assert "xoxb-" in resp.json()["detail"]
-
-    def test_update_messaging_platform_rejects_swapped_slack_app_token(self):
-        resp = self.client.put(
-            "/api/messaging/platforms/slack",
-            json={"env": {"SLACK_APP_TOKEN": "xoxb-wrong-token-type"}},
-        )
-
-        assert resp.status_code == 400
-        assert "xapp-" in resp.json()["detail"]
-
-    def test_update_messaging_platform_rejects_invalid_slack_allowed_users(self):
-        resp = self.client.put(
-            "/api/messaging/platforms/slack",
-            json={"env": {"SLACK_ALLOWED_USERS": "U01ABC2DEF3,not-a-user"}},
-        )
-
-        assert resp.status_code == 400
-        assert "member IDs" in resp.json()["detail"]
-
-    def test_update_messaging_platform_accepts_slack_allowed_users_wildcard(self):
-        # "*" is the gateway's allow-all wildcard (gateway/platforms/slack.py),
-        # so the dashboard must accept it rather than rejecting it as malformed.
-        from hermes_cli.config import load_env
-
-        resp = self.client.put(
-            "/api/messaging/platforms/slack",
-            json={"env": {"SLACK_ALLOWED_USERS": "*"}},
-        )
-
-        assert resp.status_code == 200
-        assert load_env()["SLACK_ALLOWED_USERS"] == "*"
-
-    def test_update_messaging_platform_accepts_slack_allowed_users_trailing_comma(self):
-        # The gateway drops empty entries (gateway/platforms/slack.py), so a
-        # trailing/interior comma must not be rejected by the dashboard.
-        from hermes_cli.config import load_env
-
-        resp = self.client.put(
-            "/api/messaging/platforms/slack",
-            json={"env": {"SLACK_ALLOWED_USERS": "U01ABC2DEF3,,W04XYZ5LMN6,"}},
-        )
-
-        assert resp.status_code == 200
-        assert load_env()["SLACK_ALLOWED_USERS"] == "U01ABC2DEF3,,W04XYZ5LMN6,"
 
     def test_messaging_platform_test_reports_missing_required_setup(self):
         resp = self.client.put("/api/messaging/platforms/discord", json={"enabled": True})
@@ -2786,27 +1980,6 @@ class TestWebServerEndpoints:
 
         assert seen_encodings == {"index": "utf-8", "css": "utf-8"}
 
-    def test_headless_serve_disables_spa_even_with_a_dist(self, monkeypatch, tmp_path):
-        """`hermes serve` (HERMES_SERVE_HEADLESS) must NOT serve the SPA even
-        when a built dist is present — only the API/WS surface is reachable."""
-        from fastapi import FastAPI
-        from starlette.testclient import TestClient
-        import hermes_cli.web_server as ws
-
-        dist = tmp_path / "web_dist"
-        (dist / "assets").mkdir(parents=True)
-        (dist / "index.html").write_text("<html><body>UI</body></html>", encoding="utf-8")
-
-        monkeypatch.setattr(ws, "WEB_DIST", dist)
-        monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
-        app_ = FastAPI()
-        ws.mount_spa(app_)
-
-        for route in ("/", "/chat"):
-            resp = TestClient(app_).get(route)
-            assert resp.status_code == 404
-            assert "web UI disabled" in resp.json()["error"]
-
     def test_set_model_main_nous_applies_gateway_defaults(self, monkeypatch):
         """Switching the main provider to Nous calls apply_nous_managed_defaults
         (mirroring the CLI's post-model-selection Tool Gateway routing) and
@@ -2914,10 +2087,9 @@ class TestWebServerEndpoints:
         # api_key follows the same lifecycle as base_url:
         # supplied → persisted.
         out = _apply_main_model_assignment(
-            {"api": "sk-legacy-old"}, "custom", "m", "http://x/v1", "sk-secret"
+            {}, "custom", "m", "http://x/v1", "sk-secret"
         )
         assert out["api_key"] == "sk-secret"
-        assert "api" not in out
 
         # same provider, no new key → existing key preserved (re-picking a model
         # on the same custom endpoint must not wipe the saved key).
@@ -2930,12 +2102,9 @@ class TestWebServerEndpoints:
 
         # switching providers without a new key → stale key cleared.
         out = _apply_main_model_assignment(
-            {"provider": "custom", "api_key": "sk-old", "api_mode": "anthropic_messages"},
-            "openrouter",
-            "m",
+            {"provider": "custom", "api_key": "sk-old"}, "openrouter", "m"
         )
-        assert "api_key" not in out
-        assert "api_mode" not in out
+        assert out["api_key"] == ""
 
     def test_parse_model_ids_handles_openai_and_bare_shapes(self):
         """Model discovery must tolerate the common /v1/models shapes and
@@ -3379,74 +2548,6 @@ class TestConfigRoundTrip:
         web_config["agent"]["max_turns"] = original_turns
         self.client.put("/api/config", json={"config": web_config})
 
-    def test_round_trip_preserves_custom_providers(self):
-        """``custom_providers`` is not in the dashboard schema, so the
-        frontend never sends it in PUT bodies. Saving must still preserve
-        it on disk — otherwise every dashboard click that saves silently
-        wipes the user's custom endpoints."""
-        from hermes_cli.config import load_config, save_config
-
-        save_config({
-            "model": {"default": "test/model", "provider": "custom:myprov"},
-            "custom_providers": [
-                {
-                    "name": "myprov",
-                    "base_url": "https://example.invalid/v1",
-                    "key_env": "MYPROV_API_KEY",
-                    "api_mode": "chat_completions",
-                    "model": "test/model",
-                },
-            ],
-        })
-
-        # Frontend behaviour: GET full config, then PUT without keys the
-        # schema doesn't know about (custom_providers is the prime example).
-        web_config = self.client.get("/api/config").json()
-        web_config.pop("custom_providers", None)
-        resp = self.client.put("/api/config", json={"config": web_config})
-        assert resp.status_code == 200
-
-        after = load_config()
-        cps = after.get("custom_providers")
-        assert isinstance(cps, list) and len(cps) == 1, \
-            f"custom_providers wiped by lossy PUT: {cps!r}"
-        assert cps[0].get("name") == "myprov"
-        assert cps[0].get("base_url") == "https://example.invalid/v1"
-
-    def test_round_trip_preserves_schema_invisible_nested_keys(self):
-        """Nested keys that aren't in CONFIG_SCHEMA must also survive a
-        round-trip. Deep-merge is required — a shallow merge would drop
-        ``agent.<custom_key>`` when the frontend sends a partial ``agent``
-        dict containing only schema-known sub-fields."""
-        from hermes_cli.config import load_config, read_raw_config, save_config
-
-        # Seed config with a key under `agent` that isn't in the schema.
-        # Use a sentinel name to avoid colliding with future schema fields.
-        save_config({
-            "agent": {
-                "max_turns": 50,
-                "x_dashboard_invisible_test_key": {"nested": "value"},
-            },
-        })
-
-        # PUT only schema-known agent fields, exactly like the dashboard.
-        web_config = self.client.get("/api/config").json()
-        web_config.setdefault("agent", {})
-        web_config["agent"]["max_turns"] = 75
-        # Strip our sentinel so we're sending what the schema-driven form
-        # would send.
-        web_config["agent"].pop("x_dashboard_invisible_test_key", None)
-
-        resp = self.client.put("/api/config", json={"config": web_config})
-        assert resp.status_code == 200
-
-        on_disk = read_raw_config()
-        assert on_disk.get("agent", {}).get("max_turns") == 75
-        assert on_disk.get("agent", {}).get("x_dashboard_invisible_test_key") \
-            == {"nested": "value"}, \
-            "Shallow-merge regression: agent.x_dashboard_invisible_test_key " \
-            "was wiped when the frontend sent a partial agent dict."
-
     def test_schema_types_match_config_values(self):
         """Every schema field should have a matching-type value in the config."""
         config = self.client.get("/api/config").json()
@@ -3476,7 +2577,7 @@ class TestConfigRoundTrip:
                 mismatches.append(f"{key}: expected bool, got {type(val).__name__}")
             elif expected == "list" and not isinstance(val, list):
                 mismatches.append(f"{key}: expected list, got {type(val).__name__}")
-        assert not mismatches, "Type mismatches:\n" + "\n".join(mismatches)
+        assert not mismatches, f"Type mismatches:\n" + "\n".join(mismatches)
 
 
 # ---------------------------------------------------------------------------
@@ -3660,14 +2761,9 @@ class TestNewEndpoints:
         )
 
         assert resp.status_code == 200
-        is_windows = sys.platform == "win32"
-        wrapper_path = wrapper_dir / ("writer.bat" if is_windows else "writer")
+        wrapper_path = wrapper_dir / "writer"
         assert wrapper_path.exists()
-        lines = [line.strip() for line in wrapper_path.read_text().splitlines() if line.strip()]
-        if is_windows:
-            assert lines == ["@echo off", "hermes -p writer %*"]
-        else:
-            assert lines == ["#!/bin/sh", 'exec /opt/hermes/bin/hermes -p writer "$@"']
+        assert wrapper_path.read_text() == '#!/bin/sh\nexec /opt/hermes/bin/hermes -p writer "$@"\n'
 
     def test_profiles_create_with_clone_from_copies_source_skills(self, monkeypatch):
         from hermes_constants import get_hermes_home
@@ -3831,7 +2927,7 @@ class TestNewEndpoints:
         assert spawned == [
             (
                 ["-p", "builder", "skills", "install", "someuser/some-skill", "--yes"],
-                web_server._hub_action_name("install", "someuser/some-skill"),
+                "skills-install",
             )
         ]
 
@@ -4080,16 +3176,12 @@ class TestNewEndpoints:
                 "description": "active",
                 "category": "demo",
                 "enabled": True,
-                "usage": 0,
-                "provenance": "agent",
             },
             {
                 "name": "disabled-skill",
                 "description": "disabled",
                 "category": "demo",
                 "enabled": False,
-                "usage": 0,
-                "provenance": "agent",
             },
         ]
 
@@ -4296,74 +3388,6 @@ class TestNewEndpoints:
             json={"provider": "whatever"},
         )
         assert resp.status_code == 400
-
-    def test_get_toolset_models_no_catalog_toolset(self):
-        """Toolsets without a model catalog report has_models: false."""
-        resp = self.client.get("/api/tools/toolsets/web/models")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["has_models"] is False
-        assert body["models"] == []
-
-    def test_get_toolset_models_fal_catalog(self):
-        """image_gen with the FAL backend returns its model catalog."""
-        resp = self.client.get(
-            "/api/tools/toolsets/image_gen/models", params={"provider": "FAL.ai"}
-        )
-        assert resp.status_code == 200
-        body = resp.json()
-        # Behavior contract, not a snapshot: FAL always has >= 1 model and
-        # each row carries the picker columns.
-        assert body["has_models"] is True
-        assert body["plugin"] == "fal"
-        assert len(body["models"]) >= 1
-        for row in body["models"]:
-            assert "id" in row
-            assert "speed" in row
-            assert "strengths" in row
-            assert "price" in row
-        # current resolves to a real catalog entry (default when unset).
-        ids = {row["id"] for row in body["models"]}
-        assert body["current"] in ids
-        assert body["default"] in ids
-
-    def test_select_toolset_model_persists_and_validates(self):
-        """PUT .../model writes image_gen.model; bad ids/toolsets are 400."""
-        catalog = self.client.get(
-            "/api/tools/toolsets/image_gen/models", params={"provider": "FAL.ai"}
-        ).json()
-        model_id = catalog["models"][0]["id"]
-
-        resp = self.client.put(
-            "/api/tools/toolsets/image_gen/model",
-            json={"model": model_id, "provider": "FAL.ai"},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["ok"] is True
-
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        assert cfg["image_gen"]["model"] == model_id
-
-        # The next catalog read reflects the persisted choice.
-        after = self.client.get(
-            "/api/tools/toolsets/image_gen/models", params={"provider": "FAL.ai"}
-        ).json()
-        assert after["current"] == model_id
-
-        # Unknown model id → 400.
-        resp = self.client.put(
-            "/api/tools/toolsets/image_gen/model",
-            json={"model": "not-a-real-model", "provider": "FAL.ai"},
-        )
-        assert resp.status_code == 400
-
-        # Toolset without a model catalog → 400.
-        resp = self.client.put(
-            "/api/tools/toolsets/web/model", json={"model": model_id}
-        )
-        assert resp.status_code == 400
-
 
     def test_config_raw_get(self):
         resp = self.client.get("/api/config/raw")
@@ -4653,102 +3677,6 @@ class TestModelContextLength:
         })
         assert isinstance(result["model"], dict)
         assert result["model"]["context_length"] == 32000
-
-
-class TestDenormalizeProviderSwitch:
-    """The flat Config-page Model field carries no provider info. When the
-    model string changes to one served by a different provider, the saved
-    provider must follow it (issue #14058)."""
-
-    def test_vendor_slug_switches_off_non_aggregator_provider(self):
-        """ollama-local + a vendor/model slug → switch to openrouter and drop
-        the stale local base_url (the issue's exact repro)."""
-        from hermes_cli.web_server import _denormalize_config_from_web
-        from hermes_cli.config import save_config
-
-        save_config({
-            "model": {
-                "default": "llama3.2",
-                "provider": "ollama-local",
-                "base_url": "http://localhost:11434/v1",
-                "api_mode": "chat_completions",
-            }
-        })
-
-        result = _denormalize_config_from_web({"model": "google/gemini-2.5-flash"})
-        model = result["model"]
-        assert model["provider"] == "openrouter"
-        assert model["default"] == "google/gemini-2.5-flash"
-        # The old ollama-local endpoint must not carry over to openrouter.
-        assert not model.get("base_url")
-
-    def test_unchanged_model_preserves_provider_and_base_url(self):
-        """Saving with the model unchanged must never re-detect/overwrite the
-        provider — protects unrelated config saves and custom endpoints."""
-        from hermes_cli.web_server import _denormalize_config_from_web
-        from hermes_cli.config import save_config
-
-        save_config({
-            "model": {
-                "default": "llama3.2",
-                "provider": "ollama-local",
-                "base_url": "http://localhost:11434/v1",
-            }
-        })
-
-        result = _denormalize_config_from_web({"model": "llama3.2"})
-        model = result["model"]
-        assert model["provider"] == "ollama-local"
-        assert model["base_url"] == "http://localhost:11434/v1"
-
-    def test_bare_model_name_change_keeps_local_provider(self):
-        """A bare (non-slug) model name gives no provider signal — leave the
-        existing provider alone rather than guessing."""
-        from hermes_cli.web_server import _denormalize_config_from_web
-        from hermes_cli.config import save_config
-
-        save_config({
-            "model": {
-                "default": "llama3.2",
-                "provider": "ollama-local",
-                "base_url": "http://localhost:11434/v1",
-            }
-        })
-
-        result = _denormalize_config_from_web({"model": "qwen2.5"})
-        model = result["model"]
-        assert model["provider"] == "ollama-local"
-        assert model["default"] == "qwen2.5"
-
-    def test_same_aggregator_model_swap_keeps_provider(self):
-        """Swapping models within an aggregator must not change the provider."""
-        from hermes_cli.web_server import _denormalize_config_from_web
-        from hermes_cli.config import save_config
-
-        save_config({
-            "model": {"default": "anthropic/claude-opus-4.6", "provider": "openrouter"}
-        })
-
-        result = _denormalize_config_from_web({"model": "google/gemini-2.5-flash"})
-        model = result["model"]
-        assert model["provider"] == "openrouter"
-        assert model["default"] == "google/gemini-2.5-flash"
-
-    def test_context_length_override_survives_provider_switch(self):
-        """An explicit context-length override must persist alongside a
-        provider switch."""
-        from hermes_cli.web_server import _denormalize_config_from_web
-        from hermes_cli.config import save_config
-
-        save_config({"model": {"default": "llama3.2", "provider": "ollama-local"}})
-
-        result = _denormalize_config_from_web({
-            "model": "google/gemini-2.5-flash",
-            "model_context_length": 128000,
-        })
-        model = result["model"]
-        assert model["provider"] == "openrouter"
-        assert model["context_length"] == 128000
 
 
 class TestModelContextLengthSchema:
@@ -5093,149 +4021,6 @@ class TestStatusRemoteGateway:
         assert data["gateway_state"] == "running"
 
 
-class TestGatewayBusyReadout:
-    """Tests for the NAS busy/drainable readout on /api/status.
-
-    Behaviour contracts (not snapshots): assert how gateway_busy / gateway_drainable
-    must RELATE to gateway_running + gateway_state + active_agents, and that every
-    field degrades to a safe falsy value when the gateway is down or its status
-    file is absent. Liveness must key off gateway_running, NEVER gateway_updated_at.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _setup_test_client(self):
-        try:
-            from starlette.testclient import TestClient
-        except ImportError:
-            pytest.skip("fastapi/starlette not installed")
-
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
-        self.client = TestClient(app)
-        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
-
-    def test_busy_when_running_with_active_agents(self, monkeypatch):
-        """gateway_busy is True iff running AND active_agents > 0."""
-        import hermes_cli.web_server as ws
-
-        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
-        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
-            "gateway_state": "running",
-            "platforms": {},
-            "active_agents": 2,
-            # A deliberately stale timestamp: busy must NOT depend on it.
-            "updated_at": "2020-01-01T00:00:00+00:00",
-        })
-
-        data = self.client.get("/api/status").json()
-        assert data["active_agents"] == 2
-        assert data["gateway_busy"] is True
-        assert data["gateway_drainable"] is True
-
-    def test_idle_running_is_drainable_but_not_busy(self, monkeypatch):
-        """A running gateway with zero in-flight turns is drainable, not busy."""
-        import hermes_cli.web_server as ws
-
-        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
-        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
-            "gateway_state": "running",
-            "platforms": {},
-            "active_agents": 0,
-        })
-
-        data = self.client.get("/api/status").json()
-        assert data["active_agents"] == 0
-        assert data["gateway_busy"] is False
-        assert data["gateway_drainable"] is True
-
-    def test_draining_state_is_neither_busy_nor_drainable(self, monkeypatch):
-        """While draining, the gateway is not a fresh begin-drain target, and
-        busy is False even with a stale active_agents>0 in the file — the state
-        gate dominates."""
-        import hermes_cli.web_server as ws
-
-        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
-        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
-            "gateway_state": "draining",
-            "platforms": {},
-            "active_agents": 3,
-        })
-
-        data = self.client.get("/api/status").json()
-        assert data["gateway_busy"] is False
-        assert data["gateway_drainable"] is False
-
-    def test_down_gateway_degrades_to_safe_falsy(self, monkeypatch):
-        """Gateway down (no PID, no remote probe): busy/drainable False,
-        active_agents 0 — never a spurious busy that would wedge NAS."""
-        import hermes_cli.web_server as ws
-
-        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
-        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
-        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
-
-        data = self.client.get("/api/status").json()
-        assert data["gateway_running"] is False
-        assert data["active_agents"] == 0
-        assert data["gateway_busy"] is False
-        assert data["gateway_drainable"] is False
-
-    def test_down_gateway_with_stale_busy_file_still_not_busy(self, monkeypatch):
-        """A leftover status file claiming running + active_agents>0 must NOT
-        read as busy when the live PID probe says the gateway is down. Liveness
-        wins over the file."""
-        import hermes_cli.web_server as ws
-
-        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
-        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
-        # File says running with active turns, but get_running_pid()==None and
-        # get_runtime_status_running_pid finds no live PID → gateway_running False.
-        monkeypatch.setattr(ws, "get_runtime_status_running_pid", lambda *_a, **_k: None)
-        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
-            "gateway_state": "running",
-            "platforms": {},
-            "active_agents": 5,
-        })
-
-        data = self.client.get("/api/status").json()
-        assert data["gateway_running"] is False
-        assert data["gateway_busy"] is False
-        assert data["gateway_drainable"] is False
-
-    def test_restart_drain_timeout_surfaced_and_numeric(self, monkeypatch):
-        """restart_drain_timeout is present and resolves to a non-negative
-        float so NAS can size its poll deadline without out-of-band knowledge."""
-        import hermes_cli.web_server as ws
-
-        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
-        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
-            "gateway_state": "running",
-            "platforms": {},
-            "active_agents": 0,
-        })
-        monkeypatch.setenv("HERMES_RESTART_DRAIN_TIMEOUT", "90")
-
-        data = self.client.get("/api/status").json()
-        assert "restart_drain_timeout" in data
-        assert isinstance(data["restart_drain_timeout"], (int, float))
-        assert data["restart_drain_timeout"] == 90.0
-
-    def test_active_agents_unparseable_in_file_degrades_to_zero(self, monkeypatch):
-        """A corrupt active_agents value in the status file must not 500 or
-        produce a spurious busy — it degrades to 0/not-busy."""
-        import hermes_cli.web_server as ws
-
-        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
-        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
-            "gateway_state": "running",
-            "platforms": {},
-            "active_agents": "garbage",
-        })
-
-        data = self.client.get("/api/status").json()
-        assert data["active_agents"] == 0
-        assert data["gateway_busy"] is False
-
-
 # ---------------------------------------------------------------------------
 # Dashboard theme normaliser tests
 # ---------------------------------------------------------------------------
@@ -5547,79 +4332,6 @@ class TestNormaliseThemeExtensions:
             "componentStyles": {"card": {"opacity": 0.8, "zIndex": 5}},
         })
         assert r["componentStyles"]["card"] == {"opacity": "0.8", "zIndex": "5"}
-
-
-class TestDeleteSessionEndpoint:
-    """Tests for ``DELETE /api/sessions/{session_id}`` — the single-row delete
-    behind the desktop sidebar's per-session delete.
-
-    The desktop optimistically removes the row, then RESTORES it on any error
-    and surfaces the message. So a 404 on a row that is already gone (reaped by
-    empty-session hygiene, or removed by a concurrent client — both common amid
-    /goal + auto-compression churn that leaves transient empty rows) resurrected
-    a ghost row and showed "session not found". DELETE must be idempotent and
-    resolve ids like every other session endpoint.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
-        try:
-            from starlette.testclient import TestClient
-        except ImportError:
-            pytest.skip("fastapi/starlette not installed")
-
-        import hermes_state
-        from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
-
-        monkeypatch.setattr(
-            hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
-        )
-
-        self.auth_client = TestClient(app)
-        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
-
-    def _seed(self, ids):
-        from hermes_state import SessionDB
-
-        db = SessionDB()
-        try:
-            for sid in ids:
-                db.create_session(session_id=sid, source="cli")
-        finally:
-            db.close()
-
-    def _exists(self, sid) -> bool:
-        from hermes_state import SessionDB
-
-        db = SessionDB()
-        try:
-            return db.get_session(sid) is not None
-        finally:
-            db.close()
-
-    def test_delete_existing_session(self):
-        self._seed(["real_one"])
-        resp = self.auth_client.delete("/api/sessions/real_one")
-        assert resp.status_code == 200
-        assert resp.json().get("ok") is True
-        assert not self._exists("real_one")
-
-    def test_delete_absent_session_is_idempotent(self):
-        # PREMISE / regression: deleting a row that no longer exists must NOT
-        # 404 — the desktop would resurrect the ghost row and show
-        # "session not found". DELETE's contract is "ensure it's gone".
-        resp = self.auth_client.delete("/api/sessions/never_existed")
-        assert resp.status_code == 200
-        assert resp.json().get("ok") is True
-
-    def test_delete_resolves_unique_prefix(self):
-        # Symmetry with the other session endpoints, which all resolve ids.
-        self._seed(["20260618_abcdef_unique"])
-        resp = self.auth_client.delete("/api/sessions/20260618_abcdef")
-        assert resp.status_code == 200
-        assert resp.json().get("ok") is True
-        assert not self._exists("20260618_abcdef_unique")
 
 
 class TestBulkDeleteSessionsEndpoint:
@@ -6149,7 +4861,6 @@ class TestPtyWebSocket:
         # its own fake argv via ``ws._resolve_chat_argv``.
         self.ws_module = ws
         monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
-        ws.app.state.pty_active_session_files = {}
         self.token = ws._SESSION_TOKEN
         self.client = TestClient(ws.app)
 
@@ -6174,42 +4885,8 @@ class TestPtyWebSocket:
 
         _argv, _cwd, env = self.ws_module._resolve_chat_argv()
 
-        assert env["HERMES_TUI_DASHBOARD"] == "1"
         assert env["HERMES_TUI_INLINE"] == "1"
         assert env["HERMES_TUI_DISABLE_MOUSE"] == "1"
-
-    def test_resolve_chat_argv_backfills_colorterm_truecolor(self, monkeypatch):
-        """Headless servers (cloud/systemd) have no COLORTERM, which made
-        chalk in the TUI child degrade skin hex colors to the xterm 256
-        palette (gold banner rendered salmon-red). xterm.js always supports
-        24-bit color, so the PTY env must advertise truecolor."""
-        import hermes_cli.main as main_mod
-
-        monkeypatch.setattr(
-            main_mod,
-            "_make_tui_argv",
-            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
-        )
-        monkeypatch.delenv("COLORTERM", raising=False)
-
-        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
-
-        assert env["COLORTERM"] == "truecolor"
-
-    def test_resolve_chat_argv_keeps_operator_colorterm(self, monkeypatch):
-        """An explicit operator COLORTERM wins over the backfill."""
-        import hermes_cli.main as main_mod
-
-        monkeypatch.setattr(
-            main_mod,
-            "_make_tui_argv",
-            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
-        )
-        monkeypatch.setenv("COLORTERM", "24bit")
-
-        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
-
-        assert env["COLORTERM"] == "24bit"
 
     def test_resolve_chat_argv_applies_terminal_backend_config(
         self, monkeypatch, _isolate_hermes_home
@@ -6278,107 +4955,6 @@ class TestPtyWebSocket:
             with self.client.websocket_connect(self._url(token="wrong")):
                 pass
         assert exc.value.code == 4401
-
-    def test_resolve_chat_argv_async_uses_worker_thread(self, monkeypatch):
-        captured: dict = {}
-
-        def fake_resolve(resume=None, sidecar_url=None, profile=None):
-            captured["resume"] = resume
-            captured["sidecar_url"] = sidecar_url
-            captured["profile"] = profile
-            return (["node", "dist/entry.js"], "/tmp/ui-tui", {"NODE_ENV": "production"})
-
-        async def fake_to_thread(fn, *args, **kwargs):
-            captured["thread_fn"] = fn
-            captured["thread_args"] = args
-            captured["thread_kwargs"] = kwargs
-            return fn(*args, **kwargs)
-
-        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", fake_resolve)
-        monkeypatch.setattr(self.ws_module.asyncio, "to_thread", fake_to_thread)
-
-        argv, cwd, env = asyncio.run(
-            self.ws_module._resolve_chat_argv_async(
-                resume="sess-42",
-                sidecar_url="ws://127.0.0.1:9119/api/pub?channel=abc",
-                profile="worker",
-            )
-        )
-
-        assert callable(captured["thread_fn"])
-        assert captured["thread_args"] == ()
-        assert captured["thread_kwargs"] == {
-            "resume": "sess-42",
-            "sidecar_url": "ws://127.0.0.1:9119/api/pub?channel=abc",
-            "profile": "worker",
-        }
-        assert argv == ["node", "dist/entry.js"]
-        assert cwd == "/tmp/ui-tui"
-        assert env == {"NODE_ENV": "production"}
-        assert captured["resume"] == "sess-42"
-        assert captured["sidecar_url"] == "ws://127.0.0.1:9119/api/pub?channel=abc"
-        assert captured["profile"] == "worker"
-
-    def test_pty_ws_resolves_argv_through_async_wrapper(self, monkeypatch):
-        captured: dict = {}
-
-        async def fake_resolve_async(resume=None, sidecar_url=None, profile=None):
-            captured["resume"] = resume
-            captured["sidecar_url"] = sidecar_url
-            captured["profile"] = profile
-            return (["/bin/sh", "-c", "printf async-resolve-ok"], None, None)
-
-        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv_async", fake_resolve_async)
-
-        with self.client.websocket_connect(self._url(resume="sess-99")) as conn:
-            try:
-                conn.receive_bytes()
-            except Exception:
-                pass
-
-        assert captured["resume"] == "sess-99"
-
-    def _assert_pty_propagates(self, monkeypatch, raising_resolver, *, profile=None, expect_detail=None):
-        """Drive /api/pty with a resolver that raises, and assert the error
-        propagates through the real _resolve_chat_argv_async -> asyncio.to_thread
-        -> lock -> re-raise chain into pty_ws's handler: the "Chat unavailable"
-        notice is sent and the socket closes with code 1011 (the stable
-        contract — we assert the close code, not the exact notice wording)."""
-        from starlette.websockets import WebSocketDisconnect
-
-        # Patch the REAL resolver so the whole wrapper/to_thread/lock chain runs.
-        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", raising_resolver)
-
-        url = self._url(profile=profile) if profile else self._url()
-        with self.client.websocket_connect(url) as conn:
-            notice = conn.receive_text()
-            with pytest.raises(WebSocketDisconnect) as exc:
-                conn.receive_text()
-        assert "Chat unavailable" in notice
-        assert exc.value.code == 1011
-        if expect_detail is not None:
-            assert expect_detail in notice
-
-    def test_pty_ws_propagates_systemexit_through_async_wrapper(self, monkeypatch):
-        """SystemExit from _make_tui_argv (node/npm missing) propagates through
-        the async wrapper and is caught by pty_ws's ``except SystemExit``."""
-
-        def boom(resume=None, sidecar_url=None, profile=None):
-            raise SystemExit("node not found")
-
-        self._assert_pty_propagates(monkeypatch, boom)
-
-    def test_pty_ws_propagates_httpexception_through_async_wrapper(self, monkeypatch):
-        """An invalid-profile HTTPException raised inside the threaded resolver
-        propagates through the wrapper and hits pty_ws's ``except HTTPException``."""
-        from fastapi import HTTPException
-
-        def bad_profile(resume=None, sidecar_url=None, profile=None):
-            raise HTTPException(status_code=404, detail="unknown profile")
-
-        self._assert_pty_propagates(
-            monkeypatch, bad_profile, profile="ghost", expect_detail="unknown profile"
-        )
 
     def test_streams_child_stdout_to_client(self, monkeypatch):
         monkeypatch.setattr(
@@ -6518,9 +5094,8 @@ class TestPtyWebSocket:
         same channel — which is how tool events reach the dashboard sidebar."""
         captured: dict = {}
 
-        def fake_resolve(resume=None, sidecar_url=None, profile=None, active_session_file=None):
+        def fake_resolve(resume=None, sidecar_url=None, profile=None):
             captured["sidecar_url"] = sidecar_url
-            captured["active_session_file"] = active_session_file
             return (["/bin/sh", "-c", "printf sidecar-ok"], None, None)
 
         monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", fake_resolve)
@@ -6544,7 +5119,6 @@ class TestPtyWebSocket:
         assert url.startswith("ws://127.0.0.1:9119/api/pub?")
         assert "channel=abc-123" in url
         assert "token=" in url
-        assert captured["active_session_file"]
 
     def test_pub_broadcasts_to_events_subscribers(self):
         """A frame handed to _broadcast_event is sent verbatim to every

@@ -12,11 +12,6 @@ curl -fsSL https://byterover.dev/install.sh | sh).
 Config via environment variables (profile-scoped via each profile's .env):
   BRV_API_KEY   — ByteRover API key (for cloud features, optional for local)
 
-Config via config.yaml:
-  memory:
-    byterover:
-      auto_extract: false  # disable automatic brv curate hooks
-
 Working directory: $HERMES_HOME/byterover/ (profile-scoped context tree)
 """
 
@@ -43,49 +38,6 @@ _CURATE_TIMEOUT = 120  # brv curate — may involve LLM processing
 # Minimum lengths to filter noise
 _MIN_QUERY_LEN = 10
 _MIN_OUTPUT_LEN = 20
-
-
-def _coerce_bool(value: Any, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        text = value.strip().lower()
-        if text in {"1", "true", "yes", "on"}:
-            return True
-        if text in {"0", "false", "no", "off"}:
-            return False
-    return default
-
-
-def _load_plugin_config() -> Dict[str, Any]:
-    """Read ByteRover's profile-scoped memory config.
-
-    New memory-provider setup stores non-secret provider settings under
-    ``memory.<provider>``.  Some users also set ``memory.provider_config`` from
-    early docs/issues, so accept it as a compatibility fallback.
-    """
-    try:
-        from hermes_cli.config import load_config
-
-        config = load_config()
-        memory_config = config.get("memory", {})
-        if not isinstance(memory_config, dict):
-            return {}
-
-        provider_config = memory_config.get("byterover", {})
-        if isinstance(provider_config, dict) and provider_config:
-            return dict(provider_config)
-
-        legacy_config = memory_config.get("provider_config", {})
-        if isinstance(legacy_config, dict):
-            return dict(legacy_config)
-    except Exception:
-        pass
-    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -220,9 +172,7 @@ STATUS_SCHEMA = {
 class ByteRoverMemoryProvider(MemoryProvider):
     """ByteRover persistent memory via the brv CLI."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self._config = dict(config) if config is not None else _load_plugin_config()
-        self._auto_extract = _coerce_bool(self._config.get("auto_extract"), True)
+    def __init__(self):
         self._cwd = ""
         self._session_id = ""
         self._turn_count = 0
@@ -244,12 +194,6 @@ class ByteRoverMemoryProvider(MemoryProvider):
                 "secret": True,
                 "env_var": "BRV_API_KEY",
                 "url": "https://app.byterover.dev",
-            },
-            {
-                "key": "auto_extract",
-                "description": "Automatically curate completed turns and compression/memory hooks",
-                "default": "true",
-                "choices": ["true", "false"],
             },
         ]
 
@@ -294,9 +238,6 @@ class ByteRoverMemoryProvider(MemoryProvider):
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Curate the conversation turn in background (non-blocking)."""
         self._turn_count += 1
-        if not self._auto_extract:
-            logger.debug("ByteRover sync_turn skipped (auto_extract disabled)")
-            return
 
         # Only curate substantive turns
         if len(user_content.strip()) < _MIN_QUERY_LEN:
@@ -323,9 +264,6 @@ class ByteRoverMemoryProvider(MemoryProvider):
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
         """Mirror built-in memory writes to ByteRover."""
-        if not self._auto_extract:
-            logger.debug("ByteRover memory mirror skipped (auto_extract disabled)")
-            return
         if action not in {"add", "replace"} or not content:
             return
 
@@ -344,9 +282,6 @@ class ByteRoverMemoryProvider(MemoryProvider):
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         """Extract insights before context compression discards turns."""
-        if not self._auto_extract:
-            logger.debug("ByteRover pre-compression flush skipped (auto_extract disabled)")
-            return ""
         if not messages:
             return ""
 

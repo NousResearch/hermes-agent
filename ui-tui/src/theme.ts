@@ -147,7 +147,11 @@ function rgbToHsl(red: number, green: number, blue: number): [number, number, nu
   const saturation = lightness > 0.5 ? delta / (2 - max - min) : delta / (max + min)
 
   const hue =
-    max === rn ? (gn - bn) / delta + (gn < bn ? 6 : 0) : max === gn ? (bn - rn) / delta + 2 : (rn - gn) / delta + 4
+    max === rn
+      ? (gn - bn) / delta + (gn < bn ? 6 : 0)
+      : max === gn
+        ? (bn - rn) / delta + 2
+        : (rn - gn) / delta + 4
 
   return [hue / 6, saturation, lightness]
 }
@@ -223,10 +227,9 @@ function normalizeAnsiForeground(color: string): string {
   const richAnsi = richEightBitColorNumber(rgb[0], rgb[1], rgb[2])
   const richRgb = xtermEightBitRgb(richAnsi)
 
-  const ansi =
-    relativeLuminance(richRgb[0], richRgb[1], richRgb[2]) > ANSI_LIGHT_MAX_LUMINANCE
-      ? bestReadableAnsiColor(rgb[0], rgb[1], rgb[2])
-      : richAnsi
+  const ansi = relativeLuminance(richRgb[0], richRgb[1], richRgb[2]) > ANSI_LIGHT_MAX_LUMINANCE
+    ? bestReadableAnsiColor(rgb[0], rgb[1], rgb[2])
+    : richAnsi
 
   return `ansi256(${ansi})`
 }
@@ -534,60 +537,53 @@ export function fromSkin(
   const completionMetaBg = c('completion_menu_meta_bg') ?? completionBg
   const completionMetaCurrentBg = c('completion_menu_meta_current_bg') ?? completionCurrentBg
 
-  return normalizeThemeForAnsiLightTerminal(
-    {
-      color: {
-        primary: c('ui_primary') ?? c('banner_title') ?? d.color.primary,
-        accent,
-        border: c('ui_border') ?? c('banner_border') ?? d.color.border,
-        text: c('ui_text') ?? c('banner_text') ?? d.color.text,
-        muted,
-        completionBg,
-        completionCurrentBg,
-        completionMetaBg,
-        completionMetaCurrentBg,
+  return normalizeThemeForAnsiLightTerminal({
+    color: {
+      primary: c('ui_primary') ?? c('banner_title') ?? d.color.primary,
+      accent,
+      border: c('ui_border') ?? c('banner_border') ?? d.color.border,
+      text: c('ui_text') ?? c('banner_text') ?? d.color.text,
+      muted,
+      completionBg,
+      completionCurrentBg,
+      completionMetaBg,
+      completionMetaCurrentBg,
 
-        label: c('ui_label') ?? d.color.label,
-        ok: c('ui_ok') ?? d.color.ok,
-        error: c('ui_error') ?? d.color.error,
-        warn: c('ui_warn') ?? d.color.warn,
+      label: c('ui_label') ?? d.color.label,
+      ok: c('ui_ok') ?? d.color.ok,
+      error: c('ui_error') ?? d.color.error,
+      warn: c('ui_warn') ?? d.color.warn,
 
-        prompt: c('prompt') ?? c('banner_text') ?? d.color.prompt,
-        sessionLabel: c('session_label') ?? muted,
-        sessionBorder: c('session_border') ?? muted,
+      prompt: c('prompt') ?? c('banner_text') ?? d.color.prompt,
+      sessionLabel: c('session_label') ?? muted,
+      sessionBorder: c('session_border') ?? muted,
 
-        statusBg: d.color.statusBg,
-        statusFg: d.color.statusFg,
-        statusGood: c('ui_ok') ?? d.color.statusGood,
-        statusWarn: c('ui_warn') ?? d.color.statusWarn,
-        statusBad: d.color.statusBad,
-        statusCritical: d.color.statusCritical,
-        selectionBg:
-          c('selection_bg') ??
-          c('completion_menu_current_bg') ??
-          (hasSkinColors ? completionCurrentBg : d.color.selectionBg),
+      statusBg: d.color.statusBg,
+      statusFg: d.color.statusFg,
+      statusGood: c('ui_ok') ?? d.color.statusGood,
+      statusWarn: c('ui_warn') ?? d.color.statusWarn,
+      statusBad: d.color.statusBad,
+      statusCritical: d.color.statusCritical,
+      selectionBg: c('selection_bg') ?? c('completion_menu_current_bg') ?? (hasSkinColors ? completionCurrentBg : d.color.selectionBg),
 
-        diffAdded: d.color.diffAdded,
-        diffRemoved: d.color.diffRemoved,
-        diffAddedWord: d.color.diffAddedWord,
-        diffRemovedWord: d.color.diffRemovedWord,
-        shellDollar: c('shell_dollar') ?? d.color.shellDollar
-      },
-
-      brand: {
-        name: branding.agent_name ?? d.brand.name,
-        icon: d.brand.icon,
-        prompt: cleanPromptSymbol(branding.prompt_symbol, d.brand.prompt),
-        welcome: branding.welcome ?? d.brand.welcome,
-        goodbye: branding.goodbye ?? d.brand.goodbye,
-        tool: toolPrefix || d.brand.tool,
-        helpHeader: branding.help_header ?? (helpHeader || d.brand.helpHeader)
-      },
-
-      bannerLogo,
-      bannerHero
+      diffAdded: d.color.diffAdded,
+      diffRemoved: d.color.diffRemoved,
+      diffAddedWord: d.color.diffAddedWord,
+      diffRemovedWord: d.color.diffRemovedWord,
+      shellDollar: c('shell_dollar') ?? d.color.shellDollar
     },
-    process.env,
-    DEFAULT_LIGHT_MODE
-  )
+
+    brand: {
+      name: branding.agent_name ?? d.brand.name,
+      icon: d.brand.icon,
+      prompt: cleanPromptSymbol(branding.prompt_symbol, d.brand.prompt),
+      welcome: branding.welcome ?? d.brand.welcome,
+      goodbye: branding.goodbye ?? d.brand.goodbye,
+      tool: toolPrefix || d.brand.tool,
+      helpHeader: branding.help_header ?? (helpHeader || d.brand.helpHeader)
+    },
+
+    bannerLogo,
+    bannerHero
+  }, process.env, DEFAULT_LIGHT_MODE)
 }

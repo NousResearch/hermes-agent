@@ -30,27 +30,26 @@ cd /opt/data
 dash_host="${HERMES_DASHBOARD_HOST:-0.0.0.0}"
 dash_port="${HERMES_DASHBOARD_PORT:-9119}"
 
-# The dashboard's auth gate engages automatically on non-loopback binds and
-# REQUIRES a DashboardAuthProvider to be registered, else start_server fails
-# closed. Two zero-infra ways to satisfy it in a container:
-#   • Password: set HERMES_DASHBOARD_BASIC_AUTH_USERNAME + _PASSWORD (bundled
-#     dashboard_auth/basic provider — no external IDP).
-#   • OAuth:    set HERMES_DASHBOARD_OAUTH_CLIENT_ID (bundled nous provider).
+# `--insecure` is opt-in via HERMES_DASHBOARD_INSECURE. The dashboard's
+# OAuth auth gate engages automatically on non-loopback binds when a
+# DashboardAuthProvider is registered (e.g. the bundled dashboard_auth/nous
+# provider, which auto-registers when HERMES_DASHBOARD_OAUTH_CLIENT_ID is
+# set). If no provider is registered, start_server fails closed with a
+# specific operator-facing error.
 #
-# HERMES_DASHBOARD_INSECURE no longer disables the gate (June 2026 hardening:
-# unauthenticated public dashboards were the entry point for the MCP-config
-# persistence campaign). It is accepted but ignored; warn if set so operators
-# migrate to a real provider.
+# This used to derive --insecure from the bind host ("anything non-loopback
+# implies insecure"), but that predates the OAuth gate and silently
+# disabled it on every container-deployed dashboard. The gate is now the
+# authority; operators on trusted LANs / behind a reverse proxy without
+# the OAuth contract opt in explicitly.
+insecure=""
 case "${HERMES_DASHBOARD_INSECURE:-}" in
-    1|true|TRUE|True|yes|YES|Yes)
-        echo "[dashboard] HERMES_DASHBOARD_INSECURE no longer disables the auth gate." >&2
-        echo "[dashboard] A non-loopback dashboard requires an auth provider:" >&2
-        echo "[dashboard]   set HERMES_DASHBOARD_BASIC_AUTH_USERNAME + _PASSWORD (password)" >&2
-        echo "[dashboard]   or HERMES_DASHBOARD_OAUTH_CLIENT_ID (OAuth)." >&2
-        ;;
+    1|true|TRUE|True|yes|YES|Yes) insecure="--insecure" ;;
 esac
 
 # Skip the drop when already non-root.
-[ "$(id -u)" = 0 ] || exec hermes dashboard --host "$dash_host" --port "$dash_port" --no-open
+# shellcheck disable=SC2086  # word-splitting of $insecure is intentional
+[ "$(id -u)" = 0 ] || exec hermes dashboard --host "$dash_host" --port "$dash_port" --no-open $insecure
+# shellcheck disable=SC2086  # word-splitting of $insecure is intentional
 exec s6-setuidgid hermes hermes dashboard \
-    --host "$dash_host" --port "$dash_port" --no-open
+    --host "$dash_host" --port "$dash_port" --no-open $insecure

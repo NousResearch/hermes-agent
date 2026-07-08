@@ -102,9 +102,6 @@ from gateway.platforms.base import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 3978
-# Bot Framework activities are JSON payloads well under 1 MiB; an explicit
-# aiohttp client_max_size keeps oversized/chunked request bodies bounded.
-_MAX_BODY_BYTES = 1_048_576
 _WEBHOOK_PATH = "/api/messages"
 
 
@@ -694,7 +691,6 @@ class TeamsAdapter(BasePlatformAdapter):
     """Microsoft Teams adapter using the microsoft-teams-apps SDK."""
 
     MAX_MESSAGE_LENGTH = 28000  # Teams text message limit (~28 KB)
-    splits_long_messages = True  # send() chunks via truncate_message()
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("teams"))
@@ -712,7 +708,7 @@ class TeamsAdapter(BasePlatformAdapter):
         # Used to send cards with the correct conversation type (personal/group/channel).
         self._conv_refs: Dict[str, Any] = {}
 
-    async def connect(self, *, is_reconnect: bool = False) -> bool:
+    async def connect(self) -> bool:
         # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
         # then re-check the module globals it rebinds.
         check_teams_requirements()
@@ -741,12 +737,8 @@ class TeamsAdapter(BasePlatformAdapter):
             return False
 
         try:
-            # Set up aiohttp app first — the bridge adapter wires SDK routes into it.
-            # client_max_size: Bot Framework activities are JSON (caps out well
-            # under 1 MiB); an explicit cap keeps oversized/chunked bodies from
-            # being buffered unbounded on a 0.0.0.0 bind (same pattern as
-            # webhook.py / raft, #58536/#58902).
-            aiohttp_app = web.Application(client_max_size=_MAX_BODY_BYTES)
+            # Set up aiohttp app first — the bridge adapter wires SDK routes into it
+            aiohttp_app = web.Application()
             aiohttp_app.router.add_get("/health", lambda _: web.Response(text="ok"))
 
             self._app = App(
@@ -1197,22 +1189,14 @@ class TeamsAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
-    async def _send_media_attachment(
+    async def send_image(
         self,
         chat_id: str,
-        source: str,
-        default_mime: str,
+        image_url: str,
         caption: Optional[str] = None,
-        media_label: str = "media",
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send any media file/URL as a Teams attachment.
-
-        Remote ``http(s)://`` URLs are attached by reference; local paths
-        (with optional ``file://`` prefix) are base64-encoded into a data
-        URI. MIME type is guessed from the path/extension, falling back to
-        ``default_mime``. Shared by send_image / send_video / send_voice /
-        send_document so every media kind uses the same Attachment path.
-        """
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
 
@@ -1221,13 +1205,13 @@ class TeamsAdapter(BasePlatformAdapter):
             import mimetypes
             from microsoft_teams.api import Attachment, MessageActivityInput
 
-            if source.startswith("http://") or source.startswith("https://"):
-                content_url = source
-                mime_type = mimetypes.guess_type(source.split("?")[0])[0] or default_mime
+            if image_url.startswith("http://") or image_url.startswith("https://"):
+                content_url = image_url
+                mime_type = "image/png"
             else:
                 # Local path — encode as base64 data URI
-                path = source.removeprefix("file://")
-                mime_type = mimetypes.guess_type(path)[0] or default_mime
+                path = image_url.removeprefix("file://")
+                mime_type = mimetypes.guess_type(path)[0] or "image/png"
                 with open(path, "rb") as f:
                     content_url = f"data:{mime_type};base64,{base64.b64encode(f.read()).decode()}"
 
@@ -1244,24 +1228,8 @@ class TeamsAdapter(BasePlatformAdapter):
 
             return SendResult(success=True, message_id=getattr(result, "id", None))
         except Exception as e:
-            logger.error("[teams] send_%s failed: %s", media_label, e, exc_info=True)
+            logger.error("[teams] send_image failed: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e), retryable=True)
-
-    async def send_image(
-        self,
-        chat_id: str,
-        image_url: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        return await self._send_media_attachment(
-            chat_id=chat_id,
-            source=image_url,
-            default_mime="image/png",
-            caption=caption,
-            media_label="image",
-        )
 
     async def send_image_file(
         self,
@@ -1276,58 +1244,6 @@ class TeamsAdapter(BasePlatformAdapter):
             image_url=image_path,
             caption=caption,
             reply_to=reply_to,
-        )
-
-    async def send_video(
-        self,
-        chat_id: str,
-        video_path: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs,
-    ) -> SendResult:
-        return await self._send_media_attachment(
-            chat_id=chat_id,
-            source=video_path,
-            default_mime="video/mp4",
-            caption=caption,
-            media_label="video",
-        )
-
-    async def send_voice(
-        self,
-        chat_id: str,
-        audio_path: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs,
-    ) -> SendResult:
-        return await self._send_media_attachment(
-            chat_id=chat_id,
-            source=audio_path,
-            default_mime="audio/mpeg",
-            caption=caption,
-            media_label="voice",
-        )
-
-    async def send_document(
-        self,
-        chat_id: str,
-        file_path: str,
-        caption: Optional[str] = None,
-        file_name: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs,
-    ) -> SendResult:
-        return await self._send_media_attachment(
-            chat_id=chat_id,
-            source=file_path,
-            default_mime="application/octet-stream",
-            caption=caption,
-            media_label="document",
         )
 
     async def get_chat_info(self, chat_id: str) -> dict:

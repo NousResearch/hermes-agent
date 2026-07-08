@@ -241,35 +241,8 @@ def get_environment_probe_line(*, force_refresh: bool = False) -> str:
         return line
 
 
-_warm_started = False
-
-
-def warm_environment_probe_async() -> None:
-    """Kick off the probe in a background thread so the first
-    system-prompt build doesn't pay the ~0.5s of subprocess calls
-    (python3/pip/PEP-668 version checks) on the time-to-first-token
-    critical path.
-
-    Idempotent and fail-safe.  The prompt-build call to
-    ``get_environment_probe_line`` takes the same ``_CACHE_LOCK``, so it
-    blocks only for whatever remains of an in-flight warm instead of
-    recomputing.  Called from agent init (all platforms); safe to call
-    from anywhere.
-    """
-    global _warm_started
-    if _warm_started or _CACHED_LINE is not None:
-        return
-    _warm_started = True
-    threading.Thread(
-        target=get_environment_probe_line,
-        name="env-probe-warm",
-        daemon=True,
-    ).start()
-
-
 def _reset_cache_for_tests() -> None:
     """Test helper — clear the cache between probe scenarios."""
-    global _CACHED_LINE, _warm_started
+    global _CACHED_LINE
     with _CACHE_LOCK:
         _CACHED_LINE = None
-        _warm_started = False

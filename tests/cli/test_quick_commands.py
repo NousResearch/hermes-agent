@@ -184,7 +184,8 @@ class TestGatewayQuickCommands:
         from gateway.run import GatewayRunner
 
         # Ensure redaction is active regardless of host HERMES_REDACT_SECRETS state
-        # or test ordering
+        # or test ordering (the module snapshots env at import time, so other
+        # tests in the same xdist worker can flip the flag).
         monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
 
         runner = GatewayRunner.__new__(GatewayRunner)

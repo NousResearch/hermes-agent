@@ -45,7 +45,6 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     context = SessionContext(source=source, connected_platforms=[], home_channels={})
 
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_NAME", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
@@ -56,7 +55,6 @@ def test_set_session_env_sets_contextvars(monkeypatch):
 
     # Values should be readable via get_session_env (contextvar path)
     assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
-    assert get_session_env("HERMES_SESSION_SOURCE") == ""
     assert get_session_env("HERMES_SESSION_CHAT_ID") == "-1001"
     assert get_session_env("HERMES_SESSION_CHAT_NAME") == "Group"
     assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
@@ -65,23 +63,10 @@ def test_set_session_env_sets_contextvars(monkeypatch):
 
     # os.environ should NOT be touched
     assert os.getenv("HERMES_SESSION_PLATFORM") is None
-    assert os.getenv("HERMES_SESSION_SOURCE") is None
     assert os.getenv("HERMES_SESSION_THREAD_ID") is None
 
     # Clean up
     runner._clear_session_env(tokens)
-
-
-def test_session_source_uses_contextvars(monkeypatch):
-    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
-
-    tokens = set_session_vars(source="tool")
-
-    assert get_session_env("HERMES_SESSION_SOURCE") == "tool"
-
-    clear_session_vars(tokens)
-
-    assert get_session_env("HERMES_SESSION_SOURCE") == ""
 
 
 def test_clear_session_env_restores_previous_state(monkeypatch):
@@ -317,7 +302,6 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
         )
     finally:
         runner._clear_session_env(tokens)
-        runner._shutdown_executor()
 
     assert result == {
         "platform": "telegram",
@@ -335,10 +319,7 @@ async def test_run_in_executor_with_context_forwards_args():
     def add(a, b):
         return a + b
 
-    try:
-        result = await runner._run_in_executor_with_context(add, 3, 7)
-    finally:
-        runner._shutdown_executor()
+    result = await runner._run_in_executor_with_context(add, 3, 7)
     assert result == 10
 
 
@@ -350,47 +331,5 @@ async def test_run_in_executor_with_context_propagates_exceptions():
     def blow_up():
         raise ValueError("boom")
 
-    try:
-        with pytest.raises(ValueError, match="boom"):
-            await runner._run_in_executor_with_context(blow_up)
-    finally:
-        runner._shutdown_executor()
-
-
-@pytest.mark.asyncio
-async def test_run_in_executor_with_context_survives_default_executor_shutdown():
-    """Gateway agent work should not depend on asyncio's default executor."""
-    runner = object.__new__(GatewayRunner)
-    loop = asyncio.get_running_loop()
-
-    await loop.run_in_executor(None, lambda: None)
-    await loop.shutdown_default_executor()
-
-    try:
-        result = await runner._run_in_executor_with_context(lambda: "ok")
-    finally:
-        runner._shutdown_executor()
-
-    assert result == "ok"
-
-
-@pytest.mark.asyncio
-async def test_gateway_executor_refuses_resurrection_after_shutdown():
-    """A real gateway shutdown must NOT be resurrected by the recreate path.
-
-    _shutdown_executor() means "we're stopping" — the recreate-on-shutdown
-    logic exists to survive an *external* teardown of the loop default
-    (test_..._survives_default_executor_shutdown), not to undo our own stop.
-    """
-    runner = object.__new__(GatewayRunner)
-
-    try:
-        first = await runner._run_in_executor_with_context(lambda: "first")
-        assert first == "first"
-        runner._shutdown_executor()
-
-        with pytest.raises(RuntimeError, match="shutting down"):
-            await runner._run_in_executor_with_context(lambda: "second")
-    finally:
-        runner._shutdown_executor()
-
+    with pytest.raises(ValueError, match="boom"):
+        await runner._run_in_executor_with_context(blow_up)

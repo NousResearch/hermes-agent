@@ -1,11 +1,7 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
 
-const {
-  buildSessionWindowUrl,
-  chatWindowWebPreferences,
-  createSessionWindowRegistry
-} = require('./session-windows.cjs')
+const { buildSessionWindowUrl, createSessionWindowRegistry } = require('./session-windows.cjs')
 
 // A minimal fake BrowserWindow: tracks listeners + destroyed state and lets a
 // test fire the 'closed' event, mirroring the slice of the Electron API the
@@ -178,22 +174,4 @@ test('registry trims the session id before keying', () => {
   registry.openOrFocus('  s1  ', () => win)
 
   assert.equal(registry.has('s1'), true)
-})
-
-test('chatWindowWebPreferences disables background throttling so streaming paints while blurred', () => {
-  // Regression: secondary session windows used to omit this flag, so a streamed
-  // answer stalled until the window regained focus (Chromium pauses the
-  // requestAnimationFrame-gated transcript flush for backgrounded windows).
-  const prefs = chatWindowWebPreferences('/tmp/preload.cjs')
-
-  assert.equal(prefs.backgroundThrottling, false)
-})
-
-test('chatWindowWebPreferences passes the preload path through and keeps the hardened defaults', () => {
-  const prefs = chatWindowWebPreferences('/some/preload.cjs')
-
-  assert.equal(prefs.preload, '/some/preload.cjs')
-  assert.equal(prefs.contextIsolation, true)
-  assert.equal(prefs.sandbox, true)
-  assert.equal(prefs.nodeIntegration, false)
 })

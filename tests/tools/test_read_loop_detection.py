@@ -46,7 +46,7 @@ class _FakeSearchResult:
     def __init__(self):
         self.matches = []
 
-    def to_dict(self, densify=False):
+    def to_dict(self):
         return {"matches": [{"file": "test.py", "line": 1, "text": "match"}]}
 
 

@@ -1,48 +1,30 @@
-// ── Persistence choke point ─────────────────────────────────────────────────
-// Every persisted read/write in the app funnels through readKey/writeKey, so a
-// single subscriber (telemetry, cross-window sync, an audit log) can observe all
-// of it without instrumenting each call site. No listeners by default → no cost.
-
-export interface PersistenceEvent {
-  key: string
-  op: 'read' | 'remove' | 'write'
-  value: null | string
-}
-
-type PersistenceListener = (event: PersistenceEvent) => void
-
-const persistenceListeners = new Set<PersistenceListener>()
-
-/** Observe every persisted get/set (e.g. pipe into telemetry/sync). */
-export function onPersistenceEvent(listener: PersistenceListener): () => void {
-  persistenceListeners.add(listener)
-
-  return () => void persistenceListeners.delete(listener)
-}
-
-function emitPersistence(event: PersistenceEvent) {
-  for (const listener of persistenceListeners) {
-    listener(event)
-  }
-}
-
-/** Raw read. Returns null when absent or storage is unavailable. */
-export function readKey(key: string): null | string {
-  let value: null | string = null
-
+export function storedBoolean(key: string, fallback: boolean): boolean {
   try {
-    value = window.localStorage.getItem(key)
+    const value = window.localStorage.getItem(key)
+
+    return value === null ? fallback : value === 'true'
   } catch {
-    // Restricted contexts (private mode, disabled storage) read as absent.
+    return fallback
   }
-
-  emitPersistence({ key, op: 'read', value })
-
-  return value
 }
 
-/** Raw write. A null value removes the key. Best-effort. */
-export function writeKey(key: string, value: null | string) {
+export function persistBoolean(key: string, value: boolean) {
+  try {
+    window.localStorage.setItem(key, String(value))
+  } catch {
+    // Local storage is a convenience; ignore failures in restricted contexts.
+  }
+}
+
+export function storedString(key: string): null | string {
+  try {
+    return window.localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+export function persistString(key: string, value: null | string) {
   try {
     if (value === null) {
       window.localStorage.removeItem(key)
@@ -50,38 +32,18 @@ export function writeKey(key: string, value: null | string) {
       window.localStorage.setItem(key, value)
     }
   } catch {
-    // Storage is best-effort; never let a quota/permission error break the UI.
+    // Storage is best-effort.
   }
-
-  emitPersistence({ key, op: value === null ? 'remove' : 'write', value })
-}
-
-export function storedBoolean(key: string, fallback: boolean): boolean {
-  const value = readKey(key)
-
-  return value === null ? fallback : value === 'true'
-}
-
-export function persistBoolean(key: string, value: boolean) {
-  writeKey(key, String(value))
-}
-
-export function storedString(key: string): null | string {
-  return readKey(key)
-}
-
-export function persistString(key: string, value: null | string) {
-  writeKey(key, value)
 }
 
 export function storedStringArray(key: string): string[] {
-  const value = readKey(key)
-
-  if (!value) {
-    return []
-  }
-
   try {
+    const value = window.localStorage.getItem(key)
+
+    if (!value) {
+      return []
+    }
+
     const parsed = JSON.parse(value)
 
     if (!Array.isArray(parsed)) {
@@ -95,17 +57,25 @@ export function storedStringArray(key: string): string[] {
 }
 
 export function persistStringArray(key: string, value: string[]) {
-  writeKey(key, value.length === 0 ? null : JSON.stringify(value))
+  try {
+    if (value.length === 0) {
+      window.localStorage.removeItem(key)
+    } else {
+      window.localStorage.setItem(key, JSON.stringify(value))
+    }
+  } catch {
+    // Pins are a local preference; restricted storage should not break chat.
+  }
 }
 
 export function storedStringRecord(key: string): Record<string, string> {
-  const value = readKey(key)
-
-  if (!value) {
-    return {}
-  }
-
   try {
+    const value = window.localStorage.getItem(key)
+
+    if (!value) {
+      return {}
+    }
+
     const parsed = JSON.parse(value)
 
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -121,7 +91,11 @@ export function storedStringRecord(key: string): Record<string, string> {
 }
 
 export function persistStringRecord(key: string, value: Record<string, string>) {
-  writeKey(key, JSON.stringify(value))
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // Local preference; restricted storage should not break the app.
+  }
 }
 
 export function arraysEqual(left: string[], right: string[]) {

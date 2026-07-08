@@ -17,7 +17,6 @@ Config via environment variables:
   HINDSIGHT_MODE                   — cloud or local (default: cloud)
   HINDSIGHT_TIMEOUT                — API request timeout in seconds (default: 120)
   HINDSIGHT_IDLE_TIMEOUT           — embedded daemon idle timeout seconds; 0 disables shutdown (default: 300)
-  HINDSIGHT_EMBED_PORT_HEALTH_GRACE_TIMEOUT — seconds to wait for a slow embedded daemon /health before treating it as stale (default: 30; set via config.json port_health_grace_timeout)
   HINDSIGHT_RETAIN_TAGS            — comma-separated tags attached to retained memories
   HINDSIGHT_RETAIN_OBSERVATION_SCOPES — observation scoping for retained memories: per_tag/combined/all_combinations, or a JSON list of tag-lists for custom scopes
   HINDSIGHT_RETAIN_SOURCE          — metadata source value attached to retained memories
@@ -37,7 +36,6 @@ import json
 import logging
 import os
 import queue
-import sys
 import threading
 
 from datetime import datetime, timezone
@@ -52,8 +50,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
-# Keep in sync with tools/lazy_deps.py ("memory.hindsight") and plugin.yaml.
-_MIN_CLIENT_VERSION = "0.6.1"
+_MIN_CLIENT_VERSION = "0.4.22"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
@@ -87,43 +84,6 @@ def _parse_int_setting(value: Any, default: int) -> int:
         return default
 
 
-# Env var the embedded daemon manager reads (at import time, as a module-level
-# constant) to size the grace window it waits for a slow /health before
-# declaring a daemon stale and killing it. Default upstream is 30s; on
-# resource-contended hosts a busy daemon can exceed a single 2s health check
-# and get needlessly killed + restarted (issue #13125 comment thread). We
-# surface it as plugin config so users can raise it without hand-setting an
-# env var, consistent with "config.json, not raw env vars".
-_PORT_HEALTH_GRACE_ENV = "HINDSIGHT_EMBED_PORT_HEALTH_GRACE_TIMEOUT"
-
-
-def _export_port_health_grace_timeout(config: dict[str, Any]) -> None:
-    """Export the embedded-daemon health grace timeout to the process env.
-
-    Must run BEFORE ``hindsight_embed.daemon_embed_manager`` is imported,
-    because the package reads the env var into a module-level constant at
-    import time. We only set it when the user configured a value AND the
-    env var isn't already set, so an explicit env override always wins.
-    """
-    raw = config.get("port_health_grace_timeout")
-    if raw is None or raw == "":
-        return
-    try:
-        seconds = float(raw)
-    except (TypeError, ValueError):
-        logger.warning(
-            "Invalid Hindsight port_health_grace_timeout %r; ignoring.", raw
-        )
-        return
-    if seconds < 0:
-        logger.warning(
-            "Negative Hindsight port_health_grace_timeout %r; ignoring.", raw
-        )
-        return
-    # setdefault: an explicit env var the operator set wins over config.
-    os.environ.setdefault(_PORT_HEALTH_GRACE_ENV, repr(seconds))
-
-
 def _check_local_runtime() -> tuple[bool, str | None]:
     """Return whether local embedded Hindsight imports cleanly.
 
@@ -138,17 +98,6 @@ def _check_local_runtime() -> tuple[bool, str | None]:
         return True, None
     except Exception as exc:
         return False, str(exc)
-
-
-def _ensure_cloud_client_dependency() -> None:
-    """Install the Hindsight cloud client lazily before importing it."""
-    try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("memory.hindsight", prompt=False)
-    except ImportError:
-        pass
-    except Exception as exc:
-        raise ImportError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -621,16 +570,6 @@ def _resolve_bank_id_template(template: str, fallback: str, **placeholders: str)
 class HindsightMemoryProvider(MemoryProvider):
     """Hindsight long-term memory with knowledge graph and multi-strategy retrieval."""
 
-    def backup_paths(self) -> List[str]:
-        """Hindsight's legacy shared config and embedded-mode profile env
-        files live under ~/.hindsight (see _load_config / line ~509)."""
-        try:
-            from pathlib import Path
-            legacy_dir = Path.home() / ".hindsight"
-            return [str(legacy_dir)]
-        except Exception:
-            return []
-
     def __init__(self):
         self._config = None
         self._api_key = None
@@ -763,7 +702,7 @@ class HindsightMemoryProvider(MemoryProvider):
         from hermes_cli.config import save_config
         from hermes_cli.secret_prompt import masked_secret_prompt
 
-        from hermes_cli.memory_setup import _CANCELLED, _curses_select, _print_cancelled_setup
+        from hermes_cli.memory_setup import _curses_select
 
         print("\n  Configuring Hindsight memory:\n")
 
@@ -780,10 +719,7 @@ class HindsightMemoryProvider(MemoryProvider):
         ]
         existing_mode = existing_config.get("mode")
         mode_default_idx = mode_values.index(existing_mode) if existing_mode in mode_values else 0
-        mode_idx = _curses_select("  Select mode", mode_items, default=mode_default_idx, cancel_returns=_CANCELLED)
-        if mode_idx == _CANCELLED:
-            _print_cancelled_setup()
-            return
+        mode_idx = _curses_select("  Select mode", mode_items, default=mode_default_idx)
         mode = mode_values[mode_idx]
 
         provider_config: dict = dict(existing_config)
@@ -791,6 +727,7 @@ class HindsightMemoryProvider(MemoryProvider):
         env_writes: dict = {}
 
         # Step 2: Install/upgrade deps for selected mode
+        _MIN_CLIENT_VERSION = "0.4.22"
         cloud_dep = f"hindsight-client>={_MIN_CLIENT_VERSION}"
         local_dep = "hindsight-all"
         if mode == "local_embedded":
@@ -799,27 +736,6 @@ class HindsightMemoryProvider(MemoryProvider):
             deps_to_install = [cloud_dep]
         else:
             deps_to_install = [cloud_dep]
-
-        llm_provider = ""
-        if mode == "local_embedded":
-            providers_list = list(_PROVIDER_DEFAULT_MODELS.keys())
-            llm_items = [
-                (p, f"default model: {_PROVIDER_DEFAULT_MODELS[p]}")
-                for p in providers_list
-            ]
-            existing_llm_provider = provider_config.get("llm_provider")
-            llm_default_idx = providers_list.index(existing_llm_provider) if existing_llm_provider in providers_list else 0
-            llm_idx = _curses_select(
-                "  Select LLM provider",
-                llm_items,
-                default=llm_default_idx,
-                cancel_returns=_CANCELLED,
-            )
-            if llm_idx == _CANCELLED:
-                _print_cancelled_setup()
-                return
-            llm_provider = providers_list[llm_idx]
-            provider_config["llm_provider"] = llm_provider
 
         print("\n  Checking dependencies...")
         uv_path = shutil.which("uv")
@@ -869,6 +785,18 @@ class HindsightMemoryProvider(MemoryProvider):
                 env_writes["HINDSIGHT_API_KEY"] = api_key
 
         else:  # local_embedded
+            providers_list = list(_PROVIDER_DEFAULT_MODELS.keys())
+            llm_items = [
+                (p, f"default model: {_PROVIDER_DEFAULT_MODELS[p]}")
+                for p in providers_list
+            ]
+            existing_llm_provider = provider_config.get("llm_provider")
+            llm_default_idx = providers_list.index(existing_llm_provider) if existing_llm_provider in providers_list else 0
+            llm_idx = _curses_select("  Select LLM provider", llm_items, default=llm_default_idx)
+            llm_provider = providers_list[llm_idx]
+
+            provider_config["llm_provider"] = llm_provider
+
             if llm_provider == "openai_compatible":
                 existing_base_url = provider_config.get("llm_base_url", "")
                 prompt = "  LLM endpoint URL (e.g. http://192.168.1.10:8080/v1)"
@@ -1006,7 +934,6 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
-            {"key": "port_health_grace_timeout", "description": "Seconds to wait for a slow daemon /health before treating it as stale (raise on busy/low-resource hosts; blank uses the 30s default)", "default": "", "when": {"mode": "local_embedded"}},
         ]
 
     def _get_client(self):
@@ -1051,7 +978,6 @@ class HindsightMemoryProvider(MemoryProvider):
                 kwargs["idle_timeout"] = idle_timeout
                 self._client = HindsightEmbedded(**kwargs)
             else:
-                _ensure_cloud_client_dependency()
                 from hindsight_client import Hindsight
                 timeout = self._timeout or _DEFAULT_TIMEOUT
                 kwargs = {"base_url": self._api_url, "timeout": float(timeout)}
@@ -1267,9 +1193,6 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._mode == "local":
             self._mode = "local_embedded"
         if self._mode == "local_embedded":
-            # Export the daemon health grace timeout BEFORE importing
-            # daemon_embed_manager (which reads it at import time).
-            _export_port_health_grace_timeout(self._config)
             available, reason = _check_local_runtime()
             if not available:
                 logger.warning(
@@ -1375,30 +1298,6 @@ class HindsightMemoryProvider(MemoryProvider):
         # doesn't block the chat. Redirect stdout/stderr to a log file to
         # prevent rich startup output from spamming the terminal.
         if self._mode == "local_embedded":
-            # PostgreSQL's initdb refuses to run as root by design, so the
-            # embedded daemon can never initialize its data directory under
-            # root. Without this guard the daemon-start thread would fail,
-            # retry, and loop forever — each cycle reloading embedding models
-            # (~958MB RAM, ~33% CPU) with no user-visible error. Detect root
-            # up front and skip daemon startup with a clear message instead.
-            if hasattr(os, "geteuid") and os.geteuid() == 0:
-                msg = (
-                    "Hindsight local_embedded mode cannot run as root "
-                    "(PostgreSQL initdb refuses root). Skipping the embedded "
-                    "memory daemon. Run Hermes as a non-root user, or switch "
-                    "to cloud / local_external mode via 'hermes memory setup'."
-                )
-                logger.warning(msg)
-                # Surface to the terminal too — a daemon that never starts
-                # would otherwise fail silently and the user would only see
-                # Hermes get sluggish. (issue #13125)
-                try:
-                    print(f"  ⚠ {msg}", file=sys.stderr, flush=True)
-                except Exception:
-                    pass
-                self._mode = "disabled"
-                return
-
             def _start_daemon():
                 import traceback
                 log_dir = get_hermes_home() / "logs"

@@ -155,68 +155,6 @@ def test_patch_replace_rejection_does_not_mutate(tmp_path):
     assert target.read_text(encoding="utf-8") == "alpha\nbeta\n"
 
 
-def test_patch_v4a_rejection_does_not_mutate(tmp_path):
-    target = tmp_path / "sample.txt"
-    target.write_text("alpha\nbeta\n", encoding="utf-8")
-
-    set_edit_approval_requester(lambda _proposal: False)
-
-    result = json.loads(
-        handle_function_call(
-            "patch",
-            {
-                "mode": "patch",
-                "patch": (
-                    "*** Begin Patch\n"
-                    f"*** Update File: {target}\n"
-                    "@@\n"
-                    " alpha\n"
-                    "-beta\n"
-                    "+gamma\n"
-                    "*** End Patch\n"
-                ),
-            },
-            task_id="acp-patch-v4a-reject",
-        )
-    )
-
-    assert "error" in result
-    assert "Edit approval denied" in result["error"]
-    assert target.read_text(encoding="utf-8") == "alpha\nbeta\n"
-
-
-def test_patch_v4a_approval_request_includes_patch_targets(tmp_path):
-    target = tmp_path / "sample.txt"
-    target.write_text("alpha\nbeta\n", encoding="utf-8")
-    proposals = []
-
-    set_edit_approval_requester(lambda proposal: proposals.append(proposal) or False)
-
-    json.loads(
-        handle_function_call(
-            "patch",
-            {
-                "mode": "patch",
-                "patch": (
-                    "*** Begin Patch\n"
-                    f"*** Update File: {target}\n"
-                    "@@\n"
-                    " alpha\n"
-                    "-beta\n"
-                    "+gamma\n"
-                    "*** End Patch\n"
-                ),
-            },
-            task_id="acp-patch-v4a-proposal",
-        )
-    )
-
-    assert len(proposals) == 1
-    assert proposals[0].tool_name == "patch"
-    assert proposals[0].path == str(target)
-    assert str(target) in proposals[0].new_text
-
-
 def test_patch_replace_approval_request_includes_full_file_diff(tmp_path):
     target = tmp_path / "sample.txt"
     target.write_text("alpha\nbeta\n", encoding="utf-8")

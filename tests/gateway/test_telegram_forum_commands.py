@@ -11,7 +11,7 @@ from gateway.config import Platform, PlatformConfig
 
 def _make_test_adapter():
     """Build a TelegramAdapter without running __init__."""
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from gateway.platforms.telegram import TelegramAdapter
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM

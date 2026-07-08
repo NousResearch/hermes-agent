@@ -77,22 +77,15 @@ def build_write_denied_prefixes(home: str) -> list[str]:
     ]
 
 
-def get_safe_write_roots() -> set[str]:
-    """Return resolved HERMES_WRITE_SAFE_ROOT paths. Supports multiple directories
-    separated by ``os.pathsep`` (``:`` on Unix, ``;`` on Windows).
-    E.g., ``/opt/data:/var/www/html`` on Unix, ``C:\\data;D:\\www`` on Windows."""
-    env = os.getenv("HERMES_WRITE_SAFE_ROOT", "")
-    if not env:
-        return set()
-    roots: set[str] = set()
-    for path in env.split(os.pathsep):
-        if path:
-            try:
-                resolved = os.path.realpath(os.path.expanduser(path))
-                roots.add(resolved)
-            except (OSError, ValueError):
-                continue
-    return roots
+def get_safe_write_root() -> Optional[str]:
+    """Return the resolved HERMES_WRITE_SAFE_ROOT path, or None if unset."""
+    root = os.getenv("HERMES_WRITE_SAFE_ROOT", "")
+    if not root:
+        return None
+    try:
+        return os.path.realpath(os.path.expanduser(root))
+    except Exception:
+        return None
 
 
 def is_write_denied(path: str) -> bool:
@@ -131,15 +124,9 @@ def is_write_denied(path: str) -> bool:
         except Exception:
             pass
 
-    safe_roots = get_safe_write_roots()
-    if safe_roots:
-        allowed = False
-        for safe_root in safe_roots:
-            if resolved == safe_root or resolved.startswith(safe_root + os.sep):
-                allowed = True
-                break
-        if not allowed:
-            return True
+    safe_root = get_safe_write_root()
+    if safe_root and not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):
+        return True
 
     return False
 
@@ -293,7 +280,7 @@ def get_read_block_error(path: str) -> Optional[str]:
     # .env contents — .env.example is the documented-shape substitute. The
     # terminal tool can still ``cat .env``; this is defense-in-depth, not a
     # boundary (see module docstring).
-    if resolved.name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES:
+    if resolved.name in _BLOCKED_PROJECT_ENV_BASENAMES:
         return (
             f"Access denied: {path} is a secret-bearing environment file "
             "and cannot be read to prevent credential leakage. "
@@ -302,30 +289,6 @@ def get_read_block_error(path: str) -> Optional[str]:
         )
 
     return None
-
-
-def raise_if_read_blocked(path: str) -> None:
-    """Raise ``ValueError`` if ``path`` is a denied Hermes read (see
-    :func:`get_read_block_error`), else return.
-
-    Shared chokepoint for provider input-loading sites that read a local
-    file the model/tool supplied (e.g. image-gen ``image_url`` /
-    ``reference_image_urls`` paths). Centralizes the guard so every provider
-    enforces the same read boundary with identical semantics instead of each
-    open-coding the try/except block (#57698).
-
-    Best-effort by design: if ``agent.file_safety`` machinery is somehow
-    unavailable at the call site the guard no-ops rather than breaking local
-    image loading — consistent with the defense-in-depth (not security
-    boundary) framing of the denylist itself. The blocking ``ValueError`` from
-    a real hit still propagates; only unexpected internal errors are swallowed.
-    """
-    try:
-        blocked = get_read_block_error(path)
-    except Exception:  # noqa: BLE001 - guard must never break local-file loading
-        return
-    if blocked:
-        raise ValueError(blocked)
 
 
 # ---------------------------------------------------------------------------

@@ -52,13 +52,6 @@ def _extract_autostash_block() -> str:
     return m.group(0)
 
 
-def _extract_install_sh_function(name: str) -> str:
-    text = INSTALL_SH.read_text()
-    match = re.search(rf"{name}\(\) \{{.*?\n\}}", text, re.DOTALL)
-    assert match is not None, f"{name}() not found in install.sh"
-    return match.group(0)
-
-
 def _make_unmerged_repo(repo: Path) -> None:
     """Leave ``repo`` with a conflicted (unmerged) index, as an interrupted
     update would."""
@@ -99,8 +92,6 @@ def test_install_sh_clears_unmerged_index_then_stashes(tmp_path: Path) -> None:
     script = (
         "set -e\n"
         'log_info() { echo "INFO: $*"; }\n'
-        f'INSTALL_DIR="{repo}"\n'
-        f"{_extract_install_sh_function('discard_update_lockfile_churn')}\n"
         "run() {\n"
         f"{block}"
         "}\n"
@@ -150,37 +141,3 @@ def test_install_sh_clears_unmerged_index_before_stash_source_order() -> None:
     idx_unmerged = text.index("ls-files --unmerged")
     idx_stash = text.index("stash push --include-untracked")
     assert idx_unmerged < idx_stash
-
-
-def test_install_ps1_stops_venv_resident_processes_before_removing_venv() -> None:
-    """The Windows venv-recreate path must stop every process running out of the
-    old venv before deleting it.
-
-    A gateway autostarted by a scheduled task runs as
-    ``venv\\Scripts\\pythonw.exe -m hermes_cli.main gateway run`` — image name
-    ``pythonw``, not ``hermes.exe`` — so the ``taskkill /IM hermes.exe`` guard
-    misses it, the loaded ``.pyd`` stays locked, and ``Remove-Item venv`` fails
-    mid-recursion (issues #47036/#47557/#47910). The recreate branch must also
-    sweep by venv path prefix, and that sweep must run before the delete.
-    """
-    text = INSTALL_PS1.read_text()
-
-    # The hermes.exe tree-kill is preserved (kills spawned child processes too).
-    assert 'taskkill /F /T /IM hermes.exe' in text
-
-    # The venv path-prefix sweep exists. It must match by case-insensitive
-    # StartsWith, NOT PowerShell -like: a venv path containing wildcard
-    # metacharacters ('[', ']') — legal in a Windows user name — silently fails
-    # to match under -like, reintroducing the exact miss this fix closes.
-    idx_recreate = text.index("Virtual environment already exists, recreating")
-    idx_sweep = text.index("StartsWith($venvPrefix", idx_recreate)
-    assert "[System.StringComparison]::OrdinalIgnoreCase" in text[idx_sweep:idx_sweep + 200]
-    assert 'ExecutablePath -like "$venvRoot' not in text, (
-        "the -like wildcard match must not be used for venv path scoping"
-    )
-
-    # The process sweep must run before the venv is removed, or it is a no-op.
-    idx_remove = text.index('Remove-Item -Recurse -Force "venv"', idx_recreate)
-    assert idx_sweep < idx_remove, (
-        "venv-resident processes must be stopped before Remove-Item deletes the venv"
-    )

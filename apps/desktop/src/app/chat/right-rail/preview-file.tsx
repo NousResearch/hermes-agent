@@ -6,7 +6,7 @@ import type {
   MouseEvent as ReactMouseEvent,
   ReactNode
 } from 'react'
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import ShikiHighlighter from 'react-shiki'
 import { Streamdown } from 'streamdown'
 
@@ -14,32 +14,15 @@ import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/comp
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { isAddSelectionShortcut } from '@/app/right-sidebar/terminal/selection'
-import { RichCodeBlock } from '@/components/assistant-ui/embeds'
-import { CodeEditor } from '@/components/chat/code-editor'
-import { FileDiffPanel } from '@/components/chat/diff-lines'
-import { chunkTextLines, useFixedRowWindow } from '@/components/chat/fixed-row-window'
 import { PageLoader } from '@/components/page-loader'
 import { translateNow, useI18n } from '@/i18n'
-import {
-  desktopFileDiff,
-  desktopGitRoot,
-  readDesktopFileDataUrl,
-  readDesktopFileText,
-  writeDesktopFileText
-} from '@/lib/desktop-fs'
-import { Check, Pencil, X } from '@/lib/icons'
-import { shikiLanguageForFilename } from '@/lib/markdown-code'
+import { readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
-import { setPreviewDirty } from '@/store/preview-edit'
 import { $currentCwd } from '@/store/session'
-import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
-const SOURCE_CHUNK_LINES = 200
-const SOURCE_LINE_PX = 20
-const SOURCE_OVERSCAN_LINES = 400
 
 type EmptyStateTone = 'neutral' | 'warning'
 
@@ -143,26 +126,11 @@ interface LocalPreviewState {
   binary?: boolean
   byteSize?: number
   dataUrl?: string
-  /** Working-tree-vs-HEAD unified diff, when the file has uncommitted changes. */
-  diff?: string
   error?: string
   language?: string
   loading: boolean
   text?: string
   truncated?: boolean
-}
-
-// True when focus is in a field that should swallow plain keystrokes (so the
-// bare-`e` edit shortcut never fires while the user is typing in the composer,
-// a search box, or the editor itself).
-function isTypableElement(el: Element | null): boolean {
-  if (!el) {
-    return false
-  }
-
-  const tag = el.tagName
-
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (el as HTMLElement).isContentEditable
 }
 
 function filePathForTarget(target: PreviewTarget) {
@@ -292,9 +260,7 @@ function MarkdownCode({ className, children, ...props }: ComponentProps<'code'>)
     )
   }
 
-  const code = String(children).replace(/\n$/, '')
-
-  const highlighted = (
+  return (
     <ShikiHighlighter
       addDefaultStyles={false}
       as="div"
@@ -304,13 +270,9 @@ function MarkdownCode({ className, children, ...props }: ComponentProps<'code'>)
       showLanguage={false}
       theme={SHIKI_THEME}
     >
-      {code}
+      {String(children).replace(/\n$/, '')}
     </ShikiHighlighter>
   )
-
-  // ```mermaid / ```svg fences route to the shared lazy renderers (same
-  // registry the chat transcript uses); everything else stays on Shiki.
-  return <RichCodeBlock code={code} fallback={highlighted} language={language} />
 }
 
 const MARKDOWN_COMPONENTS = {
@@ -337,92 +299,27 @@ function MarkdownPreview({ text }: { text: string }) {
   )
 }
 
-function PreviewModeSwitcher({
-  active,
-  modes,
-  onSelect,
-  trailing
-}: {
-  active: PreviewViewMode
-  modes: PreviewViewMode[]
-  onSelect: (mode: PreviewViewMode) => void
-  trailing?: ReactNode
-}) {
+function PreviewToggle({ asSource, onToggle }: { asSource: boolean; onToggle: () => void }) {
   const { t } = useI18n()
-  const showModes = modes.length > 1
-
-  if (!showModes && !trailing) {
-    return null
-  }
-
-  const label: Record<PreviewViewMode, string> = {
-    diff: t.preview.diff,
-    rendered: t.preview.renderedPreview,
-    source: t.preview.source
-  }
 
   return (
-    // Fixed height so the header is byte-identical between read and edit modes —
-    // swapping the trailing controls must never move the body below it.
-    <div className="flex h-7 shrink-0 items-center justify-end gap-3 border-b border-border/40 px-3">
-      {showModes &&
-        modes.map(mode => (
-          <button
-            className={cn(
-              'text-[0.625rem] font-bold underline-offset-4 transition-colors',
-              mode === active
-                ? 'text-foreground underline decoration-current/30'
-                : 'text-muted-foreground hover:text-foreground'
-            )}
-            key={mode}
-            onClick={() => onSelect(mode)}
-            type="button"
-          >
-            {label[mode]}
-          </button>
-        ))}
-      {trailing && <div className="flex items-center gap-1.5">{trailing}</div>}
+    <div className="sticky top-0 z-10 flex justify-end border-b border-border/40 bg-transparent px-3 py-1 backdrop-blur">
+      <button
+        className="text-[0.625rem] font-bold text-muted-foreground underline decoration-current/20 underline-offset-4 transition-colors hover:text-foreground"
+        onClick={onToggle}
+        type="button"
+      >
+        {asSource ? t.preview.renderedPreview : t.preview.source}
+      </button>
     </div>
   )
 }
 
-// Cancel / Save controls rendered as the header's trailing slot (not a bar of
-// their own) so edit mode reuses the read-mode header row verbatim.
-function EditControls({
-  dirty,
-  onCancel,
-  onSave,
-  saving
-}: {
-  dirty: boolean
-  onCancel: () => void
-  onSave: () => void
-  saving: boolean
-}) {
-  const { t } = useI18n()
-
-  return (
-    <>
-      <button
-        className="flex items-center gap-1 rounded-md px-1.5 text-[0.625rem] font-bold text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        onClick={onCancel}
-        type="button"
-      >
-        <X className="size-3" />
-        {t.common.cancel}
-      </button>
-      <button
-        className="flex items-center gap-1 rounded-md bg-primary px-2 py-0.5 text-[0.625rem] font-bold text-primary-foreground shadow-xs transition-opacity hover:opacity-90 disabled:opacity-50"
-        disabled={!dirty || saving}
-        onClick={onSave}
-        type="button"
-      >
-        <Check className="size-3" />
-        {saving ? t.common.saving : t.common.save}
-      </button>
-    </>
-  )
-}
+// Gutter and Shiki output share `font-mono text-xs leading-relaxed py-3` so
+// each line aligns vertically. The selection overlay relies on the same
+// `text-xs * leading-relaxed = 1.21875rem` line-height to position itself.
+const SOURCE_LINE_HEIGHT_REM = 1.21875
+const SOURCE_PAD_Y_REM = 0.75
 
 interface LineSelection {
   end: number
@@ -440,18 +337,7 @@ function startLineDrag(event: ReactDragEvent<HTMLElement>, filePath: string, { e
 
 function SourceView({ filePath, language, text }: { filePath: string; language: string; text: string }) {
   const { t } = useI18n()
-  const chunks = useMemo(() => chunkTextLines(text, SOURCE_CHUNK_LINES), [text])
-  const lastChunk = chunks.at(-1)
-  const totalLines = lastChunk ? lastChunk.start + lastChunk.lines.length : 0
-
-  const { afterRows, beforeRows, endChunk, onScroll, scrollerRef, startChunk } = useFixedRowWindow({
-    overscanRows: SOURCE_OVERSCAN_LINES,
-    rowPx: SOURCE_LINE_PX,
-    rowsPerChunk: SOURCE_CHUNK_LINES,
-    totalRows: totalLines
-  })
-
-  const visibleChunks = chunks.slice(startChunk, endChunk + 1)
+  const lineCount = useMemo(() => Math.max(1, text.split('\n').length), [text])
   const [selection, setSelection] = useState<LineSelection | null>(null)
   const inSelection = (line: number) => selection != null && line >= selection.start && line <= selection.end
 
@@ -508,96 +394,68 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
   }, [filePath, selection])
 
   return (
-    <div className="h-full overflow-auto" onScroll={onScroll} ref={scrollerRef}>
-      <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)] font-mono text-[0.7rem] leading-relaxed">
-        {beforeRows > 0 && <div aria-hidden className="col-span-2" style={{ height: beforeRows * SOURCE_LINE_PX }} />}
-        {visibleChunks.map(chunk => (
-          <Fragment key={chunk.start}>
-            <div className="select-none text-right text-muted-foreground/55">
-              {chunk.lines.map((_lineText, offset) => {
-                const line = chunk.start + offset + 1
-                const selected = inSelection(line)
+    <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)] font-mono text-xs leading-relaxed">
+      <div className="select-none py-3 text-right text-muted-foreground/55">
+        {Array.from({ length: lineCount }, (_, index) => {
+          const line = index + 1
+          const selected = inSelection(line)
 
-                return (
-                  <div
-                    className={cn(
-                      'h-5 w-9 cursor-pointer pr-2 leading-5 tabular-nums transition-colors',
-                      selected
-                        ? 'bg-amber-200/45 text-amber-900 dark:bg-amber-300/20 dark:text-amber-100'
-                        : 'hover:text-foreground'
-                    )}
-                    draggable
-                    key={line}
-                    onClick={event => handleLineClick(event, line)}
-                    onDragStart={event => handleDragStart(event, line)}
-                    title={t.preview.sourceLineTitle}
-                  >
-                    {line}
-                  </div>
-                )
-              })}
+          return (
+            <div
+              className={cn(
+                'cursor-pointer px-3 tabular-nums transition-colors',
+                selected
+                  ? 'bg-amber-200/45 text-amber-900 dark:bg-amber-300/20 dark:text-amber-100'
+                  : 'hover:text-foreground'
+              )}
+              draggable
+              key={line}
+              onClick={event => handleLineClick(event, line)}
+              onDragStart={event => handleDragStart(event, line)}
+              title={t.preview.sourceLineTitle}
+            >
+              {line}
             </div>
-            <div className="preview-source-code min-w-0 [&_pre]:m-0" data-selectable-text="true">
-              <ShikiHighlighter
-                addDefaultStyles={false}
-                as="div"
-                defaultColor="light-dark()"
-                delay={80}
-                language={language || 'text'}
-                showLanguage={false}
-                theme={SHIKI_THEME}
-              >
-                {chunk.text}
-              </ShikiHighlighter>
-            </div>
-          </Fragment>
-        ))}
-        {afterRows > 0 && <div aria-hidden className="col-span-2" style={{ height: afterRows * SOURCE_LINE_PX }} />}
+          )
+        })}
+      </div>
+      <div
+        className="relative [&_pre]:m-0 [&_pre]:px-3 [&_pre]:py-3 [&_pre]:bg-transparent!"
+        data-selectable-text="true"
+      >
+        {selection && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 bg-amber-200/35 dark:bg-amber-300/10"
+            style={{
+              top: `calc(${SOURCE_PAD_Y_REM}rem + ${selection.start - 1} * ${SOURCE_LINE_HEIGHT_REM}rem)`,
+              height: `calc(${selection.end - selection.start + 1} * ${SOURCE_LINE_HEIGHT_REM}rem)`
+            }}
+          />
+        )}
+        <ShikiHighlighter
+          addDefaultStyles={false}
+          as="div"
+          defaultColor="light-dark()"
+          delay={80}
+          language={language || 'text'}
+          showLanguage={false}
+          theme={SHIKI_THEME}
+        >
+          {text}
+        </ShikiHighlighter>
       </div>
     </div>
   )
 }
 
-type PreviewViewMode = 'diff' | 'rendered' | 'source'
-
 export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; target: PreviewTarget }) {
   const { t } = useI18n()
   const [state, setState] = useState<LocalPreviewState>({ loading: true })
   const [forcePreview, setForcePreview] = useState(false)
-  // User-picked view; null = auto (diff when changed, else rendered markdown,
-  // else source). Reset when the previewed file changes.
-  const [userMode, setUserMode] = useState<null | PreviewViewMode>(null)
-  // Spot-editor state. The editor owns its buffer (keyed by `editorKey`); the
-  // live draft + the snapshot the user started from live in refs so typing
-  // never re-renders this (large) component — `dirty` is the only render-worthy
-  // signal and it flips just once when crossing the clean↔dirty boundary.
-  // `selfReload` re-runs the load after a save without the parent.
-  const [editing, setEditing] = useState(false)
-  const draftRef = useRef('')
-  const baselineRef = useRef('')
-  const [dirty, setDirty] = useState(false)
-  const [editorKey, setEditorKey] = useState(0)
-  const [saving, setSaving] = useState(false)
-  const [saveError, setSaveError] = useState<null | string>(null)
-  const [conflict, setConflict] = useState(false)
-  const [selfReload, setSelfReload] = useState(0)
-  // For the bare-`e` shortcut: the read-view root (to detect focus-within) and a
-  // hover flag (no state — only the keydown handler reads it).
-  const readViewRef = useRef<HTMLDivElement>(null)
-  const hoverRef = useRef(false)
+  const [renderMarkdownAsSource, setRenderMarkdownAsSource] = useState(false)
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
-
-  useEffect(() => {
-    setUserMode(null)
-    setEditing(false)
-    setDirty(false)
-    setSaving(false)
-    setSaveError(null)
-    setConflict(false)
-    draftRef.current = ''
-    baselineRef.current = ''
-  }, [filePath, reloadKey])
 
   // HTML files are rendered as source code, not in a webview - so they take
   // the same path as plain text files. `previewKind === 'binary'` arrives
@@ -650,22 +508,6 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
             text: shouldBlock ? undefined : result.text,
             truncated: result.truncated
           })
-
-          // Best-effort: fetch the file's working-tree-vs-HEAD diff so the
-          // preview can offer a DIFF view when there are uncommitted changes.
-          // Empty (clean file / not a repo / remote) just hides the option.
-          if (!shouldBlock) {
-            try {
-              const root = await desktopGitRoot(filePath)
-              const diff = root ? await desktopFileDiff(root, filePath) : ''
-
-              if (active && diff.trim()) {
-                setState(prev => (prev.text === result.text ? { ...prev, diff } : prev))
-              }
-            } catch {
-              // No diff available; the preview just shows source.
-            }
-          }
         }
       } catch (error) {
         if (active) {
@@ -682,188 +524,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     return () => {
       active = false
     }
-  }, [blockedByTarget, filePath, forcePreview, isImage, isText, reloadKey, selfReload, target.dataUrl, target.language])
-
-  // Editing is only offered for whole, readable text — never images, binaries,
-  // or files we only loaded the first 512 KB of (saving would drop the tail).
-  const canEdit =
-    isText && !isImage && !blockedByTarget && state.text !== undefined && !state.truncated && !state.binary
-
-  // Per-keystroke: update the draft ref (no render) and only set `dirty` when it
-  // actually changes — React bails on an identical value, so a long typing run
-  // triggers a single re-render at most.
-  const handleEditorChange = useCallback((value: string) => {
-    draftRef.current = value
-    const next = value !== baselineRef.current
-    setDirty(prev => (prev === next ? prev : next))
-  }, [])
-
-  // Publish the unsaved state to the rail so the tab can show a modified dot.
-  // Keyed by url; cleared on unmount/tab-change so a stale dot never lingers.
-  useEffect(() => {
-    setPreviewDirty(target.url, editing && dirty)
-
-    return () => setPreviewDirty(target.url, false)
-  }, [target.url, editing, dirty])
-
-  const beginEdit = () => {
-    const text = state.text ?? ''
-    baselineRef.current = text
-    draftRef.current = text
-    setDirty(false)
-    setEditorKey(key => key + 1)
-    setSaving(false)
-    setSaveError(null)
-    setConflict(false)
-    setEditing(true)
-  }
-
-  // Latest `beginEdit` for the keydown listener, so the listener can stay
-  // subscribed across renders without recreating itself or going stale.
-  const beginEditRef = useRef(beginEdit)
-  beginEditRef.current = beginEdit
-
-  // Bare `e` enters edit mode when the file pane is hovered or focused and no
-  // typable field has focus — a fast, button-free path (double-click felt laggy
-  // because of the browser's click-disambiguation delay).
-  useEffect(() => {
-    if (!canEdit || editing) {
-      return
-    }
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'e' || event.metaKey || event.ctrlKey || event.altKey) {
-        return
-      }
-
-      if (isTypableElement(document.activeElement)) {
-        return
-      }
-
-      const root = readViewRef.current
-      const focusWithin = Boolean(root && document.activeElement && root.contains(document.activeElement))
-
-      if (!hoverRef.current && !focusWithin) {
-        return
-      }
-
-      event.preventDefault()
-      beginEditRef.current()
-    }
-
-    window.addEventListener('keydown', onKeyDown)
-
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [canEdit, editing])
-
-  const cancelEdit = () => {
-    setEditing(false)
-    setSaveError(null)
-    setConflict(false)
-  }
-
-  const discardAndReload = () => {
-    setEditing(false)
-    setConflict(false)
-    setSaveError(null)
-    setSelfReload(n => n + 1)
-  }
-
-  const saveEdit = async (force = false) => {
-    if (saving) {
-      return
-    }
-
-    setSaving(true)
-    setSaveError(null)
-
-    try {
-      // Stale-on-disk guard: re-read what's on disk now and compare to the
-      // snapshot the user started from. If something changed underneath (an
-      // agent edit, an external save), don't clobber it silently — surface the
-      // choice. `force` is the user picking "overwrite" from that banner.
-      if (!force) {
-        try {
-          const current = await readTextPreview(filePath)
-
-          if (!current.binary && (current.text ?? '') !== baselineRef.current) {
-            setConflict(true)
-            setSaving(false)
-
-            return
-          }
-        } catch {
-          // Couldn't re-read for the check — fall through and attempt the write.
-        }
-      }
-
-      await writeDesktopFileText(filePath, draftRef.current)
-      baselineRef.current = draftRef.current
-      setDirty(false)
-      setConflict(false)
-      setEditing(false)
-      notifyWorkspaceChanged()
-      setSelfReload(n => n + 1)
-    } catch (error) {
-      setSaveError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  // Rendered before the loading/error branches so a background re-read (file
-  // watcher, workspace tick) can't unmount the editor and drop the draft. Uses
-  // the SAME container + fixed-height header as the read view so entering edit
-  // never shifts the body — only the trailing controls and the body swap.
-  if (editing) {
-    return (
-      <div className="flex h-full flex-col overflow-hidden bg-transparent">
-        <PreviewModeSwitcher
-          active="source"
-          modes={[]}
-          onSelect={() => {}}
-          trailing={<EditControls dirty={dirty} onCancel={cancelEdit} onSave={() => void saveEdit()} saving={saving} />}
-        />
-        {conflict && (
-          <div className="shrink-0 border-b border-amber-400/40 bg-amber-50 px-3 py-2 text-[0.7rem] text-amber-900 dark:border-amber-300/30 dark:bg-amber-300/10 dark:text-amber-100">
-            <div className="font-semibold">{t.preview.diskChangedTitle}</div>
-            <div className="mt-0.5 leading-relaxed">{t.preview.diskChangedBody}</div>
-            <div className="mt-1.5 flex gap-3">
-              <button
-                className="font-bold underline underline-offset-4 transition-opacity hover:opacity-80"
-                onClick={() => void saveEdit(true)}
-                type="button"
-              >
-                {t.preview.overwrite}
-              </button>
-              <button
-                className="font-bold underline underline-offset-4 transition-opacity hover:opacity-80"
-                onClick={discardAndReload}
-                type="button"
-              >
-                {t.preview.discardReload}
-              </button>
-            </div>
-          </div>
-        )}
-        {saveError && (
-          <div className="shrink-0 border-b border-destructive/40 bg-destructive/10 px-3 py-1.5 text-[0.7rem] text-destructive">
-            {t.preview.saveFailed(saveError)}
-          </div>
-        )}
-        <div className="min-h-0 flex-1 overflow-hidden">
-          <CodeEditor
-            filePath={filePath}
-            initialValue={baselineRef.current}
-            key={editorKey}
-            onCancel={cancelEdit}
-            onChange={handleEditorChange}
-            onSave={() => void saveEdit()}
-          />
-        </div>
-      </div>
-    )
-  }
+  }, [blockedByTarget, filePath, forcePreview, isImage, isText, reloadKey, target.dataUrl, target.language])
 
   if (state.loading) {
     return <PageLoader label={t.preview.loading} />
@@ -883,7 +544,11 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
     return (
       <PreviewEmptyState
-        body={binary ? t.preview.binaryBody(target.label) : t.preview.largeBody(target.label, formatBytes(size))}
+        body={
+          binary
+            ? t.preview.binaryBody(target.label)
+            : t.preview.largeBody(target.label, formatBytes(size))
+        }
         primaryAction={{ label: t.preview.previewAnyway, onClick: () => setForcePreview(true) }}
         title={binary ? t.preview.binaryTitle : t.preview.largeTitle}
         tone="warning"
@@ -906,79 +571,29 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
   if (isText && state.text !== undefined) {
     const isMarkdown = (state.language || target.language) === 'markdown'
-    const hasDiff = Boolean(state.diff && state.diff.trim())
-    // Order the toggle reads left→right; default lands on the most useful view.
-    const modes: PreviewViewMode[] = []
-
-    if (isMarkdown) {
-      modes.push('rendered')
-    }
-
-    modes.push('source')
-
-    if (hasDiff) {
-      modes.push('diff')
-    }
-
-    const autoMode: PreviewViewMode = hasDiff ? 'diff' : isMarkdown ? 'rendered' : 'source'
-    const mode = userMode && modes.includes(userMode) ? userMode : autoMode
+    const showRendered = isMarkdown && !renderMarkdownAsSource
 
     return (
-      <div
-        className="flex h-full flex-col overflow-hidden bg-transparent"
-        onMouseEnter={() => {
-          hoverRef.current = true
-        }}
-        onMouseLeave={() => {
-          hoverRef.current = false
-        }}
-        ref={readViewRef}
-      >
+      <div className="h-full overflow-auto bg-transparent">
         {state.truncated && (
           <div className="border-b border-border/60 bg-muted/35 px-3 py-1.5 text-[0.68rem] text-muted-foreground">
             {t.preview.truncated}
           </div>
         )}
-        <PreviewModeSwitcher
-          active={mode}
-          modes={modes}
-          onSelect={setUserMode}
-          trailing={
-            canEdit ? (
-              <button
-                className="flex items-center gap-1 text-[0.625rem] font-bold text-muted-foreground underline-offset-4 transition-colors hover:text-foreground"
-                onClick={beginEdit}
-                title={`${t.preview.edit} (e)`}
-                type="button"
-              >
-                <Pencil className="size-3" />
-                {t.preview.edit}
-              </button>
-            ) : null
-          }
-        />
-        <div className="min-h-0 flex-1 overflow-auto">
-          {mode === 'rendered' ? (
-            <MarkdownPreview text={state.text} />
-          ) : mode === 'diff' ? (
-            <FileDiffPanel
-              className="mx-0 mb-0 h-full max-h-none"
-              diff={state.diff ?? ''}
-              fullText={state.text}
-              path={filePath}
-              showLineNumbers
-            />
-          ) : (
-            <SourceView
-              filePath={filePath}
-              language={shikiLanguageForFilename(filePath) || state.language || 'text'}
-              text={state.text}
-            />
-          )}
-        </div>
+        {isMarkdown && <PreviewToggle asSource={!showRendered} onToggle={() => setRenderMarkdownAsSource(s => !s)} />}
+        {showRendered ? (
+          <MarkdownPreview text={state.text} />
+        ) : (
+          <SourceView filePath={filePath} language={state.language || 'text'} text={state.text} />
+        )}
       </div>
     )
   }
 
-  return <PreviewEmptyState body={t.preview.noInlineBody(target.mimeType || '')} title={t.preview.noInlineTitle} />
+  return (
+    <PreviewEmptyState
+      body={t.preview.noInlineBody(target.mimeType || '')}
+      title={t.preview.noInlineTitle}
+    />
+  )
 }

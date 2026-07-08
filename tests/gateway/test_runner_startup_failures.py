@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
-from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
 from gateway.run import GatewayRunner
 from gateway.status import read_runtime_status
 
@@ -12,7 +11,7 @@ class _RetryableFailureAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
 
-    async def connect(self, *, is_reconnect: bool = False) -> bool:
+    async def connect(self) -> bool:
         self._set_fatal_error(
             "telegram_connect_error",
             "Telegram startup failed: temporary DNS resolution failure.",
@@ -34,7 +33,7 @@ class _DisabledAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=False, token="***"), Platform.TELEGRAM)
 
-    async def connect(self, *, is_reconnect: bool = False) -> bool:
+    async def connect(self) -> bool:
         raise AssertionError("connect should not be called for disabled platforms")
 
     async def disconnect(self) -> None:
@@ -51,7 +50,7 @@ class _SuccessfulAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="***"), Platform.DISCORD)
 
-    async def connect(self, *, is_reconnect: bool = False) -> bool:
+    async def connect(self) -> bool:
         return True
 
     async def disconnect(self) -> None:
@@ -152,7 +151,6 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
             self.config = config
             self.should_exit_cleanly = True
             self.exit_reason = None
-            self.exit_code = None
             self.adapters = {}
 
         async def start(self):
@@ -187,7 +185,6 @@ async def test_start_gateway_replace_force_uses_terminate_pid(monkeypatch, tmp_p
             self.config = config
             self.should_exit_cleanly = True
             self.exit_reason = None
-            self.exit_code = None
             self.adapters = {}
 
         async def start(self):
@@ -336,7 +333,6 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
             self.config = config
             self.should_exit_cleanly = True
             self.exit_reason = None
-            self.exit_code = None
             self.adapters = {}
 
         async def start(self):
@@ -460,94 +456,6 @@ async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch,
         "No adapter could be created" in record.message
         for record in caplog.records
     ), "Expected degraded-mode warning when all adapters are missing"
-
-
-class _NonRetryableFailureAdapter(BasePlatformAdapter):
-    """Simulates a fatal config error like token collision."""
-    def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.DISCORD)
-
-    async def connect(self, *, is_reconnect: bool = False) -> bool:
-        self._set_fatal_error(
-            "discord-bot-token_lock",
-            "Discord bot token already in use (PID 999). Stop the other gateway first.",
-            retryable=False,
-        )
-        return False
-
-    async def disconnect(self) -> None:
-        self._mark_disconnected()
-
-    async def send(self, chat_id, content, reply_to=None, metadata=None):
-        raise NotImplementedError
-
-    async def get_chat_info(self, chat_id):
-        return {"id": chat_id}
-
-
-@pytest.mark.asyncio
-async def test_runner_exits_with_ex_config_on_nonretryable_startup_error(monkeypatch, tmp_path):
-    """Non-retryable startup errors (token collision, no platforms) must
-    set exit_code to 78 (EX_CONFIG) so the s6 finish script can translate
-    it to exit 125 (permanent failure).  See #51228."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    config = GatewayConfig(
-        platforms={
-            Platform.DISCORD: PlatformConfig(enabled=True, token="***")
-        },
-        sessions_dir=tmp_path / "sessions",
-    )
-    runner = GatewayRunner(config)
-
-    monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: _NonRetryableFailureAdapter())
-
-    ok = await runner.start()
-
-    assert ok is True  # start() returns True (clean exit requested)
-    assert runner.should_exit_cleanly is True
-    assert runner.exit_code == GATEWAY_FATAL_CONFIG_EXIT_CODE
-    state = read_runtime_status()
-    assert state["gateway_state"] == "startup_failed"
-
-
-@pytest.mark.asyncio
-async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_path):
-    """A clean exit carrying GATEWAY_FATAL_CONFIG_EXIT_CODE must surface as a
-    process-level SystemExit(78) — NOT a truthy return — so main() exits 78
-    and the s6 finish script can translate it to 125 (no restart).
-
-    This guards the propagation gap: runner.start() stamps exit_code=78 and
-    requests a clean exit, but start_gateway()'s clean-exit branch used to
-    `return True` before the SystemExit(exit_code) site, so main() exited 0
-    and s6 crash-looped anyway (#51228)."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-    class _FatalConfigRunner:
-        def __init__(self, config):
-            self.config = config
-            self.should_exit_cleanly = True
-            self.exit_reason = "discord: Discord bot token already in use"
-            self.exit_code = GATEWAY_FATAL_CONFIG_EXIT_CODE
-            self.adapters = {}
-
-        async def start(self):
-            return True
-
-        async def stop(self):
-            return None
-
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
-    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
-    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
-    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
-    monkeypatch.setattr("gateway.run.GatewayRunner", _FatalConfigRunner)
-
-    from gateway.run import start_gateway
-
-    with pytest.raises(SystemExit) as exc_info:
-        await start_gateway(config=GatewayConfig(), replace=False, verbosity=0)
-
-    assert exc_info.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
 
 
 def test_runner_warns_when_docker_gateway_lacks_explicit_output_mount(monkeypatch, tmp_path, caplog):

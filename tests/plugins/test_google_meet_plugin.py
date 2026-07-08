@@ -778,13 +778,11 @@ def test_cmd_install_runs_pip_and_playwright(capsys):
          patch("shutil.which", return_value="/usr/bin/paplay"):
         rc = _cmd_install(realtime=False, assume_yes=True)
     assert rc == 0
-    # First invocation: dependency install via the uv→pip ladder
-    # (shutil.which is mocked truthy, so the uv tier is taken: `<uv> pip install ...`)
-    pip_cmds = [
-        c for c in calls
-        if "install" in c and "playwright" in c and "websockets" in c
-    ]
-    assert pip_cmds, f"no dependency install run: {calls}"
+    # First invocation: pip install
+    pip_cmds = [c for c in calls if len(c) > 2 and c[1:4] == ["-m", "pip", "install"]]
+    assert pip_cmds, f"no pip install run: {calls}"
+    assert "playwright" in pip_cmds[0]
+    assert "websockets" in pip_cmds[0]
     # Second: playwright install chromium
     pw_cmds = [c for c in calls if len(c) > 2 and c[1:4] == ["-m", "playwright", "install"]]
     assert pw_cmds, f"no playwright install run: {calls}"

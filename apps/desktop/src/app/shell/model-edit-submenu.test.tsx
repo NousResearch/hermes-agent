@@ -1,12 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuSub,
-  DropdownMenuSubTrigger
-} from '@/components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuSub, DropdownMenuSubTrigger } from '@/components/ui/dropdown-menu'
 import { $modelPresets, getModelPreset } from '@/store/model-presets'
 import { $activeSessionId } from '@/store/session'
 

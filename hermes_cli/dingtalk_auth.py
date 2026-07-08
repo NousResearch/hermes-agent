@@ -163,15 +163,17 @@ def _ensure_qrcode_installed() -> bool:
 
     import subprocess
 
-    from hermes_cli.tools_config import _pip_install
-
-    try:
-        result = _pip_install(["-q", "qrcode"], timeout=120)
-        if result.returncode == 0:
+    # Try uv first (Hermes convention), then pip
+    for cmd in (
+        [sys.executable, "-m", "uv", "pip", "install", "qrcode"],
+        [sys.executable, "-m", "pip", "install", "-q", "qrcode"],
+    ):
+        try:
+            subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             import qrcode  # noqa: F401,F811
             return True
-    except (subprocess.SubprocessError, ImportError, OSError):
-        pass
+        except (subprocess.CalledProcessError, ImportError, FileNotFoundError):
+            continue
     return False
 
 
@@ -255,7 +257,7 @@ def dingtalk_qr_auth() -> Optional[Tuple[str, str]]:
     print()
 
     if not render_qr_to_terminal(url):
-        print_warning("  QR code render failed, please open the link below to authorize:")
+        print_warning(f"  QR code render failed, please open the link below to authorize:")
 
     print()
     print_info(f"  Or open this link manually: {url}")

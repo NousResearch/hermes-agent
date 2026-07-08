@@ -59,10 +59,8 @@ function Harness({
     }
 
     const editor = editorRef.current
-
     if (editor) {
       const domText = composerPlainText(editor)
-
       if (domText !== draftRef.current) {
         draftRef.current = domText
         setDraft(domText)
@@ -129,11 +127,9 @@ function Harness({
 describe('composer Enter submit — live DOM vs stale composer state (#39630)', () => {
   it('sends the just-typed text on Enter even when composer state has not synced', async () => {
     const onSubmit = vi.fn()
-
     const { getByTestId } = render(
       <Harness onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />
     )
-
     const editor = getByTestId('editor')
 
     // Fast typing: the DOM has the text but NO input event fired, so `draft`
@@ -150,11 +146,9 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
     const onQueue = vi.fn()
     const onDrain = vi.fn()
     const onCancel = vi.fn()
-
     const { getByTestId } = render(
       <Harness busy onCancel={onCancel} onDrain={onDrain} onQueue={onQueue} onSubmit={vi.fn()} queued={['queued-1']} />
     )
-
     const editor = getByTestId('editor')
 
     await act(async () => {
@@ -171,11 +165,9 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
     const onCancel = vi.fn()
     const onSubmit = vi.fn()
     const onQueue = vi.fn()
-
     const { getByTestId } = render(
       <Harness busy onCancel={onCancel} onDrain={vi.fn()} onQueue={onQueue} onSubmit={onSubmit} />
     )
-
     const editor = getByTestId('editor')
 
     await act(async () => {
@@ -191,11 +183,9 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
   it('drains the next queued prompt on Enter when idle with a truly empty editor', async () => {
     const onDrain = vi.fn()
     const onSubmit = vi.fn()
-
     const { getByTestId } = render(
       <Harness onCancel={vi.fn()} onDrain={onDrain} onQueue={vi.fn()} onSubmit={onSubmit} queued={['queued-1']} />
     )
-
     const editor = getByTestId('editor')
 
     await act(async () => {
@@ -210,18 +200,9 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
   it('keeps reconnect drafts editable but blocks Enter submit until the gateway returns', async () => {
     const onSubmit = vi.fn()
     const onDrain = vi.fn()
-
     const { getByTestId } = render(
-      <Harness
-        disabled
-        onCancel={vi.fn()}
-        onDrain={onDrain}
-        onQueue={vi.fn()}
-        onSubmit={onSubmit}
-        queued={['queued-1']}
-      />
+      <Harness disabled onCancel={vi.fn()} onDrain={onDrain} onQueue={vi.fn()} onSubmit={onSubmit} queued={['queued-1']} />
     )
-
     const editor = getByTestId('editor')
 
     await act(async () => {

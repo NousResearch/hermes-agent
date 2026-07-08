@@ -3,10 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   $subagentsBySession,
   activeSubagentCount,
-  allSubagents,
   buildSubagentTree,
   clearSessionSubagents,
-  failedSubagentCount,
   pruneDelegateFallbackSubagents,
   upsertSubagent
 } from './subagents'
@@ -99,27 +97,6 @@ describe('subagent store', () => {
     pruneDelegateFallbackSubagents('s1')
 
     expect(listFor('s1').map(item => item.id)).toEqual(['sa-0-xyz'])
-  })
-
-  // Contract: the status-bar "Agents" indicator and the Spawn-tree panel read
-  // the same scope — every session's subagents — so a count can never point at
-  // an empty tree (the desync behind "Agents (N)" vs "No live subagents").
-  it('counts running/failed across every session, matching the aggregated tree', () => {
-    upsertSubagent('s1', { goal: 'a', status: 'running', subagent_id: 'a', task_index: 0 })
-    upsertSubagent('s1', { goal: 'b', status: 'failed', subagent_id: 'b', task_index: 1 })
-    upsertSubagent('s2', { goal: 'c', status: 'running', subagent_id: 'c', task_index: 0 })
-    upsertSubagent('s2', { goal: 'd', status: 'failed', subagent_id: 'd', task_index: 1 })
-
-    const flat = allSubagents($subagentsBySession.get())
-    const indicatorRunning = Object.values($subagentsBySession.get()).reduce((n, l) => n + activeSubagentCount(l), 0)
-    const indicatorFailed = Object.values($subagentsBySession.get()).reduce((n, l) => n + failedSubagentCount(l), 0)
-    const tree = buildSubagentTree(flat)
-
-    // The active-session-only filter would have reported 1/1 here, not 2/2.
-    expect(indicatorRunning).toBe(2)
-    expect(indicatorFailed).toBe(2)
-    expect(tree).toHaveLength(4)
-    expect(indicatorRunning + indicatorFailed).toBe(tree.length)
   })
 
   it('clears one session without touching another', () => {

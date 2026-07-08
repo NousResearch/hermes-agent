@@ -22,16 +22,12 @@ export type BlockGroup = 'diff' | 'intro' | 'model' | 'note' | 'slash' | 'trail'
 export const messageGroup = (msg: Pick<Msg, 'kind' | 'role'>): BlockGroup => {
   switch (msg.kind) {
     case 'intro':
-
     case 'panel':
       return 'intro'
-
     case 'slash':
       return 'slash'
-
     case 'diff':
       return 'diff'
-
     case 'trail':
       return 'trail'
   }
@@ -69,7 +65,10 @@ const PAINTS_TRAILING_GAP: ReadonlySet<BlockGroup> = new Set(['diff', 'user'])
  * assistant block therefore computes the same gap while it streams as the
  * settled segment does once it flushes, so the live area never jumps.
  */
-export const hasLeadGap = (prev: Pick<Msg, 'kind' | 'role'> | undefined, cur: Pick<Msg, 'kind' | 'role'>): boolean => {
+export const hasLeadGap = (
+  prev: Pick<Msg, 'kind' | 'role'> | undefined,
+  cur: Pick<Msg, 'kind' | 'role'>
+): boolean => {
   const group = messageGroup(cur)
 
   if (SELF_SPACED.has(group)) {

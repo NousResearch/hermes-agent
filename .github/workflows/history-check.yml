@@ -14,7 +14,11 @@ name: History Check
 # the PR head and main to be non-empty.
 
 on:
-  workflow_call:
+  # No paths filter — the job must always run so the required check
+  # reports a status (path-gated workflows leave checks "pending" forever
+  # when no matching files change, which blocks merge).
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read

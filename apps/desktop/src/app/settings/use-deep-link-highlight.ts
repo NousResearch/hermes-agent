@@ -30,50 +30,30 @@ export function useDeepLinkHighlight({
 
     onResolve?.(target)
 
-    let cancelled = false
-    let timer = 0
-
-    // onResolve may flip view state that mounts the row a few frames later, so
-    // poll briefly for it and only drop the param AFTER a successful scroll —
-    // deleting up front would lose the deep link when the target mounts late.
-    let attempts = 0
-
-    const attempt = () => {
-      if (cancelled) {
-        return
-      }
-
+    // Defer a frame so async state (expansion, selection) mounts the row first.
+    const scrollTimeout = window.setTimeout(() => {
       const element = document.getElementById(elementId(target))
 
-      if (element) {
-        element.scrollIntoView({ behavior: 'smooth', block })
-        element.classList.add('setting-field-highlight')
-        window.setTimeout(() => element.classList.remove('setting-field-highlight'), 1600)
-
-        setSearchParams(
-          previous => {
-            const next = new URLSearchParams(previous)
-            next.delete(param)
-
-            return next
-          },
-          { replace: true }
-        )
-
+      if (!element) {
         return
       }
 
-      if (attempts++ < 20) {
-        timer = window.setTimeout(attempt, 80)
-      }
-    }
+      element.scrollIntoView({ behavior: 'smooth', block })
+      element.classList.add('setting-field-highlight')
+      window.setTimeout(() => element.classList.remove('setting-field-highlight'), 1600)
+    }, 80)
 
-    timer = window.setTimeout(attempt, 80)
+    setSearchParams(
+      previous => {
+        const next = new URLSearchParams(previous)
+        next.delete(param)
 
-    return () => {
-      cancelled = true
-      window.clearTimeout(timer)
-    }
+        return next
+      },
+      { replace: true }
+    )
+
+    return () => window.clearTimeout(scrollTimeout)
   }, [block, elementId, onResolve, param, ready, setSearchParams, target])
 
   return target

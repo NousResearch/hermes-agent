@@ -19,38 +19,6 @@ from hermes_constants import display_hermes_home
 from agent.skill_utils import is_excluded_skill_path
 
 
-def _dotenv_key_names() -> set[str]:
-    """Return the set of env-var names assigned a non-empty value in ~/.hermes/.env.
-
-    The managed backends (launchd / systemd / the desktop-spawned ``serve``
-    process) load credentials from this file — NOT from an interactive shell's
-    exports. ``hermes debug share`` runs in a terminal, so ``os.getenv`` reflects
-    the shell's environment, which can include exported keys the managed backend
-    never sees. Comparing against this set lets the dump flag that mismatch (the
-    exact trap behind #48504-style "no web_search" reports: key exported in the
-    shell, absent from .env, invisible to the launchd backend).
-    """
-    try:
-        env_path = get_env_path()
-        text = env_path.read_text(encoding="utf-8", errors="ignore")
-    except (OSError, UnicodeError):
-        return set()
-
-    names: set[str] = set()
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        if line.lower().startswith("export "):
-            line = line[len("export "):].lstrip()
-        name, _, value = line.partition("=")
-        name = name.strip()
-        # A bare `KEY=` (empty value) is effectively unset for the backend.
-        if name and value.strip().strip("'\""):
-            names.add(name)
-    return names
-
-
 def _get_git_commit(project_root: Path) -> str:
     """Return short git commit hash, or '(unknown)'.
 
@@ -86,30 +54,6 @@ def _get_git_commit(project_root: Path) -> str:
         pass
 
     return "(unknown)"
-
-
-def _get_git_commit_date(project_root: Path) -> str:
-    """Return the date the HEAD commit was authored (YYYY-MM-DD), or ''.
-
-    Resolves live via ``git log`` on source installs.  The published Docker
-    image excludes ``.git``, so this returns '' there — the dump line simply
-    drops the date suffix in that case (the baked SHA still identifies the
-    build).
-    """
-    try:
-        result = subprocess.run(
-            ["git", "log", "-1", "--format=%cd", "--date=short", "HEAD"],
-            capture_output=True, text=True, timeout=5,
-            cwd=str(project_root),
-        )
-        if result.returncode == 0:
-            value = result.stdout.strip()
-            if value:
-                return value
-    except Exception:
-        pass
-
-    return ""
 
 
 def _redact(value: str) -> str:
@@ -287,12 +231,12 @@ def run_dump(args):
     hermes_home = get_hermes_home()
 
     try:
-        from hermes_cli import __version__
+        from hermes_cli import __version__, __release_date__
     except ImportError:
         __version__ = "(unknown)"
+        __release_date__ = ""
 
     commit = _get_git_commit(project_root)
-    commit_date = _get_git_commit_date(project_root)
 
     try:
         config = load_config()
@@ -339,14 +283,10 @@ def run_dump(args):
 
     lines = []
     lines.append("--- hermes dump ---")
-    # Identify the build by commit + the date that commit was made, resolved
-    # live via git.  __release_date__ (the package release date) is
-    # intentionally NOT shown here — it reads like a wall-clock timestamp and
-    # confuses support triage.  The commit date is the real "as-of" date.
     ver_str = f"{__version__}"
+    if __release_date__:
+        ver_str += f" ({__release_date__})"
     ver_str += f" [{commit}]"
-    if commit_date:
-        ver_str += f" ({commit_date})"
     lines.append(f"version:          {ver_str}")
     lines.append(f"os:               {os_info}")
     lines.append(f"python:           {sys.version.split()[0]}")
@@ -387,21 +327,12 @@ def run_dump(args):
         ("GITHUB_TOKEN", "github"),
     ]
 
-    dotenv_keys = _dotenv_key_names()
-
     for env_var, label in api_keys:
         val = os.getenv(env_var, "")
         if show_keys and val:
             display = _redact(val)
         else:
             display = "set" if val else "not set"
-        # Set in this (shell) process but absent from ~/.hermes/.env: a managed
-        # backend (launchd/systemd/desktop `serve`) loads .env, not the login
-        # shell, so it likely can't see this key — even though the dump reads
-        # "set". Flag it so support doesn't chase a phantom "key is configured"
-        # (the actual cause of gated tools like web_search going missing).
-        if val and env_var not in dotenv_keys:
-            display += " (shell only — not in .env; managed/desktop backend may not see it)"
         # A credential added via `hermes auth add openrouter` lives in the
         # credential pool, not as an env var — surface it so the dump doesn't
         # misleadingly read "not set" while `hermes auth list` shows it (#42130).

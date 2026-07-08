@@ -231,7 +231,7 @@ CLI、gateway、cron、ACP 及辅助调用共用的运行时解析器。将 `(pr
 
 三种发现来源：`~/.hermes/plugins/`（用户级）、`.hermes/plugins/`（项目级）和 pip entry point。插件通过上下文 API 注册工具、hook 和 CLI 命令。存在两种专用插件类型：记忆提供者（`plugins/memory/`）和上下文引擎（`plugins/context_engine/`）。两者均为单选——每种同时只能激活一个，通过 `hermes plugins` 或 `config.yaml` 配置。
 
-→ [插件指南](/developer-guide/plugins)，[记忆提供者插件](./memory-provider-plugin.md)
+→ [插件指南](/guides/build-a-hermes-plugin)，[记忆提供者插件](./memory-provider-plugin.md)
 
 ### Cron
 

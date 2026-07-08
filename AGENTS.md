@@ -123,17 +123,6 @@ conservative at the waist.
   without E2E proof, and plugins that touch core files.** Plugins live in their
   own directory and work within the ABCs/hooks we provide; if a plugin needs
   more, widen the generic plugin surface, don't special-case it in core.
-- **Third-party products / other people's projects integrated into the core
-  tree.** Observability backends, vendor SaaS integrations, analytics dashboards,
-  and similar "someone else's product" plugins do NOT land under `plugins/` in
-  this repo. They place an ongoing maintenance burden on us to keep them working
-  against a fast-moving core, for a backend we don't own. Ship them as a
-  **standalone plugin repo** users install into `~/.hermes/plugins/` (or via a
-  pip entry point), and promote them in the Nous Research Discord
-  (`#plugins-skills-and-skins`). This is a coupling-and-maintenance decision, not
-  a quality bar — the plugin can be excellent and still be a close. PRs that add
-  such a directory to the tree are closed with a pointer to publish it as its own
-  repo.
 
 ### Before you call it a bug — verify the premise (and when NOT to close)
 
@@ -491,7 +480,7 @@ The dashboard embeds the real `hermes --tui` — **not** a rewrite.  See `hermes
 
 ### Electron Desktop Chat App (`apps/desktop/`)
 
-A **separate** chat surface from both the classic CLI and the dashboard's embedded TUI. It is an Electron + React + nanostore renderer (`@assistant-ui/react`) that talks to a `tui_gateway` backend over JSON-RPC (`requestGateway(method, params)`). The WebSocket/JSON-RPC transport lives in the framework-agnostic `apps/shared` package (`@hermes/shared` — `JsonRpcGatewayClient` + WS URL helpers), which the web dashboard (`web/`) also consumes; **desktop has no build/runtime dependency on the dashboard frontend** — it spawns a headless `hermes serve` backend server (the same gateway `dashboard` serves, minus the browser UI entirely: `serve` sets `headless_backend=True`, so `cmd_dashboard` skips `_build_web_ui` AND exports `HERMES_SERVE_HEADLESS=1` so `mount_spa()` disables the SPA even if a stray `web_dist/` exists — only the JSON-RPC/WS/API surface is reachable). `dashboard` and `serve` share `cmd_dashboard`/`start_server` but are independent surfaces — neither launches the other. The one exception is a backward-compat *fallback*: `serve` is newer, so the desktop spawn (`electron/backend-command.cjs` + `backendSupportsServe()` in `main.cjs`) detects whether the resolved runtime registers `serve` and, only when it does not (an older managed install / PATH `hermes` the app hasn't updated yet), rewrites the argv to the legacy `dashboard --no-open`. Without that, a new app against an un-upgraded runtime would crash on an unknown subcommand and brick every mid-upgrade user. It does NOT embed `hermes --tui` — it has its own composer, transcript, and slash-command pipeline. Route desktop bugs to the `hermes-desktop-app-work` skill, not `hermes-dashboard-work`.
+A **separate** chat surface from both the classic CLI and the dashboard's embedded TUI. It is an Electron + React + nanostore renderer (`@assistant-ui/react`) that talks to a `tui_gateway` backend over JSON-RPC (`requestGateway(method, params)`). It does NOT embed `hermes --tui` — it has its own composer, transcript, and slash-command pipeline. Route desktop bugs to the `hermes-desktop-app-work` skill, not `hermes-dashboard-work`.
 
 **Slash commands in the desktop app are curated client-side, then dispatched to the backend.** The pipeline:
 
@@ -794,24 +783,6 @@ landing in this tree. PRs that add a new directory under
 provider as its own repo. Existing in-tree providers stay; bug fixes
 to them are welcome.
 
-**No new third-party-product plugins in-tree (policy, June 2026):** the
-same rule applies beyond memory providers. Plugins that integrate
-someone else's product or project — observability/metrics backends,
-vendor SaaS connectors, analytics dashboards, paid-service tie-ins —
-must ship as **standalone plugin repos** that users install into
-`~/.hermes/plugins/` (or via pip entry points). They register through
-the existing plugin discovery path and use the ABCs/hooks/ctx surface
-we expose; nothing special is needed in core. The reason is
-maintenance load: every product we absorb into the tree becomes our
-burden to keep working against a fast-moving core, for a backend we
-don't own. Promote standalone plugins in the Nous Research Discord
-(`#plugins-skills-and-skins`). PRs that add such a directory under
-`plugins/` are closed with a pointer to publish it as its own repo —
-this is a coupling decision, not a quality judgment. (The
-`observability/`, `kanban/`, `disk-cleanup/`, etc. directories already
-in the tree are existing precedent, not an invitation to add more
-third-party-product plugins alongside them.)
-
 ### Model-provider plugins (`plugins/model-providers/<name>/`)
 
 Every inference backend (openrouter, anthropic, gmi, deepseek, nvidia, …)
@@ -983,10 +954,9 @@ Enable/disable per platform via `hermes tools` (the curses UI) or the
 ## Delegation (`delegate_task`)
 
 `tools/delegate_tool.py` spawns a subagent with an isolated
-context + terminal session. By default the parent waits for the
-child's summary before continuing its own loop. With `background=true`,
-Hermes returns a delegation id immediately and the result re-enters the
-conversation later through the async-delegation completion queue.
+context + terminal session. Synchronous: the parent waits for the
+child's summary before continuing its own loop — if the parent is
+interrupted, the child is cancelled.
 
 Two shapes:
 
@@ -1008,9 +978,9 @@ Key config knobs (under `delegation:` in `config.yaml`):
 `orchestrator_enabled`, `subagent_auto_approve`, `inherit_mcp_toolsets`,
 `max_iterations`.
 
-Durability rule: background `delegate_task` is detached from the current
-turn but still process-local. For work that must survive process restart, use
-`cronjob` or `terminal(background=True, notify_on_complete=True)` instead.
+Synchronicity rule: delegate_task is **not** durable. For long-running
+work that must outlive the current turn, use `cronjob` or
+`terminal(background=True, notify_on_complete=True)` instead.
 
 ---
 
@@ -1204,7 +1174,7 @@ automatically scope to the active profile.
    a unique credential (bot token, API key), call `acquire_scoped_lock()` from
    `gateway.status` in the `connect()`/`start()` method and `release_scoped_lock()` in
    `disconnect()`/`stop()`. This prevents two profiles from using the same credential.
-   See `plugins/platforms/irc/adapter.py` for the canonical pattern.
+   See `gateway/platforms/telegram.py` for the canonical pattern.
 
 6. **Profile operations are HOME-anchored, not HERMES_HOME-anchored** — `_get_profiles_root()`
    returns `Path.home() / ".hermes" / "profiles"`, NOT `get_hermes_home() / "profiles"`.
@@ -1289,22 +1259,65 @@ scripts/run_tests.sh                                  # full suite, CI-parity
 scripts/run_tests.sh tests/gateway/                   # one directory
 scripts/run_tests.sh tests/agent/test_foo.py::test_x  # one test
 scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
+scripts/run_tests.sh --no-isolate tests/foo/          # disable subprocess isolation (faster, for debugging)
 ```
 
-### Subprocess-per-test-file isolation
+### Subprocess-per-test isolation
 
-Every test file runs in a freshly-spawned Python subprocess via `run_tests_parallel.py`. This means module-level dicts/sets and
-ContextVars from one test file cannot leak into the next.
+Every test runs in a freshly-spawned Python subprocess via the in-tree plugin
+at `tests/_isolate_plugin.py`. This means module-level dicts/sets and
+ContextVars from one test cannot leak into the next — the historic
+`_reset_module_state` autouse fixture is gone.
 
-### Why the wrapper
+Implementation notes:
 
-|                     | Without wrapper                             | With wrapper                              |
-| ------------------- | ------------------------------------------- | ----------------------------------------- |
-| Provider API keys   | Whatever is in your env (auto-detects pool) | All env vars except a specific few unset. |
-| HOME / `~/.hermes/` | Your real config+auth.json                  | Temp dir per test                         |
-| Timezone            | Local TZ (PDT etc.)                         | UTC                                       |
-| Locale              | Whatever is set                             | C.UTF-8                                   |
+- The plugin uses `multiprocessing.get_context("spawn")`, which works on
+  Linux, macOS, and Windows alike (POSIX `fork` is not used).
+- Per-test overhead is ~0.5–1.0s (Python startup + pytest collection). xdist
+  parallelism amortizes this across cores; on a 20-core box the full suite
+  finishes in roughly the same wall time as before, but flake-free.
+- `isolate_timeout` (configured in `pyproject.toml`) caps each test at 30s.
+  Hangs are killed and surfaced as a failure report.
+- Pass `--no-isolate` to disable isolation — useful when debugging a single
+  test interactively, or when you specifically want to verify state leakage.
+- The plugin disables itself in child processes (sentinel envvar
+  `HERMES_ISOLATE_CHILD=1`), so there's no fork-bomb risk.
 
+### Why the wrapper (and why the old "just call pytest" doesn't work)
+
+Five real sources of local-vs-CI drift the script closes:
+
+| | Without wrapper | With wrapper |
+|---|---|---|
+| Provider API keys | Whatever is in your env (auto-detects pool) | All `*_API_KEY`/`*_TOKEN`/etc. unset |
+| HOME / `~/.hermes/` | Your real config+auth.json | Temp dir per test |
+| Timezone | Local TZ (PDT etc.) | UTC |
+| Locale | Whatever is set | C.UTF-8 |
+| xdist workers | `-n auto` = all cores | `-n auto` (safe — subprocess isolation prevents cross-worker flakes) |
+
+`tests/conftest.py` also enforces points 1-4 as an autouse fixture so ANY pytest
+invocation (including IDE integrations) gets hermetic behavior — but the wrapper
+is belt-and-suspenders.
+
+### Running without the wrapper (only if you must)
+
+If you can't use the wrapper (e.g. inside an IDE that shells pytest directly),
+at minimum activate the venv. The isolation plugin loads automatically from
+`addopts` in `pyproject.toml`, so you get the same per-test process isolation
+either way.
+
+```bash
+source .venv/bin/activate   # or: source venv/bin/activate
+python -m pytest tests/ -q
+```
+
+If you need to bypass isolation for fast feedback while debugging:
+
+```bash
+python -m pytest tests/agent/test_foo.py -q --no-isolate
+```
+
+Always run the full suite before pushing changes.
 
 ### Don't write change-detector tests
 

@@ -118,7 +118,7 @@ def handle_suggestions_command(
             return "Usage: /suggestions dismiss <number|id>"
         ok = store.dismiss_suggestion(rest)
         return (
-            "Dismissed. Won't suggest that again."
+            f"Dismissed. Won't suggest that again."
             if ok
             else f"No pending suggestion matches '{rest}'."
         )

@@ -34,35 +34,37 @@ class TestPromptTextInputThreadSafety:
         # not the orphaned-coroutine result.
         assert mock_rit.called
 
-    def test_background_thread_cancels_instead_of_hanging(self):
-        """On a daemon thread with an active app, cancel cleanly (return None).
+    def test_background_thread_falls_back_to_direct_input(self):
+        """On a daemon thread, skip run_in_terminal and call input() directly.
 
-        stdin is owned by the prompt_toolkit event loop / JSON-RPC pipe on the
-        non-main (process_loop / slash-worker) thread, so a bare input() there
-        would block until the worker's timeout (#23185 / billing auto-reload
-        hang). The guard cancels to None instead of hanging — it must NOT call
-        run_in_terminal (orphaned coroutine) and must NOT call input().
+        This preserves the fallback for any prompt that still runs off the main
+        UI thread: run_in_terminal's coroutine would otherwise be orphaned.
         """
         cli = _make_cli()
+        captured = {}
+
+        def fake_input(prompt):
+            captured["prompt"] = prompt
+            return "1"
 
         result_holder = {}
 
         def run_on_daemon():
             with patch("prompt_toolkit.application.run_in_terminal") as mock_rit, \
-                 patch("builtins.input", side_effect=AssertionError("input() must not be called off-main-thread")) as mock_input:
+                 patch("builtins.input", side_effect=fake_input):
                 result_holder["value"] = cli._prompt_text_input("Choice [1/2/3]: ")
                 result_holder["rit_called"] = mock_rit.called
-                result_holder["input_called"] = mock_input.called
 
         t = threading.Thread(target=run_on_daemon, daemon=True)
         t.start()
         t.join(timeout=2.0)
-        assert not t.is_alive(), "daemon thread hung — guard did not cancel cleanly"
+        assert not t.is_alive(), "daemon thread hung — input() was not driven"
 
-        # Cancelled cleanly: None returned, neither run_in_terminal nor input() called.
-        assert result_holder["value"] is None
+        # run_in_terminal was bypassed entirely on the background thread.
         assert result_holder["rit_called"] is False
-        assert result_holder["input_called"] is False
+        # input() was invoked with the prompt and its return value was captured.
+        assert captured.get("prompt") == "Choice [1/2/3]: "
+        assert result_holder["value"] == "1"
 
     def test_no_app_uses_direct_input(self):
         """Without an active prompt_toolkit app, always call input() directly."""

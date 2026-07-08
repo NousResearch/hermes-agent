@@ -118,12 +118,6 @@ class TestGmiModelCatalog:
             },
         )
         monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda api_key, base_url: None)
-        # Generic profile path uses ProviderProfile.fetch_models (urllib), not
-        # fetch_api_models — must stub it or CI can hit the real endpoint.
-        monkeypatch.setattr(
-            "providers.base.ProviderProfile.fetch_models",
-            lambda self, *, api_key=None, base_url=None, timeout=8.0: None,
-        )
 
         assert provider_model_ids("gmi") == list(_PROVIDER_MODELS["gmi"])
 

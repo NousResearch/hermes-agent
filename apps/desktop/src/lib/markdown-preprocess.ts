@@ -151,18 +151,12 @@ function normalizeVisibleProse(text: string): string {
     .join('')
 }
 
-function extend(out: string[], lines: string[]) {
-  for (const line of lines) {
-    out.push(line)
-  }
-}
-
 function pushProseFence(out: string[], indent: string, info: string, lines: string[]) {
   if (info) {
     out.push(`${indent}${info}`.trimEnd())
   }
 
-  extend(out, lines)
+  out.push(...lines)
 }
 
 function findClosingFence(lines: string[], start: number, marker: string): number {
@@ -247,7 +241,7 @@ function normalizeFenceBlocks(text: string): string {
     }
 
     if (closeIndex !== -1 && isUrlOnlyBlock(bodyLines)) {
-      extend(out, bodyLines)
+      out.push(...bodyLines)
       index = closeIndex + 1
 
       continue
@@ -270,10 +264,10 @@ function normalizeFenceBlocks(text: string): string {
         // any literal `$$` characters in the body don't collide with
         // an outer math wrapper. No close emitted yet — streaming.
         out.push(`${indent}${marker}math`)
-        extend(out, bodyLines)
+        out.push(...bodyLines)
       } else {
         out.push(`${indent}${marker}${language}`)
-        extend(out, bodyLines)
+        out.push(...bodyLines)
       }
 
       break
@@ -294,7 +288,7 @@ function normalizeFenceBlocks(text: string): string {
       // colliding with our wrapper. Without this rewrite the block
       // would render as a syntax-highlighted "latex" code listing.
       out.push(`${indent}${marker}math`)
-      extend(out, bodyLines)
+      out.push(...bodyLines)
       out.push(`${indent}${marker}`)
       index = closeIndex + 1
 
@@ -302,7 +296,7 @@ function normalizeFenceBlocks(text: string): string {
     }
 
     out.push(`${indent}${marker}${language}`)
-    extend(out, bodyLines)
+    out.push(...bodyLines)
     out.push(`${indent}${marker}`)
     index = closeIndex + 1
   }

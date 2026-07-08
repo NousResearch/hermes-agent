@@ -14,7 +14,11 @@ function isPackagedInstallPath(dir, { installRoots, isPackaged }) {
     return false
   }
 
-  const roots = new Set((installRoots ?? []).filter(Boolean).map(candidate => path.resolve(String(candidate))))
+  const roots = new Set(
+    (installRoots ?? [])
+      .filter(Boolean)
+      .map(candidate => path.resolve(String(candidate)))
+  )
 
   for (const root of roots) {
     if (resolved === root) {

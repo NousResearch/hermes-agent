@@ -182,35 +182,6 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
 
-    def test_anthropic_host_custom_provider_uses_anthropic_messages(self):
-        """A custom provider on the native api.anthropic.com host (no
-        "/anthropic" path suffix, name != "anthropic") must resolve to the
-        anthropic_messages wire protocol — not default to chat_completions,
-        which POSTs /v1/chat/completions and 404s. Mirrors the primary-path
-        determine_api_mode() host check."""
-        fbs = [
-            {
-                "provider": "cron-anthropic",
-                "model": "claude-sonnet-4-6",
-                "base_url": "https://api.anthropic.com",
-                "key_env": "MY_FALLBACK_KEY",
-            }
-        ]
-        agent = _make_agent(fallback_model=fbs)
-        with (
-            patch.dict("os.environ", {"MY_FALLBACK_KEY": "env-secret"}, clear=False),
-            patch(
-                "agent.auxiliary_client.resolve_provider_client",
-                return_value=(
-                    _mock_client(base_url="https://api.anthropic.com"),
-                    "claude-sonnet-4-6",
-                ),
-            ),
-            patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m),
-        ):
-            assert agent._try_activate_fallback() is True
-            assert agent.api_mode == "anthropic_messages"
-
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

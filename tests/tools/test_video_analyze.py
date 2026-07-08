@@ -193,29 +193,6 @@ class TestVideoAnalyzeTool:
         assert data["success"] is True
         assert "demo" in data["analysis"].lower()
 
-    def test_local_file_read_guard_blocks_env_via_video_extension(self, tmp_path):
-        """A .env file symlinked with a video extension must still be blocked.
-
-        _detect_video_mime_type only checks the file extension, not file
-        content, so without a read guard a model could point video_url at
-        any credential-store file (renamed/symlinked to look like a video)
-        and have its raw bytes base64-encoded and sent to the vision
-        provider. Regression for the shared agent.file_safety chokepoint
-        added to video_analyze_tool's local-file branch.
-        """
-        secret = tmp_path / ".env"
-        secret.write_text("OPENAI_API_KEY=sk-super-secret\n", encoding="utf-8")
-        disguised = tmp_path / "video.mp4"
-        disguised.symlink_to(secret)
-
-        with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
-            result = self._run(video_analyze_tool(str(disguised), "What is this?"))
-
-        data = json.loads(result)
-        assert data["success"] is False
-        assert "secret-bearing environment file" in data["error"]
-        mock_llm.assert_not_awaited()
-
     def test_local_file_not_found(self, tmp_path):
         """Non-existent file raises appropriate error."""
         result = self._run(video_analyze_tool("/nonexistent/video.mp4", "What?"))

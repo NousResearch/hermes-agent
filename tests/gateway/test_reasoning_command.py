@@ -71,11 +71,7 @@ class TestReasoningCommand:
 
         result = await runner._handle_help_command(event)
 
-        # Behaviour contract: /reasoning is surfaced in help. Don't freeze the
-        # exact args-hint literal — it changes whenever a new arg is added
-        # (e.g. full/clamp). Assert the command + its category-defining args.
-        assert "/reasoning" in result
-        assert "level" in result and "show" in result and "hide" in result
+        assert "/reasoning [level|show|hide]" in result
 
     def test_reasoning_is_known_command(self):
         source = inspect.getsource(gateway_run.GatewayRunner._handle_message)

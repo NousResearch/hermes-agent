@@ -88,7 +88,6 @@ gateway:
     not_enough:            "对话内容不足，无法压缩（至少需要 4 条消息）。"
     no_provider:           "未配置提供方 — 无法压缩。"
     nothing_to_do:         "暂无可压缩内容（对话记录仍全部为受保护上下文）。"
-    aggressive_unsupported: "不支持 --aggressive；请使用 '/compress here [N]' 只保留最近的对话，或使用 /undo 删除回合。"
     focus_line:            "聚焦：\"{topic}\""
     summary_failed:        "⚠️ 摘要生成失败（{error}）。{count} 条历史消息已被移除并替换为占位符；之前的上下文已无法恢复。建议检查 auxiliary.compression 模型配置。"
     aborted:               "⚠️ 压缩已中止 ({error})。未删除任何消息 — 对话保持不变。运行 /compress 重试，运行 /reset 开始新会话，或检查你的 auxiliary.compression 模型配置。"
@@ -107,8 +106,6 @@ gateway:
     no_pending:            "没有待拒绝的命令。"
     denied_singular:       "❌ 命令已拒绝。"
     denied_plural:         "❌ 命令已拒绝（{count} 条命令）。"
-    denied_reason_singular: "❌ 命令已拒绝。 已将原因转达给代理: \"{reason}\""
-    denied_reason_plural:  "❌ 命令已拒绝（{count} 条命令）。 已将原因转达给代理: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast 仅适用于支持优先处理（Priority Processing）的 OpenAI 模型。"
@@ -152,15 +149,6 @@ gateway:
     subscribed_suffix:     "（已订阅 — 当 {task_id} 完成或被阻塞时将通知您）"
     truncated_suffix:      "…（已截断；如需完整输出请在终端运行 `hermes kanban …`）"
     no_output:             "（无输出）"
-    wake:
-      completed:           "已完成"
-      gave_up:             "已放弃（重试次数耗尽）"
-      crashed:             "崩溃（worker 异常退出），dispatcher 将重试"
-      timed_out:           "超时，dispatcher 将重试"
-      blocked:             "被阻塞，需要处理"
-      status_default:      "状态变化"
-      status_joiner:       "，"
-      message:             "[kanban] 任务 {task_id} {status}。\n标题: {title}\n执行者: @{assignee}\n看板: {board}\n\n请检查结果或决定下一步动作。"
 
   personality:
     none_configured:       "`{path}/config.yaml` 中未配置人格设定"
@@ -239,7 +227,6 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
     matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
-    blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "未找到已命名的会话。\n使用 `/title 我的会话` 为当前会话命名，然后用 `/resume 我的会话` 返回。"
     list_header:           "📋 **已命名会话**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -345,16 +332,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_cost_included:      "费用：已包含"
     label_context:            "上下文：{used} / {total}（{pct}%）"
     label_compressions:       "压缩次数：{count}"
-    breakdown_header: "🧩 **上下文明细** _(估算)_"
-    breakdown_line: "• {label}：约 {count} ({pct}%)"
-    breakdown_cat_system_prompt: "系统提示词"
-    breakdown_cat_tool_definitions: "工具定义"
-    breakdown_cat_rules: "规则"
-    breakdown_cat_skills: "技能"
-    breakdown_cat_mcp: "MCP"
-    breakdown_cat_subagent_definitions: "子代理定义"
-    breakdown_cat_memory: "记忆"
-    breakdown_cat_conversation: "对话"
     header_session_info:      "📊 **会话信息**"
     label_messages:           "消息数：{count}"
     label_estimated_context:  "估计上下文：~{count} 个令牌"
@@ -370,7 +347,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     mode_new:              "⚙️ 工具进度：**NEW** — 工具变化时显示（预览长度：`display.tool_preview_length`，默认 40）。"
     mode_all:              "⚙️ 工具进度：**ALL** — 显示每次工具调用（预览长度：`display.tool_preview_length`，默认 40）。"
     mode_verbose:          "⚙️ 工具进度：**VERBOSE** — 显示每次工具调用及完整参数。"
-    mode_log:              "⚙️ 工具进度：**LOG** — 聊天中保持静默；工具调用写入 ~/.hermes/logs/tool_calls.log。"
     saved_suffix:          "_（已为 **{platform}** 保存 — 下一条消息生效）_"
     save_failed:           "_（无法保存到配置：{error}）_"
 

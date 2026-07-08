@@ -1,8 +1,8 @@
 name: OSV-Scanner
 
 # Scans lockfiles (uv.lock, package-lock.json) against the OSV vulnerability
-# database. Runs on every PR/push (via the ci.yml orchestrator's workflow_call)
-# and on a weekly schedule against main.
+# database. Runs on every PR that touches a lockfile and on a weekly schedule
+# against main.
 #
 # This is detection-only — OSV-Scanner does NOT open PRs or modify pins.
 # It reports known CVEs in currently-pinned dependency versions so we can
@@ -10,9 +10,9 @@ name: OSV-Scanner
 # (full SHA / exact version) is preserved; only the notification signal
 # is added.
 #
-# Complements the supply-chain-audit.yml workflow (which scans for malicious
-# code patterns in PR diffs) by covering the orthogonal "currently-pinned
-# dep became known-vulnerable" case.
+# Complements the existing supply-chain-audit.yml workflow (which scans
+# for malicious code patterns in PR diffs) by covering the orthogonal
+# "currently-pinned dep became known-vulnerable" case.
 #
 # Uses Google's officially-recommended reusable workflow, pinned by SHA.
 # Findings land in the repo's Security tab (Code Scanning > OSV-Scanner).
@@ -20,7 +20,19 @@ name: OSV-Scanner
 # vulnerabilities in pinned deps that we may need to patch deliberately.
 
 on:
-  workflow_call:
+  # No paths filter — the job must always run so the required check
+  # reports a status (path-gated workflows leave checks "pending" forever
+  # when no matching files change, which blocks merge).
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    paths:
+      - "uv.lock"
+      - "pyproject.toml"
+      - "package.json"
+      - "package-lock.json"
+      - "website/package-lock.json"
   schedule:
     # Weekly scan against main — catches CVEs published after merge for
     # deps that haven't changed since.

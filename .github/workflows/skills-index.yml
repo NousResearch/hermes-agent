@@ -3,17 +3,17 @@ name: Build Skills Index
 on:
   schedule:
     # Run twice daily: 6 AM and 6 PM UTC
-    - cron: "0 6,18 * * *"
-  workflow_dispatch: # Manual trigger
+    - cron: '0 6,18 * * *'
+  workflow_dispatch:  # Manual trigger
   push:
     branches: [main]
     paths:
-      - "scripts/build_skills_index.py"
-      - ".github/workflows/skills-index.yml"
+      - 'scripts/build_skills_index.py'
+      - '.github/workflows/skills-index.yml'
 
 permissions:
   contents: read
-  actions: write # to trigger deploy-site.yml on schedule
+  actions: write   # to trigger deploy-site.yml on schedule
 
 jobs:
   build-index:
@@ -21,11 +21,11 @@ jobs:
     if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
       - name: Install dependencies
         run: pip install httpx==0.28.1 pyyaml==6.0.2
@@ -36,7 +36,7 @@ jobs:
         run: python scripts/build_skills_index.py
 
       - name: Upload index artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: skills-index
           path: website/static/api/skills-index.json

@@ -157,12 +157,6 @@ function renderedModeFor(colors: DesktopThemeColors, mode: 'light' | 'dark'): 'l
 // Per-mode mix knobs. Light/dark fallbacks live in styles.css `:root` /
 // `:root.dark`; setting them inline keeps active-skin overrides surviving
 // the boot-time paint.
-// styles.css --theme-neutral-chrome — keep in sync.
-const NEUTRAL_CHROME = { light: '#f3f3f3', dark: '#0d0d0e' } as const
-
-const chromeBackground = (background: string, isDark: boolean) =>
-  mix(background, NEUTRAL_CHROME[isDark ? 'dark' : 'light'], isDark ? 0.26 : 0.08)
-
 const mixesFor = (isDark: boolean): Record<string, string> => ({
   '--theme-mix-chrome': isDark ? '74%' : '92%',
   '--theme-mix-sidebar': '100%',
@@ -228,10 +222,8 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     root.style.setProperty(k, v)
   }
 
-  const chromeBg = chromeBackground(c.background, isDark)
-
   window.hermesDesktop?.setTitleBarTheme?.({
-    background: chromeBg,
+    background: c.background,
     foreground: c.foreground
   })
 
@@ -239,7 +231,7 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
   // they let a brand-new window paint the themed background on its very first
   // frame, before this module has even loaded.
   try {
-    window.localStorage.setItem('hermes-boot-background', chromeBg)
+    window.localStorage.setItem('hermes-boot-background', c.background)
     window.localStorage.setItem('hermes-boot-color-scheme', rendered)
   } catch {
     // Storage may be unavailable (private mode / quota); the inline script

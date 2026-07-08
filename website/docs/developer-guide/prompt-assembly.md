@@ -116,43 +116,6 @@ You are a CLI AI Agent. Try not to use markdown but simple text
 renderable inside a terminal.
 ```
 
-## Customizing platform hints
-
-The platform hint (Layer 10 above) is the per-surface guidance Hermes
-injects for Telegram, WhatsApp, Slack, CLI, and other platforms — for
-example "you are on a terminal, avoid Markdown." The built-in defaults
-live in `PLATFORM_HINTS` (`agent/system_prompt.py`); plugin-provided
-platforms supply theirs through the platform registry.
-
-An administrator can append to or replace a single platform's hint from
-`config.yaml` via the top-level `platform_hints` key, without touching
-any other platform:
-
-```yaml
-platform_hints:
-  whatsapp:
-    append: >
-      When tabular output would be useful, invoke the table_formatting
-      skill instead of emitting a Markdown table.
-  slack:
-    replace: "You are on Slack. Keep responses tight and avoid wide tables."
-  telegram: "Prefer short messages; split long answers."   # shorthand = append
-```
-
-- `append` — keep the built-in hint and add the extra text after it.
-- `replace` — substitute the built-in hint entirely.
-- A bare string — shorthand for `append`.
-- `replace` wins over `append` when both are present.
-- A malformed entry is ignored defensively and falls back to the
-  unmodified default, so a bad config value can never break prompt
-  assembly or leak across platforms.
-
-The override is resolved when the system prompt is built (session start,
-and again on compaction since that rebuilds the prompt). It produces a
-byte-stable hint for a fixed config, so it lives in the **stable** tier
-alongside the built-in hint and does not break prompt caching — it is
-not a live mid-session mutation of a frozen prompt.
-
 ## How SOUL.md appears in the prompt
 
 `SOUL.md` lives at `~/.hermes/SOUL.md` and serves as the agent's identity — the very first section of the system prompt. The loading logic in `prompt_builder.py` works as follows:

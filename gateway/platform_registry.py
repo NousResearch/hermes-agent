@@ -168,65 +168,6 @@ class PlatformRegistry:
 
     def __init__(self) -> None:
         self._entries: dict[str, PlatformEntry] = {}
-        # Deferred platform loaders: name -> zero-arg callable that imports the
-        # owning plugin module (which calls register() and populates _entries).
-        #
-        # Why this exists: platform adapter modules import heavy, platform-
-        # specific SDKs at module level (lark_oapi, microsoft_teams, discord.py,
-        # slack_bolt, ...). Eagerly loading all ~20 bundled platform plugins at
-        # plugin-discovery time added several seconds to *every* `hermes`
-        # invocation -- including plain `hermes chat`, which never touches any
-        # gateway platform. Discovery now registers a cheap deferred loader per
-        # platform; the real module is imported only when a registry lookup
-        # actually asks for that platform (gateway start, cron delivery,
-        # `hermes setup`/`gateway status`, send_message).
-        self._deferred: dict[str, Callable[[], None]] = {}
-
-    # -- deferred loading ----------------------------------------------------
-
-    def register_deferred(self, name: str, loader: Callable[[], None]) -> None:
-        """Register a lazy loader for a platform that hasn't been imported yet.
-
-        *loader* is a zero-arg callable that imports the owning plugin module,
-        which is expected to call :meth:`register` with the real entry for
-        *name*.  The loader runs at most once, the first time *name* is looked
-        up (or when the full entry list is materialized).  A real entry that is
-        registered directly (e.g. a built-in) takes precedence -- the deferred
-        loader is then dropped.
-        """
-        if name in self._entries:
-            # Already concretely registered; no need to defer.
-            return
-        self._deferred[name] = loader
-
-    def _resolve(self, name: str) -> None:
-        """Run the deferred loader for *name* if one is pending."""
-        loader = self._deferred.pop(name, None)
-        if loader is None:
-            return
-        try:
-            loader()
-        except Exception as e:
-            logger.warning(
-                "Deferred load of platform '%s' failed: %s",
-                name,
-                e,
-                exc_info=True,
-            )
-
-    def _resolve_all(self) -> None:
-        """Run every pending deferred loader.
-
-        Used by the iterate-all accessors (``all_entries``/``plugin_entries``),
-        which are only called by paths that genuinely need every adapter:
-        gateway startup, ``hermes setup``/``gateway status``, channel
-        directory.  CLI chat never iterates the full set.
-        """
-        if not self._deferred:
-            return
-        # Snapshot keys -- loaders mutate _deferred as they resolve.
-        for name in list(self._deferred):
-            self._resolve(name)
 
     def register(self, entry: PlatformEntry) -> None:
         """Register a platform adapter entry.
@@ -234,8 +175,6 @@ class PlatformRegistry:
         If an entry with the same name exists, it is replaced (last writer
         wins -- this lets plugins override built-in adapters if desired).
         """
-        # A concrete registration supersedes any pending deferred loader.
-        self._deferred.pop(entry.name, None)
         if entry.name in self._entries:
             prev = self._entries[entry.name]
             logger.info(
@@ -249,31 +188,22 @@ class PlatformRegistry:
 
     def unregister(self, name: str) -> bool:
         """Remove a platform entry.  Returns True if it existed."""
-        self._deferred.pop(name, None)
         return self._entries.pop(name, None) is not None
 
     def get(self, name: str) -> Optional[PlatformEntry]:
         """Look up a platform entry by name."""
-        if name not in self._entries:
-            self._resolve(name)
         return self._entries.get(name)
 
     def all_entries(self) -> list[PlatformEntry]:
         """Return all registered platform entries."""
-        self._resolve_all()
         return list(self._entries.values())
 
     def plugin_entries(self) -> list[PlatformEntry]:
         """Return only plugin-registered platform entries."""
-        self._resolve_all()
         return [e for e in self._entries.values() if e.source == "plugin"]
 
     def is_registered(self, name: str) -> bool:
-        # A deferred (not-yet-imported) platform still counts as registered --
-        # the loader will materialize it on first real use.  This keeps cheap
-        # membership checks (toolset resolution, webhook deliver-target checks)
-        # from triggering a heavy import.
-        return name in self._entries or name in self._deferred
+        return name in self._entries
 
     def create_adapter(self, name: str, config: Any) -> Optional[Any]:
         """Create an adapter instance for the given platform name.
@@ -284,8 +214,6 @@ class PlatformRegistry:
         - validate_config() returns False (misconfigured)
         - The factory raises an exception
         """
-        if name not in self._entries:
-            self._resolve(name)
         entry = self._entries.get(name)
         if entry is None:
             return None

@@ -25,10 +25,8 @@ Why drop xdist entirely?
 Usage:
     python scripts/run_tests_parallel.py [pytest_args...]
 
-    Common pytest args pass through to each per-file pytest invocation
-    (e.g. ``-q``, ``-v``, ``-x``, ``--tb=long``, ``-k 'pattern'``, ``--lf``)
-    with no special separator — a bare ``-q`` "just works". Anything after
-    a literal ``--`` is also passed through, and stacks with bare flags.
+    Common pytest args pass through (e.g. ``-v``, ``-x``, ``--tb=long``,
+    ``-k 'pattern'``, ``--lf``).
 
 Environment:
     HERMES_TEST_WORKERS  Override worker count (default: os.cpu_count())
@@ -60,7 +58,7 @@ _DEFAULT_ROOTS = ["tests"]
 #
 #   tests/e2e/         — .github/workflows/tests.yml :: e2e job
 #   tests/integration/ — historical; legacy --ignore flags
-#   tests/docker/      — .github/workflows/docker.yml ::
+#   tests/docker/      — .github/workflows/docker-publish.yml ::
 #                        build-amd64 job (runs against the freshly-loaded
 #                        nousresearch/hermes-agent:test image, via
 #                        ``HERMES_TEST_IMAGE`` so the fixture skips
@@ -74,16 +72,7 @@ _SKIP_PARTS = {"integration", "e2e", "docker"}
 
 # Per-file wall-clock cap. Override
 # via --file-timeout or HERMES_TEST_FILE_TIMEOUT.
-#
-# Set to 300s (5 min) deliberately generous: the per-test subprocess
-# isolation plugin spawns a fresh Python process per test, so a
-# large-collection file pays N × (interpreter startup + import) of
-# overhead before any test logic runs — and that overhead dilates under
-# load on shared CI runners, producing false "no tests ran" timeouts on
-# files that finish in ~100s on a quiet box. The Docker build matrix jobs
-# take 7-10 min anyway, so this headroom costs nothing on total CI wall
-# time while keeping a genuinely hung file bounded.
-_DEFAULT_FILE_TIMEOUT_SECONDS = 300.0
+_DEFAULT_FILE_TIMEOUT_SECONDS = 140.0 # set by observing the slowest file at commit time was ~100s in CI and adding some leeway
 
 # Duration cache: maps relative file paths to last-observed subprocess
 # wall-clock seconds. Used by ``--slice`` to distribute files across
@@ -91,27 +80,62 @@ _DEFAULT_FILE_TIMEOUT_SECONDS = 300.0
 _DURATIONS_FILE = "test_durations.json"
 
 
-def _approximately_count_tests(
-    files: List[Path], repo_root: Path
+def _count_tests(
+    files: List[Path], repo_root: Path, pytest_passthrough: List[str]
 ) -> dict[Path, int]:
-    """
-    Make a decent estimate at individual tests per file.
-    Running ``pytest --co -q`` is WAY too slow because it actually imports everything.
+    """Run ``pytest --co -q`` once to count individual tests per file.
 
     Returns a mapping ``{file_path: test_count}``. Files with zero
     collected tests are omitted from the dict (not an error — e.g. the
     file only defines fixtures / conftest helpers).
 
+    This is a single subprocess call (~2-5s for ~1k files) that gives
+    us the total test count for the discovery announcement and
+    per-file counts for the progress lines.
+
+    ``--ignore`` flags for directories in ``_SKIP_PARTS`` are added
+    automatically so that pytest's own collection machinery (conftest
+    walking, directory traversal) doesn't pull in tests we intend to
+    skip — matching what the per-file runs will actually execute.
     """
+    # Build --ignore flags for skipped dirs so the --co collection
+    # mirrors what we'll actually run (not what pytest might find via
+    # conftest walking or directory traversal).
+    ignore_args: List[str] = []
+    for root in [repo_root / p for p in _DEFAULT_ROOTS]:
+        for part in _SKIP_PARTS:
+            d = root / part
+            if d.is_dir():
+                ignore_args.extend(["--ignore", str(d)])
 
-    results = {}
+    cmd = [
+        sys.executable, "-m", "pytest",
+        "--co", "-q",
+        *ignore_args,
+        *[str(f) for f in files],
+        *pytest_passthrough,
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return {}
 
-    for path in files:
-        with open(path, "r", encoding="utf-8") as f:
-            contents = f.read()
-        results[path] = contents.count("def test_")
+    counts: dict[Path, int] = {}
+    for line in result.stdout.splitlines():
+        # Lines look like: tests/acp/test_auth.py::TestClass::test_name
+        if "::" not in line:
+            continue
+        file_part = line.split("::", 1)[0]
+        key = repo_root / file_part
+        counts[key] = counts.get(key, 0) + 1
 
-    return results
+    return counts
 
 
 def _discover_files(roots: List[Path]) -> List[Path]:
@@ -366,7 +390,7 @@ def _format_file(file: Path, repo_root: Path) -> str:
 
 def _print_progress(
     tests_done: int,
-    approx_total_tests: int,
+    total_tests: int,
     file: Path,
     rc: int,
     dur: float,
@@ -388,7 +412,7 @@ def _print_progress(
     time and the queue-inclusive elapsed time.
     """
     status = "✓" if rc == 0 else "✗"
-    pct = min((tests_done / approx_total_tests * 100), 100) if approx_total_tests else 0
+    pct = (tests_done / total_tests * 100) if total_tests else 0
     # Digit width for left-side counter padding (derived from total file count).
     fw = len(str(tests_passed + tests_failed))
     # Build per-file test count string.
@@ -423,7 +447,7 @@ def _print_progress(
     else:
         time_str = f"{dur:.1f}s"
     msg = (
-        f"[{pct:5.1f}% | {tests_done:>5}/~{approx_total_tests}"
+        f"[{pct:5.1f}% | {tests_done:>5}/{total_tests}"
         f" | ✓{tests_passed:>{fw}} | ✗{tests_failed:>{fw}}] "
         f"{status} {_format_file(file, repo_root)} ({test_str}{time_str})"
     )
@@ -462,9 +486,9 @@ def _print_inline_failure(
     print(f"  ╔╍ Failed: {rel} ╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍", flush=True)
     for line in tail.splitlines():
         print(f"  ║ {line}", flush=True)
-    print("  ║", flush=True)
+    print(f"  ║", flush=True)
     print(f"  ║  Repro: {repro}", flush=True)
-    print("  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍", flush=True)
+    print(f"  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍", flush=True)
     print(flush=True)
 
 
@@ -480,8 +504,7 @@ def _load_durations(repo_root: Path) -> dict[str, float]:
         return {}
     try:
         return json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError) as e:
-        print("[ERROR] Failed to load json durations file! {e}")
+    except (json.JSONDecodeError, OSError):
         return {}
 
 
@@ -504,27 +527,38 @@ def _save_durations(
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
-def _compute_lpt_slices(
+def _slice_files(
     files: List[Path],
+    slice_index: int,
     slice_count: int,
     durations: dict[str, float],
     repo_root: Path,
-) -> List[List[Path]]:
-    """Distribute files across N slices using LPT (Longest Processing Time first).
+) -> List[Path]:
+    """Return the subset of *files* belonging to slice *slice_index*.
 
-    Sorts files by estimated duration descending, then greedily assigns each
-    file to the slice with the smallest accumulated time so far. This
-    minimizes the makespan (max slice duration) and keeps CI jobs balanced.
+    Uses **Longest Processing Time first** (LPT) distribution: sort files
+    by estimated duration descending, then greedily assign each file to
+    the slice with the smallest accumulated time so far. This minimizes
+    the makespan (max slice duration) and keeps CI jobs balanced.
 
     Files with no cached duration get a default estimate of 2.0s (roughly
-    the P50 from profiling). This means first-time runs (no cache) still
-    get reasonable distribution, and new files don't all land in one slice.
+    the P50 from profiling). This means first-time ``--slice`` runs
+    (no cache) still get reasonable distribution, and new files don't
+    all land in one slice.
 
-    Returns a list of N file-lists, one per slice (0-indexed).
+    ``slice_index`` is 1-indexed (1..slice_count) for ergonomics —
+    ``--slice 1/4`` reads more naturally than ``--slice 0/4``.
     """
     if slice_count < 2:
-        return [files]
+        return files
+    if not (1 <= slice_index <= slice_count):
+        print(
+            f"error: --slice index must be 1..{slice_count}, got {slice_index}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
+    # Build (file, estimated_duration) pairs.
     default_dur = 2.0
     file_durs: List[Tuple[Path, float]] = []
     for f in files:
@@ -541,47 +575,15 @@ def _compute_lpt_slices(
     bucket_totals: List[float] = [0.0] * slice_count
 
     for f, dur in file_durs:
+        # Find the least-loaded bucket.
         min_idx = min(range(slice_count), key=lambda i: bucket_totals[i])
         bucket_files[min_idx].append(f)
         bucket_totals[min_idx] += dur
 
-    return bucket_files
-
-
-def _slice_files(
-    files: List[Path],
-    slice_index: int,
-    slice_count: int,
-    durations: dict[str, float],
-    repo_root: Path,
-) -> List[Path]:
-    """Return the subset of *files* belonging to slice *slice_index*.
-
-    Uses :func:`_compute_lpt_slices` for LPT distribution.
-
-    ``slice_index`` is 1-indexed (1..slice_count) for ergonomics —
-    ``--slice 1/4`` reads more naturally than ``--slice 0/4``.
-    """
-    if slice_count < 2:
-        return files
-    if not (1 <= slice_index <= slice_count):
-        print(
-            f"error: --slice index must be 1..{slice_count}, got {slice_index}",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    bucket_files = _compute_lpt_slices(files, slice_count, durations, repo_root)
-
+    # Print slice summary for visibility.
     target = bucket_files[slice_index - 1]
-    target_dur = sum(
-        durations.get(_format_file(f, repo_root), 2.0) for f in target
-    )
-    total_dur = sum(
-        durations.get(_format_file(f, repo_root), 2.0)
-        for bucket in bucket_files
-        for f in bucket
-    )
+    target_dur = bucket_totals[slice_index - 1]
+    total_dur = sum(bucket_totals)
     print(
         f"Slice {slice_index}/{slice_count}: {len(target)} files "
         f"(~{target_dur:.0f}s estimated of {total_dur:.0f}s total)",
@@ -637,27 +639,6 @@ def main() -> int:
         ),
     )
     parser.add_argument(
-        "--generate-slices",
-        metavar="N",
-        type=int,
-        help=(
-            "Discover test files, distribute them across N slices using "
-            "LPT on cached durations, and print a JSON matrix to stdout "
-            "then exit (no tests run). The JSON has the shape "
-            "'{\"slices\": [{\"index\": 1, \"files\": [\"tests/foo.py\", ...]}, ...]}' "
-            "so the CI generate job can feed it directly into a matrix."
-        ),
-    )
-    parser.add_argument(
-        "--files",
-        metavar="LIST",
-        help=(
-            "Explicit colon-separated list of test files to run. Bypasses "
-            "discovery entirely — used by CI matrix jobs that receive their "
-            "file list from the generate job."
-        ),
-    )
-    parser.add_argument(
         "paths_positional",
         nargs="*",
         metavar="PATH",
@@ -667,69 +648,17 @@ def main() -> int:
             "separator is passed through to each per-file pytest invocation."
         ),
     )
-    # Split argv into "our flags + positional paths" vs "pytest passthrough".
-    #
-    # Two ways to pass args through to the per-file pytest invocation:
-    #   1. Explicit ``--`` separator: everything after it goes to pytest.
-    #   2. Bare pytest flags anywhere before ``--``: any token starting with
-    #      ``-`` that isn't one of OUR options is routed to pytest, so a bare
-    #      ``-q`` / ``-v`` / ``-x`` / ``--tb=long`` / ``-k expr`` "just works"
-    #      without the developer remembering the ``--``. This matches the
-    #      docstring's promise and pytest muscle-memory.
-    #
-    # The subtlety bare-flag routing must handle: value-taking pytest flags
-    # given in space-separated form (``-k expr``, ``-m mark``, ``-p plugin``,
-    # ``-o name=val``). Naively, ``expr`` would look like a positional path and
-    # clobber discovery. We peel the following token along with such flags so
-    # it never reaches our positional ``paths``. ``=``-joined forms
-    # (``-k=expr``, ``--tb=long``) are self-contained and need no lookahead.
-    OUR_FLAGS = {
-        "-j", "--jobs", "--paths", "--include-integration",
-        "--file-timeout", "--slice", "--generate-slices", "--files",
-    }
-    # pytest short flags that consume the NEXT token as their value.
-    PYTEST_VALUE_FLAGS = {"-k", "-m", "-p", "-o", "-c", "-r", "-W"}
-
-    def _is_our_flag(tok: str) -> bool:
-        # Match exact (``-j``, ``--paths``), ``=``-joined (``--paths=x``),
-        # and attached short-value (``-j4``) forms of our own options.
-        if tok in OUR_FLAGS:
-            return True
-        head = tok.split("=", 1)[0]
-        if head in OUR_FLAGS:
-            return True
-        # Attached short value, e.g. ``-j4`` → ``-j``.
-        if len(tok) > 2 and tok[:2] in OUR_FLAGS and not tok[1] == "-":
-            return True
-        return False
-
+    # Manually split argv on '--' so positional paths and pytest passthrough
+    # args don't fight over each other. argparse's nargs="*" positional is
+    # greedy and will swallow everything after '--' including the pytest
+    # flags, defeating the convention.
     argv = sys.argv[1:]
     if "--" in argv:
         sep = argv.index("--")
-        before, explicit_passthrough = argv[:sep], argv[sep + 1 :]
+        our_args, pytest_passthrough = argv[:sep], argv[sep + 1 :]
     else:
-        before, explicit_passthrough = argv, []
-
-    our_args: List[str] = []
-    bare_passthrough: List[str] = []
-    i = 0
-    while i < len(before):
-        tok = before[i]
-        if tok.startswith("-") and not _is_our_flag(tok):
-            bare_passthrough.append(tok)
-            # Pull the value token for space-separated value flags.
-            if tok in PYTEST_VALUE_FLAGS and i + 1 < len(before):
-                bare_passthrough.append(before[i + 1])
-                i += 2
-                continue
-        else:
-            our_args.append(tok)
-        i += 1
-
+        our_args, pytest_passthrough = argv, []
     args = parser.parse_args(our_args)
-    # Bare flags run before any explicit ``--`` passthrough so ordering is
-    # intuitive (``run_tests.sh tests/foo.py -q -- --tb=long`` → ``-q --tb=long``).
-    pytest_passthrough = bare_passthrough + explicit_passthrough
 
     # Parse --slice (or HERMES_TEST_SLICE) early so we can exit on bad input
     # before doing any expensive discovery.
@@ -747,51 +676,29 @@ def main() -> int:
 
     repo_root = Path(__file__).resolve().parent.parent
 
-    # --files: explicit file list from the CI generate job — skip discovery.
-    if args.files:
-        files = [repo_root / f for f in args.files.split(":") if f.strip()]
-        roots = []
+    # Resolve discovery roots: positional path args override --paths if any
+    # were supplied, otherwise --paths (which itself defaults to 'tests').
+    if args.paths_positional:
+        # Positionals can be directories OR explicit .py files. Either is
+        # fine — _discover_files handles both via rglob('test_*.py') for
+        # dirs and direct inclusion for files.
+        roots = [repo_root / p for p in args.paths_positional]
     else:
-        # Resolve discovery roots: positional path args override --paths if any
-        # were supplied, otherwise --paths (which itself defaults to 'tests').
-        if args.paths_positional:
-            roots = [repo_root / p for p in args.paths_positional]
-        else:
-            roots = [repo_root / p for p in args.paths.split(":") if p]
+        roots = [repo_root / p for p in args.paths.split(":") if p]
 
-        if args.include_integration:
-            # Caller takes responsibility — typically used via explicit -k filter.
-            global _SKIP_PARTS  # noqa: PLW0603 — config knob
-            _SKIP_PARTS = set()
+    if args.include_integration:
+        # Caller takes responsibility — typically used via explicit -k filter.
+        global _SKIP_PARTS  # noqa: PLW0603 — config knob
+        _SKIP_PARTS = set()
 
-        files = _discover_files(roots)
-
+    files = _discover_files(roots)
     if not files:
-        print("No test files to run", file=sys.stderr)
+        print(f"No test files discovered under {[str(r) for r in roots]}", file=sys.stderr)
         return 1
 
-    # --generate-slices: compute LPT distribution and emit JSON, then exit.
-    if args.generate_slices is not None:
-        durations = _load_durations(repo_root)
-        slices = _compute_lpt_slices(
-            files, args.generate_slices, durations, repo_root
-        )
-        matrix = {
-            "slice": [
-                {
-                    "index": i + 1,
-                    "files": ":".join(_format_file(f, repo_root) for f in bucket),
-                }
-                for i, bucket in enumerate(slices)
-            ]
-        }
-        # Print to stdout so the CI step can capture it with $().
-        print(json.dumps(matrix))
-        return 0
-
-    # Count individual tests per file
-    test_counts = _approximately_count_tests(files, repo_root)
-    approx_total_tests = sum(test_counts.values())
+    # Count individual tests per file via a single pytest --co pass.
+    test_counts = _count_tests(files, repo_root, pytest_passthrough)
+    total_tests = sum(test_counts.values())
 
     # Apply slicing if requested — distribute files across CI jobs by
     # estimated duration so no one job gets all the slow files.
@@ -800,21 +707,14 @@ def main() -> int:
         files = _slice_files(files, slice_index, slice_count, durations, repo_root)
         # Recount after slicing.
         test_counts = {f: test_counts[f] for f in files if f in test_counts}
-        approx_total_tests = sum(test_counts.values())
+        total_tests = sum(test_counts.values())
 
-    if roots:
-        roots_str = [str(r.relative_to(repo_root)) if r.is_relative_to(repo_root) else str(r) for r in roots]
-        print(
-            f"Discovered {len(files)} test files (~{approx_total_tests} tests) under "
-            f"{roots_str}; running with -j {args.jobs}",
-            flush=True,
-        )
-    else:
-        print(
-            f"Running {len(files)} test files (~{approx_total_tests} tests) "
-            f"with -j {args.jobs}",
-            flush=True,
-        )
+    print(
+        f"Discovered {len(files)} test files ({total_tests} tests) under "
+        f"{[str(r.relative_to(repo_root)) if r.is_relative_to(repo_root) else str(r) for r in roots]}; "
+        f"running with -j {args.jobs}",
+        flush=True,
+    )
 
     # Capture and print on completion (out-of-order is fine — keeps the
     # terminal clean rather than interleaving N parallel pytest outputs).
@@ -841,7 +741,7 @@ def main() -> int:
                 fail_count += 1
                 failures.append((file, f"runner crashed: {exc!r}", {}))
                 _print_progress(
-                    tests_done, approx_total_tests, file, 1,
+                    tests_done, total_tests, file, 1,
                     time.monotonic() - started_at,
                     repo_root, tests_passed, tests_failed,
                     test_counts,
@@ -861,7 +761,7 @@ def main() -> int:
                 fail_count += 1
                 failures.append((fpath, output, summary))
             _print_progress(
-                tests_done, approx_total_tests, fpath, rc,
+                tests_done, total_tests, fpath, rc,
                 time.monotonic() - started_at,
                 repo_root, tests_passed, tests_failed,
                 test_counts,
@@ -888,7 +788,7 @@ def main() -> int:
 
     elapsed = time.monotonic() - started
     print()
-    pct = min(100, (tests_done / approx_total_tests * 100)) if approx_total_tests else 0
+    pct = (tests_done / total_tests * 100) if total_tests else 0
     print(f"=== Summary: {len(files)} files, {tests_passed} tests passed, {tests_failed} failed ({pct:.0f}% complete) in {elapsed:.1f}s ({args.jobs} workers) ===")
 
     # Save durations for future --slice runs. Each slice writes its own
@@ -914,14 +814,14 @@ def main() -> int:
         fast = sum(1 for t in times if t < 1.0)
         fast_2s = sum(1 for t in times if t < 2.0)
         print()
-        print("=== Per-file subprocess time distribution ===")
+        print(f"=== Per-file subprocess time distribution ===")
         print(f"  Files:   {len(times)}")
         print(f"  Total subprocess CPU-wall: {total_subproc:.1f}s  (runner wall: {elapsed:.1f}s, parallelism: {args.jobs}x)")
         print(f"  P50: {p50:.2f}s  P90: {p90:.2f}s  P95: {p95:.2f}s  P99: {p99:.2f}s  Max: {max_t:.2f}s")
         print(f"  <1s: {fast} files ({fast/len(times)*100:.0f}%)  <2s: {fast_2s} files ({fast_2s/len(times)*100:.0f}%)")
         # Top 10 slowest files — likely the ones dragging the run.
         slowest = sorted(file_times, key=lambda x: x[1], reverse=True)[:10]
-        print("  Top 10 slowest:")
+        print(f"  Top 10 slowest:")
         for f, t in slowest:
             print(f"    {t:>6.2f}s  {_format_file(f, repo_root)}")
 

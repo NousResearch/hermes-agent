@@ -1,8 +1,8 @@
-import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { HermesGateway } from '@/hermes'
+import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
 import { $gateway, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState, setConnection } from '@/store/session'
@@ -94,7 +94,7 @@ export function useGatewayRequest() {
   }, [])
 
   const requestGateway = useCallback(
-    async <T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal) => {
+    async <T>(method: string, params: Record<string, unknown> = {}) => {
       const gateway = gatewayRef.current
 
       if (!gateway) {
@@ -102,7 +102,7 @@ export function useGatewayRequest() {
       }
 
       try {
-        return await gateway.request<T>(method, params, timeoutMs, signal)
+        return await gateway.request<T>(method, params)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
 
@@ -128,7 +128,7 @@ export function useGatewayRequest() {
           throw error
         }
 
-        return recovered.request<T>(method, params, timeoutMs, signal)
+        return recovered.request<T>(method, params)
       }
     },
     [ensureGatewayOpen]

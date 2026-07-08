@@ -1,11 +1,12 @@
-import { asText } from '@/lib/text'
 import type { HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
 
 import { BUILTIN_PERSONALITIES, ENUM_OPTIONS, PROVIDER_GROUPS } from './constants'
 
-// Canonical implementations live in @/lib/text; re-exported here so the many
-// settings/capabilities call sites keep their import path.
-export { asText, includesQuery, prettyName } from '@/lib/text'
+export const asText = (v: unknown): string => (typeof v === 'string' ? v : v == null ? '' : String(v))
+
+export const includesQuery = (v: unknown, q: string) => asText(v).toLowerCase().includes(q)
+
+export const prettyName = (v: string) => v.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 
 /** Strip leading emoji from toolset titles (CLI registry prefixes labels with icons). */
 export const stripToolsetLabel = (label: string): string =>

@@ -1,19 +1,18 @@
 {
   "name": "@hermes-agent/photon-sidecar",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.3.0",
   "description": "Spectrum-ts bridge for the Hermes Agent Photon platform plugin.",
   "type": "module",
   "main": "index.mjs",
   "scripts": {
-    "start": "node index.mjs",
-    "postinstall": "node patch-spectrum-mixed-attachments.mjs"
+    "start": "node index.mjs"
   },
   "engines": {
     "node": ">=18.17"
   },
   "dependencies": {
-    "spectrum-ts": "8.0.0"
+    "spectrum-ts": "3.1.0"
   },
   "overrides": {
     "protobufjs": "8.6.1",

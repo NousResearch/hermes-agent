@@ -86,7 +86,6 @@ def _ensure_teams_mock():
     microsoft_teams_api.MessageActivity = MagicMock
     microsoft_teams_api.ConversationReference = MagicMock
     microsoft_teams_api.MessageActivityInput = MagicMock
-    microsoft_teams_api.Attachment = MagicMock
 
     # TypingActivityInput mock
     class MockTypingActivityInput:
@@ -1068,60 +1067,3 @@ class TestTeamsStandaloneSend:
         assert "error" in result
         assert "Bot Framework conversation ID" in result["error"]
         assert len(session.calls) == 0
-
-
-class TestTeamsMediaAttachments:
-    """send_video / send_voice / send_document route through the same
-    Attachment mechanism as send_image so the gateway's media dispatch
-    (run.py) delivers native attachments instead of the base-class text
-    fallback (file path sent as plain text)."""
-
-    def _make_adapter(self):
-        adapter = TeamsAdapter(_make_config(
-            client_id="bot-id", client_secret="secret", tenant_id="tenant",
-        ))
-        adapter._app = MagicMock()
-        adapter._app.id = "bot-id"
-        adapter._app.send = AsyncMock(return_value=MagicMock(id="msg-001"))
-        return adapter
-
-    @pytest.mark.asyncio
-    async def test_send_video_remote_url_succeeds(self):
-        adapter = self._make_adapter()
-        result = await adapter.send_video("19:abc@thread.v2", "https://cdn.example.com/clip.mp4")
-        assert result.success
-        assert result.message_id == "msg-001"
-        adapter._app.send.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_send_voice_local_file_base64(self, tmp_path):
-        adapter = self._make_adapter()
-        audio = tmp_path / "reply.mp3"
-        audio.write_bytes(b"ID3fakeaudio")
-        result = await adapter.send_voice("19:abc@thread.v2", str(audio), caption="here you go")
-        assert result.success
-        adapter._app.send.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_send_document_local_file_base64(self, tmp_path):
-        adapter = self._make_adapter()
-        doc = tmp_path / "report.pdf"
-        doc.write_bytes(b"%PDF-1.4 fake")
-        result = await adapter.send_document("19:abc@thread.v2", str(doc))
-        assert result.success
-        adapter._app.send.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_send_video_without_app_fails(self):
-        adapter = self._make_adapter()
-        adapter._app = None
-        result = await adapter.send_video("19:abc@thread.v2", "https://cdn.example.com/clip.mp4")
-        assert not result.success
-        assert "not initialized" in result.error
-
-    @pytest.mark.asyncio
-    async def test_send_document_missing_file_fails_gracefully(self):
-        adapter = self._make_adapter()
-        result = await adapter.send_document("19:abc@thread.v2", "/no/such/file.pdf")
-        assert not result.success
-        adapter._app.send.assert_not_awaited()

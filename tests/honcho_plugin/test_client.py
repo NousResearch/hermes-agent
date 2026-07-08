@@ -711,17 +711,15 @@ class TestResolveSessionNameGatewayKey:
         )
         assert result == "agent-main-telegram-dm-8439114563"
 
-    def test_gateway_key_not_remapped_by_title(self):
-        """A title never remaps a stable identifier — the gateway per-chat key
-        wins over the title so a generated title can't split a live conversation
-        onto a new Honcho session."""
+    def test_session_title_still_wins_over_gateway_key(self):
+        """Explicit /title remap takes priority over gateway_session_key."""
         config = HonchoClientConfig(session_strategy="per-session")
         result = config.resolve_session_name(
             session_title="my-custom-title",
             session_id="20260412_171002_69bb38",
             gateway_session_key="agent:main:telegram:dm:8439114563",
         )
-        assert result == "agent-main-telegram-dm-8439114563"
+        assert result == "my-custom-title"
 
     def test_per_session_fallback_without_gateway_key(self):
         """Without gateway_session_key, per-session returns session_id (CLI path)."""

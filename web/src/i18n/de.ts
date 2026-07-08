@@ -158,7 +158,6 @@ export const de: Translations = {
     selectedSessionsDeleted: "{count} Sitzungen gelöscht",
     failedToDeleteSelected: "Ausgewählte Sitzungen konnten nicht gelöscht werden",
     resumeInChat: "Im Chat fortsetzen",
-    newChat: "Neuer Chat",
     previousPage: "Vorherige Seite",
     nextPage: "Nächste Seite",
     roles: {
@@ -433,14 +432,6 @@ export const de: Translations = {
     replaceCurrentValue: "Aktuellen Wert ersetzen ({preview})",
     showValue: "Echten Wert anzeigen",
     hideValue: "Wert ausblenden",
-    customTitle: "Benutzerdefinierte Schlüssel",
-    customHint: "Beliebige Umgebungsvariablen in deiner .env, die Hermes nicht erkennt. Verwende sie, um Umgebungsvariablen für Skills, MCP-Server oder eigene Tools einzuschleusen.",
-    customConfigured: "{count} benutzerdefinierte Schlüssel gesetzt",
-    addCustomKey: "Benutzerdefinierten Schlüssel hinzufügen",
-    customKeyName: "Variablenname",
-    customKeyNamePlaceholder: "z. B. MY_SERVICE_API_KEY",
-    add: "Hinzufügen",
-    invalidKeyName: "Nur Buchstaben, Zahlen und Unterstriche verwenden (muss mit einem Buchstaben oder Unterstrich beginnen).",
   },
 
   oauth: {

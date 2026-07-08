@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import { getProfiles, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { getProfiles, setApiRequestProfile } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import {
   arraysEqual,
@@ -13,7 +13,6 @@ import {
 } from '@/lib/storage'
 import { $gateway, ensureGatewayForProfile } from '@/store/gateway'
 import { setConnection } from '@/store/session'
-import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
 // Canonical key for a profile: trimmed, empty → "default". Used everywhere we
@@ -36,13 +35,6 @@ export const $profiles = atom<ProfileInfo[]>([])
 
 export function setActiveProfile(name: string): void {
   $activeProfile.set(name || 'default')
-}
-
-export async function refreshProfiles(): Promise<ProfileInfo[]> {
-  const { profiles } = await getProfiles()
-  $profiles.set(profiles)
-
-  return profiles
 }
 
 // ── Rail order ─────────────────────────────────────────────────────────────
@@ -110,10 +102,7 @@ interface ActiveProfileResponse {
 // Best-effort: failures (backend not up yet) leave the prior values intact.
 export async function refreshActiveProfile(): Promise<void> {
   try {
-    const res = await window.hermesDesktop.api<ActiveProfileResponse>({
-      path: '/api/profiles/active',
-      timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
-    })
+    const res = await window.hermesDesktop.api<ActiveProfileResponse>({ path: '/api/profiles/active' })
 
     setActiveProfile(res.current || 'default')
   } catch {
@@ -121,7 +110,8 @@ export async function refreshActiveProfile(): Promise<void> {
   }
 
   try {
-    await refreshProfiles()
+    const { profiles } = await getProfiles()
+    $profiles.set(profiles)
   } catch {
     // Leave the cached list in place.
   }
@@ -154,13 +144,12 @@ export const $activeGatewayProfile = atom<string>('default')
 // / default, so single-profile users are unaffected.
 export const $newChatProfile = atom<string | null>(null)
 
-// Bumped whenever the open session should be dropped for a fresh new-session
-// draft: a profile switch/create (below), or deleting the project that owns the
-// currently-open session (store/projects). The chat controller subscribes and
-// resets to the intro draft, so we never strand the user in an orphaned view.
+// Bumped whenever the profile context actually changes (switch or create). The
+// chat controller subscribes and drops to a fresh new-session draft, so the
+// session you were in doesn't stay sticky across a profile switch.
 export const $freshSessionRequest = atom(0)
 
-export function requestFreshSession(): void {
+function requestFreshSession(): void {
   $freshSessionRequest.set($freshSessionRequest.get() + 1)
 }
 
@@ -178,7 +167,6 @@ $activeGatewayProfile.subscribe(value => {
   if (_lastRoutedProfile !== null && _lastRoutedProfile !== key) {
     // Profile-scoped settings + the unified session list are now stale.
     void queryClient.invalidateQueries()
-    resetStarmapGraph()
   }
 
   _lastRoutedProfile = key

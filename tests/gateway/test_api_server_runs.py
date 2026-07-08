@@ -22,7 +22,6 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
-from tools import approval as approval_mod
 
 
 # ---------------------------------------------------------------------------
@@ -355,77 +354,6 @@ class TestRunEvents:
             "once",
             resolve_all=False,
         )
-
-    @pytest.mark.asyncio
-    async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):
-        """Same client session_id must not let one run approve another run's queue."""
-        app = _create_runs_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
-            with patch.object(auth_adapter, "_create_agent") as mock_create:
-                victim_agent, victim_ready, victim_interrupted = _make_slow_agent()
-                attacker_agent, attacker_ready, attacker_interrupted = _make_slow_agent()
-                mock_create.side_effect = [victim_agent, attacker_agent]
-
-                victim_resp = await cli.post(
-                    "/v1/runs",
-                    json={"input": "victim", "session_id": "shared-project"},
-                    headers={"Authorization": "Bearer sk-secret"},
-                )
-                attacker_resp = await cli.post(
-                    "/v1/runs",
-                    json={"input": "attacker", "session_id": "shared-project"},
-                    headers={"Authorization": "Bearer sk-secret"},
-                )
-                assert victim_resp.status == 202
-                assert attacker_resp.status == 202
-                victim_run = (await victim_resp.json())["run_id"]
-                attacker_run = (await attacker_resp.json())["run_id"]
-
-                victim_ready.wait(timeout=3.0)
-                attacker_ready.wait(timeout=3.0)
-                assert auth_adapter._run_approval_sessions[victim_run] == victim_run
-                assert auth_adapter._run_approval_sessions[attacker_run] == attacker_run
-                assert auth_adapter._run_approval_sessions[victim_run] != auth_adapter._run_approval_sessions[attacker_run]
-
-                victim_entry = approval_mod._ApprovalEntry({
-                    "command": "bash -c victim-danger",
-                    "description": "victim approval",
-                    "pattern_keys": ["shell-c"],
-                })
-                attacker_entry = approval_mod._ApprovalEntry({
-                    "command": "bash -c attacker-danger",
-                    "description": "attacker approval",
-                    "pattern_keys": ["shell-c"],
-                })
-                with approval_mod._lock:
-                    approval_mod._gateway_queues[victim_run] = [victim_entry]
-                    approval_mod._gateway_queues[attacker_run] = [attacker_entry]
-
-                approval_resp = await cli.post(
-                    f"/v1/runs/{attacker_run}/approval",
-                    json={"choice": "always", "resolve_all": True},
-                    headers={"Authorization": "Bearer sk-secret"},
-                )
-                approval_data = await approval_resp.json()
-
-                assert approval_resp.status == 200
-                assert approval_data["resolved"] == 1
-                assert attacker_entry.result == "always"
-                assert attacker_entry.event.is_set()
-                assert victim_entry.result is None
-                assert not victim_entry.event.is_set()
-                with approval_mod._lock:
-                    assert approval_mod._gateway_queues[victim_run] == [victim_entry]
-                    assert victim_run in approval_mod._gateway_queues
-                    assert attacker_run not in approval_mod._gateway_queues
-
-                # Clean up the synthetic pending victim approval and unblock the
-                # slow test agents so their background run tasks can finish.
-                with approval_mod._lock:
-                    approval_mod._gateway_queues.pop(victim_run, None)
-                victim_interrupted.set()
-                attacker_interrupted.set()
-
 
     @pytest.mark.asyncio
     async def test_events_not_found_returns_404(self, adapter):

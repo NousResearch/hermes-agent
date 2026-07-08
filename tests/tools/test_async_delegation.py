@@ -227,8 +227,7 @@ def test_completed_records_pruned_to_cap():
 
 def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     """delegate_task(background=True) returns a handle without running the
-    child synchronously, and the child completes on the background thread.
-    A single task is dispatched as a one-item background batch unit."""
+    child synchronously, and the child completes on the background thread."""
     from unittest.mock import MagicMock, patch
     import tools.delegate_tool as dt
 
@@ -236,8 +235,6 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     parent._delegate_depth = 0
     parent.session_id = "sess"
     parent._interrupt_requested = False
-    parent._active_children = []
-    parent._active_children_lock = None
     fake_child = MagicMock()
     fake_child._delegate_role = "leaf"
     fake_child._subagent_id = "s1"
@@ -256,194 +253,55 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
         "model": "m", "provider": None, "base_url": None, "api_key": None,
         "api_mode": None, "command": None, "args": None,
     }
-    # monkeypatch (not `with`) so patches outlive delegate_task's return and
-    # remain active while the background worker runs.
-    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
-    monkeypatch.setattr(dt, "_run_single_child", slow_child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
-    out = dt.delegate_task(
-        goal="the real task", context="ctx",
-        background=True, parent_agent=parent,
-    )
+    with patch.object(dt, "_build_child_agent", return_value=fake_child), \
+         patch.object(dt, "_run_single_child", side_effect=slow_child), \
+         patch.object(dt, "_resolve_delegation_credentials", return_value=creds):
+        out = dt.delegate_task(
+            goal="the real task", context="ctx", toolsets=["web"],
+            background=True, parent_agent=parent,
+        )
 
     import json
     parsed = json.loads(out)
     assert parsed["status"] == "dispatched"
     assert parsed["mode"] == "background"
     assert parsed["delegation_id"].startswith("deleg_")
-    # Non-blocking invariant: delegate_task returned while the child is STILL
-    # blocked on the closed gate, so no completion event exists yet.
+    # The real non-blocking invariant (environment-independent — no wall-clock
+    # threshold that flakes on a loaded CI runner): delegate_task returned
+    # while the child is STILL blocked on the closed gate, so no completion
+    # event exists yet. A synchronous impl could not have returned here — it
+    # would still be inside slow_child waiting on the gate.
     assert process_registry.completion_queue.empty()
-    assert ad.active_count() == 1  # one background batch unit, not finished
+    assert ad.active_count() == 1  # child running in background, not finished
 
     gate.set()
     evt = _drain_one()
     assert evt is not None
     assert evt["type"] == "async_delegation"
-    # Single task rides the batch path → carries a 1-item results list.
-    assert evt.get("is_batch") is True
-    assert len(evt["results"]) == 1
-    assert evt["results"][0]["summary"] == "done: the real task"
+    assert evt["summary"] == "done: the real task"
     text = format_process_notification(evt)
     assert text is not None
-    assert "the real task" in text
+    assert "the real task" in text and "ctx" in text
 
 
-def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
-    """A multi-item batch with background=True dispatches the WHOLE fan-out as
-    ONE background unit (one handle, one async slot). The children run in
-    parallel and join; the consolidated results come back as a single
-    completion event when ALL of them finish."""
+def test_delegate_task_background_rejects_batch(monkeypatch):
+    """background=True with a multi-item tasks batch is rejected (v1: single-task only)."""
     import json
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
     import tools.delegate_tool as dt
 
     parent = MagicMock()
     parent._delegate_depth = 0
     parent.session_id = "sess"
-    parent._interrupt_requested = False
-    parent._active_children = []
-    parent._active_children_lock = None
 
-    fake_child = MagicMock()
-    fake_child._delegate_role = "leaf"
-
-    gate = threading.Event()
-
-    def _blocking_child(task_index, goal, child=None, parent_agent=None, **kw):
-        gate.wait(timeout=5)
-        return {
-            "task_index": task_index, "status": "completed",
-            "summary": f"done: {goal}", "api_calls": 1,
-            "duration_seconds": 0.1, "model": "m", "exit_reason": "completed",
-        }
-
-    creds = {
-        "model": "m", "provider": None, "base_url": None, "api_key": None,
-        "api_mode": None, "command": None, "args": None,
-    }
-
-    # Use monkeypatch (not a `with` block) so the patches stay active while the
-    # background worker thread runs _execute_and_aggregate AFTER delegate_task
-    # has already returned.
-    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
-    monkeypatch.setattr(dt, "_run_single_child", _blocking_child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
     out = dt.delegate_task(
-        tasks=[{"goal": "a"}, {"goal": "b"}, {"goal": "c"}],
+        tasks=[{"goal": "a"}, {"goal": "b"}],
         background=True,
         parent_agent=parent,
     )
-
     parsed = json.loads(out)
-    assert parsed["status"] == "dispatched"
-    assert parsed["mode"] == "background"
-    assert parsed["count"] == 3
-    assert parsed["delegation_id"].startswith("deleg_")
-    assert parsed["goals"] == ["a", "b", "c"]
-    # ONE background unit for the whole fan-out (not three), and the call
-    # returned while all children are still blocked → chat not blocked.
-    assert process_registry.completion_queue.empty()
-    assert ad.active_count() == 1
-
-    # Release the children; the whole batch joins and emits ONE event.
-    gate.set()
-    evt = _drain_one()
-    assert evt is not None
-    assert evt["type"] == "async_delegation"
-    assert evt.get("is_batch") is True
-    assert len(evt["results"]) == 3
-    summaries = sorted(r["summary"] for r in evt["results"])
-    assert summaries == ["done: a", "done: b", "done: c"]
-    # The consolidated notification names all three tasks in one block.
-    text = format_process_notification(evt)
-    assert text is not None
-    assert "TASK 1/3" in text and "TASK 2/3" in text and "TASK 3/3" in text
-    assert "done: a" in text and "done: b" in text and "done: c" in text
-    # No more events — it's a single combined completion, not N of them.
-    assert _drain_one() is None
-
-
-def test_model_dispatch_forces_background():
-    """The MODEL-facing dispatch path forces background=True for any top-level
-    delegation (single task OR batch), and keeps it off for an orchestrator
-    subagent (depth > 0). Direct delegate_task() callers are unaffected (they
-    keep the synchronous default)."""
-    import tools.delegate_tool as dt
-    from unittest.mock import MagicMock
-
-    top = MagicMock()
-    top._delegate_depth = 0
-    sub = MagicMock()
-    sub._delegate_depth = 1
-
-    # Registry-fallback helper: top-level always background, regardless of
-    # single vs batch; subagent never.
-    assert dt._model_background_value({"goal": "x"}, top) is True
-    assert dt._model_background_value(
-        {"tasks": [{"goal": "a"}, {"goal": "b"}]}, top
-    ) is True
-    assert dt._model_background_value({"tasks": [{"goal": "a"}]}, top) is True
-    assert dt._model_background_value({"goal": "x"}, sub) is False
-    assert dt._model_background_value(
-        {"tasks": [{"goal": "a"}, {"goal": "b"}]}, sub
-    ) is False
-
-
-def test_run_agent_dispatch_forces_background():
-    """run_agent._dispatch_delegate_task — the live model path — forces
-    background on for any top-level delegation (single OR batch) and off for a
-    subagent."""
-    from unittest.mock import patch
-    import run_agent
-
-    class _FakeAgent:
-        _delegate_depth = 0
-
-    captured = {}
-
-    def _fake_delegate(**kwargs):
-        captured.update(kwargs)
-        return "{}"
-
-    with patch("tools.delegate_tool.delegate_task", _fake_delegate):
-        agent = _FakeAgent()
-        run_agent.AIAgent._dispatch_delegate_task(agent, {"goal": "x"})
-        assert captured["background"] is True
-
-        run_agent.AIAgent._dispatch_delegate_task(
-            agent, {"tasks": [{"goal": "a"}, {"goal": "b"}]}
-        )
-        assert captured["background"] is True
-
-        sub = _FakeAgent()
-        sub._delegate_depth = 1
-        run_agent.AIAgent._dispatch_delegate_task(sub, {"goal": "x"})
-        assert captured["background"] is False
-
-
-def test_dispatch_never_forwards_model_toolsets():
-    """The model has no toolsets argument — subagents always inherit the
-    parent's toolsets. Even if a model smuggles a `toolsets` key into the
-    tool-call args, the live dispatch path must NOT forward it to
-    delegate_task (which no longer accepts it) and must not crash."""
-    from unittest.mock import patch
-    import run_agent
-
-    class _FakeAgent:
-        _delegate_depth = 0
-
-    captured = {}
-
-    def _fake_delegate(**kwargs):
-        captured.update(kwargs)
-        return "{}"
-
-    with patch("tools.delegate_tool.delegate_task", _fake_delegate):
-        run_agent.AIAgent._dispatch_delegate_task(
-            _FakeAgent(), {"goal": "x", "toolsets": ["web", "terminal"]}
-        )
-    assert "toolsets" not in captured
+    assert "error" in parsed
+    assert "single-task only" in parsed["error"]
 
 
 def test_delegate_task_background_detaches_child_from_parent(monkeypatch):

@@ -62,6 +62,7 @@ fallback_model:
 | GMI Cloud | `gmi` | `GMI_API_KEY`（可选：`GMI_BASE_URL`） |
 | StepFun | `stepfun` | `STEPFUN_API_KEY`（可选：`STEPFUN_BASE_URL`） |
 | Ollama Cloud | `ollama-cloud` | `OLLAMA_API_KEY` |
+| Google Gemini（OAuth） | `google-gemini-cli` | `hermes model`（Google OAuth；可选：`HERMES_GEMINI_PROJECT_ID`） |
 | Google AI Studio | `gemini` | `GOOGLE_API_KEY`（别名：`GEMINI_API_KEY`） |
 | xAI（Grok） | `xai`（别名 `grok`） | `XAI_API_KEY`（可选：`XAI_BASE_URL`） |
 | xAI Grok OAuth（SuperGrok） | `xai-oauth`（别名 `grok-oauth`） | `hermes model` → xAI Grok OAuth（浏览器登录；需 SuperGrok 订阅） |
@@ -165,12 +166,12 @@ fallback_model:
 |---------|-------------------|
 | CLI 会话 | ✔ |
 | 消息网关（Telegram、Discord 等） | ✔ |
-| 子 Agent 委派 | ✔（子 Agent 继承父 Agent 的备用链） |
-| Cron 任务 | ✔（Cron Agent 继承配置的备用提供商） |
+| 子 Agent 委派 | ✘（子 Agent 不继承备用配置） |
+| Cron 任务 | ✘（使用固定提供商运行） |
 | 辅助任务（视觉、压缩等） | ✘（使用各自的提供商链——见下文） |
 
 :::tip
-没有针对主备用链的环境变量——只能通过 `config.yaml` 或 `hermes fallback` 进行配置。这是有意为之：备用配置是一个经过深思熟虑的选择，不应被过期的 shell 导出变量覆盖。
+`fallback_model` 没有对应的环境变量——它只能通过 `config.yaml` 配置。这是有意为之：备用配置是一个经过深思熟虑的选择，不应被过期的 shell 导出变量覆盖。
 :::
 
 ---
@@ -361,7 +362,7 @@ auxiliary:
 
 ## 委派提供商覆盖
 
-由 `delegate_task` 生成的子 Agent 会继承父 Agent 的主备用链。你仍然可以将子 Agent 路由到不同的主提供商:模型对以进行成本优化：
+由 `delegate_task` 生成的子 Agent **不会**使用主备用模型。但可以将它们路由到不同的提供商:模型对以优化成本：
 
 ```yaml
 delegation:
@@ -377,7 +378,7 @@ delegation:
 
 ## Cron 任务提供商
 
-Cron 任务在创建 Agent 时会继承你配置的 `fallback_providers` 链（或旧版 `fallback_model`）。要为 Cron 任务使用不同的主提供商，请在 Cron 任务本身配置 `provider` 和 `model` 覆盖：
+Cron 任务使用执行时配置的提供商运行，不支持备用模型。若要为 Cron 任务使用不同的提供商，请在 Cron 任务本身上配置 `provider` 和 `model` 覆盖：
 
 ```python
 cronjob(
@@ -397,7 +398,7 @@ cronjob(
 
 | 功能 | 备用机制 | 配置位置 |
 |---------|-------------------|----------------|
-| 主 Agent 模型 | `fallback_providers`（config.yaml 中）——出错时按轮次故障转移（每轮次恢复主模型） | `fallback_providers:`（顶层列表） |
+| 主 Agent 模型 | `fallback_model`（config.yaml 中）——出错时按轮次故障转移（每轮次恢复主模型） | `fallback_model:`（顶层） |
 | 辅助任务（任意）— auto 用户 | 容量错误时完整自动检测链（主 Agent 模型优先，然后提供商链） | `auxiliary.<task>.provider: auto` |
 | 辅助任务（任意）— 显式提供商 | `fallback_chain`（若已设置）→ 主 Agent 模型 → 警告 + 抛出，仅在容量错误时触发 | `auxiliary.<task>.fallback_chain` |
 | 视觉 | 分层（见上文）+ 内部 OpenRouter 重试 | `auxiliary.vision` |

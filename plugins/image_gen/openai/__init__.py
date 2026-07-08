@@ -31,7 +31,6 @@ from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
     error_response,
-    normalize_reference_images,
     resolve_aspect_ratio,
     save_b64_image,
     save_url_image,
@@ -119,50 +118,12 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Source-image loading (for image-to-image / edit)
-# ---------------------------------------------------------------------------
-
-
-def _load_image_bytes(ref: str) -> Tuple[bytes, str]:
-    """Load image bytes from a URL or local file path.
-
-    Returns ``(data, filename)``. Raises on any network / IO error so the
-    caller can surface a clean error_response.
-    """
-    ref = ref.strip()
-    lower = ref.lower()
-    if lower.startswith(("http://", "https://")):
-        import requests
-
-        resp = requests.get(ref, timeout=60)
-        resp.raise_for_status()
-        name = ref.split("?", 1)[0].rsplit("/", 1)[-1] or "image.png"
-        return resp.content, name
-    if lower.startswith("data:"):
-        import base64
-
-        header, _, b64 = ref.partition(",")
-        ext = "png"
-        if "image/" in header:
-            ext = header.split("image/", 1)[1].split(";", 1)[0] or "png"
-        return base64.b64decode(b64), f"image.{ext}"
-    # Local file path — enforce the shared credential-read guard before reading.
-    from agent.file_safety import raise_if_read_blocked
-
-    raise_if_read_blocked(ref)
-    with open(ref, "rb") as fh:
-        data = fh.read()
-    name = os.path.basename(ref) or "image.png"
-    return data, name
-
-
-# ---------------------------------------------------------------------------
 # Provider
 # ---------------------------------------------------------------------------
 
 
 class OpenAIImageGenProvider(ImageGenProvider):
-    """OpenAI ``images.generate`` / ``images.edit`` backend — gpt-image-2."""
+    """OpenAI ``images.generate`` backend — gpt-image-2 at low/medium/high."""
 
     @property
     def name(self) -> str:
@@ -200,7 +161,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
         return {
             "name": "OpenAI",
             "badge": "paid",
-            "tag": "gpt-image-2 at low/medium/high quality tiers — text-to-image & image editing",
+            "tag": "gpt-image-2 at low/medium/high quality tiers",
             "env_vars": [
                 {
                     "key": "OPENAI_API_KEY",
@@ -210,18 +171,10 @@ class OpenAIImageGenProvider(ImageGenProvider):
             ],
         }
 
-    def capabilities(self) -> Dict[str, Any]:
-        # gpt-image-2 supports editing via images.edit() with up to 16 source
-        # images.
-        return {"modalities": ["text", "image"], "max_reference_images": 16}
-
     def generate(
         self,
         prompt: str,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
-        *,
-        image_url: Optional[str] = None,
-        reference_image_urls: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         prompt = (prompt or "").strip()
@@ -260,82 +213,29 @@ class OpenAIImageGenProvider(ImageGenProvider):
         tier_id, meta = _resolve_model()
         size = _SIZES.get(aspect, _SIZES["square"])
 
-        # Collect source images (primary + references) for image-to-image.
-        sources: List[str] = []
-        if isinstance(image_url, str) and image_url.strip():
-            sources.append(image_url.strip())
-        for ref in (normalize_reference_images(reference_image_urls) or []):
-            sources.append(ref)
-        sources = sources[:16]  # gpt-image-2 edit caps at 16 images
-        is_edit = bool(sources)
-        modality = "image" if is_edit else "text"
+        # gpt-image-2 returns b64_json unconditionally and REJECTS
+        # ``response_format`` as an unknown parameter. Don't send it.
+        payload: Dict[str, Any] = {
+            "model": API_MODEL,
+            "prompt": prompt,
+            "size": size,
+            "n": 1,
+            "quality": meta["quality"],
+        }
 
-        client = openai.OpenAI()
-
-        if is_edit:
-            # images.edit() expects file-like objects. Download/read each
-            # source into a named BytesIO so the SDK sends correct multipart.
-            import io
-
-            try:
-                files = []
-                for ref in sources:
-                    data, fname = _load_image_bytes(ref)
-                    bio = io.BytesIO(data)
-                    bio.name = fname
-                    files.append(bio)
-            except Exception as exc:
-                return error_response(
-                    error=f"Could not load source image for editing: {exc}",
-                    error_type="io_error",
-                    provider="openai",
-                    model=tier_id,
-                    prompt=prompt,
-                    aspect_ratio=aspect,
-                )
-
-            try:
-                response = client.images.edit(
-                    model=API_MODEL,
-                    image=files if len(files) > 1 else files[0],
-                    prompt=prompt,
-                    size=size,  # type: ignore[arg-type]  # _SIZES values are valid gpt-image sizes
-                    quality=meta["quality"],
-                    n=1,
-                )
-            except Exception as exc:
-                logger.debug("OpenAI image edit failed", exc_info=True)
-                return error_response(
-                    error=f"OpenAI image editing failed: {exc}",
-                    error_type="api_error",
-                    provider="openai",
-                    model=tier_id,
-                    prompt=prompt,
-                    aspect_ratio=aspect,
-                )
-        else:
-            # gpt-image-2 returns b64_json unconditionally and REJECTS
-            # ``response_format`` as an unknown parameter. Don't send it.
-            payload: Dict[str, Any] = {
-                "model": API_MODEL,
-                "prompt": prompt,
-                "size": size,
-                "n": 1,
-                "quality": meta["quality"],
-            }
-
-            try:
-                response = client.images.generate(**payload)
-            except Exception as exc:
-                logger.debug("OpenAI image generation failed", exc_info=True)
-                return error_response(
-                    error=f"OpenAI image generation failed: {exc}",
-                    error_type="api_error",
-                    provider="openai",
-                    model=tier_id,
-                    prompt=prompt,
-                    aspect_ratio=aspect,
-                )
+        try:
+            client = openai.OpenAI()
+            response = client.images.generate(**payload)
+        except Exception as exc:
+            logger.debug("OpenAI image generation failed", exc_info=True)
+            return error_response(
+                error=f"OpenAI image generation failed: {exc}",
+                error_type="api_error",
+                provider="openai",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
 
         data = getattr(response, "data", None) or []
         if not data:
@@ -402,7 +302,6 @@ class OpenAIImageGenProvider(ImageGenProvider):
             prompt=prompt,
             aspect_ratio=aspect,
             provider="openai",
-            modality=modality,
             extra=extra,
         )
 

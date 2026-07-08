@@ -5,7 +5,6 @@ import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
-import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
@@ -30,15 +29,7 @@ const PILL = cn(
  * `model.options` dropdown (`modelMenuContent`) verbatim; falls back to the
  * full picker when the gateway is closed and no live menu exists.
  */
-export function ModelPill({
-  compact = false,
-  disabled,
-  model
-}: {
-  compact?: boolean
-  disabled: boolean
-  model: ChatBarState['model']
-}) {
+export function ModelPill({ disabled, model }: { disabled: boolean; model: ChatBarState['model'] }) {
   const copy = useI18n().t.shell.statusbar
   const currentModel = useStore($currentModel)
   const currentProvider = useStore($currentProvider)
@@ -49,9 +40,7 @@ export function ModelPill({
   // The model resolves a beat after the gateway/session comes up. Rather than
   // flash a literal "No model", show a quiet loader (inherits the pill text
   // color at half opacity) until a model lands.
-  const label = compact ? (
-    <ChevronDown className="size-3.5 shrink-0 opacity-70" />
-  ) : (
+  const label = (
     <>
       {currentModel.trim() ? (
         <span className="truncate">{formatModelStatusLabel(currentModel, { fastMode, reasoningEffort })}</span>
@@ -62,43 +51,31 @@ export function ModelPill({
     </>
   )
 
-  // Compact (floating composer): a snug square holding just the chevron — no pill
-  // padding, sized to match the other composer icon buttons.
-  const pillClass = compact
-    ? cn(
-        'size-(--composer-control-size) shrink-0 justify-center gap-0 rounded-md p-0',
-        'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
-      )
-    : PILL
-
   const title = currentProvider ? copy.modelTitle(currentProvider, currentModel || copy.modelNone) : copy.switchModel
 
   if (!model.modelMenuContent) {
     return (
-      <Tip label={copy.openModelPicker} side="top">
-        <Button
-          aria-label={copy.openModelPicker}
-          className={pillClass}
-          disabled={disabled}
-          onClick={() => setModelPickerOpen(true)}
-          type="button"
-          variant="ghost"
-        >
-          {label}
-        </Button>
-      </Tip>
+      <Button
+        aria-label={copy.openModelPicker}
+        className={PILL}
+        disabled={disabled}
+        onClick={() => setModelPickerOpen(true)}
+        title={copy.openModelPicker}
+        type="button"
+        variant="ghost"
+      >
+        {label}
+      </Button>
     )
   }
 
   return (
     <DropdownMenu onOpenChange={setOpen} open={open}>
-      <Tip label={title} side="top">
-        <DropdownMenuTrigger asChild>
-          <Button aria-label={title} className={pillClass} disabled={disabled} type="button" variant="ghost">
-            {label}
-          </Button>
-        </DropdownMenuTrigger>
-      </Tip>
+      <DropdownMenuTrigger asChild>
+        <Button aria-label={title} className={PILL} disabled={disabled} title={title} type="button" variant="ghost">
+          {label}
+        </Button>
+      </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-64 p-0" side="top" sideOffset={8}>
         <ModelMenuCloseContext.Provider value={() => setOpen(false)}>
           {model.modelMenuContent}

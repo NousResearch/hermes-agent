@@ -201,13 +201,4 @@ describe('preprocessMarkdown', () => {
 
     expect(output).toContain('<https://example.com/a_b/c~d/page>')
   })
-
-  it('handles a fenced block larger than V8 spread-argument limit', () => {
-    // A single huge code block (e.g. a logged minified bundle) used to throw
-    // `RangeError: Maximum call stack size exceeded` via `out.push(...lines)`.
-    const body = Array.from({ length: 200_000 }, (_, i) => `line ${i}`).join('\n')
-    const input = `\`\`\`js\n${body}\n\`\`\``
-
-    expect(() => preprocessMarkdown(input)).not.toThrow()
-  })
 })

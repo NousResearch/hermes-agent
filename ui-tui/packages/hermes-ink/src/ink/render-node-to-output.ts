@@ -717,10 +717,7 @@ function renderNodeToOutput(
             const childYoga = (child as DOMElement).yogaNode
 
             if (childYoga) {
-              scrollHeight = Math.max(
-                scrollHeight,
-                Math.ceil(childYoga.getComputedTop() + childYoga.getComputedHeight())
-              )
+              scrollHeight = Math.max(scrollHeight, Math.ceil(childYoga.getComputedTop() + childYoga.getComputedHeight()))
             }
           }
         }

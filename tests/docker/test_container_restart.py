@@ -21,7 +21,7 @@ import time
 
 import pytest
 
-from tests.docker.conftest import docker_exec, docker_exec_sh, wait_for_path, wait_for_log, wait_for_docker_logs, poll_container
+from tests.docker.conftest import docker_exec, docker_exec_sh
 
 
 def _docker(*args: str, **kw) -> subprocess.CompletedProcess[str]:
@@ -32,7 +32,40 @@ def _docker(*args: str, **kw) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _exec(container: str, *args: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+    return docker_exec(container, *args, timeout=timeout)
 
+
+def _sh(container: str, cmd: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+    return docker_exec_sh(container, cmd, timeout=timeout)
+
+
+def _wait_for_path(
+    container: str,
+    path: str,
+    *,
+    kind: str = "f",
+    deadline_s: float = 30.0,
+    interval_s: float = 0.25,
+) -> bool:
+    """Poll `test -<kind> <path>` inside container until success or timeout.
+
+    `kind` is the `test` flag: 'f' for file, 'd' for directory, 'e' for
+    existence. Returns True on success, False on timeout. Strictly
+    better than a fixed `time.sleep()` because:
+
+      * we don't wait the full budget when the path appears early, and
+      * the test fails with a precise "waited N seconds" assertion
+        instead of a confusing one-line failure mid-test when the
+        sleep was too short.
+    """
+    end = time.monotonic() + deadline_s
+    while time.monotonic() < end:
+        r = _sh(container, f"test -{kind} {path}", timeout=5)
+        if r.returncode == 0:
+            return True
+        time.sleep(interval_s)
+    return False
 
 
 def _wait_for_reconcile_log_mention(
@@ -43,8 +76,23 @@ def _wait_for_reconcile_log_mention(
     interval_s: float = 0.25,
 ) -> str:
     """Poll until /opt/data/logs/container-boot.log mentions `profile`.
+
+    Returns the matching log content on success. On timeout, returns
+    the last observed contents so the assertion can render a
+    meaningful diagnostic. The container-boot.log is the explicit
+    signal that the reconciler has finished — much more reliable
+    than a fixed sleep that hopes 8 seconds is enough.
     """
-    return wait_for_log(container, "/opt/data/logs/container-boot.log",  f"profile={profile}")
+    end = time.monotonic() + deadline_s
+    last = ""
+    while time.monotonic() < end:
+        r = _sh(container, "cat /opt/data/logs/container-boot.log", timeout=5)
+        if r.returncode == 0:
+            last = r.stdout
+            if f"profile={profile}" in last:
+                return last
+        time.sleep(interval_s)
+    return last
 
 
 @pytest.fixture
@@ -69,7 +117,23 @@ def restart_container(request, built_image: str):
     # it starts issuing commands. The reconciler always writes one
     # 'default' line on every boot (PR #30136 item I1) — that's our
     # readiness signal.
-    wait_for_log(name, "/opt/data/logs/container-boot.log", "profile=default")
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        r = _docker(
+            "exec", "-u", "hermes", name, "sh", "-c",
+            "cat /opt/data/logs/container-boot.log 2>/dev/null",
+            timeout=5,
+        )
+        if r.returncode == 0 and "profile=default" in r.stdout:
+            break
+        time.sleep(0.25)
+    else:
+        # Defensive: surface a timeout from the fixture itself so the
+        # test failure points at "container never finished cont-init"
+        # rather than mid-test where the symptom would be obscure.
+        raise RuntimeError(
+            f"container {name} did not finish cont-init within 30s"
+        )
     yield name
     _docker("rm", "-f", name)
     _docker("volume", "rm", "-f", volume)
@@ -81,14 +145,20 @@ def test_running_gateway_survives_container_restart(restart_container: str) -> N
     # Create the profile + start its gateway. The Phase 4 hooks
     # register the s6 service slot during create and the dispatch
     # path brings it up via s6-svc -u.
-    r = docker_exec(container, "hermes", "profile", "create", "coder")
+    r = _exec(container, "hermes", "profile", "create", "coder")
     assert r.returncode == 0, f"profile create failed: {r.stderr}"
 
-    r = docker_exec(container, "hermes", "-p", "coder", "gateway", "start", timeout=60)
+    r = _exec(container, "hermes", "-p", "coder", "gateway", "start", timeout=60)
     assert r.returncode == 0, f"gateway start failed: {r.stderr}"
 
     # Give the service time to actually come up under supervision.
-    poll_container(container, "/command/s6-svstat /run/service/gateway-coder | grep -q 'up '")
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline:
+        r = _sh(container, "/command/s6-svstat /run/service/gateway-coder")
+        if r.returncode == 0 and "up " in r.stdout:
+            break
+        time.sleep(0.5)
+    assert "up " in r.stdout, f"gateway never came up pre-restart: {r.stdout!r}"
 
     # Persist state so the reconciler will treat the slot as 'running'
     # post-restart. The gateway process itself writes gateway_state.json
@@ -100,7 +170,7 @@ def test_running_gateway_survives_container_restart(restart_container: str) -> N
         "p = pathlib.Path('/opt/data/profiles/coder/gateway_state.json'); "
         "p.write_text(json.dumps({'gateway_state': 'running', 'timestamp': 1}))"
     )
-    docker_exec(container, "python3", "-c", write_state, timeout=10).check_returncode()
+    _exec(container, "python3", "-c", write_state, timeout=10).check_returncode()
 
     # Restart. After this, /run/service/ is empty until cont-init.d
     # runs the reconciler. We need to wait long enough for the
@@ -109,22 +179,25 @@ def test_running_gateway_survives_container_restart(restart_container: str) -> N
     # restored slot. Polling the boot log gives us the first signal.
     _docker("restart", container, timeout=60).check_returncode()
     log = _wait_for_reconcile_log_mention(container, "coder", deadline_s=30.0)
+    assert "profile=coder" in log, (
+        f"reconciler never logged coder after restart: {log!r}"
+    )
     assert "action=started" in log
 
     # Service slot exists.
-    assert wait_for_path(
+    assert _wait_for_path(
         container, "/run/service/gateway-coder", kind="d", deadline_s=10.0,
     ), "slot not recreated after restart"
 
     # No `down` marker — we asked for auto-start.
-    r = docker_exec_sh(container, "test -f /run/service/gateway-coder/down")
+    r = _sh(container, "test -f /run/service/gateway-coder/down")
     assert r.returncode != 0, "down marker present despite prior_state=running"
 
 
 def test_stopped_gateway_stays_stopped_after_restart(restart_container: str) -> None:
     container = restart_container
 
-    docker_exec(container, "hermes", "profile", "create", "writer").check_returncode()
+    _exec(container, "hermes", "profile", "create", "writer").check_returncode()
 
     # Write 'stopped' directly so we don't have to race against the
     # gateway's own state writes.
@@ -133,18 +206,19 @@ def test_stopped_gateway_stays_stopped_after_restart(restart_container: str) -> 
         "p = pathlib.Path('/opt/data/profiles/writer/gateway_state.json'); "
         "p.write_text(json.dumps({'gateway_state': 'stopped', 'timestamp': 1}))"
     )
-    docker_exec(container, "python3", "-c", write_state, timeout=10).check_returncode()
+    _exec(container, "python3", "-c", write_state, timeout=10).check_returncode()
 
     _docker("restart", container, timeout=60).check_returncode()
-    _wait_for_reconcile_log_mention(container, "writer", deadline_s=30.0)
+    log = _wait_for_reconcile_log_mention(container, "writer", deadline_s=30.0)
+    assert "profile=writer" in log
 
     # Slot exists.
-    assert wait_for_path(
+    assert _wait_for_path(
         container, "/run/service/gateway-writer", kind="d", deadline_s=10.0,
     )
 
     # Down marker present.
-    r = docker_exec_sh(container, "test -f /run/service/gateway-writer/down")
+    r = _sh(container, "test -f /run/service/gateway-writer/down")
     assert r.returncode == 0, "down marker missing despite prior_state=stopped"
 
 
@@ -155,7 +229,7 @@ def test_stale_gateway_pid_cleaned_up_on_restart(restart_container: str) -> None
     process-mismatch checks."""
     container = restart_container
 
-    docker_exec(container, "hermes", "profile", "create", "ghost").check_returncode()
+    _exec(container, "hermes", "profile", "create", "ghost").check_returncode()
 
     # Stamp stale runtime files alongside a 'running' state so the
     # reconciler walks this profile.
@@ -166,15 +240,15 @@ def test_stale_gateway_pid_cleaned_up_on_restart(restart_container: str) -> None
         "(p / 'gateway.pid').write_text(json.dumps({'pid': 99999, 'host': 'old'})); "
         "(p / 'processes.json').write_text('[]')"
     )
-    docker_exec(container, "python3", "-c", stamp, timeout=10).check_returncode()
+    _exec(container, "python3", "-c", stamp, timeout=10).check_returncode()
 
     _docker("restart", container, timeout=60).check_returncode()
     _wait_for_reconcile_log_mention(container, "ghost", deadline_s=30.0)
 
     # Stale runtime files swept.
-    r = docker_exec_sh(container, "test -f /opt/data/profiles/ghost/gateway.pid")
+    r = _sh(container, "test -f /opt/data/profiles/ghost/gateway.pid")
     assert r.returncode != 0, "stale gateway.pid survived restart"
-    r = docker_exec_sh(container, "test -f /opt/data/profiles/ghost/processes.json")
+    r = _sh(container, "test -f /opt/data/profiles/ghost/processes.json")
     assert r.returncode != 0, "stale processes.json survived restart"
 
 
@@ -197,20 +271,37 @@ def test_live_gateway_autostarts_after_real_restart_without_manual_state_stamp(
     """
     container = restart_container
 
-    docker_exec(container, "hermes", "profile", "create", "live").check_returncode()
-    r = docker_exec(container, "hermes", "-p", "live", "gateway", "start", timeout=60)
+    _exec(container, "hermes", "profile", "create", "live").check_returncode()
+    r = _exec(container, "hermes", "-p", "live", "gateway", "start", timeout=60)
     assert r.returncode == 0, f"gateway start failed: {r.stderr}"
 
     # Wait for the gateway to actually come up under supervision AND write
     # its own gateway_state=running (we do NOT stamp it ourselves).
-    poll_container(container, "/command/s6-svstat /run/service/gateway-live |  grep -q 'up '")
+    deadline = time.monotonic() + 20.0
+    while time.monotonic() < deadline:
+        r = _sh(container, "/command/s6-svstat /run/service/gateway-live")
+        if r.returncode == 0 and "up " in r.stdout:
+            break
+        time.sleep(0.5)
+    assert "up " in r.stdout, f"gateway never came up pre-restart: {r.stdout!r}"
 
-    # Confirm the gateway persisted its own 'running' state. The gateway has
-    # to boot Python, discover ~50 plugins, construct GatewayRunner, and
-    # reach write_runtime_status("running") at run.py start() — on a loaded
-    # CI runner with parallel docker test containers competing for CPU, this
-    # can take a while.
-    wait_for_log(container, "/opt/data/profiles/live/gateway_state.json", '"running"', deadline_s=45, interval_s=1)
+    # Confirm the gateway persisted its own 'running' state (sanity: we're
+    # testing the real write path, not a stamped fixture).
+    deadline = time.monotonic() + 15.0
+    state = ""
+    while time.monotonic() < deadline:
+        r = _sh(
+            container,
+            "cat /opt/data/profiles/live/gateway_state.json 2>/dev/null",
+        )
+        if r.returncode == 0 and '"gateway_state"' in r.stdout:
+            state = r.stdout
+            if '"running"' in state:
+                break
+        time.sleep(0.5)
+    assert '"running"' in state, (
+        f"gateway never persisted running state pre-restart: {state!r}"
+    )
 
     # Real restart — Docker sends SIGTERM to PID 1; s6 propagates it to the
     # supervised gateway. No planned-stop marker is written (this is not an
@@ -218,6 +309,9 @@ def test_live_gateway_autostarts_after_real_restart_without_manual_state_stamp(
     _docker("restart", container, timeout=60).check_returncode()
 
     log = _wait_for_reconcile_log_mention(container, "live", deadline_s=30.0)
+    assert "profile=live" in log, (
+        f"reconciler never logged live after restart: {log!r}"
+    )
     # The crux: the reconciler must AUTO-START it, not register it down.
     assert "action=started" in log, (
         f"gateway did NOT auto-start after a real restart (issue #42675 "
@@ -225,10 +319,10 @@ def test_live_gateway_autostarts_after_real_restart_without_manual_state_stamp(
     )
 
     # Slot recreated, and NO down marker (we expect auto-start).
-    assert wait_for_path(
+    assert _wait_for_path(
         container, "/run/service/gateway-live", kind="d", deadline_s=10.0,
     ), "slot not recreated after restart"
-    r = docker_exec_sh(container, "test -f /run/service/gateway-live/down")
+    r = _sh(container, "test -f /run/service/gateway-live/down")
     assert r.returncode != 0, (
         "down marker present despite a live gateway being restarted — "
         "the signal-initiated shutdown wrongly persisted 'stopped' (#42675)"

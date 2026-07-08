@@ -80,21 +80,8 @@ def _effective_provider_label() -> str:
     except AuthError:
         effective = requested or "auto"
 
-    if effective == "openrouter":
-        # A custom endpoint may be configured either in config.yaml
-        # (model.base_url — the canonical location; the runtime treats
-        # config.yaml as the single source of truth) or via the legacy
-        # OPENAI_BASE_URL env var. Either way, labeling it "OpenRouter"
-        # is misleading (#3296).
-        config_base_url = ""
-        try:
-            model_cfg = load_config().get("model")
-            if isinstance(model_cfg, dict):
-                config_base_url = (model_cfg.get("base_url") or "").strip()
-        except Exception:
-            pass
-        if config_base_url or get_env_value("OPENAI_BASE_URL"):
-            effective = "custom"
+    if effective == "openrouter" and get_env_value("OPENAI_BASE_URL"):
+        effective = "custom"
 
     return provider_label(effective)
 
@@ -104,6 +91,7 @@ from hermes_constants import is_termux as _is_termux
 
 def show_status(args):
     """Show status of all Hermes Agent components."""
+    show_all = getattr(args, 'all', False)
     deep = getattr(args, 'deep', False)
 
     print()
@@ -177,12 +165,12 @@ def show_status(args):
             continue
         value = _resolve_env(env_ref)
         has_key = bool(value)
-        display = redact_key(value)
+        display = redact_key(value) if not show_all else value
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
 
     from hermes_cli.auth import get_anthropic_key
     anthropic_value = get_anthropic_key()
-    anthropic_display = redact_key(anthropic_value)
+    anthropic_display = redact_key(anthropic_value) if not show_all else anthropic_value
     print(f"  {'Anthropic':<12}  {check_mark(bool(anthropic_value))} {anthropic_display}")
 
     # =========================================================================
@@ -543,39 +531,17 @@ def show_status(args):
     print()
     print(color("◆ Sessions", Colors.CYAN, Colors.BOLD))
 
-    # Gateway session count: state.db is the source of truth (#9006);
-    # fall back to sessions.json for pre-migration installs.
-    _session_count = None
-    try:
-        from hermes_state import SessionDB
-        _db = SessionDB()
+    sessions_file = get_hermes_home() / "sessions" / "sessions.json"
+    if sessions_file.exists():
+        import json
         try:
-            _lister = getattr(_db, "list_gateway_sessions", None)
-            if callable(_lister):
-                _session_count = len(_lister(active_only=True))
-        finally:
-            _db.close()
-    except Exception:
-        _session_count = None
-
-    if _session_count is not None and _session_count > 0:
-        print(f"  Active:       {_session_count} session(s)")
+            with open(sessions_file, encoding="utf-8") as f:
+                data = json.load(f)
+                print(f"  Active:       {len(data)} session(s)")
+        except Exception:
+            print("  Active:       (error reading sessions file)")
     else:
-        sessions_file = get_hermes_home() / "sessions" / "sessions.json"
-        if sessions_file.exists():
-            import json
-            try:
-                with open(sessions_file, encoding="utf-8") as f:
-                    data = json.load(f)
-                    _entries = {
-                        k: v for k, v in data.items()
-                        if not str(k).startswith("_")
-                    } if isinstance(data, dict) else {}
-                    print(f"  Active:       {len(_entries)} session(s)")
-            except Exception:
-                print("  Active:       (error reading sessions file)")
-        else:
-            print(f"  Active:       {_session_count if _session_count is not None else 0}")
+        print("  Active:       0")
 
     # =========================================================================
     # Deep checks

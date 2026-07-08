@@ -71,7 +71,6 @@ Examples:
     hermes logs errors            View errors.log
     hermes logs --since 1h        Lines from the last hour
     hermes debug share             Upload debug report for support
-    hermes console                Open the safe Hermes command console
     hermes update                 Update to latest version
     hermes dashboard              Start web UI dashboard (port 9119)
     hermes dashboard --stop       Stop running dashboard processes
@@ -110,17 +109,6 @@ def build_top_level_parser():
             "previews, no session_id line. Tools, memory, rules, and "
             "AGENTS.md in the CWD are loaded as normal; approvals are "
             "auto-bypassed. Intended for scripts / pipes."
-        ),
-    )
-    parser.add_argument(
-        "--usage-file",
-        metavar="PATH",
-        default=None,
-        help=(
-            "One-shot mode only: after the run, write a JSON usage report "
-            "(estimated cost, token counts, model, api_calls) to PATH. "
-            "The report is written even when the run fails, so pipelines "
-            "can always account for spend. No effect outside -z/--oneshot."
         ),
     )
     # --model / --provider are accepted at the top level so they can pair

@@ -22,7 +22,7 @@ class TestCompressionBoundaryHook:
     def _make_agent(self, session_db):
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             from run_agent import AIAgent
-            agent = AIAgent(
+            return AIAgent(
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
                 model="test/model",
@@ -32,9 +32,6 @@ class TestCompressionBoundaryHook:
                 skip_context_files=True,
                 skip_memory=True,
             )
-            # ROTATION fallback — pin in_place=False regardless of default (#38763).
-            agent.compression_in_place = False
-            return agent
 
     def test_on_session_start_called_with_compression_boundary(self):
         from hermes_state import SessionDB
@@ -170,7 +167,7 @@ class TestSessionCompressEvent:
     def _make_agent(self, session_db, event_callback=None):
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             from run_agent import AIAgent
-            agent = AIAgent(
+            return AIAgent(
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
                 model="test/model",
@@ -181,9 +178,6 @@ class TestSessionCompressEvent:
                 skip_memory=True,
                 event_callback=event_callback,
             )
-            # ROTATION fallback — pin in_place=False regardless of default (#38763).
-            agent.compression_in_place = False
-            return agent
 
     def _stub_compressor(self):
         compressor = MagicMock()

@@ -3,12 +3,10 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
-import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
 import { Tip } from '@/components/ui/tooltip'
 import { getCronJobRuns, type SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { fmtDayTime, relativeTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $selectedStoredSessionId } from '@/store/session'
 import type { CronJob } from '@/types/hermes'
@@ -33,6 +31,30 @@ const PEEK_POLL_INTERVAL_MS = 8000
 const INITIAL_VISIBLE_JOBS = 3
 const LOAD_MORE_STEP = 10
 
+const relativeFmt = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' })
+
+// Localized "in 5 min" / "2 hr ago" without hand-rolled strings — picks the
+// coarsest sensible unit so a daily job reads "in 14 hr", not "in 840 min".
+function relativeTime(targetMs: number, nowMs: number): string {
+  const diff = targetMs - nowMs
+  const abs = Math.abs(diff)
+  const sign = diff < 0 ? -1 : 1
+
+  if (abs < 60_000) {
+    return relativeFmt.format(sign * Math.round(abs / 1000), 'second')
+  }
+
+  if (abs < 3_600_000) {
+    return relativeFmt.format(sign * Math.round(abs / 60_000), 'minute')
+  }
+
+  if (abs < 86_400_000) {
+    return relativeFmt.format(sign * Math.round(abs / 3_600_000), 'hour')
+  }
+
+  return relativeFmt.format(sign * Math.round(abs / 86_400_000), 'day')
+}
+
 function nextRunMs(job: CronJob): null | number {
   if (!job.next_run_at) {
     return null
@@ -53,7 +75,9 @@ function formatRunTime(seconds?: null | number): string {
 
   const date = new Date(seconds * 1000)
 
-  return Number.isNaN(date.valueOf()) ? '—' : fmtDayTime.format(date)
+  return Number.isNaN(date.valueOf())
+    ? '—'
+    : date.toLocaleString(undefined, { day: 'numeric', hour: 'numeric', minute: '2-digit', month: 'short' })
 }
 
 interface SidebarCronJobsSectionProps {
@@ -304,7 +328,7 @@ function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (s
     <div className="mb-1 ml-[1.375rem] flex flex-col gap-px">
       {runs === null ? (
         <div className="flex items-center gap-1.5 py-1 pl-1 text-[0.6875rem] text-(--ui-text-tertiary)">
-          <GlyphSpinner ariaLabel={c.loading} className="text-[0.75rem]" />
+          <Codicon name="loading" size="0.75rem" spinning />
         </div>
       ) : runs.length === 0 ? (
         <div className="py-1 pl-1 text-[0.6875rem] text-(--ui-text-tertiary)">{c.noRuns}</div>

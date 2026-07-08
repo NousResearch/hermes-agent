@@ -36,6 +36,7 @@ DISTRIBUTIONS = {
             "image_gen": 100,
             "terminal": 100,
             "file": 100,
+            "moa": 100,
             "browser": 100
         }
     },
@@ -47,7 +48,8 @@ DISTRIBUTIONS = {
             "image_gen": 90,  # 80% chance of image generation tools
             "vision": 90,      # 60% chance of vision tools
             "web": 55,         # 40% chance of web tools
-            "terminal": 45
+            "terminal": 45,
+            "moa": 10          # 20% chance of reasoning tools
         }
     },
     
@@ -58,6 +60,7 @@ DISTRIBUTIONS = {
             "web": 90,       # 90% chance of web tools
             "browser": 70,   # 70% chance of browser tools for deep research
             "vision": 50,    # 50% chance of vision tools
+            "moa": 40,       # 40% chance of reasoning tools
             "terminal": 10   # 10% chance of terminal tools
         }
     },
@@ -71,7 +74,8 @@ DISTRIBUTIONS = {
             "file": 94,      # 94% chance of file tools
             "vision": 65,    # 65% chance of vision tools
             "browser": 50,   # 50% chance of browser for accessing papers/databases
-            "image_gen": 15  # 15% chance of image generation tools
+            "image_gen": 15, # 15% chance of image generation tools
+            "moa": 10        # 10% chance of reasoning tools
         }
     },
 
@@ -81,6 +85,7 @@ DISTRIBUTIONS = {
         "toolsets": {
             "terminal": 80,  # 80% chance of terminal tools
             "file": 80,      # 80% chance of file tools (read, write, patch, search)
+            "moa": 60,       # 60% chance of reasoning tools
             "web": 30,       # 30% chance of web tools
             "vision": 10     # 10% chance of vision tools
         }
@@ -93,7 +98,8 @@ DISTRIBUTIONS = {
             "web": 80,
             "browser": 70,   # Browser is safe (no local filesystem access)
             "vision": 60,
-            "image_gen": 60
+            "image_gen": 60,
+            "moa": 50
         }
     },
     
@@ -106,6 +112,7 @@ DISTRIBUTIONS = {
             "image_gen": 50,
             "terminal": 50,
             "file": 50,
+            "moa": 50,
             "browser": 50
         }
     },
@@ -149,15 +156,14 @@ DISTRIBUTIONS = {
     
     # Reasoning heavy
     "reasoning": {
-        "description": "Heavy research/reasoning distribution with minimal other tools",
+        "description": "Heavy mixture of agents usage with minimal other tools",
         "toolsets": {
-            "web": 90,
-            "file": 60,
+            "moa": 90,
+            "web": 30,
             "terminal": 20
         }
     },
-
-
+    
     # Browser-based web interaction
     "browser_use": {
         "description": "Full browser-based web interaction with search, vision, and page control",

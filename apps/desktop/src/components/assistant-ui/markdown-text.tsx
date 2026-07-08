@@ -19,15 +19,13 @@ import {
   useState
 } from 'react'
 
-import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
-import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
+import { SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
-  downloadGatewayMediaFile,
   filePathFromMediaPath,
   gatewayMediaDataUrl,
   isRemoteGateway,
@@ -40,8 +38,6 @@ import {
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { tailBoundedRemend } from '@/lib/remend-tail'
 import { cn } from '@/lib/utils'
-
-import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
 // plugin is stateless beyond its internal cache so re-creating per-render
@@ -61,11 +57,7 @@ const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
 // flush) with a tail-bounded repair — see lib/remend-tail.ts. Must stay
 // module-scope so the prop identity is stable across renders.
 function preprocessWithTailRepair(text: string): string {
-  try {
-    return tailBoundedRemend(preprocessMarkdown(text))
-  } catch {
-    return text
-  }
+  return tailBoundedRemend(preprocessMarkdown(text))
 }
 
 // Memoized block splitter. Streamdown calls `parseMarkdownIntoBlocks` (a full
@@ -130,50 +122,21 @@ async function mediaSrc(path: string): Promise<string> {
   return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
 }
 
-function useOpenMediaFile(path: string) {
-  const [openFailed, setOpenFailed] = useState(false)
-
-  const open = () => {
-    if (window.hermesDesktop && isRemoteGateway()) {
-      setOpenFailed(false)
-      void downloadGatewayMediaFile(path).catch(() => setOpenFailed(true))
-    } else {
-      openExternalLink(mediaExternalUrl(path))
-    }
-  }
-
-  return { open, openFailed }
-}
-
-function OpenMediaFailedNote({ name }: { name: string }) {
-  return (
-    <span className="mt-1 block text-xs text-muted-foreground">
-      Couldn&apos;t fetch {name} from the gateway (missing, unreadable, or too large).
-    </span>
-  )
-}
-
 function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string }) {
-  const { open, openFailed } = useOpenMediaFile(path)
-
   return (
-    <span className="block">
-      <button
-        className="mt-2 bg-transparent text-xs font-medium text-muted-foreground underline underline-offset-4 decoration-current/20 hover:text-foreground"
-        onClick={open}
-        type="button"
-      >
-        Open {kind} file
-      </button>
-      {openFailed && <OpenMediaFailedNote name={mediaName(path)} />}
-    </span>
+    <button
+      className="mt-2 bg-transparent text-xs font-medium text-muted-foreground underline underline-offset-4 decoration-current/20 hover:text-foreground"
+      onClick={() => void window.hermesDesktop?.openExternal(mediaExternalUrl(path))}
+      type="button"
+    >
+      Open {kind} file
+    </button>
   )
 }
 
 function MediaAttachment({ path }: { path: string }) {
   const [src, setSrc] = useState('')
   const [failed, setFailed] = useState(false)
-  const { open, openFailed } = useOpenMediaFile(path)
   const kind = mediaKind(path)
   const name = mediaName(path)
 
@@ -183,15 +146,6 @@ function MediaAttachment({ path }: { path: string }) {
 
     setFailed(false)
     setSrc('')
-
-    if (kind === 'file') {
-      setFailed(true)
-
-      return () => {
-        cancelled = true
-      }
-    }
-
     void mediaSrc(path)
       .then(value => {
         if (value.startsWith('blob:')) {
@@ -217,7 +171,7 @@ function MediaAttachment({ path }: { path: string }) {
         URL.revokeObjectURL(objectUrl)
       }
     }
-  }, [kind, path])
+  }, [path])
 
   if (kind === 'image' && src) {
     return (
@@ -253,19 +207,16 @@ function MediaAttachment({ path }: { path: string }) {
   }
 
   return (
-    <span className="wrap-anywhere">
-      <a
-        className="font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere"
-        href="#"
-        onClick={event => {
-          event.preventDefault()
-          open()
-        }}
-      >
-        {failed ? `Open ${name}` : `Loading ${name}...`}
-      </a>
-      {openFailed && <OpenMediaFailedNote name={name} />}
-    </span>
+    <a
+      className="font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere"
+      href="#"
+      onClick={event => {
+        event.preventDefault()
+        openExternalLink(mediaExternalUrl(path))
+      }}
+    >
+      {failed ? `Open ${name}` : `Loading ${name}...`}
+    </a>
   )
 }
 
@@ -314,17 +265,6 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   }
 
   const text = childrenToText(children)
-
-  // Bare autolink → inline rich embed when a provider matches. Labeled links
-  // (`[watch](url)`) stay plain. Desktop only (webview / iframe renderers).
-  if (window.hermesDesktop && text && normalizeExternalUrl(text) === target) {
-    const embed = detectEmbed(target)
-
-    if (embed) {
-      return <UrlEmbed descriptor={embed} />
-    }
-  }
-
   const fallbackLabel = text && normalizeExternalUrl(text) !== target ? text : undefined
 
   return (
@@ -513,35 +453,8 @@ const MARKDOWN_CONTAINER_CLASS_NAME = cn(
   '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&>*+*]:mt-(--paragraph-gap)'
 )
 
-const MAX_MARKDOWN_CHARS = 200_000
-
-function HugeTextFallback({ containerClassName, text }: { containerClassName?: string; text: string }) {
-  const chunks = useMemo(() => chunkByLines(text, 200), [text])
-
-  return (
-    <div
-      className={cn(
-        'aui-md w-full max-w-none overflow-hidden rounded-[0.625rem] border border-border font-mono text-[0.7rem] leading-relaxed text-foreground/90',
-        containerClassName
-      )}
-    >
-      <ExpandableBlock className="p-2">
-        {chunks.map((chunk, index) => (
-          <div
-            className="[content-visibility:auto]"
-            key={index}
-            style={{ containIntrinsicSize: `auto ${chunk.lines * 16}px` }}
-          >
-            {chunk.text}
-          </div>
-        ))}
-      </ExpandableBlock>
-    </div>
-  )
-}
-
 function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTextSurfaceProps) {
-  const { status, text } = useMessagePartText()
+  const { status } = useMessagePartText()
   const isStreaming = status.type === 'running'
 
   // Keep code parsing enabled while streaming so incomplete fenced blocks still
@@ -571,49 +484,19 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
           <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props} />
         ),
         a: MarkdownLink,
-        // Inline code must not vote when an ancestor resolves `dir="auto"`
-        // (HTML's algorithm skips descendants that carry their own dir),
-        // mirroring the CSS isolate that already keeps it out of the
-        // plaintext scan. Fenced code never reaches this override; it goes
-        // through the code plugin's CodeCard path.
-        inlineCode: ({ className, ...props }: ComponentProps<'code'>) => (
-          <code className={className} dir="ltr" {...props} />
-        ),
         // `---` as quiet spacing, not a heavy full-width rule.
         hr: (_props: ComponentProps<'hr'>) => <div aria-hidden className="my-3" />,
-        // Lists and blockquotes have chrome that sits *beside* the text
-        // (markers, the quote border), and that side is driven by the CSS
-        // `direction` of the box, which `unicode-bidi: plaintext` never
-        // touches — an RTL list otherwise renders its numbers stranded at
-        // the far left. `dir="auto"` lets the browser resolve the box
-        // direction from content; the plaintext rules in styles.css keep
-        // owning per-line text direction. Inline code carries `dir="ltr"`
-        // (see the `code` override) so it doesn't vote here either, same
-        // contract as the CSS isolate.
-        // A `> [!NOTE]`/`[!WARNING]`/... blockquote renders as a GFM alert
-        // callout; everything else stays a plain quote.
-        blockquote: ({ children, className, ...props }: ComponentProps<'blockquote'>) => {
-          const alert = extractAlert(children)
-
-          if (alert) {
-            return <MarkdownAlert type={alert.type}>{alert.body}</MarkdownAlert>
-          }
-
-          return (
-            <blockquote
-              className={cn('border-s-2 border-border ps-3 text-muted-foreground italic', className)}
-              dir="auto"
-              {...props}
-            >
-              {children}
-            </blockquote>
-          )
-        },
+        blockquote: ({ className, ...props }: ComponentProps<'blockquote'>) => (
+          <blockquote
+            className={cn('border-l-2 border-border pl-3 text-muted-foreground italic', className)}
+            {...props}
+          />
+        ),
         ul: ({ className, ...props }: ComponentProps<'ul'>) => (
-          <ul className={cn('my-1 gap-0', className)} dir="auto" {...props} />
+          <ul className={cn('my-1 gap-0', className)} {...props} />
         ),
         ol: ({ className, ...props }: ComponentProps<'ol'>) => (
-          <ol className={cn('my-1 gap-0', className)} dir="auto" {...props} />
+          <ol className={cn('my-1 gap-0', className)} {...props} />
         ),
         li: ({ className, ...props }: ComponentProps<'li'>) => (
           <li className={cn('leading-(--dt-line-height)', className)} {...props} />
@@ -645,23 +528,10 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
           <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props} />
         ),
         img: MarkdownImage,
-        // ```mermaid / ```svg fences route to their lazy renderers; every other
-        // language falls back to the Shiki-highlighted code block.
-        SyntaxHighlighter: (props: SyntaxHighlighterProps) => (
-          <RichCodeBlock
-            code={props.code}
-            fallback={<SyntaxHighlighter {...props} defer={isStreaming} />}
-            language={props.language}
-            streaming={isStreaming}
-          />
-        )
+        SyntaxHighlighter: (props: SyntaxHighlighterProps) => <SyntaxHighlighter {...props} defer={isStreaming} />
       }) as StreamdownTextComponents,
     [isStreaming]
   )
-
-  if (text.length > MAX_MARKDOWN_CHARS) {
-    return <HugeTextFallback containerClassName={containerClassName} text={text} />
-  }
 
   return (
     <StreamdownTextPrimitive

@@ -19,8 +19,7 @@ import React, { Fragment, useEffect, useState } from "react";
  *  these in their manifest's `slots` field get wired in automatically.
  *
  *  Shell-wide slots:
- *  - `backdrop`         — optional full-viewport background decoration;
- *                         mounted behind shell chrome at z-0
+ *  - `backdrop`         — rendered inside `<Backdrop />`, above the noise layer
  *  - `header-left`      — injected before the Hermes brand in the top bar
  *  - `header-right`     — injected before the theme/language switchers
  *  - `header-banner`    — injected below the top nav bar, full-width

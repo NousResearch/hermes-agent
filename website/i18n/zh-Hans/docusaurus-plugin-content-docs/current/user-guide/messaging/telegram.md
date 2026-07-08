@@ -886,17 +886,17 @@ gateway:
 - **小表格**被展平为**行组项目符号**——每行在列标题下变为可读的项目符号列表。适合 2-4 列和短单元格。
 - **较大或较宽的表格**回退为带对齐列的**围栏代码块**，以防内容折叠。
 
-富消息现在是**选择启用**。默认保持旧版 MarkdownV2 路径，因为当前 Telegram 客户端可能让 Bot API 富消息难以作为纯文本复制，这对命令片段和移动端交接尤其麻烦。若要为表格、任务列表、折叠 `<details>` 和块级数学启用原生渲染：
+富消息**默认启用**。一些 Telegram 客户端能接收 Bot API 载荷但渲染效果很差；若要关闭并强制所有回复走旧版 MarkdownV2 路径：
 
 ```yaml
 gateway:
   platforms:
     telegram:
       extra:
-        rich_messages: true
+        rich_messages: false
 ```
 
-这个设置用于客户端渲染/复制兼容性；当 Telegram 拒绝富消息 API 调用时，Hermes 已经会自动回退。如果你只是想在保持富消息启用的同时恢复旧版「始终使用代码块」表格行为，可在 `config.yaml` 中设置 `telegram.pretty_tables: false` 禁用表格规范化（默认：`true`）。
+这个设置用于客户端渲染兼容性；当 Telegram 拒绝富消息 API 调用时，Hermes 已经会自动回退。如果你只是想在保持富消息启用的同时恢复旧版「始终使用代码块」表格行为，可在 `config.yaml` 中设置 `telegram.pretty_tables: false` 禁用表格规范化（默认：`true`）。
 
 **链接预览。** Telegram 会为机器人消息中的 URL 自动生成链接预览。如果你希望抑制这些预览（长 `/tools` 输出、提及十个链接的 Agent 回复等）：
 

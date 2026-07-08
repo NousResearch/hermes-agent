@@ -65,7 +65,7 @@ def _make_event(
 
 
 class _DummyAdapter(BasePlatformAdapter):  # type: ignore[misc]
-    async def connect(self, *, is_reconnect: bool = False):
+    async def connect(self):
         pass
 
     async def disconnect(self):

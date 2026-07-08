@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { shouldPassThroughToGlobalHandler, shouldPreserveCtrlJNewline } from '../components/textInput.js'
 import { DEFAULT_VOICE_RECORD_KEY, parseVoiceRecordKey } from '../lib/platform.js'
 
-const key = (overrides: Record<string, unknown> = {}) => ({ ctrl: false, meta: false, ...overrides }) as any
+const key = (overrides: Record<string, unknown> = {}) =>
+  ({ ctrl: false, meta: false, ...overrides }) as any
 
 describe('shouldPreserveCtrlJNewline', () => {
   it('preserves Ctrl+J as newline in Ghostty even when tmux masks TERM/TERM_PROGRAM', () => {
@@ -23,9 +24,15 @@ describe('shouldPreserveCtrlJNewline', () => {
 
 describe('shouldPassThroughToGlobalHandler', () => {
   it('passes through the configured voice shortcut while composer is focused', () => {
-    expect(shouldPassThroughToGlobalHandler('o', key({ ctrl: true }), parseVoiceRecordKey('ctrl+o'))).toBe(true)
-    expect(shouldPassThroughToGlobalHandler('r', key({ meta: true }), parseVoiceRecordKey('alt+r'))).toBe(true)
-    expect(shouldPassThroughToGlobalHandler(' ', key({ ctrl: true }), parseVoiceRecordKey('ctrl+space'))).toBe(true)
+    expect(
+      shouldPassThroughToGlobalHandler('o', key({ ctrl: true }), parseVoiceRecordKey('ctrl+o'))
+    ).toBe(true)
+    expect(
+      shouldPassThroughToGlobalHandler('r', key({ meta: true }), parseVoiceRecordKey('alt+r'))
+    ).toBe(true)
+    expect(
+      shouldPassThroughToGlobalHandler(' ', key({ ctrl: true }), parseVoiceRecordKey('ctrl+space'))
+    ).toBe(true)
     expect(
       shouldPassThroughToGlobalHandler('', key({ ctrl: true, return: true }), parseVoiceRecordKey('ctrl+enter'))
     ).toBe(true)

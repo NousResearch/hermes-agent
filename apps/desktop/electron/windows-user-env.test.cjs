@@ -1,12 +1,21 @@
 const assert = require('node:assert/strict')
 const { test } = require('node:test')
 
-const { expandWindowsEnvRefs, parseRegQueryValue, readWindowsUserEnvVar } = require('./windows-user-env.cjs')
+const {
+  expandWindowsEnvRefs,
+  parseRegQueryValue,
+  readWindowsUserEnvVar
+} = require('./windows-user-env.cjs')
 
 // ── parseRegQueryValue ─────────────────────────────────────────────────────
 
 test('parseRegQueryValue extracts a REG_SZ value', () => {
-  const out = ['', 'HKEY_CURRENT_USER\\Environment', '    HERMES_HOME    REG_SZ    F:\\Hermes\\data', ''].join('\r\n')
+  const out = [
+    '',
+    'HKEY_CURRENT_USER\\Environment',
+    '    HERMES_HOME    REG_SZ    F:\\Hermes\\data',
+    ''
+  ].join('\r\n')
   assert.equal(parseRegQueryValue(out, 'HERMES_HOME'), 'F:\\Hermes\\data')
 })
 
@@ -30,7 +39,10 @@ test('parseRegQueryValue returns null when the value line is absent', () => {
 // ── expandWindowsEnvRefs ───────────────────────────────────────────────────
 
 test('expandWindowsEnvRefs expands %VAR% case-insensitively', () => {
-  assert.equal(expandWindowsEnvRefs('%UserProfile%\\h', { USERPROFILE: 'C:\\Users\\jeff' }), 'C:\\Users\\jeff\\h')
+  assert.equal(
+    expandWindowsEnvRefs('%UserProfile%\\h', { USERPROFILE: 'C:\\Users\\jeff' }),
+    'C:\\Users\\jeff\\h'
+  )
 })
 
 test('expandWindowsEnvRefs leaves literal paths and unknown refs intact', () => {

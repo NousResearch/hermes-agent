@@ -21,7 +21,8 @@ const { execFileSync } = require('node:child_process')
 // the requested value line isn't present.
 function parseRegQueryValue(stdout, name) {
   if (!stdout || !name) return null
-  const typePattern = /^(\S+)\s+(?:REG_SZ|REG_EXPAND_SZ|REG_MULTI_SZ|REG_DWORD|REG_QWORD|REG_BINARY|REG_NONE)\s+(.*)$/
+  const typePattern =
+    /^(\S+)\s+(?:REG_SZ|REG_EXPAND_SZ|REG_MULTI_SZ|REG_DWORD|REG_QWORD|REG_BINARY|REG_NONE)\s+(.*)$/
   for (const rawLine of String(stdout).split(/\r?\n/)) {
     const line = rawLine.trim()
     const match = line.match(typePattern)
@@ -46,7 +47,10 @@ function expandWindowsEnvRefs(value, env = process.env) {
 // Read a User-scoped env var from HKCU\Environment. Windows-only: returns null
 // off-Windows (without spawning), on any spawn error, when `reg` exits non-zero
 // (the value doesn't exist), or when the value is empty.
-function readWindowsUserEnvVar(name, { platform = process.platform, env = process.env, exec = execFileSync } = {}) {
+function readWindowsUserEnvVar(
+  name,
+  { platform = process.platform, env = process.env, exec = execFileSync } = {}
+) {
   if (platform !== 'win32' || !name) return null
   let stdout
   try {

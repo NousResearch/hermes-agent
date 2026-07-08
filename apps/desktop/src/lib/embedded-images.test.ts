@@ -32,13 +32,4 @@ describe('extractEmbeddedImages', () => {
     expect(result.cleanedText).toBe('first  mid  tail')
     expect(result.images).toEqual([SAMPLE_PNG_DATA_URL, second])
   })
-
-  it('handles multi-megabyte data URLs without overflowing the JS stack', () => {
-    const hugeDataUrl = 'data:image/png;base64,' + 'A'.repeat(8_000_000)
-    const result = extractEmbeddedImages(`describe this ${hugeDataUrl} thanks`)
-
-    expect(result.cleanedText).toBe('describe this  thanks')
-    expect(result.images).toHaveLength(1)
-    expect(result.images[0]).toHaveLength(hugeDataUrl.length)
-  })
 })

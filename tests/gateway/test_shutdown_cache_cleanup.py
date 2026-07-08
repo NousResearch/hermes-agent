@@ -54,24 +54,8 @@ class _FakeGateway:
     def _running_agent_count(self):
         return len(self._running_agents)
 
-    def _active_cron_job_count(self):
-        # stop() reads this alongside _running_agent_count when logging the
-        # drain snapshot (#60432) -- this fake has no cron scheduler, so
-        # there's never in-flight cron work to report.
-        return 0
-
     def _update_runtime_status(self, *_a, **_kw):
         pass
-
-    async def _run_in_executor_with_context(self, func, *args):
-        # stop() offloads agent-resource cleanup off the loop (#53175); run
-        # inline in tests so the bounded-cleanup path is exercised.
-        return func(*args)
-
-    async def _cleanup_agent_resources_off_loop(self, agent, *, context=""):
-        # Mirror the real bounded helper, inline (no executor/timeout) so the
-        # fake exercises the same call shape stop() now uses.
-        self._cleanup_agent_resources(agent)
 
     async def _notify_active_sessions_of_shutdown(self):
         pass
@@ -79,7 +63,7 @@ class _FakeGateway:
     async def _drain_active_agents(self, timeout):
         return {}, False
 
-    async def _finalize_shutdown_agents(self, agents):
+    def _finalize_shutdown_agents(self, agents):
         for agent in agents.values():
             self._cleanup_agent_resources(agent)
 

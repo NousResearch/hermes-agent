@@ -188,22 +188,3 @@ providers:
 
     agent = _make_agent(tmp_path)
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 1800.0
-
-
-# ── openai-codex gateway-scale stale floor ────────────────────────────────
-
-
-def test_openai_codex_stale_floor_covers_gateway_tool_payload():
-    """Gateway/Telegram tool payloads (~20k tokens) need the 600s Codex floor."""
-    from agent.chat_completion_helpers import openai_codex_stale_timeout_floor
-
-    assert openai_codex_stale_timeout_floor(22_095) == 600.0
-    assert openai_codex_stale_timeout_floor(10_001) == 600.0
-    assert openai_codex_stale_timeout_floor(10_000) == 0.0
-
-
-def test_openai_codex_stale_floor_tiers():
-    from agent.chat_completion_helpers import openai_codex_stale_timeout_floor
-
-    assert openai_codex_stale_timeout_floor(55_000) == 900.0
-    assert openai_codex_stale_timeout_floor(120_000) == 1200.0

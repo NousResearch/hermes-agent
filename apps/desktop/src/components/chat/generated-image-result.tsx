@@ -19,13 +19,7 @@ const ASPECT_HINTS: Record<string, number> = {
 }
 
 function hintedRatio(aspectRatio?: string): number {
-  return (
-    ASPECT_HINTS[
-      String(aspectRatio ?? '')
-        .toLowerCase()
-        .trim()
-    ] ?? ASPECT_HINTS.landscape
-  )
+  return ASPECT_HINTS[String(aspectRatio ?? '').toLowerCase().trim()] ?? ASPECT_HINTS.landscape
 }
 
 function isInlineSrc(path: string): boolean {

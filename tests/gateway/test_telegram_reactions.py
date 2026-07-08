@@ -11,7 +11,7 @@ from gateway.session import SessionSource
 
 
 def _make_adapter(**extra_env):
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from gateway.platforms.telegram import TelegramAdapter
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM

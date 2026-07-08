@@ -35,7 +35,7 @@ def make_adapter_skeleton(
     require_mention: bool = True,
     group_policy: str = "allowlist",
 ) -> Any:
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from gateway.platforms.feishu import FeishuAdapter
 
     adapter = object.__new__(FeishuAdapter)
     adapter._bot_open_id = bot_open_id

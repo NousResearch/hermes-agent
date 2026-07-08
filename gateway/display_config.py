@@ -34,12 +34,6 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
     "show_reasoning": False,
-    # How a reasoning/thinking summary is rendered when show_reasoning is on.
-    #   "code"      -> 💭 **Reasoning:** + fenced code block (legacy default)
-    #   "blockquote"-> each line prefixed with "> "
-    #   "subtext"   -> each line prefixed with "-# " (Discord small grey subtext)
-    # Discord defaults to "subtext"; everywhere else defaults to "code".
-    "reasoning_style": "code",
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
     # Gateway-only assistant/status chatter controls. These default on for
@@ -47,11 +41,6 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "interim_assistant_messages": True,
     "long_running_notifications": True,
     "busy_ack_detail": True,
-    # Whether busy_input_mode=steer sends a visible "Steered into current run"
-    # acknowledgment after successfully injecting the user's mid-turn message.
-    # Disable when the platform should steer silently (the text still lands in
-    # the active run; only the confirmation echo is suppressed).
-    "busy_steer_ack_enabled": True,
     # When true, delete tool-progress / "⏳ Working — N min" / status bubbles
     # after the final response lands on platforms that support message
     # deletion (e.g. Telegram). Off by default — progress is still shown
@@ -122,10 +111,7 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
         "tool_progress": "off",
         "busy_ack_detail": False,
     },
-    # Discord has a native "subtext" primitive (-# small grey text) that reads
-    # as metadata rather than content, so reasoning summaries default to it
-    # here instead of the fenced code block used elsewhere.
-    "discord":     {**_TIER_HIGH, "reasoning_style": "subtext"},
+    "discord":     _TIER_HIGH,
 
     # Tier 2 — edit support, often customer/workspace channels
     # Slack: tool_progress off by default — Bolt posts cannot be edited like CLI;
@@ -238,26 +224,16 @@ def _normalise(setting: str, value: Any) -> Any:
             return "off"
         if value is True:
             return "all"
-        val = str(value).strip().lower()
-        if val in {"false", "0", "no"}:
-            return "off"
-        if val in {"true", "1", "yes", "on"}:
-            return "all"
-        return val if val in {"off", "new", "all", "verbose", "log"} else "all"
+        return str(value).lower()
     if setting in {
         "show_reasoning",
         "streaming",
         "interim_assistant_messages",
         "long_running_notifications",
         "busy_ack_detail",
-        "busy_steer_ack_enabled",
-        "thinking_progress",
     }:
         if isinstance(value, str):
-            val = value.strip().lower()
-            if val == "generic" and setting == "long_running_notifications":
-                return "generic"
-            return val in {"true", "1", "yes", "on", "raw", "verbose"}
+            return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)
     if setting == "cleanup_progress":
         if isinstance(value, str):
@@ -266,9 +242,6 @@ def _normalise(setting: str, value: Any) -> Any:
     if setting == "tool_progress_grouping":
         val = str(value).lower()
         return val if val in ("accumulate", "separate") else "accumulate"
-    if setting == "reasoning_style":
-        val = str(value).lower()
-        return val if val in ("code", "blockquote", "subtext") else "code"
     if setting == "tool_preview_length":
         try:
             return int(value)

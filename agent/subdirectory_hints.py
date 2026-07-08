@@ -144,7 +144,7 @@ class SubdirectoryHintTracker:
                 if parent == p:
                     break  # filesystem root
                 p = parent
-        except (OSError, ValueError, RuntimeError):
+        except (OSError, ValueError):
             pass
 
     def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):
@@ -241,11 +241,11 @@ class SubdirectoryHintTracker:
                 rel_path = str(hint_path)
                 try:
                     rel_path = str(hint_path.relative_to(self.working_dir))
-                except (ValueError, RuntimeError):
+                except ValueError:
                     try:
                         rel_path = str(hint_path.relative_to(Path.home()))
                         rel_path = "~/" + rel_path
-                    except (ValueError, RuntimeError):
+                    except ValueError:
                         pass  # keep absolute
                 found_hints.append((rel_path, content))
                 # First match wins per directory (like startup loading)

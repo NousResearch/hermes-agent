@@ -135,7 +135,7 @@ skill_view("writing-plans")
 
 插件 skills **不会**列在系统 prompt 中，也不出现在 `skills_list` 中。它们是按需加载的——当你知道某个插件提供了某个 skill 时，显式加载它。加载后，agent 会看到一个横幅，列出同一插件的其他 skills。
 
-关于如何在自己的插件中捆绑 skills，请参见 [构建 Hermes 插件 → 捆绑 skills](/developer-guide/plugins#bundle-skills)。
+关于如何在自己的插件中捆绑 skills，请参见 [构建 Hermes 插件 → 捆绑 skills](/guides/build-a-hermes-plugin#bundle-skills)。
 
 ---
 

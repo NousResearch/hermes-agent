@@ -50,6 +50,7 @@ from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
 from hermes_cli import kanban_diagnostics as kd
+from plugins.kanban.dashboard.providers import ExternalHttpTaskProvider, resolve_provider
 
 log = logging.getLogger(__name__)
 
@@ -133,6 +134,16 @@ def _conn(board: Optional[str] = None):
     except Exception as exc:
         log.warning("kanban init_db failed: %s", exc)
     return kanban_db.connect(board=board)
+
+
+def _ensure_native_provider(provider: Optional[str]) -> None:
+    """Reject mutations against read-only external projection providers."""
+    selected = resolve_provider(provider)
+    if not selected.is_native:
+        raise HTTPException(
+            status_code=403,
+            detail=f"kanban provider {selected.name!r} is read-only",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +391,7 @@ def get_board(
     tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
     include_archived: bool = Query(False),
     board: Optional[str] = Query(None, description="Kanban board slug (omit for current)"),
+    provider: Optional[str] = Query(None, description="Kanban task provider (omit for native)"),
     workflow_template_id: Optional[str] = Query(
         None, description="Restrict to tasks using this workflow template id",
     ),
@@ -396,6 +408,16 @@ def get_board(
     through to the active board (``HERMES_KANBAN_BOARD`` env → on-disk
     ``current`` pointer → ``default``).
     """
+    selected_provider = resolve_provider(provider)
+    if not selected_provider.is_native:
+        return ExternalHttpTaskProvider(selected_provider).get_board({
+            "tenant": tenant,
+            "include_archived": "true" if include_archived else None,
+            "board": board,
+            "workflow_template_id": workflow_template_id,
+            "current_step_key": current_step_key,
+        })
+
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
@@ -505,6 +527,8 @@ def get_board(
             "assignees": assignees,
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
+            "provider": "native",
+            "readonly": False,
         }
     finally:
         conn.close()
@@ -518,6 +542,7 @@ def get_board(
 def get_task(
     task_id: str,
     board: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
     run_state_type: Optional[str] = Query(
         None, description="With run_state_name: filter runs by column 'status' or 'outcome'",
     ),
@@ -525,6 +550,14 @@ def get_task(
         None, description="With run_state_type: exact value for that run column",
     ),
 ):
+    selected_provider = resolve_provider(provider)
+    if not selected_provider.is_native:
+        return ExternalHttpTaskProvider(selected_provider).get_task(task_id, {
+            "board": board,
+            "run_state_type": run_state_type,
+            "run_state_name": run_state_name,
+        })
+
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
@@ -595,7 +628,12 @@ class CreateTaskBody(BaseModel):
 
 
 @router.post("/tasks")
-def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
+def create_task(
+    payload: CreateTaskBody,
+    board: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+):
+    _ensure_native_provider(provider)
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
@@ -669,7 +707,12 @@ def _safe_attachment_name(raw: str) -> str:
 
 
 @router.get("/tasks/{task_id}/attachments")
-def list_task_attachments(task_id: str, board: Optional[str] = Query(None)):
+def list_task_attachments(
+    task_id: str,
+    board: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+):
+    _ensure_native_provider(provider)
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
@@ -689,6 +732,7 @@ async def upload_task_attachment(
     task_id: str,
     file: UploadFile = File(...),
     board: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
     uploaded_by: Optional[str] = Form(None),
 ):
     """Store an uploaded file for a task and record its metadata.
@@ -697,6 +741,7 @@ async def upload_task_attachment(
     sanitised, collision-resolved name. The worker reads it via the
     absolute path surfaced in ``build_worker_context``.
     """
+    _ensure_native_provider(provider)
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
@@ -760,7 +805,12 @@ async def upload_task_attachment(
 
 
 @router.get("/attachments/{attachment_id}")
-def download_attachment(attachment_id: int, board: Optional[str] = Query(None)):
+def download_attachment(
+    attachment_id: int,
+    board: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+):
+    _ensure_native_provider(provider)
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
@@ -787,7 +837,12 @@ def download_attachment(attachment_id: int, board: Optional[str] = Query(None)):
 
 
 @router.delete("/attachments/{attachment_id}")
-def remove_attachment(attachment_id: int, board: Optional[str] = Query(None)):
+def remove_attachment(
+    attachment_id: int,
+    board: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+):
+    _ensure_native_provider(provider)
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
@@ -819,7 +874,13 @@ class UpdateTaskBody(BaseModel):
 
 
 @router.patch("/tasks/{task_id}")
-def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
+def update_task(
+    task_id: str,
+    payload: UpdateTaskBody,
+    board: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+):
+    _ensure_native_provider(provider)
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
@@ -942,7 +1003,12 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
 # ---------------------------------------------------------------------------
 
 @router.delete("/tasks/{task_id}")
-def delete_task(task_id: str, board: Optional[str] = Query(None)):
+def delete_task(
+    task_id: str,
+    board: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+):
+    _ensure_native_provider(provider)
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
@@ -1089,7 +1155,13 @@ class CommentBody(BaseModel):
 
 
 @router.post("/tasks/{task_id}/comments")
-def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query(None)):
+def add_comment(
+    task_id: str,
+    payload: CommentBody,
+    board: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+):
+    _ensure_native_provider(provider)
     if not payload.body.strip():
         raise HTTPException(status_code=400, detail="body is required")
     board = _resolve_board(board)
@@ -1115,7 +1187,12 @@ class LinkBody(BaseModel):
 
 
 @router.post("/links")
-def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
+def add_link(
+    payload: LinkBody,
+    board: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+):
+    _ensure_native_provider(provider)
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
@@ -1132,7 +1209,9 @@ def delete_link(
     parent_id: str = Query(...),
     child_id: str = Query(...),
     board: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
 ):
+    _ensure_native_provider(provider)
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
@@ -1159,7 +1238,11 @@ class BulkTaskBody(BaseModel):
 
 
 @router.post("/tasks/bulk")
-def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
+def bulk_update(
+    payload: BulkTaskBody,
+    board: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+):
     """Apply the same patch to every id in ``payload.ids``.
 
     This is an *independent* iteration — per-task failures don't abort
@@ -1168,6 +1251,7 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
     ids = [i for i in (payload.ids or []) if i]
     if not ids:
         raise HTTPException(status_code=400, detail="ids is required")
+    _ensure_native_provider(provider)
     results: list[dict] = []
     board = _resolve_board(board)
     conn = _conn(board=board)

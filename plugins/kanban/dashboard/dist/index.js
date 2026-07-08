@@ -206,6 +206,7 @@
   // can inspect any board without shifting the CLI's active board out
   // from under a terminal they left open.
   const LS_BOARD_KEY = "hermes.kanban.selectedBoard";
+  const LS_PROVIDER_KEY = "hermes.kanban.selectedProvider";
 
   function readSelectedBoard() {
     try {
@@ -232,6 +233,20 @@
     } catch (_e) { /* ignore quota / private mode */ }
   }
 
+  function readSelectedProvider() {
+    try {
+      const v = window.localStorage.getItem(LS_PROVIDER_KEY);
+      return (v || "").trim() || "native";
+    } catch (_e) { return "native"; }
+  }
+
+  function writeSelectedProvider(provider) {
+    try {
+      const value = (provider || "native").trim() || "native";
+      window.localStorage.setItem(LS_PROVIDER_KEY, value);
+    } catch (_e) { /* ignore quota / private mode */ }
+  }
+
   function withBoard(url, board) {
     // Always append ?board=<slug> when we have one picked — including
     // "default". Omitting the param would fall through to the backend's
@@ -242,6 +257,17 @@
     if (!board) return url;
     const sep = url.indexOf("?") >= 0 ? "&" : "?";
     return `${url}${sep}board=${encodeURIComponent(board)}`;
+  }
+
+  function withProvider(url, provider) {
+    const name = (provider || "native").trim() || "native";
+    if (name === "native") return url;
+    const sep = url.indexOf("?") >= 0 ? "&" : "?";
+    return `${url}${sep}provider=${encodeURIComponent(name)}`;
+  }
+
+  function withBoardProvider(url, board, provider) {
+    return withProvider(withBoard(url, board), provider);
   }
 
   // The SDK's Select component fires ``onValueChange(value)`` directly
@@ -507,6 +533,7 @@
   function KanbanPage() {
     const { t } = useI18n();
     const [board, setBoard] = useState(() => readSelectedBoard() || null);
+    const [provider, setProvider] = useState(() => readSelectedProvider());
     const [boardList, setBoardList] = useState([]);      // [{slug, name, counts, ...}]
     const [showNewBoard, setShowNewBoard] = useState(false);
 
@@ -570,7 +597,7 @@
       if (tenantFilter) qs.set("tenant", tenantFilter);
       if (includeArchived) qs.set("include_archived", "true");
       const url = qs.toString() ? `${API}/board?${qs}` : `${API}/board`;
-      return SDK.fetchJSON(withBoard(url, board))
+      return SDK.fetchJSON(withBoardProvider(url, board, provider))
         .then(function (data) {
           setBoardData(data);
           cursorRef.current = data.latest_event_id || 0;
@@ -580,7 +607,7 @@
           setError(String(err && err.message ? err.message : err));
         })
         .finally(function () { setLoading(false); });
-    }, [tenantFilter, includeArchived, board]);
+    }, [tenantFilter, includeArchived, board, provider]);
 
     // --- load list of boards for the switcher ------------------------------
     const loadBoardList = useCallback(function () {
@@ -626,7 +653,7 @@
 
     // --- WebSocket ---------------------------------------------------------
     useEffect(function () {
-      if (!boardData) return undefined;
+      if (!boardData || provider !== "native") return undefined;
       wsClosedRef.current = false;
       function openWs() {
         if (wsClosedRef.current) return;
@@ -692,7 +719,13 @@
         wsClosedRef.current = true;
         try { wsRef.current && wsRef.current.close(); } catch (_e) { /* noop */ }
       };
-    }, [!!boardData, board, scheduleReload]);
+    }, [!!boardData, board, provider, scheduleReload]);
+
+    useEffect(function () {
+      if (provider === "native") return undefined;
+      const id = setInterval(function () { loadBoard(); }, 10000);
+      return function () { clearInterval(id); };
+    }, [provider, loadBoard]);
 
     // --- filtering ----------------------------------------------------------
     const filteredBoard = useMemo(function () {
@@ -716,6 +749,10 @@
 
     // --- actions ------------------------------------------------------------
     const moveTask = useCallback(function (taskId, newStatus) {
+      if (boardData && boardData.readonly) {
+        setError("This Kanban provider is read-only.");
+        return;
+      }
       const confirmMsg = getDestructiveConfirm(t, newStatus);
       if (confirmMsg && !window.confirm(confirmMsg)) return;
       const patch = withCompletionSummary({ status: newStatus }, 1, t);
@@ -736,7 +773,7 @@
         }
         return Object.assign({}, b, { columns });
       });
-      SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(taskId)}`, board), {
+      SDK.fetchJSON(withBoardProvider(`${API}/tasks/${encodeURIComponent(taskId)}`, board, provider), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
@@ -744,7 +781,7 @@
         setError(tx(t, "moveFailed", "Move failed: ") + parseApiErrorMessage(err));
         loadBoard();
       });
-    }, [loadBoard, board, t]);
+    }, [loadBoard, board, provider, t, boardData]);
 
     const clearSelected = useCallback(function () {
       setSelectedIds(new Set());
@@ -752,6 +789,10 @@
       setFailedIds(new Set());
     }, []);
     const moveSelected = useCallback(function (newStatus) {
+      if (boardData && boardData.readonly) {
+        setError("This Kanban provider is read-only.");
+        return;
+      }
       const confirmMsg = DESTRUCTIVE_TRANSITIONS[newStatus];
       if (confirmMsg && !window.confirm(confirmMsg)) return;
       if (selectedIds.size === 0) return;
@@ -774,7 +815,7 @@
         if (dest) dest.tasks = moved.concat(dest.tasks);
         return Object.assign({}, b, { columns });
       });
-      SDK.fetchJSON(withBoard(`${API}/tasks/bulk`, board), {
+      SDK.fetchJSON(withBoardProvider(`${API}/tasks/bulk`, board, provider), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(Object.assign({ ids }, patch)),
@@ -794,10 +835,14 @@
         setFailedIds(new Set(selectedIds));
         loadBoard();
       });
-    }, [selectedIds, loadBoard, board]);
+    }, [selectedIds, loadBoard, board, provider, boardData]);
 
     const createTask = useCallback(function (body) {
-      return SDK.fetchJSON(withBoard(`${API}/tasks`, board), {
+      if (boardData && boardData.readonly) {
+        setError("This Kanban provider is read-only.");
+        return Promise.resolve();
+      }
+      return SDK.fetchJSON(withBoardProvider(`${API}/tasks`, board, provider), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -813,7 +858,7 @@
         loadBoardList();  // refresh counts in the switcher
         return res;
       });
-    }, [loadBoard, loadBoardList, board, t]);
+    }, [loadBoard, loadBoardList, board, provider, t, boardData]);
 
     const toggleSelected = useCallback(function (id, additive) {
       setSelectedIds(function (prev) {
@@ -891,6 +936,10 @@
 
     const applyBulk = useCallback(function (patch, confirmMsg) {
       if (selectedIds.size === 0) return;
+      if (boardData && boardData.readonly) {
+        setError("This Kanban provider is read-only.");
+        return;
+      }
       if (confirmMsg && !window.confirm(confirmMsg)) return;
       const finalPatch = withCompletionSummary(patch, selectedIds.size, t);
       if (!finalPatch) return;
@@ -913,7 +962,7 @@
           return Object.assign({}, b, { columns });
         });
       }
-      SDK.fetchJSON(withBoard(`${API}/tasks/bulk`, board), {
+      SDK.fetchJSON(withBoardProvider(`${API}/tasks/bulk`, board, provider), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -937,7 +986,18 @@
           setFailedIds(new Set(selectedIds));
           loadBoard();
         });
-    }, [selectedIds, loadBoard, board, t]);
+    }, [selectedIds, loadBoard, board, provider, t, boardData]);
+
+    const switchProvider = useCallback(function (nextProvider) {
+      const value = (nextProvider || "native").trim() || "native";
+      if (value === provider) return;
+      setBoardData(null);
+      cursorRef.current = 0;
+      setLoading(true);
+      setProvider(value);
+      writeSelectedProvider(value);
+      clearSelected();
+    }, [provider, clearSelected]);
 
     // --- board switching ----------------------------------------------------
     const switchBoard = useCallback(function (nextSlug) {
@@ -982,8 +1042,12 @@
     }, [board, loadBoardList, switchBoard]);
 
    const deleteTask = useCallback(function (taskId) {
+     if (boardData && boardData.readonly) {
+       setError("This Kanban provider is read-only.");
+       return Promise.resolve();
+     }
      if (!window.confirm(tx(t, "trash.confirm", FALLBACK_TRASH.confirm))) return Promise.resolve();
-     return SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(taskId)}`, {
+     return SDK.fetchJSON(withBoardProvider(`${API}/tasks/${encodeURIComponent(taskId)}`, board, provider), {
        method: "DELETE",
      }).then(function () {
        loadBoard();
@@ -993,19 +1057,23 @@
          return next;
        });
      }).catch(function (e) { setError(String(e.message || e)); });
-   }, [board, loadBoard, t]);
+   }, [board, provider, loadBoard, t, boardData]);
 
     const deleteSelected = useCallback(function (count) {
       if (selectedIds.size === 0) return Promise.resolve();
+      if (boardData && boardData.readonly) {
+        setError("This Kanban provider is read-only.");
+        return Promise.resolve();
+      }
       if (!window.confirm(tx(t, "trash.confirmMany", "Permanently delete {n} selected tasks? This cannot be undone.", { n: count }))) return Promise.resolve();
       const ids = Array.from(selectedIds);
       setSelectedIds(new Set());
       return Promise.all(ids.map(function (id) {
-        return SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+        return SDK.fetchJSON(withBoardProvider(`${API}/tasks/${encodeURIComponent(id)}`, board, provider), { method: "DELETE" });
       })).then(function () {
         loadBoard();
       }).catch(function (e) { setError(String(e.message || e)); });
-    }, [selectedIds, board, loadBoard, t]);
+    }, [selectedIds, board, provider, loadBoard, t, boardData]);
 
     // --- render -------------------------------------------------------------
     if (loading && !boardData) {
@@ -1049,13 +1117,20 @@
         }),
         h(BoardToolbar, {
           board: boardData,
+          provider,
+          setProvider: switchProvider,
+          readonly: !!(boardData && boardData.readonly),
           tenantFilter, setTenantFilter,
           assigneeFilter, setAssigneeFilter,
           includeArchived, setIncludeArchived,
           laneByProfile, setLaneByProfile,
           search, setSearch,
           onNudgeDispatch: function () {
-            SDK.fetchJSON(withBoard(`${API}/dispatch?max=8`, board), { method: "POST" })
+            if (boardData && boardData.readonly) {
+              setError("This Kanban provider is read-only.");
+              return;
+            }
+            SDK.fetchJSON(withBoardProvider(`${API}/dispatch?max=8`, board, provider), { method: "POST" })
               .then(loadBoard)
               .catch(function (e) { setError(String(e.message || e)); });
           },
@@ -1086,11 +1161,14 @@
           onDelete: deleteTask,
           onOpen: setSelectedTaskId,
           onCreate: createTask,
+          readonly: !!(boardData && boardData.readonly),
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
         }),
         selectedTaskId ? h(TaskDrawer, {
           taskId: selectedTaskId,
           boardSlug: board,
+          provider,
+          readonly: !!(boardData && boardData.readonly),
           onClose: function () { setSelectedTaskId(null); },
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
@@ -2013,6 +2091,17 @@
     const assignees = (props.board && props.board.assignees) || [];
     return h("div", { className: "flex flex-wrap items-end gap-3" },
       h("div", { className: "flex flex-col gap-1",
+                 title: "Choose the task provider rendered by this Kanban board. External providers are read-only projections." },
+        h(Label, { className: "text-xs text-muted-foreground" }, "Provider"),
+        h(Select, Object.assign({
+          value: props.provider || "native",
+          className: "h-8",
+        }, selectChangeHandler(props.setProvider)),
+          h(SelectOption, { value: "native" }, "Native Hermes"),
+          h(SelectOption, { value: "gloops" }, "GLoops projection"),
+        ),
+      ),
+      h("div", { className: "flex flex-col gap-1",
                  title: "Fuzzy-match tasks by id, title, or description. Matches across all columns." },
         h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "search", "Search")),
         h(Input, {
@@ -2068,6 +2157,7 @@
       h(Button, {
         onClick: props.onNudgeDispatch,
         size: "sm",
+        disabled: props.readonly,
         title: "Wake the dispatcher to claim ready tasks now instead of waiting for the next tick. Use this after adding tasks if you want them picked up immediately.",
       }, tx(t, "nudgeDispatcher", "Nudge dispatcher")),
       h(Button, {
@@ -2395,6 +2485,7 @@
           onMoveSelected: props.onMoveSelected,
           onOpen: props.onOpen,
           onCreate: props.onCreate,
+          readonly: props.readonly,
           allTasks: props.allTasks,
         });
       }),
@@ -2417,6 +2508,7 @@
       if (!colRef.current) return undefined;
       const el = colRef.current;
       function onTouchDrop(e) {
+        if (props.readonly) return;
         if (e.detail && e.detail.status === props.column.name) {
           const taskId = e.detail.taskId;
           if (props.selectedIds && props.selectedIds.has(taskId) && props.selectedIds.size > 1 && props.onMoveSelected) {
@@ -2431,6 +2523,7 @@
     }, [props.column.name, props.onMove, props.selectedIds, props.onMoveSelected]);
 
     const handleDragOver = function (e) {
+      if (props.readonly) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
       if (!dragOver) setDragOver(true);
@@ -2439,6 +2532,7 @@
     const handleDrop = function (e) {
       e.preventDefault();
       setDragOver(false);
+      if (props.readonly) return;
       const taskId = e.dataTransfer.getData(MIME_TASK);
       if (!taskId) return;
       if (props.selectedIds && props.selectedIds.has(taskId) && props.selectedIds.size > 1) {
@@ -2496,12 +2590,13 @@
           type: "button",
           className: "hermes-kanban-column-add",
           title: tx(t, "createTask", "Create task in this column"),
+          disabled: props.readonly,
           onClick: function () { setShowCreate(function (v) { return !v; }); },
-        }, showCreate ? "×" : "+"),
+        }, props.readonly ? "·" : (showCreate ? "×" : "+")),
       ),
       h("div", { className: "hermes-kanban-column-sub" },
         colHelp || ""),
-      showCreate ? h(InlineCreate, {
+      showCreate && !props.readonly ? h(InlineCreate, {
         columnName: props.column.name,
         allTasks: props.allTasks,
         onSubmit: function (body) {
@@ -2529,6 +2624,7 @@
                       toggleSelected: props.toggleSelected,
                       toggleRange: props.toggleRange,
                       onOpen: props.onOpen,
+                      readonly: props.readonly,
                     });
                   }),
                 );
@@ -2543,6 +2639,7 @@
                   toggleSelected: props.toggleSelected,
                   toggleRange: props.toggleRange,
                   onOpen: props.onOpen,
+                  readonly: props.readonly,
                 });
               }),
       ),
@@ -2580,10 +2677,15 @@
     const cardRef = useRef(null);
 
     useEffect(function () {
+      if (props.readonly || t.readonly) return undefined;
       return attachTouchDrag(cardRef.current, t.id);
-    }, [t.id]);
+    }, [t.id, props.readonly, t.readonly]);
 
     const handleDragStart = function (e) {
+      if (props.readonly || t.readonly) {
+        e.preventDefault();
+        return;
+      }
       e.dataTransfer.setData(MIME_TASK, t.id);
       e.dataTransfer.effectAllowed = "move";
       const selectedCards = document.querySelectorAll(".hermes-kanban-card--selected");
@@ -2606,6 +2708,7 @@
         return;
       }
       if (e.ctrlKey || e.metaKey) {
+        if (props.readonly || t.readonly) return;
         e.preventDefault();
         e.stopPropagation();
         props.toggleSelected(t.id, true);
@@ -2623,6 +2726,7 @@
       }
     };
     const handleCheckedChange = function () {
+      if (props.readonly || t.readonly) return;
       props.toggleSelected(t.id, true);
     };
 
@@ -2639,7 +2743,7 @@
         props.draggingSource ? "hermes-kanban-card--dragging-source" : "",
         stalenessClass(t),
       ),
-      draggable: true,
+      draggable: !(props.readonly || t.readonly),
       tabIndex: 0,
       role: "button",
       "aria-label": `${t.title || "untitled"} — ${t.id} — ${t.status}`,
@@ -2658,6 +2762,7 @@
               h(Checkbox, {
                 className: "hermes-kanban-card-check",
                 checked: props.selected,
+                disabled: props.readonly || t.readonly,
                 onCheckedChange: handleCheckedChange,
                 onClick: function (e) { e.stopPropagation(); },
                 "aria-label": `Select task ${t.id}`,
@@ -2704,7 +2809,22 @@
                   title: tx(i18n, "needsAssigneeHint", "Dependencies are satisfied, but the dispatcher skips this task until you assign a profile."),
                 }, tx(i18n, "needsAssignee", "Needs assignee"))
               : null,
+            t.readonly || t.external_provider
+              ? h(Badge, { variant: "outline", className: "hermes-kanban-tag",
+                           title: "Read-only external projection." }, t.external_provider || "read-only")
+              : null,
           ),
+          t.badges && t.badges.length
+            ? h("div", { className: "hermes-kanban-card-row hermes-kanban-card-badges" },
+                t.badges.slice(0, 4).map(function (badge, idx) {
+                  return h(Badge, {
+                    key: `${badge.kind || "badge"}-${idx}`,
+                    variant: "outline",
+                    className: cn("hermes-kanban-external-badge", "hermes-kanban-external-badge--" + (badge.severity || "info")),
+                    title: badge.kind || "",
+                  }, badge.label || badge.kind || "badge");
+                }))
+            : null,
           h("div", { className: "hermes-kanban-card-title" },
             t.title || tx(i18n, "untitled", "(untitled)")),
           h("div", { className: "hermes-kanban-card-row hermes-kanban-card-meta" },
@@ -2939,21 +3059,27 @@
     const [homeChannels, setHomeChannels] = useState([]);
     const [homeBusy, setHomeBusy] = useState({});
     const boardSlug = props.boardSlug;
+    const provider = props.provider || "native";
+    const readonly = !!props.readonly || !!(data && data.readonly) || !!(data && data.task && data.task.readonly);
 
     const load = useCallback(function () {
-      return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug))
+      return SDK.fetchJSON(withBoardProvider(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug, provider))
         .then(function (d) { setData(d); setErr(null); setPatchErr(null); })
         .catch(function (e) { setErr(String(e.message || e)); })
         .finally(function () { setLoading(false); });
-    }, [props.taskId, boardSlug]);
+    }, [props.taskId, boardSlug, provider]);
 
     const loadHomeChannels = useCallback(function () {
+      if (provider !== "native") {
+        setHomeChannels([]);
+        return Promise.resolve();
+      }
       const qs = new URLSearchParams({ task_id: props.taskId });
       const url = withBoard(`${API}/home-channels?${qs}`, boardSlug);
       return SDK.fetchJSON(url)
         .then(function (d) { setHomeChannels(d.home_channels || []); })
         .catch(function () { /* silent — endpoint optional on older gateways */ });
-    }, [props.taskId, boardSlug]);
+    }, [props.taskId, boardSlug, provider]);
 
     // Reload when the WS stream reports new events for this task id
     // (completion, block, crash, etc. — anything that'd make the drawer
@@ -2969,7 +3095,11 @@
     const handleComment = function () {
       const body = newComment.trim();
       if (!body) return;
-      SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/comments`, boardSlug), {
+      if (readonly) {
+        setErr("This Kanban provider is read-only.");
+        return;
+      }
+      SDK.fetchJSON(withBoardProvider(`${API}/tasks/${encodeURIComponent(props.taskId)}/comments`, boardSlug, provider), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ body }),
@@ -2986,9 +3116,13 @@
     const handleUpload = function (fileList) {
       const files = Array.prototype.slice.call(fileList || []);
       if (!files.length) return;
+      if (readonly) {
+        setUploadErr("This Kanban provider is read-only.");
+        return;
+      }
       setUploadBusy(true);
       setUploadErr(null);
-      const url = withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/attachments`, boardSlug);
+      const url = withBoardProvider(`${API}/tasks/${encodeURIComponent(props.taskId)}/attachments`, boardSlug, provider);
       // Upload sequentially so a partial failure leaves a clear state.
       let chain = Promise.resolve();
       files.forEach(function (f) {
@@ -3020,7 +3154,11 @@
     };
 
     const handleDeleteAttachment = function (attachmentId) {
-      return SDK.fetchJSON(withBoard(`${API}/attachments/${attachmentId}`, boardSlug), { method: "DELETE" })
+      if (readonly) {
+        setUploadErr("This Kanban provider is read-only.");
+        return Promise.resolve();
+      }
+      return SDK.fetchJSON(withBoardProvider(`${API}/attachments/${attachmentId}`, boardSlug, provider), { method: "DELETE" })
         .then(function () { load(); props.onRefresh(); })
         .catch(function (e) { setUploadErr(String(e.message || e)); });
     };
@@ -3031,8 +3169,12 @@
       }
       const finalPatch = withCompletionSummary(patch, 1);
       if (!finalPatch) return Promise.resolve();
+      if (readonly) {
+        setPatchErr("This Kanban provider is read-only.");
+        return Promise.resolve();
+      }
       setPatchErr(null);
-      return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug), {
+      return SDK.fetchJSON(withBoardProvider(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug, provider), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(finalPatch),
@@ -3167,6 +3309,7 @@
         err ? h("div", { className: "p-4 text-sm text-destructive" }, err) :
         data ? h(TaskDetail, {
           data, editing, setEditing,
+          readonly,
           renderMarkdown: props.renderMarkdown,
           allTasks: props.allTasks,
           assignees: props.assignees || [],
@@ -3187,7 +3330,7 @@
           uploadBusy: uploadBusy,
           uploadErr: uploadErr,
         }) : null,
-        data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
+        data && !readonly ? h("div", { className: "hermes-kanban-drawer-comment-row" },
           h(Input, {
             value: newComment,
             onChange: function (e) { setNewComment(e.target.value); },
@@ -3322,11 +3465,12 @@
     const events = props.data.events || [];
     const attachments = props.data.attachments || [];
     const links = props.data.links || { parents: [], children: [] };
+    const readonly = !!props.readonly || !!t.readonly;
 
     return h("div", { className: "hermes-kanban-drawer-body" },
       h("div", { className: "hermes-kanban-drawer-title" },
         h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[t.status]) }),
-        props.editing
+        props.editing && !readonly
           ? h(TitleEditor, {
               initial: t.title || "",
               onSave: function (newTitle) {
@@ -3337,13 +3481,13 @@
           : h("span", {
               className: "hermes-kanban-drawer-title-text",
               title: tx(i18n, "clickToEdit", "Click to edit"),
-              onClick: function () { props.setEditing(true); },
+              onClick: function () { if (!readonly) props.setEditing(true); },
             }, t.title || tx(i18n, "untitled", "(untitled)")),
       ),
       h("div", { className: "hermes-kanban-drawer-meta" },
         h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
-        h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
-        h(PriorityEditor, { task: t, onPatch: props.onPatch }),
+        readonly ? h(MetaRow, { label: tx(i18n, "assignee", "Assignee"), value: t.assignee || "unassigned" }) : h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
+        readonly ? h(MetaRow, { label: tx(i18n, "priority", "Priority"), value: String(t.priority || 0) }) : h(PriorityEditor, { task: t, onPatch: props.onPatch }),
         t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,
         h(MetaRow, {
           label: tx(i18n, "workspace", "Workspace"),
@@ -3360,8 +3504,27 @@
             : "on",
         }) : null,
         t.created_by ? h(MetaRow, { label: tx(i18n, "createdBy", "Created by"), value: t.created_by }) : null,
+        t.external_provider ? h(MetaRow, { label: "Provider", value: t.external_provider }) : null,
       ),
-      h(StatusActions, {
+      t.external_url ? h("div", { className: "hermes-kanban-section" },
+        h("a", {
+          href: t.external_url,
+          target: "_blank",
+          rel: "noreferrer",
+          className: "hermes-kanban-external-link",
+        }, "Open in source system"),
+      ) : null,
+      t.badges && t.badges.length ? h("div", { className: "hermes-kanban-card-row hermes-kanban-card-badges" },
+        t.badges.map(function (badge, idx) {
+          return h(Badge, {
+            key: `${badge.kind || "badge"}-${idx}`,
+            variant: "outline",
+            className: cn("hermes-kanban-external-badge", "hermes-kanban-external-badge--" + (badge.severity || "info")),
+            title: badge.kind || "",
+          }, badge.label || badge.kind || "badge");
+        })
+      ) : null,
+      readonly ? null : h(StatusActions, {
         task: t,
         onPatch: props.onPatch,
         onSpecify: props.onSpecify,
@@ -3374,17 +3537,20 @@
         diagnostics: t.diagnostics || [],
         onRefresh: props.onRefresh,
       }),
-      h(HomeSubsSection, {
+      readonly ? null : h(HomeSubsSection, {
         homeChannels: props.homeChannels || [],
         homeBusy: props.homeBusy || {},
         onToggle: props.onToggleHomeSub,
       }),
-      h(BodyEditor, {
+      readonly ? (t.body ? h("div", { className: "hermes-kanban-section" },
+        h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "description", "Description")),
+        h(MarkdownBlock, { source: t.body, enabled: props.renderMarkdown }),
+      ) : null) : h(BodyEditor, {
         task: t,
         renderMarkdown: props.renderMarkdown,
         onPatch: props.onPatch,
       }),
-      h(DependencyEditor, {
+      readonly ? null : h(DependencyEditor, {
         task: t,
         links, allTasks: props.allTasks,
         onAddParent: props.onAddParent,
@@ -3396,7 +3562,7 @@
         h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
         h(MarkdownBlock, { source: t.result, enabled: props.renderMarkdown }),
       ) : null,
-      h(AttachmentsSection, {
+      readonly ? null : h(AttachmentsSection, {
         attachments: attachments,
         boardSlug: props.boardSlug,
         onUpload: props.onUpload,

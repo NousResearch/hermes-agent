@@ -1590,3 +1590,40 @@
 .hermes-kanban-trash-label {
   font-weight: 500;
 }
+
+/* ---- External provider projections ----------------------------------- */
+.hermes-kanban-card-badges {
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.hermes-kanban-external-badge {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hermes-kanban-external-badge--warning {
+  border-color: color-mix(in srgb, #d97706 55%, var(--color-border));
+}
+
+.hermes-kanban-external-badge--error {
+  border-color: color-mix(in srgb, var(--color-destructive, #d14a4a) 65%, var(--color-border));
+  color: var(--color-destructive, #d14a4a);
+}
+
+.hermes-kanban-external-link {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 2rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-foreground);
+  text-decoration: none;
+}
+
+.hermes-kanban-external-link:hover {
+  background: var(--color-muted);
+}

@@ -25,19 +25,29 @@ from hermes_cli import kanban_db as kb
 # ---------------------------------------------------------------------------
 
 
-def _load_plugin_router():
-    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+def _load_plugin_module():
+    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return it."""
     repo_root = Path(__file__).resolve().parents[2]
     plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
 
+    mod_name = "hermes_dashboard_plugin_kanban_test"
+    if mod_name in sys.modules:
+        return sys.modules[mod_name]
+
     spec = importlib.util.spec_from_file_location(
-        "hermes_dashboard_plugin_kanban_test", plugin_file,
+        mod_name, plugin_file,
     )
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
+    return mod
+
+
+def _load_plugin_router():
+    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+    mod = _load_plugin_module()
     return mod.router
 
 
@@ -59,6 +69,11 @@ def client(kanban_home):
     return TestClient(app)
 
 
+@pytest.fixture
+def plugin_module(kanban_home):
+    return _load_plugin_module()
+
+
 # ---------------------------------------------------------------------------
 # GET /board on an empty DB
 # ---------------------------------------------------------------------------
@@ -77,6 +92,128 @@ def test_board_empty(client):
     assert data["tenants"] == []
     assert data["assignees"] == []
     assert data["latest_event_id"] == 0
+    assert data["provider"] == "native"
+    assert data["readonly"] is False
+
+
+def test_provider_native_query_matches_default(client):
+    client.post("/api/plugins/kanban/tasks", json={"title": "native-default"})
+
+    default = client.get("/api/plugins/kanban/board").json()
+    explicit = client.get("/api/plugins/kanban/board?provider=native").json()
+
+    assert explicit["columns"] == default["columns"]
+    assert explicit["provider"] == "native"
+    assert explicit["readonly"] is False
+
+
+def test_external_provider_board_routes_to_provider(plugin_module, monkeypatch):
+    class Selection:
+        name = "gloops"
+        is_native = False
+
+    class FakeExternalProvider:
+        def __init__(self, selection):
+            self.selection = selection
+
+        def get_board(self, params):
+            assert self.selection.name == "gloops"
+            assert params["tenant"] == "acme"
+            return {
+                "columns": [
+                    {
+                        "name": "ready",
+                        "tasks": [
+                            {
+                                "id": "external:gloops:execution_request:exec-1",
+                                "title": "Projected work",
+                                "status": "ready",
+                                "readonly": True,
+                            }
+                        ],
+                    }
+                ],
+                "tenants": ["acme"],
+                "assignees": [],
+                "latest_event_id": 0,
+                "now": 1,
+                "provider": "gloops",
+                "readonly": True,
+            }
+
+    monkeypatch.setattr(plugin_module, "resolve_provider", lambda provider: Selection())
+    monkeypatch.setattr(plugin_module, "ExternalHttpTaskProvider", FakeExternalProvider)
+    app = FastAPI()
+    app.include_router(plugin_module.router, prefix="/api/plugins/kanban")
+    local_client = TestClient(app)
+
+    r = local_client.get("/api/plugins/kanban/board?provider=gloops&tenant=acme")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["provider"] == "gloops"
+    assert body["readonly"] is True
+    assert body["columns"][0]["tasks"][0]["readonly"] is True
+
+
+def test_external_provider_task_routes_to_provider(plugin_module, monkeypatch):
+    class Selection:
+        name = "gloops"
+        is_native = False
+
+    class FakeExternalProvider:
+        def __init__(self, selection):
+            self.selection = selection
+
+        def get_task(self, task_id, params):
+            assert task_id == "external:gloops:execution_request:exec-1"
+            return {
+                "task": {
+                    "id": task_id,
+                    "title": "Projected work",
+                    "status": "ready",
+                    "readonly": True,
+                },
+                "comments": [],
+                "events": [],
+                "attachments": [],
+                "links": {"parents": [], "children": []},
+                "runs": [],
+                "provider": "gloops",
+                "readonly": True,
+            }
+
+    monkeypatch.setattr(plugin_module, "resolve_provider", lambda provider: Selection())
+    monkeypatch.setattr(plugin_module, "ExternalHttpTaskProvider", FakeExternalProvider)
+    app = FastAPI()
+    app.include_router(plugin_module.router, prefix="/api/plugins/kanban")
+    local_client = TestClient(app)
+
+    r = local_client.get(
+        "/api/plugins/kanban/tasks/external%3Agloops%3Aexecution_request%3Aexec-1?provider=gloops"
+    )
+
+    assert r.status_code == 200
+    assert r.json()["task"]["readonly"] is True
+
+
+def test_external_provider_mutation_is_read_only(plugin_module, monkeypatch):
+    class Selection:
+        name = "gloops"
+        is_native = False
+
+    monkeypatch.setattr(plugin_module, "resolve_provider", lambda provider: Selection())
+    app = FastAPI()
+    app.include_router(plugin_module.router, prefix="/api/plugins/kanban")
+    local_client = TestClient(app)
+
+    r = local_client.patch(
+        "/api/plugins/kanban/tasks/external%3Agloops%3Aexecution_request%3Aexec-1?provider=gloops",
+        json={"status": "done"},
+    )
+
+    assert r.status_code == 403
+    assert "read-only" in r.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +363,36 @@ def test_dashboard_client_side_filtering_includes_tenant_filter():
 
     assert "if (tenantFilter && t.tenant !== tenantFilter) return false;" in js
     assert "[boardData, tenantFilter, assigneeFilter, search]" in js
+
+
+def test_dashboard_provider_selection_is_persisted_and_sent_to_api():
+    """The dashboard can switch from native tasks to a configured read provider."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert 'const LS_PROVIDER_KEY = "hermes.kanban.selectedProvider";' in js
+    assert "function readSelectedProvider()" in js
+    assert "function writeSelectedProvider(provider)" in js
+    assert "function withBoardProvider(url, board, provider)" in js
+    assert 'h(SelectOption, { value: "gloops" }, "GLoops projection")' in js
+    assert "SDK.fetchJSON(withBoardProvider(url, board, provider))" in js
+
+
+def test_dashboard_external_projection_cards_are_readonly():
+    """Read-only provider cards must not advertise native mutation affordances."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert 'setError("This Kanban provider is read-only.");' in js
+    assert "draggable: !(props.readonly || t.readonly)" in js
+    assert "disabled: props.readonly || t.readonly" in js
+    assert "readonly ? null : h(StatusActions" in js
+    assert "Open in source system" in js
+    assert "hermes-kanban-external-badge" in js
 
 
 def test_dashboard_initial_board_uses_backend_current_when_unpinned():

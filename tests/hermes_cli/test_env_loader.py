@@ -103,3 +103,71 @@ def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
 
     assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
     assert os.getenv("HERMES_INFERENCE_PROVIDER") == "custom"
+
+
+def test_profile_home_loads_root_env_as_base_and_profile_env_as_override(tmp_path, monkeypatch):
+    """When HERMES_HOME points to ~/.hermes/profiles/<name>, the root
+    ~/.hermes/.env is loaded as a non-override base, and the profile's own
+    .env overrides the base for keys it defines explicitly (#61046).
+    """
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "test"
+    profile.mkdir(parents=True)
+
+    (root / ".env").write_text(
+        "QQ_APP_ID=root-app\nSHARED_KEY=root-value\n",
+        encoding="utf-8",
+    )
+    (profile / ".env").write_text(
+        "QQ_APP_ID=profile-app\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("QQ_APP_ID", raising=False)
+    monkeypatch.delenv("SHARED_KEY", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=profile)
+
+    # Both files should be reported as loaded, root first (base) then profile.
+    assert loaded == [root / ".env", profile / ".env"]
+    # Profile wins for keys it defines.
+    assert os.getenv("QQ_APP_ID") == "profile-app"
+    # Root fills in keys the profile did not set.
+    assert os.getenv("SHARED_KEY") == "root-value"
+
+
+def test_profile_home_without_root_env_still_loads_profile_env(tmp_path, monkeypatch):
+    """Profile mode must not crash when the root ~/.hermes/.env is missing."""
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "test"
+    profile.mkdir(parents=True)
+
+    # Only the profile .env exists, not the root one.
+    (profile / ".env").write_text("QQ_APP_ID=profile-app\n", encoding="utf-8")
+
+    monkeypatch.delenv("QQ_APP_ID", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=profile)
+
+    assert loaded == [profile / ".env"]
+    assert os.getenv("QQ_APP_ID") == "profile-app"
+
+
+def test_non_profile_home_does_not_look_for_root_env_sibling(tmp_path, monkeypatch):
+    """When HERMES_HOME is the hermes root itself (default), a sibling
+    directory at the same level must not be mistaken for a profiles dir.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("QQ_APP_ID=root-app\n", encoding="utf-8")
+    # A sibling named 'profiles' is unrelated and must be ignored.
+    sibling_profiles = tmp_path / "profiles"
+    sibling_profiles.mkdir()
+    (sibling_profiles / ".env").write_text("QQ_APP_ID=should-not-load\n", encoding="utf-8")
+
+    monkeypatch.delenv("QQ_APP_ID", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [home / ".env"]
+    assert os.getenv("QQ_APP_ID") == "root-app"

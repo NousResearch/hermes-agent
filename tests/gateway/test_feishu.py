@@ -3499,6 +3499,81 @@ class TestGroupMentionAtAll(unittest.TestCase):
         self.assertTrue(_admits_group(adapter, message, allowed_sender, ""))
 
 
+class TestIgnoreAtAll(unittest.TestCase):
+    """Tests for ignore_at_all config: when true, @everyone does NOT count as a bot mention."""
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open", "FEISHU_IGNORE_AT_ALL": "true"}, clear=True)
+    def test_ignore_at_all_rejects_at_everyone_message(self):
+        """When ignore_at_all=true, @_all should not pass the mention gate."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        message = SimpleNamespace(
+            content='{"text":"@_all 请注意"}',
+            mentions=[],
+            chat_type="group",
+            chat_id="oc_test",
+        )
+        sender = SimpleNamespace(sender_type="user", sender_id=SimpleNamespace(open_id="ou_any", user_id=None))
+        # Should be rejected because @_all no longer counts as mentioning the bot.
+        self.assertIsNotNone(adapter._admit(sender, message))
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_default_ignore_at_all_false_accepts_at_everyone(self):
+        """By default (ignore_at_all=false), @_all still passes the mention gate."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        message = SimpleNamespace(
+            content='{"text":"@_all 请注意"}',
+            mentions=[],
+            chat_type="group",
+            chat_id="oc_test",
+        )
+        sender = SimpleNamespace(sender_type="user", sender_id=SimpleNamespace(open_id="ou_any", user_id=None))
+        self.assertIsNone(adapter._admit(sender, message))
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open", "FEISHU_IGNORE_AT_ALL": "true"}, clear=True)
+    def test_ignore_at_all_does_not_affect_explicit_bot_mention(self):
+        """When ignore_at_all=true, a direct @bot mention should still pass."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._bot_open_id = "ou_bot123"
+        message = SimpleNamespace(
+            content='{"text":"@_user_1 hello"}',
+            mentions=[SimpleNamespace(
+                id=SimpleNamespace(open_id="ou_bot123", user_id=None),
+                name="Bot",
+                key="@_user_1",
+            )],
+            chat_type="group",
+            chat_id="oc_test",
+        )
+        sender = SimpleNamespace(sender_type="user", sender_id=SimpleNamespace(open_id="ou_any", user_id=None))
+        self.assertIsNone(adapter._admit(sender, message))
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open", "FEISHU_IGNORE_AT_ALL": "true"}, clear=True)
+    def test_ignore_at_all_does_not_affect_dm(self):
+        """ignore_at_all should not affect DMs which bypass the mention gate entirely."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        message = SimpleNamespace(
+            content='{"text":"@_all please check"}',
+            mentions=[],
+            chat_type="p2p",
+            chat_id="ou_dm",
+        )
+        sender = SimpleNamespace(sender_type="user", sender_id=SimpleNamespace(open_id="ou_any", user_id=None))
+        # DMs always bypass the mention gate.
+        self.assertIsNone(adapter._admit(sender, message))
+
+
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestSenderNameResolution(unittest.TestCase):
     """Tests for _resolve_sender_name_from_api (contact API + cache)."""

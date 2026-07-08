@@ -409,6 +409,7 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    ignore_at_all: bool = False
 
 
 @dataclass
@@ -1600,6 +1601,9 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            ignore_at_all=_to_boolean(
+                extra.get("ignore_at_all", os.getenv("FEISHU_IGNORE_AT_ALL", "false"))
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1632,6 +1636,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._ignore_at_all = settings.ignore_at_all
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -4331,7 +4336,7 @@ class FeishuAdapter(BasePlatformAdapter):
     def _mentions_self(self, message: Any) -> bool:
         # @_all is Feishu's @everyone placeholder.
         raw_content = getattr(message, "content", "") or ""
-        if "@_all" in raw_content:
+        if "@_all" in raw_content and not self._ignore_at_all:
             return True
         mentions = getattr(message, "mentions", None) or []
         if mentions and self._message_mentions_bot(mentions):

@@ -1569,8 +1569,12 @@ def anthropic_prompt_cache_policy(
     # moonshotai/kimi-k2.6 falls through to (False, False), serving ~1%
     # cache hits on 64K-token prompts and re-billing the full prompt on
     # every turn.  Observed within-turn progression with cache enabled:
-    # 1% → 67% → 84% → 97% (#25970).
-    is_kimi = "kimi" in model_lower or "moonshot" in model_lower
+    # 1% → 67% → 84% → 97% (#25970).  Reuses the canonical family matcher
+    # (covers bare k1./k2./k25 release slugs the substring check missed).
+    from agent.anthropic_adapter import _model_name_is_kimi_family
+    is_kimi = (
+        _model_name_is_kimi_family(eff_model) or "moonshot" in model_lower
+    )
     is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
     # Nous Portal proxies to OpenRouter behind the scenes — identical
     # OpenAI-wire envelope cache_control semantics. Treat it as an

@@ -3802,11 +3802,17 @@ class GatewaySlashCommandsMixin:
             pass
 
         # Post an intro into the new thread so the branch has a visible anchor.
+        # Include a link back to the PARENT conversation (where /branch ran) so
+        # the child<->parent relationship is navigable from BOTH sides (the
+        # parent channel already got a link INTO this thread).
         try:
+            parent_ref = source.thread_id or source.chat_id
+            parent_mention = f"<#{parent_ref}>" if parent_ref else t("gateway.branch.thread_parent_fallback")
             intro = t(
                 "gateway.branch.thread_intro",
                 title=branch_title,
                 count=msg_count,
+                parent=parent_mention,
             )
             await adapter.send(str(new_thread_id), intro)
         except Exception as exc:

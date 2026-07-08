@@ -153,6 +153,14 @@ class TestBranchDiscordThread:
         # Confirmation mentions the new thread.
         assert "thread999" in result or "<#thread999>" in result
 
+        # The intro posted INTO the new thread links back to the PARENT
+        # conversation (reciprocal to the parent channel's link into the thread).
+        intro_calls = [c for c in adapter.send.await_args_list
+                       if str(c.args[0]) == "thread999"]
+        assert intro_calls, "expected an intro sent into the new thread"
+        intro_text = intro_calls[0].args[1]
+        assert "<#parent_chan>" in intro_text  # link back to the parent channel
+
     @pytest.mark.asyncio
     async def test_branch_stamps_branch_point_len(self, session_db):
         """The branch session records how many messages it inherited from the
@@ -405,6 +413,9 @@ class TestMergeCommand:
         assert adapter.send.await_args.args[0] == "parent_chan"
         adapter.archive_thread.assert_awaited_once()
         assert "archived" in result.lower()
+        # The thread-merge confirm NAMES the parent it folded back into
+        # (reciprocal to the child branch name shown in the parent's note).
+        assert "Parent Work" in result
         runner._evict_cached_agent.assert_called()
 
     @pytest.mark.asyncio

@@ -30,6 +30,7 @@ Behavioral settings live in `$HERMES_HOME/mem0.json` (set them via `hermes memor
 | `user_id` | `hermes-user` | User identifier on Mem0 |
 | `agent_id` | `hermes` | Agent identifier |
 | `rerank` | `false` | Rerank search results for relevance (platform mode only) |
+| `min_score` | `0.0` | Minimum relevance score (0.0–1.0) a recalled memory must reach to be auto-injected into context. `0.0` disables filtering; `0.5` is a good starting value to keep short messages from pulling in low-relevance noise. Doesn't affect the `mem0_search` tool |
 
 The plugin has three connection modes:
 

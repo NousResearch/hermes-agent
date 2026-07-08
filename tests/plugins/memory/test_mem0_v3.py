@@ -350,6 +350,103 @@ class TestMem0Prefetch:
         assert backend.captured == []
 
 
+class TestMem0MinScore:
+    """min_score relevance floor on injection (prefetch).
+
+    Default 0.0 keeps everything (pre-existing behavior); a configured floor
+    drops low-relevance results so short openers don't inject junk memories
+    that read as authoritative context. Results without a score are kept.
+    """
+
+    def _make_provider(self, backend, min_score=None):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        provider._backend = backend
+        if min_score is not None:
+            provider._min_score = min_score
+        return provider
+
+    def test_floor_filters_low_score_results(self):
+        backend = FakeBackend(search_results=[
+            {"id": "m1", "memory": "relevant fact", "score": 0.9},
+            {"id": "m2", "memory": "junk match", "score": 0.2},
+            {"id": "m3", "memory": "borderline", "score": 0.5},
+        ])
+        provider = self._make_provider(backend, min_score=0.5)
+        result = provider.prefetch("what do I like?")
+        assert "relevant fact" in result
+        assert "borderline" in result  # >= floor is inclusive
+        assert "junk match" not in result
+
+    def test_floor_filters_everything_injects_nothing(self):
+        backend = FakeBackend(search_results=[
+            {"id": "m1", "memory": "junk a", "score": 0.1},
+            {"id": "m2", "memory": "junk b", "score": 0.3},
+        ])
+        provider = self._make_provider(backend, min_score=0.5)
+        assert provider.prefetch("ok") == ""
+
+    def test_default_keeps_everything(self, monkeypatch, tmp_path):
+        # No min_score configured anywhere → floor is 0.0, nothing filtered.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        monkeypatch.delenv("MEM0_MIN_SCORE", raising=False)
+        backend = FakeBackend(search_results=[
+            {"id": "m1", "memory": "high", "score": 0.9},
+            {"id": "m2", "memory": "low", "score": 0.1},
+        ])
+        provider = self._make_provider(backend)
+        assert provider._min_score == 0.0
+        result = provider.prefetch("anything")
+        assert "high" in result
+        assert "low" in result
+
+    def test_missing_score_is_kept(self):
+        # Conservative: backends that omit scores keep their current behavior.
+        backend = FakeBackend(search_results=[
+            {"id": "m1", "memory": "no score here"},
+            {"id": "m2", "memory": "scored junk", "score": 0.1},
+        ])
+        provider = self._make_provider(backend, min_score=0.5)
+        result = provider.prefetch("query")
+        assert "no score here" in result
+        assert "scored junk" not in result
+
+    def test_config_from_mem0_json(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        monkeypatch.delenv("MEM0_MIN_SCORE", raising=False)
+        (tmp_path / "mem0.json").write_text('{"min_score": 0.5}')
+        provider = Mem0MemoryProvider()
+        provider._create_backend = lambda: None  # type: ignore[method-assign]
+        provider.initialize("test")
+        assert provider._min_score == 0.5
+
+    def test_config_from_env_var(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        monkeypatch.setenv("MEM0_MIN_SCORE", "0.7")
+        provider = Mem0MemoryProvider()
+        provider._create_backend = lambda: None  # type: ignore[method-assign]
+        provider.initialize("test")
+        assert provider._min_score == 0.7
+
+    @pytest.mark.parametrize("bad", ['"not-a-number"', "-0.5", "1.5"])
+    def test_invalid_config_falls_back_with_warning(self, monkeypatch, tmp_path, caplog, bad):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        monkeypatch.delenv("MEM0_MIN_SCORE", raising=False)
+        (tmp_path / "mem0.json").write_text('{"min_score": %s}' % bad)
+        provider = Mem0MemoryProvider()
+        provider._create_backend = lambda: None  # type: ignore[method-assign]
+        with caplog.at_level("WARNING", logger="plugins.memory.mem0"):
+            provider.initialize("test")
+        assert provider._min_score == 0.0
+        assert any("min_score" in r.message for r in caplog.records)
+
+
 class TestMem0V3Config:
 
     def test_tool_schemas_four_tools(self):

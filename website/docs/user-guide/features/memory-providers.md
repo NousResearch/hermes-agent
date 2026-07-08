@@ -380,6 +380,7 @@ The plugin authenticates with `X-API-Key` and uses the server's `/search` / `/me
 | `user_id` | `hermes-user` | User identifier |
 | `agent_id` | `hermes` | Agent identifier |
 | `rerank` | `false` | Rerank search results for relevance (platform mode only) |
+| `min_score` | `0.0` | Minimum relevance score (0.0–1.0) for memories auto-injected into context; `0.0` disables filtering, `0.5` is a good starting value. Doesn't affect the `mem0_search` tool |
 
 **OSS supported providers:**
 

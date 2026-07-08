@@ -24,10 +24,17 @@ setup`):
                        store. When unset, the gateway-native id (e.g. Telegram
                        numeric id, Discord snowflake) is used instead.
   agent_id           — Agent identifier (default: hermes)
+  min_score          — Minimum relevance score (0.0-1.0) a recalled memory
+                       must reach to be injected into context on turn start.
+                       Default 0.0 (no filtering, current behavior). Very
+                       short messages ("ok", "do it") match nothing real, so
+                       without a floor the injected block fills with
+                       low-relevance noise that reads as authoritative
+                       context; 0.5 is a reasonable starting value.
 
-The matching MEM0_MODE / MEM0_USER_ID / MEM0_AGENT_ID environment variables are
-still read as a backward-compatible fallback, but mem0.json is the canonical
-home for these non-secret settings.
+The matching MEM0_MODE / MEM0_USER_ID / MEM0_AGENT_ID / MEM0_MIN_SCORE
+environment variables are still read as a backward-compatible fallback, but
+mem0.json is the canonical home for these non-secret settings.
 """
 
 from __future__ import annotations
@@ -88,6 +95,7 @@ def _load_config() -> dict:
         "api_key": os.environ.get("MEM0_API_KEY", ""),
         "host": os.environ.get("MEM0_HOST", ""),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
+        "min_score": os.environ.get("MEM0_MIN_SCORE", ""),
         "oss": {},
     }
     # Only carry user_id when the operator explicitly configured one (env or
@@ -107,6 +115,32 @@ def _load_config() -> dict:
             pass
 
     return config
+
+
+def _parse_min_score(value: Any) -> float:
+    """Parse the ``min_score`` config value into a float in [0.0, 1.0].
+
+    Invalid input (non-numeric, NaN, or out of range) falls back to 0.0 —
+    i.e. no filtering, the pre-existing behavior — with a warning, so a typo
+    in mem0.json never silently drops memories.
+    """
+    if value is None or value == "":
+        return 0.0
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid mem0 min_score %r (expected a number between 0.0 and 1.0); "
+            "using 0.0 (no filtering).", value,
+        )
+        return 0.0
+    if not 0.0 <= score <= 1.0:
+        logger.warning(
+            "mem0 min_score %s is out of range (expected 0.0-1.0); "
+            "using 0.0 (no filtering).", score,
+        )
+        return 0.0
+    return score
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +239,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._user_id = _DEFAULT_USER_ID
         self._agent_id = "hermes"
         self._rerank_default = False
+        self._min_score = 0.0
         self._channel = "cli"  # gateway channel name (cli/telegram/discord/...)
         self._sync_thread = None
         self._prefetch_thread = None
@@ -257,6 +292,7 @@ class Mem0MemoryProvider(MemoryProvider):
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "false", "choices": ["true", "false"]},
+            {"key": "min_score", "description": "Minimum relevance score (0.0-1.0) for injected memories; 0 disables filtering", "default": "0.0"},
         ]
 
     def post_setup(self, hermes_home: str, config: dict) -> None:
@@ -362,6 +398,9 @@ class Mem0MemoryProvider(MemoryProvider):
         self._rerank_default = (
             _rr.lower() in ("true", "1", "yes") if isinstance(_rr, str) else bool(_rr)
         )
+        # Relevance floor for context injection (prefetch). 0.0 = keep
+        # everything (backward-compatible default); see _parse_min_score.
+        self._min_score = _parse_min_score(self._config.get("min_score"))
         self._channel = kwargs.get("platform") or "cli"
         self._backend = self._create_backend()
         if self._backend and not self._atexit_registered:
@@ -413,6 +452,23 @@ class Mem0MemoryProvider(MemoryProvider):
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         self._start_prefetch(message)
 
+    def _passes_min_score(self, result: Dict[str, Any]) -> bool:
+        """True when a search result clears the configured relevance floor.
+
+        Results without a usable ``score`` are kept: some backends omit
+        scores, and dropping them would change behavior for those setups.
+        The floor only ever filters results that report a score below it.
+        """
+        if self._min_score <= 0.0:
+            return True
+        score = result.get("score")
+        if score is None:
+            return True
+        try:
+            return float(score) >= self._min_score
+        except (TypeError, ValueError):
+            return True
+
     def _consume_prefetch_result(self, query: str) -> str | None:
         with self._prefetch_lock:
             if self._prefetch_query != query or not self._prefetch_done:
@@ -442,7 +498,15 @@ class Mem0MemoryProvider(MemoryProvider):
                 results = backend.search(
                     query, filters=self._read_filters(), top_k=10, rerank=False,
                 )
-                lines = [r.get("memory", "") for r in (results or []) if r.get("memory")]
+                # Apply the configured relevance floor: very short messages
+                # ("ok", "do it") match nothing real, and without a floor the
+                # injected block fills with low-relevance noise that reads as
+                # authoritative context. Injecting nothing beats injecting junk.
+                lines = [
+                    r.get("memory", "")
+                    for r in (results or [])
+                    if r.get("memory") and self._passes_min_score(r)
+                ]
                 if lines:
                     body = "## Mem0 Memory\n" + "\n".join(f"- {l}" for l in lines)
                 self._record_success()

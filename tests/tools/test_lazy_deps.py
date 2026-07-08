@@ -294,6 +294,53 @@ class TestIsSatisfiedVersionAware:
         assert ld._is_satisfied("mautrix[encryption]==0.21.0") is False
 
 
+class TestSharedDependencyPins:
+    """Pins on packages other Hermes features install transitively must be
+    ranges, not == pins: active_features() flags a feature "active" from mere
+    package presence, so a hard pin makes the post-update lazy refresh
+    downgrade the shared package underneath its other consumers (#60783)."""
+
+    # transformers (via sentence-transformers, the Hindsight local-embedding
+    # provider) requires this range of huggingface-hub.
+    _TRANSFORMERS_HF_HUB_REQ = ">=1.5.0,<2.0"
+
+    def _hub_spec_tail(self):
+        (spec,) = ld.LAZY_DEPS["tool.trace_upload"]
+        assert ld._pkg_name_from_spec(spec) == "huggingface-hub"
+        return ld._specifier_from_spec(spec)
+
+    def test_trace_upload_hub_pin_admits_transformers_range(self):
+        """A version satisfying transformers' floor must satisfy our spec too,
+        so the refresh pass never downgrades it out from under transformers."""
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import Version
+
+        ours = SpecifierSet(self._hub_spec_tail())
+        # Representative versions across transformers' accepted range.
+        for v in ("1.5.0", "1.22.0", "1.99.0"):
+            assert Version(v) in SpecifierSet(self._TRANSFORMERS_HF_HUB_REQ)
+            assert Version(v) in ours, (
+                f"tool.trace_upload huggingface-hub spec {ours!r} rejects "
+                f"{v}, which transformers accepts — the lazy refresh would "
+                f"downgrade the shared package and break Hindsight (#60783)"
+            )
+
+    def test_transformers_compatible_hub_version_is_satisfied(self, monkeypatch):
+        """hermes update must treat an already-compatible newer hub version
+        as current instead of reinstalling the old pin."""
+        from importlib.metadata import PackageNotFoundError
+
+        def _version(pkg):
+            if pkg == "huggingface-hub":
+                return "1.22.0"
+            raise PackageNotFoundError(pkg)
+
+        import importlib.metadata as _md
+        monkeypatch.setattr(_md, "version", _version)
+
+        assert ld.feature_missing("tool.trace_upload") == ()
+
+
 # ---------------------------------------------------------------------------
 # active_features + refresh_active_features (Piece A — hermes update wiring)
 # ---------------------------------------------------------------------------

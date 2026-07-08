@@ -239,7 +239,15 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "starlette==1.0.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
     ),
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace).
-    "tool.trace_upload": ("huggingface-hub==1.2.3",),
+    # RANGE, not an == pin: huggingface-hub is shared with transformers /
+    # sentence-transformers (Hindsight local embeddings), which require
+    # huggingface-hub>=1.5.0,<2.0. A hard pin makes the post-update lazy
+    # refresh downgrade the shared package underneath them and break their
+    # import (#60783) — active_features() flags this feature "active" from
+    # mere package presence, so the downgrade fires even for users who never
+    # ran a trace upload. The HfApi surface used here (whoami / create_repo /
+    # upload_file) is stable across the whole 1.x line.
+    "tool.trace_upload": ("huggingface-hub>=1.2.3,<2.0",),
 }
 
 

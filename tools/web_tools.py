@@ -132,7 +132,11 @@ def _load_web_config() -> dict:
     """Load the ``web:`` section from ~/.hermes/config.yaml."""
     try:
         from hermes_cli.config import load_config
-        return load_config().get("web", {})
+        # ``or {}``: a present-but-null ``web:`` section (YAML ``web:`` with no
+        # body) makes ``.get("web", {})`` return None, which would break every
+        # caller that does ``_load_web_config().get(...)``. Honor the ``-> dict``
+        # contract so callers never see None.
+        return load_config().get("web") or {}
     except (ImportError, Exception):
         return {}
 
@@ -1004,7 +1008,9 @@ def check_web_api_key() -> bool:
     :func:`_is_backend_available`, which delegates non-legacy names to the
     registry.
     """
-    configured = _load_web_config().get("backend", "").lower().strip()
+    # ``or ""``: a null ``web.backend`` value yields None from ``.get``, and
+    # ``None.lower()`` would raise. Mirrors ``_get_backend``.
+    configured = (_load_web_config().get("backend") or "").lower().strip()
     if configured and _is_backend_available(configured):
         return True
     # Any built-in backend with credentials present. This is a boolean OR, so

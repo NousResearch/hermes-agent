@@ -198,6 +198,12 @@ class TestProviderListFlag:
         prov = {p["name"]: p for p in resp.json()["providers"]}
         assert prov["testpw"]["supports_password"] is True
 
+    def test_single_password_provider_renders_login_instead_of_oauth_redirect(self, gated_app):
+        resp = gated_app.get("/sessions", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"].startswith("/login")
+        assert "/auth/login" not in resp.headers["location"]
+
     def test_oauth_provider_reports_false(self):
         clear_providers()
         register_provider(StubAuthProvider())

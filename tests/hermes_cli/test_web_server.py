@@ -283,8 +283,9 @@ class TestWebServerEndpoints:
             def __init__(self, *args, **kwargs):
                 captured["read_only"] = kwargs.get("read_only")
 
-            def list_sessions_rich(self, limit):
+            def list_sessions_rich(self, limit, compact_rows=False):
                 captured["limit"] = limit
+                captured["compact_rows"] = compact_rows
                 return [
                     {"ended_at": None, "last_active": 95},
                     {"ended_at": 99, "last_active": 99},
@@ -298,7 +299,9 @@ class TestWebServerEndpoints:
         monkeypatch.setattr(web_server.time, "time", lambda: 100)
 
         assert web_server._count_status_active_sessions() == 1
-        assert captured == {"read_only": True, "limit": 50, "closed": True}
+        assert captured == {
+            "read_only": True, "limit": 50, "compact_rows": True, "closed": True
+        }
 
     def test_status_active_session_count_fresh_install_returns_zero(self, monkeypatch, tmp_path):
         """No state.db yet (fresh install): return 0 without attempting a

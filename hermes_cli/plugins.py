@@ -221,6 +221,18 @@ VALID_HOOKS: Set[str] = {
     # kanban_task_blocked adds:   reason: str | None.
     # kanban_pre_complete adds:   summary: str | None (the proposed summary;
     #                              may differ from final stored value).
+    # ── Relationship to tool-layer hooks ─────────────────────────────
+    # Some kanban state transitions have hooks at BOTH the tool layer and
+    # the DB layer. They serve different purposes and are not redundant:
+    #   - Tool-layer hooks (e.g. on_task_block in tools/kanban_tools.py,
+    #     #42692) fire BEFORE any DB write — they can reject the tool
+    #     call early (returning a tool_error to the worker) without ever
+    #     touching the board DB.
+    #   - DB-layer hooks (kanban_task_blocked, etc.) fire AFTER the write
+    #     txn commits — they observe durable state and a slow plugin can
+    #     never hold the SQLite write lock.
+    # A policy plugin can use both: tool-layer to reject early, DB-layer
+    # to react to the confirmed, durable transition.
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",

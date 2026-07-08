@@ -5161,6 +5161,10 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             {"status": new_status} if new_status != "ready" else None,
         )
         # Capture assignee for the lifecycle hook while still inside the txn.
+        # SQLite's SERIALIZABLE isolation (the default WAL mode) guarantees
+        # this read sees the row that was just committed — no other writer can
+        # mutate the row between our UPDATE above and this SELECT, so the
+        # value is not stale when the hook fires outside the txn.
         _unblocked_assignee = conn.execute(
             "SELECT assignee FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()

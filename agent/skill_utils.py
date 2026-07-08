@@ -507,6 +507,91 @@ def get_all_skills_dirs() -> List[Path]:
     return dirs
 
 
+def normalize_skill_lookup_name(identifier: str) -> str:
+    """Normalize a skill identifier to a ``skill_view()``-safe relative path.
+
+    Slash commands and cron jobs may store absolute paths to skills that live
+    under ``~/.hermes/skills/`` (including via symlinks) or configured
+    ``skills.external_dirs``. ``skill_view()`` rejects absolute names for
+    security, so callers must translate trusted absolute paths to their
+    relative form first.
+    """
+    raw_identifier = (identifier or "").strip()
+    if not raw_identifier:
+        return raw_identifier
+
+    identifier_path = Path(raw_identifier).expanduser()
+    if not identifier_path.is_absolute():
+        return raw_identifier.lstrip("/")
+
+    # Look the primary skills root up on tools.skills_tool at CALL time
+    # (not via get_skills_dir()): callers and tests patch
+    # ``tools.skills_tool.SKILLS_DIR`` and skill_view() itself resolves
+    # against that module attribute, so normalization must agree with the
+    # exact root skill_view() will enforce.  Import deferred to avoid a
+    # module cycle (tools.skills_tool imports agent.skill_utils).
+    try:
+        from tools import skills_tool as _skills_tool
+        primary_root = Path(_skills_tool.SKILLS_DIR)
+    except Exception:
+        primary_root = get_skills_dir()
+
+    trusted_roots = [primary_root]
+    try:
+        trusted_roots.extend(get_external_skills_dirs())
+    except Exception:
+        pass
+
+    # Prefer the lexical path under a trusted skill root before resolving
+    # symlinks. Slash-command discovery can legitimately find a skill via
+    # ~/.hermes/skills/<name> where <name> is a symlink to a checked-out
+    # skill elsewhere. Resolving first turns that trusted visible path into
+    # an arbitrary absolute path that skill_view() refuses to load.
+    for root in trusted_roots:
+        try:
+            return str(identifier_path.relative_to(root))
+        except ValueError:
+            continue
+
+    try:
+        return str(identifier_path.resolve().relative_to(primary_root.resolve()))
+    except Exception:
+        logger.debug(
+            "Skill identifier %r is an absolute path outside trusted skills "
+            "roots — passing through unchanged (skill_view will reject it)",
+            raw_identifier,
+        )
+        return raw_identifier
+
+
+def _resolve_for_skill_ownership(path) -> Path:
+    path_obj = path if isinstance(path, Path) else Path(str(path))
+    try:
+        return path_obj.expanduser().resolve()
+    except (OSError, RuntimeError):
+        return path_obj.expanduser().absolute()
+
+
+def is_external_skill_path(path) -> bool:
+    """Return True when ``path`` lives under a configured external skills dir.
+
+    ``skills.external_dirs`` are externally owned: Hermes can discover and view
+    their skills, and foreground user-directed tool calls may still edit them,
+    but autonomous lifecycle maintenance must treat them as read-only. This
+    helper centralizes the ownership boundary so curator/reporting/tool paths do
+    not each need to re-interpret the config.
+    """
+    candidate = _resolve_for_skill_ownership(path)
+    for root in get_external_skills_dirs():
+        resolved_root = _resolve_for_skill_ownership(root)
+        try:
+            candidate.relative_to(resolved_root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 # ── Condition extraction ──────────────────────────────────────────────────
 
 

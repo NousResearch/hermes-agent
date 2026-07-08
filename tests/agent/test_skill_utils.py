@@ -7,6 +7,7 @@ from agent.skill_utils import (
     get_disabled_skill_names,
     get_external_skills_dirs,
     is_excluded_skill_path,
+    is_external_skill_path,
     is_skill_support_path,
     iter_skill_index_files,
     resolve_skill_config_values,
@@ -168,6 +169,28 @@ def test_skill_config_raw_cache_invalidates_on_config_edit(tmp_path, monkeypatch
     os.utime(config_path, None)
 
     assert get_disabled_skill_names() == {"new-skill"}
+
+
+def test_is_external_skill_path_matches_configured_external_dir(tmp_path, monkeypatch):
+    from agent import skill_utils
+
+    hermes_home = tmp_path / ".hermes"
+    local_skills = hermes_home / "skills"
+    external = tmp_path / "external-skills"
+    local_skills.mkdir(parents=True)
+    external.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        f"skills:\n  external_dirs:\n    - {external}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    skill_utils._external_dirs_cache_clear()
+
+    assert is_external_skill_path(external / "team-skill" / "SKILL.md") is True
+    assert is_external_skill_path(local_skills / "local-skill" / "SKILL.md") is False
+
+
 def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):
     """Archived package SKILL.md files under support dirs are not active skills."""
     real = tmp_path / "umbrella"
@@ -310,3 +333,45 @@ class TestSkillMatchesPlatformTermux:
             "agent.skill_utils.is_termux", return_value=False
         ):
             assert skill_matches_platform(fm) is True
+
+
+class TestNormalizeSkillLookupName:
+    def test_relative_path_unchanged(self, tmp_path, monkeypatch):
+        from agent.skill_utils import normalize_skill_lookup_name
+
+        # Relative identifiers early-return before any root lookup.
+        assert normalize_skill_lookup_name("foo/bar") == "foo/bar"
+
+    def test_absolute_under_skills_dir_becomes_relative(self, tmp_path, monkeypatch):
+        from agent.skill_utils import normalize_skill_lookup_name
+
+        skills_dir = tmp_path / "skills"
+        skill_dir = skills_dir / "category" / "my-skill"
+        skill_dir.mkdir(parents=True)
+        # Patch the root skill_view() itself enforces — normalization reads
+        # tools.skills_tool.SKILLS_DIR at call time so the two stay in sync.
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
+        assert normalize_skill_lookup_name(str(skill_dir)) == "category/my-skill"
+
+    def test_absolute_via_symlink_uses_lexical_relative_path(self, tmp_path, monkeypatch):
+        from agent.skill_utils import normalize_skill_lookup_name
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        external = tmp_path / "external" / "my-skill"
+        external.mkdir(parents=True)
+        link = skills_dir / "my-skill"
+        try:
+            link.symlink_to(external)
+        except OSError:
+            pytest.skip("Symlinks not supported")
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
+        assert normalize_skill_lookup_name(str(link)) == "my-skill"
+
+    def test_untrusted_absolute_returned_unchanged(self, tmp_path, monkeypatch):
+        from agent.skill_utils import normalize_skill_lookup_name
+
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path / "skills")
+        monkeypatch.setattr("agent.skill_utils.get_skills_dir", lambda: tmp_path / "skills")
+        outside = str(tmp_path / "outside" / "skill")
+        assert normalize_skill_lookup_name(outside) == outside

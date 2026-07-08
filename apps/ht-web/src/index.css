@@ -51,13 +51,350 @@ body {
   line-height: 1.55;
 }
 
+/* ── App shell: nav rail + routed content ────────────── */
 .ht-app {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: 76px 1fr;
+  height: 100%;
+}
+.ht-rail {
+  background: var(--ht-surface);
+  border-right: 1px solid var(--ht-border);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 10px 8px;
+  overflow-y: auto;
+}
+.ht-rail__brand {
+  display: grid;
+  place-items: center;
+  height: 40px;
+  margin-bottom: 6px;
+}
+.ht-rail__mark {
+  color: var(--ht-accent-strong);
+  font-size: 22px;
+}
+.ht-rail__group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ht-rail__divider {
+  height: 1px;
+  background: var(--ht-border);
+  margin: 8px 4px;
+}
+.ht-rail__link {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 4px;
+  border-radius: 8px;
+  color: var(--ht-text-dim);
+  text-decoration: none;
+  font-size: 10px;
+}
+.ht-rail__link:hover {
+  background: var(--ht-surface-2);
+  color: var(--ht-text);
+}
+.ht-rail__link.is-active {
+  background: color-mix(in srgb, var(--ht-accent) 22%, transparent);
+  color: var(--ht-accent-strong);
+}
+.ht-rail__glyph {
+  font-size: 18px;
+}
+.ht-content {
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* ── Chat page (two-pane: conversation list + thread) ── */
+.ht-chat {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  height: 100%;
+}
+.ht-chat__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
   height: 100%;
 }
 
-/* ── Sidebar ─────────────────────────────────────────── */
+/* ── Management pages ────────────────────────────────── */
+.ht-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.ht-page__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--ht-border);
+}
+.ht-page__title {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
+.ht-page__actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.ht-page__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+}
+.ht-muted {
+  color: var(--ht-text-dim);
+}
+.ht-sm {
+  font-size: 12px;
+}
+.ht-dim {
+  color: var(--ht-text-dim);
+  opacity: 0.8;
+}
+.ht-ok {
+  color: var(--ht-ok);
+}
+.ht-warn {
+  color: #ffb454;
+}
+.ht-mono,
+.ht-page code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+.ht-error-inline {
+  color: var(--ht-error);
+}
+
+/* Cards + key/value */
+.ht-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+}
+.ht-card {
+  background: var(--ht-surface);
+  border: 1px solid var(--ht-border);
+  border-radius: var(--ht-radius);
+  padding: 16px 18px;
+}
+.ht-card__title {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ht-text-dim);
+  margin: 0 0 12px;
+}
+.ht-kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 0;
+}
+.ht-kv dt {
+  color: var(--ht-text-dim);
+  font-size: 13px;
+}
+.ht-kv dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+/* Chips */
+.ht-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+.ht-chip {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--ht-surface-2);
+  color: var(--ht-text-dim);
+}
+.ht-chip--ok {
+  background: color-mix(in srgb, var(--ht-ok) 20%, transparent);
+  color: var(--ht-ok);
+}
+.ht-chip--warn {
+  background: color-mix(in srgb, #ffb454 22%, transparent);
+  color: #ffb454;
+}
+
+/* Tables */
+.ht-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.ht-table th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ht-text-dim);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--ht-border);
+}
+.ht-table td {
+  padding: 10px;
+  border-bottom: 1px solid var(--ht-border);
+  vertical-align: top;
+}
+.ht-row-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+
+/* Inputs */
+.ht-select,
+.ht-input {
+  background: var(--ht-surface);
+  color: var(--ht-text);
+  border: 1px solid var(--ht-border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font: inherit;
+}
+.ht-input--sm,
+.ht-select {
+  padding: 5px 8px;
+  font-size: 13px;
+}
+.ht-btn--sm {
+  padding: 5px 10px;
+  font-size: 13px;
+}
+.ht-btn--ghost {
+  background: var(--ht-surface-2);
+  color: var(--ht-text);
+}
+
+/* Logs */
+.ht-logs__file {
+  font-size: 12px;
+  margin: 0 0 8px;
+}
+.ht-logs {
+  background: var(--ht-bg);
+  border: 1px solid var(--ht-border);
+  border-radius: 8px;
+  padding: 12px;
+  overflow-x: auto;
+  font-family: ui-monospace, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre;
+  margin: 0;
+}
+
+/* Code editor (config) */
+.ht-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 10px;
+}
+.ht-code-editor {
+  flex: 1;
+  min-height: 320px;
+  resize: vertical;
+  background: var(--ht-bg);
+  color: var(--ht-text);
+  border: 1px solid var(--ht-border);
+  border-radius: 8px;
+  padding: 12px;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.ht-editor__bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Models */
+.ht-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 16px;
+}
+.ht-provider.is-current {
+  border-color: var(--ht-accent);
+}
+.ht-provider__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: none;
+  border: 0;
+  color: var(--ht-text);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+.ht-provider__name {
+  font-weight: 600;
+}
+.ht-provider__count {
+  margin-left: auto;
+  color: var(--ht-text-dim);
+  font-size: 12px;
+}
+.ht-model-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.ht-model {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  color: var(--ht-text);
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+}
+.ht-model:hover:not(:disabled) {
+  background: var(--ht-surface-2);
+}
+.ht-model.is-active {
+  color: var(--ht-accent-strong);
+  cursor: default;
+}
+
+/* ── Sidebar (chat conversation list) ────────────────── */
 .ht-sidebar {
   background: var(--ht-surface);
   border-right: 1px solid var(--ht-border);

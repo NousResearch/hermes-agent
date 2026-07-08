@@ -1,64 +1,74 @@
-import { useGateway } from "./gateway/useGateway";
-import { MessageList } from "./components/MessageList";
-import { Composer } from "./components/Composer";
-import { SessionSidebar } from "./components/SessionSidebar";
-import { ApprovalDialog, ClarifyDialog } from "./components/RequestDialogs";
+import { lazy, Suspense } from "react";
+import { HashRouter, Route, Routes } from "react-router-dom";
+import { GatewayProvider } from "./gateway/GatewayContext";
+import { AppShell } from "./app/AppShell";
+import ChatPage from "./pages/ChatPage";
 
-const CONNECTION_LABEL: Record<string, string> = {
-  idle: "Connecting…",
-  connecting: "Connecting…",
-  open: "Connected",
-  closed: "Disconnected",
-  error: "Connection failed",
-};
+// Management pages are lazy-loaded so the chat bundle stays lean; they pull in
+// the REST client and their own widgets only when first navigated to.
+const SessionsPage = lazy(() => import("./pages/SessionsPage"));
+const ModelsPage = lazy(() => import("./pages/ModelsPage"));
+const ConfigPage = lazy(() => import("./pages/ConfigPage"));
+const LogsPage = lazy(() => import("./pages/LogsPage"));
+const SystemPage = lazy(() => import("./pages/SystemPage"));
+
+function Loading() {
+  return <p className="ht-muted" style={{ padding: 24 }}>Loading…</p>;
+}
 
 export default function App() {
-  const gw = useGateway();
-  const { chat, connection, skin } = gw;
-  const connected = connection === "open";
-  const busy = chat.status === "working" || chat.status === "starting";
-
   return (
-    <div className="ht-app">
-      <SessionSidebar
-        sessions={gw.sessions}
-        activeId={gw.sessionId}
-        agentName={skin.agentName}
-        onNew={() => void gw.newSession()}
-        onResume={(id) => void gw.resumeSession(id)}
-      />
-
-      <main className="ht-main">
-        <header className="ht-header">
-          <span className="ht-header__title">{skin.agentName}</span>
-          <span className={`ht-status ht-status--${connection}`}>
-            {chat.statusText || CONNECTION_LABEL[connection] || connection}
-          </span>
-        </header>
-
-        <section className="ht-conversation">
-          {chat.error && <div className="ht-error">{chat.error}</div>}
-          <MessageList messages={chat.messages} />
-        </section>
-
-        {chat.clarify && (
-          <ClarifyDialog clarify={chat.clarify} onRespond={(a) => void gw.respondClarify(a)} />
-        )}
-        {chat.approval && (
-          <ApprovalDialog
-            approval={chat.approval}
-            onRespond={(c, all) => void gw.respondApproval(c, all)}
-          />
-        )}
-
-        <Composer
-          disabled={!connected || gw.sessionId === null}
-          busy={busy}
-          promptSymbol={skin.promptSymbol}
-          onSubmit={(text) => void gw.submit(text)}
-          onInterrupt={() => void gw.interrupt()}
-        />
-      </main>
-    </div>
+    <GatewayProvider>
+      {/* Hash routing: the SPA is served as a static bundle by the Python
+          gateway with no server-side route table, so hash routes avoid 404s
+          on deep-link refresh without needing a catch-all rewrite. */}
+      <HashRouter>
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route index element={<ChatPage />} />
+            <Route
+              path="sessions"
+              element={
+                <Suspense fallback={<Loading />}>
+                  <SessionsPage />
+                </Suspense>
+              }
+            />
+            <Route
+              path="models"
+              element={
+                <Suspense fallback={<Loading />}>
+                  <ModelsPage />
+                </Suspense>
+              }
+            />
+            <Route
+              path="config"
+              element={
+                <Suspense fallback={<Loading />}>
+                  <ConfigPage />
+                </Suspense>
+              }
+            />
+            <Route
+              path="logs"
+              element={
+                <Suspense fallback={<Loading />}>
+                  <LogsPage />
+                </Suspense>
+              }
+            />
+            <Route
+              path="system"
+              element={
+                <Suspense fallback={<Loading />}>
+                  <SystemPage />
+                </Suspense>
+              }
+            />
+          </Route>
+        </Routes>
+      </HashRouter>
+    </GatewayProvider>
   );
 }

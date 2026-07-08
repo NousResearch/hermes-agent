@@ -51,9 +51,49 @@ npm run test --workspace apps/ht-web        # vitest (reducer + skin + component
 npm run build --workspace apps/ht-web       # production build → dist/
 ```
 
-## MVP scope (Phase 3, M1–M4)
+## Chat (Phase 3, M1–M4)
 
 Connect + skin handshake, streaming chat with client-side Markdown, tool-call
-activity feed, approval/clarify dialogs, and session list/resume/new. Out of
-scope for the MVP: the management pages (see `web/`), voice, billing overlays,
-subagent spawn-tree view, and the PTY-embedded terminal.
+activity feed, approval/clarify dialogs, and session list/resume/new.
+
+## Management pages (Phase 4)
+
+The app is now a shell: a left nav rail routes between **Chat** and REST-backed
+management pages. The gateway WebSocket connection lives in `GatewayContext`
+above the router, so chat state survives navigating away and back.
+
+| Path | Page | Endpoints |
+|---|---|---|
+| `/` | Chat | `/api/ws` (gateway) |
+| `/sessions` | Sessions — list, rename, delete | `/api/sessions*` |
+| `/models` | Models — current model + provider/model picker | `/api/model/{info,options,set}` |
+| `/config` | Config — raw `config.yaml` editor | `/api/config/raw` |
+| `/logs` | Logs — level/line filters | `/api/logs` |
+| `/system` | System — gateway + host status | `/api/status`, `/api/system/stats` |
+
+### REST layer
+
+- `src/api/client.ts` — base client (session-token header, base path, gated
+  cookie path, 401 → login redirect). Unit-tested with a mocked `fetch`.
+- `src/api/endpoints.ts` — typed wrappers + response types, mirroring
+  `web/src/lib/api.ts` (source of truth) for the subset the pages use.
+
+### Porting the next page (the pattern)
+
+1. Add the response type + a typed wrapper in `src/api/endpoints.ts`.
+2. Create `src/pages/<Name>Page.tsx` using `ManagementPage` + `useResource` +
+   `ResourceView` from `src/components/PageScaffold.tsx` for the
+   loading/error/empty lifecycle.
+3. Register it in `src/app/nav.ts` (one `NavItem`) and add the lazy `<Route>`
+   in `src/App.tsx`.
+
+Still to port from `web/`: Env/Keys, Cron, Skills, Plugins, MCP, Channels,
+Webhooks, Profiles, Files, Pairing, Analytics. All are plain REST (no WS/PTY);
+async-action pages (backup/import/update/hub installs) additionally need an
+`getActionStatus` polling helper and an `authedFetch`-style blob/FormData path
+added to the client.
+
+## Out of scope
+
+Voice, billing overlays, subagent spawn-tree view, the PTY-embedded terminal
+(ht-web has its own native chat), and the dashboard plugin system.

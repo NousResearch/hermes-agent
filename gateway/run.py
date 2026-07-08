@@ -2393,14 +2393,28 @@ def _load_gateway_runtime_config() -> dict:
     return expanded if isinstance(expanded, dict) else {}
 
 
-def _resolve_gateway_model(config: dict | None = None) -> str:
+def _resolve_gateway_model(config: dict | None = None, platform: Optional[str] = None) -> str:
     """Read model from config.yaml — single source of truth.
 
-    Without this, temporary AIAgent instances (e.g. /compress) fall
-    back to the hardcoded default which fails when the active provider is
-    openai-codex.
+    Supports per-platform overrides via `platforms.<name>.model`. If no
+    override is found, falls back to the global `model` section.
     """
     cfg = config if config is not None else _load_gateway_config()
+
+    # 1. Try platform-specific override
+    if platform:
+        platforms_cfg = cfg.get("platforms", {})
+        if isinstance(platforms_cfg, dict):
+            plat_cfg = platforms_cfg.get(platform, {})
+            if isinstance(plat_cfg, dict):
+                plat_model = plat_cfg.get("model")
+                if plat_model:
+                    if isinstance(plat_model, str):
+                        return plat_model
+                    if isinstance(plat_model, dict):
+                        return plat_model.get("default") or plat_model.get("model") or ""
+
+    # 2. Fallback to global default
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, str):
         return model_cfg
@@ -3755,7 +3769,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 resolved_session_key = None
 
-        model = _resolve_gateway_model(user_config)
+        model = _resolve_gateway_model(
+            user_config, platform=source.platform.value if source else None
+        )
         if resolved_session_key:
             self._rehydrate_session_model_override(resolved_session_key)
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
@@ -4752,7 +4768,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             if override and override.model:
                 return override.model
-        return _resolve_gateway_model(user_config)
+        return _resolve_gateway_model(
+            user_config, platform=platform.value if platform else None
+        )
 
     def _get_system_prompt_for_channel(
         self,
@@ -11786,7 +11804,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     {
                         "role": "session_meta",
                         "tools": tool_defs or [],
-                        "model": _resolve_gateway_model(),
+                        "model": _resolve_gateway_model(
+                            platform=source.platform.value if source else None
+                        ),
                         "platform": source.platform.value if source.platform else "",
                         "timestamp": ts,
                     }
@@ -12114,10 +12134,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
-                return self._format_session_info()
-        return self._format_session_info()
+                return self._format_session_info(platform=source.platform.value if source else None)
+        return self._format_session_info(platform=source.platform.value if source else None)
 
-    def _format_session_info(self) -> str:
+    def _format_session_info(self, platform: Optional[str] = None) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
@@ -12126,7 +12146,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
-        model = _resolve_gateway_model()
+        model = _resolve_gateway_model(platform=platform)
         config_context_length = None
         provider = None
         base_url = None
@@ -19428,7 +19448,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _result_for_fb = result_holder[0]
             _run_failed = _result_for_fb.get("failed") if _result_for_fb else False
             if _agent is not None and hasattr(_agent, 'model') and not _run_failed:
-                _cfg_model = _resolve_gateway_model()
+                _cfg_model = _resolve_gateway_model(
+                    platform=source.platform.value if source else None
+                )
                 # Normalize _cfg_model the same way AIAgent.__init__ does, so a
                 # vendor-prefixed config value (e.g. "deepseek/deepseek-v4-pro")
                 # matches the agent's stripped model ("deepseek-v4-pro") on

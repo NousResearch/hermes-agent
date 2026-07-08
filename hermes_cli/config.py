@@ -963,6 +963,21 @@ DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
     "fallback_providers": [],
+    # Main-agent adaptive model routing. Distinct from OpenRouter provider_routing
+    # (within-model provider selection), auxiliary.* side-task routing,
+    # fallback_providers failure recovery, and delegation/cron explicit overrides.
+    # Inert unless enabled; incomplete/bad routes fail closed to the configured
+    # primary model for the turn.
+    "model_routing": {
+        "enabled": False,
+        "default_tier": "balanced",
+        "log_decisions": True,
+        "tiers": {
+            "cheap": {"provider": "", "model": ""},
+            "balanced": {"provider": "", "model": ""},
+            "best": {"provider": "", "model": ""},
+        },
+    },
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
@@ -5185,7 +5200,7 @@ def check_config_version() -> Tuple[int, int]:
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
-    "fallback_providers", "credential_pool_strategies", "toolsets",
+    "fallback_providers", "model_routing", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
     "sessions", "streaming", "updates", "mcp_servers",

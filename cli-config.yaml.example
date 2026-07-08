@@ -139,6 +139,38 @@ model:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
 # =============================================================================
+# Hermes Adaptive Model Routing (main agent turns; opt-in)
+# =============================================================================
+# Chooses a configured model tier for each main user turn before the AIAgent is
+# constructed. This is Hermes-level model selection, not OpenRouter's provider
+# routing below. It does not affect auxiliary.* side tasks, fallback_providers,
+# delegation.model, or cron job explicit model overrides.
+#
+# model_routing:
+#   enabled: false
+#   default_tier: balanced
+#   log_decisions: true
+#   tiers:
+#     cheap:
+#       provider: openrouter
+#       model: google/gemini-3-flash-preview
+#     balanced:
+#       provider: openrouter
+#       model: anthropic/claude-sonnet-4.6
+#     best:
+#       provider: anthropic
+#       model: claude-opus-4-6
+#
+# Manual language overrides win over heuristics:
+#   "use cheap model", "quick answer" -> cheap
+#   "use best model", "think deeply", "use Fable" -> best
+#
+# Built-in heuristics route short/simple turns to cheap, normal coding/tool use
+# to balanced, and architecture, hard debugging, large refactors, Hermes
+# internals, security/privacy, and high-stakes advice to best. Bad/missing tier
+# config fails closed to the current configured model.
+
+# =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
 # =============================================================================
 # Control how requests are routed across providers on OpenRouter.

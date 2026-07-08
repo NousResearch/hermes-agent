@@ -3779,7 +3779,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     resolved_session_key or "", model, override_model,
                     override_runtime.get("provider"),
                 )
-                return override_model, override_runtime
+                return override_model, {**override_runtime, "_session_model_override": True}
             # Override exists but has no api_key — fall through to env-based
             # resolution and apply model/provider from the override on top.
             logger.debug(
@@ -3838,6 +3838,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs
             )
+            runtime_kwargs["_session_model_override"] = True
 
         # When the config has no model.default but a provider was resolved
         # (e.g. user ran `hermes auth add openai-codex` without `hermes model`),
@@ -3915,6 +3916,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 tuple(runtime["args"]),
             ),
         }
+
+        try:
+            from hermes_cli.model_routing import apply_route_to_turn
+
+            route = apply_route_to_turn(
+                route=route,
+                user_message=user_message,
+                config=getattr(self, "_user_config", None) or _load_gateway_config(),
+                explicit_override=bool(runtime_kwargs.get("_session_model_override")),
+            )
+        except Exception:
+            pass
 
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:

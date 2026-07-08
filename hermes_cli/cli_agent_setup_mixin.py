@@ -203,6 +203,24 @@ class CLIAgentSetupMixin:
             ),
         }
 
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.model_routing import apply_route_to_turn
+
+            # CLI --model/--provider/model switching is already reflected in
+            # self.model/self.requested_provider and must remain authoritative.
+            # There is no reliable session flag here, so only route when the
+            # feature is enabled and a tier fully resolves; failures leave route
+            # untouched.
+            route = apply_route_to_turn(
+                route=route,
+                user_message=user_message,
+                config=load_config(),
+                explicit_override=False,
+            )
+        except Exception:
+            pass
+
         service_tier = getattr(self, "service_tier", None)
         if not service_tier:
             route["request_overrides"] = None

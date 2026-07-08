@@ -490,6 +490,34 @@ def convert_tools_to_converse(tools: List[Dict]) -> List[Dict]:
     return result
 
 
+# Bedrock's Converse API rejects text content blocks that are empty OR
+# whitespace-only ("text content blocks must contain non-whitespace text").
+# When a message legitimately has no text (e.g. an assistant turn that is only
+# tool calls, or an empty tool result), we must substitute a NON-whitespace
+# sentinel — a single space no longer passes validation.
+_EMPTY_TEXT_PLACEHOLDER = "[empty]"
+
+
+def _sanitize_text_blocks(blocks) -> None:
+    """In-place backstop: replace any empty/whitespace-only ``text`` with the
+    non-whitespace sentinel, recursing into ``toolResult`` content.
+
+    Bedrock's Converse API rejects the whole request if a single text content
+    block is empty or whitespace-only, so this runs as a final sweep over every
+    assembled message regardless of the path that produced the block.
+    """
+    if not isinstance(blocks, list):
+        return
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        if "text" in block:
+            if not isinstance(block["text"], str) or not block["text"].strip():
+                block["text"] = _EMPTY_TEXT_PLACEHOLDER
+        elif "toolResult" in block and isinstance(block["toolResult"], dict):
+            _sanitize_text_blocks(block["toolResult"].get("content", []))
+
+
 def _convert_content_to_converse(content) -> List[Dict]:
     """Convert OpenAI message content (string or list) to Converse content blocks.
 
@@ -498,13 +526,16 @@ def _convert_content_to_converse(content) -> List[Dict]:
       - Content arrays with text/image_url parts → mixed text/image blocks
 
     Filters out empty text blocks — Bedrock's Converse API rejects messages
-    where a text content block has an empty ``text`` field (ValidationException:
-    "text content blocks must be non-empty"). Ref: issue #9486.
+    where a text content block is empty *or whitespace-only* (ValidationException:
+    "text content blocks must contain non-whitespace text"). Whitespace-only
+    text is replaced with ``_EMPTY_TEXT_PLACEHOLDER`` (a non-whitespace sentinel)
+    rather than a single space, because a space no longer satisfies the check.
+    Ref: issue #9486.
     """
     if content is None:
-        return [{"text": " "}]
+        return [{"text": _EMPTY_TEXT_PLACEHOLDER}]
     if isinstance(content, str):
-        return [{"text": content}] if content.strip() else [{"text": " "}]
+        return [{"text": content}] if content.strip() else [{"text": _EMPTY_TEXT_PLACEHOLDER}]
     if isinstance(content, list):
         blocks = []
         for part in content:
@@ -516,7 +547,7 @@ def _convert_content_to_converse(content) -> List[Dict]:
             part_type = part.get("type", "")
             if part_type == "text":
                 text = part.get("text", "")
-                blocks.append({"text": text if text else " "})
+                blocks.append({"text": text if text.strip() else _EMPTY_TEXT_PLACEHOLDER})
             elif part_type == "image_url":
                 image_url = part.get("image_url", {})
                 url = image_url.get("url", "") if isinstance(image_url, dict) else ""
@@ -538,7 +569,7 @@ def _convert_content_to_converse(content) -> List[Dict]:
                     # Remote URL — Converse doesn't support URLs directly,
                     # include as text reference for the model.
                     blocks.append({"text": f"[Image: {url}]"})
-        return blocks if blocks else [{"text": " "}]
+        return blocks if blocks else [{"text": _EMPTY_TEXT_PLACEHOLDER}]
     return [{"text": str(content)}]
 
 
@@ -584,6 +615,10 @@ def convert_messages_to_converse(
             # Tool result messages → merge into the preceding user turn
             tool_call_id = msg.get("tool_call_id", "")
             result_content = content if isinstance(content, str) else json.dumps(content)
+            # Bedrock rejects whitespace-only text blocks; empty tool output
+            # (a command that printed nothing) must still carry a sentinel.
+            if not result_content.strip():
+                result_content = _EMPTY_TEXT_PLACEHOLDER
             tool_result_block = {
                 "toolResult": {
                     "toolUseId": tool_call_id,
@@ -626,7 +661,7 @@ def convert_messages_to_converse(
                 })
 
             if not content_blocks:
-                content_blocks = [{"text": " "}]
+                content_blocks = [{"text": _EMPTY_TEXT_PLACEHOLDER}]
 
             # Merge with previous assistant message if needed (strict alternation)
             if converse_msgs and converse_msgs[-1]["role"] == "assistant":
@@ -652,11 +687,21 @@ def convert_messages_to_converse(
 
     # Converse requires the first message to be from the user
     if converse_msgs and converse_msgs[0]["role"] != "user":
-        converse_msgs.insert(0, {"role": "user", "content": [{"text": " "}]})
+        converse_msgs.insert(0, {"role": "user", "content": [{"text": _EMPTY_TEXT_PLACEHOLDER}]})
 
     # Converse requires the last message to be from the user
     if converse_msgs and converse_msgs[-1]["role"] != "user":
-        converse_msgs.append({"role": "user", "content": [{"text": " "}]})
+        converse_msgs.append({"role": "user", "content": [{"text": _EMPTY_TEXT_PLACEHOLDER}]})
+
+    # Defensive final sweep: guarantee no text block anywhere is empty or
+    # whitespace-only, regardless of which conversion path produced it.
+    # Bedrock rejects the ENTIRE request on a single offending block
+    # (ValidationException: "text content blocks must contain non-whitespace
+    # text"), so this backstop covers system blocks, merged alternation turns,
+    # and nested toolResult content in one place.
+    _sanitize_text_blocks(system_blocks)
+    for _m in converse_msgs:
+        _sanitize_text_blocks(_m.get("content", []))
 
     return (system_blocks if system_blocks else None, converse_msgs)
 

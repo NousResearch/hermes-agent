@@ -326,8 +326,9 @@ class TestConvertMessagesToConverse:
         from agent.bedrock_adapter import convert_messages_to_converse
         messages = [{"role": "user", "content": ""}]
         system, msgs = convert_messages_to_converse(messages)
-        # Empty string should get a space placeholder
-        assert msgs[0]["content"][0]["text"].strip() != "" or msgs[0]["content"][0]["text"] == " "
+        # Empty string must become a non-whitespace placeholder (Bedrock rejects
+        # empty or whitespace-only text blocks).
+        assert msgs[0]["content"][0]["text"].strip() != ""
 
     def test_image_data_url_converted(self):
         from agent.bedrock_adapter import convert_messages_to_converse
@@ -1305,22 +1306,28 @@ class TestIsAnthropicBedrockModel:
 
 
 class TestEmptyTextBlockFix:
-    """Test that empty text blocks are replaced with space placeholders."""
+    """Empty/whitespace-only text blocks must be replaced with a NON-whitespace
+    placeholder. Bedrock's Converse API rejects the whole request if any text
+    block is empty or whitespace-only ("text content blocks must contain
+    non-whitespace text"), so the placeholder itself must be non-whitespace —
+    a bare space (the original #9486 fix) no longer passes. We assert the
+    invariant (non-whitespace, non-empty), not a specific literal.
+    """
 
-    def test_none_content_gets_space(self):
+    def test_none_content_is_non_whitespace(self):
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse(None)
-        assert blocks[0]["text"] == " "
+        assert blocks[0]["text"].strip(), "placeholder must be non-whitespace"
 
-    def test_empty_string_gets_space(self):
+    def test_empty_string_is_non_whitespace(self):
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse("")
-        assert blocks[0]["text"] == " "
+        assert blocks[0]["text"].strip(), "placeholder must be non-whitespace"
 
-    def test_whitespace_only_gets_space(self):
+    def test_whitespace_only_is_non_whitespace(self):
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse("   ")
-        assert blocks[0]["text"] == " "
+        assert blocks[0]["text"].strip(), "whitespace-only must become non-whitespace"
 
     def test_real_text_preserved(self):
         from agent.bedrock_adapter import _convert_content_to_converse

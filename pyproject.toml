@@ -305,6 +305,7 @@ all = [
 ]
 
 [project.scripts]
+ht = "hermes_cli.main:main"
 hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"

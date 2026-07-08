@@ -298,13 +298,6 @@ _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
 _running_lock = threading.Lock()
 
-
-def cron_jobs_in_flight() -> int:
-    """Return how many cron jobs are currently executing agent/tool work."""
-    with _running_lock:
-        return len(_running_job_ids)
-
-
 # Job IDs the gateway shutdown path force-killed the tool subprocess of
 # while still in ``_running_job_ids`` (see ``mark_running_jobs_interrupted``
 # below). ``run_one_job``'s own completion path checks this set before

@@ -458,7 +458,9 @@ class TestProfileScopedGateway:
             return None
 
         monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
-        monkeypatch.setattr(web_server, "get_running_pid", fake_get_running_pid)
+        # get_status probes via the TTL-cached wrapper (PR #53511 salvage);
+        # patch the cached name so the fake still intercepts the probe.
+        monkeypatch.setattr(web_server, "get_running_pid_cached", fake_get_running_pid)
         monkeypatch.setattr(
             web_server,
             "read_runtime_status",
@@ -493,7 +495,7 @@ class TestProfileScopedGateway:
             "updated_at": "2026-06-17T00:00:00+00:00",
         }
         monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
-        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
+        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: None)
         monkeypatch.setattr(web_server, "read_runtime_status", lambda: runtime)
         monkeypatch.setattr(
             web_server, "get_runtime_status_running_pid", lambda payload: 4242

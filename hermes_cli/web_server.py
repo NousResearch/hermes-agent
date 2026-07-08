@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import hmac
+import inspect
 import importlib.util
 import json
 import logging
@@ -77,6 +78,7 @@ from hermes_cli.config import (
 from gateway.status import (
     derive_gateway_busy,
     derive_gateway_drainable,
+    get_running_pid_cached,
     get_running_pid,
     get_runtime_status_running_pid,
     parse_active_agents,
@@ -93,6 +95,7 @@ try:
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
+    from starlette.concurrency import run_in_threadpool
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
@@ -108,6 +111,7 @@ except ImportError:
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel
+        from starlette.concurrency import run_in_threadpool
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
@@ -1120,6 +1124,8 @@ except (ValueError, TypeError):
     )
     _GATEWAY_HEALTH_TIMEOUT = 3.0
 
+_STATUS_ACTIVE_SESSIONS_TIMEOUT = 0.75
+
 # DEPRECATED (scheduled for removal): GATEWAY_HEALTH_URL / GATEWAY_HEALTH_TIMEOUT.
 # Cross-container / cross-host gateway liveness detection will be folded into a
 # first-class dashboard config key so it's no longer Docker-adjacent lore buried
@@ -1168,6 +1174,51 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
         except Exception:
             continue
     return False, None
+
+
+def _count_status_active_sessions() -> int:
+    """Return the dashboard status active-session count.
+
+    This is best-effort status garnish, not a critical path.  Use a read-only
+    connection so /api/status never tries to initialise or migrate state.db
+    while another Hermes process is writing to it.
+    """
+    from hermes_state import DEFAULT_DB_PATH, SessionDB
+
+    # read_only opens require the DB to already exist (see SessionDB.__init__
+    # read_only contract) — on a fresh install every /api/status poll would
+    # otherwise pay an OperationalError until the first session is written.
+    if not DEFAULT_DB_PATH.exists():
+        return 0
+
+    db = SessionDB(read_only=True)
+    try:
+        sessions = db.list_sessions_rich(limit=50)
+        now = time.time()
+        return sum(
+            1 for s in sessions
+            if s.get("ended_at") is None
+            and (now - s.get("last_active", s.get("started_at", 0))) < 300
+        )
+    finally:
+        db.close()
+
+
+async def _status_active_sessions() -> int:
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _count_status_active_sessions),
+            timeout=_STATUS_ACTIVE_SESSIONS_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        _log.debug(
+            "/api/status active session count exceeded %.2fs; returning 0",
+            _STATUS_ACTIVE_SESSIONS_TIMEOUT,
+        )
+    except Exception as exc:
+        _log.debug("/api/status active session count unavailable: %s", exc)
+    return 0
 
 
 # Image MIME types this endpoint will serve. Extension-allowlisted so an
@@ -2412,7 +2463,7 @@ async def get_status(profile: Optional[str] = None):
         # Try local PID check first (same-host).  If that fails and a remote
         # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
         # dashboard works when the gateway runs in a separate container.
-        gateway_pid = get_running_pid()
+        gateway_pid = get_running_pid_cached()
         gateway_running = gateway_pid is not None
         remote_health_body: dict | None = None
 
@@ -2485,22 +2536,7 @@ async def get_status(profile: Optional[str] = None):
         if gateway_running and gateway_state is None and remote_health_body is not None:
             gateway_state = "running"
 
-        active_sessions = 0
-        try:
-            from hermes_state import SessionDB
-            db = SessionDB()
-            try:
-                sessions = db.list_sessions_rich(limit=50)
-                now = time.time()
-                active_sessions = sum(
-                    1 for s in sessions
-                    if s.get("ended_at") is None
-                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
-                )
-            finally:
-                db.close()
-        except Exception:
-            pass
+        active_sessions = await _status_active_sessions()
 
         # Busy/drainable readout (NAS lifecycle-safety gate).  active_agents is
         # the in-flight gateway-turn count the gateway now persists at every
@@ -3011,6 +3047,9 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None):
 # ---------------------------------------------------------------------------
 
 _ACTION_LOG_DIR: Path = get_hermes_home() / "logs"
+_ACTION_LOG_TAIL_MAX_BYTES = 256 * 1024
+_ACTION_LOG_TAIL_INITIAL_CHUNK_BYTES = 8 * 1024
+_ACTION_LOG_TAIL_MAX_CHUNK_BYTES = 64 * 1024
 
 # Short ``name`` (from the URL) → absolute log file path.
 _ACTION_LOG_FILES: Dict[str, str] = {
@@ -3112,17 +3151,50 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
 
 
 def _tail_lines(path: Path, n: int) -> List[str]:
-    """Return the last ``n`` lines of ``path``.  Reads the whole file — fine
-    for our small per-action logs.  Binary-decoded with ``errors='replace'``
-    so log corruption doesn't 500 the endpoint."""
-    if not path.exists():
+    """Return the last ``n`` lines of ``path`` without loading huge logs."""
+    if n <= 0 or not path.exists():
         return []
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        size = path.stat().st_size
     except OSError:
         return []
-    lines = text.splitlines()
-    return lines[-n:] if n > 0 else lines
+    if size <= 0:
+        return []
+
+    min_offset = max(0, size - _ACTION_LOG_TAIL_MAX_BYTES)
+    offset = size
+    chunk_size = _ACTION_LOG_TAIL_INITIAL_CHUNK_BYTES
+    newline_count = 0
+    chunks: List[bytes] = []
+    drop_partial_first_line = False
+
+    try:
+        with path.open("rb") as handle:
+            while offset > min_offset and newline_count <= n:
+                read_size = min(chunk_size, offset - min_offset)
+                offset -= read_size
+                handle.seek(offset)
+                chunk = handle.read(read_size)
+                chunks.append(chunk)
+                newline_count += chunk.count(b"\n")
+                chunk_size = min(
+                    chunk_size * 2,
+                    _ACTION_LOG_TAIL_MAX_CHUNK_BYTES,
+                )
+            if offset > 0:
+                handle.seek(offset - 1)
+                drop_partial_first_line = handle.read(1) != b"\n"
+    except OSError:
+        return []
+
+    lines = (
+        b"".join(reversed(chunks))
+        .decode("utf-8", errors="replace")
+        .splitlines()
+    )
+    if drop_partial_first_line and lines:
+        lines = lines[1:]
+    return lines[-n:]
 
 
 def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
@@ -3764,7 +3836,7 @@ async def get_action_status(name: str, lines: int = 200):
 
 
 @app.get("/api/sessions")
-async def get_sessions(
+def get_sessions(
     limit: int = 20,
     offset: int = 0,
     min_messages: int = 0,
@@ -9237,7 +9309,17 @@ def _session_latest_descendant(session_id: str, db):
     rows = []
     if conn is not None:
         raw_rows = conn.execute(
-            "SELECT id, parent_session_id, started_at FROM sessions"
+            """
+            WITH RECURSIVE descendants(id, parent_session_id, started_at) AS (
+                SELECT id, parent_session_id, started_at FROM sessions WHERE id = ?
+                UNION
+                SELECT s.id, s.parent_session_id, s.started_at
+                FROM sessions s
+                JOIN descendants d ON s.parent_session_id = d.id
+            )
+            SELECT id, parent_session_id, started_at FROM descendants
+            """,
+            (sid,),
         ).fetchall()
         for row in raw_rows:
             rows.append({
@@ -9959,8 +10041,7 @@ def _find_cron_job_profile(job_id: str) -> Optional[str]:
     return None
 
 
-@app.get("/api/cron/jobs")
-async def list_cron_jobs(profile: str = "all"):
+def _list_cron_jobs_sync(profile: str = "all"):
     requested = (profile or "all").strip()
     if requested.lower() != "all":
         return _call_cron_for_profile(requested, "list_jobs", True)
@@ -9977,8 +10058,22 @@ async def list_cron_jobs(profile: str = "all"):
     return jobs
 
 
-@app.get("/api/cron/jobs/{job_id}")
-async def get_cron_job(job_id: str, profile: Optional[str] = None):
+async def _run_cron_dashboard_io(func, *args, **kwargs):
+    """Run cron dashboard profile/job I/O outside the FastAPI event loop."""
+    if inspect.iscoroutinefunction(func):
+        raise TypeError("_run_cron_dashboard_io only accepts sync callables")
+    result = await run_in_threadpool(func, *args, **kwargs)
+    if inspect.isawaitable(result):
+        raise TypeError("_run_cron_dashboard_io sync callable returned an awaitable")
+    return result
+
+
+@app.get("/api/cron/jobs")
+async def list_cron_jobs(profile: str = "all"):
+    return await _run_cron_dashboard_io(_list_cron_jobs_sync, profile)
+
+
+def _get_cron_job_sync(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -9988,8 +10083,12 @@ async def get_cron_job(job_id: str, profile: Optional[str] = None):
     return job
 
 
-@app.get("/api/cron/jobs/{job_id}/runs")
-async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: int = 20):
+@app.get("/api/cron/jobs/{job_id}")
+async def get_cron_job(job_id: str, profile: Optional[str] = None):
+    return await _run_cron_dashboard_io(_get_cron_job_sync, job_id, profile)
+
+
+def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: int = 20):
     """Run sessions produced by a cron job, newest first.
 
     Cron runs are stored as ordinary sessions whose id is
@@ -10034,8 +10133,12 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
         db.close()
 
 
-@app.post("/api/cron/jobs")
-async def create_cron_job(body: CronJobCreate, profile: str = "default"):
+@app.get("/api/cron/jobs/{job_id}/runs")
+async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: int = 20):
+    return await _run_cron_dashboard_io(_list_cron_job_runs_sync, job_id, profile, limit)
+
+
+def _create_cron_job_sync(body: CronJobCreate, profile: str = "default"):
     try:
         profile_name, profile_home = _cron_profile_home(profile)
         script = _normalize_dashboard_cron_script(body.script, profile_home)
@@ -10073,6 +10176,11 @@ async def create_cron_job(body: CronJobCreate, profile: str = "default"):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.post("/api/cron/jobs")
+async def create_cron_job(body: CronJobCreate, profile: str = "default"):
+    return await _run_cron_dashboard_io(_create_cron_job_sync, body, profile)
+
+
 @app.get("/api/cron/delivery-targets")
 async def get_cron_delivery_targets():
     """Delivery targets the cron dropdown should offer.
@@ -10101,8 +10209,7 @@ async def get_cron_delivery_targets():
     return {"targets": targets}
 
 
-@app.put("/api/cron/jobs/{job_id}")
-async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
+def _update_cron_job_sync(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -10136,8 +10243,12 @@ async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[st
     return job
 
 
-@app.post("/api/cron/jobs/{job_id}/pause")
-async def pause_cron_job(job_id: str, profile: Optional[str] = None):
+@app.put("/api/cron/jobs/{job_id}")
+async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
+    return await _run_cron_dashboard_io(_update_cron_job_sync, job_id, body, profile)
+
+
+def _pause_cron_job_sync(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -10147,8 +10258,12 @@ async def pause_cron_job(job_id: str, profile: Optional[str] = None):
     return job
 
 
-@app.post("/api/cron/jobs/{job_id}/resume")
-async def resume_cron_job(job_id: str, profile: Optional[str] = None):
+@app.post("/api/cron/jobs/{job_id}/pause")
+async def pause_cron_job(job_id: str, profile: Optional[str] = None):
+    return await _run_cron_dashboard_io(_pause_cron_job_sync, job_id, profile)
+
+
+def _resume_cron_job_sync(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -10158,8 +10273,12 @@ async def resume_cron_job(job_id: str, profile: Optional[str] = None):
     return job
 
 
-@app.post("/api/cron/jobs/{job_id}/trigger")
-async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
+@app.post("/api/cron/jobs/{job_id}/resume")
+async def resume_cron_job(job_id: str, profile: Optional[str] = None):
+    return await _run_cron_dashboard_io(_resume_cron_job_sync, job_id, profile)
+
+
+def _trigger_cron_job_sync(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -10169,8 +10288,12 @@ async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
     return job
 
 
-@app.delete("/api/cron/jobs/{job_id}")
-async def delete_cron_job(job_id: str, profile: Optional[str] = None):
+@app.post("/api/cron/jobs/{job_id}/trigger")
+async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
+    return await _run_cron_dashboard_io(_trigger_cron_job_sync, job_id, profile)
+
+
+def _delete_cron_job_sync(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -10181,6 +10304,11 @@ async def delete_cron_job(job_id: str, profile: Optional[str] = None):
     if not removed:
         raise HTTPException(status_code=404, detail="Job not found")
     return {"ok": True}
+
+
+@app.delete("/api/cron/jobs/{job_id}")
+async def delete_cron_job(job_id: str, profile: Optional[str] = None):
+    return await _run_cron_dashboard_io(_delete_cron_job_sync, job_id, profile)
 
 
 def _fire_cron_job_for_profile(profile: str, job_id: str) -> bool:

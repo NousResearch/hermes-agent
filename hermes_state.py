@@ -122,7 +122,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -742,6 +742,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     compression_failure_error TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    pinned_at REAL,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -2810,6 +2811,43 @@ class SessionDB:
             return rowcount
         rowcount = self._execute_write(_do)
         return rowcount > 0
+
+    def pin_session(self, session_id: str) -> bool:
+        """Pin a session so it appears at the top of the session list.
+
+        Sets pinned_at to the current timestamp. Returns True if the session
+        was found and updated.
+        """
+        from time import time
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET pinned_at = ? WHERE id = ?",
+                (time(), session_id),
+            )
+            return cursor.rowcount
+        rowcount = self._execute_write(_do)
+        return rowcount > 0
+
+    def unpin_session(self, session_id: str) -> bool:
+        """Unpin a session by clearing its pinned_at field."""
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET pinned_at = NULL WHERE id = ?",
+                (session_id,),
+            )
+            return cursor.rowcount
+        rowcount = self._execute_write(_do)
+        return rowcount > 0
+
+    def get_pinned_sessions(self) -> List[Dict[str, Any]]:
+        """Return all pinned sessions ordered by pinned_at descending."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM sessions WHERE pinned_at IS NOT NULL "
+                "ORDER BY pinned_at DESC"
+            )
+            rows = cursor.fetchall()
+        return [dict(r) for r in rows]
 
     def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""

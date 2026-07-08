@@ -587,30 +587,20 @@ class EmailAdapter(BasePlatformAdapter):
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             imap.login(self._address, self._password)
             _send_imap_id(imap)
-            # Mark all existing messages as seen so we only process new ones
+            # Establish a startup UID boundary so we only process later messages.
             imap.select("INBOX")
-            self._startup_seen_uidvalidity = self._selected_uidvalidity(imap)
-            status, data = imap.uid("search", None, "ALL")
-            if status == "OK" and data and data[0]:
-                startup_cutoff: Optional[int] = None
-                for uid in data[0].split():
-                    self._seen_uids.add(uid)
-                    try:
-                        numeric_uid = int(uid)
-                    except (ValueError, TypeError):
-                        continue
-                    startup_cutoff = (
-                        numeric_uid
-                        if startup_cutoff is None
-                        else max(startup_cutoff, numeric_uid)
-                    )
-                self._startup_seen_uid_cutoff = startup_cutoff
-            else:
-                self._startup_seen_uid_cutoff = None
-            # Keep only the most recent UIDs to prevent unbounded growth
-            self._trim_seen_uids()
+            startup_count = self._establish_uid_baseline(imap)
+            if startup_count is None:
+                try:
+                    imap.logout()
+                except Exception:
+                    pass
+                return False
             imap.logout()
-            logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+            logger.info(
+                "[Email] IMAP connection test passed. %d existing messages skipped.",
+                startup_count,
+            )
         except Exception as e:
             logger.error("[Email] IMAP connection failed: %s", e)
             return False
@@ -682,8 +672,13 @@ class EmailAdapter(BasePlatformAdapter):
                         "[Email] INBOX UIDVALIDITY changed; clearing cached UID state"
                     )
                     self._seen_uids.clear()
-                    self._startup_seen_uid_cutoff = None
-                    self._startup_seen_uidvalidity = current_uidvalidity
+                    startup_count = self._establish_uid_baseline(imap)
+                    if startup_count is not None:
+                        logger.info(
+                            "[Email] Re-established INBOX UID baseline with %d existing messages skipped.",
+                            startup_count,
+                        )
+                    return results
 
                 status, data = imap.uid("search", None, "UNSEEN")
                 if status != "OK" or not data or not data[0]:
@@ -774,6 +769,34 @@ class EmailAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[Email] IMAP fetch error: %s", e)
         return results
+
+    def _establish_uid_baseline(self, imap: "imaplib.IMAP4") -> Optional[int]:
+        """Capture the selected mailbox's current UID high-water mark."""
+        self._startup_seen_uidvalidity = self._selected_uidvalidity(imap)
+        status, data = imap.uid("search", None, "ALL")
+        if status != "OK":
+            logger.error("[Email] Could not establish startup UID baseline")
+            self._startup_seen_uid_cutoff = None
+            return None
+
+        startup_count = 0
+        startup_cutoff: Optional[int] = None
+        if data and data[0]:
+            for uid in data[0].split():
+                startup_count += 1
+                try:
+                    numeric_uid = int(uid)
+                except (ValueError, TypeError):
+                    self._seen_uids.add(uid)
+                    continue
+                startup_cutoff = (
+                    numeric_uid
+                    if startup_cutoff is None
+                    else max(startup_cutoff, numeric_uid)
+                )
+        self._startup_seen_uid_cutoff = startup_cutoff
+        self._trim_seen_uids()
+        return startup_count
 
     @staticmethod
     def _selected_uidvalidity(imap: "imaplib.IMAP4") -> Optional[bytes]:

@@ -1008,15 +1008,16 @@ class TestConnectDisconnect(unittest.TestCase):
 
             self.assertTrue(result)
             self.assertTrue(adapter._running)
-            # Should have skipped existing messages
-            self.assertEqual(len(adapter._seen_uids), 3)
+            # Should have skipped existing messages without caching every UID
+            self.assertEqual(adapter._startup_seen_uid_cutoff, 3)
+            self.assertEqual(adapter._seen_uids, set())
             # Cleanup
             adapter._running = False
             if adapter._poll_task:
                 adapter._poll_task.cancel()
 
-    def test_connect_records_startup_uid_cutoff_before_trimming(self):
-        """The startup high-water UID survives trimming the duplicate set."""
+    def test_connect_records_startup_uid_cutoff_without_historical_uid_cache(self):
+        """The startup high-water UID avoids seeding every historical UID."""
         import asyncio
         adapter = self._make_adapter()
         adapter._seen_uids_max = 4
@@ -1035,10 +1036,25 @@ class TestConnectDisconnect(unittest.TestCase):
             self.assertTrue(result)
             self.assertEqual(adapter._startup_seen_uid_cutoff, 6)
             self.assertEqual(adapter._startup_seen_uidvalidity, b"123")
-            self.assertEqual(adapter._seen_uids, {b"5", b"6"})
+            self.assertEqual(adapter._seen_uids, set())
             adapter._running = False
             if adapter._poll_task:
                 adapter._poll_task.cancel()
+
+    def test_connect_fails_when_startup_uid_baseline_fails(self):
+        """The adapter should not start if the initial UID baseline is unsafe."""
+        import asyncio
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("NO", [b"server error"])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp:
+            result = asyncio.run(adapter.connect())
+
+        self.assertFalse(result)
+        mock_smtp.assert_not_called()
 
     def test_connect_imap_failure(self):
         """IMAP connection failure returns False."""
@@ -1198,26 +1214,25 @@ class TestFetchNewMessages(unittest.TestCase):
         if adapter._poll_task:
             adapter._poll_task.cancel()
 
-    def test_fetch_clears_startup_cutoff_when_uidvalidity_changes(self):
-        """A UIDVALIDITY reset invalidates the old startup cutoff."""
+    def test_fetch_rebaselines_without_dispatch_when_uidvalidity_changes(self):
+        """A UIDVALIDITY reset establishes a fresh baseline before dispatch."""
         adapter = self._make_adapter()
         adapter._seen_uids = {b"1001"}
         adapter._startup_seen_uid_cutoff = 1001
         adapter._startup_seen_uidvalidity = b"old"
 
-        raw_email = MIMEText("Hello", "plain", "utf-8")
-        raw_email["From"] = "user@test.com"
-        raw_email["Subject"] = "Test"
-        raw_email["Message-ID"] = "<msg@test.com>"
-
         mock_imap = MagicMock()
         mock_imap.response.return_value = ("UIDVALIDITY", [b"new"])
+        search_criteria = []
 
         def uid_handler(command, *args):
             if command == "search":
-                return ("OK", [b"999"])
+                search_criteria.append(args[-1])
+                if args[-1] == "ALL":
+                    return ("OK", [b"1 999"])
+                raise AssertionError("existing unread backlog should not be fetched")
             if command == "fetch":
-                return ("OK", [(args[0], raw_email.as_bytes())])
+                raise AssertionError("UIDVALIDITY rebaseline should skip this poll")
             return ("NO", [])
 
         mock_imap.uid.side_effect = uid_handler
@@ -1225,10 +1240,11 @@ class TestFetchNewMessages(unittest.TestCase):
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
             results = adapter._fetch_new_messages()
 
-        self.assertEqual([msg["uid"] for msg in results], [b"999"])
-        self.assertIsNone(adapter._startup_seen_uid_cutoff)
+        self.assertEqual(results, [])
+        self.assertEqual(search_criteria, ["ALL"])
+        self.assertEqual(adapter._startup_seen_uid_cutoff, 999)
         self.assertEqual(adapter._startup_seen_uidvalidity, b"new")
-        self.assertIn(b"999", adapter._seen_uids)
+        self.assertEqual(adapter._seen_uids, set())
 
     def test_fetch_no_unseen_messages(self):
         """No unseen messages returns empty list."""

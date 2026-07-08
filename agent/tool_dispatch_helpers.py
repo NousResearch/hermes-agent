@@ -364,10 +364,11 @@ def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict
     field (required by the wire format and provider adapters) and the internal
     ``tool_name`` field (written to the session DB messages table).
 
-    Content from high-risk tools (``web_extract``, ``web_search``, ``browser_*``,
-    ``mcp_*``) gets wrapped in semantic delimiters telling the model the content
-    is untrusted data, not instructions.  This is the architectural defense
-    against indirect prompt injection from poisoned web pages, GitHub issues,
+    Content from high-risk tools (``web_extract``, ``web_search``,
+    ``session_search``, ``browser_*``, ``mcp_*``) gets wrapped in semantic
+    delimiters telling the model the content is untrusted data, not
+    instructions.  This is the architectural defense against indirect prompt
+    injection from poisoned web pages, recalled session history, GitHub issues,
     and MCP responses — it changes how the model interprets the content rather
     than relying on regex pattern matching catching every payload.
 
@@ -403,6 +404,7 @@ def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict
 # promptware defense.  Skipped for short outputs (under 32 chars) where the
 # overhead of the wrapper outweighs any indirect-injection risk.
 _UNTRUSTED_TOOL_NAMES = frozenset({
+    "session_search",
     "web_extract",
     "web_search",
 })

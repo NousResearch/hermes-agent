@@ -190,6 +190,12 @@ class SessionSource:
     auto_thread_created: bool = False
     auto_thread_initial_name: Optional[str] = None
 
+    # Telegram Secretary Mode: the business connection ID when this message
+    # arrived via a connected business bot (business_message update). When set,
+    # replies must pass this ID to sendMessage so they're sent as the business
+    # owner's personal account, not as the bot. None for normal messages.
+    business_connection_id: Optional[str] = None
+
     # Internal, wire-INVISIBLE trust signal: True when this event was delivered
     # to the gateway over the per-instance-authenticated relay WebSocket (the
     # Team Gateway connector). The connector authenticates the gateway's socket

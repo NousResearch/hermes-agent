@@ -3590,24 +3590,30 @@ class GatewaySlashCommandsMixin:
         except Exception as e:
             logger.debug("Failed to resolve resume continuation for %s: %s", target_id, e)
 
+        # Authorization / scoping gate. A session id/title is a routing handle,
+        # not authority: bind /resume to the caller's own platform/user/chat on
+        # every adapter so one user can't attach to another's persisted
+        # transcript (CWE-639). When the target exists but the caller is not
+        # authorized, we return the SAME generic "not found" response as for a
+        # genuinely missing session. Otherwise the previously-distinct
+        # "blocked: belongs to a different user or chat" and "different Matrix
+        # room (<room>)" messages let any caller confirm the existence of — and,
+        # on Matrix, learn the room name of — every other user's session: an
+        # information-disclosure oracle (CWE-203) in a shared, multi-tenant
+        # gateway (the residual called out on PR #60914).
+        _resume_allowed = True
         if source.platform == Platform.MATRIX:
             target_origin = self._gateway_session_origin_for_id(target_id)
             if not self._same_matrix_room(source, target_origin) and not allow_cross_room:
-                if target_origin is None:
-                    return t("gateway.resume.matrix_blocked_no_origin", name=name)
-                return t(
-                    "gateway.resume.matrix_blocked_other_room",
-                    room=target_origin.chat_name or target_origin.chat_id,
-                    name=name,
-                )
+                _resume_allowed = False
         elif not await self._resume_target_allowed(
             source, target_id, allow_override=(allow_all or allow_cross_room)
         ):
-            # IDOR guard: a session id/title is a routing handle, not authority.
-            # Bind /resume to the caller's own platform/user/chat on every
-            # non-Matrix adapter so one user can't attach to another's
-            # persisted transcript.
-            return t("gateway.resume.blocked_not_owner", name=name)
+            _resume_allowed = False
+        if not _resume_allowed:
+            # Collapse "exists-but-not-yours" and "doesn't exist" into one
+            # response so a caller cannot enumerate other users' sessions.
+            return t("gateway.resume.not_found", name=name)
 
         # Check if already on that session
         current_entry = self.session_store.get_or_create_session(source)

@@ -402,6 +402,85 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_blocked_is_indistinguishable_from_not_found(self, tmp_path):
+        """Regression for the /resume existence oracle (CWE-203): a session title
+        that exists but is owned by another user/chat must produce the SAME reply
+        as the same title when it does not exist at all. Otherwise the distinct
+        'different user or chat' message lets any caller confirm the existence of
+        every other user's session title in a shared multi-tenant gateway."""
+        from hermes_state import SessionDB
+
+        title = "Victim Secret Project"
+
+        # (a) Title exists, owned by a different user.
+        db_victim = SessionDB(db_path=tmp_path / "victim.db")
+        db_victim.create_session("victim_uid", "telegram", user_id="99999", chat_id="55555")
+        db_victim.set_session_title("victim_uid", title)
+        db_victim.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
+        runner_victim = _make_runner(session_db=db_victim,
+                                     current_session_id="current_session_001",
+                                     event=_make_event(text=f"/resume {title}"))
+        blocked = await runner_victim._handle_resume_command(_make_event(text=f"/resume {title}"))
+        runner_victim.session_store.switch_session.assert_not_called()
+        db_victim.close()
+
+        # (b) Same title, but it does not exist for anyone.
+        db_missing = SessionDB(db_path=tmp_path / "missing.db")
+        db_missing.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
+        runner_missing = _make_runner(session_db=db_missing,
+                                      current_session_id="current_session_001",
+                                      event=_make_event(text=f"/resume {title}"))
+        missing = await runner_missing._handle_resume_command(_make_event(text=f"/resume {title}"))
+        runner_missing.session_store.switch_session.assert_not_called()
+        db_missing.close()
+
+        # No resume happened, and the reply does not reveal that the title exists.
+        assert "Resumed" not in blocked
+        assert "different user" not in blocked.lower()
+        assert "belongs to" not in blocked.lower()
+        # Blocked (exists-but-not-yours) must be byte-for-byte identical to
+        # not-found (does-not-exist) for the SAME title.
+        assert blocked == missing
+        assert "No session found" in blocked
+
+    @pytest.mark.asyncio
+    async def test_resume_matrix_blocked_does_not_reveal_room(self, tmp_path):
+        """Matrix variant of the existence oracle: a session owned by another
+        Matrix room must not leak that room's name/ID. The previous reply
+        embedded the victim room ('different Matrix room (<room>)'), letting a
+        caller learn which room another user's session lives in."""
+        from hermes_state import SessionDB
+        from gateway.config import Platform as _Platform
+        from gateway.session import SessionSource as _SessionSource
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("victim_room_b", "matrix", user_id="@bob:hs",
+                          chat_id="!room-b:hs", chat_type="group")
+        db.set_session_title("victim_room_b", "Victim Matrix Session")
+        db.create_session("current_session_001", "matrix", user_id="@alice:hs",
+                          chat_id="!room-a:hs", chat_type="group")
+
+        caller_event = _make_event(text="/resume Victim Matrix Session",
+                                   platform=_Platform.MATRIX,
+                                   user_id="@alice:hs", chat_id="!room-a:hs")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001",
+                              event=caller_event)
+        # The persisted victim session's live origin lives in a different room.
+        runner._gateway_session_origin_for_id = lambda sid: _SessionSource(
+            platform=_Platform.MATRIX, chat_id="!room-b:hs",
+            chat_type="group", user_id="@bob:hs")
+
+        result = await runner._handle_resume_command(caller_event)
+
+        runner.session_store.switch_session.assert_not_called()
+        assert "Resumed" not in result
+        # No room identifier must be disclosed.
+        assert "!room-b:hs" not in result
+        assert "different Matrix room" not in result
+        assert "No session found" in result
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_resume_resolves_by_session_id(self, tmp_path):
         """The gateway should accept a bare session ID, not just a title.
 

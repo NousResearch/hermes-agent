@@ -69,3 +69,10 @@ def test_cli_origins_override_config_routes(monkeypatch):
     c = resolve_tunnel_config(cli_origins=["alice=127.0.0.1:9000", "alice-api=127.0.0.1:8080"])
     sub_to_port = {r["subdomain"]: r["port"] for r in c["routes"]}
     assert sub_to_port == {"alice": 9000, "alice-api": 8080}
+
+
+def test_invalid_int_env_falls_back_to_config(monkeypatch):
+    _stub_config(monkeypatch, {"idle_timeout_seconds": 600})
+    monkeypatch.setenv("HERMES_TUNNEL_IDLE_TIMEOUT", "abc")
+    c = resolve_tunnel_config()
+    assert c["idle_timeout_seconds"] == 600

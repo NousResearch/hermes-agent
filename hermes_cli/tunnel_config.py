@@ -8,9 +8,12 @@ its value is non-empty after strip.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from typing import Optional
+
+_log = logging.getLogger(__name__)
 
 ORIGIN_SPEC_RE = re.compile(r"^(?P<sub>[A-Za-z0-9._-]+)=(?P<host>[A-Za-z0-9.\-]+):(?P<port>\d+)$")
 
@@ -24,7 +27,8 @@ def _load_tunnel_section() -> dict:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-    except Exception:
+    except Exception as exc:
+        _log.warning("tunnel: could not load config (%s); using defaults", exc)
         return {}
     section = cfg.get("tunnel") if isinstance(cfg, dict) else None
     return section if isinstance(section, dict) else {}
@@ -58,7 +62,8 @@ def resolve_tunnel_config(cli_origins: Optional[list] = None) -> dict:
         try:
             return int(v)
         except ValueError:
-            return default
+            _log.warning("tunnel: %s=%r is not an integer; using config value", name, v)
+            return int(sec.get(config_key, default))
 
     return {
         "enabled": bool(sec.get("enabled", False)),

@@ -40,6 +40,15 @@ model:
   #
   # Can also be overridden for a single invocation with the --provider flag.
   provider: "auto"
+
+  # Announce a deliberate mid-session /model switch in the conversation, the
+  # same way an automatic failover already announces (🔀 line to the channel,
+  # not just the ephemeral slash reply). Default: true. Set false to keep a
+  # /model switch silent for spectators. Read per-turn, so a value change takes
+  # effect without a code redeploy (the initial code deploy still needs a
+  # gateway restart).
+  # announce_switch: true
+
   
   # API configuration (falls back to OPENROUTER_API_KEY env var)
   # api_key: "your-key-here"  # Uncomment to set here instead of .env

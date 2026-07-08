@@ -1103,6 +1103,65 @@ class GatewaySlashCommandsMixin:
             getattr(getattr(event, "source", None), "platform", None),
         )
 
+    def _announce_model_switch(
+        self,
+        agent,
+        *,
+        old_model: str,
+        new_model: str,
+        old_provider: str,
+        new_provider: str,
+        old_effort: "str | None" = None,
+        new_effort: "str | None" = None,
+        old_window: "int | None" = None,
+        new_window: "int | None" = None,
+    ) -> None:
+        """Announce a deliberate ``/model`` switch in-chat, like failover does.
+
+        Config-gated (``model.announce_switch``, default ON). Routes through the
+        agent's ``_emit_switch_announce`` → ``_emit_status`` seam so the ``🔀``
+        line reaches the CHANNEL (Discord/Telegram ``status_callback``), not just
+        the ephemeral slash-command reply the runner sees. Symmetric to/from with
+        model + effort + context-window deltas.
+
+        A bug here must NEVER break the switch: everything is wrapped so the
+        already-applied ``switch_model`` result stands regardless. This is a
+        status EMISSION, never a context mutation — it cannot break prompt
+        caching (see ``chat_completion_helpers._emit_switch_announce``).
+        """
+        try:
+            if agent is None:
+                return
+            # Config gate: model.announce_switch (default True). Read per-call so
+            # a value flip after deploy takes effect without a code redeploy.
+            announce = True
+            try:
+                from gateway.run import _load_gateway_config
+
+                _cfg = _load_gateway_config() or {}
+                _model_cfg = _cfg.get("model", {})
+                if isinstance(_model_cfg, dict) and "announce_switch" in _model_cfg:
+                    announce = is_truthy_value(_model_cfg.get("announce_switch"))
+            except Exception:
+                announce = True
+            if not announce:
+                return
+            from agent.chat_completion_helpers import _emit_switch_announce
+
+            _emit_switch_announce(
+                agent,
+                old_model=old_model or "",
+                new_model=new_model or "",
+                new_provider=new_provider or "",
+                old_provider=old_provider or None,
+                old_window=old_window,
+                new_window=new_window,
+                old_effort=old_effort,
+                new_effort=new_effort,
+            )
+        except Exception as exc:  # noqa: BLE001 — announce must never break the switch
+            logger.debug("model-switch announce failed: %s", exc)
+
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model.
 
@@ -1271,6 +1330,15 @@ class GatewaySlashCommandsMixin:
                             with _cache_lock:
                                 cached_entry = _cache.get(_session_key)
                         if cached_entry and cached_entry[0] is not None:
+                            _sw_old_window = None
+                            try:
+                                _sw_old_window = getattr(
+                                    getattr(cached_entry[0], "context_compressor", None),
+                                    "context_length",
+                                    None,
+                                )
+                            except Exception:
+                                _sw_old_window = None
                             try:
                                 cached_entry[0].switch_model(
                                     new_model=result.new_model,
@@ -1299,6 +1367,39 @@ class GatewaySlashCommandsMixin:
                                         f"staying on {_cur_model}."
                                     ),
                                 )
+
+                            # Announce the deliberate switch in-chat (like
+                            # failover does) so spectators who didn't run
+                            # /model see the change, not just the ephemeral
+                            # reply. Fires on the cached agent (whose
+                            # _emit_status reaches the channel status_callback).
+                            _sw_new_window = None
+                            try:
+                                _sw_new_window = getattr(
+                                    getattr(cached_entry[0], "context_compressor", None),
+                                    "context_length",
+                                    None,
+                                )
+                            except Exception:
+                                _sw_new_window = None
+                            _sw_effort = None
+                            try:
+                                _sw_effort = _self._reasoning_effort_label(
+                                    _self._resolve_session_reasoning_config(source=event.source)
+                                )
+                            except Exception:
+                                _sw_effort = None
+                            _self._announce_model_switch(
+                                cached_entry[0],
+                                old_model=_cur_model,
+                                new_model=result.new_model,
+                                old_provider=_cur_provider,
+                                new_provider=result.target_provider,
+                                old_effort=_sw_effort,
+                                new_effort=_sw_effort,
+                                old_window=_sw_old_window,
+                                new_window=_sw_new_window,
+                            )
 
                         # Persist the new model to the session DB so the
                         # dashboard shows the updated model (#34850).
@@ -1520,6 +1621,15 @@ class GatewaySlashCommandsMixin:
                     cached_entry = _cache.get(session_key)
 
             if cached_entry and cached_entry[0] is not None:
+                _sw_old_window = None
+                try:
+                    _sw_old_window = getattr(
+                        getattr(cached_entry[0], "context_compressor", None),
+                        "context_length",
+                        None,
+                    )
+                except Exception:
+                    _sw_old_window = None
                 try:
                     cached_entry[0].switch_model(
                         new_model=result.new_model,
@@ -1543,6 +1653,37 @@ class GatewaySlashCommandsMixin:
                             f"staying on {current_model}."
                         ),
                     )
+
+                # Announce the deliberate switch in-chat (like failover) so
+                # spectators who didn't run /model see it, not just the
+                # ephemeral reply. Symmetric to/from with effort + window.
+                _sw_new_window = None
+                try:
+                    _sw_new_window = getattr(
+                        getattr(cached_entry[0], "context_compressor", None),
+                        "context_length",
+                        None,
+                    )
+                except Exception:
+                    _sw_new_window = None
+                _sw_effort = None
+                try:
+                    _sw_effort = self._reasoning_effort_label(
+                        self._resolve_session_reasoning_config(source=source)
+                    )
+                except Exception:
+                    _sw_effort = None
+                self._announce_model_switch(
+                    cached_entry[0],
+                    old_model=current_model,
+                    new_model=result.new_model,
+                    old_provider=current_provider,
+                    new_provider=result.target_provider,
+                    old_effort=_sw_effort,
+                    new_effort=_sw_effort,
+                    old_window=_sw_old_window,
+                    new_window=_sw_new_window,
+                )
 
             # Persist the new model to the session DB so the dashboard
             # shows the updated model (#34850).

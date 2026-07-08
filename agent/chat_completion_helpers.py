@@ -33,6 +33,7 @@ from agent.model_metadata import is_local_endpoint
 from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
+    _TOOL_ARGUMENT_ERROR_KEY,
 )
 from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -2355,10 +2356,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         # commas, unclosed brackets, Python None, etc.
                         # Without repair, these hit the truncation handler
                         # and kill the session.  _repair_tool_call_arguments
-                        # returns "{}" for unrepairable args, which is far
-                        # better than a crashed session.
+                        # returns "{}" for generic unrepairable args and a
+                        # retryable sentinel for write-style tools. The
+                        # sentinel is useful once a tool call is already in
+                        # history, but here it still means the live stream cut
+                        # off before the call was executable.
                         repaired = _repair_tool_call_arguments(arguments, tool_name)
-                        if repaired != "{}":
+                        try:
+                            repaired_obj = json.loads(repaired)
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            repaired_obj = None
+                        if isinstance(repaired_obj, dict) and repaired_obj.get(_TOOL_ARGUMENT_ERROR_KEY):
+                            has_truncated_tool_args = True
+                        elif repaired != "{}":
                             # Successfully repaired — use the fixed args
                             arguments = repaired
                         else:

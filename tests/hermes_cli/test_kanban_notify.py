@@ -458,12 +458,15 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     source = SimpleNamespace(
         platform=Platform.TELEGRAM,
         chat_id="chat1",
-        thread_id="th1",
+        chat_type="dm",
+        thread_id="20197",
         user_id="u1",
     )
     event = SimpleNamespace(
         text='/kanban --board projx create "hello" --assignee alice',
         source=source,
+        message_id="462",
+        reply_to_message_id=None,
     )
 
     out = await GatewayRunner._handle_kanban_command(runner, event)
@@ -480,7 +483,14 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     assert [t.title for t in tasks] == ["hello"]
     assert len(subs) == 1
     assert subs[0]["chat_id"] == "chat1"
-    assert subs[0]["thread_id"] == "th1"
+    assert subs[0]["thread_id"] == "20197"
+    assert subs[0]["delivery_metadata"] == {
+        "chat_type": "dm",
+        "direct_messages_topic_id": "20197",
+        "telegram_dm_topic_reply_fallback": True,
+        "telegram_reply_to_message_id": "462",
+        "thread_id": "20197",
+    }
 
     conn = kb.connect(board="default")
     try:

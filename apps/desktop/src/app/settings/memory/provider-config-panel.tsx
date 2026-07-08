@@ -3,9 +3,9 @@ import { useCallback, useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { getMemoryProviderConfig, runMemoryProviderAction, saveMemoryProviderConfig } from '@/hermes'
-import { Loader2, Save, SlidersHorizontal } from '@/lib/icons'
+import { Loader2, SlidersHorizontal } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
-import type { MemoryProviderConfig } from '@/types/hermes'
+import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 
 import { FieldControl, FieldTitle } from './field-control'
 import { ListRow, LoadingState, Pill } from '../primitives'
@@ -22,16 +22,18 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
   const [config, setConfig] = useState<MemoryProviderConfig | null>(null)
   const [loadError, setLoadError] = useState<null | string>(null)
   const [values, setValues] = useState<Record<string, string>>({})
+  const [saved, setSaved] = useState<Record<string, string>>({})
   const [expanded, setExpanded] = useState(true)
-  const [saving, setSaving] = useState(false)
   const [runningAction, setRunningAction] = useState<null | string>(null)
   const [showModal, setShowModal] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
       const next = await getMemoryProviderConfig(provider)
+      const seed = seedValues(next)
       setConfig(next)
-      setValues(seedValues(next))
+      setValues(seed)
+      setSaved(seed)
       setLoadError(null)
     } catch (err) {
       setConfig(null)
@@ -44,23 +46,34 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
     void refresh()
   }, [refresh])
 
-  const save = useCallback(async () => {
-    if (!config) {
-      return
-    }
+  // Autosave, matching the settings page around the panel: one-key partial PUT
+  // on commit, silent on success, no full refresh (it would reset sibling drafts).
+  const commitField = useCallback(
+    async (field: MemoryProviderField, value: string) => {
+      if (value === (saved[field.key] ?? '') || (field.kind === 'secret' && !value.trim())) {
+        return
+      }
 
-    setSaving(true)
-
-    try {
-      await saveMemoryProviderConfig(provider, values)
-      notify({ kind: 'success', title: `${config.label} saved`, message: 'Memory provider configuration updated.' })
-      await refresh()
-    } catch (err) {
-      notifyError(err, `Failed to save ${config.label} settings`)
-    } finally {
-      setSaving(false)
-    }
-  }, [config, provider, refresh, values])
+      try {
+        await saveMemoryProviderConfig(provider, { [field.key]: value })
+        if (field.kind === 'secret') {
+          setValues(current => ({ ...current, [field.key]: '' }))
+          setConfig(
+            current =>
+              current && {
+                ...current,
+                fields: current.fields.map(f => (f.key === field.key ? { ...f, is_set: true } : f))
+              }
+          )
+        } else {
+          setSaved(current => ({ ...current, [field.key]: value }))
+        }
+      } catch (err) {
+        notifyError(err, `Failed to save ${field.label}`)
+      }
+    },
+    [provider, saved]
+  )
 
   const runAction = useCallback(
     async (key: string, label: string) => {
@@ -141,6 +154,7 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
                   <FieldControl
                     field={field}
                     onChange={value => setValues(current => ({ ...current, [field.key]: value }))}
+                    onCommit={value => void commitField(field, value)}
                     value={values[field.key] ?? ''}
                   />
                 }
@@ -150,26 +164,24 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
             </div>
           ))}
 
-          <div className="flex items-center justify-end gap-2 pt-3">
-            {config.actions.map(action => (
-              <Button
-                disabled={runningAction !== null || saving}
-                key={action.key}
-                onClick={() => void runAction(action.key, action.label)}
-                size="sm"
-                title={action.description || undefined}
-                type="button"
-                variant="secondary"
-              >
-                {runningAction === action.key && <Loader2 className="size-3.5 animate-spin" />}
-                {action.label}
-              </Button>
-            ))}
-            <Button disabled={saving || runningAction !== null} onClick={() => void save()} size="sm">
-              {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Save />}
-              Save
-            </Button>
-          </div>
+          {config.actions.length > 0 && (
+            <div className="flex items-center justify-end gap-2 pt-3">
+              {config.actions.map(action => (
+                <Button
+                  disabled={runningAction !== null}
+                  key={action.key}
+                  onClick={() => void runAction(action.key, action.label)}
+                  size="sm"
+                  title={action.description || undefined}
+                  type="button"
+                  variant="secondary"
+                >
+                  {runningAction === action.key && <Loader2 className="size-3.5 animate-spin" />}
+                  {action.label}
+                </Button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

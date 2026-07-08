@@ -146,22 +146,41 @@ describe('ProviderConfigPanel', () => {
     expect(await screen.findByDisplayValue('myws')).toBeTruthy()
   })
 
-  it('saves only inline values, with a blank secret', async () => {
+  it('autosaves a text field on blur as a one-key partial save', async () => {
     await renderPanel()
 
     const baseUrl = await screen.findByPlaceholderText('https://… (self-hosted)')
     fireEvent.change(baseUrl, { target: { value: 'http://localhost:8000' } })
-    fireEvent.change(screen.getByDisplayValue('myws'), { target: { value: 'ben-bank' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    fireEvent.blur(baseUrl)
 
     await waitFor(() =>
-      expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', {
-        apiKey: '',
-        baseUrl: 'http://localhost:8000',
-        environment: 'production',
-        workspace: 'ben-bank'
-      })
+      expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { baseUrl: 'http://localhost:8000' })
     )
+    expect(saveMemoryProviderConfig).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not save on blur when nothing changed', async () => {
+    await renderPanel()
+
+    const workspace = await screen.findByDisplayValue('myws')
+    fireEvent.blur(workspace)
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).toBeNull())
+    expect(saveMemoryProviderConfig).not.toHaveBeenCalled()
+  })
+
+  it('autosaves a committed secret and clears the draft', async () => {
+    await renderPanel()
+
+    const apiKey = await screen.findByPlaceholderText('Enter Honcho API key')
+    fireEvent.blur(apiKey)
+    expect(saveMemoryProviderConfig).not.toHaveBeenCalled()
+
+    fireEvent.change(apiKey, { target: { value: 'hch-new-key' } })
+    fireEvent.blur(apiKey)
+
+    await waitFor(() => expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { apiKey: 'hch-new-key' }))
+    await waitFor(() => expect((apiKey as HTMLInputElement).value).toBe(''))
   })
 
   it('offers a full-config trigger when modal-only fields exist', async () => {

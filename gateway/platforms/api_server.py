@@ -947,7 +947,11 @@ class APIServerAdapter(BasePlatformAdapter):
         Priority:
         1. Explicit override (config extra or API_SERVER_MODEL_NAME env var)
         2. Active profile name (so each profile advertises a distinct model)
-        3. Fallback: "hermes-agent"
+        3. Fallback: "ht-ai-agent"
+
+        Inbound request ``model`` values are never validated against this
+        advertised id (unknown names fall through to the default agent), so
+        clients that still send the legacy "hermes-agent" id keep working.
         """
         if explicit and explicit.strip():
             return explicit.strip()
@@ -958,7 +962,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return profile
         except Exception:
             pass
-        return "hermes-agent"
+        return "ht-ai-agent"
 
     def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
         """Return CORS headers for an allowed browser origin."""

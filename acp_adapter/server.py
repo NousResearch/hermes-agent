@@ -459,7 +459,7 @@ class HermesACPAgent(acp.Agent):
         "compact": "Compress conversation context",
         "steer": "Inject guidance into the currently running agent turn",
         "queue": "Queue a prompt to run after the current turn finishes",
-        "version": "Show Hermes version",
+        "version": "Show HT AI Agent version",
     }
 
     _ADVERTISED_COMMANDS = (
@@ -500,7 +500,7 @@ class HermesACPAgent(acp.Agent):
         },
         {
             "name": "version",
-            "description": "Show Hermes version",
+            "description": "Show HT AI Agent version",
         },
     )
 
@@ -883,7 +883,11 @@ class HermesACPAgent(acp.Agent):
 
         return InitializeResponse(
             protocol_version=acp.PROTOCOL_VERSION,
-            agent_info=Implementation(name="hermes-agent", version=HERMES_VERSION),
+            agent_info=Implementation(
+                name="hermes-agent",  # functional id — editors display `title`
+                title="HT AI Agent",
+                version=HERMES_VERSION,
+            ),
             agent_capabilities=AgentCapabilities(
                 load_session=True,
                 prompt_capabilities=PromptCapabilities(image=True),
@@ -1988,7 +1992,7 @@ class HermesACPAgent(acp.Agent):
         return f"Queued for the next turn. ({depth} queued)"
 
     def _cmd_version(self, args: str, state: SessionState) -> str:
-        return f"Hermes Agent v{HERMES_VERSION}"
+        return f"HT AI Agent v{HERMES_VERSION}"
 
     # ---- Model switching (ACP protocol method) -------------------------------
 

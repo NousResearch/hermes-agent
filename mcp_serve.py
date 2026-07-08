@@ -1,5 +1,5 @@
 """
-Hermes MCP Server — expose messaging conversations as MCP tools.
+HT AI Agent MCP Server — expose messaging conversations as MCP tools.
 
 Starts a stdio MCP server that lets any MCP client (Claude Code, Cursor, Codex,
 etc.) list conversations, read message history, send messages, poll for live
@@ -13,14 +13,14 @@ Matches OpenClaw's 9-tool MCP channel bridge surface:
 Plus: channels_list (Hermes-specific extra)
 
 Usage:
-    hermes mcp serve
-    hermes mcp serve --verbose
+    ht mcp serve
+    ht mcp serve --verbose
 
 MCP client config (e.g. claude_desktop_config.json):
     {
         "mcpServers": {
-            "hermes": {
-                "command": "hermes",
+            "ht-ai-agent": {
+                "command": "ht",
                 "args": ["mcp", "serve"]
             }
         }
@@ -549,9 +549,9 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         )
 
     mcp = FastMCP(
-        "hermes",
+        "ht-ai-agent",
         instructions=(
-            "Hermes Agent messaging bridge. Use these tools to interact with "
+            "HT AI Agent messaging bridge. Use these tools to interact with "
             "conversations across Telegram, Discord, Slack, WhatsApp, Signal, "
             "Matrix, and other connected platforms."
         ),

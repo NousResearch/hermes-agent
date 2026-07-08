@@ -28,20 +28,20 @@ SECOND_VALID_TOKEN = "987654321:abcdefghijklmnopqrstuvwxyzABCDEF"
 class TestGenerateBotUsername:
     def test_secure_default_format(self):
         name = generate_bot_username()
-        assert name.startswith("hermes_")
+        assert name.startswith("ht_")
         assert name.endswith("_bot")
-        assert len(name) == len("hermes_") + 16 + len("_bot")
+        assert len(name) == len("ht_") + 16 + len("_bot")
         assert len(name) <= 32
 
     def test_profile_name_not_embedded(self):
         name = generate_bot_username("work")
         assert "work" not in name
-        assert name.startswith("hermes_")
+        assert name.startswith("ht_")
         assert name.endswith("_bot")
 
     def test_slug_uses_telegram_safe_base32_chars(self):
         name = generate_bot_username()
-        slug = name.removeprefix("hermes_").removesuffix("_bot")
+        slug = name.removeprefix("ht_").removesuffix("_bot")
         assert len(slug) == 16
         assert set(slug) <= set("abcdefghijklmnopqrstuvwxyz234567")
 
@@ -70,7 +70,7 @@ class TestGenerateDeepLink:
     def test_defaults(self):
         link = generate_deep_link()
         assert f"https://t.me/newbot/{DEFAULT_MANAGER_BOT}/" in link
-        assert "hermes_" in link
+        assert "ht_" in link
 
     def test_name_url_encoded(self):
         link = generate_deep_link(

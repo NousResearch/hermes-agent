@@ -20,14 +20,18 @@ import httpx
 
 # Default pairing API base URL (Nous-hosted Cloudflare Worker).
 # Override for PoC/staging with TELEGRAM_ONBOARDING_URL.
+# NOTE: the managed-bot onboarding flow still points at the upstream
+# vendor (Nous Research) service; it is not rebranded because the flow
+# only works against Nous's hosted backend.
 DEFAULT_API_URL = "https://setup.hermes-agent.nousresearch.com"
 TELEGRAM_ONBOARDING_URL_ENV = "TELEGRAM_ONBOARDING_URL"
 
 # The Nous-hosted manager bot username (without @). The backend returns the
 # actual deep link, so this is only used by local helpers/tests.
+# NOTE: kept as the upstream vendor's manager bot — see DEFAULT_API_URL above.
 DEFAULT_MANAGER_BOT = "HermesSetupBot"
 
-DEFAULT_BOT_NAME = "Hermes Agent"
+DEFAULT_BOT_NAME = "HT AI Agent"
 DEFAULT_POLL_TIMEOUT = 180
 POLL_INTERVAL = 2
 
@@ -117,20 +121,20 @@ def generate_username_slug(length: int = 16) -> str:
     """Generate a base32-ish slug for Telegram username correlation.
 
     Sixteen characters from a 32-symbol alphabet gives 80 bits of entropy while
-    keeping ``hermes_<slug>_bot`` under Telegram's 32-character username limit.
+    keeping ``ht_<slug>_bot`` under Telegram's 32-character username limit.
     """
     return "".join(secrets.choice(_USERNAME_SLUG_ALPHABET) for _ in range(length))
 
 
 def generate_bot_username(profile_name: Optional[str] = None) -> str:
-    """Generate a secure suggested bot username like ``hermes_<slug>_bot``.
+    """Generate a secure suggested bot username like ``ht_<slug>_bot``.
 
     ``profile_name`` is accepted for backward compatibility with the original
     PoC, but is intentionally not embedded in the username. The username has to
     carry enough entropy for backend correlation.
     """
     _ = profile_name
-    return f"hermes_{generate_username_slug()}_bot"
+    return f"ht_{generate_username_slug()}_bot"
 
 
 def generate_deep_link(

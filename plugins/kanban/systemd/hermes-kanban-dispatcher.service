@@ -14,7 +14,7 @@
 # dispatch_in_gateway=true is NOT supported.
 
 [Unit]
-Description=Hermes Kanban dispatcher (DEPRECATED standalone daemon — prefer gateway-embedded dispatch)
+Description=HT AI Agent Kanban dispatcher (DEPRECATED standalone daemon — prefer gateway-embedded dispatch)
 Documentation=https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban
 After=network.target
 

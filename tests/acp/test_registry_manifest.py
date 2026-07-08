@@ -30,10 +30,10 @@ def test_agent_json_matches_official_registry_required_fields():
     assert FORBIDDEN_MANIFEST_KEYS.isdisjoint(data)
     assert data["id"] == "hermes-agent"
     assert re.fullmatch(r"[a-z][a-z0-9-]*", data["id"])
-    assert data["name"] == "Hermes Agent"
+    assert data["name"] == "HT AI Agent"
     assert data["description"]
     assert data["repository"] == "https://github.com/NousResearch/hermes-agent"
-    assert data["website"].startswith("https://hermes-agent.nousresearch.com/")
+    assert data["website"] == "https://github.com/uaixo/awesome-hermes-agent"
     assert data["authors"] == ["Nous Research"]
     assert data["license"] == "MIT"
     assert set(data["distribution"]) <= ALLOWED_DISTRIBUTIONS
@@ -74,17 +74,18 @@ def test_icon_svg_is_16x16_current_color():
     assert root.attrib["height"] == "16"
 
 
-def test_icon_svg_has_no_hardcoded_colors_or_gradients():
+def test_icon_svg_uses_brand_color_and_no_gradients():
     text = ICON.read_text(encoding="utf-8")
 
     assert "linearGradient" not in text
     assert "radialGradient" not in text
     assert "url(#" not in text
-    assert not re.search(r"#[0-9a-fA-F]{3,8}\b", text)
+    # The icon is a flat diamond mark in the HT AI Agent brand color.
+    assert set(re.findall(r"#[0-9a-fA-F]{3,8}\b", text)) == {"#5B4BEA"}
 
     root = ET.fromstring(text)
     for element in root.iter():
         for attr in ("fill", "stroke"):
             value = element.attrib.get(attr)
             if value is not None:
-                assert value in {"currentColor", "none"}
+                assert value in {"currentColor", "none", "#5B4BEA"}

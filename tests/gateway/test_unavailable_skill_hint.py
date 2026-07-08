@@ -81,7 +81,7 @@ def test_frontmatter_slug_matched_even_when_dir_name_differs(
         "the old code compared the dir name 'stable-diffusion' and returned None"
     )
     assert "disabled" in msg.lower()
-    assert "hermes skills config" in msg
+    assert "ht skills config" in msg
 
 
 def test_unknown_command_still_returns_none(

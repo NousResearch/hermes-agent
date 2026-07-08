@@ -349,7 +349,7 @@ async def test_group_new_keeps_existing_reset_semantics_when_dm_topic_mode_enabl
 
     result = await runner._handle_message(_make_group_event("/new", thread_id="555"))
 
-    assert "Started a new Hermes session in this topic" not in result
+    assert "Started a new HT AI Agent session in this topic" not in result
     assert "parallel work" not in result
     runner.session_store.reset_session.assert_called_once_with(group_key)
 
@@ -390,7 +390,7 @@ async def test_new_inside_telegram_topic_resets_current_topic_with_parallel_tip(
 
     result = await runner._handle_message(_make_event("/new", thread_id="17585"))
 
-    assert "Started a new Hermes session in this topic" in result
+    assert "Started a new HT AI Agent session in this topic" in result
     assert "parallel work" in result
     assert "All Messages" in result
     runner.session_store.reset_session.assert_called_once_with(topic_key)
@@ -709,7 +709,7 @@ async def test_topic_restore_inside_topic_binds_old_session_and_returns_last_ass
     result = await runner._handle_message(_make_event("/topic old-session", thread_id="17585"))
 
     assert "Session restored: Research notes" in result
-    assert "Last Hermes message:" in result
+    assert "Last HT AI Agent message:" in result
     assert "Here is the summary." in result
     binding = session_db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585")
     assert binding is not None
@@ -875,7 +875,7 @@ async def test_topic_root_command_creates_and_pins_system_topic(tmp_path, monkey
     adapter._create_dm_topic.assert_awaited_once_with(208214988, "System")
     adapter.send.assert_awaited_once_with(
         "208214988",
-        "System topic for Hermes commands and status.",
+        "System topic for HT AI Agent commands and status.",
         metadata={"thread_id": "4242"},
     )
     bot.pin_chat_message.assert_awaited_once_with(

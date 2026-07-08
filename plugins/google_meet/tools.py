@@ -108,7 +108,7 @@ MEET_JOIN_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "description": (
                     "Display name to use when joining as guest. Defaults to "
-                    "'Hermes Agent'."
+                    "'HT AI Agent'."
                 ),
             },
             "duration": {
@@ -252,7 +252,7 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
         try:
             res = client.start_bot(
                 url=url,
-                guest_name=str(args.get("guest_name") or "Hermes Agent"),
+                guest_name=str(args.get("guest_name") or "HT AI Agent"),
                 duration=str(args.get("duration")) if args.get("duration") else None,
                 headed=bool(args.get("headed", False)),
                 mode=mode,
@@ -271,7 +271,7 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
     res = pm.start(
         url=url,
         headed=bool(args.get("headed", False)),
-        guest_name=str(args.get("guest_name") or "Hermes Agent"),
+        guest_name=str(args.get("guest_name") or "HT AI Agent"),
         duration=str(args.get("duration")) if args.get("duration") else None,
         mode=mode,
     )

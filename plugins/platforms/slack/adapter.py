@@ -414,7 +414,7 @@ class SlackAdapter(BasePlatformAdapter):
       - DMs and channel messages (mention-gated in channels)
       - Thread support
       - File/image/audio attachments
-      - Slash commands (/hermes)
+      - Slash commands (/ht, legacy /hermes)
       - Typing indicators (not natively supported by Slack bots)
     """
 
@@ -1151,12 +1151,18 @@ class SlackAdapter(BasePlatformAdapter):
             import re as _re
 
             _slash_names = [name for name, _d, _h in slack_native_slashes()]
+            # Always accept both /ht (current) and /hermes (legacy manifests)
+            # as the top-level catch-all command, regardless of which one the
+            # command registry advertises.
+            for _alias in ("ht", "hermes"):
+                if _alias not in _slash_names:
+                    _slash_names.append(_alias)
             if _slash_names:
                 _slash_pattern = _re.compile(
                     r"^/(?:" + "|".join(_re.escape(n) for n in _slash_names) + r")$"
                 )
             else:  # pragma: no cover - registry always non-empty
-                _slash_pattern = _re.compile(r"^/hermes$")
+                _slash_pattern = _re.compile(r"^/(?:ht|hermes)$")
 
             @self._app.command(_slash_pattern)
             async def handle_hermes_command(ack, command):
@@ -1291,7 +1297,7 @@ class SlackAdapter(BasePlatformAdapter):
             if client is None:
                 return None
             seed_text = (
-                f":thread: Hermes handoff — *{(name or 'session').strip()[:80]}*"
+                f":thread: HT AI Agent handoff — *{(name or 'session').strip()[:80]}*"
             )
             result = await client.chat_postMessage(
                 channel=parent_chat_id,
@@ -3920,8 +3926,9 @@ class SlackAdapter(BasePlatformAdapter):
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
 
-        if slash_name in {"hermes", ""}:
-            # Legacy /hermes <subcommand> [args] routing + free-form questions.
+        if slash_name in {"ht", "hermes", ""}:
+            # Catch-all /ht (or legacy /hermes) <subcommand> [args] routing
+            # + free-form questions.
             # Empty slash_name falls into this branch for backward compat
             # with any caller that didn't populate command["command"].
             from hermes_cli.commands import slack_subcommand_map
@@ -4394,8 +4401,8 @@ def interactive_setup() -> None:
             import json as _json
 
             manifest = _build_full_manifest(
-                bot_name="Hermes",
-                bot_description="Your Hermes agent on Slack",
+                bot_name="HT AI Agent",
+                bot_description="Your HT AI Agent on Slack",
             )
             target = Path(get_hermes_home()) / "slack-manifest.json"
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -4410,8 +4417,8 @@ def interactive_setup() -> None:
                 "reinstall if scopes or slash commands changed."
             )
             print_info(
-                "   Re-run `hermes slack manifest --write` anytime to refresh after "
-                "Hermes adds new commands."
+                "   Re-run `ht slack manifest --write` anytime to refresh after "
+                "HT AI Agent adds new commands."
             )
         except Exception as e:
             print_warning(f"Could not write Slack manifest: {e}")
@@ -4425,7 +4432,7 @@ def interactive_setup() -> None:
             # new commands (e.g. /btw, /stop, ...) get registered in Slack.
             if prompt_yes_no(
                 "Regenerate the Slack app manifest with the latest command "
-                "list? (recommended after `hermes update`)",
+                "list? (recommended after `ht update`)",
                 True,
             ):
                 _write_slack_manifest_and_instruct()
@@ -4472,7 +4479,7 @@ def interactive_setup() -> None:
         print_info("   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access.")
 
     print()
-    print_info("📬 Home Channel: where Hermes delivers cron job results,")
+    print_info("📬 Home Channel: where HT AI Agent delivers cron job results,")
     print_info("   cross-platform messages, and notifications.")
     print_info("   To get a channel ID: open the channel in Slack, then right-click")
     print_info("   the channel name → Copy link — the ID starts with C (e.g. C01ABC2DE3F).")

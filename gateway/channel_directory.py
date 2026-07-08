@@ -7,6 +7,7 @@ action="list" and for resolving human-friendly channel names to numeric IDs.
 """
 
 import json
+import asyncio
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -121,7 +122,7 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     for platform, adapter in adapters.items():
         try:
             if platform == Platform.DISCORD:
-                platforms["discord"] = _build_discord(adapter)
+                platforms["discord"] = await asyncio.to_thread(_build_discord, adapter)
             elif platform == Platform.SLACK:
                 platforms["slack"] = await _build_slack(adapter)
         except Exception as e:
@@ -142,7 +143,7 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
             or plat_name not in adapter_platform_names
         ):
             continue
-        platforms[plat_name] = _build_from_sessions(plat_name)
+        platforms[plat_name] = await asyncio.to_thread(_build_from_sessions, plat_name)
 
     # Include plugin-registered platforms (dynamic enum members aren't in
     # Platform.__members__, so the loop above misses them). Same
@@ -156,7 +157,7 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
                 and entry.name not in platforms
                 and entry.name in adapter_platform_names
             ):
-                platforms[entry.name] = _build_from_sessions(entry.name)
+                platforms[entry.name] = await asyncio.to_thread(_build_from_sessions, entry.name)
     except Exception:
         pass
 

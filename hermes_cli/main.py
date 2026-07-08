@@ -1161,6 +1161,12 @@ def _resolve_last_session(source: str = "cli") -> Optional[str]:
         from hermes_state import SessionDB
 
         db = SessionDB()
+        cleanup = getattr(db, "archive_stale_local_endpoint_sessions", None)
+        if callable(cleanup):
+            try:
+                cleanup(source=source)
+            except Exception:
+                pass
         sessions = db.search_sessions(source=source, limit=1)
         return sessions[0]["id"] if sessions else None
     except Exception:

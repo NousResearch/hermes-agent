@@ -1825,6 +1825,21 @@ class TestSearchSessions:
         assert len(page2) == 2
         assert page1[0]["id"] != page2[0]["id"]
 
+    def test_archived_hidden_by_default(self, db):
+        db.create_session(session_id="live", source="cli")
+        db.create_session(session_id="archived", source="cli")
+        db.set_session_archived("archived", True)
+
+        assert [s["id"] for s in db.search_sessions(source="cli")] == ["live"]
+        assert {
+            s["id"]
+            for s in db.search_sessions(source="cli", include_archived=True)
+        } == {"live", "archived"}
+        assert [
+            s["id"]
+            for s in db.search_sessions(source="cli", archived_only=True)
+        ] == ["archived"]
+
 
 # =========================================================================
 # Counts
@@ -4920,6 +4935,106 @@ class TestSessionArchive:
         both = {s["id"] for s in db.list_sessions_rich(include_archived=True)}
         assert both == {"live", "hidden"}
         assert db.session_count(include_archived=True) == 2
+
+
+class TestStaleLocalEndpointSessionArchive:
+    def _seed_api_session(
+        self,
+        db,
+        sid,
+        *,
+        source="tui",
+        base_url="http://127.0.0.1:8082/v1",
+        provider="ollama",
+        api_call_count=1,
+    ):
+        model_config = {"provider": provider}
+        if base_url:
+            model_config["base_url"] = base_url
+        db.create_session(
+            session_id=sid,
+            source=source,
+            model="local/test-model",
+            model_config=model_config,
+        )
+        db.append_message(session_id=sid, role="user", content=f"hello from {sid}")
+        db.append_message(session_id=sid, role="assistant", content="hi")
+        if api_call_count:
+            db.update_token_counts(
+                sid,
+                input_tokens=1,
+                output_tokens=1,
+                api_call_count=api_call_count,
+                billing_provider=provider,
+                billing_base_url=base_url,
+            )
+
+    def test_archives_unreachable_local_endpoint_without_deleting_messages(self, db):
+        self._seed_api_session(db, "stale")
+
+        count = db.archive_stale_local_endpoint_sessions(
+            now=1234.5,
+            endpoint_reachable=lambda _url, _timeout: False,
+        )
+
+        assert count == 1
+        session = db.get_session("stale")
+        assert session["ended_at"] == 1234.5
+        assert session["end_reason"] == "archived_local_endpoint_stale"
+        assert session["archived"] == 1
+        assert [m["content"] for m in db.get_messages("stale")] == [
+            "hello from stale",
+            "hi",
+        ]
+        assert db.search_sessions(source="tui") == []
+        assert [
+            s["id"]
+            for s in db.search_sessions(source="tui", include_archived=True)
+        ] == ["stale"]
+
+    def test_keeps_reachable_local_endpoint_live(self, db):
+        self._seed_api_session(db, "live")
+
+        count = db.archive_stale_local_endpoint_sessions(
+            now=1234.5,
+            endpoint_reachable=lambda _url, _timeout: True,
+        )
+
+        assert count == 0
+        session = db.get_session("live")
+        assert session["ended_at"] is None
+        assert session["archived"] == 0
+
+    def test_ignores_remote_and_empty_local_sessions(self, db):
+        self._seed_api_session(
+            db,
+            "remote",
+            base_url="https://api.openai.com/v1",
+            provider="openai",
+        )
+        self._seed_api_session(db, "empty", api_call_count=0)
+
+        count = db.archive_stale_local_endpoint_sessions(
+            now=1234.5,
+            endpoint_reachable=lambda _url, _timeout: False,
+        )
+
+        assert count == 0
+        assert db.get_session("remote")["archived"] == 0
+        assert db.get_session("empty")["archived"] == 0
+
+    def test_provider_only_local_hint_must_age_out(self, db):
+        self._seed_api_session(db, "hint", base_url=None, provider="ollama")
+        now = time.time()
+
+        assert db.archive_stale_local_endpoint_sessions(
+            now=now,
+            stale_after_seconds=300,
+        ) == 0
+        assert db.archive_stale_local_endpoint_sessions(
+            now=now + 301,
+            stale_after_seconds=300,
+        ) == 1
 
 
 

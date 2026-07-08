@@ -155,3 +155,72 @@ def test_resolve_last_session_not_limited_to_newest_started_20(tmp_path, monkeyp
 
     monkeypatch.setattr("hermes_state.SessionDB", lambda: real_session_db(db_path=state_db))
     assert _resolve_last_session("cli") == target
+
+
+def test_resolve_last_session_skips_unreachable_local_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+    import hermes_state
+
+    from pathlib import Path
+
+    state_db = Path(tmp_path / "state.db")
+    real_session_db = hermes_state.SessionDB
+    db = real_session_db(db_path=state_db)
+    try:
+        db.create_session(
+            "safe_remote",
+            source="tui",
+            model="openai/gpt-5.4",
+            model_config={"base_url": "https://api.openai.com/v1"},
+        )
+        db.append_message("safe_remote", role="user", content="remote session")
+        db.update_token_counts(
+            "safe_remote",
+            input_tokens=1,
+            output_tokens=1,
+            api_call_count=1,
+            billing_provider="openai",
+            billing_base_url="https://api.openai.com/v1",
+        )
+
+        db.create_session(
+            "dead_local",
+            source="tui",
+            model="local/test",
+            model_config={"base_url": "http://127.0.0.1:8082/v1"},
+        )
+        db.append_message("dead_local", role="user", content="latest local session")
+        db.update_token_counts(
+            "dead_local",
+            input_tokens=1,
+            output_tokens=1,
+            api_call_count=1,
+            billing_provider="ollama",
+            billing_base_url="http://127.0.0.1:8082/v1",
+        )
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=?",
+                (30_000.0, "dead_local"),
+            )
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=?",
+                (20_000.0, "safe_remote"),
+            )
+            db._conn.commit()
+    finally:
+        db.close()
+
+    monkeypatch.setattr(hermes_state, "_local_endpoint_reachable", lambda _url, _timeout: False)
+    monkeypatch.setattr("hermes_state.SessionDB", lambda: real_session_db(db_path=state_db))
+
+    assert _resolve_last_session("tui") == "safe_remote"
+    check = real_session_db(db_path=state_db)
+    try:
+        dead = check.get_session("dead_local")
+        assert dead["end_reason"] == "archived_local_endpoint_stale"
+        assert dead["archived"] == 1
+    finally:
+        check.close()

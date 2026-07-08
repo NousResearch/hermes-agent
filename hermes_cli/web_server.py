@@ -161,6 +161,16 @@ def _warm_gateway_module() -> None:
         pass
 
 
+def _archive_stale_local_endpoint_sessions_for_desktop_startup() -> int:
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        return db.archive_stale_local_endpoint_sessions()
+    finally:
+        db.close()
+
+
 def _resolve_restart_drain_timeout() -> float:
     try:
         from hermes_cli.gateway import _get_restart_drain_timeout
@@ -195,6 +205,18 @@ async def _lifespan(app: "FastAPI"):
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
     if os.getenv("HERMES_DESKTOP") == "1":
+        try:
+            archived = await asyncio.to_thread(
+                _archive_stale_local_endpoint_sessions_for_desktop_startup
+            )
+            if archived:
+                _log.info(
+                    "Archived %d stale local-endpoint session(s) before desktop startup",
+                    archived,
+                )
+        except Exception as exc:
+            _log.debug("Desktop stale local-endpoint session cleanup skipped: %s", exc)
+
         cron_stop = threading.Event()
         cron_thread = threading.Thread(
             target=_start_desktop_cron_ticker,

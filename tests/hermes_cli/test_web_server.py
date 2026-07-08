@@ -129,6 +129,32 @@ def _install_example_plugin(_isolate_hermes_home):
         web_server._dashboard_plugins_cache = None
 
 
+def test_desktop_startup_local_endpoint_cleanup_closes_session_db(monkeypatch):
+    from hermes_cli import web_server
+
+    instances = []
+
+    class FakeSessionDB:
+        def __init__(self):
+            self.closed = False
+            self.called = False
+            instances.append(self)
+
+        def archive_stale_local_endpoint_sessions(self):
+            self.called = True
+            return 2
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr("hermes_state.SessionDB", FakeSessionDB)
+
+    assert web_server._archive_stale_local_endpoint_sessions_for_desktop_startup() == 2
+    assert len(instances) == 1
+    assert instances[0].called is True
+    assert instances[0].closed is True
+
+
 # ---------------------------------------------------------------------------
 # reload_env tests
 # ---------------------------------------------------------------------------

@@ -377,7 +377,11 @@ class SessionManager:
         db = self._get_db()
         if db is not None:
             try:
-                rows = db.search_sessions(source="acp", limit=10000)
+                rows = db.search_sessions(
+                    source="acp",
+                    limit=10000,
+                    include_archived=True,
+                )
                 for row in rows:
                     sid = row["id"]
                     _clear_task_cwd(sid)

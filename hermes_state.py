@@ -15,21 +15,149 @@ Key design decisions:
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
 import random
 import re
 import sqlite3
+import socket
 import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
+
+_STALE_LOCAL_ENDPOINT_END_REASON = "archived_local_endpoint_stale"
+_LOCAL_ENDPOINT_SESSION_SOURCES = ("cli", "tui", "desktop")
+_LOCAL_ENDPOINT_URL_KEYS = (
+    "base_url",
+    "api_base",
+    "api_url",
+    "endpoint",
+    "inference_base_url",
+)
+_LOCAL_ENDPOINT_PROVIDER_HINTS = (
+    "ollama",
+    "lmstudio",
+    "lm-studio",
+    "vllm",
+    "llamacpp",
+    "llama.cpp",
+)
+_LOCAL_ENDPOINT_HOSTS = {
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "0.0.0.0",
+    "::",
+    "host.docker.internal",
+    "gateway.docker.internal",
+    "host.containers.internal",
+}
+_WILDCARD_LOCAL_HOSTS = {"0.0.0.0", "::"}
+_TAILSCALE_CGNAT = ipaddress.IPv4Network("100.64.0.0/10")
+
+
+def _normalize_endpoint_url(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return raw if "://" in raw else f"http://{raw}"
+
+
+def _endpoint_host(url: str) -> str:
+    try:
+        parsed = urlparse(_normalize_endpoint_url(url))
+    except Exception:
+        return ""
+    return (parsed.hostname or "").strip().lower()
+
+
+def _is_local_endpoint_url(url: str) -> bool:
+    host = _endpoint_host(url)
+    if not host:
+        return False
+    if host in _LOCAL_ENDPOINT_HOSTS:
+        return True
+    if host.endswith(".localhost") or host.endswith(".local"):
+        return True
+    if host and "." not in host:
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if addr.is_private or addr.is_loopback or addr.is_link_local:
+        return True
+    return isinstance(addr, ipaddress.IPv4Address) and addr in _TAILSCALE_CGNAT
+
+
+def _local_endpoint_reachable(url: str, timeout: float = 0.25) -> bool:
+    try:
+        parsed = urlparse(_normalize_endpoint_url(url))
+        host = (parsed.hostname or "").strip()
+        if not host:
+            return False
+        if host in _WILDCARD_LOCAL_HOSTS:
+            host = "127.0.0.1"
+        port = parsed.port
+        if port is None:
+            port = 443 if parsed.scheme == "https" else 80
+        with socket.create_connection((host, port), timeout=max(timeout, 0.01)):
+            return True
+    except Exception:
+        return False
+
+
+def _loads_model_config(raw: Any) -> Dict[str, Any]:
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str):
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _session_local_endpoint_urls(row: Dict[str, Any]) -> List[str]:
+    urls: List[str] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        normalized = _normalize_endpoint_url(value)
+        if normalized and normalized not in seen and _is_local_endpoint_url(normalized):
+            seen.add(normalized)
+            urls.append(normalized)
+
+    add(row.get("billing_base_url"))
+    cfg = _loads_model_config(row.get("model_config"))
+    for key in _LOCAL_ENDPOINT_URL_KEYS:
+        add(cfg.get(key))
+    return urls
+
+
+def _session_has_local_endpoint_hint(row: Dict[str, Any]) -> bool:
+    cfg = _loads_model_config(row.get("model_config"))
+    parts = [
+        row.get("model"),
+        row.get("billing_provider"),
+        cfg.get("provider"),
+        cfg.get("provider_id"),
+        cfg.get("name"),
+    ]
+    haystack = " ".join(str(part or "").lower() for part in parts)
+    return any(hint in haystack for hint in _LOCAL_ENDPOINT_PROVIDER_HINTS)
 
 def _delegate_from_json(col: str = "model_config") -> str:
     return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
@@ -2036,6 +2164,117 @@ class SessionDB:
                 (session_id,),
             )
         self._execute_write(_do)
+
+    def archive_stale_local_endpoint_sessions(
+        self,
+        *,
+        source: Optional[str] = None,
+        sources: Optional[List[str]] = None,
+        stale_after_seconds: float = 300.0,
+        probe_timeout: float = 0.25,
+        max_candidates: int = 20,
+        endpoint_reachable: Optional[Callable[[str, float], bool]] = None,
+        now: Optional[float] = None,
+    ) -> int:
+        """Soft-archive abandoned local-endpoint sessions that can block resume.
+
+        A crashed TUI/CLI leaves its session row ``ended_at IS NULL``. If that
+        row points at a loopback/local OpenAI-compatible endpoint that is no
+        longer listening, auto-resume can hydrate the whole transcript and then
+        spend many seconds retrying the dead endpoint. This best-effort cleanup
+        marks only real, API-backed interactive sessions as ended + archived;
+        messages stay intact and explicit archived-history views can still show
+        them.
+
+        Sessions with a concrete local URL are archived only when a short TCP
+        connect probe says the endpoint is not listening. Provider-only local
+        hints are archived only after ``stale_after_seconds``.
+        """
+        now = time.time() if now is None else float(now)
+        cutoff = now - max(float(stale_after_seconds or 0), 0.0)
+        reachable = endpoint_reachable or _local_endpoint_reachable
+
+        if source:
+            source_values = [source]
+        elif sources is not None:
+            source_values = [s for s in sources if s]
+        else:
+            source_values = list(_LOCAL_ENDPOINT_SESSION_SOURCES)
+        if not source_values:
+            return 0
+        candidate_limit = max(1, int(max_candidates or 20))
+
+        placeholders = ",".join("?" for _ in source_values)
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT
+                    s.id,
+                    s.source,
+                    s.model,
+                    s.model_config,
+                    s.started_at,
+                    s.message_count,
+                    s.api_call_count,
+                    s.billing_provider,
+                    s.billing_base_url,
+                    COALESCE(
+                        (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id),
+                        s.started_at
+                    ) AS last_active
+                FROM sessions s
+                WHERE s.ended_at IS NULL
+                  AND COALESCE(s.archived, 0) = 0
+                  AND s.source IN ({placeholders})
+                  AND COALESCE(s.message_count, 0) > 0
+                  AND COALESCE(s.api_call_count, 0) > 0
+                ORDER BY last_active DESC, s.started_at DESC, s.id DESC
+                LIMIT ?
+                """,
+                [*source_values, candidate_limit],
+            ).fetchall()
+
+        archive_ids: List[str] = []
+
+        def is_reachable(url: str) -> bool:
+            try:
+                return bool(reachable(url, probe_timeout))
+            except Exception:
+                return False
+
+        for row in rows:
+            item = dict(row)
+            urls = _session_local_endpoint_urls(item)
+            if urls:
+                if any(is_reachable(url) for url in urls):
+                    continue
+                archive_ids.append(item["id"])
+                continue
+
+            last_active = float(item.get("last_active") or item.get("started_at") or 0)
+            if last_active <= cutoff and _session_has_local_endpoint_hint(item):
+                archive_ids.append(item["id"])
+
+        if not archive_ids:
+            return 0
+
+        def _do(conn):
+            id_placeholders = ",".join("?" for _ in archive_ids)
+            cursor = conn.execute(
+                f"""
+                UPDATE sessions
+                SET ended_at = ?,
+                    end_reason = ?,
+                    archived = 1
+                WHERE ended_at IS NULL
+                  AND COALESCE(archived, 0) = 0
+                  AND id IN ({id_placeholders})
+                """,
+                [now, _STALE_LOCAL_ENDPOINT_END_REASON, *archive_ids],
+            )
+            return cursor.rowcount
+
+        return self._execute_write(_do) or 0
 
     def update_session_cwd(
         self, session_id: str, cwd: str, git_branch: str = None, git_repo_root: str = None
@@ -4882,12 +5121,15 @@ class SessionDB:
         source: str = None,
         limit: int = 20,
         offset: int = 0,
+        include_archived: bool = False,
+        archived_only: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions, optionally filtered by source.
 
         Returns rows enriched with a computed ``last_active`` column (latest
         message timestamp for the session, falling back to ``started_at``),
-        ordered by most-recently-used first.
+        ordered by most-recently-used first. Soft-archived sessions are hidden
+        by default so archived rows are not automatically resumed.
         """
         select_with_last_active = (
             "SELECT s.*, COALESCE(m.last_active, s.started_at) AS last_active "
@@ -4897,20 +5139,25 @@ class SessionDB:
             "FROM messages GROUP BY session_id"
             ") m ON m.session_id = s.id "
         )
+        where_clauses: List[str] = []
+        params: List[Any] = []
+        if source:
+            where_clauses.append("s.source = ?")
+            params.append(source)
+        if archived_only:
+            where_clauses.append("COALESCE(s.archived, 0) = 1")
+        elif not include_archived:
+            where_clauses.append("COALESCE(s.archived, 0) = 0")
+        where_sql = f"WHERE {' AND '.join(where_clauses)} " if where_clauses else ""
+        params.extend([limit, offset])
+
         with self._lock:
-            if source:
-                cursor = self._conn.execute(
-                    f"{select_with_last_active}"
-                    "WHERE s.source = ? "
-                    "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
-                    (source, limit, offset),
-                )
-            else:
-                cursor = self._conn.execute(
-                    f"{select_with_last_active}"
-                    "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
-                    (limit, offset),
-                )
+            cursor = self._conn.execute(
+                f"{select_with_last_active}"
+                f"{where_sql}"
+                "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
+                params,
+            )
             return [dict(row) for row in cursor.fetchall()]
 
     # =========================================================================
@@ -5099,7 +5346,11 @@ class SessionDB:
         Export all sessions (with messages) as a list of dicts.
         Suitable for writing to a JSONL file for backup/analysis.
         """
-        sessions = self.search_sessions(source=source, limit=100000)
+        sessions = self.search_sessions(
+            source=source,
+            limit=100000,
+            include_archived=True,
+        )
         results = []
         for session in sessions:
             messages = self.get_messages(session["id"])

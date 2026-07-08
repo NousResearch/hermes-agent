@@ -81,12 +81,12 @@ acknowledgement so HA doesn't time out or show an error, then keeps working
 in the background and delivers the real answer per `announce_mode`. The ack
 text itself is honest about where the eventual answer will surface:
 
-| `announce_mode`   | Ack text says…                                   | Where the late reply actually goes                                  |
-|--------------------|--------------------------------------------------|-----------------------------------------------------------------------|
-| `off` (default)    | "I'll keep the answer in our conversation."       | Nowhere spoken — stays in the session transcript only.                |
-| `last_active`      | "I'll announce the answer when it's ready."       | The satellite that most recently sent a transcript.                   |
-| `default_device`   | "I'll announce the answer when it's ready."       | `announce_entity` (an `assist_satellite.*` entity you configure).     |
-| `broadcast`        | "I'll announce the answer when it's ready."       | All Assist satellites (`assist_satellite.announce` target `all`).     |
+| `announce_mode`   | Ack text says…                                                      | Where the late reply actually goes                                  |
+|--------------------|---------------------------------------------------------------------|-----------------------------------------------------------------------|
+| `off` (default)    | "I'm still working on that. I'll keep the answer in our conversation." | Nowhere spoken — stays in the session transcript only.                |
+| `last_active`      | "I'm still working on that. I'll announce the answer when it's ready." | The satellite that most recently sent a transcript.                   |
+| `default_device`   | "I'm still working on that. I'll announce the answer when it's ready." | `announce_entity` (an `assist_satellite.*` entity you configure).     |
+| `broadcast`        | "I'm still working on that. I'll announce the answer when it's ready." | All Assist satellites (`assist_satellite.announce` target `all`).     |
 
 Announcements are delivered via Home Assistant's own
 `assist_satellite.announce` service call (through the `homeassistant`
@@ -102,8 +102,11 @@ in Room B.
 ## Home control
 
 `supports_home_control` is advertised to HA automatically — not a config
-key — whenever `HASS_URL` and `HASS_TOKEN` are configured (the same
-credentials the `homeassistant` platform and toolset use). When present,
+key — whenever a `HASS_TOKEN` (Long-Lived Access Token) is configured
+(the same credentials the `homeassistant` platform and toolset use). The HA
+instance URL comes from `HASS_URL`, defaulting to `http://homeassistant.local:8123`;
+set `HASS_URL` explicitly if your instance lives elsewhere, since announce/control calls
+will otherwise target that default hostname. When a token is present,
 device-control intents spoken during a conversation turn ("turn off the
 kitchen lights") execute through Hermes's existing `homeassistant` toolset
 inside that turn, the same way they would from text chat.

@@ -2088,7 +2088,11 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )
-        argv = [_bash, str(path)]
+        # On Windows, MSYS2/Git Bash interprets backslashes as escape
+        # sequences, not path separators.  Convert to POSIX forward
+        # slashes so C:\Users\... doesn't become C:Users... (#60857).
+        script_arg = str(path).replace("\\", "/")
+        argv = [_bash, script_arg]
     else:
         argv = [sys.executable, str(path)]
 

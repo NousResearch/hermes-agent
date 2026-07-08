@@ -16823,11 +16823,15 @@ def start_server(
             app.state.bound_port = actual_port
 
             _write_dashboard_ready_file(actual_port)
-            # Port-discovery sentinel parsed by the desktop spawn. `serve` is a
-            # plain backend, not a dashboard, so it announces a neutral token;
-            # `dashboard` keeps the legacy one. The desktop matches either.
-            ready_token = "HERMES_BACKEND_READY" if headless else "HERMES_DASHBOARD_READY"
-            print(f"{ready_token} port={actual_port}", flush=True)
+            # Port-discovery sentinel parsed by the desktop spawn. During the
+            # transition period (post-#55923), emit both tokens so pre-#55923
+            # desktop builds can still match the legacy sentinel while new
+            # builds use the neutral one. This avoids breaking users who run
+            # `hermes update` (CLI-only) without rebuilding the desktop app.
+            # The desktop regex already matches either sentinel since #55923.
+            print(f"HERMES_DASHBOARD_READY port={actual_port}", flush=True)
+            if headless:
+                print(f"HERMES_BACKEND_READY port={actual_port}", flush=True)
             if headless:
                 # No SPA, and the JSON-RPC/WS endpoints are auth-gated — don't
                 # advertise a paste-and-connect URL, just announce the bind.

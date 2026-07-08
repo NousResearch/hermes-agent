@@ -9337,8 +9337,14 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         try:
             from tools.process_registry import process_registry
 
+            # Positive-proof ownership (compression-chain aware) — the same
+            # fail-closed gate the poller uses, so the post-turn drain can't
+            # adopt another session's (or an orphan's) delegation payload,
+            # while a post-compression session still claims its own
+            # pre-compression dispatches (#55578).
             for _evt, synth in process_registry.drain_notifications(
                 session_key=session.get("session_key", ""),
+                owns_event=lambda e: _session_owns_notification_event(sid, session, e),
             ):
                 with session["history_lock"]:
                     if session.get("running"):

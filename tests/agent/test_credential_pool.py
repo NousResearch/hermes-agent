@@ -1805,6 +1805,150 @@ def test_load_pool_oauth_path_still_autodiscovers(tmp_path, monkeypatch):
     assert "claude_code" in sources
 
 
+class _RecordingLock:
+    def __init__(self, calls, timeout_seconds=None):
+        self.calls = calls
+        self.timeout_seconds = timeout_seconds
+
+    def __enter__(self):
+        self.calls.append(self.timeout_seconds)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+def test_anthropic_claude_code_refresh_runs_under_auth_lock(tmp_path, monkeypatch):
+    """Claude Code refresh tokens are single-use; serialize refresh like Codex.
+
+    Without the lock, concurrent gateway turns can all POST the same expired
+    refresh token and drive Anthropic's OAuth endpoint into 429s, causing Hermes
+    to fall back to Codex even though Claude Code itself works.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cc-expired",
+                        "label": "claude-code",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "claude_code",
+                        "access_token": "expired-access",
+                        "refresh_token": "expired-refresh",
+                        "expires_at_ms": int(time.time() * 1000) - 1_000,
+                    }
+                ]
+            },
+        },
+    )
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
+    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: {
+            "accessToken": "expired-access",
+            "refreshToken": "expired-refresh",
+            "expiresAt": int(time.time() * 1000) - 1_000,
+        },
+    )
+    monkeypatch.setattr("agent.anthropic_adapter._write_claude_code_credentials", lambda *args: None)
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.refresh_anthropic_oauth_pure",
+        lambda refresh_token, use_json=False: {
+            "access_token": "fresh-access",
+            "refresh_token": "fresh-refresh",
+            "expires_at_ms": int(time.time() * 1000) + 3_600_000,
+        },
+    )
+
+    import agent.credential_pool as cp
+
+    lock_calls = []
+    monkeypatch.setattr(cp, "_auth_store_lock", lambda timeout_seconds=None: _RecordingLock(lock_calls, timeout_seconds))
+
+    pool = cp.load_pool("anthropic")
+    entry = pool.select()
+
+    assert lock_calls, "Anthropic claude_code refresh must acquire the shared auth lock"
+    assert entry is not None
+    assert entry.access_token == "fresh-access"
+    assert entry.refresh_token == "fresh-refresh"
+
+
+def test_anthropic_claude_code_lock_resync_skips_consumed_refresh(tmp_path, monkeypatch):
+    """A lock waiter should adopt tokens rotated by the winner instead of POSTing.
+
+    This catches the concurrency race where process B enters after process A has
+    already refreshed and written ~/.claude/.credentials.json; B must not spend
+    the old single-use refresh token again.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cc-stale",
+                        "label": "claude-code",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "claude_code",
+                        "access_token": "stale-access",
+                        "refresh_token": "stale-refresh",
+                        "expires_at_ms": int(time.time() * 1000) - 1_000,
+                    }
+                ]
+            },
+        },
+    )
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
+    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
+    creds = {
+        "accessToken": "stale-access",
+        "refreshToken": "stale-refresh",
+        "expiresAt": int(time.time() * 1000) - 1_000,
+    }
+    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: dict(creds))
+
+    def _should_not_refresh(*args, **kwargs):
+        raise AssertionError("should adopt credentials-file tokens instead of refreshing stale token")
+
+    monkeypatch.setattr("agent.anthropic_adapter.refresh_anthropic_oauth_pure", _should_not_refresh)
+
+    import agent.credential_pool as cp
+
+    lock_calls = []
+    monkeypatch.setattr(cp, "_auth_store_lock", lambda timeout_seconds=None: _RecordingLock(lock_calls, timeout_seconds))
+
+    pool = cp.load_pool("anthropic")
+    creds.update(
+        {
+            "accessToken": "winner-access",
+            "refreshToken": "winner-refresh",
+            "expiresAt": int(time.time() * 1000) + 3_600_000,
+        }
+    )
+    entry = pool.select()
+
+    assert lock_calls, "Anthropic claude_code resync must happen inside the shared auth lock"
+    assert entry is not None
+    assert entry.access_token == "winner-access"
+    assert entry.refresh_token == "winner-refresh"
+
+
 def test_least_used_strategy_selects_lowest_count(tmp_path, monkeypatch):
     """least_used strategy should select the credential with the lowest request_count."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

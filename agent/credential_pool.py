@@ -113,6 +113,11 @@ SUPPORTED_POOL_STRATEGIES = {
 EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
 EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
+# Anthropic Claude Code OAuth token-refresh 429s are usually short-lived
+# control-plane throttles, not a model-usage quota window.  Treating them like
+# generic provider 429s freezes Claude for an hour and pushes every live turn to
+# fallback even though retrying shortly afterwards often succeeds.
+ANTHROPIC_OAUTH_REFRESH_429_TTL_SECONDS = 60  # 1 minute
 
 # Pool key prefix for custom OpenAI-compatible endpoints.
 # Custom endpoints all share provider='custom' but are keyed by their
@@ -965,14 +970,30 @@ class CredentialPool:
                 self._mark_exhausted(entry, None)
             return None
 
-        # Codex OAuth refresh tokens are single-use.  The sync→POST→write-back
+        # OAuth refresh tokens are single-use.  The sync→POST→write-back
         # sequence below must run atomically across Hermes processes: otherwise
         # two processes can both adopt the same on-disk token, both POST it, and
-        # the loser gets ``refresh_token_reused``.  Serialize the whole sequence
-        # through the shared cross-process auth-store flock (the same lock and
-        # extended-timeout pattern used by resolve_codex_runtime_credentials()).
-        # When a waiter finally acquires the lock, the in-lock re-sync below
-        # picks up the rotated token the winner persisted and skips the POST.
+        # the loser gets refresh_token_reused / invalid_grant or upstream refresh
+        # throttling.  Serialize refresh paths that share a singleton backing
+        # store through the shared cross-process auth-store flock.  When a waiter
+        # finally acquires the lock, the in-lock re-sync picks up the rotated
+        # token the winner persisted and can skip the POST.
+        if self.provider == "anthropic" and entry.source == "claude_code":
+            refresh_timeout_seconds = auth_mod.env_float(
+                "HERMES_ANTHROPIC_REFRESH_TIMEOUT_SECONDS", 30
+            )
+            lock_timeout = max(
+                float(auth_mod.AUTH_LOCK_TIMEOUT_SECONDS),
+                float(refresh_timeout_seconds) + 5.0,
+            )
+            with _auth_store_lock(timeout_seconds=lock_timeout):
+                synced = self._sync_anthropic_entry_from_credentials_file(entry)
+                if synced is not entry:
+                    entry = synced
+                    if not force and not self._entry_needs_refresh(entry):
+                        return entry
+                return self._refresh_entry_impl(entry, force=force)
+
         if self.provider == "openai-codex":
             refresh_timeout_seconds = auth_mod.env_float(
                 "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", 20
@@ -1069,6 +1090,22 @@ class CredentialPool:
                 return entry
         except Exception as exc:
             logger.debug("Credential refresh failed for %s/%s: %s", self.provider, entry.id, exc)
+            refresh_status_code = getattr(exc, "code", None)
+            try:
+                refresh_status_code = int(refresh_status_code) if refresh_status_code is not None else None
+            except (TypeError, ValueError):
+                refresh_status_code = None
+            refresh_error_context: Optional[Dict[str, Any]] = None
+            if (
+                self.provider == "anthropic"
+                and entry.source == "claude_code"
+                and refresh_status_code == 429
+            ):
+                refresh_error_context = {
+                    "reason": "oauth_refresh_rate_limited",
+                    "message": "Anthropic OAuth token refresh was rate limited; using a short retry cooldown",
+                    "reset_at": time.time() + ANTHROPIC_OAUTH_REFRESH_429_TTL_SECONDS,
+                }
             # For anthropic claude_code entries: the refresh token may have been
             # consumed by another process. Check if ~/.claude/.credentials.json
             # has a newer token pair and retry once.
@@ -1318,7 +1355,7 @@ class CredentialPool:
                         self._current_id = None
                     self._persist(removed_ids=removed_ids)
                     return None
-            self._mark_exhausted(entry, None)
+            self._mark_exhausted(entry, refresh_status_code, refresh_error_context)
             return None
 
         updated = replace(

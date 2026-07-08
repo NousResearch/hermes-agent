@@ -2988,6 +2988,7 @@ class SessionDB:
         archived_only: bool = False,
         id_query: str = None,
         search_query: str = None,
+        user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -3046,6 +3047,12 @@ class SessionDB:
         if source:
             where_clauses.append("s.source = ?")
             params.append(source)
+        if user_id is not None:
+            # Scope to the caller's own sessions in multi-user gateway
+            # contexts so browsing/recent-session listing cannot surface
+            # another user's sessions (same boundary as resolve_session_by_title).
+            where_clauses.append("s.user_id = ?")
+            params.append(user_id)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
@@ -4469,6 +4476,7 @@ class SessionDB:
         offset: int = 0,
         sort: str = None,
         include_inactive: bool = False,
+        user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
@@ -4551,6 +4559,13 @@ class SessionDB:
             where_clauses.append(f"m.role IN ({role_placeholders})")
             params.extend(role_filter)
 
+        if user_id is not None:
+            # Scope to the caller's own sessions in multi-user gateway
+            # contexts so one user cannot search another user's conversation
+            # history (same security boundary as resolve_session_by_title).
+            where_clauses.append("s.user_id = ?")
+            params.append(user_id)
+
         where_sql = " AND ".join(where_clauses)
         params.extend([limit, offset])
 
@@ -4626,6 +4641,9 @@ class SessionDB:
                 if role_filter:
                     tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     tri_params.extend(role_filter)
+                if user_id is not None:
+                    tri_where.append("s.user_id = ?")
+                    tri_params.append(user_id)
                 tri_sql = f"""
                     SELECT
                         m.id,
@@ -4683,6 +4701,9 @@ class SessionDB:
                 if role_filter:
                     like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     like_params.extend(role_filter)
+                if user_id is not None:
+                    like_where.append("s.user_id = ?")
+                    like_params.append(user_id)
                 like_sql = f"""
                     SELECT m.id, m.session_id, m.role,
                            substr(m.content,

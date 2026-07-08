@@ -1581,6 +1581,43 @@ class TestFTS5Search:
         assert isinstance(results, list)
         assert elapsed < 1.0
 
+    def test_search_scopes_by_user_id(self, db):
+        """A scoped search (multi-user gateway) must not return another user's
+        messages — the same security boundary as resolve_session_by_title/#60914."""
+        db.create_session(session_id="s_a", source="telegram", user_id="tg-userA")
+        db.append_message("s_a", role="user", content="USER_A_SECRET about the launch")
+
+        db.create_session(session_id="s_b", source="telegram", user_id="tg-userB")
+        db.append_message("s_b", role="user", content="USER_B_SECRET banking credentials")
+
+        # User A searching USER_B's term — must be empty when scoped.
+        results = db.search_messages("USER_B_SECRET", user_id="tg-userA")
+        assert results == []
+
+        # User B can find its own.
+        results = db.search_messages("USER_B_SECRET", user_id="tg-userB")
+        assert len(results) == 1
+        assert results[0]["session_id"] == "s_b"
+
+        # Unscoped search (single-user / CLI) still finds everything.
+        results = db.search_messages("USER_B_SECRET")
+        assert len(results) == 1
+
+    def test_search_user_id_scope_cjk_path(self, db):
+        """The CJK (trigram / LIKE) fallback paths must also honor user_id."""
+        db.create_session(session_id="s_a", source="telegram", user_id="tg-userA")
+        db.append_message("s_a", role="user", content="用户A的私密项目细节")
+
+        db.create_session(session_id="s_b", source="telegram", user_id="tg-userB")
+        db.append_message("s_b", role="user", content="用户B的银行登录信息")
+
+        # Scope to user A — must not see user B's CJK content.
+        results = db.search_messages("用户B", user_id="tg-userA")
+        assert results == []
+
+        results = db.search_messages("用户B", user_id="tg-userB")
+        assert len(results) == 1
+
 
 # =========================================================================
 # CJK (Chinese/Japanese/Korean) LIKE fallback
@@ -4028,6 +4065,27 @@ class TestExcludeSources:
         )
         sources = [r["source"] for r in results]
         assert sources == ["cli"]
+
+    def test_list_sessions_rich_scopes_by_user_id(self, db):
+        """Browsing recent sessions in a multi-user gateway must not surface
+        another user's sessions."""
+        db.create_session("s_a", "telegram", user_id="tg-userA")
+        db.create_session("s_b", "telegram", user_id="tg-userB")
+
+        sessions = db.list_sessions_rich(user_id="tg-userA")
+        ids = [s["id"] for s in sessions]
+        assert "s_a" in ids
+        assert "s_b" not in ids
+
+        sessions = db.list_sessions_rich(user_id="tg-userB")
+        ids = [s["id"] for s in sessions]
+        assert "s_b" in ids
+        assert "s_a" not in ids
+
+        # Unscoped still returns both.
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "s_a" in ids and "s_b" in ids
 
 
 class TestResolveSessionByNameOrId:

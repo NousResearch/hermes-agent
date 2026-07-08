@@ -103,6 +103,27 @@ def _resolve_to_parent(db, session_id: str) -> str:
     return cur
 
 
+def _caller_identity(db, current_session_id: Optional[str]) -> tuple:
+    """Resolve ``(user_id, source)`` of the session that owns the current call.
+
+    In a multi-user gateway every user's agent runs a separate session that
+    carries a ``user_id`` (and ``source``/platform). Returning the caller's
+    identity lets the session-search queries scope to that owner so one user
+    cannot read another user's conversation history — the same security
+    boundary enforced for ``/resume`` by CVE-2026-11461. When the caller
+    session is unknown (CLI / single-user), both values are ``None`` and the
+    queries stay unscoped (backward compatible).
+    """
+    if not current_session_id or db is None:
+        return (None, None)
+    try:
+        row = db.get_session(current_session_id) or {}
+    except Exception:
+        logging.debug("get_session failed resolving caller identity for %s", current_session_id, exc_info=True)
+        return (None, None)
+    return (row.get("user_id"), row.get("source"))
+
+
 def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Stable-sort FTS rows so interactive sessions rank above automation.
 
@@ -260,10 +281,12 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
+        caller_user_id, caller_source = _caller_identity(db, current_session_id)
         sessions = db.list_sessions_rich(
             limit=limit + 5,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             order_by_last_active=True,
+            user_id=caller_user_id,
         )  # fetch extra so we can skip current
 
         current_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
@@ -433,8 +456,15 @@ def _title_match_result(
     db,
     query: str,
     current_lineage_root: Optional[str],
+    source: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Return a discovery-shaped result when the query matches a session title."""
+    """Return a discovery-shaped result when the query matches a session title.
+
+    ``source``/``user_id`` scope the title lookup to the caller's own sessions
+    so a multi-user gateway user cannot resolve another user's session by title
+    (same security boundary as resolve_session_by_title scoping, CVE-2026-11461).
+    """
     title_query = _normalize_title_query(query)
     if not title_query:
         return None
@@ -445,6 +475,18 @@ def _title_match_result(
         logging.debug("resolve_session_by_title failed for %r", title_query, exc_info=True)
         return None
     if not session_id:
+        return None
+
+    # Scope the resolved session to the caller's own sessions. ``resolve_session_by_title``
+    # may not yet be caller-scoped on this build, so verify ownership explicitly.
+    try:
+        _row = db.get_session(session_id) or {}
+    except Exception:
+        logging.debug("get_session failed for title match %s", session_id, exc_info=True)
+        _row = {}
+    if user_id is not None and _row.get("user_id") != user_id:
+        return None
+    if source is not None and _row.get("source") != source:
         return None
 
     lineage_root = _resolve_to_parent(db, session_id)
@@ -507,7 +549,10 @@ def _discover(
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
     current_lineage_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
-    title_result = _title_match_result(db, query, current_lineage_root)
+    caller_user_id, caller_source = _caller_identity(db, current_session_id)
+    title_result = _title_match_result(
+        db, query, current_lineage_root, source=caller_source, user_id=caller_user_id
+    )
 
     try:
         raw_results = db.search_messages(
@@ -519,6 +564,7 @@ def _discover(
             # of cron rows are still in hand for the demotion pass below.
             offset=0,
             sort=sort,
+            user_id=caller_user_id,
         )
     except Exception as e:
         logging.error("FTS5 search failed: %s", e, exc_info=True)
@@ -914,7 +960,11 @@ registry.register(
         sort=args.get("sort"),
         profile=args.get("profile"),
         db=kw.get("db"),
-        current_session_id=kw.get("current_session_id"),
+        # handle_function_call forwards the active session as ``session_id``;
+        # explicit callers (CLI / gateway slash commands) use
+        # ``current_session_id``. Both identify the caller's own session so the
+        # search can be scoped to that owner in multi-user gateway contexts.
+        current_session_id=kw.get("current_session_id") or kw.get("session_id"),
     ),
     check_fn=check_session_search_requirements,
     emoji="🔍",

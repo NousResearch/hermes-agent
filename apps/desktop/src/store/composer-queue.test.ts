@@ -168,3 +168,69 @@ describe('shouldAutoDrain', () => {
     expect(shouldAutoDrain({ isBusy: false, queueLength: 0 })).toBe(false)
   })
 })
+
+describe('Race 5: source session binding', () => {
+  beforeEach(() => {
+    window.localStorage.removeItem(QUEUE_STORAGE_KEY)
+    $queuedPromptsBySession.set({})
+  })
+
+  it('stamps sourceRuntimeId and sourceStoredId onto queued entries', () => {
+    const entry = enqueueQueuedPrompt(SESSION_KEY, {
+      attachments: [],
+      text: 'race 5 test',
+      sourceRuntimeId: 'rt-session-a',
+      sourceStoredId: 'stored-session-a'
+    })
+
+    expect(entry).not.toBeNull()
+    expect(entry?.sourceRuntimeId).toBe('rt-session-a')
+    expect(entry?.sourceStoredId).toBe('stored-session-a')
+
+    const queue = getQueuedPrompts(SESSION_KEY)
+    expect(queue[0]?.sourceRuntimeId).toBe('rt-session-a')
+    expect(queue[0]?.sourceStoredId).toBe('stored-session-a')
+  })
+
+  it('allows entries without source session ids (backward compatible)', () => {
+    const entry = enqueueQueuedPrompt(SESSION_KEY, {
+      attachments: [],
+      text: 'legacy entry'
+    })
+
+    expect(entry).not.toBeNull()
+    expect(entry?.sourceRuntimeId).toBeUndefined()
+    expect(entry?.sourceStoredId).toBeUndefined()
+  })
+
+  it('persists source session ids into local storage', () => {
+    enqueueQueuedPrompt(SESSION_KEY, {
+      attachments: [],
+      text: 'persist source ids',
+      sourceRuntimeId: 'rt-persist',
+      sourceStoredId: 'stored-persist'
+    })
+
+    const raw = window.localStorage.getItem(QUEUE_STORAGE_KEY)
+    expect(raw).toBeTruthy()
+
+    const parsed = JSON.parse(String(raw)) as Record<string, { sourceRuntimeId?: string; sourceStoredId?: string; text: string }[]>
+    expect(parsed[SESSION_KEY]?.[0]?.sourceRuntimeId).toBe('rt-persist')
+    expect(parsed[SESSION_KEY]?.[0]?.sourceStoredId).toBe('stored-persist')
+  })
+
+  it('survives migration with source ids intact', () => {
+    enqueueQueuedPrompt('rt-old', {
+      attachments: [],
+      text: 'migrate me',
+      sourceRuntimeId: 'rt-original',
+      sourceStoredId: 'stored-original'
+    })
+
+    migrateQueuedPrompts('rt-old', 'rt-new')
+
+    const queue = getQueuedPrompts('rt-new')
+    expect(queue[0]?.sourceRuntimeId).toBe('rt-original')
+    expect(queue[0]?.sourceStoredId).toBe('stored-original')
+  })
+})

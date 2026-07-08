@@ -7,6 +7,17 @@ export interface QueuedPromptEntry {
   text: string
   attachments: ComposerAttachment[]
   queuedAt: number
+  /**
+   * The runtime session id that was active when this entry was enqueued.
+   * Used to bind the drain submit to the source session so a queued prompt
+   * never fires into a different session after a session switch (Race 5).
+   */
+  sourceRuntimeId?: string
+  /**
+   * The stored session id that was active when this entry was enqueued.
+   * Paired with sourceRuntimeId for session.resume retry paths.
+   */
+  sourceStoredId?: string
 }
 
 type QueueState = Record<string, QueuedPromptEntry[]>
@@ -80,7 +91,12 @@ export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEn
 
 export const enqueueQueuedPrompt = (
   key: string | null | undefined,
-  payload: { text: string; attachments: ComposerAttachment[] }
+  payload: {
+    text: string
+    attachments: ComposerAttachment[]
+    sourceRuntimeId?: string
+    sourceStoredId?: string
+  }
 ): null | QueuedPromptEntry => {
   const sid = sidOf(key)
 
@@ -92,7 +108,9 @@ export const enqueueQueuedPrompt = (
     id: nextId(),
     text: payload.text,
     attachments: cloneAttachments(payload.attachments),
-    queuedAt: Date.now()
+    queuedAt: Date.now(),
+    sourceRuntimeId: payload.sourceRuntimeId,
+    sourceStoredId: payload.sourceStoredId
   }
 
   writeSession(sid, [...queueFor(sid), entry])

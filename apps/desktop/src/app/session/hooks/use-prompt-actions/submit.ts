@@ -128,7 +128,14 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       // One submit in flight per session — drop any concurrent re-fire so a
       // stalled turn can't stack the same prompt into multiple real turns.
-      const submitLockKey = startingStoredSessionId || startingActiveSessionId || '__pending_new__'
+      // When draining a queued prompt, key the lock on the TARGET session
+      // (the one that owns the queue entry), not the currently-active one.
+      const submitLockKey =
+        options?.targetStoredId ||
+        options?.targetRuntimeId ||
+        startingStoredSessionId ||
+        startingActiveSessionId ||
+        '__pending_new__'
 
       if (_submitInFlight.has(submitLockKey)) {
         return false
@@ -226,7 +233,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       setAwaitingResponse(true)
       clearNotifications()
 
-      let sessionId: null | string = activeSessionId
+      // When draining a queued prompt, target the source session instead of the
+      // currently-active one. This prevents a queued prompt from firing into the
+      // wrong session after a session switch (Race 5).
+      let sessionId: null | string = options?.targetRuntimeId || activeSessionId
 
       if (sessionId) {
         seedOptimistic(sessionId)
@@ -331,22 +341,36 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // backend loop (#55578 symptom d) rejects the submit even though
             // the stored session is fine — resume + retry instead of erroring
             // out and losing the session binding.
-            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: startingStoredSessionId,
-              source: 'desktop'
-            })
+            // Use the queued prompt's source stored id when available so the
+            // resume targets the original session, not the active one.
+            const storedIdForResume = options?.targetStoredId || startingStoredSessionId
 
-            if (sessionContextDrifted()) {
-              return abortForSessionSwitch(sessionId)
-            }
+            if (storedIdForResume) {
+              const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+                session_id: storedIdForResume,
+                source: 'desktop'
+              })
 
-            const recoveredId = resumed?.session_id
+              if (sessionContextDrifted()) {
+                return abortForSessionSwitch(sessionId)
+              }
 
-            if (recoveredId) {
-              activeSessionIdRef.current = recoveredId
-              await withSessionBusyRetry(() =>
-                requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
-              )
+              const recoveredId = resumed?.session_id
+
+              if (recoveredId) {
+                // Update the ref only if we're targeting the active session.
+                // For background-session drains, don't clobber the active ref.
+                if (!options?.targetRuntimeId || options.targetRuntimeId === activeSessionIdRef.current) {
+                  activeSessionIdRef.current = recoveredId
+                }
+
+                sessionId = recoveredId
+                await withSessionBusyRetry(() =>
+                  requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+                )
+              } else {
+                submitErr = firstErr
+              }
             } else {
               submitErr = firstErr
             }

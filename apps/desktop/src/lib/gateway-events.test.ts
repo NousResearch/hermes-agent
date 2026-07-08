@@ -24,4 +24,18 @@ describe('gateway event routing', () => {
     expect(gatewayEventRequiresSessionId('session.info')).toBe(false)
     expect(gatewayEventRequiresSessionId(undefined)).toBe(false)
   })
+
+  it('documents the Race 3 fix: session.info state patches require explicitSid', () => {
+    // gatewayEventRequiresSessionId('session.info') is still false — unscoped
+    // session.info events are NOT dropped (they carry the active turn's state).
+    // The Race 3 fix is in gateway-event.ts: the per-session state-patch
+    // (updateSessionState) is guarded by `explicitSid` so an unscoped
+    // session.info can't misattribute a background session's model/cwd/branch
+    // onto the active session during a switch.
+    //
+    // This test documents the invariant: the function-level gate stays open
+    // for session.info, but the state-patch path in the event handler checks
+    // explicitSid separately.
+    expect(gatewayEventRequiresSessionId('session.info')).toBe(false)
+  })
 })

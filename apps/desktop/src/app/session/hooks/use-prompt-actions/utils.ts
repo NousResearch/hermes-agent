@@ -226,4 +226,15 @@ export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targ
 export interface SubmitTextOptions {
   attachments?: ComposerAttachment[]
   fromQueue?: boolean
+  /**
+   * When draining a queued prompt, the source session's runtime id. If the
+   * user switched sessions between enqueue and drain, this ensures the prompt
+   * submits to the original session instead of the currently-active one.
+   */
+  targetRuntimeId?: string
+  /**
+   * The stored session id paired with targetRuntimeId, used for session.resume
+   * retry when the runtime id has expired.
+   */
+  targetStoredId?: string
 }

@@ -168,7 +168,13 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           }
         }
 
-        if (sessionId && hasStatePatch) {
+        // Only apply per-session state patches when we have a real session_id.
+        // Without explicitSid, sessionId falls back to activeSessionIdRef.current
+        // — patching state with that fallback could misattribute a background
+        // session's model/cwd/branch onto the active session during a switch.
+        // The `apply` guard above already prevents global setters; this closes
+        // the per-session state-patch path (Race 3).
+        if (explicitSid && sessionId && hasStatePatch) {
           updateSessionState(sessionId, state => ({
             ...state,
             ...statePatch,

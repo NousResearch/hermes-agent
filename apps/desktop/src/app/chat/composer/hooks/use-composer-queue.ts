@@ -34,6 +34,8 @@ interface UseComposerQueueArgs {
   queueEditRef: RefObject<QueueEditState | null>
   queueSessionKey: ChatBarProps['queueSessionKey']
   sessionId: string | null | undefined
+  /** Stored session id for the active session — used to stamp queue entries. */
+  storedSessionId: string | null | undefined
 }
 
 /**
@@ -57,7 +59,8 @@ export function useComposerQueue({
   onSubmit,
   queueEditRef,
   queueSessionKey,
-  sessionId
+  sessionId,
+  storedSessionId
 }: UseComposerQueueArgs) {
   const { t } = useI18n()
 
@@ -168,7 +171,12 @@ export function useComposerQueue({
       return false
     }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments })) {
+    if (!enqueueQueuedPrompt(activeQueueSessionKey, {
+      text,
+      attachments,
+      sourceRuntimeId: sessionId ?? undefined,
+      sourceStoredId: storedSessionId ?? undefined
+    })) {
       return false
     }
 
@@ -177,10 +185,13 @@ export function useComposerQueue({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef])
+  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, sessionId, storedSessionId])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited.
+  // Each entry carries its source session ids so the drain always targets
+  // the session that owned the entry at enqueue time — never the
+  // currently-active session if the user switched in between (Race 5).
   const runDrain = useCallback(
     async (pickEntry: (entries: QueuedPromptEntry[]) => QueuedPromptEntry | undefined): Promise<boolean> => {
       if (drainingQueueRef.current || !activeQueueSessionKey) {
@@ -193,11 +204,24 @@ export function useComposerQueue({
         return false
       }
 
+      // Determine which session key owns this entry. If the entry has a
+      // sourceRuntimeId that differs from the current activeQueueSessionKey,
+      // the user switched sessions — use the entry's source key for removal
+      // and pass the source ids to onSubmit so it targets the right session.
+      const entrySessionKey = entry.sourceRuntimeId && entry.sourceRuntimeId !== activeQueueSessionKey
+        ? entry.sourceRuntimeId
+        : activeQueueSessionKey
+
       drainingQueueRef.current = true
 
       try {
         const accepted = await Promise.resolve(
-          onSubmit(entry.text, { attachments: entry.attachments, fromQueue: true })
+          onSubmit(entry.text, {
+            attachments: entry.attachments,
+            fromQueue: true,
+            targetRuntimeId: entry.sourceRuntimeId,
+            targetStoredId: entry.sourceStoredId
+          })
         )
 
         if (accepted === false) {
@@ -205,7 +229,7 @@ export function useComposerQueue({
         }
 
         drainFailuresRef.current.delete(entry.id)
-        removeQueuedPrompt(activeQueueSessionKey, entry.id)
+        removeQueuedPrompt(entrySessionKey, entry.id)
         resetBrowseState(sessionId)
 
         return true

@@ -27,6 +27,12 @@ class TestIsUnusableContainerCwd:
         assert tt._is_unusable_container_cwd(r"C:\Users\someuser") is True
 
 
+    def test_windows_non_c_backslash_host_path_rejected(self):
+        assert tt._is_unusable_container_cwd(r"E:\SomeRoot\project") is True
+
+    def test_windows_non_c_forwardslash_host_path_rejected(self):
+        assert tt._is_unusable_container_cwd("D:/SomeRoot/project") is True
+
     def test_posix_home_host_path_rejected(self):
         assert tt._is_unusable_container_cwd("/home/ben/projects") is True
 
@@ -35,6 +41,30 @@ class TestIsUnusableContainerCwd:
         assert tt._CONTAINER_BACKENDS == frozenset(
             {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
         )
+
+
+class TestGetEnvConfigWindowsDriveCwd:
+    def test_non_c_windows_host_cwd_replaced_for_docker_by_default(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CWD", r"E:\SomeRoot\project")
+        monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", raising=False)
+
+        config = tt._get_env_config()
+
+        assert config["cwd"] == "/root"
+        assert config["host_cwd"] is None
+        assert config["docker_mount_cwd_to_workspace"] is False
+
+    def test_non_c_windows_host_cwd_maps_to_workspace_when_enabled(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CWD", r"E:\SomeRoot\project")
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+
+        config = tt._get_env_config()
+
+        assert config["cwd"] == "/workspace"
+        assert config["host_cwd"] == r"E:\SomeRoot\project"
+        assert config["docker_mount_cwd_to_workspace"] is True
 
 
 class TestOverrideCwdSanitizedAtCallSite:
@@ -107,6 +137,9 @@ class TestOverrideCwdSanitizedAtCallSite:
             "It must be sanitized back to config['cwd']."
         )
 
+    def test_non_c_windows_host_override_does_not_reach_container(self, monkeypatch):
+        cwd = self._run_and_capture_cwd(monkeypatch, r"E:\SomeRoot\project")
+        assert cwd == "/root"
 
     def test_valid_container_override_is_preserved(self, monkeypatch):
         # RL/benchmark envs set an in-container path; it must pass through.
@@ -197,6 +230,9 @@ class TestFileOpsCwdSanitizedAtCallSite:
             "It must be sanitized back to config['cwd']."
         )
 
+    def test_non_c_windows_host_override_does_not_reach_container(self, monkeypatch):
+        cwd = self._run_and_capture_cwd(monkeypatch, r"E:\SomeRoot\project")
+        assert cwd == "/workspace"
 
     def test_valid_container_override_is_preserved(self, monkeypatch):
         # RL/benchmark envs set an in-container path; it must pass through.

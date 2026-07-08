@@ -600,6 +600,40 @@ class TestSkillManageDispatcher:
         assert result["success"] is False
         assert "does not exist" in result["error"]
 
+    def test_create_rejects_existing_skill_dir_even_when_find_skill_misses(self, tmp_path):
+        """When SKILLS_DIR/<name>/SKILL.md already exists on disk,
+        skill_manage(action='create') must reject with an 'already exists' error —
+        even if _find_skill() happens to return None.
+
+        Regression: without a direct filesystem check in the create path,
+        mkdir(exist_ok=True) would silently nest the new SKILL.md inside the
+        existing directory, creating skills/X/X/SKILL.md and breaking resolution.
+        """
+        # Pre-create the directory + SKILL.md manually
+        skill_dir = tmp_path / "dupe-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT.replace(
+            "name: test-skill", "name: dupe-skill"))
+
+        # Simulate a scenario where _find_skill doesn't detect the local
+        # collision (e.g. get_all_skills_dirs is misconfigured or the skill
+        # was created by an external process between _find_skill and mkdir).
+        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[]):
+            raw = skill_manage(
+                action="create", name="dupe-skill",
+                content=VALID_SKILL_CONTENT.replace(
+                    "name: test-skill", "name: dupe-skill"),
+            )
+
+        result = json.loads(raw)
+        assert result["success"] is False, (
+            f"Expected duplicate rejection but got: {result}"
+        )
+        assert "already exists" in result["error"], (
+            f"Error message must say 'already exists', got: {result.get('error')}"
+        )
+
     def test_background_review_delete_refuses_bundled_even_with_absorbed_into(self, tmp_path):
         from tools.skill_provenance import (
             BACKGROUND_REVIEW,

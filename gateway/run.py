@@ -10637,6 +10637,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             (getattr(event, "metadata", None) or {}).get("gateway_session_id") or ""
         ).strip()
         if pinned_session_id and pinned_session_id != session_entry.session_id:
+            # Fail closed (#55578): the spawning session may have ENDED since
+            # dispatch (user /new-reset, compression rotation whose parent was
+            # closed). switch_session() re-opens ended sessions, so pinning
+            # blindly would RESURRECT a conversation the user explicitly
+            # ended and inject into it — the same illicit-revival class as
+            # the ws_orphan_reap loop (#60609). A completion whose spawning
+            # session is dead is dropped from injection; the subagent's
+            # output remains in the delegation records.
+            pinned_row = None
+            try:
+                if self._session_db is not None:
+                    # AsyncSessionDB already offloads to a thread.
+                    pinned_row = await self._session_db.get_session(pinned_session_id)
+            except Exception:
+                pinned_row = None
+            if pinned_row is None or pinned_row.get("ended_at"):
+                logger.warning(
+                    "Async-delegation completion pinned to session %s, which is "
+                    "%s — dropping injection instead of resurrecting it "
+                    "(#55578 fail-closed; result remains in the delegation "
+                    "records).",
+                    pinned_session_id,
+                    "unknown" if pinned_row is None else "ended",
+                )
+                return
             prior_session_id = session_entry.session_id
             switched = self.session_store.switch_session(session_key, pinned_session_id)
             if switched is not None:

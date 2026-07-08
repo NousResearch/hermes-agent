@@ -14577,6 +14577,13 @@ def main():
         cmd_version(args)
         return
 
+    # --yolo: set env var before plugin discovery imports tools/approval.py,
+    # which freezes _YOLO_MODE_FROZEN at import time. Previously this was set
+    # inside cmd_chat(), after _prepare_agent_startup() had already run
+    # discover_plugins() — the frozen flag was always False (#60328).
+    if getattr(args, "yolo", False):
+        os.environ["HERMES_YOLO_MODE"] = "1"
+
     # Discover Python plugins and register shell hooks once, before any
     # command that can fire lifecycle hooks.  Both are idempotent; gated
     # so introspection/management commands (hermes hooks list, cron

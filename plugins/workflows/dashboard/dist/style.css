@@ -269,6 +269,19 @@
   background: color-mix(in srgb, var(--color-border) 18%, transparent);
 }
 
+.hermes-workflows .hermes-workflows-palette-card[draggable="true"] {
+  cursor: grab;
+}
+
+.hermes-workflows .hermes-workflows-palette-card[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.hermes-workflows .hermes-workflows-canvas-drop-target {
+  outline: 2px dashed var(--color-primary, var(--color-foreground));
+  outline-offset: -4px;
+}
+
 .hermes-workflows .hermes-workflows-palette-icon {
   grid-row: 1 / span 2;
   opacity: 0.86;

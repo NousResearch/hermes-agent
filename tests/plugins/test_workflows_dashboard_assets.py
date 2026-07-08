@@ -80,7 +80,7 @@ def test_workflow_dashboard_exposes_ui_only_builder_controls() -> None:
 def test_workflow_dashboard_uses_palette_instead_of_form_toolbar_clutter() -> None:
     text = BUNDLE.read_text(encoding="utf-8")
     assert "Nodes library" in text
-    assert "Drag from here mentally: click a node type to add it, then configure it in the inspector." in text
+    assert "Drag a node type onto the canvas, or click to add it." in text
     assert "hermes-workflows-node-palette" in text
     assert "Choose a node from the palette, select it on the canvas, then configure it in Properties." in text
     for removed_marker in [
@@ -115,6 +115,17 @@ def test_workflow_dashboard_blocks_trigger_edges_that_backend_rejects() -> None:
     assert "function isTriggerSource" in text
     assert "Triggers start workflows automatically; connect cells to other cells, not triggers." in text
     assert "if (isTriggerSource(spec, connection.source))" in text
+
+
+def test_workflow_dashboard_supports_drag_from_palette_to_canvas() -> None:
+    text = BUNDLE.read_text(encoding="utf-8")
+    assert "draggable: true" in text
+    assert "onDragStart" in text
+    assert "onDragOver" in text
+    assert "onDrop" in text
+    assert "HERMES_DRAG_NODE_TYPE" in text
+    assert "function addWorkflowCellAtPosition" in text
+    assert "hermes-workflows-canvas-drop-target" in text
 
 
 def test_workflow_dashboard_has_no_dead_builder_code() -> None:

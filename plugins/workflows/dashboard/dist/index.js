@@ -991,6 +991,9 @@
     const stateAdvancedJsonOpen = useState(false);
     const advancedJsonOpen = stateAdvancedJsonOpen[0];
     const setAdvancedJsonOpen = stateAdvancedJsonOpen[1];
+    const stateIsDragOver = useState(false);
+    const isDragOver = stateIsDragOver[0];
+    const setIsDragOver = stateIsDragOver[1];
     const statePromptAssistantOpen = useState(false);
     const promptAssistantOpen = statePromptAssistantOpen[0];
     const setPromptAssistantOpen = statePromptAssistantOpen[1];
@@ -1759,6 +1762,18 @@
       setSwitchCaseEquals("");
     }
 
+    function addWorkflowCellAtPosition(type) {
+      const safeType = type || "pass";
+      const baseSpec = activeSpec() || newWorkflowSpec(newWorkflowName || goalText || "Workflow Draft");
+      const after = selectedNode && selectedNode.specKind !== "trigger" ? selectedNode.id : "";
+      const nextSpec = addSpecNodeAfter(baseSpec, safeType, safeType, after);
+      setActiveDraftSpec(nextSpec, "Added " + safeString(safeType) + " cell. Configure it in the inspector.");
+      const id = Object.keys(nextSpec.nodes || {}).slice(-1)[0];
+      const node = findSpecNode(nextSpec, id);
+      if (node) selectNodeForInspector(node);
+      setNewCellType(safeType);
+    }
+
     function deleteSelectedCell() {
       if (!selectedNode) return;
       const spec = activeSpec();
@@ -2433,7 +2448,21 @@
     function renderReactFlowGraph(spec) {
       if (!ReactFlow || !ReactFlowProvider) return renderSimpleGraph(spec);
       return h("div", { className: "hermes-workflows-flow-surface" },
-        h("div", { className: "hermes-workflows-canvas" },
+        h("div", {
+          className: "hermes-workflows-canvas" + (isDragOver ? " hermes-workflows-canvas-drop-target" : ""),
+          onDragOver: function (event) {
+            event.preventDefault();
+            if (!isDragOver) setIsDragOver(true);
+          },
+          onDragLeave: function () { setIsDragOver(false); },
+          onDrop: function (event) {
+            event.preventDefault();
+            setIsDragOver(false);
+            const type = (event.dataTransfer && event.dataTransfer.getData("text/plain")) || window.__HERMES_DRAG_NODE_TYPE || "";
+            if (type) addWorkflowCellAtPosition(type);
+            delete window.__HERMES_DRAG_NODE_TYPE;
+          },
+        },
           h(ReactFlowProvider, null,
             h(ReactFlow, {
               nodes: flowNodes,
@@ -2602,18 +2631,18 @@
         h("div", { className: "hermes-workflows-palette-header" },
           h("div", null,
             h("strong", null, "Nodes library"),
-            h("p", { className: "hermes-workflows-muted" }, "Drag from here mentally: click a node type to add it, then configure it in the inspector.")
+            h("p", { className: "hermes-workflows-muted" }, "Drag a node type onto the canvas, or click to add it.")
           ),
           h("div", { className: "hermes-workflows-palette-help" }, "Connect cells by dragging between node handles on the canvas.")
         ),
         h("div", { className: "hermes-workflows-node-palette" },
-          h("button", { type: "button", className: "hermes-workflows-palette-card", "aria-label": "Add trigger", onClick: function () { addTriggerOfType("manual"); } },
+          h("button", { type: "button", className: "hermes-workflows-palette-card", draggable: true, onDragStart: function (event) { event.dataTransfer.setData("text/plain", "manual"); window.__HERMES_DRAG_NODE_TYPE = "manual"; }, "aria-label": "Add trigger", onClick: function () { addTriggerOfType("manual"); } },
             h("span", { className: "hermes-workflows-palette-icon" }, "⚡"),
             h("span", { className: "hermes-workflows-palette-title" }, "Manual trigger"),
             h("span", { className: "hermes-workflows-palette-desc" }, "Start the workflow")
           ),
           nodeTypes.map(function (item) {
-            return h("button", { key: item[0], type: "button", className: "hermes-workflows-palette-card", "aria-label": "Add workflow cell: " + item[0], onClick: function () { addWorkflowCellOfType(item[0]); } },
+            return h("button", { key: item[0], type: "button", className: "hermes-workflows-palette-card", draggable: true, onDragStart: function (event) { event.dataTransfer.setData("text/plain", item[0]); window.__HERMES_DRAG_NODE_TYPE = item[0]; }, "aria-label": "Add workflow cell: " + item[0], onClick: function () { addWorkflowCellOfType(item[0]); } },
               h("span", { className: "hermes-workflows-palette-icon" }, item[0] === "agent_task" ? "🤖" : item[0] === "switch" ? "◇" : item[0] === "parallel" ? "⇉" : item[0] === "join" ? "⇥" : item[0] === "wait" ? "⏱" : item[0] === "fail" ? "!" : "▣"),
               h("span", { className: "hermes-workflows-palette-title" }, item[1]),
               h("span", { className: "hermes-workflows-palette-desc" }, item[2])

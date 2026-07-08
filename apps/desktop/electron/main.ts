@@ -28,7 +28,7 @@ import {
   systemPreferences
 } from 'electron'
 import nodePty from 'node-pty'
-
+import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
@@ -6612,59 +6612,37 @@ function stopAllPoolBackends() {
   }
 }
 
-function profileNameFromDeleteRequest(request) {
-  if (!request || String(request.method || 'GET').toUpperCase() !== 'DELETE') {
-    return null
-  }
-
-  const match = String(request.path || '').match(/^\/api\/profiles\/([^/?#]+)(?:[?#].*)?$/)
-
-  if (!match) {
-    return null
-  }
-
-  let raw = ''
-
-  try {
-    raw = decodeURIComponent(match[1])
-  } catch {
-    return null
-  }
-
-  const name = raw.trim()
-
-  if (!name) {
-    return null
-  }
-
-  if (name.toLowerCase() === 'default') {
-    return 'default'
-  }
-
-  return name.toLowerCase()
-}
-
 // Returns the profile name whose backend was torn down, or null when the
 // request is not a profile-delete.  The caller uses this to skip ensureBackend
 // for the just-torn-down profile — otherwise ensureBackend respawns a pool
 // backend whose ensure_hermes_home() recreates the deleted profile directory.
+//
+// The routing *decision* (which branch fires, what profile name gets
+// returned) lives in the pure decideProfileDeleteAction() in
+// profile-delete-routing.ts; this function only performs the side effects
+// that decision calls for.
 async function prepareProfileDeleteRequest(request) {
   const profile = profileNameFromDeleteRequest(request)
+  const decision = decideProfileDeleteAction(profile, {
+    isDefaultProfile: p => p === 'default',
+    isValidProfileName: p => PROFILE_NAME_RE.test(p),
+    primaryProfileKey
+  })
 
-  if (!profile || profile === 'default' || !PROFILE_NAME_RE.test(profile)) {
+  if (decision.action === 'noop') {
     return null
   }
 
-  if (profile === primaryProfileKey()) {
+  if (decision.action === 'teardown-primary') {
     writeActiveDesktopProfile('default')
     await teardownPrimaryBackendAndWait()
 
-    return profile
+    return decision.profile
   }
 
-  await teardownPoolBackendAndWait(profile)
+  await teardownPoolBackendAndWait(decision.profile)
 
-  return profile
+  return decision.profile
 }
 
 async function startHermes() {
@@ -7849,7 +7827,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   // backend instead of spawning a fresh pool backend.  A freshly spawned
   // backend calls ensure_hermes_home() which recreates the profile directory,
   // defeating the deletion and leaving a zombie process.
-  const routeProfile = tornDownProfile ? null : profile
+  const routeProfile = resolveRouteProfile(tornDownProfile, profile)
   const connection = await ensureBackend(routeProfile)
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 

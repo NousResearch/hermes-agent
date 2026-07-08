@@ -428,7 +428,7 @@ class TestWebToolPolicy:
             pytest.fail(f"unexpected URL checked: {url}")
 
         class FakeFirecrawlClient:
-            def scrape(self, url, formats):
+            def scrape(self, *, url, formats, timeout=None):
                 return {
                     "markdown": "secret content",
                     "metadata": {
@@ -449,6 +449,36 @@ class TestWebToolPolicy:
         assert result["results"][0]["url"] == "https://blocked.test/final"
         assert result["results"][0]["content"] == ""
         assert result["results"][0]["blocked_by_policy"]["rule"] == "blocked.test"
+
+    @pytest.mark.asyncio
+    async def test_web_extract_passes_firecrawl_scrape_timeout(self, monkeypatch):
+        from tools import web_tools
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        async def _allow_ssrf(_url: str) -> bool:
+            return True
+
+        seen = {}
+
+        class FakeFirecrawlClient:
+            def scrape(self, *, url, formats, timeout=None):
+                seen["timeout"] = timeout
+                return {
+                    "markdown": "content",
+                    "metadata": {"title": "Allowed", "sourceURL": url},
+                }
+
+        monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
+        monkeypatch.setattr(firecrawl_provider, "is_safe_url", lambda url: True)
+        monkeypatch.setattr(firecrawl_provider, "check_website_access", lambda url: None)
+        monkeypatch.setattr(firecrawl_provider, "_get_firecrawl_client", lambda: FakeFirecrawlClient())
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
+
+        result = json.loads(await web_tools.web_extract_tool(["https://allowed.test"]))
+
+        assert result["results"][0]["content"] == "content"
+        assert seen["timeout"] == 60000
 
     @pytest.mark.asyncio
     async def test_web_extract_blocks_firecrawl_unsafe_final_url(self, monkeypatch):
@@ -474,7 +504,7 @@ class TestWebToolPolicy:
             pytest.fail(f"unexpected website policy check for unsafe URL: {url}")
 
         class FakeFirecrawlClient:
-            def scrape(self, url, formats):
+            def scrape(self, *, url, formats, timeout=None):
                 return {
                     "markdown": "metadata credentials",
                     "metadata": {

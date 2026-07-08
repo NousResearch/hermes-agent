@@ -7033,6 +7033,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if success:
                     self.adapters[platform] = adapter
                     self._sync_voice_mode_state_to_adapter(adapter)
+                    if platform == Platform.DISCORD:
+                        asyncio.create_task(self._auto_join_discord_voice_context(adapter))
                     connected_count += 1
                     self._update_platform_runtime_status(
                         platform.value,
@@ -7863,6 +7865,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if success:
                         self.adapters[platform] = adapter
                         self._sync_voice_mode_state_to_adapter(adapter)
+                        if platform == Platform.DISCORD:
+                            asyncio.create_task(self._auto_join_discord_voice_context(adapter))
                         self.delivery_router.adapters = self.adapters
                         del self._failed_platforms[platform]
                         self._update_platform_runtime_status(
@@ -12696,6 +12700,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "enabled": bool(voice_cfg.get("enabled", False)),
             "allowed_channel_ids": allowed_channel_ids,
             "allowed_category_ids": allowed_category_ids,
+            "auto_join_channel_ids": self._coerce_config_id_set(
+                voice_cfg.get("auto_join_channel_ids")
+                or voice_cfg.get("auto_join_voice_channel_ids")
+            ),
+            "text_channel_id": str(
+                voice_cfg.get("text_channel_id")
+                or voice_cfg.get("status_channel_id")
+                or ""
+            ).strip(),
             "echo_transcripts": bool(voice_cfg.get("echo_transcripts", False)),
         }
 
@@ -12765,6 +12778,107 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             event,
             reply_mode="context",
             target_channel_id=target_channel_id,
+        )
+
+    async def _auto_join_discord_voice_context(self, adapter: Any) -> None:
+        """Best-effort startup/reconnect join for configured voice context channels."""
+        cfg = self._load_discord_voice_context_config()
+        if not cfg.get("enabled"):
+            return
+        channel_ids = list(cfg.get("auto_join_channel_ids") or [])
+        if not channel_ids:
+            return
+        text_channel_id = str(cfg.get("text_channel_id") or "").strip()
+        if not text_channel_id:
+            logger.warning(
+                "Discord voice context auto-join skipped: "
+                "discord.voice_context.text_channel_id is not configured"
+            )
+            return
+        if not hasattr(adapter, "join_voice_channel"):
+            logger.warning("Discord voice context auto-join skipped: adapter has no voice join support")
+            return
+
+        client = getattr(adapter, "_client", None)
+        if client is None or not hasattr(client, "get_channel"):
+            logger.warning("Discord voice context auto-join skipped: Discord client is not ready")
+            return
+
+        if hasattr(adapter, "_voice_input_callback"):
+            adapter._voice_input_callback = self._handle_voice_channel_input
+        if hasattr(adapter, "_on_voice_disconnect"):
+            adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup
+        if hasattr(adapter, "_voice_mode_getter"):
+            adapter._voice_mode_getter = lambda chat_id: self._voice_mode.get(
+                self._voice_key(Platform.DISCORD, str(chat_id)), "off"
+            )
+
+        for channel_id in channel_ids:
+            try:
+                voice_channel = client.get_channel(int(str(channel_id)))
+            except Exception:
+                voice_channel = None
+            if voice_channel is None:
+                logger.warning(
+                    "Discord voice context auto-join skipped channel %s: not visible to bot",
+                    channel_id,
+                )
+                continue
+            if not self._discord_voice_context_channel_allowed(voice_channel, cfg):
+                logger.warning(
+                    "Discord voice context auto-join skipped channel %s: not allowlisted",
+                    channel_id,
+                )
+                continue
+
+            try:
+                success = await adapter.join_voice_channel(voice_channel)
+            except Exception as exc:
+                logger.warning(
+                    "Discord voice context auto-join failed for channel %s: %s",
+                    channel_id,
+                    exc,
+                )
+                continue
+            if not success:
+                logger.warning(
+                    "Discord voice context auto-join failed for channel %s: adapter returned false",
+                    channel_id,
+                )
+                continue
+
+            guild_id = int(getattr(getattr(voice_channel, "guild", None), "id", 0) or 0)
+            if not guild_id:
+                logger.warning(
+                    "Discord voice context auto-join joined channel %s but could not resolve guild id",
+                    channel_id,
+                )
+                continue
+            adapter._voice_text_channels[guild_id] = int(text_channel_id)
+            if hasattr(adapter, "_voice_sources"):
+                source = SessionSource(
+                    platform=Platform.DISCORD,
+                    chat_id=text_channel_id,
+                    user_id="voice_context_auto_join",
+                    user_name="voice_context_auto_join",
+                    chat_type="channel",
+                )
+                adapter._voice_sources[guild_id] = source.to_dict()
+            voice_key = self._voice_key(Platform.DISCORD, text_channel_id)
+            self._voice_mode[voice_key] = "context"
+            self._save_voice_modes()
+            self._set_adapter_auto_tts_disabled(adapter, text_channel_id, disabled=True)
+            logger.info(
+                "Discord voice context auto-joined channel %s (%s) for guild %s",
+                channel_id,
+                getattr(voice_channel, "name", ""),
+                guild_id,
+            )
+            return
+
+        logger.warning(
+            "Discord voice context auto-join could not join any configured channel: %s",
+            ",".join(channel_ids),
         )
 
     async def _handle_voice_channel_join(

@@ -921,6 +921,75 @@ class TestVoiceChannelCommands:
         mock_adapter.join_voice_channel.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_voice_context_auto_join_joins_first_configured_channel(self, runner):
+        """Startup auto-join binds an allowlisted voice channel to a text channel."""
+        from gateway.config import Platform
+
+        mock_channel = SimpleNamespace(
+            id=1282930260911984660,
+            category_id=1282725267571347549,
+            name="daily-team",
+            guild=SimpleNamespace(id=111),
+        )
+        mock_adapter = SimpleNamespace(
+            join_voice_channel=AsyncMock(return_value=True),
+            _client=SimpleNamespace(get_channel=MagicMock(return_value=mock_channel)),
+            _voice_text_channels={},
+            _voice_sources={},
+            _auto_tts_disabled_chats=set(),
+            _voice_input_callback=None,
+            _on_voice_disconnect=None,
+            _voice_mode_getter=None,
+        )
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        runner._load_discord_voice_context_config = lambda: {
+            "enabled": True,
+            "allowed_channel_ids": {"1282930260911984660"},
+            "allowed_category_ids": {"1282725267571347549"},
+            "auto_join_channel_ids": {"1282930260911984660"},
+            "text_channel_id": "1504852355588423801",
+            "echo_transcripts": False,
+        }
+
+        await runner._auto_join_discord_voice_context(mock_adapter)
+
+        mock_adapter.join_voice_channel.assert_awaited_once_with(mock_channel)
+        assert mock_adapter._voice_text_channels[111] == 1504852355588423801
+        assert runner._voice_mode["discord:1504852355588423801"] == "context"
+        assert mock_adapter._auto_tts_disabled_chats == {"1504852355588423801"}
+        assert mock_adapter._voice_sources[111]["chat_id"] == "1504852355588423801"
+
+    @pytest.mark.asyncio
+    async def test_voice_context_auto_join_requires_text_channel(self, runner):
+        """Auto-join must not connect if transcripts have no bound text channel."""
+        mock_channel = SimpleNamespace(
+            id=1282930260911984660,
+            category_id=1282725267571347549,
+            name="daily-team",
+            guild=SimpleNamespace(id=111),
+        )
+        mock_adapter = SimpleNamespace(
+            join_voice_channel=AsyncMock(return_value=True),
+            _client=SimpleNamespace(get_channel=MagicMock(return_value=mock_channel)),
+            _voice_text_channels={},
+            _voice_sources={},
+            _auto_tts_disabled_chats=set(),
+        )
+        runner._load_discord_voice_context_config = lambda: {
+            "enabled": True,
+            "allowed_channel_ids": {"1282930260911984660"},
+            "allowed_category_ids": set(),
+            "auto_join_channel_ids": {"1282930260911984660"},
+            "text_channel_id": "",
+            "echo_transcripts": False,
+        }
+
+        await runner._auto_join_discord_voice_context(mock_adapter)
+
+        mock_adapter.join_voice_channel.assert_not_called()
+        assert mock_adapter._voice_text_channels == {}
+
+    @pytest.mark.asyncio
     async def test_join_failure(self, runner):
         """Failed join returns permissions error."""
         mock_channel = MagicMock()

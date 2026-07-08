@@ -2684,9 +2684,13 @@ class MCPServerTask:
                         self._ready.set()
                         self._deregister_tools()
                         self._reconnect_event.clear()
-                        parked = await self._wait_for_reconnect_or_shutdown(
-                            timeout=_PARKED_RETRY_INTERVAL
-                        )
+                        try:
+                            parked = await self._wait_for_reconnect_or_shutdown(
+                                timeout=_PARKED_RETRY_INTERVAL
+                            )
+                        except RuntimeError:
+                            # Event loop closed during shutdown — exit cleanly
+                            return
                         if parked == "shutdown":
                             return
                         logger.info(
@@ -2708,7 +2712,11 @@ class MCPServerTask:
                         self.name, initial_retries,
                         _MAX_INITIAL_CONNECT_RETRIES, backoff, exc,
                     )
-                    await asyncio.sleep(backoff)
+                    try:
+                        await asyncio.sleep(backoff)
+                    except RuntimeError:
+                        # Event loop closed during shutdown — exit cleanly
+                        return
                     backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
 
                     # Check if shutdown was requested during the sleep
@@ -2747,9 +2755,13 @@ class MCPServerTask:
                     # manual /mcp refresh) still wakes us immediately.
                     self._deregister_tools()
                     self._reconnect_event.clear()
-                    parked = await self._wait_for_reconnect_or_shutdown(
-                        timeout=_PARKED_RETRY_INTERVAL
-                    )
+                    try:
+                        parked = await self._wait_for_reconnect_or_shutdown(
+                            timeout=_PARKED_RETRY_INTERVAL
+                        )
+                    except RuntimeError:
+                        # Event loop closed during shutdown — exit cleanly
+                        return
                     if parked == "shutdown":
                         return
                     logger.info(
@@ -2771,7 +2783,11 @@ class MCPServerTask:
                     self.name, self._reconnect_retries, _MAX_RECONNECT_RETRIES,
                     backoff, exc,
                 )
-                await asyncio.sleep(backoff)
+                try:
+                    await asyncio.sleep(backoff)
+                except RuntimeError:
+                    # Event loop closed during shutdown — exit cleanly
+                    return
                 backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
 
                 # Check again after sleeping

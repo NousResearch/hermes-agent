@@ -3910,7 +3910,10 @@ class GatewaySlashCommandsMixin:
         except Exception:
             pass
 
-        msg_count = len([m for m in history if m.get("role") == "user"])
+        # Count = raw transcript rows (matches the /footer "N/Nmsgs" tally =
+        # sessions.message_count = len(history)), NOT a user-only subset — so the
+        # "inherits N messages" line reconciles with the footer the user sees.
+        msg_count = len(history)
 
         # Discord: spawn a NEW thread bound to the branch session and leave the
         # parent channel on its own session (the parent conversation continues
@@ -4444,13 +4447,21 @@ class GatewaySlashCommandsMixin:
         # HOW MUCH (N user turns folded), and WHERE the detail is (the .md path).
         # The full summary is already in the agent's context — dumping it into the
         # channel as a wall of text is noise, not signal (Ace, 2026-07-08). ---
-        turns_folded = sum(1 for m in summarize_history if m.get("role") == "user")
+        # Count = raw rows folded (matches the /footer "N/Nmsgs" semantics =
+        # sessions.message_count = len(history)), NOT a user-only subset.
+        turns_folded = len(summarize_history)
         path_str = str(record_path) if record_path else ""
         md_note = t("gateway.merge.note_record_suffix", path=path_str) if path_str else ""
         try:
             target_origin = self._gateway_session_origin_for_id(target_id)
         except Exception:
             target_origin = None
+        # Reciprocal link: the parent-side note links back to the CHILD thread
+        # the summary came from (thread form only — named merges have no thread),
+        # mirroring how /branch links the parent INTO the child.
+        child_link = ""
+        if is_thread_form and source.thread_id:
+            child_link = t("gateway.merge.source_thread_link", thread=f"<#{source.thread_id}>")
         posted_note = False
         if isinstance(target_origin, SessionSource) and target_origin.platform:
             dest_adapter = self.adapters.get(target_origin.platform) if getattr(self, "adapters", None) else None
@@ -4459,7 +4470,7 @@ class GatewaySlashCommandsMixin:
                 try:
                     note = t(
                         "gateway.merge.target_note" if is_thread_form else "gateway.merge.target_note_named",
-                        source=source_title, turns=turns_folded, record=md_note,
+                        source=source_title, turns=turns_folded, record=md_note, child=child_link,
                     )
                     await dest_adapter.send(str(dest_chat), note)
                     posted_note = True
@@ -4471,7 +4482,7 @@ class GatewaySlashCommandsMixin:
         if not posted_note and is_thread_form and thread_adapter is not None and source.parent_chat_id:
             try:
                 note = t("gateway.merge.target_note", source=source_title,
-                         turns=turns_folded, record=md_note)
+                         turns=turns_folded, record=md_note, child=child_link)
                 await thread_adapter.send(str(source.parent_chat_id), note)
             except Exception as exc:
                 logger.debug("merge: parent-channel fallback note send failed: %s", exc)
@@ -4487,8 +4498,15 @@ class GatewaySlashCommandsMixin:
         # --- Confirm to the caller. ---
         md_part = t("gateway.merge.md_suffix", path=path_str) if path_str else ""
         if is_thread_form:
+            # Reciprocal link: name+link the PARENT conversation this thread
+            # folded back into (mirrors the child link in the parent's note).
+            parent_link = ""
+            if isinstance(target_origin, SessionSource):
+                parent_ref = target_origin.thread_id or target_origin.chat_id
+                if parent_ref:
+                    parent_link = t("gateway.merge.target_parent_link", parent=f"<#{parent_ref}>")
             confirm_key = "gateway.merge.merged_thread" if archived else "gateway.merge.merged_thread_no_archive"
-            return t(confirm_key, title=target_title, md=md_part)
+            return t(confirm_key, title=target_title, md=md_part, parent=parent_link)
         return t("gateway.merge.merged_named", title=target_title, md=md_part)
 
     async def _handle_credits_command(self, event: MessageEvent) -> str:

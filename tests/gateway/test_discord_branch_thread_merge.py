@@ -160,6 +160,9 @@ class TestBranchDiscordThread:
         assert intro_calls, "expected an intro sent into the new thread"
         intro_text = intro_calls[0].args[1]
         assert "<#parent_chan>" in intro_text  # link back to the parent channel
+        # Count = RAW transcript rows (2 = 1 user + 1 assistant), matching the
+        # footer's message tally — NOT a user-only subset (would say "1").
+        assert "2 message" in intro_text
 
     @pytest.mark.asyncio
     async def test_branch_stamps_branch_point_len(self, session_db):
@@ -413,9 +416,10 @@ class TestMergeCommand:
         assert adapter.send.await_args.args[0] == "parent_chan"
         adapter.archive_thread.assert_awaited_once()
         assert "archived" in result.lower()
-        # The thread-merge confirm NAMES the parent it folded back into
-        # (reciprocal to the child branch name shown in the parent's note).
+        # The thread-merge confirm NAMES + LINKS the parent it folded back into
+        # (reciprocal to the child branch name+link shown in the parent's note).
         assert "Parent Work" in result
+        assert "<#parent_chan>" in result   # reciprocal link to the parent
         runner._evict_cached_agent.assert_called()
 
     @pytest.mark.asyncio
@@ -598,10 +602,12 @@ class TestMergeCommand:
 
         adapter.send.assert_awaited()
         note = adapter.send.await_args.args[1]
-        # Note goes to the target's origin, mentions the 2 new user turns, and
-        # does NOT contain the raw summary body.
+        # Note goes to the target's origin, counts the RAW rows folded (3 =
+        # 2 user + 1 assistant, matching the footer's message tally), links back
+        # to the CHILD thread, and does NOT contain the raw summary body.
         assert adapter.send.await_args.args[0] == "parent_origin"
-        assert "2 new turn" in note
+        assert "3 message(s)" in note
+        assert f"<#{source.thread_id}>" in note   # reciprocal link to the child thread
         assert "THIS LONG SUMMARY" not in note
 
     @pytest.mark.asyncio

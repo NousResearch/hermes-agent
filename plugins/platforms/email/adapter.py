@@ -810,8 +810,18 @@ class EmailAdapter(BasePlatformAdapter):
         startup_count = 0
         startup_cutoff: Optional[int] = None
         malformed_uids: set = set()
-        if data and data[0]:
-            for uid in data[0].split():
+        if not data:
+            logger.error("[Email] UID SEARCH ALL returned no baseline payload")
+            return None
+        uid_payload = data[0]
+        if uid_payload not in (b"", ""):
+            if uid_payload is None or not isinstance(uid_payload, (bytes, str)):
+                logger.error(
+                    "[Email] UID SEARCH ALL returned malformed baseline payload: %r",
+                    uid_payload,
+                )
+                return None
+            for uid in uid_payload.split():
                 startup_count += 1
                 try:
                     numeric_uid = int(uid)

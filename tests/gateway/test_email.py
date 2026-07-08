@@ -1524,6 +1524,19 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(adapter._startup_seen_uidvalidity, b"123")
         self.assertEqual(adapter._seen_uids, set())
 
+    def test_establish_uid_baseline_rejects_malformed_ok_payload(self):
+        """A malformed OK SEARCH payload is not a safe startup boundary."""
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.response.return_value = ("UIDVALIDITY", [b"123"])
+        mock_imap.uid.return_value = ("OK", [None])
+
+        self.assertIsNone(adapter._establish_uid_baseline(mock_imap))
+        self.assertIsNone(adapter._startup_seen_uid_cutoff)
+        self.assertIsNone(adapter._startup_seen_uidvalidity)
+        self.assertEqual(adapter._seen_uids, set())
+
     def test_establish_uid_baseline_keeps_malformed_uids_in_duplicate_cache(self):
         """Non-numeric UID tokens fall back to exact duplicate tracking."""
         adapter = self._make_adapter()

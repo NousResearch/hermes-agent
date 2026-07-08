@@ -98,12 +98,12 @@ except ImportError:
 
 import sys
 from pathlib import Path as _Path
-sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
-from utils import atomic_json_write
+from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -116,6 +116,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
+    validate_inbound_media_size,
 )
 from tools.url_safety import is_safe_url
 
@@ -732,8 +733,14 @@ class DiscordAdapter(BasePlatformAdapter):
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
 
-    # Auto-disconnect from voice channel after this many seconds of inactivity
+    # Auto-disconnect from voice channel after this many seconds of inactivity.
+    # Config key: discord.voice_channel_inactivity_timeout_seconds (0 disables)
     VOICE_TIMEOUT = 300
+    # Minimum seconds to wait for a single voice playback. The effective limit
+    # scales with the probed clip duration so long readbacks are not cut off at
+    # a hard two-minute ceiling.
+    PLAYBACK_TIMEOUT = 120
+    PLAYBACK_TIMEOUT_PADDING = 30
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
@@ -746,13 +753,15 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
         # Text batching: merge rapid successive messages (Telegram-style)
-        self._text_batch_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", "0.6"))
-        self._text_batch_split_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
+        self._text_batch_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", 0.6)
+        self._text_batch_split_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
+        self._voice_timeout_seconds = self._load_voice_timeout()
+        self._playback_timeout_seconds = self._load_playback_timeout()
         # Phase 2: voice listening
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
@@ -2233,6 +2242,83 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.debug("Could not load discord.voice_fx config: %s", e)
         return defaults
 
+    def _load_discord_int_config(self, key: str, default: int, *, minimum: int = 0) -> int:
+        """Read a non-secret integer from the top-level ``discord`` config."""
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config() or {}
+            raw = (cfg.get("discord") or {}).get(key, default)
+            value = int(raw)
+            return max(minimum, value)
+        except Exception as e:
+            logger.debug("Could not load discord.%s config: %s", key, e)
+            return default
+
+    def _load_voice_timeout(self) -> int:
+        """Return voice-channel inactivity timeout seconds; 0 disables it."""
+        return self._load_discord_int_config(
+            "voice_channel_inactivity_timeout_seconds",
+            self.VOICE_TIMEOUT,
+            minimum=0,
+        )
+
+    def _load_playback_timeout(self) -> int:
+        """Return minimum playback wait seconds for Discord VC audio."""
+        return self._load_discord_int_config(
+            "voice_playback_timeout_seconds",
+            self.PLAYBACK_TIMEOUT,
+            minimum=1,
+        )
+
+    def _voice_timeout_limit(self) -> int:
+        return int(getattr(self, "_voice_timeout_seconds", self.VOICE_TIMEOUT))
+
+    def _playback_timeout_limit(self) -> int:
+        return int(getattr(self, "_playback_timeout_seconds", self.PLAYBACK_TIMEOUT))
+
+    def _probe_audio_duration_seconds(self, audio_path: str) -> Optional[float]:
+        """Best-effort audio duration probe used to size playback timeouts."""
+        try:
+            import importlib
+            mutagen = importlib.import_module("mutagen")
+            audio = mutagen.File(audio_path)
+            length = getattr(getattr(audio, "info", None), "length", None)
+            if length:
+                return float(length)
+        except Exception:
+            pass
+
+        try:
+            proc = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    audio_path,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                stdin=subprocess.DEVNULL,
+            )
+            if proc.returncode == 0:
+                raw = (proc.stdout or "").strip()
+                if raw:
+                    return float(raw)
+        except Exception:
+            pass
+        return None
+
+    async def _playback_timeout_for_audio(self, audio_path: str) -> float:
+        """Return timeout for this clip: configured floor or duration+padding."""
+        floor = float(self._playback_timeout_limit())
+        duration = await asyncio.to_thread(self._probe_audio_duration_seconds, audio_path)
+        if not duration or duration <= 0:
+            return floor
+        return max(floor, duration + float(self.PLAYBACK_TIMEOUT_PADDING))
+
     def _get_ambient_pcm(self) -> Optional[bytes]:
         """Return decoded 48k/stereo/s16le PCM for the ambient idle bed.
 
@@ -2422,9 +2508,6 @@ class DiscordAdapter(BasePlatformAdapter):
             self._voice_text_channels.pop(guild_id, None)
             self._voice_sources.pop(guild_id, None)
 
-    # Maximum seconds to wait for voice playback before giving up
-    PLAYBACK_TIMEOUT = 120
-
     async def play_in_voice_channel(self, guild_id: int, audio_path: str) -> bool:
         """Play an audio file in the connected voice channel.
 
@@ -2437,68 +2520,75 @@ class DiscordAdapter(BasePlatformAdapter):
         if not vc or not vc.is_connected():
             return False
 
-        # ── Mixer path (overlap + ducking) ──────────────────────────────
-        mixer = getattr(self, "_voice_mixers", {}).get(guild_id) if getattr(self, "_voice_mixers", None) else None
-        if mixer is not None:
-            try:
-                from voice_mixer import decode_to_pcm
-            except ImportError:
-                from .voice_mixer import decode_to_pcm
-            pcm = await asyncio.to_thread(decode_to_pcm, audio_path)
-            if pcm:
-                speech_gain = float(self._voice_fx_cfg.get("speech_gain", 1.0))
-                mixer.play_speech(pcm, gain=speech_gain)
-                # Block until the speech child drains so callers serialise
-                # replies (mirrors legacy semantics) but the ambient keeps
-                # playing underneath the whole time.
-                wait_start = time.monotonic()
-                while mixer.speech_active:
-                    if time.monotonic() - wait_start > self.PLAYBACK_TIMEOUT:
-                        logger.warning("Mixer speech playback timed out after %ds", self.PLAYBACK_TIMEOUT)
-                        mixer.stop_speech()
-                        break
-                    await asyncio.sleep(0.05)
-                self._reset_voice_timeout(guild_id)
-                return True
-            logger.warning("Mixer decode failed for %s; falling back to legacy playback", audio_path)
-
-        # ── Legacy one-shot path (no mixer) ─────────────────────────────
-        # Pause voice receiver while playing (echo prevention)
-        receiver = self._voice_receivers.get(guild_id)
-        if receiver:
-            receiver.pause()
-
+        # Playback is activity. Do not let the inactivity timer disconnect the
+        # bot while duration probing, decoding, or speaking; re-arm it when this
+        # attempt finishes, even if decoding/playback raises.
+        self._cancel_voice_timeout(guild_id)
         try:
-            # Wait for current playback to finish (with timeout)
-            wait_start = time.monotonic()
-            while vc.is_playing():
-                if time.monotonic() - wait_start > self.PLAYBACK_TIMEOUT:
-                    logger.warning("Timed out waiting for previous playback to finish")
-                    vc.stop()
-                    break
-                await asyncio.sleep(0.1)
+            playback_timeout = await self._playback_timeout_for_audio(audio_path)
 
-            done = asyncio.Event()
-            loop = asyncio.get_running_loop()
+            # ── Mixer path (overlap + ducking) ──────────────────────────────
+            mixer = getattr(self, "_voice_mixers", {}).get(guild_id) if getattr(self, "_voice_mixers", None) else None
+            if mixer is not None:
+                try:
+                    from voice_mixer import decode_to_pcm
+                except ImportError:
+                    from .voice_mixer import decode_to_pcm
+                pcm = await asyncio.to_thread(decode_to_pcm, audio_path)
+                if pcm:
+                    speech_gain = float(self._voice_fx_cfg.get("speech_gain", 1.0))
+                    mixer.play_speech(pcm, gain=speech_gain)
+                    # Block until the speech child drains so callers serialise
+                    # replies (mirrors legacy semantics) but the ambient keeps
+                    # playing underneath the whole time.
+                    wait_start = time.monotonic()
+                    while mixer.speech_active:
+                        if time.monotonic() - wait_start > playback_timeout:
+                            logger.warning("Mixer speech playback timed out after %.1fs", playback_timeout)
+                            mixer.stop_speech()
+                            break
+                        await asyncio.sleep(0.05)
+                    return True
+                logger.warning("Mixer decode failed for %s; falling back to legacy playback", audio_path)
 
-            def _after(error):
-                if error:
-                    logger.error("Voice playback error: %s", error)
-                loop.call_soon_threadsafe(done.set)
-
-            source = discord.FFmpegPCMAudio(audio_path)
-            source = discord.PCMVolumeTransformer(source, volume=1.0)
-            vc.play(source, after=_after)
-            try:
-                await asyncio.wait_for(done.wait(), timeout=self.PLAYBACK_TIMEOUT)
-            except asyncio.TimeoutError:
-                logger.warning("Voice playback timed out after %ds", self.PLAYBACK_TIMEOUT)
-                vc.stop()
-            self._reset_voice_timeout(guild_id)
-            return True
-        finally:
+            # ── Legacy one-shot path (no mixer) ─────────────────────────────
+            # Pause voice receiver while playing (echo prevention)
+            receiver = self._voice_receivers.get(guild_id)
             if receiver:
-                receiver.resume()
+                receiver.pause()
+
+            try:
+                # Wait for current playback to finish (with timeout)
+                wait_start = time.monotonic()
+                while vc.is_playing():
+                    if time.monotonic() - wait_start > playback_timeout:
+                        logger.warning("Timed out waiting for previous playback to finish")
+                        vc.stop()
+                        break
+                    await asyncio.sleep(0.1)
+
+                done = asyncio.Event()
+                loop = asyncio.get_running_loop()
+
+                def _after(error):
+                    if error:
+                        logger.error("Voice playback error: %s", error)
+                    loop.call_soon_threadsafe(done.set)
+
+                source = discord.FFmpegPCMAudio(audio_path)
+                source = discord.PCMVolumeTransformer(source, volume=1.0)
+                vc.play(source, after=_after)
+                try:
+                    await asyncio.wait_for(done.wait(), timeout=playback_timeout)
+                except asyncio.TimeoutError:
+                    logger.warning("Voice playback timed out after %.1fs", playback_timeout)
+                    vc.stop()
+                return True
+            finally:
+                if receiver:
+                    receiver.resume()
+        finally:
+            self._reset_voice_timeout(guild_id)
 
     async def get_user_voice_channel(self, guild_id: int, user_id: str):
         """Return the voice channel the user is currently in, or None."""
@@ -2512,19 +2602,29 @@ class DiscordAdapter(BasePlatformAdapter):
             return None
         return member.voice.channel
 
-    def _reset_voice_timeout(self, guild_id: int) -> None:
-        """Reset the auto-disconnect inactivity timer."""
+    def _cancel_voice_timeout(self, guild_id: int) -> None:
         task = self._voice_timeout_tasks.pop(guild_id, None)
         if task:
             task.cancel()
+
+    def _reset_voice_timeout(self, guild_id: int) -> None:
+        """Reset the auto-disconnect inactivity timer."""
+        self._cancel_voice_timeout(guild_id)
+        timeout = self._voice_timeout_limit()
+        if timeout <= 0:
+            logger.debug("Voice inactivity timeout disabled (guild=%d)", guild_id)
+            return
         self._voice_timeout_tasks[guild_id] = asyncio.ensure_future(
-            self._voice_timeout_handler(guild_id)
+            self._voice_timeout_handler(guild_id, timeout)
         )
 
-    async def _voice_timeout_handler(self, guild_id: int) -> None:
-        """Auto-disconnect after VOICE_TIMEOUT seconds of inactivity."""
+    async def _voice_timeout_handler(self, guild_id: int, timeout: Optional[int] = None) -> None:
+        """Auto-disconnect after the configured inactivity timeout."""
+        timeout = self._voice_timeout_limit() if timeout is None else int(timeout)
+        if timeout <= 0:
+            return
         try:
-            await asyncio.sleep(self.VOICE_TIMEOUT)
+            await asyncio.sleep(timeout)
         except asyncio.CancelledError:
             return
         text_ch_id = self._voice_text_channels.get(guild_id)
@@ -5052,19 +5152,32 @@ class DiscordAdapter(BasePlatformAdapter):
     # non-CDN URL into the ``att.url`` field. (issue #11345)
     # ------------------------------------------------------------------
 
-    async def _read_attachment_bytes(self, att) -> Optional[bytes]:
+    async def _read_attachment_bytes(
+        self,
+        att,
+        *,
+        media_type: str = "media",
+    ) -> Optional[bytes]:
         """Read an attachment via discord.py's authenticated bot session.
 
         Returns the raw bytes on success, or ``None`` if ``att`` doesn't
         expose a callable ``read()`` or the read itself fails. Callers
         should treat ``None`` as a signal to fall back to the URL-based
         downloaders.
+
+        Oversized attachments (per ``gateway.max_inbound_media_bytes``) raise
+        ``ValueError`` BEFORE the bytes are pulled into memory when Discord
+        reports the size up front, so a hostile upload can't OOM the gateway.
         """
+        attachment_size = getattr(att, "size", None)
+        if attachment_size:
+            validate_inbound_media_size(int(attachment_size), media_type=media_type)
+
         reader = getattr(att, "read", None)
         if reader is None or not callable(reader):
             return None
         try:
-            return await reader()
+            raw_bytes = await reader()
         except Exception as e:
             logger.warning(
                 "[Discord] Authenticated attachment read failed for %s: %s",
@@ -5072,6 +5185,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 e,
             )
             return None
+        validate_inbound_media_size(len(raw_bytes), media_type=media_type)
+        return raw_bytes
 
     async def _cache_discord_image(self, att, ext: str) -> str:
         """Cache a Discord image attachment to local disk.
@@ -5081,7 +5196,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Fallback: ``cache_image_from_url`` (plain httpx, SSRF-gated).
         """
-        raw_bytes = await self._read_attachment_bytes(att)
+        raw_bytes = await self._read_attachment_bytes(att, media_type="image")
         if raw_bytes is not None:
             try:
                 return cache_image_from_bytes(raw_bytes, ext=ext)
@@ -5100,7 +5215,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Fallback: ``cache_audio_from_url`` (plain httpx, SSRF-gated).
         """
-        raw_bytes = await self._read_attachment_bytes(att)
+        raw_bytes = await self._read_attachment_bytes(att, media_type="audio")
         if raw_bytes is not None:
             try:
                 return cache_audio_from_bytes(raw_bytes, ext=ext)
@@ -5122,7 +5237,7 @@ class DiscordAdapter(BasePlatformAdapter):
         for passing the returned bytes to ``cache_document_from_bytes``
         (and, where applicable, for injecting text content).
         """
-        raw_bytes = await self._read_attachment_bytes(att)
+        raw_bytes = await self._read_attachment_bytes(att, media_type="document")
         if raw_bytes is not None:
             return raw_bytes
 

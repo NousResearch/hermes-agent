@@ -606,9 +606,71 @@ def _gateway_run_args_for_profile(profile: str) -> list[str]:
     return args
 
 
+def _capture_gateway_argv(pid: int) -> list[str] | None:
+    """Return the live argv of a running gateway process, or ``None``.
+
+    Used to respawn gateways that have no profile→PID-file mapping (e.g. a
+    Windows Scheduled Task running ``pythonw.exe -m hermes_cli.main gateway
+    run``). ``_pause_windows_gateways_for_update`` force-kills such gateways
+    before mutating the venv; without their original command line we cannot
+    bring them back, so we snapshot it here before the kill.
+
+    Best-effort: returns ``None`` if psutil is unavailable, the process is
+    gone, access is denied, or the argv doesn't look like a gateway command.
+    """
+    if pid <= 1:
+        return None
+    try:
+        import psutil  # type: ignore
+    except ImportError:
+        return None
+    try:
+        argv = list(psutil.Process(pid).cmdline() or [])
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return None
+    except Exception:
+        return None
+    if not argv:
+        return None
+    # Guard against snapshotting an unrelated process whose PID happened to be
+    # reported by the scan: only respawn things that actually look like a
+    # gateway run command line.
+    try:
+        from gateway.status import looks_like_gateway_command_line
+
+        if not looks_like_gateway_command_line(" ".join(argv)):
+            return None
+    except Exception:
+        pass
+    return argv
+
+
+def launch_detached_gateway_restart_by_cmdline(
+    old_pid: int, run_argv: list[str]
+) -> bool:
+    """Relaunch a gateway by replaying its captured command line after exit.
+
+    Companion to ``launch_detached_profile_gateway_restart`` for gateways that
+    have no profile→PID-file mapping (Scheduled-Task / manually-launched
+    ``gateway run`` whose HERMES_HOME or argv doesn't match a known profile).
+    Uses the identical detached-watcher mechanism; only the respawn argv
+    differs (the process's own argv instead of a profile-derived one).
+    """
+    if old_pid <= 0 or not run_argv:
+        return False
+    return _spawn_gateway_restart_watcher(old_pid, list(run_argv))
+
+
 def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
     """Relaunch a manually-run profile gateway after its current PID exits."""
     if old_pid <= 0:
+        return False
+    return _spawn_gateway_restart_watcher(old_pid, _gateway_run_args_for_profile(profile))
+
+
+def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
+    """Spawn the detached watcher that respawns ``run_argv`` once ``old_pid`` exits."""
+    if old_pid <= 0 or not run_argv:
         return False
 
     # The watcher is a tiny Python subprocess that polls the old PID and
@@ -695,7 +757,7 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
         "-c",
         watcher,
         str(old_pid),
-        *_gateway_run_args_for_profile(profile),
+        *run_argv,
     ]
 
     # Same platform-aware detach for the watcher process itself — so
@@ -4210,134 +4272,18 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 # Per-platform config: each entry defines the env vars, setup instructions,
 # and prompts needed to configure a messaging platform.
 _PLATFORMS = [
-    {
-        "key": "telegram",
-        "label": "Telegram",
-        "emoji": "📱",
-        "token_var": "TELEGRAM_BOT_TOKEN",
-        "setup_instructions": [
-            "1. Open Telegram and message @BotFather",
-            "2. Send /newbot and follow the prompts to create your bot",
-            "3. Copy the bot token BotFather gives you",
-            "4. To find your user ID: message @userinfobot — it replies with your numeric ID",
-        ],
-        "vars": [
-            {
-                "name": "TELEGRAM_BOT_TOKEN",
-                "prompt": "Bot token",
-                "password": True,
-                "help": "Paste the token from @BotFather (step 3 above).",
-            },
-            {
-                "name": "TELEGRAM_ALLOWED_USERS",
-                "prompt": "Allowed user IDs (comma-separated)",
-                "password": False,
-                "is_allowlist": True,
-                "help": "Paste your user ID from step 4 above.",
-            },
-            {
-                "name": "TELEGRAM_HOME_CHANNEL",
-                "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)",
-                "password": False,
-                "help": "For DMs, this is your user ID. You can set it later by typing /set-home in chat.",
-            },
-        ],
-    },
+    # Telegram moved to plugins/platforms/telegram/ — setup metadata discovered
+    # dynamically via the platform registry entry registered by
+    # plugins/platforms/telegram/adapter.py::register(). #41112.
     # Discord moved to plugins/platforms/discord/ — its setup metadata is
     # discovered dynamically via _all_platforms() from the platform registry
     # entry registered by plugins/platforms/discord/adapter.py::register().
-    {
-        "key": "slack",
-        "label": "Slack",
-        "emoji": "💼",
-        "token_var": "SLACK_BOT_TOKEN",
-        "setup_instructions": [
-            "1. Go to https://api.slack.com/apps → Create New App → From Scratch",
-            "2. Enable Socket Mode: Settings → Socket Mode → Enable",
-            "   Create an App-Level Token with scope: connections:write → copy xapp-... token",
-            "3. Add Bot Token Scopes: Features → OAuth & Permissions → Scopes",
-            "   Required: chat:write, app_mentions:read, channels:history, channels:read,",
-            "   groups:history, im:history, im:read, im:write, users:read, files:read, files:write",
-            "4. Subscribe to Events: Features → Event Subscriptions → Enable",
-            "   Required events: message.im, message.channels, app_mention",
-            "   Optional: message.groups (for private channels)",
-            "   ⚠ Without message.channels the bot will ONLY work in DMs!",
-            "5. Install to Workspace: Settings → Install App → copy xoxb-... token",
-            "6. Reinstall the app after any scope or event changes",
-            "7. Find your user ID: click your profile → three dots → Copy member ID",
-            "8. Invite the bot to channels: /invite @YourBot",
-        ],
-        "vars": [
-            {
-                "name": "SLACK_BOT_TOKEN",
-                "prompt": "Bot Token (xoxb-...)",
-                "password": True,
-                "help": "Paste the bot token from step 3 above.",
-            },
-            {
-                "name": "SLACK_APP_TOKEN",
-                "prompt": "App Token (xapp-...)",
-                "password": True,
-                "help": "Paste the app-level token from step 4 above.",
-            },
-            {
-                "name": "SLACK_ALLOWED_USERS",
-                "prompt": "Allowed user IDs (comma-separated)",
-                "password": False,
-                "is_allowlist": True,
-                "help": "Paste your member ID from step 7 above.",
-            },
-        ],
-    },
-    {
-        "key": "matrix",
-        "label": "Matrix",
-        "emoji": "🔐",
-        "token_var": "MATRIX_ACCESS_TOKEN",
-        "setup_instructions": [
-            "1. Works with any Matrix homeserver (self-hosted Synapse/Conduit/Dendrite or matrix.org)",
-            "2. Create a bot user on your homeserver, or use your own account",
-            "3. Get an access token: Element → Settings → Help & About → Access Token",
-            "   Or via API: curl -X POST https://your-server/_matrix/client/v3/login \\",
-            '     -d \'{"type":"m.login.password","user":"@bot:server","password":"..."}\'',
-            "4. Alternatively, provide user ID + password and Hermes will log in directly",
-            "5. For E2EE: set MATRIX_ENCRYPTION=true (requires pip install 'mautrix[encryption]')",
-            "6. To find your user ID: it's @username:your-server (shown in Element profile)",
-        ],
-        "vars": [
-            {
-                "name": "MATRIX_HOMESERVER",
-                "prompt": "Homeserver URL (e.g. https://matrix.example.org)",
-                "password": False,
-                "help": "Your Matrix homeserver URL. Works with any self-hosted instance.",
-            },
-            {
-                "name": "MATRIX_ACCESS_TOKEN",
-                "prompt": "Access token (leave empty to use password login instead)",
-                "password": True,
-                "help": "Paste your access token, or leave empty and provide user ID + password below.",
-            },
-            {
-                "name": "MATRIX_USER_ID",
-                "prompt": "User ID (@bot:server — required for password login)",
-                "password": False,
-                "help": "Full Matrix user ID, e.g. @hermes:matrix.example.org",
-            },
-            {
-                "name": "MATRIX_ALLOWED_USERS",
-                "prompt": "Allowed user IDs (comma-separated, e.g. @you:server)",
-                "password": False,
-                "is_allowlist": True,
-                "help": "Matrix user IDs who can interact with the bot.",
-            },
-            {
-                "name": "MATRIX_HOME_ROOM",
-                "prompt": "Home room ID (for cron/notification delivery, or empty to set later with /set-home)",
-                "password": False,
-                "help": "Room ID (e.g. !abc123:server) for delivering cron results and notifications.",
-            },
-        ],
-    },
+    # Slack moved to plugins/platforms/slack/ for the same reason — its setup
+    # metadata is discovered dynamically via the platform registry entry
+    # registered by plugins/platforms/slack/adapter.py::register(). #41112.
+    # Matrix moved to plugins/platforms/matrix/ — setup metadata discovered
+    # dynamically via the platform registry entry registered by
+    # plugins/platforms/matrix/adapter.py::register(). #41112.
     {
         "key": "mattermost",
         "label": "Mattermost",
@@ -4387,289 +4333,18 @@ _PLATFORMS = [
             },
         ],
     },
-    {
-        "key": "whatsapp",
-        "label": "WhatsApp",
-        "emoji": "📲",
-        "token_var": "WHATSAPP_ENABLED",
-    },
+    # WhatsApp moved to plugins/platforms/whatsapp/ — setup metadata discovered
+    # dynamically via the platform registry entry registered by
+    # plugins/platforms/whatsapp/adapter.py::register(). #41112.
     {
         "key": "signal",
         "label": "Signal",
         "emoji": "📡",
         "token_var": "SIGNAL_HTTP_URL",
     },
-    {
-        "key": "email",
-        "label": "Email",
-        "emoji": "📧",
-        "token_var": "EMAIL_ADDRESS",
-        "setup_instructions": [
-            "1. Use a dedicated email account for your Hermes agent",
-            "2. For Gmail: enable 2FA, then create an App Password at",
-            "   https://myaccount.google.com/apppasswords",
-            "3. For other providers: use your email password or app-specific password",
-            "4. IMAP must be enabled on your email account",
-        ],
-        "vars": [
-            {
-                "name": "EMAIL_ADDRESS",
-                "prompt": "Email address",
-                "password": False,
-                "help": "The email address Hermes will use (e.g., hermes@gmail.com).",
-            },
-            {
-                "name": "EMAIL_PASSWORD",
-                "prompt": "Email password (or app password)",
-                "password": True,
-                "help": "For Gmail, use an App Password (not your regular password).",
-            },
-            {
-                "name": "EMAIL_IMAP_HOST",
-                "prompt": "IMAP host",
-                "password": False,
-                "help": "e.g., imap.gmail.com for Gmail, outlook.office365.com for Outlook.",
-            },
-            {
-                "name": "EMAIL_SMTP_HOST",
-                "prompt": "SMTP host",
-                "password": False,
-                "help": "e.g., smtp.gmail.com for Gmail, smtp.office365.com for Outlook.",
-            },
-            {
-                "name": "EMAIL_ALLOWED_USERS",
-                "prompt": "Allowed sender emails (comma-separated)",
-                "password": False,
-                "is_allowlist": True,
-                "help": "Only emails from these addresses will be processed.",
-            },
-        ],
-    },
-    {
-        "key": "sms",
-        "label": "SMS (Twilio)",
-        "emoji": "📱",
-        "token_var": "TWILIO_ACCOUNT_SID",
-        "setup_instructions": [
-            "1. Create a Twilio account at https://www.twilio.com/",
-            "2. Get your Account SID and Auth Token from the Twilio Console dashboard",
-            "3. Buy or configure a phone number capable of sending SMS",
-            "4. Set up your webhook URL for inbound SMS:",
-            "   Twilio Console → Phone Numbers → Active Numbers → your number",
-            "   → Messaging → A MESSAGE COMES IN → Webhook → https://your-server:8080/webhooks/twilio",
-        ],
-        "vars": [
-            {
-                "name": "TWILIO_ACCOUNT_SID",
-                "prompt": "Twilio Account SID",
-                "password": False,
-                "help": "Found on the Twilio Console dashboard.",
-            },
-            {
-                "name": "TWILIO_AUTH_TOKEN",
-                "prompt": "Twilio Auth Token",
-                "password": True,
-                "help": "Found on the Twilio Console dashboard (click to reveal).",
-            },
-            {
-                "name": "TWILIO_PHONE_NUMBER",
-                "prompt": "Twilio phone number (E.164 format, e.g. +15551234567)",
-                "password": False,
-                "help": "The Twilio phone number to send SMS from.",
-            },
-            {
-                "name": "SMS_ALLOWED_USERS",
-                "prompt": "Allowed phone numbers (comma-separated, E.164 format)",
-                "password": False,
-                "is_allowlist": True,
-                "help": "Only messages from these phone numbers will be processed.",
-            },
-            {
-                "name": "SMS_HOME_CHANNEL",
-                "prompt": "Home channel phone number (for cron/notification delivery, or empty)",
-                "password": False,
-                "help": "Phone number to deliver cron job results and notifications to.",
-            },
-        ],
-    },
-    {
-        "key": "dingtalk",
-        "label": "DingTalk",
-        "emoji": "💬",
-        "token_var": "DINGTALK_CLIENT_ID",
-        "setup_instructions": [
-            "1. Go to https://open-dev.dingtalk.com → Create Application",
-            "2. Under 'Credentials', copy the AppKey (Client ID) and AppSecret (Client Secret)",
-            "3. Enable 'Stream Mode' under the bot settings",
-            "4. Add the bot to a group chat or message it directly",
-        ],
-        "vars": [
-            {
-                "name": "DINGTALK_CLIENT_ID",
-                "prompt": "AppKey (Client ID)",
-                "password": False,
-                "help": "The AppKey from your DingTalk application credentials.",
-            },
-            {
-                "name": "DINGTALK_CLIENT_SECRET",
-                "prompt": "AppSecret (Client Secret)",
-                "password": True,
-                "help": "The AppSecret from your DingTalk application credentials.",
-            },
-        ],
-    },
-    {
-        "key": "feishu",
-        "label": "Feishu / Lark",
-        "emoji": "🪽",
-        "token_var": "FEISHU_APP_ID",
-        "setup_instructions": [
-            "1. Go to https://open.feishu.cn/ (or https://open.larksuite.com/ for Lark)",
-            "2. Create an app and copy the App ID and App Secret",
-            "3. Enable the Bot capability for the app",
-            "4. Choose WebSocket (recommended) or Webhook connection mode",
-            "5. Add the bot to a group chat or message it directly",
-            "6. Restrict access with FEISHU_ALLOWED_USERS for production use",
-        ],
-        "vars": [
-            {
-                "name": "FEISHU_APP_ID",
-                "prompt": "App ID",
-                "password": False,
-                "help": "The App ID from your Feishu/Lark application.",
-            },
-            {
-                "name": "FEISHU_APP_SECRET",
-                "prompt": "App Secret",
-                "password": True,
-                "help": "The App Secret from your Feishu/Lark application.",
-            },
-            {
-                "name": "FEISHU_DOMAIN",
-                "prompt": "Domain — feishu or lark (default: feishu)",
-                "password": False,
-                "help": "Use 'feishu' for Feishu China, or 'lark' for Lark international.",
-            },
-            {
-                "name": "FEISHU_CONNECTION_MODE",
-                "prompt": "Connection mode — websocket or webhook (default: websocket)",
-                "password": False,
-                "help": "websocket is recommended unless you specifically need webhook mode.",
-            },
-            {
-                "name": "FEISHU_ALLOWED_USERS",
-                "prompt": "Allowed user IDs (comma-separated, or empty)",
-                "password": False,
-                "is_allowlist": True,
-                "help": "Restrict which Feishu/Lark users can interact with the bot.",
-            },
-            {
-                "name": "FEISHU_HOME_CHANNEL",
-                "prompt": "Home chat ID (optional, for cron/notifications)",
-                "password": False,
-                "help": "Chat ID for scheduled results and notifications.",
-            },
-        ],
-    },
-    {
-        "key": "wecom",
-        "label": "WeCom (Enterprise WeChat)",
-        "emoji": "💬",
-        "token_var": "WECOM_BOT_ID",
-        "setup_instructions": [
-            "1. Go to WeCom Admin Console → Applications → Create AI Bot",
-            "2. Copy the Bot ID and Secret from the bot's credentials page",
-            "3. The bot connects via WebSocket — no public endpoint needed",
-            "4. Add the bot to a group chat or message it directly in WeCom",
-            "5. Restrict access with WECOM_ALLOWED_USERS for production use",
-        ],
-        "vars": [
-            {
-                "name": "WECOM_BOT_ID",
-                "prompt": "Bot ID",
-                "password": False,
-                "help": "The Bot ID from your WeCom AI Bot.",
-            },
-            {
-                "name": "WECOM_SECRET",
-                "prompt": "Secret",
-                "password": True,
-                "help": "The secret from your WeCom AI Bot.",
-            },
-            {
-                "name": "WECOM_ALLOWED_USERS",
-                "prompt": "Allowed user IDs (comma-separated, or empty)",
-                "password": False,
-                "is_allowlist": True,
-                "help": "Restrict which WeCom users can interact with the bot.",
-            },
-            {
-                "name": "WECOM_HOME_CHANNEL",
-                "prompt": "Home chat ID (optional, for cron/notifications)",
-                "password": False,
-                "help": "Chat ID for scheduled results and notifications.",
-            },
-        ],
-    },
-    {
-        "key": "wecom_callback",
-        "label": "WeCom Callback (Self-Built App)",
-        "emoji": "💬",
-        "token_var": "WECOM_CALLBACK_CORP_ID",
-        "setup_instructions": [
-            "1. Go to WeCom Admin Console → Applications → Create Self-Built App",
-            "2. Note the Corp ID (top of admin console) and create a Corp Secret",
-            "3. Under Receive Messages, configure the callback URL to point to your server",
-            "4. Copy the Token and EncodingAESKey from the callback configuration",
-            "5. The adapter runs an HTTP server — ensure the port is reachable from WeCom",
-            "6. Restrict access with WECOM_CALLBACK_ALLOWED_USERS for production use",
-        ],
-        "vars": [
-            {
-                "name": "WECOM_CALLBACK_CORP_ID",
-                "prompt": "Corp ID",
-                "password": False,
-                "help": "Your WeCom enterprise Corp ID.",
-            },
-            {
-                "name": "WECOM_CALLBACK_CORP_SECRET",
-                "prompt": "Corp Secret",
-                "password": True,
-                "help": "The secret for your self-built application.",
-            },
-            {
-                "name": "WECOM_CALLBACK_AGENT_ID",
-                "prompt": "Agent ID",
-                "password": False,
-                "help": "The Agent ID of your self-built application.",
-            },
-            {
-                "name": "WECOM_CALLBACK_TOKEN",
-                "prompt": "Callback Token",
-                "password": True,
-                "help": "The Token from your WeCom callback configuration.",
-            },
-            {
-                "name": "WECOM_CALLBACK_ENCODING_AES_KEY",
-                "prompt": "Encoding AES Key",
-                "password": True,
-                "help": "The EncodingAESKey from your WeCom callback configuration.",
-            },
-            {
-                "name": "WECOM_CALLBACK_PORT",
-                "prompt": "Callback server port (default: 8645)",
-                "password": False,
-                "help": "Port for the HTTP callback server.",
-            },
-            {
-                "name": "WECOM_CALLBACK_ALLOWED_USERS",
-                "prompt": "Allowed user IDs (comma-separated, or empty)",
-                "password": False,
-                "is_allowlist": True,
-                "help": "Restrict which WeCom users can interact with the app.",
-            },
-        ],
-    },
+    # Email and SMS moved to plugins/platforms/{email,sms}/ — setup metadata
+    # discovered dynamically via the platform registry entries registered by
+    # plugins/platforms/{email,sms}/adapter.py::register(). #41112.
     {
         "key": "weixin",
         "label": "Weixin / WeChat",
@@ -4835,6 +4510,11 @@ def _all_platforms() -> list[dict]:
     for entry in platform_registry.all_entries():
         if entry.name in by_key:
             continue  # built-in already covers it
+        # Drop platforms that can't function on this host. Matrix is hidden on
+        # Windows (python-olm has no Windows wheel) — applies whether matrix is
+        # a built-in or, post-#41112, a registry-discovered plugin.
+        if sys.platform == "win32" and entry.name == "matrix":
+            continue
         platforms.append(
             {
                 "key": entry.name,
@@ -4955,7 +4635,9 @@ def _runtime_health_lines() -> list[str]:
         lines.append(f"⚠ Last startup issue: {exit_reason}")
     elif gateway_state == "draining":
         action = "restart" if restart_requested else "shutdown"
-        count = int(active_agents or 0)
+        from gateway.status import parse_active_agents
+
+        count = parse_active_agents(active_agents)
         lines.append(f"⏳ Gateway draining for {action} ({count} active agent(s))")
     elif gateway_state == "stopped" and exit_reason:
         lines.append(f"⚠ Last shutdown reason: {exit_reason}")
@@ -5122,197 +4804,13 @@ def _setup_standard_platform(platform: dict):
     print_success(f"{emoji} {label} configured!")
 
 
-def _setup_whatsapp():
-    """Delegate to the existing WhatsApp setup flow."""
-    from hermes_cli.main import cmd_whatsapp
-    import argparse
-
-    cmd_whatsapp(argparse.Namespace())
+# _setup_whatsapp and _setup_dingtalk moved into their plugins:
+# plugins/platforms/{whatsapp,dingtalk}/adapter.py::interactive_setup
+# (registered via setup_fn, dispatched through the plugin path). #41112.
 
 
-def _setup_dingtalk():
-    """Configure DingTalk — QR scan (recommended) or manual credential entry."""
-    from hermes_cli.setup import (
-        prompt_choice,
-        prompt_yes_no,
-        print_success,
-        print_warning,
-    )
-
-    dingtalk_platform = next(p for p in _PLATFORMS if p["key"] == "dingtalk")
-    emoji = dingtalk_platform["emoji"]
-    label = dingtalk_platform["label"]
-
-    print()
-    print(color(f"  ─── {emoji} {label} Setup ───", Colors.CYAN))
-
-    existing = get_env_value("DINGTALK_CLIENT_ID")
-    if existing:
-        print()
-        print_success(f"{label} is already configured (Client ID: {existing}).")
-        if not prompt_yes_no(f"  Reconfigure {label}?", False):
-            return
-
-    print()
-    method = prompt_choice(
-        "  Choose setup method",
-        [
-            "QR Code Scan (Recommended, auto-obtain Client ID and Client Secret)",
-            "Manual Input (Client ID and Client Secret)",
-        ],
-        default=0,
-    )
-
-    if method == 0:
-        # ── QR-code device-flow authorization ──
-        try:
-            from hermes_cli.dingtalk_auth import dingtalk_qr_auth
-        except ImportError as exc:
-            print_warning(
-                f"  QR auth module failed to load ({exc}), falling back to manual input."
-            )
-            _setup_standard_platform(dingtalk_platform)
-            return
-
-        result = dingtalk_qr_auth()
-        if result is None:
-            print_warning("  QR auth incomplete, falling back to manual input.")
-            _setup_standard_platform(dingtalk_platform)
-            return
-
-        client_id, client_secret = result
-        save_env_value("DINGTALK_CLIENT_ID", client_id)
-        save_env_value("DINGTALK_CLIENT_SECRET", client_secret)
-        print()
-        print_success(f"{emoji} {label} configured via QR scan!")
-    else:
-        # ── Manual entry ──
-        _setup_standard_platform(dingtalk_platform)
-
-
-def _setup_wecom():
-    """Interactive setup for WeCom — scan QR code or manual credential input."""
-    print()
-    print(color("  ─── 💬 WeCom (Enterprise WeChat) Setup ───", Colors.CYAN))
-
-    existing_bot_id = get_env_value("WECOM_BOT_ID")
-    existing_secret = get_env_value("WECOM_SECRET")
-    if existing_bot_id and existing_secret:
-        print()
-        print_success("WeCom is already configured.")
-        if not prompt_yes_no("  Reconfigure WeCom?", False):
-            return
-
-    # ── Choose setup method ──
-    print()
-    method_choices = [
-        "Scan QR code to obtain Bot ID and Secret automatically (recommended)",
-        "Enter existing Bot ID and Secret manually",
-    ]
-    method_idx = prompt_choice(
-        "  How would you like to set up WeCom?", method_choices, 0
-    )
-
-    bot_id = None
-    secret = None
-
-    if method_idx == 0:
-        # ── QR scan flow ──
-        try:
-            from gateway.platforms.wecom import qr_scan_for_bot_info
-        except Exception as exc:
-            print_error(f"  WeCom QR scan import failed: {exc}")
-            qr_scan_for_bot_info = None
-
-        if qr_scan_for_bot_info is not None:
-            try:
-                credentials = qr_scan_for_bot_info()
-            except KeyboardInterrupt:
-                print()
-                print_warning("  WeCom setup cancelled.")
-                return
-            except Exception as exc:
-                print_warning(f"  QR scan failed: {exc}")
-                credentials = None
-            if credentials:
-                bot_id = credentials.get("bot_id", "")
-                secret = credentials.get("secret", "")
-                print_success("  ✔ QR scan successful! Bot ID and Secret obtained.")
-
-        if not bot_id or not secret:
-            print_info("  QR scan did not complete. Continuing with manual input.")
-            bot_id = None
-            secret = None
-
-    # ── Manual credential input ──
-    if not bot_id or not secret:
-        print()
-        print_info(
-            "  1. Go to WeCom Application → Workspace → Smart Robot -> Create smart robots"
-        )
-        print_info("  2. Select API Mode")
-        print_info("  3. Copy the Bot ID and Secret from the bot's credentials info")
-        print_info("  4. The bot connects via WebSocket — no public endpoint needed")
-        print()
-        bot_id = prompt("  Bot ID", password=False)
-        if not bot_id:
-            print_warning("  Skipped — WeCom won't work without a Bot ID.")
-            return
-        secret = prompt("  Secret", password=True)
-        if not secret:
-            print_warning("  Skipped — WeCom won't work without a Secret.")
-            return
-
-    # ── Save core credentials ──
-    save_env_value("WECOM_BOT_ID", bot_id)
-    save_env_value("WECOM_SECRET", secret)
-
-    # ── Allowed users (deny-by-default security) ──
-    print()
-    print_info("  The gateway DENIES all users by default for security.")
-    print_info("  Enter user IDs to create an allowlist, or leave empty.")
-    allowed = prompt("  Allowed user IDs (comma-separated, or empty)", password=False)
-    if allowed:
-        cleaned = allowed.replace(" ", "")
-        save_env_value("WECOM_ALLOWED_USERS", cleaned)
-        print_success("  Saved — only these users can interact with the bot.")
-    else:
-        print()
-        access_choices = [
-            "Enable open access (anyone can message the bot)",
-            "Use DM pairing (unknown users request access, you approve with 'hermes pairing approve')",
-            "Disable direct messages",
-            "Skip for now (bot will deny all users until configured)",
-        ]
-        access_idx = prompt_choice(
-            "  How should unauthorized users be handled?", access_choices, 1
-        )
-        if access_idx == 0:
-            save_env_value("WECOM_DM_POLICY", "open")
-            save_env_value("GATEWAY_ALLOW_ALL_USERS", "true")
-            print_warning("  Open access enabled — anyone can use your bot!")
-        elif access_idx == 1:
-            save_env_value("WECOM_DM_POLICY", "pairing")
-            print_success(
-                "  DM pairing mode — users will receive a code to request access."
-            )
-            print_info("  Approve with: hermes pairing approve <platform> <code>")
-        elif access_idx == 2:
-            save_env_value("WECOM_DM_POLICY", "disabled")
-            print_warning("  Direct messages disabled.")
-        else:
-            print_info("  Skipped — configure later with 'hermes gateway setup'")
-
-    # ── Home channel (optional) ──
-    print()
-    print_info("  Chat ID for scheduled results and notifications.")
-    home = prompt("  Home chat ID (optional, for cron/notifications)", password=False)
-    if home:
-        save_env_value("WECOM_HOME_CHANNEL", home)
-        print_success(f"  Home channel set to {home}")
-
-    print()
-    print_success("💬 WeCom configured!")
+# _setup_wecom moved to plugins/platforms/wecom/adapter.py::interactive_setup
+# (registered via setup_fn, dispatched through the plugin path). #41112.
 
 
 def _is_service_installed() -> bool:
@@ -5555,197 +5053,8 @@ def _setup_weixin():
         print_info(f"  User ID: {user_id}")
 
 
-def _setup_feishu():
-    """Interactive setup for Feishu / Lark — scan-to-create or manual credentials."""
-    print()
-    print(color("  ─── 🪽 Feishu / Lark Setup ───", Colors.CYAN))
-
-    existing_app_id = get_env_value("FEISHU_APP_ID")
-    existing_secret = get_env_value("FEISHU_APP_SECRET")
-    if existing_app_id and existing_secret:
-        print()
-        print_success("Feishu / Lark is already configured.")
-        if not prompt_yes_no("  Reconfigure Feishu / Lark?", False):
-            return
-
-    # ── Choose setup method ──
-    print()
-    method_choices = [
-        "Scan QR code to create a new bot automatically (recommended)",
-        "Enter existing App ID and App Secret manually",
-    ]
-    method_idx = prompt_choice(
-        "  How would you like to set up Feishu / Lark?", method_choices, 0
-    )
-
-    credentials = None
-    used_qr = False
-
-    if method_idx == 0:
-        # ── QR scan-to-create ──
-        try:
-            from gateway.platforms.feishu import qr_register
-        except Exception as exc:
-            print_error(f"  Feishu / Lark onboard import failed: {exc}")
-            qr_register = None
-
-        if qr_register is not None:
-            try:
-                credentials = qr_register()
-            except KeyboardInterrupt:
-                print()
-                print_warning("  Feishu / Lark setup cancelled.")
-                return
-            except Exception as exc:
-                print_warning(f"  QR registration failed: {exc}")
-        if credentials:
-            used_qr = True
-        if not credentials:
-            print_info("  QR setup did not complete. Continuing with manual input.")
-
-    # ── Manual credential input ──
-    if not credentials:
-        print()
-        print_info(
-            "  Go to https://open.feishu.cn/ (or https://open.larksuite.com/ for Lark)"
-        )
-        print_info(
-            "  Create an app, enable the Bot capability, and copy the credentials."
-        )
-        print()
-        app_id = prompt("  App ID", password=False)
-        if not app_id:
-            print_warning("  Skipped — Feishu / Lark won't work without an App ID.")
-            return
-        app_secret = prompt("  App Secret", password=True)
-        if not app_secret:
-            print_warning("  Skipped — Feishu / Lark won't work without an App Secret.")
-            return
-
-        domain_choices = ["feishu (China)", "lark (International)"]
-        domain_idx = prompt_choice("  Domain", domain_choices, 0)
-        domain = "lark" if domain_idx == 1 else "feishu"
-
-        # Try to probe the bot with manual credentials
-        bot_name = None
-        try:
-            from gateway.platforms.feishu import probe_bot
-
-            bot_info = probe_bot(app_id, app_secret, domain)
-            if bot_info:
-                bot_name = bot_info.get("bot_name")
-                print_success(f"  Credentials verified — bot: {bot_name or 'unnamed'}")
-            else:
-                print_warning(
-                    "  Could not verify bot connection. Credentials saved anyway."
-                )
-        except Exception as exc:
-            print_warning(f"  Credential verification skipped: {exc}")
-
-        credentials = {
-            "app_id": app_id,
-            "app_secret": app_secret,
-            "domain": domain,
-            "open_id": None,
-            "bot_name": bot_name,
-        }
-
-    # ── Save core credentials ──
-    app_id = credentials["app_id"]
-    app_secret = credentials["app_secret"]
-    domain = credentials.get("domain", "feishu")
-    open_id = credentials.get("open_id")
-    bot_name = credentials.get("bot_name")
-
-    save_env_value("FEISHU_APP_ID", app_id)
-    save_env_value("FEISHU_APP_SECRET", app_secret)
-    save_env_value("FEISHU_DOMAIN", domain)
-    # Bot identity is resolved at runtime via _hydrate_bot_identity().
-
-    # ── Connection mode ──
-    if used_qr:
-        connection_mode = "websocket"
-    else:
-        print()
-        mode_choices = [
-            "WebSocket (recommended — no public URL needed)",
-            "Webhook (requires a reachable HTTP endpoint)",
-        ]
-        mode_idx = prompt_choice("  Connection mode", mode_choices, 0)
-        connection_mode = "webhook" if mode_idx == 1 else "websocket"
-        if connection_mode == "webhook":
-            print_info("  Webhook defaults: 127.0.0.1:8765/feishu/webhook")
-            print_info(
-                "  Override with FEISHU_WEBHOOK_HOST / FEISHU_WEBHOOK_PORT / FEISHU_WEBHOOK_PATH"
-            )
-            print_info(
-                "  For signature verification, set FEISHU_ENCRYPT_KEY and FEISHU_VERIFICATION_TOKEN"
-            )
-    save_env_value("FEISHU_CONNECTION_MODE", connection_mode)
-
-    if bot_name:
-        print()
-        print_success(f"  Bot created: {bot_name}")
-
-    # ── DM security policy ──
-    print()
-    access_choices = [
-        "Use DM pairing approval (recommended)",
-        "Allow all direct messages",
-        "Only allow listed user IDs",
-    ]
-    access_idx = prompt_choice(
-        "  How should direct messages be authorized?", access_choices, 0
-    )
-    if access_idx == 0:
-        save_env_value("FEISHU_ALLOW_ALL_USERS", "false")
-        save_env_value("FEISHU_ALLOWED_USERS", "")
-        print_success("  DM pairing enabled.")
-        print_info(
-            "  Unknown users can request access; approve with `hermes pairing approve`."
-        )
-    elif access_idx == 1:
-        save_env_value("FEISHU_ALLOW_ALL_USERS", "true")
-        save_env_value("FEISHU_ALLOWED_USERS", "")
-        print_warning("  Open DM access enabled for Feishu / Lark.")
-    else:
-        save_env_value("FEISHU_ALLOW_ALL_USERS", "false")
-        default_allow = open_id or ""
-        allowlist = prompt(
-            "  Allowed user IDs (comma-separated)", default_allow, password=False
-        ).replace(" ", "")
-        save_env_value("FEISHU_ALLOWED_USERS", allowlist)
-        print_success("  Allowlist saved.")
-
-    # ── Group policy ──
-    print()
-    group_choices = [
-        "Respond only when @mentioned in groups (recommended)",
-        "Disable group chats",
-    ]
-    group_idx = prompt_choice("  How should group chats be handled?", group_choices, 0)
-    if group_idx == 0:
-        save_env_value("FEISHU_GROUP_POLICY", "open")
-        print_info("  Group chats enabled (bot must be @mentioned).")
-    else:
-        save_env_value("FEISHU_GROUP_POLICY", "disabled")
-        print_info("  Group chats disabled.")
-
-    # ── Home channel ──
-    print()
-    home_channel = prompt(
-        "  Home chat ID (optional, for cron/notifications)", password=False
-    )
-    if home_channel:
-        save_env_value("FEISHU_HOME_CHANNEL", home_channel)
-        print_success(f"  Home channel set to {home_channel}")
-
-    print()
-    print_success("🪽 Feishu / Lark configured!")
-    print_info(f"  App ID: {app_id}")
-    print_info(f"  Domain: {domain}")
-    if bot_name:
-        print_info(f"  Bot: {bot_name}")
+# _setup_feishu moved to plugins/platforms/feishu/adapter.py::interactive_setup
+# (registered via setup_fn, dispatched through the plugin path). #41112.
 
 
 def _setup_qqbot():
@@ -6014,23 +5323,31 @@ def _builtin_setup_fn(key: str):
     from hermes_cli import setup as _s
 
     return {
-        "telegram": _s._setup_telegram,
+        # telegram moved into the plugin: setup_fn registered by
+        # plugins/platforms/telegram/adapter.py::register(). #41112.
         # discord moved into the plugin: setup_fn is registered by
         # plugins/platforms/discord/adapter.py::register() and dispatched
         # via the plugin path in _configure_platform().
-        "slack": _s._setup_slack,
-        "matrix": _s._setup_matrix,
+        # slack moved into the plugin: setup_fn is registered by
+        # plugins/platforms/slack/adapter.py::register() and dispatched
+        # via the plugin path in _configure_platform(). #41112.
+        # matrix moved into the plugin: setup_fn registered by
+        # plugins/platforms/matrix/adapter.py::register() and dispatched via
+        # the plugin path in _configure_platform(). #41112.
         # mattermost moved into the plugin: setup_fn is registered by
         # plugins/platforms/mattermost/adapter.py::register() and dispatched
         # via the plugin path in _configure_platform().
         "bluebubbles": _s._setup_bluebubbles,
         "webhooks": _s._setup_webhooks,
         "signal": _setup_signal,
-        "whatsapp": _setup_whatsapp,
+        # whatsapp + dingtalk moved into plugins: setup_fn registered by
+        # plugins/platforms/{whatsapp,dingtalk}/adapter.py::register() and
+        # dispatched via the plugin path in _configure_platform(). #41112.
         "weixin": _setup_weixin,
-        "dingtalk": _setup_dingtalk,
-        "feishu": _setup_feishu,
-        "wecom": _setup_wecom,
+        # feishu moved into the plugin: setup_fn registered by
+        # plugins/platforms/feishu/adapter.py::register(). #41112.
+        # wecom moved into the plugin: setup_fn registered by
+        # plugins/platforms/wecom/adapter.py::register(). #41112.
         "qqbot": _setup_qqbot,
     }.get(key)
 

@@ -203,6 +203,7 @@ class TestPlayInVoiceChannelMixerPath:
             ok = await adapter.play_in_voice_channel(111, "/tmp/x.mp3")
         assert ok is True
         mixer.play_speech.assert_called_once()
+        adapter._reset_voice_timeout.assert_called_once_with(111)
         # Legacy path must NOT have been used.
         vc.play.assert_not_called()
 
@@ -232,6 +233,7 @@ class TestPlayInVoiceChannelMixerPath:
                 ok = await adapter.play_in_voice_channel(111, "/tmp/x.mp3")
         # Fell through to legacy path -> vc.play called.
         assert vc.play.called
+        adapter._reset_voice_timeout.assert_called_once_with(111)
 
 
 class TestPlayAckInVoice:

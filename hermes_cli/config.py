@@ -1259,7 +1259,7 @@ DEFAULT_CONFIG = {
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
-        "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count
+        "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt
                                       # (which is always implicitly protected). Set to
@@ -1287,6 +1287,22 @@ DEFAULT_CONFIG = {
                                       # exact route is affected — gpt-5.5 on OpenAI's
                                       # direct API, OpenRouter, and Copilot keep the
                                       # global threshold regardless.
+        "in_place": False,            # When True, compaction rewrites the message
+                                      # list and rebuilds the system prompt WITHOUT
+                                      # rotating the session id — the conversation
+                                      # keeps one durable id for its whole life
+                                      # (no parent_session_id chain, no `name #N`
+                                      # renumbering). Eliminates the session-rotation
+                                      # bug cluster (#33618 /goal loss, #14238 lost
+                                      # response, #33907 orphans, #45117 search gaps,
+                                      # #42228 null cwd) — see #38763. Non-destructive:
+                                      # the live context is compacted (lossy for what
+                                      # the model reloads), but the pre-compaction
+                                      # turns are soft-archived under the same id
+                                      # (active=0, compacted=1) — still searchable via
+                                      # session_search and recoverable, not deleted.
+                                      # Default False during rollout; will flip on
+                                      # after live validation.
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).
@@ -1438,6 +1454,7 @@ DEFAULT_CONFIG = {
             "api_key": "",
             "timeout": 30,
             "extra_body": {},
+            "language": "",
         },
         "tts_audio_tags": {
             "provider": "auto",
@@ -2103,6 +2120,13 @@ DEFAULT_CONFIG = {
         # real memory cost. Default 32 MiB matches the historical hardcoded
         # cap. Set to 0 for no cap. Env override: DISCORD_MAX_ATTACHMENT_BYTES.
         "max_attachment_bytes": 33554432,
+        # Discord voice-channel inactivity timeout, in seconds. Set to 0 to
+        # keep the bot in VC until an explicit `/voice leave` / disconnect.
+        "voice_channel_inactivity_timeout_seconds": 300,
+        # Minimum seconds to wait for a VC playback before force-stopping it.
+        # The adapter also probes clip duration and extends this floor by a
+        # padding window, so long TTS readbacks are not cut at exactly 120s.
+        "voice_playback_timeout_seconds": 120,
         # Voice-channel audio effects (the continuous mixer). OFF by default.
         # When enabled, the bot installs a software mixer on the outgoing voice
         # stream so a low ambient "thinking" bed, verbal acknowledgements, and
@@ -2141,7 +2165,7 @@ DEFAULT_CONFIG = {
         "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
         "allowed_chats": "",           # If set, bot ONLY responds in these group/supergroup chat IDs (whitelist)
         "extra": {
-            "rich_messages": True,      # Bot API 10.1 rich messages (tables/task lists/details/math) render natively; set False to force legacy MarkdownV2
+            "rich_messages": False,     # Bot API 10.1 rich messages (tables/task lists/details/math) render natively; set True to opt in. Default stays legacy MarkdownV2 because rich messages can be hard to copy as plain text in Telegram clients.
         },
     },
 
@@ -2457,6 +2481,16 @@ DEFAULT_CONFIG = {
             "enabled": False,
         },
 
+        # Maximum bytes for an inbound image / audio / video payload the
+        # gateway will buffer into memory and cache to disk. Inbound media is
+        # read fully into RAM before being written, so an unbounded upload
+        # (Discord Nitro allows 500 MB) or a remote media URL pointing at a
+        # huge file can spike memory and OOM-kill the gateway on constrained
+        # deployments. Enforced in the shared cache helpers
+        # (gateway/platforms/base.py), so the cap holds across every platform
+        # adapter. ``0`` disables the cap. Default 128 MiB.
+        "max_inbound_media_bytes": 134217728,
+
         # When false (default), any file path the agent emits is delivered
         # as a native attachment as long as it isn't under the credential /
         # system-path denylist (/etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,
@@ -2494,6 +2528,18 @@ DEFAULT_CONFIG = {
         # multi-tool agent turn. Bridged to HERMES_MEDIA_TRUST_RECENT_SECONDS.
         # Only consulted when ``strict`` is true.
         "trust_recent_files_seconds": 600,
+
+        # OpenAI-compatible API server platform
+        # (gateway/platforms/api_server.py).
+        "api_server": {
+            # Maximum number of agent runs the API server will service
+            # concurrently. Requests to /v1/chat/completions, /v1/responses,
+            # and /v1/runs that arrive while this many runs are already
+            # in flight are rejected with HTTP 429 + a Retry-After header,
+            # bounding CPU / memory / upstream-LLM-quota exhaustion from a
+            # request flood. Set to 0 to disable the cap entirely.
+            "max_concurrent_runs": 10,
+        },
     },
 
     # Real-time token streaming to messaging platforms (Telegram, Discord,
@@ -3056,6 +3102,38 @@ OPTIONAL_ENV_VARS = {
     "HERMES_GEMINI_PROJECT_ID": {
         "description": "GCP project ID for paid Gemini tiers (free tier auto-provisions)",
         "prompt": "GCP project ID for Gemini OAuth (leave empty for free tier)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "HERMES_ANTIGRAVITY_CLIENT_ID": {
+        "description": "Google OAuth client ID for google-antigravity (optional; discovered from agy when omitted)",
+        "prompt": "Antigravity OAuth client ID (optional — leave empty to discover from agy)",
+        "url": "https://console.cloud.google.com/apis/credentials",
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "HERMES_ANTIGRAVITY_CLIENT_SECRET": {
+        "description": "Google OAuth client secret for google-antigravity (optional)",
+        "prompt": "Antigravity OAuth client secret (optional)",
+        "url": "https://console.cloud.google.com/apis/credentials",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "HERMES_ANTIGRAVITY_CLI_PATH": {
+        "description": "Path to agy/Antigravity CLI for OAuth client credential discovery",
+        "prompt": "Antigravity CLI path (leave empty to search PATH/default locations)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "HERMES_ANTIGRAVITY_PROJECT_ID": {
+        "description": "GCP project ID for Antigravity OAuth (auto-discovered when omitted)",
+        "prompt": "GCP project ID for Antigravity OAuth (leave empty to auto-discover)",
         "url": None,
         "password": False,
         "category": "provider",
@@ -3912,6 +3990,30 @@ def _set_nested(config, dotted_key: str, value):
         current[int(last)] = value
     else:
         current[last] = value
+
+
+def clear_model_endpoint_credentials(
+    model_cfg: Dict[str, Any],
+    *,
+    clear_api_key: bool = True,
+    clear_api_mode: bool = True,
+) -> Dict[str, Any]:
+    """Remove stale inline endpoint credentials from a model config.
+
+    ``model.api_key`` is valid only for explicit custom endpoint assignments.
+    Built-in providers resolve credentials from env vars, auth.json, or the
+    credential pool. When switching away from a custom endpoint, leaving these
+    fields behind keeps secrets in config.yaml and can contaminate later custom
+    resolution paths.
+    """
+    if not isinstance(model_cfg, dict):
+        return model_cfg
+    if clear_api_key:
+        model_cfg.pop("api_key", None)
+        model_cfg.pop("api", None)
+    if clear_api_mode:
+        model_cfg.pop("api_mode", None)
+    return model_cfg
 
 
 def get_missing_config_fields() -> List[Dict[str, Any]]:
@@ -5405,23 +5507,44 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     ``model.*`` key is empty — they never override an existing value.
     After migration the root-level keys are removed so they can't cause
     confusion on subsequent loads.
+
+    Also aliases ``api_base`` → ``base_url`` (issue #8919). ``api_base`` is the
+    intuitive name OpenAI-SDK / LiteLLM users reach for, and ``hermes config set``
+    blindly accepts any dotted key — so ``model.api_base`` got written, confirmed,
+    and then silently ignored by the runtime resolver (which reads only
+    ``model.base_url``), causing requests to fall back to OpenRouter. We migrate
+    the alias to the canonical key (fallback-only — never override an explicit
+    ``base_url``) and drop the alias so it can't confuse later loads.
     """
-    # Only act if there are root-level keys to migrate
-    has_root = any(config.get(k) for k in ("provider", "base_url", "context_length"))
-    if not has_root:
+    # Only act if there are root-level keys (or an api_base alias) to migrate
+    model_in = config.get("model")
+    model_has_alias = isinstance(model_in, dict) and model_in.get("api_base")
+    has_root = any(
+        config.get(k) for k in ("provider", "base_url", "context_length", "api_base")
+    )
+    if not has_root and not model_has_alias:
         return config
 
     config = dict(config)
     model = config.get("model")
     if not isinstance(model, dict):
         model = {"default": model} if model else {}
-        config["model"] = model
+    else:
+        model = dict(model)
+    config["model"] = model
 
     for key in ("provider", "base_url", "context_length"):
         root_val = config.get(key)
         if root_val and not model.get(key):
             model[key] = root_val
         config.pop(key, None)
+
+    # api_base is an alias for base_url, at the root OR inside model.
+    for alias_val in (config.get("api_base"), model.get("api_base")):
+        if alias_val and not model.get("base_url"):
+            model["base_url"] = alias_val
+    config.pop("api_base", None)
+    model.pop("api_base", None)
 
     return config
 
@@ -6347,6 +6470,60 @@ def redact_key(key: str) -> str:
     return mask_secret(key, empty=color("(not set)", Colors.DIM))
 
 
+# Key names (case-insensitive, exact match) whose VALUE is a credential and
+# must be masked before printing any config dict to the terminal. Covers the
+# fields a custom provider stuffs into the `model`/`custom_providers` blocks
+# (`api_key`) plus the usual token/secret/password shapes. Exact-match only so
+# benign keys like `token_count` or `secret_santa` don't get masked.
+_SECRET_CONFIG_KEYS = frozenset({
+    "api_key",
+    "apikey",
+    "key",
+    "token",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "secret",
+    "client_secret",
+    "password",
+    "passwd",
+    "auth",
+    "authorization",
+    "private_key",
+    "bearer",
+    "jwt",
+})
+
+
+def redact_config_value(value: Any, _depth: int = 0) -> Any:
+    """Return a copy of ``value`` with credential-shaped keys masked for display.
+
+    Recursively walks dicts/lists and replaces the value of any key in
+    ``_SECRET_CONFIG_KEYS`` (case-insensitive) with a masked form via
+    :func:`agent.redact.mask_secret`. Non-secret keys and scalar values pass
+    through unchanged. Use this before ``print``-ing any config sub-tree that
+    might carry a custom-provider ``api_key`` — ``print`` bypasses the logging
+    redactor, and opaque tokens (e.g. Cloudflare ``cfut_...``) don't match the
+    vendor-prefix regexes either, so structural key-name masking is required.
+    """
+    from agent.redact import mask_secret
+
+    # Defensive bound on recursion depth for pathological/cyclic configs.
+    if _depth > 20:
+        return value
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, str) and k.lower() in _SECRET_CONFIG_KEYS and isinstance(v, str) and v:
+                out[k] = mask_secret(v)
+            else:
+                out[k] = redact_config_value(v, _depth + 1)
+        return out
+    if isinstance(value, list):
+        return [redact_config_value(v, _depth + 1) for v in value]
+    return value
+
+
 def show_config():
     """Display current configuration."""
     config = load_config()
@@ -6415,7 +6592,7 @@ def show_config():
     # Model settings
     print()
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
-    print(f"  Model:        {config.get('model', 'not set')}")
+    print(f"  Model:        {redact_config_value(config.get('model', 'not set'))}")
     _cfg_max_turns = config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])
     print(f"  Max turns:    {_cfg_max_turns}")
     # Warn on stale HERMES_MAX_ITERATIONS ghost in .env that disagrees with
@@ -6661,7 +6838,15 @@ def set_config_value(key: str, value: str):
         value = float(value)
 
     _set_nested(user_config, key, value)
-    
+    # Normalize the api_base → base_url alias at set-time too (issue #8919),
+    # so a fresh `hermes config set model.api_base ...` lands on the canonical
+    # key the runtime resolver actually reads, instead of being silently
+    # ignored. Mirrors the load-time migration in _normalize_root_model_keys.
+    _alias_norm = key.strip().lower()
+    if _alias_norm in ("model.api_base", "api_base"):
+        user_config = _normalize_root_model_keys(user_config)
+        key = "model.base_url"
+        print("  (note: 'api_base' is an alias — saved as model.base_url)")
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
     from utils import atomic_yaml_write
@@ -6673,7 +6858,17 @@ def set_config_value(key: str, value: str):
     if env_var and key != "terminal.cwd":
         save_env_value(env_var, _terminal_env_value(value))
 
-    print(f"✓ Set {key} = {value} in {config_path}")
+    # Mask the echoed value when the (possibly nested) key is credential-shaped
+    # — e.g. `hermes config set model.api_key cfut_...` routes to config.yaml
+    # (lowercase, so it misses the .env api_keys list above) and would otherwise
+    # print the raw secret to the terminal.
+    _leaf_key = key.rsplit(".", 1)[-1].lower()
+    if _leaf_key in _SECRET_CONFIG_KEYS and isinstance(value, str) and value:
+        from agent.redact import mask_secret
+        _display_value = mask_secret(value)
+    else:
+        _display_value = value
+    print(f"✓ Set {key} = {_display_value} in {config_path}")
 
 
 # =============================================================================

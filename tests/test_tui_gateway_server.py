@@ -2016,6 +2016,25 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
     ]
 
 
+def test_ensure_session_db_row_persists_session_source(monkeypatch):
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+            created.append(
+                {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
+            )
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    server._ensure_session_db_row({"session_key": "k1", "source": "tool"})
+
+    assert created == [
+        {"key": "k1", "source": "tool", "model": "test-model", "model_config": None, "cwd": None}
+    ]
+
+
 def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
     """Without an explicit workspace, cwd is left null so the session groups
     under "No workspace" rather than the gateway's launch directory."""
@@ -4949,7 +4968,8 @@ def test_mirror_slash_side_effects_allowed_when_idle(monkeypatch):
 def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     """Regression guard: /compress side effect must not hold history_lock
     when calling _compress_session_history (the helper snapshots under
-    the same non-reentrant lock internally)."""
+    the same non-reentrant lock internally). It also returns a before/after
+    summary string (#46686)."""
     import types
 
     seen = {"compress": False, "sync": False}
@@ -4958,7 +4978,9 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     def _fake_compress(session, focus_topic=None, **_kw):
         seen["compress"] = True
         assert not session["history_lock"].locked()
-        return (0, {"total": 0})
+        # Simulate a real compaction shrinking the transcript.
+        session["history"] = [{"role": "user", "content": "summary"}]
+        return (1, {"total": 0})
 
     def _fake_sync(_sid, _session):
         seen["sync"] = True
@@ -4969,14 +4991,20 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
 
     session = _session(running=False)
-    session["agent"] = types.SimpleNamespace(model="x")
+    session["history"] = [
+        {"role": "user", "content": f"m{i}"} for i in range(6)
+    ]
+    session["agent"] = types.SimpleNamespace(model="x", _cached_system_prompt="", tools=None)
 
     warning = server._mirror_slash_side_effects("sid", session, "/compress")
 
-    assert warning == ""
+    # Now returns a before/after summary (was "" before #46686).
     assert seen["compress"]
     assert seen["sync"]
     assert ("session.info", "sid", {"model": "x"}) in emitted
+    assert "Compressed:" in warning
+    assert "6 → 1 messages" in warning
+    assert "tokens" in warning
 
 
 # ---------------------------------------------------------------------------
@@ -7682,6 +7710,18 @@ def test_session_create_records_close_on_disconnect_flag(monkeypatch):
         )["result"]["session_id"]
         assert server._sessions[on]["close_on_disconnect"]
         assert not server._sessions[off]["close_on_disconnect"]
+    finally:
+        server._sessions.clear()
+
+
+def test_session_create_records_source(monkeypatch):
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+    server._sessions.clear()
+    try:
+        sid = server.handle_request(
+            {"id": "1", "method": "session.create", "params": {"source": "tool"}}
+        )["result"]["session_id"]
+        assert server._sessions[sid]["source"] == "tool"
     finally:
         server._sessions.clear()
 

@@ -2029,7 +2029,7 @@ dashboard:
   theme: "default"            # "default" | "midnight" | "ember" | "mono" | "cyberpunk" | "rose"
   show_token_analytics: false # Re-enable the (local-estimate-only) token/cost analytics surfaces
   public_url: ""              # Full public authority for OAuth redirect_uri (env: HERMES_DASHBOARD_PUBLIC_URL)
-  oauth:                      # Portal OAuth gate (engaged with --host and not --insecure)
+  oauth:                      # Portal OAuth gate (engages on every non-loopback dashboard bind)
     client_id: ""             # agent:{instance_id} — Portal provisions this
     portal_url: ""            # blank → plugin default (production Portal)
   basic_auth:                 # Self-hosted username/password gate (dashboard_auth/basic plugin)

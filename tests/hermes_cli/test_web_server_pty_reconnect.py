@@ -44,15 +44,30 @@ def pty_client(monkeypatch, _isolate_hermes_home):
 
     import hermes_cli.web_server as ws
 
+    prev_auth_required = getattr(ws.app.state, "auth_required", None)
+    prev_bound_host = getattr(ws.app.state, "bound_host", None)
+    prev_bound_port = getattr(ws.app.state, "bound_port", None)
+
     monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
     monkeypatch.setattr(ws.PtyBridge, "spawn", _OneFrameBridge.spawn)
+    ws.app.state.auth_required = False
+    # Starlette's TestClient uses Host: testserver for WebSocket handshakes.
+    # Pin the bound host to that synthetic test host so these focused PTY tests
+    # are isolated from dashboard-auth tests that mutate the shared app state.
+    ws.app.state.bound_host = "testserver"
+    ws.app.state.bound_port = 80
     ws.app.state.event_channels = {}
     ws.app.state.event_buffers = {}
     ws.app.state.event_publishers = {}
     ws.app.state.pty_active_session_files = {}
 
-    client = TestClient(ws.app)
-    return ws, client, ws._SESSION_TOKEN
+    client = TestClient(ws.app, base_url="http://127.0.0.1:9119")
+    try:
+        yield ws, client, ws._SESSION_TOKEN
+    finally:
+        ws.app.state.auth_required = prev_auth_required
+        ws.app.state.bound_host = prev_bound_host
+        ws.app.state.bound_port = prev_bound_port
 
 
 def _url(token: str, **params: str) -> str:

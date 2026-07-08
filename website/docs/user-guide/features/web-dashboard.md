@@ -25,21 +25,50 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--port` | `9119` | Port to run the web server on |
-| `--host` | `127.0.0.1` | Bind address |
+| `--host` | `127.0.0.1` | Bind address. Loopback is local-only; any non-loopback address is VPN/LAN/hosted mode and requires dashboard auth. |
 | `--no-open` | — | Don't auto-open the browser |
-| `--insecure` | off | Allow binding to non-localhost hosts (**DANGEROUS** — exposes API keys on the network; pair with a firewall and strong auth) |
+| `--insecure` | no-op | Deprecated compatibility flag. It no longer disables auth; non-loopback binds always require OAuth or username/password auth. |
 | `--isolated` | off | When launched from a named profile (`worker dashboard`), run a dedicated per-profile server instead of routing to the machine dashboard |
 
 ```bash
 # Custom port
 hermes dashboard --port 8080
 
-# Bind to all interfaces (use with caution on shared networks)
+# Bind to all interfaces for VPN/LAN access. This fails closed unless
+# dashboard auth is configured; do not use it as a no-auth local shortcut.
 hermes dashboard --host 0.0.0.0
 
 # Start without opening browser
 hermes dashboard --no-open
 ```
+
+### Local, VPN-hosted, and remote Desktop modes
+
+There are three different deployment shapes that are easy to mix up:
+
+1. **Local dashboard / local Desktop** — `hermes dashboard` binds to
+   `127.0.0.1` and is opened by the browser or Desktop on the same PC. This is
+   the normal "it's drawing on my screen here" mode. It is local-only and the
+   dashboard auth gate is off.
+2. **VPN/LAN-hosted dashboard** — the same dashboard process binds to a
+   non-loopback address such as `0.0.0.0`, a LAN IP, or a Tailscale IP so a
+   phone/tablet/another PC can reach it over the private network. Hermes treats
+   this as network-exposed even if the network is a VPN: the auth gate turns on
+   and startup fails closed unless OAuth or username/password auth is available.
+3. **Remote Desktop backend** — Hermes Desktop on one machine connects to a
+   dashboard process running on another machine via **Settings → Gateway →
+   Remote gateway**. Despite the UI label, this is a remote dashboard backend;
+   the messaging gateway (`hermes gateway`, Telegram/Discord/etc.) is a separate
+   service and is not what Desktop attaches to.
+
+Use local mode for the PC in front of you. Use VPN/LAN-hosted mode when you want
+the same local machine to serve your phone over Tailscale or a trusted LAN. Use
+Remote Desktop backend only when the backend actually lives on another host.
+
+:::warning
+`--insecure` is kept only so older launch scripts do not break. It no longer
+turns off authentication on `--host 0.0.0.0` or any other non-loopback bind.
+:::
 
 ## Managing multiple profiles
 
@@ -572,13 +601,16 @@ Operator-owned dashboards bound to loopback are unaffected — no auth, no login
 | `hermes dashboard` (default — binds to `127.0.0.1`) | OFF | Local development |
 | `hermes dashboard --host 0.0.0.0` | **ON** | Remote / production — protect with the username/password provider or OAuth |
 
-The gate is on if and only if:
+The gate is on whenever the bind host is not `127.0.0.1`, `::1`, or
+`localhost`. That includes `0.0.0.0`, LAN addresses, and Tailscale/CGNAT
+addresses. The deprecated `--insecure` flag is ignored for this decision.
 
-1. The bind host is not `127.0.0.1`, `::1`, `localhost`, or `0.0.0.0` AND
-2. The `--insecure` flag is **not** set.
-
-:::danger `--insecure` disables auth entirely
-`--insecure` skips the gate and serves an unauthenticated dashboard that reads/writes your `.env` (API keys, secrets) and can run agent commands. **Do not use it for a remote connection.** To expose the dashboard to another machine, configure the [username/password provider](#usernamepassword-provider-no-oauth-idp) (or OAuth) and leave `--insecure` off. The flag exists only as a last-resort escape hatch on a fully trusted, firewalled single-host network.
+:::danger Non-loopback binds always require auth
+A dashboard that reads/writes your `.env` (API keys, secrets) and can run agent
+commands must not be served unauthenticated on the network. To expose the
+dashboard to another device, configure the [username/password
+provider](#usernamepassword-provider-no-oauth-idp), OAuth, or OIDC; otherwise
+bind to loopback and use an SSH/Tailscale tunnel that terminates locally.
 :::
 
 ### Fail-closed semantics
@@ -632,7 +664,7 @@ Empty environment values are treated as unset, so a provisioned-but-not-populate
 If neither source provides a client_id, the plugin reports the specific reason and the dashboard's fail-closed bind error tells you exactly what to fix:
 
 ```
-Refusing to bind dashboard to 0.0.0.0 — the OAuth auth gate engages on
+Refusing to bind dashboard to 0.0.0.0 — the auth gate engages on
 non-loopback binds, but no auth providers are registered.
 
 Bundled providers reported these issues:
@@ -640,11 +672,11 @@ Bundled providers reported these issues:
     dashboard.oauth.client_id in config.yaml is empty). The Nous Portal
     provisions this env var (shape 'agent:{instance_id}') when it
     deploys a Hermes Agent instance — set it to your provisioned
-    client id (either as an env var or under dashboard.oauth.client_id
-    in config.yaml), or pass --insecure to skip the OAuth gate entirely.
+    client id either as an env var or under dashboard.oauth.client_id
+    in config.yaml.
 
-Or pass --insecure to skip the auth gate (NOT recommended on untrusted
-networks).
+Configure OAuth, username/password, or OIDC auth; otherwise bind to
+127.0.0.1 and reach it through a tunnel that terminates locally.
 ```
 
 #### Worked example: Nous Research
@@ -660,7 +692,7 @@ hermes dashboard register
 # …writes HERMES_DASHBOARD_OAUTH_CLIENT_ID to ~/.hermes/.env
 ```
 
-**2. Run the dashboard on a reachable address.** A non-loopback bind without `--insecure` engages the OAuth gate, and the `client_id` just written activates the `nous` provider:
+**2. Run the dashboard on a reachable address.** A non-loopback bind engages the OAuth gate, and the `client_id` just written activates the `nous` provider:
 
 ```bash
 hermes dashboard --host 0.0.0.0 --port 9119 --no-open
@@ -680,7 +712,7 @@ curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'
 
 If you don't want to wire up an OAuth identity provider — a self-hosted "just put a password on my dashboard" deployment — the bundled `plugins/dashboard_auth/basic` plugin registers a `DashboardAuthProvider` named `basic` that authenticates with a **username and password** instead of an OAuth redirect.
 
-It plugs into the same gate as the OAuth provider: the gate engages on a non-loopback bind without `--insecure`, the login page renders a credential form for this provider (instead of a "Log in with X" button), and everything downstream of login — session cookies, transparent refresh, WS tickets, logout, the audit log — is identical to the OAuth path. Sessions are stateless HMAC-signed tokens the provider mints itself, so there's **no database and no external IDP**. Password hashing uses stdlib `scrypt` (no third-party dependency).
+It plugs into the same gate as the OAuth provider: the gate engages on every non-loopback bind, the login page renders a credential form for this provider (instead of a "Log in with X" button), and everything downstream of login — session cookies, transparent refresh, WS tickets, logout, the audit log — is identical to the OAuth path. Sessions are stateless HMAC-signed tokens the provider mints itself, so there's **no database and no external IDP**. Password hashing uses stdlib `scrypt` (no third-party dependency).
 
 :::warning Use this on trusted networks only — not the public internet
 The username/password provider is intended for self-hosted / on-prem / homelab dashboards on a **trusted network**, or reachable only over a **VPN**. It protects a single shared credential with no external identity provider, MFA, or per-user accounts behind it, so it is **not suitable for exposing a dashboard directly to the public internet**. For an internet-facing dashboard, use the [Nous Research provider](#default-provider-nous-research) (or your own [self-hosted OIDC](#self-hosted-oidc-provider) / [custom OAuth](#custom-providers) provider) instead.
@@ -688,7 +720,7 @@ The username/password provider is intended for self-hosted / on-prem / homelab d
 
 #### Configuration
 
-Like the Nous provider, it reads from `config.yaml` (canonical) with environment variables winning when set non-empty. It activates only when `username` plus either `password_hash` (preferred) or `password` are configured — otherwise it's a no-op, so OAuth users and loopback/`--insecure` operators are unaffected.
+Like the Nous provider, it reads from `config.yaml` (canonical) with environment variables winning when set non-empty. It activates only when `username` plus either `password_hash` (preferred) or `password` are configured — otherwise it's a no-op, so OAuth users and loopback-only operators are unaffected.
 
 **`config.yaml`:**
 
@@ -739,7 +771,7 @@ EOF
 chmod 600 ~/.hermes/.env
 ```
 
-**2. Run the dashboard on a reachable address.** A non-loopback bind without `--insecure` engages the gate, and the username + hash activate the `basic` provider:
+**2. Run the dashboard on a reachable address.** A non-loopback bind engages the gate, and the username + hash activate the `basic` provider:
 
 ```bash
 hermes dashboard --host 0.0.0.0 --port 9119 --no-open
@@ -765,7 +797,7 @@ If you run your own identity provider, the bundled `plugins/dashboard_auth/self_
 
 > **Authentik · Keycloak · Zitadel · Authelia · Auth0 · Okta · Google · …**
 
-Like the Nous provider, it auto-loads and only registers itself once it's configured, so it's a no-op for loopback / `--insecure` dashboards.
+Like the Nous provider, it auto-loads and only registers itself once it's configured, so it's a no-op for loopback-only dashboards.
 
 #### Configuration
 
@@ -874,8 +906,7 @@ hermes dashboard --host 0.0.0.0 --port 9119 --no-open
 
 `HERMES_DASHBOARD_PUBLIC_URL` tells the dashboard its OAuth callback is
 `http://localhost:9119/auth/callback` — the redirect URI the realm registered
-above. Binding to `0.0.0.0` (a non-loopback bind) without `--insecure` is what
-engages the OAuth gate.
+above. Binding to `0.0.0.0` (a non-loopback bind) is what engages the OAuth gate.
 
 **3. Log in.** Open `http://localhost:9119/`, you'll be bounced to `/login`. Click **Sign in with Self-Hosted OIDC** → authenticate at Keycloak as `testuser` / `testpassword` → land back on the authenticated dashboard. The sidebar shows `Logged in as Test User via self-hosted`, and `GET /api/auth/me` returns the verified session (`provider: self-hosted`, `email: testuser@example.com`).
 

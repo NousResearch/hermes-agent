@@ -502,9 +502,10 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
     host_only = host_only.lower()
 
-    # 0.0.0.0 bind means operator explicitly opted into all-interfaces
-    # (requires --insecure per web_server.start_server). No Host-layer
-    # defence can protect that mode; rely on operator network controls.
+    # 0.0.0.0 bind means operator explicitly opted into all-interfaces.
+    # Host-layer filtering cannot distinguish the intended LAN/VPN hostname
+    # from another accepted interface name in that mode; rely on the auth gate
+    # (non-loopback binds always require auth) plus operator network controls.
     if bound_host in {"0.0.0.0", "::"}:
         return True
 
@@ -14252,9 +14253,9 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     don't want LAN hosts guessing tokens.
 
     Explicit non-loopback bind (``--host 0.0.0.0``, ``--host ::``, or a
-    specific address such as a Tailscale/LAN IP, always with
-    ``--insecure``): allow any peer. The operator explicitly opted into
-    non-loopback exposure, so the loopback-only peer restriction does not
+    specific address such as a Tailscale/LAN IP): allow any peer once the
+    dashboard auth gate has accepted the request. The operator explicitly
+    opted into non-loopback exposure, so the loopback-only peer restriction does not
     apply. DNS-rebinding is still blocked by the Host/Origin guard in
     :func:`_ws_host_origin_is_allowed`, which mirrors the HTTP layer and
     requires the Host header to match the bound interface — the same
@@ -14272,7 +14273,7 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
         return True
     # Any explicit non-loopback bind (0.0.0.0, ::, or a specific LAN /
     # Tailscale address) means the operator opted into non-loopback
-    # access via --insecure.  The loopback-only peer gate only applies to
+    # access.  The loopback-only peer gate only applies to
     # an actual loopback bind; otherwise the WS handshake is rejected even
     # though same-bind HTTP requests pass _is_accepted_host.
     bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()

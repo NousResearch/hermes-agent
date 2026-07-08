@@ -2403,7 +2403,19 @@ def delegate_task(
 
     # Load config
     cfg = _load_config()
-    default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+    default_max_iter = cfg.get("max_iterations")
+    if default_max_iter is not None:
+        try:
+            default_max_iter = int(default_max_iter)
+        except (TypeError, ValueError):
+            logger.warning(
+                "delegation.max_iterations=%r is not a valid integer; "
+                "using default %d",
+                default_max_iter, DEFAULT_MAX_ITERATIONS,
+            )
+            default_max_iter = DEFAULT_MAX_ITERATIONS
+    else:
+        default_max_iter = DEFAULT_MAX_ITERATIONS
     # Model-supplied max_iterations is ignored — the config value is authoritative
     # so users get predictable budgets. The kwarg is retained for internal callers
     # and tests; a model-emitted value here would only shrink the budget and

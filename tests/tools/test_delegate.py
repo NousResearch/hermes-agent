@@ -2550,6 +2550,45 @@ class TestMaxSpawnDepth(unittest.TestCase):
         self.assertEqual(_get_max_spawn_depth(), 1)
 
 
+class TestMaxIterationsValidation(unittest.TestCase):
+    """Invalid delegation.max_iterations config values must fall back to default."""
+
+    @patch("tools.delegate_tool._load_config",
+           return_value={"max_iterations": "fifty"})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_invalid_max_iterations_falls_back_to_default(self, mock_creds, mock_cfg):
+        """When max_iterations='fifty', child receives DEFAULT_MAX_ITERATIONS."""
+        from tools.delegate_tool import DEFAULT_MAX_ITERATIONS
+
+        mock_creds.return_value = {
+            "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "model": None,
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True,
+                "api_calls": 1, "messages": [],
+            }
+            mock_child._delegate_saved_tool_names = []
+            mock_child._credential_pool = None
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.model = "test"
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="test invalid max_iterations", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(
+                kwargs["max_iterations"], DEFAULT_MAX_ITERATIONS,
+                f"Expected {DEFAULT_MAX_ITERATIONS} (default), "
+                f"got {kwargs['max_iterations']}"
+            )
+
+
 # =========================================================================
 # role param plumbing
 # =========================================================================

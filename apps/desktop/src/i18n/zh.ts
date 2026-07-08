@@ -2067,8 +2067,10 @@ export const zh: Translations = {
     recommended: '推荐',
     connected: '已连接',
     featuredPitch: '一个订阅，300+ 前沿模型 — 运行 Hermes 的推荐方式',
+    fireworksPitch: '面向生产 AI 的最快推理 — 300+ 模型，一个 API，一键部署',
     openRouterPitch: '一个密钥，数百个模型 — 稳妥的默认选择',
     apiKeyOptions: {
+      fireworks: { short: '最快推理', description: '通过 Fireworks AI 直接访问 300+ 开源与专有模型 — 一个 API 密钥，生产级速度。' },
       openrouter: { short: '一个密钥，多个模型', description: '用一个密钥访问数百个模型。适合新安装的默认选择。' },
       openai: { short: 'GPT 级模型', description: '直接访问 OpenAI 模型。' },
       gemini: { short: 'Gemini 模型', description: '直接访问 Google Gemini 模型。' },

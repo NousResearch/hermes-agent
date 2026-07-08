@@ -1555,8 +1555,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _reset_stale_streak(agent)
         return True
     except Exception as e:
-        if fb_provider == "nous":
-            unavailable.add(fb_key)
+        # #60761: Don't permanently suppress on transient errors.
+        # The local_skip_reason + fb_client-is-None checks above already
+        # handle permanent config/auth problems. Suppressing on every
+        # exception (including transient network failures) made fallback
+        # entries permanently unrecoverable within a session.
         logger.error("Failed to activate fallback %s: %s", fb_model, e)
         return agent._try_activate_fallback(reason)  # try next in chain
 

@@ -3133,19 +3133,22 @@ def run_conversation(
                     # is exhausted or didn't help.
 
                 # Eager fallback for rate-limit errors (429 or quota exhaustion)
-                # and transport errors (connection failure / timeout / provider
-                # overloaded).  Rate limits and billing: switch immediately —
-                # the primary provider won't recover within the retry window.
-                # Transport errors: allow 1 retry first (transient hiccups
-                # recover), then fall back if the provider is truly unreachable.
+                # and provider overload (529).  Rate limits, billing, and
+                # overload: switch immediately — the primary provider won't
+                # recover within the retry window (Anthropic SDK treats 529
+                # as a hard signal to failover).  Z.AI Coding Plan overload
+                # 429s are demoted back to transport-failure below to keep
+                # their existing long-backoff schedule (30/60/90/120s).
+                # Transport errors (timeout / connection): allow 1 retry
+                # first (transient hiccups recover), then fall back.
                 is_rate_limited = classified.reason in {
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
                     FailoverReason.upstream_rate_limit,
+                    FailoverReason.overloaded,
                 }
                 _is_transport_failure = classified.reason in {
                     FailoverReason.timeout,
-                    FailoverReason.overloaded,
                 }
                 # Z.AI Coding Plan GLM-5.2 overload 429s classify as
                 # `overloaded` (to spare the credential pool), but `overloaded`
@@ -3159,6 +3162,13 @@ def run_conversation(
                 )
                 if _is_zai_coding_overload:
                     max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
+                    # Z.AI Coding Plan overload 429s self-heal in minutes —
+                    # preserve the existing long-backoff schedule instead of
+                    # immediate fallback. Demote back to transport failure so
+                    # retries run before fallback is considered.
+                    if classified.reason == FailoverReason.overloaded:
+                        is_rate_limited = False
+                        _is_transport_failure = True
                 _should_fallback = (
                     is_rate_limited
                     or (_is_transport_failure and retry_count >= 2)

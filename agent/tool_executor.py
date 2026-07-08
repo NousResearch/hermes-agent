@@ -854,6 +854,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     skip_pre_tool_call_hook=True,
                     enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                     disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                    turn_id=f"turn_{api_call_count}",
                 )
                 _spinner_result = function_result
             except Exception as tool_error:
@@ -876,6 +877,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     skip_pre_tool_call_hook=True,
                     enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                     disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                    turn_id=f"turn_{api_call_count}",
                 )
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"

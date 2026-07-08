@@ -810,6 +810,7 @@ def handle_function_call(
     skip_pre_tool_call_hook: bool = False,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    turn_id: Optional[str] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -1001,6 +1002,7 @@ def handle_function_call(
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
                 duration_ms=duration_ms,
+                turn_id=turn_id or "",
             )
         except Exception as _hook_err:
             logger.debug("post_tool_call hook error: %s", _hook_err)

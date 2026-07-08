@@ -984,6 +984,15 @@ class TelegramAdapter(BasePlatformAdapter):
         context-aware decision the runner would make. Unknown DMs with no
         allowlist still pass through so the normal pairing flow can run.
         """
+        # Secretary Mode: messages carrying a business_connection_id are
+        # pre-authorized by the owner connecting the bot via Chat Automation.
+        # The external client's user ID will never be in the allowlist, but
+        # the owner has explicitly scoped which chats the bot sees. The
+        # business_connection_id is set by Telegram server-side and cannot
+        # be spoofed by the client.
+        if getattr(message, "business_connection_id", None):
+            return True
+
         source = self._source_from_message_for_auth(message)
         user_id = source.user_id
         # No identity at all → genuine group service message (pin, delete,

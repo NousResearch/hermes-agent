@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import tools.file_operations as file_operations
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import ShellFileOperations
 
@@ -82,6 +83,28 @@ class TestWriteFileSyntaxGate:
         res = ops.write_file(str(target), garbage)
         assert res.error is None, res.error
         assert target.read_text() == garbage
+
+    def test_json_content_parsed_only_once(self, ops, tmp_path, monkeypatch):
+        """The pre-write gate and the post-write lint-delta report must
+        share a single parse of the same content, not each call
+        json.loads independently on identical bytes. Two disconnected
+        call sites re-deriving the same fact is the shape of bug that
+        let the original gate go missing (a check existed, nothing
+        wired its result to the write decision)."""
+        calls = []
+        real = file_operations._lint_json_inproc
+
+        def counting(content):
+            calls.append(content)
+            return real(content)
+
+        monkeypatch.setitem(file_operations.LINTERS_INPROC, ".json", counting)
+
+        target = tmp_path / "config.json"
+        content = json.dumps({"a": 1})
+        res = ops.write_file(str(target), content)
+        assert res.error is None, res.error
+        assert len(calls) == 1, f"expected exactly one parse, got {len(calls)}"
 
     def test_invalid_python_is_not_hard_refused(self, ops, tmp_path):
         """Deliberate scope decision: .py keeps the pre-existing

@@ -30,7 +30,7 @@ import re
 import difflib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any, ClassVar
+from typing import Optional, List, Dict, Any, ClassVar, Tuple
 from pathlib import Path
 from tools.binary_extensions import BINARY_EXTENSIONS
 
@@ -1343,23 +1343,36 @@ class ShellFileOperations(FileOperations):
 
         ext = os.path.splitext(path)[1].lower()
 
-        # ── Pre-write syntax gate for structured formats ────────────────
+        # ── Pre-write syntax check for structured formats ───────────────
         # JSON/YAML/TOML are atomic blobs: content that doesn't parse is
         # corrupt, full stop. Check the raw ``content`` argument here,
         # before mkdir / line-ending / BOM shims / LSP snapshot run below,
         # so a rejected write has zero side effects and the check can't be
-        # fooled by a BOM this method itself would re-add (see BOM block
-        # below). ``.py`` is excluded: this codebase's own test fixtures
-        # write arbitrary non-Python text through *.py paths as generic
-        # write-mechanics fixtures, so Python keeps its existing
-        # non-blocking post-write lint-delta report instead of a refusal.
-        if ext in LINTERS_INPROC and ext != '.py':
-            _ok, _err = LINTERS_INPROC[ext](content)
-            if not _ok:
-                return WriteResult(
-                    error=f"Refused to write '{path}': invalid {ext} ({_err}). "
-                          "File was not created or modified."
-                )
+        # fooled by a BOM this method itself would re-add (see the BOM
+        # block below). ``.py`` is excluded from the *refusal*: this
+        # codebase's own test fixtures write arbitrary non-Python text
+        # through *.py paths as generic write-mechanics fixtures, so
+        # Python keeps its existing non-blocking lint-delta report.
+        #
+        # The result is computed exactly ONCE and threaded through to
+        # ``_check_lint_delta`` below via ``precomputed_post`` instead of
+        # being silently re-parsed a second time on the same content for
+        # the response's ``lint`` field — two independent call sites
+        # re-deriving the same fact from the same string is exactly the
+        # shape of bug that let this gate go missing in the first place
+        # (the post-write check existed, but nothing wired its result to
+        # the write decision).
+        inproc_result: Optional[Tuple[bool, str]] = None
+        inproc = LINTERS_INPROC.get(ext)
+        if inproc is not None:
+            _ok, _err = inproc(content)
+            if _err != "__SKIP__":
+                inproc_result = (_ok, _err)
+                if not _ok and ext != '.py':
+                    return WriteResult(
+                        error=f"Refused to write '{path}': invalid {ext} ({_err}). "
+                              "File was not created or modified."
+                    )
 
         # Capture pre-write content.  Two consumers want it:
         #
@@ -1457,8 +1470,13 @@ class ShellFileOperations(FileOperations):
         except ValueError:
             bytes_written = len(content.encode('utf-8'))
 
-        # Post-write lint with delta refinement.
-        lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)
+        # Post-write lint with delta refinement. Reuses the syntax check
+        # already computed by the pre-write gate above (``inproc_result``)
+        # instead of re-parsing identical content a second time.
+        lint_result = self._check_lint_delta(
+            path, pre_content=pre_content, post_content=content,
+            precomputed_post=inproc_result,
+        )
 
         # Semantic diagnostics from the LSP layer — separate channel.
         # Only fired when the syntax tier reported clean (no point asking
@@ -1638,7 +1656,8 @@ class ShellFileOperations(FileOperations):
         result = apply_v4a_operations(operations, self)
         return result
     
-    def _check_lint(self, path: str, content: Optional[str] = None) -> LintResult:
+    def _check_lint(self, path: str, content: Optional[str] = None,
+                     precomputed: Optional[Tuple[bool, str]] = None) -> LintResult:
         """
         Run syntax check on a file after editing.
 
@@ -1654,6 +1673,12 @@ class ShellFileOperations(FileOperations):
                      linter matches the extension, we lint the content
                      directly without re-reading the file from disk.  Ignored
                      for shell linters.
+            precomputed: Optional ``(ok, err)`` result from an in-process
+                         linter call the caller already made on this exact
+                         content (e.g. write_file's pre-write syntax gate).
+                         When given, skips re-parsing — the caller is
+                         asserting it already ran ``LINTERS_INPROC[ext]``
+                         on this same string.
 
         Returns:
             LintResult with status and any errors.
@@ -1663,14 +1688,17 @@ class ShellFileOperations(FileOperations):
         # Prefer in-process linter when available.
         inproc = LINTERS_INPROC.get(ext)
         if inproc is not None:
-            # Need content — either passed in or read from disk.
-            if content is None:
-                read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
-                read_result = self._exec(read_cmd)
-                if read_result.exit_code != 0:
-                    return LintResult(skipped=True, message=f"Failed to read {path} for lint")
-                content = read_result.stdout
-            ok, err = inproc(content)
+            if precomputed is not None:
+                ok, err = precomputed
+            else:
+                # Need content — either passed in or read from disk.
+                if content is None:
+                    read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+                    read_result = self._exec(read_cmd)
+                    if read_result.exit_code != 0:
+                        return LintResult(skipped=True, message=f"Failed to read {path} for lint")
+                    content = read_result.stdout
+                ok, err = inproc(content)
             if err == "__SKIP__":
                 return LintResult(skipped=True, message=f"No linter available for {ext} (missing dependency)")
             return LintResult(success=ok, output="" if ok else err)
@@ -1727,7 +1755,8 @@ class ShellFileOperations(FileOperations):
         )
 
     def _check_lint_delta(self, path: str, pre_content: Optional[str],
-                          post_content: Optional[str] = None) -> LintResult:
+                          post_content: Optional[str] = None,
+                          precomputed_post: Optional[Tuple[bool, str]] = None) -> LintResult:
         """
         Run post-write syntax lint with pre-write baseline comparison.
 
@@ -1758,13 +1787,17 @@ class ShellFileOperations(FileOperations):
             post_content: File content AFTER the write.  Optional; if None,
                           the shell linter reads from disk (same as
                           _check_lint).
+            precomputed_post: Optional ``(ok, err)`` already computed by
+                              the caller for ``post_content`` (e.g.
+                              write_file's pre-write syntax gate) — avoids
+                              re-parsing identical content a second time.
 
         Returns:
             LintResult.  ``output`` contains either the full post-lint
             errors (no pre-state) or just the new-error lines (delta
             refinement applied).
         """
-        post = self._check_lint(path, content=post_content)
+        post = self._check_lint(path, content=post_content, precomputed=precomputed_post)
 
         # Hot path: clean post-write syntactically.
         if post.success or post.skipped:

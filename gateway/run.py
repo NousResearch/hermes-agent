@@ -136,6 +136,58 @@ _GATEWAY_PROVIDER_POLICY_RE = re.compile(
     re.IGNORECASE,
 )
 
+
+
+def _auto_reset_context_note(reset_reason: str) -> str:
+    """Return the assistant-only context note for an auto-reset session."""
+
+    if reset_reason == "suspended":
+        return (
+            "[System note: The user's previous session was stopped and suspended. "
+            "This is a fresh conversation with no prior context.]"
+        )
+    if reset_reason == "daily":
+        return (
+            "[System note: The user's session was automatically reset by the daily "
+            "schedule. This is a fresh conversation with no prior context.]"
+        )
+    if reset_reason == "resume_pending_expired":
+        return (
+            "[System note: The user's previous session expired after a gateway "
+            "resume timeout. This is a fresh conversation with no prior context.]"
+        )
+    return (
+        "[System note: The user's previous session expired due to inactivity. "
+        "This is a fresh conversation with no prior context.]"
+    )
+
+
+def _auto_reset_reason_text(reset_reason: str, policy: Any) -> str:
+    """Return the human-facing auto-reset reason text."""
+
+    if reset_reason == "suspended":
+        return "previous session was stopped or interrupted"
+    if reset_reason == "daily":
+        return f"daily schedule at {policy.at_hour}:00"
+    if reset_reason == "resume_pending_expired":
+        return "previous session expired after gateway resume timeout"
+
+    hours = policy.idle_minutes // 60
+    mins = policy.idle_minutes % 60
+    duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
+    return f"inactive for {duration}"
+
+
+def _auto_reset_adjust_hint(reset_reason: str) -> str:
+    """Return the config hint appended to the user-facing auto-reset notice."""
+
+    if reset_reason == "resume_pending_expired":
+        return (
+            "Adjust gateway resume freshness in config.yaml under "
+            "agent.gateway_auto_continue_freshness."
+        )
+    return "Adjust reset timing in config.yaml under session_reset."
+
 _GATEWAY_AUTH_ERROR_RE = re.compile(
     r"(provider\s+authentication\s+failed|incorrect\s+api\s+key|invalid\s+api\s+key|\b401\b)",
     re.IGNORECASE,
@@ -10801,12 +10853,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if _was_auto_reset:
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
-            if reset_reason == "suspended":
-                context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
-            elif reset_reason == "daily":
-                context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
-            else:
-                context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
+            context_note = _auto_reset_context_note(reset_reason)
             context_prompt = context_note + "\n\n" + context_prompt
 
             # Send a user-facing notification explaining the reset, unless:
@@ -10830,20 +10877,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if should_notify:
                     adapter = self._adapter_for_source(source)
                     if adapter:
-                        if reset_reason == "suspended":
-                            reason_text = "previous session was stopped or interrupted"
-                        elif reset_reason == "daily":
-                            reason_text = f"daily schedule at {policy.at_hour}:00"
-                        else:
-                            hours = policy.idle_minutes // 60
-                            mins = policy.idle_minutes % 60
-                            duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
-                            reason_text = f"inactive for {duration}"
+                        reason_text = _auto_reset_reason_text(reset_reason, policy)
+                        adjust_hint = _auto_reset_adjust_hint(reset_reason)
                         notice = (
                             f"◐ Session automatically reset ({reason_text}). "
                             f"Conversation history cleared.\n"
                             f"Use /resume to browse and restore a previous session.\n"
-                            f"Adjust reset timing in config.yaml under session_reset."
+                            f"{adjust_hint}"
                         )
                         try:
                             session_info = await asyncio.to_thread(

@@ -62,7 +62,7 @@ def test_workflow_dashboard_summarizes_agent_routing() -> None:
 def test_workflow_dashboard_exposes_ui_only_builder_controls() -> None:
     text = BUNDLE.read_text(encoding="utf-8")
     required_labels = [
-        "Start from blank workflow",
+        "Start From Scratch",
         "Add workflow cell",
         "Add trigger",
         "Delete",

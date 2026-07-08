@@ -2600,8 +2600,8 @@
             placeholder: "Example: review code changes, run tests, then deploy if approved.",
           }),
           h("div", { className: "hermes-workflows-row", style: {marginTop: "0.3rem"} },
-            h("button", { type: "button", disabled: drafting, onClick: draftFromGoal, className: "hermes-workflows-primary", style: {fontSize: "0.78rem"} }, drafting ? "Drafting…" : "Draft"),
-            h("button", { type: "button", "aria-label": "Start from blank workflow", onClick: startBlankWorkflow, style: {fontSize: "0.78rem"} }, "Blank")
+            h("button", { type: "button", disabled: drafting, onClick: draftFromGoal, className: "hermes-workflows-primary", style: {fontSize: "0.78rem"} }, drafting ? "Generating…" : "Generate From Prompt"),
+            h("button", { type: "button", "aria-label": "Start from scratch", onClick: startBlankWorkflow, style: {fontSize: "0.78rem"} }, "Start From Scratch")
           )
         ),
         h("div", { className: "hermes-workflows-sidebar-section" + (wfCollapsed ? " hermes-workflows-sidebar-collapsible is-collapsed" : " hermes-workflows-sidebar-collapsible"), onClick: function() { toggleSection("workflows"); } },

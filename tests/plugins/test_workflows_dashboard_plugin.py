@@ -1673,7 +1673,7 @@ def test_dashboard_bundle_is_prompt_first_not_yaml_first():
     render_tree = bundle[render_start:]
 
     assert "New workflow" in bundle
-    assert "Draft" in bundle
+    assert "Generate From Prompt" in bundle
     assert "Advanced YAML" in bundle or "YAML" in bundle
     assert "Validate / deploy definition" not in bundle
     # In the 3-zone layout, goal builder is in the sidebar which renders before the canvas

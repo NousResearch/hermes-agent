@@ -11,7 +11,6 @@ provider error. This is a diagnostic improvement and is platform-agnostic.
 """
 
 from types import SimpleNamespace
-
 from typing import Any
 
 import httpx

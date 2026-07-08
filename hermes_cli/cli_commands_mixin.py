@@ -1589,7 +1589,16 @@ class CLICommandsMixin:
         from tools import write_approval as wa
         parts = cmd.strip().split()
         args = parts[1:] if len(parts) > 1 else []
-        store = getattr(self.agent, "_memory_store", None) if getattr(self, "agent", None) else None
+        agent = getattr(self, "agent", None)
+        store = getattr(agent, "_memory_store", None) if agent else None
+        memory_manager = getattr(agent, "_memory_manager", None) if agent else None
+        metadata_builder = None
+        build_metadata = getattr(agent, "_build_memory_write_metadata", None) if agent else None
+        if callable(build_metadata):
+            metadata_builder = lambda: build_metadata(
+                write_origin="memory_approval",
+                execution_context="slash_command",
+            )
         if store is None:
             # No live agent store (e.g. /memory approve invoked from the Desktop
             # GUI, or any context without an active agent). Apply against a freshly
@@ -1604,6 +1613,8 @@ class CLICommandsMixin:
         out = handle_pending_subcommand(
             wa.MEMORY, args,
             memory_store=store,
+            memory_manager=memory_manager,
+            memory_metadata_builder=metadata_builder,
             set_mode_fn=lambda enabled: self._save_write_approval("memory", enabled),
         )
         if out is None:

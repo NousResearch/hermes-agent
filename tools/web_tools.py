@@ -136,6 +136,71 @@ def _load_web_config() -> dict:
     except (ImportError, Exception):
         return {}
 
+
+# The built-in web backends whose availability is driven by hardcoded
+# env-var / package / OAuth probes below. Any name NOT in this set is a
+# candidate plugin-registered provider and must be resolved through the
+# web_search_registry (``is_available()``) instead. Kept as a single named
+# constant so the whitelist early-returns and the availability chokepoint
+# stay in sync.
+#
+# NOTE: this intentionally includes ``xai``, which the registry's
+# ``_LEGACY_PREFERENCE`` does NOT — xai availability is probed via
+# ``has_xai_credentials()`` (env var OR auth.json OAuth), not a registered
+# WebSearchProvider. Keep the two sets aligned by hand: if xai ever ships as
+# a registered provider, drop it here so the registry path takes over.
+_LEGACY_WEB_BACKENDS = frozenset(
+    {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}
+)
+
+
+def _registered_web_provider(backend: str):
+    """Return a plugin-registered web provider by name, or ``None``.
+
+    Consults ``agent.web_search_registry`` so backends contributed by the
+    plugin system (which are absent from :data:`_LEGACY_WEB_BACKENDS`) are
+    discoverable during availability/selection resolution. Returns ``None``
+    on any lookup failure so callers can fall through to legacy checks.
+    """
+    if not backend:
+        return None
+    try:
+        from agent.web_search_registry import get_provider
+
+        return get_provider(backend)
+    except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
+        logger.debug("web provider registry lookup failed for %r: %s", backend, exc)
+        return None
+
+
+def _registered_web_provider_available(backend: str):
+    """Availability of a *registered* web provider, or ``None`` if unregistered.
+
+    Returns ``True``/``False`` when *backend* names a registered provider
+    (calling its ``is_available()``), or ``None`` when it isn't registered —
+    letting the caller fall through to the legacy built-in probes.
+    """
+    provider = _registered_web_provider(backend)
+    if provider is None:
+        return None
+    try:
+        return bool(provider.is_available())
+    except Exception as exc:  # noqa: BLE001 — a broken provider is "unavailable"
+        logger.debug("web provider %r.is_available() raised: %s", backend, exc)
+        return False
+
+
+def _list_registered_web_providers():
+    """Return all plugin-registered web providers (empty list on failure)."""
+    try:
+        from agent.web_search_registry import list_providers
+
+        return list_providers()
+    except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
+        logger.debug("web provider registry list failed: %s", exc)
+        return []
+
+
 def _get_backend() -> str:
     """Determine which web backend to use (shared fallback).
 
@@ -144,7 +209,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in _LEGACY_WEB_BACKENDS or _registered_web_provider(configured) is not None:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -167,6 +232,21 @@ def _get_backend() -> str:
     for backend, available in backend_candidates:
         if available:
             return backend
+
+    # Final fallback: walk plugin-registered providers so a custom backend
+    # (with no built-in creds present) still resolves. Built-in names are
+    # already covered above, so this only surfaces plugin-contributed
+    # providers via their own is_available() gate. We hold the provider
+    # object already, so probe it directly rather than round-tripping through
+    # _is_backend_available() (which would re-do the registry lookup).
+    for provider in _list_registered_web_providers():
+        if provider.name in _LEGACY_WEB_BACKENDS:
+            continue
+        try:
+            if provider.is_available():
+                return provider.name
+        except Exception as exc:  # noqa: BLE001 — a broken provider is skipped
+            logger.debug("web provider %r.is_available() raised: %s", provider.name, exc)
 
     return "firecrawl"  # default (backward compat)
 
@@ -210,7 +290,22 @@ def _get_capability_backend(capability: str) -> str:
 
 
 def _is_backend_available(backend: str) -> bool:
-    """Return True when the selected backend is currently usable."""
+    """Return True when the selected backend is currently usable.
+
+    For plugin-registered backends (any name outside
+    :data:`_LEGACY_WEB_BACKENDS`), availability is delegated to the
+    provider's ``is_available()`` via the web_search_registry. This is the
+    single chokepoint through which ``_get_backend``,
+    ``_get_capability_backend``, and ``check_web_api_key`` all resolve
+    availability — fixing custom-provider discovery for every caller at once
+    (issues #28651, #31873, #32698). Built-in backends keep their cheap
+    hardcoded probes below.
+    """
+    backend = (backend or "").lower().strip()
+    if backend not in _LEGACY_WEB_BACKENDS:
+        registered = _registered_web_provider_available(backend)
+        if registered is not None:
+            return registered
     if backend == "exa":
         return _has_env("EXA_API_KEY")
     if backend == "parallel":
@@ -566,6 +661,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         from agent.web_search_registry import (
             get_active_search_provider,
             get_provider as _wsp_get_provider,
+            _disabled_web_plugin_for,
         )
 
         backend = _get_search_backend()
@@ -577,13 +673,29 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             provider = get_active_search_provider()
 
         if provider is None:
-            response_data = {
-                "success": False,
-                "error": (
-                    "No web search provider configured. "
-                    "Run `hermes tools` to set one up."
-                ),
-            }
+            # A bundled web plugin the user explicitly disabled looks
+            # identical to "no provider" here — point at the real cause
+            # (re-enable the plugin) rather than a generic setup hint.
+            disabled_key = _disabled_web_plugin_for(capability="search")
+            if disabled_key:
+                _vendor = disabled_key.split("/", 1)[-1]
+                response_data = {
+                    "success": False,
+                    "error": (
+                        f"web.search_backend is set to '{_vendor}', but its "
+                        f"plugin ('{disabled_key}') is disabled in config. "
+                        f"Re-enable it with `hermes plugins enable {disabled_key}` "
+                        "(or remove it from plugins.disabled)."
+                    ),
+                }
+            else:
+                response_data = {
+                    "success": False,
+                    "error": (
+                        "No web search provider configured. "
+                        "Run `hermes tools` to set one up."
+                    ),
+                }
         else:
             logger.info(
                 "Web search via %s: '%s' (limit: %d)",
@@ -719,6 +831,7 @@ async def web_extract_tool(
             from agent.web_search_registry import (
                 get_active_extract_provider,
                 get_provider as _wsp_get_provider,
+                _disabled_web_plugin_for,
             )
 
             provider = _wsp_get_provider(backend) if backend else None
@@ -744,6 +857,27 @@ async def web_extract_tool(
                     )
                 provider = get_active_extract_provider()
                 if provider is None:
+                    # If the configured backend is a bundled web plugin the
+                    # user explicitly disabled, the backend is set correctly
+                    # and the real fix is to re-enable the plugin — say so
+                    # instead of telling them to set web.extract_backend
+                    # (which they already did). #40190 follow-up.
+                    disabled_key = _disabled_web_plugin_for(capability="extract")
+                    if disabled_key:
+                        _vendor = disabled_key.split("/", 1)[-1]
+                        return json.dumps(
+                            {
+                                "success": False,
+                                "error": (
+                                    f"web.extract_backend is set to '{_vendor}', "
+                                    f"but its plugin ('{disabled_key}') is disabled "
+                                    "in config. Re-enable it with "
+                                    f"`hermes plugins enable {disabled_key}` "
+                                    "(or remove it from plugins.disabled)."
+                                ),
+                            },
+                            ensure_ascii=False,
+                        )
                     return json.dumps(
                         {
                             "success": False,
@@ -861,14 +995,39 @@ async def web_extract_tool(
 
 # Convenience function to check Firecrawl credentials
 def check_web_api_key() -> bool:
-    """Check whether the configured web backend is available."""
+    """Check whether the configured web backend is available.
+
+    Used as the ``check_fn`` gate for the ``web_search`` and ``web_extract``
+    tool registry entries — so a plugin-registered provider that reports
+    ``is_available()`` must light the tools up even when no built-in backend
+    has credentials (issues #28651, #31873). Resolution funnels through
+    :func:`_is_backend_available`, which delegates non-legacy names to the
+    registry.
+    """
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai"}:
-        return _is_backend_available(configured)
-    return any(
-        _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai")
-    )
+    if configured and _is_backend_available(configured):
+        return True
+    # Any built-in backend with credentials present. This is a boolean OR, so
+    # unlike _get_backend() the probe order is irrelevant.
+    if any(_is_backend_available(backend) for backend in _LEGACY_WEB_BACKENDS):
+        return True
+    # Any plugin-registered provider the registry considers active for either
+    # capability. Delegating to the registry's own availability-filtered
+    # resolvers keeps a single authority for "is a custom provider usable"
+    # rather than re-implementing the walk here.
+    try:
+        from agent.web_search_registry import (
+            get_active_search_provider,
+            get_active_extract_provider,
+        )
+
+        return (
+            get_active_search_provider() is not None
+            or get_active_extract_provider() is not None
+        )
+    except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
+        logger.debug("web provider registry availability check failed: %s", exc)
+        return False
 
 
 if __name__ == "__main__":
@@ -881,8 +1040,9 @@ if __name__ == "__main__":
     # Check if API keys are available
     web_available = check_web_api_key()
     tool_gateway_available = _is_tool_gateway_ready()
-    firecrawl_key_available = bool(os.getenv("FIRECRAWL_API_KEY", "").strip())
-    firecrawl_url_available = bool(os.getenv("FIRECRAWL_API_URL", "").strip())
+    from hermes_cli.config import get_env_value as _gev
+    firecrawl_key_available = bool((_gev("FIRECRAWL_API_KEY") or "").strip())
+    firecrawl_url_available = bool((_gev("FIRECRAWL_API_URL") or "").strip())
 
     if web_available:
         backend = _get_backend()
@@ -900,7 +1060,7 @@ if __name__ == "__main__":
         elif backend == "ddgs":
             print("   Using DuckDuckGo via ddgs package (search only)")
         elif firecrawl_url_available:
-            print(f"   Using self-hosted Firecrawl: {os.getenv('FIRECRAWL_API_URL').strip().rstrip('/')}")
+            print(f"   Using self-hosted Firecrawl: {(_gev('FIRECRAWL_API_URL') or '').strip().rstrip('/')}")
         elif firecrawl_key_available:
             print("   Using direct Firecrawl cloud API")
         elif tool_gateway_available:

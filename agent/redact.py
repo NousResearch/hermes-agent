@@ -107,7 +107,9 @@ _PREFIX_PATTERNS = [
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
     r"xai-[A-Za-z0-9]{30,}",            # xAI (Grok) API key
     r"ntn_[A-Za-z0-9]{10,}",            # Notion internal integration token
+    r"fw-[A-Za-z0-9]{30,}",             # Fireworks AI API key
     r"fw_[A-Za-z0-9]{30,}",             # Fireworks AI API key
+    r"fpk_[A-Za-z0-9]{30,}",            # Fireworks AI project key
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name.
@@ -137,6 +139,14 @@ _ENV_ASSIGN_RE = re.compile(
 # The colon-form URL guard (skip when ``://`` present) lives at the call site.
 _SECRET_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential|auth)"
 _CFG_VALUE = r"(['\"]?)([^\s&]+?)\2(?=[\s&]|$)"
+
+# Programmatic env lookups (``os.getenv(...)``, ``os.environ[...]``,
+# ``os.environ.get(...)``, ``process.env.X``, ``$ENV{X}``) reference variable
+# *names*, not secret values. When one appears as the VALUE of a KEY=... match
+# it's a code snippet, not a leaked secret — skip redaction (issue #2852).
+_ENV_LOOKUP_VALUE_RE = re.compile(
+    r"^(?:os\.(?:getenv|environ)|process\.env|\$ENV\{)"
+)
 # Namespaced (dotted) key: the secret word may sit anywhere in a dotted path.
 _CFG_DOTTED_RE = re.compile(
     rf"((?:[A-Za-z0-9_\-]+\.)+[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*"
@@ -541,6 +551,11 @@ def redact_sensitive_text(
         if "=" in text:
             def _redact_env(m):
                 name, quote, value = m.group(1), m.group(2), m.group(3)
+                # Programmatic env lookups reference variable *names*, not
+                # secret values — masking them corrupts code snippets in
+                # prose/log contexts (issue #2852): ``KEY=os.getenv('X')``.
+                if _ENV_LOOKUP_VALUE_RE.match(value):
+                    return m.group(0)
                 return f"{name}={quote}{_mask_token(value)}{quote}"
             text = _ENV_ASSIGN_RE.sub(_redact_env, text)
             # Lowercase/dotted config keys (issue #16413). Skip URLs entirely —
@@ -555,6 +570,11 @@ def redact_sensitive_text(
         if ":" in text and '"' in text:
             def _redact_json(m):
                 key, value = m.group(1), m.group(2)
+                # Same programmatic-env-lookup exception as _redact_env above
+                # (issue #2852): "apiKey": "os.getenv('X')" is a code snippet,
+                # not a leaked secret value.
+                if _ENV_LOOKUP_VALUE_RE.match(value):
+                    return m.group(0)
                 return f'{key}: "{_mask_token(value)}"'
             text = _JSON_FIELD_RE.sub(_redact_json, text)
 
@@ -564,6 +584,11 @@ def redact_sensitive_text(
         if ":" in text and "://" not in text:
             def _redact_yaml(m):
                 key, sep, value = m.group(1), m.group(2), m.group(3)
+                # Same programmatic-env-lookup exception as _redact_env above
+                # (issue #2852): api_key: os.getenv('X') is a code snippet,
+                # not a leaked secret value.
+                if _ENV_LOOKUP_VALUE_RE.match(value):
+                    return m.group(0)
                 return f"{key}{sep}{_mask_token(value)}"
             text = _YAML_ASSIGN_RE.sub(_redact_yaml, text)
 

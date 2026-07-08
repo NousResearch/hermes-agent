@@ -384,6 +384,27 @@ class TestGetOrCreateResumePending:
         # Flag is NOT cleared on read — only on successful turn completion.
         assert second.resume_pending is True
 
+    def test_resume_pending_follows_compression_tip(self, tmp_path):
+        """Interrupted platform mappings must not stay pinned to compressed roots."""
+        store = _make_store(tmp_path)
+        source = _make_source(
+            platform=Platform.WEIXIN,
+            chat_id="wx-chat",
+            user_id="wx-user",
+        )
+        first = store.get_or_create_session(source)
+        original_sid = first.session_id
+        store.mark_resume_pending(first.session_key)
+
+        with patch.object(
+            store, "_compression_tip_for_session_id", return_value="child-session"
+        ) as mock_tip:
+            second = store.get_or_create_session(source)
+
+        assert second.session_id == "child-session"
+        assert second.resume_pending is True
+        mock_tip.assert_called_with(original_sid)
+
     def test_suspended_still_creates_new_session(self, tmp_path):
         """Regression guard — suspended must still force a clean slate."""
         store = _make_store(tmp_path)

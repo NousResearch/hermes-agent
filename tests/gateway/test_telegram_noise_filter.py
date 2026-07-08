@@ -144,6 +144,15 @@ def test_chat_gateways_keep_normal_answers(platform):
     assert _sanitize_gateway_final_response(platform, answer) == answer
 
 
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+def test_chat_gateways_drop_interrupt_sentinel(platform):
+    """The interrupt-while-waiting sentinel is metadata, not a reply (#7921)."""
+    sentinel = "Operation interrupted: waiting for model response (1.7s elapsed)."
+
+    assert _sanitize_gateway_final_response(platform, sentinel) == ""
+    assert _sanitize_gateway_final_response("local", sentinel) == sentinel
+
+
 def test_telegram_status_sanitizes_raw_provider_security_errors():
     """Provider policy/security bodies should be replaced before chat delivery."""
     raw = (

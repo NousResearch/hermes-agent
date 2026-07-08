@@ -1,8 +1,9 @@
 """``hermes dashboard`` / ``hermes serve`` subcommand parsers.
 
 ``dashboard`` is the browser web UI; ``serve`` is the same gateway, headless —
-what the desktop app and remote backends run. Both share one handler
-(``cmd_dashboard`` → ``start_server``). Extracted from
+what the desktop app and remote backends run. ``serve`` also skips the web UI
+build (``headless_backend=True``): pure JSON-RPC/WS clients never load the SPA.
+Both share one handler (``cmd_dashboard`` → ``start_server``). Extracted from
 ``hermes_cli/main.py:main()`` (god-file Phase 2); handler injected to avoid
 importing ``main``.
 """
@@ -148,7 +149,11 @@ def build_dashboard_parser(
     serve_parser.add_argument(
         "--no-open", action="store_true", help=argparse.SUPPRESS
     )
-    serve_parser.set_defaults(func=cmd_dashboard, no_open=True)
+    # `headless_backend` marks the lean path: desktop/remote clients speak pure
+    # JSON-RPC/WS, so `serve` skips the web UI build AND never serves the SPA
+    # (cmd_dashboard exports HERMES_SERVE_HEADLESS=1). `dashboard` leaves it
+    # unset and serves the browser UI as before.
+    serve_parser.set_defaults(func=cmd_dashboard, no_open=True, headless_backend=True)
 
     # `hermes dashboard register` — register a self-hosted dashboard OAuth
     # client with Nous Portal and write the client_id into ~/.hermes/.env.

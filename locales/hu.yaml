@@ -107,6 +107,8 @@ gateway:
     no_pending:            "Nincs elutasítható függőben lévő parancs."
     denied_singular:       "❌ Parancs elutasítva."
     denied_plural:         "❌ Parancsok elutasítva ({count} parancs)."
+    denied_reason_singular: "❌ Parancs elutasítva. Indok továbbítva az ügynöknek: \"{reason}\""
+    denied_reason_plural:  "❌ Parancsok elutasítva ({count} parancs). Indok továbbítva az ügynöknek: \"{reason}\""
 
   fast:
     not_supported:         "⚡ A /fast csak olyan OpenAI modelleknél érhető el, amelyek támogatják a Priority Processinget."

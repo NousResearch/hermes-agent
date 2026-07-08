@@ -79,6 +79,7 @@ describe('maybeNotifyUpdateAvailable', () => {
   it('shows when an update is available and not snoozed', () => {
     maybeNotifyUpdateAvailable(status())
     expect(notifySpy).toHaveBeenCalledTimes(1)
+    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ icon: 'gift' })
   })
 
   it('stays quiet for new commits once the toast was closed', () => {

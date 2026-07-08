@@ -72,6 +72,40 @@ class TestResolveMediaToDataUrls(unittest.TestCase):
         out = _resolve_media_to_data_urls(f"MEDIA:{p1}\nand MEDIA:{p2}")
         self.assertEqual(out.count("data:image/png;base64,"), 2)
 
+    def test_relative_traversal_path_not_inlined(self):
+        """A relative/traversal path must never be inlined — the anchored
+        MEDIA_TAG_CLEANUP_RE matcher requires an absolute-path prefix
+        (~/, /, or a Windows drive letter), so a bare relative token after
+        MEDIA: is left as literal text rather than resolved against cwd."""
+        text = "MEDIA:../../../../etc/passwd.png"
+        self.assertEqual(_resolve_media_to_data_urls(text), text)
+
+    def test_credential_path_not_inlined_even_with_image_extension(self):
+        """An absolute path under the credential/system-path denylist
+        (validate_media_delivery_path) must not be inlined even though it
+        has an allowed image extension and the tag matcher's shape."""
+        text = "MEDIA:~/.ssh/id_rsa.png"
+        self.assertEqual(_resolve_media_to_data_urls(text), text)
+
+    def test_symlink_escaping_to_denylisted_target_not_inlined(self):
+        """A symlink whose resolved target lands under a denylisted system
+        prefix (/etc) must not be inlined — validate_media_delivery_path
+        resolves symlinks before the containment/denylist check runs, so
+        the traversal can't be laundered through an innocuous-looking
+        image-suffixed symlink name."""
+        import os
+        import tempfile
+        from pathlib import Path
+
+        d = Path(tempfile.mkdtemp(prefix="hermes_media_test_symlink"))
+        link = d / "shot.png"
+        try:
+            os.symlink("/etc/hosts", link)
+        except OSError:
+            self.skipTest("symlink creation not supported in this environment")
+        text = f"MEDIA:{link}"
+        self.assertEqual(_resolve_media_to_data_urls(text), text)
+
 
 if __name__ == "__main__":
     unittest.main()

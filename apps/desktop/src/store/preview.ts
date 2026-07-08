@@ -1,6 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { persistentAtom } from '@/lib/persisted'
+import { normalize } from '@/lib/text'
 
 import {
   $rightRailActiveTabId,
@@ -539,7 +540,7 @@ export function completePreviewServerRestart(taskId: string, text: string) {
   $previewServerRestart.set({
     ...current,
     message: text,
-    status: text.trim().toLowerCase().startsWith('error:') ? 'error' : 'complete'
+    status: normalize(text).startsWith('error:') ? 'error' : 'complete'
   })
 }
 

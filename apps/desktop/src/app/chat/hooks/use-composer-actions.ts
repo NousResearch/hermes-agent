@@ -6,6 +6,7 @@ import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import { readDesktopFileDataUrl, selectDesktopPaths } from '@/lib/desktop-fs'
+import { normalize } from '@/lib/text'
 import {
   addComposerAttachment,
   type ComposerAttachment,
@@ -30,9 +31,9 @@ const BLOB_MIME_EXTENSION: Record<string, string> = {
 }
 
 function blobExtension(blob: Blob): string {
-  const mime = blob.type.split(';')[0]?.trim().toLowerCase()
+  const mime = normalize(blob.type.split(';')[0])
 
-  return (mime && BLOB_MIME_EXTENSION[mime]) || '.png'
+  return BLOB_MIME_EXTENSION[mime] || '.png'
 }
 
 export function isImagePath(filePath: string): boolean {

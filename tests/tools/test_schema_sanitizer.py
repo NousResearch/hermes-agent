@@ -80,6 +80,65 @@ def test_nullable_type_array_collapsed_to_single_string():
     assert prop.get("nullable") is True
 
 
+def test_multitype_array_becomes_anyof_no_branch_dropped():
+    # Ported from anomalyco/opencode#31877: a genuine multi-type array such as
+    # ["number", "string"] (common in MCP tool schemas) must keep BOTH branches
+    # as an anyOf, not silently drop all but the first. Several backends
+    # (llama.cpp, Gemini via OpenAI-compatible transports) reject the array form.
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "status": {"type": ["number", "string"], "description": "status filter"},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["status"]
+    assert "type" not in prop
+    assert prop["anyOf"] == [{"type": "number"}, {"type": "string"}]
+    assert prop.get("nullable") is None
+    # Sibling keywords survive alongside the generated anyOf.
+    assert prop["description"] == "status filter"
+
+
+def test_multitype_array_with_null_lifts_nullable():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "v": {"type": ["integer", "boolean", "null"]},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["v"]
+    assert "type" not in prop
+    assert prop["anyOf"] == [{"type": "integer"}, {"type": "boolean"}]
+    assert prop.get("nullable") is True
+
+
+def test_all_null_type_array_becomes_null_type():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "n": {"type": ["null"]},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["n"]
+    assert prop["type"] == "null"
+
+
+def test_single_element_type_array_unwrapped():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "s": {"type": ["string"]},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["s"]
+    assert prop["type"] == "string"
+    assert prop.get("nullable") is None
+
+
 def test_anyof_nested_objects_sanitized():
     tools = [_tool("t", {
         "type": "object",

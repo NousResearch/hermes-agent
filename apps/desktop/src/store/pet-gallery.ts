@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { normalize } from '@/lib/text'
 import { $petInfo, type PetInfo, petProfile, setPetInfo } from '@/store/pet'
 
 /**
@@ -218,7 +219,7 @@ export function rankedGalleryPets(gallery: PetGallery | null, query = ''): Galle
     return []
   }
 
-  const needle = query.trim().toLowerCase()
+  const needle = normalize(query)
 
   // User-generated pets first, then the active pet, then installed, then curated.
   // Guard every term with a boolean — local-only pets omit curated/generated, and

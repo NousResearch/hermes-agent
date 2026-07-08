@@ -40,6 +40,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_WEBHOOK_HOST = "127.0.0.1"
+# BlueBubbles webhook events are small JSON/form payloads; attachments come
+# through the REST API, not the webhook. 1 MiB is generous headroom while
+# keeping oversized/chunked bodies from being buffered unbounded.
+_WEBHOOK_MAX_BODY_BYTES = 1_048_576
 DEFAULT_WEBHOOK_PORT = 8645
 DEFAULT_WEBHOOK_PATH = "/bluebubbles-webhook"
 MAX_TEXT_LENGTH = 4000
@@ -264,7 +268,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 self.client = None
             return False
 
-        app = web.Application()
+        # Explicit body cap: BlueBubbles webhook events are small JSON (or
+        # form-encoded) payloads. client_max_size makes aiohttp enforce the
+        # cap on every read path — including chunked requests that carry no
+        # Content-Length (same pattern as webhook.py / raft, #58536/#58902).
+        app = web.Application(client_max_size=_WEBHOOK_MAX_BODY_BYTES)
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
         app.router.add_post(self.webhook_path, self._handle_webhook)
         # The webhook auth value is carried in the query string because the

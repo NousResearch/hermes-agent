@@ -2351,7 +2351,18 @@ class MatrixAdapter(BasePlatformAdapter):
         if inspect.isawaitable(tasks):
             tasks = await tasks
         if tasks:
-            await asyncio.gather(*tasks)
+            # return_exceptions=True so one failing event handler doesn't abort
+            # the whole gather and silently drop the SIBLING events in the same
+            # sync response (a bare gather re-raises the first exception, leaving
+            # the rest of the batch unprocessed). Mirrors the invite/redaction
+            # gathers above. Surface each failure instead of swallowing it.
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.warning(
+                        "Matrix: event handler failed during sync dispatch: %s",
+                        result,
+                    )
 
     def _is_self_sender(self, sender: str) -> bool:
         """Return True if the sender refers to the bot's own account.
@@ -4486,23 +4497,14 @@ def interactive_setup() -> None:
                 __import__("mautrix")
             except ImportError:
                 print_info(f"Installing {matrix_pkg}...")
-                import subprocess
-                uv_bin = shutil.which("uv")
-                if uv_bin:
-                    result = subprocess.run(
-                        [uv_bin, "pip", "install", "--python", _sys.executable, matrix_pkg],
-                        capture_output=True, text=True,
-                    )
-                else:
-                    result = subprocess.run(
-                        [_sys.executable, "-m", "pip", "install", matrix_pkg],
-                        capture_output=True, text=True,
-                    )
+                from hermes_cli.tools_config import _pip_install
+
+                result = _pip_install([matrix_pkg])
                 if result.returncode == 0:
                     print_success(f"{matrix_pkg} installed")
                 else:
                     print_warning(
-                        f"Install failed — run manually: pip install "
+                        f"Install failed — run manually: uv pip install "
                         f"'{matrix_pkg}' asyncpg aiosqlite Markdown aiohttp-socks"
                     )
 

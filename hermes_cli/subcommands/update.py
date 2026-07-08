@@ -65,6 +65,12 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         "--force",
         action="store_true",
         default=False,
-        help="Windows: proceed with the update even when another hermes.exe is detected. The concurrent process will likely cause WinError 32 warnings and may leave a reboot-deferred .exe replacement.",
+        help="Windows: proceed with the update even when another hermes.exe is detected. The concurrent process will likely cause WinError 32 warnings and may leave a reboot-deferred .exe replacement. Does NOT bypass the venv-process guard (see --force-venv).",
+    )
+    update_parser.add_argument(
+        "--force-venv",
+        action="store_true",
+        default=False,
+        help="Windows: mutate the venv even while other processes are running from its interpreter (desktop backend, gateway, terminals). Those processes keep native .pyd files locked, so the dependency sync will likely fail partway and strand the install half-updated. Use only if you know the detected holders are false positives.",
     )
     update_parser.set_defaults(func=cmd_update)

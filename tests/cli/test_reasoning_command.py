@@ -550,7 +550,10 @@ class TestConfigDefault(unittest.TestCase):
         from hermes_cli.config import DEFAULT_CONFIG
         display = DEFAULT_CONFIG.get("display", {})
         self.assertIn("show_reasoning", display)
-        self.assertFalse(display["show_reasoning"])
+        # Default ON (July 2026 TTFT-perception change): thinking models
+        # stream reasoning for tens of seconds; hiding it left users staring
+        # at a spinner. The key must exist and be a bool.
+        self.assertTrue(display["show_reasoning"])
 
 
 class TestCommandRegistered(unittest.TestCase):

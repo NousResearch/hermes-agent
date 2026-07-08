@@ -107,6 +107,8 @@ gateway:
     no_pending:            "Reddedilecek bekleyen komut yok."
     denied_singular:       "❌ Komut reddedildi."
     denied_plural:         "❌ Komutlar reddedildi ({count} komut)."
+    denied_reason_singular: "❌ Komut reddedildi. Gerekçe ajana iletildi: \"{reason}\""
+    denied_reason_plural:  "❌ Komutlar reddedildi ({count} komut). Gerekçe ajana iletildi: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast yalnızca Priority Processing destekleyen OpenAI modellerinde kullanılabilir."

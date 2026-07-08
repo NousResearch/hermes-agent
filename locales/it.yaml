@@ -107,6 +107,8 @@ gateway:
     no_pending:            "Nessun comando in attesa da negare."
     denied_singular:       "❌ Comando negato."
     denied_plural:         "❌ Comandi negati ({count} comandi)."
+    denied_reason_singular: "❌ Comando negato. Motivo inoltrato all'agente: \"{reason}\""
+    denied_reason_plural:  "❌ Comandi negati ({count} comandi). Motivo inoltrato all'agente: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast è disponibile solo per i modelli OpenAI che supportano Priority Processing."

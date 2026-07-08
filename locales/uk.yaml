@@ -107,6 +107,8 @@ gateway:
     no_pending:            "Немає команди для відхилення."
     denied_singular:       "❌ Команду відхилено."
     denied_plural:         "❌ Команди відхилено ({count} команд)."
+    denied_reason_singular: "❌ Команду відхилено. Причину передано агентові: \"{reason}\""
+    denied_reason_plural:  "❌ Команди відхилено ({count} команд). Причину передано агентові: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast доступний лише для моделей OpenAI, які підтримують Priority Processing."

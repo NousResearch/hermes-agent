@@ -84,6 +84,46 @@ LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 # poisoning every subsequent request in the session — a bare key like
 # "is_compressed_summary" would reach the wire and trip exactly that.
 COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
+_DB_PERSISTED_MARKER = "_db_persisted"
+
+
+def _fresh_compaction_message_copy(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy a message for compaction assembly without persistence markers.
+
+    Live cached-gateway transcripts stamp ``_db_persisted`` during incremental
+    flushes.  Shallow ``.copy()`` propagates that marker into the post-rotation
+    compressed list, so ``_flush_messages_to_session_db`` skips every row when
+    writing to the new child session (#57491).
+
+    This strips at the copy site (clearest intent, and cheap), but the
+    authoritative guarantee is the single terminal sweep in ``compress()``
+    (``_strip_persistence_markers``): no message may leave ``compress()``
+    carrying ``_db_persisted`` regardless of how many intermediate copy sites
+    a future refactor adds.
+    """
+    fresh = msg.copy()
+    fresh.pop(_DB_PERSISTED_MARKER, None)
+    return fresh
+
+
+def _strip_persistence_markers(messages: List[Dict[str, Any]]) -> None:
+    """Enforce the compaction invariant: no assembled message carries a
+    session-store persistence marker.
+
+    ``compress()`` copies protected head/tail messages out of the live
+    cached-gateway transcript, which stamps ``_db_persisted`` on every message
+    over the life of the session.  If any copied dict keeps that marker, the
+    rotation flush to the child session skips it and the compacted transcript is
+    lost from ``state.db`` (#57491).  Stripping at each copy site is necessary
+    but *positional* — a copy site added after the assembly loops would re-leak.
+    This single terminal sweep makes the guarantee structural instead: run it
+    once on the fully-assembled list so the invariant holds no matter where the
+    copies happened.  Mutates in place (the dicts are compaction-local copies).
+    """
+    for msg in messages:
+        if isinstance(msg, dict):
+            msg.pop(_DB_PERSISTED_MARKER, None)
+
 
 # Appended to every standalone summary message (and to the merged-into-tail
 # prefix) so the model has an unambiguous "summary ends here" boundary.
@@ -258,6 +298,32 @@ def _content_length_for_budget(raw_content: Any) -> int:
     return total
 
 
+def _serialized_length_for_budget(value: Any) -> int:
+    """Return a stable char-length for non-content replay/metadata fields."""
+    if value is None or value == "":
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    try:
+        return len(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str))
+    except (TypeError, ValueError):
+        return len(str(value))
+
+
+# Provider replay/metadata fields that ride the wire on every request but are
+# invisible to ``msg["content"]``/``msg["tool_calls"]`` accounting.  Codex
+# Responses sessions in particular carry ``codex_reasoning_items`` blobs of
+# ``encrypted_content`` that can dominate the serialized session (a measured
+# 214-turn session held ~115K tokens / 27% of its payload there — #55572).
+_REPLAY_BUDGET_KEYS = (
+    "reasoning",
+    "reasoning_content",
+    "reasoning_details",
+    "codex_reasoning_items",
+    "codex_message_items",
+)
+
+
 def _estimate_msg_budget_tokens(msg: dict) -> int:
     """Token estimate for one message in the tail-protection budget walks.
 
@@ -268,12 +334,23 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
     4-tool-call turn measures ~73 vs ~1,090 real tokens), so the protected
     tail overshot ``tail_token_budget`` and compression became ineffective.
     See issue #28053.
+
+    Also counts provider replay fields (``codex_reasoning_items`` etc. —
+    see ``_REPLAY_BUDGET_KEYS``).  The preflight "should I compress?"
+    estimator sees the full message shape, so the tail walk must use the
+    same size class; otherwise an assistant message with tiny visible
+    content but large hidden replay blobs is protected as if it were small,
+    the post-compression session stays near the context limit, and
+    compaction re-fires continuously (#55572).  Accounting-only: replay
+    fields are never mutated or pruned here.
     """
     content_len = _content_length_for_budget(msg.get("content") or "")
     tokens = content_len // _CHARS_PER_TOKEN + 10  # +10 for role/key overhead
     for tc in msg.get("tool_calls") or []:
         if isinstance(tc, dict):
             tokens += len(str(tc)) // _CHARS_PER_TOKEN
+    for key in _REPLAY_BUDGET_KEYS:
+        tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
     return tokens
 
 
@@ -2834,7 +2911,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Phase 4: Assemble compressed message list
         compressed = []
         for i in range(compress_start):
-            msg = messages[i].copy()
+            msg = _fresh_compaction_message_copy(messages[i])
             if i == 0 and msg.get("role") == "system":
                 existing = msg.get("content")
                 _compression_note = "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work. Your persistent memory (MEMORY.md, USER.md) remains fully authoritative regardless of compaction.]"
@@ -2870,6 +2947,33 @@ This compaction should PRIORITISE preserving all information related to the focu
         # is not role=user, so we must pin the summary to "user" and
         # prevent the flip logic below from reverting it (#52160).
         _force_user_leading = last_head_role == "system"
+        # Zero-user-turn guard (#58753). The #52160 guard above only fires
+        # when the system prompt sits *inside* ``messages`` (the gateway
+        # ``/compress`` path). The main auto-compression path passes the
+        # transcript WITHOUT the system prompt (it is prepended at
+        # request-build time), so ``last_head_role`` defaults to "user" and
+        # the summary is emitted as role="assistant". On a session whose only
+        # genuine user turn falls into the compressed middle — e.g. a
+        # ``hermes kanban`` worker seeded with a single short
+        # ``"work kanban task <id>"`` prompt followed by nothing but
+        # assistant/tool turns — that leaves the compressed transcript with
+        # ZERO user-role messages. OpenAI-compatible backends (vLLM/Qwen)
+        # reject such a request with a non-retryable
+        # ``400 No user query found in messages``, crashing the worker with no
+        # possible recovery (every resume replays the same poisoned history).
+        # If no user-role message survives in either the protected head or the
+        # preserved tail, the summary MUST carry role="user" so the request
+        # always has at least one user turn.
+        if not _force_user_leading:
+            _user_survives = any(
+                messages[i].get("role") == "user"
+                for i in range(0, compress_start)
+            ) or any(
+                messages[i].get("role") == "user"
+                for i in range(compress_end, n_messages)
+            )
+            if not _user_survives:
+                _force_user_leading = True
         # Pick a role that avoids consecutive same-role with both neighbors.
         # Priority: avoid colliding with head (already committed), then tail.
         if last_head_role in {"assistant", "tool"} or _force_user_leading:
@@ -2907,7 +3011,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             })
 
         for i in range(compress_end, n_messages):
-            msg = messages[i].copy()
+            msg = _fresh_compaction_message_copy(messages[i])
             if _merge_summary_into_tail and i == compress_end:
                 # Merge the summary into the first tail message, but place
                 # the END MARKER at the very end so the model sees an
@@ -2968,5 +3072,11 @@ This compaction should PRIORITISE preserving all information related to the focu
                 savings_pct,
             )
             logger.info("Compression #%d complete", self.compression_count)
+
+        # Enforced invariant (#57491): no compacted message may leave compress()
+        # carrying a session-store persistence marker. The per-site strips above
+        # are positional; this single terminal sweep makes it structural so a
+        # future copy site cannot re-leak the marker into the child-session flush.
+        _strip_persistence_markers(compressed)
 
         return compressed

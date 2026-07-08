@@ -483,3 +483,51 @@ async def test_compress_command_overrides_stale_resolver_identity():
     # Source-derived identity overrides the stale resolver values, passed once.
     assert kwargs["platform"] == "telegram"
     assert kwargs["gateway_session_key"] == runner._session_key_for_source(_make_source())
+
+
+@pytest.mark.asyncio
+async def test_compress_command_passes_tool_messages_to_compressor():
+    """Tool results must reach _compress_context (#3854).
+
+    Filtering the transcript to user/assistant-only starved the
+    compressor's tool-result pruning — tool messages are usually the bulk
+    of the context.
+    """
+    history = [
+        {"role": "user", "content": "run it"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "t1", "type": "function",
+                            "function": {"name": "x", "arguments": "{}"}}],
+        },
+        {"role": "tool", "content": "BIG RESULT " * 50, "tool_call_id": "t1"},
+        {"role": "assistant", "content": "done"},
+        {"role": "user", "content": "thanks"},
+        {"role": "assistant", "content": "np"},
+    ]
+    runner = _make_runner(history)
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.session_id = "sess-1"
+    agent_instance._compress_context.return_value = (list(history), "")
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
+    ):
+        await runner._handle_compress_command(_make_event())
+
+    args, _kwargs = agent_instance._compress_context.call_args
+    passed = args[0]
+    roles = [m.get("role") for m in passed]
+    assert "tool" in roles, f"tool messages filtered out: {roles}"
+    # Assistant tool_calls stubs (content=None) must survive too, or the
+    # tool message would dangle without its call.
+    assert any(m.get("tool_calls") for m in passed), "assistant tool_calls stub dropped"

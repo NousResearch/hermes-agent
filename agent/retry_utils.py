@@ -24,6 +24,14 @@ _jitter_lock = threading.Lock()
 # not sit silent for 20+ minutes.
 _ZAI_CODING_OVERLOAD_LONG_BACKOFF = (30.0, 60.0, 90.0, 120.0)
 
+# Number of initial short retries before the adaptive long-backoff tier kicks
+# in. Shared by ``adaptive_rate_limit_backoff`` (which walks the long table
+# starting at attempt ``short_attempts + 1``) and
+# ``zai_coding_overload_retry_ceiling`` (which sizes the retry loop so every
+# long-tier entry is reachable). Keeping it a single module constant prevents
+# the two from silently desyncing if the short-retry count is ever tuned.
+_ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS = 3
+
 
 def jittered_backoff(
     attempt: int,
@@ -104,7 +112,7 @@ def adaptive_rate_limit_backoff(
     model: str | None,
     error: Any,
     default_wait: float,
-    short_attempts: int = 3,
+    short_attempts: int = _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS,
 ) -> tuple[float, str | None]:
     """Provider-aware rate-limit backoff.
 
@@ -127,3 +135,20 @@ def adaptive_rate_limit_backoff(
     # A smaller jitter ratio keeps long waits readable while still avoiding
     # synchronized retry storms across concurrent Hermes sessions.
     return jittered_backoff(1, base_delay=base_delay, max_delay=base_delay, jitter_ratio=0.2), "zai_coding_overload_long"
+
+
+def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS) -> int:
+    """Retry-loop ceiling needed for the full Z.AI overload backoff schedule.
+
+    The adaptive policy runs ``short_attempts`` short retries, then walks the
+    long-backoff table one entry per subsequent attempt. The retry loop gives
+    up as soon as ``retry_count >= ceiling`` — and that check runs *before* the
+    attempt's backoff is computed — so the ceiling must sit one past the final
+    long-backoff entry for every long tier to actually execute.
+
+    With the default ``api_max_retries`` (3) equal to ``short_attempts`` (3),
+    the loop always gave up before reaching the long tier, leaving the whole
+    long-backoff schedule as dead code. Callers extend the ceiling to this
+    value for Z.AI Coding overload 429s so the 30/60/90/120s waits run.
+    """
+    return short_attempts + len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) + 1

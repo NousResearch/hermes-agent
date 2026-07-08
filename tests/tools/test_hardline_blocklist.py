@@ -150,6 +150,16 @@ _HARDLINE_ALLOW = [
     "rm -rf $HOME/tmp",
     "rm foo.txt",
     "rm -rf some/path",
+    # Literal root-level directories that only LOOK like root-collapse
+    # spellings. Each inter-slash segment must be exactly "." or ".." to
+    # count as a collapse back to "/" — "/..." is a dir literally named
+    # "..." and "/.foo" is an ordinary root dotfile. These must NOT be
+    # swept into the "recursive delete of root filesystem" hardline rule
+    # (regression guard for the collapse-spelling tightening).
+    "rm -rf /...",
+    "rm -rf /....",
+    "rm -rf /.foo",
+    "rm -rf /.config/foo",
     # A dangerous-looking command embedded as a quoted *argument* to another
     # command must not trip the floor: the path is immediately followed by a
     # closing quote with no matching opening quote of its own, so the
@@ -401,7 +411,8 @@ def test_root_collapse_pattern_leaves_real_paths_alone(clean_session):
     be pulled onto the hardline floor by the "collapse to /" broadening.
     """
     for cmd in ["rm -rf /tmp", "rm -rf /home/user/x", "rm -rf /.ssh",
-                "rm -rf /.config", "rm -rf ./build", "rm -rf /opt/foo"]:
+                "rm -rf /.config", "rm -rf ./build", "rm -rf /opt/foo",
+                "rm -rf /...", "rm -rf /....", "rm -rf /.foo"]:
         is_hl, _ = detect_hardline_command(cmd)
         assert not is_hl, f"{cmd!r} must not be hardline-blocked (over-match)"
 

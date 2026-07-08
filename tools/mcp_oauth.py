@@ -104,6 +104,15 @@ _oauth_interactive_enabled: "contextvars.ContextVar[bool]" = contextvars.Context
     "_oauth_interactive_enabled", default=True
 )
 
+# Forces _is_interactive() past the stdin-TTY check for flows driven from a
+# GUI (dashboard/desktop REST): the browser + localhost callback server do all
+# the work there, and the stdin paste fallback degrades harmlessly (EOF is
+# swallowed by _paste_callback_reader). Suppression still wins — background
+# discovery must never start a browser flow.
+_oauth_interactive_forced: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "_oauth_interactive_forced", default=False
+)
+
 
 # Skip tokens accepted at the paste prompt — exit OAuth without auth.
 _SKIP_TOKENS = frozenset({"skip", "cancel", "s", "n", "no", "q", "quit"})
@@ -150,10 +159,43 @@ def _is_interactive() -> bool:
     """Return True if we can reasonably expect to interact with a user."""
     if not _oauth_interactive_enabled.get():
         return False
+    if _oauth_interactive_forced.get():
+        return True
     try:
         return sys.stdin.isatty()
     except (AttributeError, ValueError):
         return False
+
+
+def _raise_if_non_interactive(lead: str) -> None:
+    """Raise ``OAuthNonInteractiveError`` unless an interactive session exists.
+
+    ``lead`` is the boundary-specific first sentence; this helper appends the
+    shared, actionable ``hermes mcp login`` next-step so the guidance wording
+    lives in one place across every non-interactive OAuth boundary (#57836).
+    """
+    if not _is_interactive():
+        raise OAuthNonInteractiveError(
+            f"{lead} "
+            "Run `hermes mcp login <server>` interactively to (re)authorize, "
+            "then restart or reload the gateway."
+        )
+
+
+@contextmanager
+def force_interactive_oauth():
+    """Treat the current execution context as interactive despite no TTY.
+
+    For GUI-driven auth (dashboard/desktop REST endpoint): the user IS present
+    — just not on stdin. Opens the browser + localhost callback flow that the
+    TTY heuristic would otherwise refuse. Same ContextVar propagation story as
+    suppress_interactive_oauth() (#35927).
+    """
+    token = _oauth_interactive_forced.set(True)
+    try:
+        yield
+    finally:
+        _oauth_interactive_forced.reset(token)
 
 
 @contextmanager
@@ -372,6 +414,41 @@ class HermesTokenStorage:
         for p in (self._tokens_path(), self._client_info_path(), self._meta_path()):
             p.unlink(missing_ok=True)
 
+    def snapshot(self) -> dict[str, bytes]:
+        """Capture on-disk OAuth state so a failed re-auth can restore it.
+
+        Maps filename -> bytes for whichever of the three state files exist.
+        Feed back to ``restore()`` to undo an intervening ``remove()`` when a
+        re-authentication attempt fails, so a still-valid token isn't destroyed.
+        """
+        snap: dict[str, bytes] = {}
+        for p in (self._tokens_path(), self._client_info_path(), self._meta_path()):
+            try:
+                snap[p.name] = p.read_bytes()
+            except OSError:
+                pass
+        return snap
+
+    def restore(self, snapshot: dict[str, bytes]) -> None:
+        """Revert to a ``snapshot()`` capture (dropping any newer partial state)."""
+        self.remove()
+        if not snapshot:
+            return
+        token_dir = _get_token_dir()
+        token_dir.mkdir(parents=True, exist_ok=True)
+        for fname, data in snapshot.items():
+            path = token_dir / fname
+            try:
+                fd = os.open(
+                    str(path),
+                    os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                    stat.S_IRUSR | stat.S_IWUSR,
+                )
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(data)
+            except OSError as exc:
+                logger.warning("Failed to restore OAuth state %s: %s", fname, exc)
+
     def poison_client_registration(self) -> bool:
         """Discard a dead dynamically-registered client so it gets re-created.
 
@@ -467,6 +544,21 @@ async def _redirect_handler(authorization_url: str) -> None:
     Opens the browser automatically when possible; always prints the URL
     as a fallback for headless/SSH/gateway environments.
     """
+    # Fail fast at the authorization boundary in non-interactive contexts
+    # (systemd gateway, cron, background MCP discovery). A cached-but-unusable
+    # token (expired/revoked, refresh rejected) makes the SDK fall through to
+    # the authorization-code flow even though build_oauth_auth's token-file
+    # guard passed. Without this check we would print a URL and launch a
+    # browser flow no operator can complete, then block in _wait_for_callback
+    # for the full timeout. Raise before launching so gateway adapters start
+    # promptly and the caller can skip this server with an actionable warning.
+    # This intentionally re-checks interactivity here rather than trusting the
+    # token-file existence guard alone. See #57836.
+    _raise_if_non_interactive(
+        "MCP OAuth requires browser authorization but no interactive "
+        "session is available (non-interactive/background context)."
+    )
+
     msg = (
         f"\n  MCP OAuth: authorization required.\n"
         f"  Open this URL in your browser:\n\n"
@@ -537,6 +629,22 @@ async def _wait_for_callback() -> tuple[str, str | None]:
             "OAuth callback port not set — build_oauth_auth must be called "
             "before _wait_for_oauth_callback"
         )
+
+    # Reject before binding the callback listener in non-interactive contexts.
+    # Reaching here means the SDK entered the authorization-code flow (a valid
+    # or refreshable token would never call the callback handler), so a cached
+    # token file is present but unusable. Binding the listener here would block
+    # for the full 300s timeout and — on the next connection retry — collide
+    # with the still-bound/TIME_WAIT port, surfacing as
+    # ``OSError: [Errno 98] Address already in use``. Failing fast keeps
+    # gateway startup independent of an unusable optional MCP server. This
+    # guard holds "regardless of whether a token file exists" — the point the
+    # build_oauth_auth token-file guard cannot cover. See #57836.
+    _raise_if_non_interactive(
+        "OAuth callback requires an interactive session but none is "
+        "available (non-interactive/background context); skipping browser "
+        "authorization without binding a callback listener."
+    )
 
     # The callback server is already running (started in build_oauth_auth).
     # We just need to poll for the result.

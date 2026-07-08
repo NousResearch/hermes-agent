@@ -134,7 +134,7 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
 
   if (loading) {
     return (
-      <div className="mt-3 flex items-center gap-2 px-1 text-xs text-muted-foreground">
+      <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
         <Loader2 className="size-3.5 animate-spin" />
         Checking Computer Use status…
       </div>
@@ -147,7 +147,7 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
 
   if (!status.platform_supported) {
     return (
-      <p className="mt-3 px-1 text-xs text-muted-foreground">
+      <p className="px-1 text-xs text-muted-foreground">
         Computer Use isn&apos;t supported on this platform ({status.platform}).
       </p>
     )
@@ -155,7 +155,7 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
 
   if (!status.installed) {
     return (
-      <p className="mt-3 px-1 text-xs text-muted-foreground">
+      <p className="px-1 text-xs text-muted-foreground">
         Install the cua-driver backend below to drive this machine.
         {status.can_grant && ' Then grant Accessibility and Screen Recording here.'}
       </p>
@@ -165,7 +165,7 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
   const failingChecks = status.checks.filter(c => c.status !== 'ok')
 
   return (
-    <div className="mt-3 grid gap-2">
+    <div className="grid gap-2">
       <div className="flex flex-wrap items-center justify-between gap-2 px-1">
         <div className="min-w-0">
           {status.can_grant ? (

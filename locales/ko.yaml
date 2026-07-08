@@ -107,6 +107,8 @@ gateway:
     no_pending:            "거부 대기 중인 명령이 없습니다."
     denied_singular:       "❌ 명령이 거부되었습니다."
     denied_plural:         "❌ 명령이 거부되었습니다 ({count}개)."
+    denied_reason_singular: "❌ 명령이 거부되었습니다. 사유를 에이전트에 전달함: \"{reason}\""
+    denied_reason_plural:  "❌ 명령이 거부되었습니다 ({count}개). 사유를 에이전트에 전달함: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast는 Priority Processing을 지원하는 OpenAI 모델에서만 사용할 수 있습니다."

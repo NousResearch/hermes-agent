@@ -1,5 +1,4 @@
 ---
-sidebar_position: 9
 sidebar_label: "Build a Plugin"
 title: "构建 Hermes 插件"
 description: "逐步指南：构建包含工具、钩子、数据文件和技能的完整 Hermes 插件"
@@ -21,6 +20,10 @@ Hermes 有多种不同的可插拔接口——有些使用 Python `register_*` A
 | **上下文压缩引擎** | [上下文引擎插件](/developer-guide/context-engine-plugin) |
 | **图像生成后端** | [图像生成提供商插件](/developer-guide/image-gen-provider-plugin) |
 | **视频生成后端** | [视频生成提供商插件](/developer-guide/video-gen-provider-plugin) |
+| **网页搜索/提取后端** | [网页搜索提供商插件](/developer-guide/web-search-provider-plugin) |
+| **云浏览器后端**（Browserbase 类 CDP 会话提供商） | [浏览器提供商插件](/developer-guide/browser-provider-plugin) |
+| **密钥管理器后端**（保险库 / 密码管理器 / 系统钥匙串） | [密钥源插件](/developer-guide/secret-source-plugin) |
+| **仪表盘 OIDC/认证提供商** | [Web 仪表盘 — 自定义提供商](/user-guide/features/web-dashboard#custom-providers) — `ctx.register_dashboard_auth_provider()` |
 | **TTS 后端**（任意 CLI——Piper、VoxCPM、Kokoro、声音克隆等） | [TTS 自定义命令提供商](/user-guide/features/tts#custom-command-providers)——配置驱动，无需 Python |
 | **STT 后端**（自定义 whisper / ASR CLI） | [语音消息转录](/user-guide/features/tts#voice-message-transcription-stt)——将 `HERMES_LOCAL_STT_COMMAND` 设置为 shell 模板 |
 | **通过 MCP 接入外部工具**（文件系统、GitHub、Linear、任意 MCP 服务器） | [MCP](/user-guide/features/mcp)——在 `config.yaml` 中声明 `mcp_servers.<name>` |

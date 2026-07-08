@@ -157,7 +157,9 @@ function readGraph(r: BitReader): StarmapGraph {
     counts.set(n.category, (counts.get(n.category) ?? 0) + 1)
   }
 
-  const clusters = [...counts.entries()].map(([category, count]) => ({ category, count })).sort((a, b) => b.count - a.count)
+  const clusters = [...counts.entries()]
+    .map(([category, count]) => ({ category, count }))
+    .sort((a, b) => b.count - a.count)
 
   // Memory cards are dropped (viz-only); a marker lets the UI tell a decoded map
   // apart from a freshly-scanned one.

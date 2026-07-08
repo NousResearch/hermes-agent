@@ -30,6 +30,7 @@ from plugins.platforms.discord.adapter import (  # noqa: E402
     DiscordAdapter,
 )
 from gateway.config import PlatformConfig  # noqa: E402
+from gateway.platforms.base import utf16_len  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +130,19 @@ class TestClarifyChoiceViewConstruction:
         assert first_label.endswith("\u2026")
         # Final label total <= 80 (Discord cap on button labels)
         assert len(first_label) <= 80
+
+    def test_truncates_emoji_choice_label_by_utf16_limit(self):
+        long_choice = "\U0001f600" * 80
+        view = ClarifyChoiceView(
+            choices=[long_choice],
+            clarify_id="cidEmoji",
+            allowed_user_ids=set(),
+        )
+
+        first_label = view.children[0].label
+        assert first_label.startswith("1. ")
+        assert first_label.endswith("\u2026")
+        assert utf16_len(first_label) <= 80
 
     def test_truncates_long_choice_label_breaks_on_word_boundary(self):
         # Long choice with spaces — should cut at the last whole word so the

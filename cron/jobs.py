@@ -84,8 +84,63 @@ TICKER_INTERVAL_SECONDS = 60
 # concurrent mark_job_run / advance_next_run calls can clobber each other.
 _jobs_file_lock = threading.RLock()
 _jobs_lock_state = threading.local()
+
+# Upper bound on waiting for the cross-process .jobs.lock flock (#60703).
+# Every cron function in the process funnels through _jobs_lock(), and the
+# flock is taken while holding the process-wide RLock — so an unbounded wait
+# on a lock held by a wedged sibling process silently freezes the ticker
+# heartbeat and every job forever.  30s is orders of magnitude above any
+# legitimate critical section (field updates only) while keeping the ticker's
+# worst-case stall well under one status-alarm threshold.
+_JOBS_LOCK_TIMEOUT_SECONDS = 30.0
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+
+# Fallback stale-recovery window for a one-shot's running-claim (#59229) when
+# the cron inactivity timeout is disabled (HERMES_CRON_TIMEOUT=0 → unlimited),
+# in which case no finite run bound exists to derive from. Also acts as the
+# floor for the derived value so a very short configured timeout can't make the
+# claim expire mid-run.
+ONESHOT_RUN_CLAIM_TTL_SECONDS = 1800
+
+# The derived TTL is the cron inactivity timeout times this headroom multiplier.
+# A healthy run clears its claim via mark_job_run() long before the TTL; the
+# TTL only recovers a claim left by a tick that DIED mid-run. HERMES_CRON_TIMEOUT
+# is an *inactivity* limit, not a wall-clock cap — a job that keeps producing
+# output legitimately runs past it — so the multiplier gives comfortable
+# headroom over any healthy run before we treat a claim as stale.
+_ONESHOT_RUN_CLAIM_TTL_HEADROOM = 3
+
+_DEFAULT_CRON_INACTIVITY_TIMEOUT = 600.0
+
+
+def _oneshot_run_claim_ttl_seconds() -> float:
+    """Resolve the one-shot running-claim stale-recovery TTL.
+
+    Derived from ``HERMES_CRON_TIMEOUT`` (the cron inactivity timeout the
+    scheduler enforces on each run) so the safety valve tracks how long a run
+    is actually allowed to go quiet, instead of a magic constant:
+
+    - unset / invalid → default 600s inactivity limit → TTL = 1800s
+    - ``0`` (unlimited runs) → no finite bound to derive from → fall back to
+      ``ONESHOT_RUN_CLAIM_TTL_SECONDS``
+    - positive N → ``max(N * headroom, ONESHOT_RUN_CLAIM_TTL_SECONDS)`` so a
+      tiny configured timeout can never expire a claim mid-run.
+    """
+    raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+    timeout = _DEFAULT_CRON_INACTIVITY_TIMEOUT
+    if raw:
+        try:
+            timeout = float(raw)
+        except (ValueError, TypeError):
+            timeout = _DEFAULT_CRON_INACTIVITY_TIMEOUT
+    if timeout <= 0:
+        # Unlimited runs — cannot bound; use the fixed fallback floor.
+        return float(ONESHOT_RUN_CLAIM_TTL_SECONDS)
+    return max(
+        timeout * _ONESHOT_RUN_CLAIM_TTL_HEADROOM,
+        float(ONESHOT_RUN_CLAIM_TTL_SECONDS),
+    )
 
 
 def _jobs_lock_file() -> Path:
@@ -131,7 +186,42 @@ def _jobs_lock():
                 lock_fd = open(_jobs_lock_file(), "a+", encoding="utf-8")
                 lock_fd.seek(0)
                 if fcntl is not None:
-                    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                    # Bounded acquisition (#60703): a plain blocking
+                    # fcntl.flock(LOCK_EX) here has NO timeout, and it is
+                    # taken while holding the process-wide _jobs_file_lock
+                    # RLock above.  If another process wedges while holding
+                    # .jobs.lock (e.g. an old gateway draining through a
+                    # restart), a single blocked acquirer freezes EVERY cron
+                    # function in this process — including the ticker's
+                    # get_due_jobs() — silently and forever: the heartbeat
+                    # file stops updating and all jobs stop firing with no
+                    # error logged.  Poll LOCK_NB against a deadline instead;
+                    # on timeout, log loudly and fall through to the same
+                    # in-process-only degraded mode used when locking is
+                    # unavailable.  A briefly-torn cross-process write is
+                    # strictly better than a permanently dead scheduler.
+                    _deadline = time.monotonic() + _JOBS_LOCK_TIMEOUT_SECONDS
+                    while True:
+                        try:
+                            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            break
+                        except (OSError, IOError):
+                            if time.monotonic() >= _deadline:
+                                logger.error(
+                                    "Timed out after %.0fs waiting for the cron "
+                                    "jobs lock (%s) — another process is holding "
+                                    "it. Proceeding with in-process locking only "
+                                    "so the scheduler stays alive (#60703).",
+                                    _JOBS_LOCK_TIMEOUT_SECONDS,
+                                    _jobs_lock_file(),
+                                )
+                                try:
+                                    lock_fd.close()
+                                except OSError:
+                                    pass
+                                lock_fd = None
+                                break
+                            time.sleep(0.1)
                 elif msvcrt is not None:
                     getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
             except (OSError, IOError) as e:
@@ -978,6 +1068,20 @@ def create_job(
         no_agent=normalized_no_agent,
     )
 
+    next_run_at = compute_next_run(parsed_schedule)
+    if parsed_schedule.get("kind") == "once" and next_run_at is None:
+        run_at = parsed_schedule.get("run_at") or schedule
+        logger.warning(
+            "Rejecting one-shot cron job '%s': run_at %s is outside the %ss grace window",
+            name or label_source[:50].strip(),
+            run_at,
+            ONESHOT_GRACE_SECONDS,
+        )
+        raise ValueError(
+            f"Requested one-shot time {run_at} is more than "
+            f"{ONESHOT_GRACE_SECONDS}s in the past and cannot be scheduled."
+        )
+
     job = {
         "id": job_id,
         "name": name or label_source[:50].strip(),
@@ -1006,7 +1110,7 @@ def create_job(
         "paused_at": None,
         "paused_reason": None,
         "created_at": now,
-        "next_run_at": compute_next_run(parsed_schedule),
+        "next_run_at": next_run_at,
         "last_run_at": None,
         "last_status": None,
         "last_error": None,
@@ -1137,7 +1241,29 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updated_schedule.get("display", updated.get("schedule_display")),
                 )
                 if updated.get("state") != "paused":
-                    updated["next_run_at"] = compute_next_run(updated_schedule)
+                    updated_next_run = compute_next_run(updated_schedule)
+                    # Same guard as create_job: an UPDATE that sets a one-shot
+                    # to a time >ONESHOT_GRACE_SECONDS in the past would store
+                    # next_run_at=None with state="scheduled", re-creating the
+                    # ghost job that never fires (#59395). Reject it here too so
+                    # the bug can't re-enter through the update door.
+                    if (
+                        updated_next_run is None
+                        and updated_schedule.get("kind") == "once"
+                    ):
+                        run_at = updated_schedule.get("run_at") or updated_schedule
+                        logger.warning(
+                            "Rejecting one-shot cron job update '%s': run_at %s "
+                            "is outside the %ss grace window",
+                            updated.get("name", job_id),
+                            run_at,
+                            ONESHOT_GRACE_SECONDS,
+                        )
+                        raise ValueError(
+                            f"Requested one-shot time {run_at} is more than "
+                            f"{ONESHOT_GRACE_SECONDS}s in the past and cannot be scheduled."
+                        )
+                    updated["next_run_at"] = updated_next_run
 
             if inference_fields_changed:
                 provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
@@ -1150,7 +1276,14 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updated["model_snapshot"] = model_snapshot
 
             if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
-                updated["next_run_at"] = compute_next_run(updated["schedule"])
+                next_run = compute_next_run(updated["schedule"])
+                if next_run is None and updated["schedule"].get("kind") == "once":
+                    run_at = updated["schedule"].get("run_at", "unknown")
+                    raise ValueError(
+                        f"Requested one-shot time {run_at} is in the past "
+                        f"(grace window: {ONESHOT_GRACE_SECONDS}s) and cannot be scheduled."
+                    )
+                updated["next_run_at"] = next_run
 
             jobs[i] = updated
             save_jobs(jobs)
@@ -1181,6 +1314,12 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
         return None
 
     next_run_at = compute_next_run(job["schedule"])
+    if next_run_at is None and job["schedule"].get("kind") == "once":
+        run_at = job["schedule"].get("run_at", "unknown")
+        raise ValueError(
+            f"Cannot resume: one-shot time {run_at} is in the past "
+            f"(grace window: {ONESHOT_GRACE_SECONDS}s) and will never fire."
+        )
     return update_job(
         job["id"],
         {
@@ -1257,6 +1396,11 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # Clear any external-fire claim so a re-armed recurring job can
                 # be claimed again on its next fire (Phase 4C CAS).
                 job["fire_claim"] = None
+                # Clear the one-shot running-claim (#59229): the run is over, so
+                # a re-armed recurring job or a re-dispatched one-shot recovery
+                # is claimable again. No-op if the job never carried a claim.
+                if job.get("run_claim") is not None:
+                    job["run_claim"] = None
                 
                 # Increment completed count.  Finite one-shot jobs are
                 # pre-claimed by claim_dispatch() BEFORE the side effect runs
@@ -1465,7 +1609,14 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
             if existing:
                 try:
                     claimed_at = _ensure_aware(datetime.fromisoformat(existing["at"]))
-                    if (now - claimed_at).total_seconds() < claim_ttl_seconds:
+                    # Bounded on BOTH sides (#60703): a claim stamped in the
+                    # future (clock/TZ skew across a restart, or a corrupted
+                    # timestamp) would otherwise have a negative age and stay
+                    # "fresh" forever — the job becomes permanently unfireable
+                    # and every manual `cron run` reports "already being
+                    # fired". Treat future-dated claims as stale/overwritable.
+                    _age = (now - claimed_at).total_seconds()
+                    if 0 <= _age < claim_ttl_seconds:
                         return False  # someone holds a fresh claim
                 except Exception:
                     pass  # malformed claim → overwrite
@@ -1505,10 +1656,35 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
     due = []
     needs_save = False
+    # Resolve the one-shot running-claim stale-recovery TTL once per scan
+    # (derived from HERMES_CRON_TIMEOUT). See _oneshot_run_claim_ttl_seconds.
+    _run_claim_ttl = _oneshot_run_claim_ttl_seconds()
 
     for job in jobs:
         if not job.get("enabled", True):
             continue
+
+        # Cross-process running-claim guard (#59229): if another scheduler
+        # process already claimed this one-shot and its run is still in flight
+        # (claim younger than the TTL), skip it — do NOT re-dispatch. The
+        # claim is stamped just before we return the job as due (below) and
+        # cleared by mark_job_run() on completion. A claim older than the TTL
+        # is treated as stale (the claiming tick died mid-run) and allowed
+        # through so the job is recovered rather than wedged forever.
+        existing_claim = job.get("run_claim")
+        if existing_claim and job.get("schedule", {}).get("kind") == "once":
+            try:
+                claimed_at = _ensure_aware(
+                    datetime.fromisoformat(existing_claim["at"])
+                )
+                # 0 <= age: a future-dated claim (clock/TZ skew across a
+                # restart) must be treated as stale, not eternally fresh,
+                # or the one-shot is skipped forever (#60703).
+                _age = (now - claimed_at).total_seconds()
+                if 0 <= _age < _run_claim_ttl:
+                    continue  # a fresh claim is held by an in-flight run
+            except (KeyError, ValueError, TypeError):
+                pass  # malformed claim → fall through and (re)claim
 
         next_run = job.get("next_run_at")
         if not next_run:
@@ -1653,6 +1829,31 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                 needs_save = True
                                 break
                         continue
+
+            # Durably claim a one-shot for the DURATION of its run before
+            # returning it as due, so a second scheduler process (gateway +
+            # desktop both run in-process 60s tickers on one HERMES_HOME)
+            # cannot re-dispatch it while the first run is still in flight
+            # (#59229). A plain one-shot's due-state is not resolved until
+            # mark_job_run() completes it minutes later, so advancing
+            # next_run_at by a fixed window is not enough — a job that outlives
+            # one tick (e.g. a 2.5-min research prompt) would simply re-fire on
+            # the next tick after the window. Instead we stamp a run_claim under
+            # the same lock get_due_jobs already holds; the other process reads
+            # a fresh claim on its next tick and skips (handled at the top of
+            # this loop). mark_job_run() clears the claim on completion. The TTL
+            # is only a safety valve: a claiming tick that DIES mid-run leaves a
+            # stale claim that expires after the resolved run-claim TTL
+            # (_oneshot_run_claim_ttl_seconds, derived from HERMES_CRON_TIMEOUT),
+            # so the job is re-dispatched rather than wedged forever.
+            if kind == "once":
+                claim = {"at": now.isoformat(), "by": _machine_id()}
+                job["run_claim"] = claim
+                for rj in raw_jobs:
+                    if rj["id"] == job["id"]:
+                        rj["run_claim"] = claim
+                        needs_save = True
+                        break
 
             due.append(job)
 

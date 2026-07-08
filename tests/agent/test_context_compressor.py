@@ -341,6 +341,38 @@ class TestCompress:
         # original content is present in either case.
         assert msgs[-2]["content"] in result[-2]["content"]
 
+    def test_compress_strips_db_persisted_from_assembled_messages(self, compressor):
+        """Regression for #57491: shallow copies must not carry flush markers."""
+        msgs = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}", "_db_persisted": True}
+            for i in range(10)
+        ]
+        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
+            result = compressor.compress(msgs)
+        assert len(result) < len(msgs)
+        assert all("_db_persisted" not in msg for msg in result)
+
+    def test_compress_terminal_sweep_strips_markers_even_if_a_copy_site_leaks(self, compressor):
+        """Regression for #57491, structural: even if a copy site fails to strip
+        the marker (simulating a future refactor that adds/reintroduces a leaky
+        copy), the single terminal sweep in compress() guarantees no compacted
+        message leaves carrying `_db_persisted`. Neuter the per-site helper to a
+        plain leaking copy and assert the invariant still holds."""
+        import agent.context_compressor as _cc
+
+        msgs = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}", "_db_persisted": True}
+            for i in range(10)
+        ]
+        # Make the per-site helper leak the marker (dict.copy keeps it).
+        with patch.object(_cc, "_fresh_compaction_message_copy", lambda m: m.copy()), \
+             patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
+            result = compressor.compress(msgs)
+        assert len(result) < len(msgs)
+        assert all("_db_persisted" not in msg for msg in result), (
+            "terminal sweep must strip _db_persisted even when a copy site leaks"
+        )
+
     def test_protect_first_n_decays_after_first_compression(self):
         """Regression for #11996: protect_first_n must protect early turns on
         the FIRST compaction but DECAY afterwards, so the same early user
@@ -373,6 +405,114 @@ class TestCompress:
         c.compression_count = 0
         c._previous_summary = "[CONTEXT SUMMARY]: earlier work"
         assert c._effective_protect_first_n() == 0
+
+
+class TestTailBudgetCodexReplayFields:
+    def test_tail_cut_counts_codex_replay_and_reasoning_fields(self):
+        """Tail protection must budget hidden replay fields sent back to providers.
+
+        Codex Responses messages can have tiny visible content but large
+        `codex_reasoning_items`, `codex_message_items`, or provider-native
+        reasoning fields. Preflight compression counts these fields, so the
+        tail-cut budget must count them too; otherwise compression preserves an
+        oversized tail and immediately starts the next session near the limit.
+        """
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                protect_first_n=1,
+                protect_last_n=1,
+                quiet_mode=True,
+            )
+
+        big_replay = "x" * 5_000
+        big_hidden_message = {
+            "role": "assistant",
+            "content": "ok",
+            "reasoning": "summary " + big_replay,
+            "reasoning_content": "scratchpad " + big_replay,
+            "reasoning_details": [{"text": "details " + big_replay}],
+            "codex_reasoning_items": [
+                {"type": "reasoning", "encrypted_content": "enc_" + big_replay}
+            ],
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "reply " + big_replay}],
+                }
+            ],
+        }
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "initial ask"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "older follow-up"},
+            big_hidden_message,
+        ]
+        messages.extend(
+            {
+                "role": "user" if i % 2 == 0 else "assistant",
+                "content": f"tail visible message {i}",
+            }
+            for i in range(14)
+        )
+
+        cut_idx = c._find_tail_cut_by_tokens(messages, head_end=1, token_budget=150)
+
+        assert cut_idx == 5
+        assert messages[4]["codex_reasoning_items"][0]["encrypted_content"].startswith("enc_")
+        assert messages[4]["codex_message_items"][0]["content"][0]["text"].startswith("reply ")
+
+    @pytest.mark.parametrize(
+        ("field_name", "field_value"),
+        [
+            ("reasoning", "x" * 5_000),
+            ("reasoning_content", "x" * 5_000),
+            ("reasoning_details", [{"text": "x" * 5_000}]),
+            (
+                "codex_reasoning_items",
+                [{"type": "reasoning", "encrypted_content": "x" * 5_000}],
+            ),
+            (
+                "codex_message_items",
+                [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "x" * 5_000}],
+                    }
+                ],
+            ),
+        ],
+    )
+    def test_tail_cut_counts_each_hidden_replay_field(self, field_name, field_value):
+        """Each provider replay/reasoning field should affect tail budgeting."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                protect_first_n=1,
+                protect_last_n=1,
+                quiet_mode=True,
+            )
+
+        hidden_message = {"role": "assistant", "content": "ok", field_name: field_value}
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "initial ask"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "older follow-up"},
+            hidden_message,
+        ]
+        messages.extend(
+            {
+                "role": "user" if i % 2 == 0 else "assistant",
+                "content": f"tail visible message {i}",
+            }
+            for i in range(14)
+        )
+
+        assert c._find_tail_cut_by_tokens(messages, head_end=1, token_budget=150) == 5
 
 
 class TestGenerateSummaryNoneContent:

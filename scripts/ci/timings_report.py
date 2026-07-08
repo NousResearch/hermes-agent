@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,6 +30,70 @@ from datetime import datetime
 from html import escape
 
 API_BASE = "https://api.github.com"
+
+# Retry policy for GitHub API calls. The repo-scoped GITHUB_TOKEN shares a
+# rate-limit budget across every concurrent workflow run; when several PRs
+# run CI at once, this report job (which makes dozens of paginated calls)
+# regularly hits 403 rate-limit responses. Those are transient — retry with
+# backoff, honoring Retry-After / X-RateLimit-Reset when present.
+_RETRY_STATUSES = {403, 429, 500, 502, 503, 504}
+_MAX_ATTEMPTS = 5
+_MAX_RETRY_WAIT_S = 120.0
+
+
+class TimingsUnavailable(Exception):
+    """GitHub API data could not be collected (rate limit, outage, ...).
+
+    This is a REPORT job — never a reason to fail the PR's checks. main()
+    catches this and exits 0 with a degraded summary.
+    """
+
+
+def _retry_wait_s(headers, attempt: int) -> float:
+    """Seconds to wait before the next attempt, honoring server hints."""
+    retry_after = (headers.get("Retry-After") or "").strip() if headers else ""
+    if retry_after.isdigit():
+        return min(float(retry_after), _MAX_RETRY_WAIT_S)
+    reset = (headers.get("X-RateLimit-Reset") or "").strip() if headers else ""
+    remaining = (headers.get("X-RateLimit-Remaining") or "").strip() if headers else ""
+    if remaining == "0" and reset.isdigit():
+        return min(max(float(reset) - time.time(), 1.0), _MAX_RETRY_WAIT_S)
+    return min(2.0 ** attempt * 2.0, _MAX_RETRY_WAIT_S)  # 4s, 8s, 16s, 32s
+
+
+def _urlopen_with_retry(req: urllib.request.Request):
+    """urlopen with backoff on rate-limit/transient statuses.
+
+    Returns (parsed_json, link_header). Raises TimingsUnavailable when
+    attempts are exhausted — callers treat that as "no report this run",
+    not a job failure.
+    """
+    last_err: Exception | None = None
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return json.loads(resp.read()), resp.headers.get("Link", "")
+        except urllib.error.HTTPError as e:
+            last_err = e
+            if e.code not in _RETRY_STATUSES or attempt == _MAX_ATTEMPTS:
+                break
+            wait = _retry_wait_s(e.headers, attempt)
+            print(f"GitHub API {e.code} on {req.full_url} — "
+                  f"retry {attempt}/{_MAX_ATTEMPTS - 1} in {wait:.0f}s",
+                  file=sys.stderr)
+            time.sleep(wait)
+        except urllib.error.URLError as e:
+            last_err = e
+            if attempt == _MAX_ATTEMPTS:
+                break
+            wait = _retry_wait_s(None, attempt)
+            print(f"GitHub API connection error on {req.full_url} ({e.reason}) — "
+                  f"retry {attempt}/{_MAX_ATTEMPTS - 1} in {wait:.0f}s",
+                  file=sys.stderr)
+            time.sleep(wait)
+    raise TimingsUnavailable(
+        f"GitHub API unavailable after {_MAX_ATTEMPTS} attempts: {last_err}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +107,9 @@ def api_get(path: str, token: str, params: dict | None = None,
     For list endpoints, pass list_key to extract items from the paginated
     wrapper response (e.g. list_key='jobs' for {'total_count': N, 'jobs': [...]}).
     When list_key is omitted, a non-list response is returned as-is (single object).
+
+    Transient failures (403 rate limit, 429, 5xx, connection errors) are
+    retried with backoff; exhausted retries raise TimingsUnavailable.
     """
     url = f"{API_BASE}{path}"
     if params:
@@ -55,9 +123,7 @@ def api_get(path: str, token: str, params: dict | None = None,
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "ci-timings-report",
         })
-        with urllib.request.urlopen(req) as resp:
-            data = json.loads(resp.read())
-            link_header = resp.headers.get("Link", "")
+        data, link_header = _urlopen_with_retry(req)
 
         if list_key:
             results.extend(data.get(list_key, []))
@@ -748,8 +814,20 @@ def main():
         repo = expect_env("GITHUB_REPOSITORY")
         run_id = expect_env("GITHUB_RUN_ID")
         head_sha = expect_env("GITHUB_SHA")
-
-    timings = collect_timings(token, repo, run_id, head_sha)
+        try:
+            timings = collect_timings(token, repo, run_id, head_sha)
+        except TimingsUnavailable as e:
+            # Observability job: a missing report must never redden the PR.
+            # Emit a degraded summary + placeholder artifact and exit 0.
+            msg = f"CI timing data unavailable this run: {e}"
+            print(msg, file=sys.stderr)
+            with open(args.summary_out, "a", encoding="utf-8") as f:
+                f.write(f"\n> ⚠️ {msg}\n")
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(f"<html><body><p>{escape(msg)}</p></body></html>\n")
+            # No JSON on purpose: an empty timings file must never be cached
+            # as the main baseline.
+            sys.exit(0)
 
     # Save JSON
     with open(args.json_out, "w", encoding="utf-8") as f:

@@ -1,4 +1,3 @@
-
 export type ToolTone = 'agent' | 'browser' | 'default' | 'file' | 'image' | 'terminal' | 'web'
 export type ToolStatus = 'error' | 'running' | 'success' | 'warning'
 

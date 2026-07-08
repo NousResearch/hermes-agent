@@ -134,7 +134,7 @@ def main():
                        tenant="reclaim-race")
     conn.close()
     print(f"Seeded {NUM_TASKS} tasks. TTL={TTL}s, work_duration={WORK_DURATION_S}s")
-    print(f"(worker work > TTL guarantees reclaims)")
+    print("(worker work > TTL guarantees reclaims)")
 
     ctx = mp.get_context("spawn")
     worker_results = [f"/tmp/rc_worker_{i}.json" for i in range(NUM_WORKERS)]

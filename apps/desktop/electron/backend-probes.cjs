@@ -44,7 +44,7 @@ const PROBE_TIMEOUT_MS = 5000
  * @returns {string}
  */
 function hermesRuntimeImportProbe() {
-  return 'import yaml; import hermes_cli.config'
+  return 'import yaml; import dotenv; import hermes_cli.config'
 }
 
 /**

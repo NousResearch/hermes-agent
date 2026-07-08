@@ -51,7 +51,9 @@ def _get_exa_client() -> Any:
     if cached is not None:
         return cached
 
-    api_key = os.getenv("EXA_API_KEY")
+    from agent.web_search_provider import get_provider_env
+
+    api_key = get_provider_env("EXA_API_KEY")
     if not api_key:
         raise ValueError(
             "EXA_API_KEY environment variable not set. "
@@ -100,7 +102,9 @@ class ExaWebSearchProvider(WebSearchProvider):
 
     def is_available(self) -> bool:
         """Return True when ``EXA_API_KEY`` is set to a non-empty value."""
-        return bool(os.getenv("EXA_API_KEY", "").strip())
+        from agent.web_search_provider import get_provider_env
+
+        return bool(get_provider_env("EXA_API_KEY"))
 
     def supports_search(self) -> bool:
         return True

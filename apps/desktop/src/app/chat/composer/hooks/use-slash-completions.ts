@@ -12,6 +12,7 @@ import {
   isDesktopSlashExtensionCommand,
   isDesktopSlashSuggestion
 } from '@/lib/desktop-slash-commands'
+import { normalize } from '@/lib/text'
 import { $sessions } from '@/store/session'
 
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
@@ -94,7 +95,7 @@ export function useSlashCompletions(options: {
       const sessionArg = /^\/(?:resume|sessions|switch)\s+(.*)$/is.exec(text)
 
       if (sessionArg) {
-        const needle = (sessionArg[1] ?? '').trim().toLowerCase()
+        const needle = normalize(sessionArg[1])
 
         const matches = (
           needle

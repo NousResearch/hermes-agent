@@ -173,6 +173,50 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
     return out
 
 
+def _maybe_apply_moa_cache_control(
+    messages: list[dict[str, Any]],
+    runtime: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Decorate an advisor or aggregator request with cache_control when its
+    route honors it.
+
+    Reuses the SAME policy function as the main agent loop
+    (``anthropic_prompt_cache_policy``) resolved against the slot's own
+    provider/base_url/api_mode/model, and the SAME breakpoint layout
+    (``apply_anthropic_cache_control``, system_and_3). This keeps advisor and
+    aggregator calls decorated exactly like an acting agent on that provider
+    would be — no MoA-specific caching logic to drift.
+
+    Returns the messages unchanged on any resolution error or when the
+    policy says the route doesn't honor markers.
+    """
+    try:
+        from types import SimpleNamespace
+
+        from agent.agent_runtime_helpers import anthropic_prompt_cache_policy
+        from agent.prompt_caching import apply_anthropic_cache_control
+
+        # The policy function reads agent.* only as fallbacks for kwargs we
+        # don't pass; provide a stub so the slot is judged purely on its own
+        # resolved runtime.
+        stub = SimpleNamespace(provider="", base_url="", api_mode="", model="")
+        should_cache, native_layout = anthropic_prompt_cache_policy(
+            stub,
+            provider=runtime.get("provider") or "",
+            base_url=runtime.get("base_url") or "",
+            api_mode=runtime.get("api_mode") or "",
+            model=runtime.get("model") or "",
+        )
+        if not should_cache:
+            return messages
+        return apply_anthropic_cache_control(
+            messages, native_anthropic=native_layout
+        )
+    except Exception as exc:  # pragma: no cover - decoration must never break a call
+        logger.debug("MoA cache_control decoration skipped: %s", exc)
+        return messages
+
+
 def _run_reference(
     slot: dict[str, str],
     ref_messages: list[dict[str, Any]],
@@ -214,6 +258,18 @@ def _run_reference(
         # trimmed view (_reference_messages) already strips the agent's own
         # system prompt, so this is the only system message the reference sees.
         messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
+        # Apply the same Anthropic-style prompt-caching decoration the main
+        # agent loop applies (system_and_3 breakpoints). The advisory view is
+        # append-only across iterations (new turns append before the trailing
+        # synthetic marker), so on cache-honoring routes (Claude via
+        # OpenRouter/native, MiniMax, Qwen/DashScope) iteration N+1's prefix
+        # replays iteration N's cached prefix. Without this, Claude advisors
+        # served ZERO cache reads across an entire benchmark run (measured:
+        # 0/1227 calls, 11.5M re-billed input tokens) because Anthropic
+        # caching is opt-in per request. OpenAI-family advisors are untouched
+        # (their caching is automatic; markers are ignored harmlessly, but we
+        # only decorate when the policy says the route honors them).
+        messages = _maybe_apply_moa_cache_control(messages, runtime)
         response = call_llm(
             task="moa_reference",
             messages=messages,
@@ -370,6 +426,14 @@ def _render_tool_calls(tool_calls: Any) -> str:
     return "\n".join(lines)
 
 
+_ADVISORY_INSTRUCTION = (
+    "[The conversation above is the current state of the task. Give your "
+    "most intelligent judgement: what is going on, what should happen next, "
+    "what risks or mistakes you see, and how the acting agent should "
+    "proceed.]"
+)
+
+
 def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Build an advisory view of the conversation for reference models.
 
@@ -401,13 +465,6 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     The acting aggregator always receives the full, untrimmed transcript; this
     function only shapes the disposable advisory copy.
     """
-    advisory_instruction = (
-        "[The conversation above is the current state of the task. Give your "
-        "most intelligent judgement: what is going on, what should happen next, "
-        "what risks or mistakes you see, and how the acting agent should "
-        "proceed.]"
-    )
-
     rendered: list[dict[str, Any]] = []
     last_user_content: str | None = None
     for msg in messages:
@@ -449,7 +506,7 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # deleting the agent's latest assistant context. This satisfies Anthropic's
     # no-trailing-assistant-prefill rule while preserving full state.
     if rendered and rendered[-1].get("role") == "assistant":
-        rendered.append({"role": "user", "content": advisory_instruction})
+        rendered.append({"role": "user", "content": _ADVISORY_INSTRUCTION})
     elif rendered and rendered[-1].get("role") == "user":
         # Already ends on a user turn (fresh user prompt, no agent action yet).
         # Leave it — the reference answers that prompt directly.
@@ -490,14 +547,35 @@ def _extract_text(response: Any) -> str:
         return ""
 
 
+def _preset_temperature(preset: dict[str, Any], key: str) -> float | None:
+    """Read an optional temperature from a preset.
+
+    Returns None when the key is absent, empty, or explicitly null — meaning
+    "don't send temperature; let the provider default apply", exactly like a
+    single-model Hermes agent (which never sends temperature unless
+    configured). The old coercion ``float(preset.get(key, 0.6) or 0.6)``
+    made unset impossible: absent, null, and even 0 all collapsed to the
+    hardcoded default, so MoA advisors/aggregator always ran at 0.6/0.4
+    while the same model running solo used the provider default.
+    """
+    value = preset.get(key)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        logger.warning("ignoring non-numeric %s=%r in MoA preset", key, value)
+        return None
+
+
 def aggregate_moa_context(
     *,
     user_prompt: str,
     api_messages: list[dict[str, Any]],
     reference_models: list[dict[str, str]],
     aggregator: dict[str, str],
-    temperature: float = 0.6,
-    aggregator_temperature: float = 0.4,
+    temperature: float | None = None,
+    aggregator_temperature: float | None = None,
     max_tokens: int | None = None,
 ) -> str:
     """Run configured reference models and synthesize their advice.
@@ -510,6 +588,11 @@ def aggregate_moa_context(
     the parameter entirely when it is ``None`` (see its docstring), which also
     sidesteps providers that reject ``max_tokens`` outright. A hardcoded cap
     here previously truncated long aggregator syntheses.
+
+    ``temperature`` / ``aggregator_temperature`` are ``None`` by default:
+    like max_tokens, ``call_llm`` omits temperature when None so the
+    provider default applies — matching single-model agent behavior. Presets
+    may still pin explicit values.
     """
     reference_outputs: list[tuple[str, str, Any]] = []
     ref_messages = _reference_messages(api_messages)
@@ -535,13 +618,27 @@ def aggregate_moa_context(
     )
 
     agg_label = _slot_label(aggregator)
+    agg_runtime = _slot_runtime(aggregator)
     try:
+        # Same cache_control decoration as _run_reference's advisor calls
+        # (see _maybe_apply_moa_cache_control) — this synthesis call is a
+        # third, independent MoA call path that 22c5048d9 did not cover (it
+        # only restored caching for the acting-aggregator turn in the
+        # persistent `provider: moa` model and for advisor fan-out). Without
+        # it, the one-shot `/moa <prompt>` command's synthesis call re-bills
+        # its full input (system-less prompt containing every joined
+        # reference output) on every invocation with zero cache_control
+        # breakpoints, even when the resolved aggregator slot is a
+        # cache-honoring route (e.g. Claude on OpenRouter/native Anthropic).
+        agg_messages = _maybe_apply_moa_cache_control(
+            [{"role": "user", "content": synth_prompt}], agg_runtime
+        )
         response = call_llm(
             task="moa_aggregator",
-            messages=[{"role": "user", "content": synth_prompt}],
+            messages=agg_messages,
             temperature=aggregator_temperature,
             max_tokens=max_tokens,
-            **_slot_runtime(aggregator),
+            **agg_runtime,
         )
         synthesis = _extract_text(response)
     except Exception as exc:
@@ -726,8 +823,15 @@ class MoAChatCompletions:
         # The acting aggregator is never capped here (its output is the
         # user-visible answer).
         reference_max_tokens = preset.get("reference_max_tokens")
-        temperature = float(preset.get("reference_temperature", 0.6) or 0.6)
-        aggregator_temperature = float(preset.get("aggregator_temperature", api_kwargs.get("temperature") or 0.4) or 0.4)
+        # None (the default) = don't send temperature; provider default
+        # applies, matching single-model agent behavior. Presets may pin
+        # explicit values. See _preset_temperature.
+        temperature = _preset_temperature(preset, "reference_temperature")
+        aggregator_temperature = _preset_temperature(preset, "aggregator_temperature")
+        if aggregator_temperature is None and api_kwargs.get("temperature") is not None:
+            # The acting agent's own configured temperature (if any) still
+            # applies to the aggregator, which IS the acting model.
+            aggregator_temperature = api_kwargs.get("temperature")
 
         # When the preset is disabled, skip the reference fan-out and let the
         # configured aggregator act alone — it is the preset's acting model, so
@@ -740,13 +844,41 @@ class MoAChatCompletions:
         reference_outputs: list[tuple[str, str, Any]] = []
         ref_messages = _reference_messages(messages)
 
+        # Fan-out cadence. "per_iteration" (default): advisors re-run whenever
+        # the advisory view changes — i.e. every tool iteration, since the
+        # view grows with each tool result. "user_turn": advisors run ONCE per
+        # user turn; subsequent tool iterations reuse that turn's advice and
+        # the aggregator acts alone (the original MoA shape: synthesize at the
+        # start, then let the acting model work). Implemented by hashing only
+        # the prefix up to the LAST USER message so mid-turn growth doesn't
+        # change the signature — iteration 2+ becomes a cache HIT.
+        fanout_mode = str(preset.get("fanout") or "per_iteration").strip().lower()
+        sig_messages = ref_messages
+        if fanout_mode == "user_turn":
+            # Find the last REAL user message. The advisory view appends a
+            # synthetic user marker (_ADVISORY_INSTRUCTION) when it ends on an
+            # assistant turn — i.e. on every tool iteration after the first —
+            # so that marker must not count as a user turn or the prefix
+            # would include the grown mid-turn context and the signature
+            # would change every iteration (defeating the once-per-turn
+            # cadence entirely).
+            last_user_idx = None
+            for _i in range(len(ref_messages) - 1, -1, -1):
+                _m = ref_messages[_i]
+                if _m.get("role") == "user" and _m.get("content") != _ADVISORY_INSTRUCTION:
+                    last_user_idx = _i
+                    break
+            if last_user_idx is not None:
+                sig_messages = ref_messages[: last_user_idx + 1]
+
         # Turn-scoped cache: only run + display references when the advisory
         # view changed (i.e. a new user turn). Within one turn the agent loop
-        # calls create() once per tool iteration with the same advisory view;
-        # reuse the cached outputs and skip both the re-run and the re-emit.
+        # calls create() once per tool iteration; in user_turn mode the
+        # signature is stable across those iterations (prefix hash above), so
+        # the fan-out runs once per user turn and iterations reuse the advice.
         _sig = hashlib.sha256(
             "\u0000".join(
-                f"{m.get('role')}:{m.get('content')}" for m in ref_messages
+                f"{m.get('role')}:{m.get('content')}" for m in sig_messages
             ).encode("utf-8", "replace")
         ).hexdigest()
         _cache_key = (self.preset_name, _sig, tuple(_slot_label(s) for s in reference_models))

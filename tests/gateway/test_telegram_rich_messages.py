@@ -10,6 +10,7 @@ The ``telegram`` package is mocked by ``tests/gateway/conftest.py``
 ``TelegramAdapter`` and wire a mock bot.
 """
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -476,6 +477,53 @@ async def test_transient_timeout_is_not_retryable():
 
 
 @pytest.mark.asyncio
+async def test_rich_transport_error_redacts_bot_token_even_when_redaction_disabled(monkeypatch):
+    import agent.redact as redact
+
+    monkeypatch.setattr(redact, "_REDACT_ENABLED", False)
+    token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
+    adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(
+        side_effect=NetworkError(
+            f"Timed out requesting https://api.telegram.org/bot{token}/sendRichMessage"
+        )
+    )
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is False
+    assert result.error is not None
+    assert token not in result.error
+    assert "bot123456789:***/sendRichMessage" in result.error
+    adapter._bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_legacy_send_error_redacts_bot_token_without_traceback(monkeypatch, caplog):
+    import agent.redact as redact
+
+    monkeypatch.setattr(redact, "_REDACT_ENABLED", False)
+    token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
+    adapter = _make_adapter({"rich_messages": False})
+    adapter._bot.send_message = AsyncMock(
+        side_effect=BadRequest(
+            f"Bad Request: https://api.telegram.org/bot{token}/sendMessage"
+        )
+    )
+
+    with caplog.at_level(logging.ERROR):
+        result = await adapter.send("12345", "Plain legacy content.")
+
+    assert result.success is False
+    assert result.error is not None
+    assert token not in result.error
+    assert "bot123456789:***/sendMessage" in result.error
+    assert token not in caplog.text
+    assert "bot123456789:***/sendMessage" in caplog.text
+    adapter._bot.do_api_request.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_routing_thread_id_maps_to_message_thread_id():
     adapter = _make_adapter()
 
@@ -821,6 +869,32 @@ async def test_finalize_edit_plain_content_stays_legacy():
     assert result.success is True
     adapter._bot.do_api_request.assert_not_called()
     adapter._bot.edit_message_text.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_edit_error_logs_redacted_bot_token_without_traceback(monkeypatch, caplog):
+    import agent.redact as redact
+
+    monkeypatch.setattr(redact, "_REDACT_ENABLED", False)
+    token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
+    adapter = _make_adapter()
+    adapter._bot.edit_message_text = AsyncMock(
+        side_effect=BadRequest(
+            f"Bad Request: https://api.telegram.org/bot{token}/editMessageText"
+        )
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = await adapter.edit_message(
+            "12345", "555", "Just a normal answer.", finalize=True,
+        )
+
+    assert result.success is False
+    assert result.error is not None
+    assert token not in result.error
+    assert "bot123456789:***/editMessageText" in result.error
+    assert token not in caplog.text
+    assert "bot123456789:***/editMessageText" in caplog.text
 
 
 @pytest.mark.asyncio

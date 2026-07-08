@@ -30,13 +30,22 @@ those rules surfaces before a Mission Control deploy.
 """
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
+from hermes_cli.dashboard_auth import prefix as prefix_mod
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+
+HA_INGRESS_DASHBOARD_PREFIX = (
+    "/api/hassio_ingress/8AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEf"
+    "/dashboard"
+)
 
 
 @pytest.fixture
@@ -90,6 +99,53 @@ def gated_app_direct():
     web_server.app.state.bound_host = prev_host
     web_server.app.state.bound_port = prev_port
     web_server.app.state.auth_required = prev_required
+
+
+# ---------------------------------------------------------------------------
+# X-Forwarded-Prefix normalisation
+# ---------------------------------------------------------------------------
+
+
+class TestForwardedPrefixNormalisation:
+    def test_home_assistant_ingress_prefix_with_subpath_is_accepted(
+        self, caplog
+    ):
+        """Home Assistant Supervisor ingress prefixes are 63 chars before
+        add-ons append their own mount path. They must survive validation so
+        the SPA receives the correct __HERMES_BASE_PATH__ and asset prefix."""
+        prefix_mod._warned_malformed_prefixes.clear()
+        assert len(HA_INGRESS_DASHBOARD_PREFIX) > 64
+
+        with caplog.at_level(logging.WARNING, logger=prefix_mod.__name__):
+            result = prefix_mod.normalise_prefix(HA_INGRESS_DASHBOARD_PREFIX)
+
+        assert result == HA_INGRESS_DASHBOARD_PREFIX
+        assert not [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING
+            and "X-Forwarded-Prefix" in r.getMessage()
+        ]
+
+    def test_overlong_prefix_is_rejected_with_deduplicated_warning(
+        self, caplog
+    ):
+        """Keep a bounded header budget, but make rejected non-empty
+        prefixes diagnosable instead of silently producing root-relative
+        dashboard URLs."""
+        prefix_mod._warned_malformed_prefixes.clear()
+        too_long = "/" + ("a" * 257)
+
+        with caplog.at_level(logging.WARNING, logger=prefix_mod.__name__):
+            for _ in range(3):
+                assert prefix_mod.normalise_prefix(too_long) == ""
+
+        warnings = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING
+            and "X-Forwarded-Prefix" in r.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert "longer than 256 characters" in warnings[0].getMessage()
 
 
 # ---------------------------------------------------------------------------

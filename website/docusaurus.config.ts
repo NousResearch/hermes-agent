@@ -78,6 +78,12 @@ const config: Config = {
             from: '/guides/automation-templates',
             to: '/guides/automation-blueprints',
           },
+          {
+            // Moved when the Plugins subcategory was created under
+            // Developer Guide > Extending (docs restructure, July 2026)
+            from: '/guides/build-a-hermes-plugin',
+            to: '/developer-guide/plugins',
+          },
         ],
       },
     ],

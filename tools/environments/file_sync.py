@@ -302,7 +302,17 @@ class FileSyncManager:
             if on_main_thread and original_handler is not None:
                 signal.signal(signal.SIGINT, original_handler)
                 if deferred_sigint:
-                    os.kill(os.getpid(), signal.SIGINT)
+                    # Re-deliver the deferred Ctrl+C to the just-restored
+                    # handler. ``os.kill(os.getpid(), signal.SIGINT)`` is NOT a
+                    # graceful signal on Windows: os.kill only treats
+                    # CTRL_C_EVENT(0)/CTRL_BREAK_EVENT(1) as console events; any
+                    # other value (SIGINT == 2) routes to TerminateProcess(sig),
+                    # hard-killing the CLI (exit code 2) instead of raising
+                    # KeyboardInterrupt — so a Ctrl+C during a remote-backend
+                    # sync-back would kill the whole session on Windows.
+                    # ``signal.raise_signal`` (3.8+) invokes the handler via C
+                    # ``raise()`` on every platform.
+                    signal.raise_signal(signal.SIGINT)
 
     def _sync_back_locked(self, lock_path: Path) -> None:
         """Sync-back under file lock (serializes concurrent gateways)."""

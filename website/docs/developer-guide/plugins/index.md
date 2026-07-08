@@ -1,6 +1,6 @@
 ---
-sidebar_position: 9
 sidebar_label: "Build a Plugin"
+slug: /developer-guide/plugins
 title: "Build a Hermes Plugin"
 description: "Step-by-step guide to building a complete Hermes plugin with tools, hooks, data files, and skills"
 ---
@@ -21,6 +21,10 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | A **context-compression engine** | [Context Engine Plugins](/developer-guide/context-engine-plugin) |
 | An **image-generation backend** | [Image Generation Provider Plugins](/developer-guide/image-gen-provider-plugin) |
 | A **video-generation backend** | [Video Generation Provider Plugins](/developer-guide/video-gen-provider-plugin) |
+| A **web-search / extract backend** | [Web Search Provider Plugins](/developer-guide/web-search-provider-plugin) |
+| A **cloud browser backend** (Browserbase-style CDP session provider) | [Browser Provider Plugins](/developer-guide/browser-provider-plugin) |
+| A **secret-manager backend** (vault / password manager / OS keystore) | [Secret Source Plugins](/developer-guide/secret-source-plugin) |
+| A **dashboard OIDC/auth provider** | [Web Dashboard — custom providers](/user-guide/features/web-dashboard#custom-providers) — `ctx.register_dashboard_auth_provider()` |
 | A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, voice cloning, …) | [TTS custom command providers](/user-guide/features/tts#custom-command-providers) — config-driven, no Python needed |
 | An **STT backend** (custom whisper / ASR CLI) | [Voice Message Transcription](/user-guide/features/tts#voice-message-transcription-stt) — set `HERMES_LOCAL_STT_COMMAND` to a shell template |
 | **External tools via MCP** (filesystem, GitHub, Linear, any MCP server) | [MCP](/user-guide/features/mcp) — declare `mcp_servers.<name>` in `config.yaml` |
@@ -629,6 +633,20 @@ return None
 ```
 
 Any non-None, non-empty return with a `"context"` key (or a plain non-empty string) is collected and appended to the user message for the current turn.
+
+#### Oversized-context spill
+
+Per-hook context is capped at `10,000` characters by default. Anything above the cap is written to `$HERMES_HOME/hook_outputs/<session_id>/<uuid>.txt` and replaced with a head/tail preview plus the saved path. The model can read the full content via `read_file` or `terminal` if it genuinely needs it. This keeps a runaway plugin from inflating every subsequent turn's prompt and blowing out the prompt cache prefix. Tune in `config.yaml`:
+
+```yaml
+hooks:
+  output_spill:
+    enabled: true          # default: true
+    max_chars: 10000       # default; set higher to opt out of spilling
+    preview_head: 500      # chars shown at the top of the preview
+    preview_tail: 500      # chars shown at the bottom of the preview
+    # directory: null      # default: $HERMES_HOME/hook_outputs
+```
 
 #### How injection works
 

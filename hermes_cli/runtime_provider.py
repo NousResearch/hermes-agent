@@ -31,7 +31,11 @@ from hermes_cli.auth import (
     resolve_external_process_provider_credentials,
     has_usable_secret,
 )
-from hermes_cli.config import get_compatible_custom_providers, load_config
+from hermes_cli.config import (
+    get_compatible_custom_providers,
+    load_config,
+    normalize_extra_headers,
+)
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_int
 
@@ -499,11 +503,14 @@ def _resolve_runtime_from_pool_entry(
                 api_mode = detected
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
-    # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
-    # trailing /v1 so the SDK constructs the correct path (e.g.
-    # https://opencode.ai/zen/go/v1/messages instead of .../v1/v1/messages).
-    if api_mode == "anthropic_messages" and provider in {"opencode-zen", "opencode-go"}:
-        base_url = re.sub(r"/v1/?$", "", base_url)
+    # Anthropic SDK prepends its own /v1/messages to the base_url.  Normalize
+    # symmetrically: strip /v1 for anthropic_messages, re-append it for
+    # chat_completions / codex_responses (heals a stripped URL persisted to
+    # model.base_url by an earlier switch into an anthropic-routed model).
+    if provider in {"opencode-zen", "opencode-go"}:
+        from hermes_cli.models import normalize_opencode_base_url
+
+        base_url = normalize_opencode_base_url(provider, api_mode, base_url)
 
     # Optional opt-in: route OpenAI/Codex turns through `codex app-server`.
     # Inert when `model.openai_runtime` is unset or "auto".
@@ -597,11 +604,9 @@ def _lift_extra_headers(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
     SECURITY: header values routinely carry credentials (Cloudflare Access
     service tokens, proxy auth, custom bearer schemes). Never log them.
     """
-    extra_headers = entry.get("extra_headers")
-    if isinstance(extra_headers, dict) and extra_headers:
-        result["extra_headers"] = {
-            str(k): str(v) for k, v in extra_headers.items() if v is not None
-        }
+    extra_headers = normalize_extra_headers(entry.get("extra_headers"))
+    if extra_headers:
+        result["extra_headers"] = extra_headers
 
 
 def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
@@ -2023,9 +2028,10 @@ def resolve_runtime_provider(
                 detected = _detect_api_mode_for_url(base_url)
                 if detected:
                     api_mode = detected
-        # Strip trailing /v1 for OpenCode Anthropic models (see comment above).
-        if api_mode == "anthropic_messages" and provider in {"opencode-zen", "opencode-go"}:
-            base_url = re.sub(r"/v1/?$", "", base_url)
+        # Normalize the /v1 suffix for OpenCode by API mode (see comment above).
+        if provider in {"opencode-zen", "opencode-go"}:
+            from hermes_cli.models import normalize_opencode_base_url
+            base_url = normalize_opencode_base_url(provider, api_mode, base_url)
         if provider == "lmstudio":
             base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
         return {

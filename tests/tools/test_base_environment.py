@@ -174,6 +174,32 @@ class TestAtomicSnapshotWrite:
         assert "$BASHPID" in boot
         assert ".tmp.$$" not in boot
 
+    def test_snapshot_writes_use_private_umask_after_user_command(self):
+        env = _TestableEnv()
+        env._snapshot_ready = True
+        wrapped = env._wrap_command("echo hi", "/tmp")
+
+        assert "umask 077" in wrapped
+        assert wrapped.index("eval 'echo hi'") < wrapped.index("umask 077")
+        assert wrapped.index("umask 077") < wrapped.index("export -p >")
+
+    def test_init_session_bootstrap_uses_private_umask(self):
+        env = _TestableEnv()
+        captured = {}
+
+        def fake_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None):
+            captured["cmd"] = cmd_string
+            raise RuntimeError("stop after capture")
+
+        env._run_bash = fake_run_bash  # type: ignore[assignment]
+        try:
+            env.init_session()
+        except Exception:
+            pass
+        boot = captured.get("cmd", "")
+        assert "umask 077" in boot
+        assert boot.index("umask 077") < boot.index("export -p >")
+
 
 class TestAtomicSnapshotConcurrencyBehavioral:
     """Behavioral regression for #38249 — actually EXECUTES the generated
@@ -248,6 +274,57 @@ class TestAtomicSnapshotConcurrencyBehavioral:
         self._run(script)
         out = self._run(f"cat {_q(snap)}")
         assert "export GOOD=1" in out.stdout, "good snapshot was destroyed by a failed export"
+
+
+class TestSnapshotFileModes:
+    """Snapshot metadata files are private without changing user command umask."""
+
+    def test_snapshot_and_cwd_files_are_0600(self, tmp_path):
+        import os
+        from pathlib import Path
+        import shutil
+        import stat
+        import subprocess
+        if not shutil.which("bash"):
+            import pytest
+            pytest.skip("bash required")
+
+        class ExecutableEnv(BaseEnvironment):
+            def __init__(self, temp_dir):
+                self._temp_dir = str(temp_dir)
+                super().__init__(cwd=str(temp_dir), timeout=10)
+
+            def get_temp_dir(self):
+                return self._temp_dir
+
+            def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
+                proc = subprocess.Popen(
+                    ["/bin/bash", "-lc", cmd_string],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                    cwd=self.cwd,
+                )
+                proc.communicate(timeout=timeout)
+                return proc
+
+            def cleanup(self):
+                pass
+
+        old_umask = os.umask(0o022)
+        try:
+            env = ExecutableEnv(tmp_path)
+            env.init_session()
+
+            user_file = tmp_path / "user-created.txt"
+            env.execute(f"touch {user_file}")
+
+            assert stat.S_IMODE(user_file.stat().st_mode) == 0o644
+            assert stat.S_IMODE(Path(env._snapshot_path).stat().st_mode) == 0o600
+            assert stat.S_IMODE(Path(env._cwd_file).stat().st_mode) == 0o600
+        finally:
+            os.umask(old_umask)
 
 
 class TestExtractCwdFromOutput:

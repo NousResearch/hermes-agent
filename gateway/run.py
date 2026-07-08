@@ -3288,6 +3288,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Restore persisted /voice state into a live platform adapter.
 
         Populates three fields from config + ``self._voice_mode``:
+          - ``_voice_input_callback``: inbound voice transcripts → gateway handler
           - ``_auto_tts_default``: global default from ``voice.auto_tts``
           - ``_auto_tts_enabled_chats``: chats with mode ``voice_only``/``all``
           - ``_auto_tts_disabled_chats``: chats with mode ``off``
@@ -3295,6 +3296,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         platform = getattr(adapter, "platform", None)
         if not isinstance(platform, Platform):
             return
+
+        if hasattr(adapter, "_voice_input_callback"):
+            adapter._voice_input_callback = self._handle_voice_channel_input
 
         disabled_chats = getattr(adapter, "_auto_tts_disabled_chats", None)
         enabled_chats = getattr(adapter, "_auto_tts_enabled_chats", None)

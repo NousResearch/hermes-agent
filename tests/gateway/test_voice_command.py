@@ -224,6 +224,19 @@ class TestHandleVoiceCommand:
 
         assert adapter._auto_tts_default is True
 
+    def test_sync_wires_voice_input_callback_without_tts_sets(self, runner):
+        """Voice transcripts must reach the gateway even outside /voice join."""
+        from gateway.config import Platform
+
+        adapter = SimpleNamespace(
+            platform=Platform.DISCORD,
+            _voice_input_callback=None,
+        )
+
+        runner._sync_voice_mode_state_to_adapter(adapter)
+
+        assert adapter._voice_input_callback == runner._handle_voice_channel_input
+
     def test_restart_restores_voice_off_state(self, runner, tmp_path):
         from gateway.config import Platform
         runner._VOICE_MODE_PATH.write_text(json.dumps({"telegram:123": "off"}))

@@ -638,3 +638,127 @@ class TestCronDemotion:
         # Interactive rows first, in original relative order; cron last, in
         # original relative order.
         assert [r["id"] for r in ordered] == [2, 4, 5, 1, 3]
+
+
+# =========================================================================
+# Protected profile gating (session_search.protected config flag)
+# =========================================================================
+
+class TestProtectedProfile:
+    """session_search.protected: true makes a profile invisible to other
+    profiles' session_search, but the protected profile can still read itself
+    and read other profiles.
+    """
+
+    def _setup_profiles(self, tmp_path):
+        """Create two fake profiles: 'alice' (caller) and 'bob' (protected)."""
+        from hermes_state import SessionDB
+
+        alice_home = tmp_path / "profiles" / "alice"
+        alice_home.mkdir(parents=True)
+        bob_home = tmp_path / "profiles" / "bob"
+        bob_home.mkdir(parents=True)
+
+        # Bob's config marks him as protected.
+        (bob_home / "config.yaml").write_text(
+            "session_search:\n  protected: true\n", encoding="utf-8"
+        )
+        # Alice has no such config (or an empty one).
+        (alice_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+        # Seed Bob's DB with a session.
+        bob_db = SessionDB(bob_home / "state.db")
+        bob_db.create_session("s_bob", source="cli")
+        bob_db.append_message("s_bob", role="user", content="secret thought from bob")
+        bob_db._conn.commit()
+
+        # Seed Alice's DB with a session.
+        alice_db = SessionDB(alice_home / "state.db")
+        alice_db.create_session("s_alice", source="cli")
+        alice_db.append_message("s_alice", role="user", content="hello from alice")
+        alice_db._conn.commit()
+
+        return alice_home, bob_home, alice_db, bob_db
+
+    def _patch_profiles(self, monkeypatch, tmp_path, active_name="alice"):
+        """Patch hermes_cli.profiles to use the tmp_path layout."""
+        from collections import namedtuple
+        from hermes_cli import profiles as profiles_mod
+
+        profiles_root = tmp_path / "profiles"
+        Info = namedtuple("Info", "name path")
+
+        monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+        monkeypatch.setattr(profiles_mod, "validate_profile_name", lambda n: None)
+        monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: (profiles_root / n).exists())
+        monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profiles_root / n)
+        monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: active_name)
+        monkeypatch.setattr(
+            profiles_mod, "list_profiles",
+            lambda: [Info(d.name, d) for d in profiles_root.iterdir() if d.is_dir()],
+        )
+
+    def test_alice_cannot_read_protected_bob(self, tmp_path, monkeypatch):
+        """Profile A cannot read protected profile B via explicit profile param."""
+        alice_home, bob_home, alice_db, bob_db = self._setup_profiles(tmp_path)
+        self._patch_profiles(monkeypatch, tmp_path, active_name="alice")
+
+        result = json.loads(session_search(session_id="s_bob", profile="bob", db=alice_db))
+        assert result["success"] is False
+        assert "protected" in result.get("error", "")
+
+    def test_bob_can_read_own_profile(self, tmp_path, monkeypatch):
+        """Protected profile B can read itself without error."""
+        alice_home, bob_home, alice_db, bob_db = self._setup_profiles(tmp_path)
+        self._patch_profiles(monkeypatch, tmp_path, active_name="bob")
+
+        result = json.loads(session_search(session_id="s_bob", profile="bob", db=bob_db))
+        assert result["success"] is True
+        assert result["mode"] == "read"
+        assert result["session_id"] == "s_bob"
+
+    def test_bob_can_read_alice(self, tmp_path, monkeypatch):
+        """Protected profile B can read unprotected profile A."""
+        alice_home, bob_home, alice_db, bob_db = self._setup_profiles(tmp_path)
+        self._patch_profiles(monkeypatch, tmp_path, active_name="bob")
+
+        result = json.loads(session_search(session_id="s_alice", profile="alice", db=bob_db))
+        assert result["success"] is True
+        assert result["mode"] == "read"
+        assert result["session_id"] == "s_alice"
+
+    def test_locate_skips_protected_bob_when_caller_is_alice(self, tmp_path, monkeypatch):
+        """_locate_session_db must not find sessions inside protected profiles."""
+        alice_home, bob_home, alice_db, bob_db = self._setup_profiles(tmp_path)
+        self._patch_profiles(monkeypatch, tmp_path, active_name="alice")
+
+        # Bare id without profile — should NOT find bob's session.
+        result = json.loads(session_search(session_id="s_bob", db=alice_db))
+        assert result["success"] is False
+
+    def test_locate_finds_own_sessions_when_protected(self, tmp_path, monkeypatch):
+        """Protected profile can still locate its own sessions via bare id scan."""
+        alice_home, bob_home, alice_db, bob_db = self._setup_profiles(tmp_path)
+        self._patch_profiles(monkeypatch, tmp_path, active_name="bob")
+
+        # bob_db is the caller's DB; s_bob is in it directly, so read shape
+        # finds it without needing _locate_session_db. But let's test via a
+        # DB that does NOT contain s_bob — forcing fallback to _locate.
+        from hermes_state import SessionDB
+        empty_db = SessionDB(tmp_path / "empty.db")
+
+        result = json.loads(session_search(session_id="s_bob", db=empty_db))
+        assert result["success"] is True
+        assert result["profile"] == "bob"
+
+    def test_broken_config_treated_as_unprotected(self, tmp_path, monkeypatch):
+        """A profile whose config.yaml is broken is treated as NOT protected."""
+        alice_home, bob_home, alice_db, bob_db = self._setup_profiles(tmp_path)
+        # Corrupt bob's config
+        (bob_home / "config.yaml").write_text("{{{{invalid yaml", encoding="utf-8")
+        self._patch_profiles(monkeypatch, tmp_path, active_name="alice")
+
+        # Should succeed — broken config means bob is treated as unprotected.
+        result = json.loads(session_search(session_id="s_bob", profile="bob", db=alice_db))
+        assert result["success"] is True
+        assert result["mode"] == "read"

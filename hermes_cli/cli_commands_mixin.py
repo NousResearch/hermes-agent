@@ -2247,6 +2247,82 @@ class CLICommandsMixin:
         idx = len(mgr.state.subgoals) if mgr.state else 0
         _cprint(f"  ✓ Added subgoal {idx}: {text}")
 
+    def _handle_executive_v2_dryrun(self, cmd: str) -> None:
+        """Handle /objective [--dry-run] <objective> as dry-run only.
+
+        This CLI surface intentionally exposes no persist/cancel/apply path:
+        it only runs ObjectiveEngine.run_pipeline(...,
+        persist_to_state_meta=False) and renders the preview.  It does not
+        start runtime providers, workers, Kanban, Goal Runner, gateway, GBrain,
+        Obsidian, or NotebookLM integrations.
+        """
+        import shlex
+
+        from cli import _DIM, _RST, _cprint
+        from agent.executive.flag import resolve_v2_enabled
+        from agent.executive.objective_engine import ObjectiveEngine, PermissionError_
+        from agent.executive.dryrun import render_dry_run
+
+        try:
+            parts = shlex.split((cmd or "").strip())
+        except ValueError as exc:
+            _cprint(f"  /objective: {exc}")
+            _cprint("  Usage: /objective [--dry-run] <objective>")
+            return
+
+        args = parts[1:] if parts and parts[0].startswith("/") else parts
+        if args and args[0] == "--dry-run":
+            args = args[1:]
+        objective_text = " ".join(args).strip()
+        if not objective_text:
+            _cprint("  Usage: /objective [--dry-run] <objective>")
+            return
+
+        if not resolve_v2_enabled():
+            _cprint(
+                f"  {_DIM}Executive v2 is disabled. Set "
+                "HERMES_EXECUTIVE_V2_ENABLED=1 or "
+                "agent._executive_v2_enabled = True to enable.{_RST}"
+            )
+            return
+
+        # Determine user_id from current agent if available.
+        user_id = "cli-user"
+        try:
+            agent = getattr(self, "_agent", None) or getattr(self, "agent", None)
+            if agent is not None and getattr(agent, "session_id", None):
+                user_id = str(agent.session_id)
+        except Exception:
+            pass
+
+        engine = ObjectiveEngine(user_id=user_id, enabled=True)
+        try:
+            oid = engine.run_pipeline(objective_text, persist_to_state_meta=False)
+        except PermissionError_ as exc:
+            _cprint(f"  /objective: {exc}")
+            return
+        except Exception as exc:
+            _cprint(f"  /objective: {exc}")
+            return
+        # Render dry-run output. render_dry_run is the formatting source, but
+        # the /objective CLI surface is dry-run-only: strip legacy scaffold
+        # hints for persist/cancel so users are not pointed at unsupported
+        # state-mutating paths from this command.
+        try:
+            state = engine.get_state(oid)
+            rendered = render_dry_run(state)
+            safe_lines = [
+                line for line in rendered.splitlines()
+                if "/objective persist" not in line and "/objective cancel" not in line
+            ]
+            safe_lines.append(
+                "│ persist/cancel are not supported by /objective dry-run."
+            )
+            _cprint("\n".join(safe_lines))
+        except Exception as exc:
+            _cprint(f"  /objective: failed to render dry-run: {exc}")
+            _cprint(f"  (objective_id: {oid})")
+
     def _handle_skin_command(self, cmd: str):
         """Handle /skin [name] — show or change the display skin."""
         from cli import _ACCENT, save_config_value

@@ -259,11 +259,10 @@ def _signal_gateway_sigusr1_restart(pid: int) -> bool:
     """
     if not hasattr(signal, "SIGUSR1"):
         return False
+    if pid <= 0:
+        return False
     try:
         os.kill(pid, signal.SIGUSR1)  # windows-footgun: ok — POSIX signal, guarded above
-    except (ProcessLookupError, PermissionError, OSError):
-        return False
-    return True
 
 
 def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:

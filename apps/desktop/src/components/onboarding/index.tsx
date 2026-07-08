@@ -28,9 +28,16 @@ import {
 import type { ModelOptionProvider, OAuthProvider } from '@/types/hermes'
 
 import { DocsLink, FlowPanel, Status } from './flow'
-import { FeaturedProviderRow, KeyProviderRow, ProviderRow, sortProviders } from './providers'
+import { FeaturedFireworksRow, FeaturedProviderRow, KeyProviderRow, ProviderRow, sortProviders } from './providers'
 
-export { FeaturedProviderRow, KeyProviderRow, ProviderRow, providerTitle, sortProviders } from './providers'
+export {
+  FeaturedFireworksRow,
+  FeaturedProviderRow,
+  KeyProviderRow,
+  ProviderRow,
+  providerTitle,
+  sortProviders
+} from './providers'
 
 interface DesktopOnboardingOverlayProps {
   enabled: boolean
@@ -49,6 +56,12 @@ export interface ApiKeyOption {
 }
 
 const API_KEY_OPTIONS: ApiKeyOption[] = [
+  {
+    id: 'fireworks',
+    name: 'Fireworks AI',
+    envKey: 'FIREWORKS_API_KEY',
+    docsUrl: 'https://app.fireworks.ai/settings/users/api-keys'
+  },
   {
     id: 'openrouter',
     name: 'OpenRouter',
@@ -395,6 +408,14 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   const { t } = useI18n()
   const { localEndpoint, manual, mode, providers } = useStore($desktopOnboarding)
   const [showAll, setShowAll] = useState(readShowAll)
+  // Which key-form option to preselect when we flip to 'apikey' mode. Set by the
+  // Fireworks hero card (its BYOK key) and the OpenRouter row; the generic
+  // "I have an API key" link leaves it undefined and lands on the first option.
+  const [apiKeyInitialEnv, setApiKeyInitialEnv] = useState<string | undefined>(undefined)
+  const openKeyForm = (envKey?: string) => {
+    setApiKeyInitialEnv(envKey)
+    setOnboardingMode('apikey')
+  }
   const ordered = useMemo(() => (providers ? sortProviders(providers) : []), [providers])
   const hasOauth = ordered.length > 0
   const apiKeyOptions = useApiKeyCatalog()
@@ -408,7 +429,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
       <div className="grid gap-3">
         <ApiKeyForm
           canGoBack={hasOauth && !localEndpoint}
-          initialEnvKey={localEndpoint ? 'OPENAI_BASE_URL' : undefined}
+          initialEnvKey={localEndpoint ? 'OPENAI_BASE_URL' : apiKeyInitialEnv}
           onBack={() => setOnboardingMode('oauth')}
           onSave={(envKey, value, name, apiKey) => saveOnboardingApiKey(envKey, value, name, ctx, apiKey)}
           options={apiKeyOptions}
@@ -438,12 +459,15 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
     <div className="grid gap-2">
       <div className="grid max-h-[60dvh] gap-2 overflow-y-auto p-1">
         {featured ? <FeaturedProviderRow onSelect={select} provider={featured} /> : null}
+        {/* Fireworks — preferred BYOK provider, second hero card after Nous.
+            Routes into the API-key form preselecting the Fireworks key. */}
+        <FeaturedFireworksRow onSelect={() => openKeyForm('FIREWORKS_API_KEY')} />
         {showRest ? (
           <>
             {rest.map(p => (
               <ProviderRow key={p.id} onSelect={select} provider={p} />
             ))}
-            <KeyProviderRow onClick={() => setOnboardingMode('apikey')} />
+            <KeyProviderRow onClick={() => openKeyForm('OPENROUTER_API_KEY')} />
           </>
         ) : null}
       </div>
@@ -466,7 +490,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
         {manual ? <span /> : <ChooseLaterLink />}
         <Button
           className="-mr-2 font-medium"
-          onClick={() => setOnboardingMode('apikey')}
+          onClick={() => openKeyForm()}
           size="xs"
           type="button"
           variant="text"

@@ -200,15 +200,21 @@ def main(argv: list[str] | None = None) -> int:
     # without touching our own group or the (already-gone) original parent's.
     # On Windows, process groups are not used for signal delivery, so we spawn
     # as a direct child and use psutil to walk the tree for termination.
-    popen_kwargs = {
-        "stdin": sys.stdin,
-        "stdout": sys.stdout,
-        "stderr": sys.stderr,
-    }
     if os.name == "posix":
-        popen_kwargs["start_new_session"] = True
-
-    proc = subprocess.Popen(real_argv, **popen_kwargs)
+        proc = subprocess.Popen(
+            real_argv,
+            stdin=sys.stdin,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            start_new_session=True,
+        )
+    else:
+        proc = subprocess.Popen(
+            real_argv,
+            stdin=sys.stdin,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
 
     # Forward SIGTERM/SIGINT to the child on POSIX so graceful teardown
     # (`_kill_orphaned_mcp_children`, shutdown sweeps) still kills a wedged

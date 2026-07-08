@@ -121,6 +121,17 @@ class TestMcpList:
         assert "myserver" in out
         assert "enabled" in out
 
+    def test_list_redacts_sensitive_url_query_values(self, tmp_path, capsys):
+        _seed_config(tmp_path, {
+            "remote": {"url": "https://a.b?key=supersecret"},
+        })
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list()
+        out = capsys.readouterr().out
+        assert "key=***" in out
+        assert "supersecret" not in out
+
 
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_remove
@@ -483,6 +494,23 @@ class TestMcpTest:
         assert captured["outer_timeout"] == 310.0
         assert captured["shutdown"] is True
 
+    def test_test_redacts_sensitive_url_query_values(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {
+            "ink": {"url": "https://example.test/mcp?access_token=supersecret&x=1"},
+        })
+
+        def mock_probe(name, config, **kw):
+            return []
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        cmd_mcp_test(_make_args(name="ink"))
+        out = capsys.readouterr().out
+        assert "access_token=***" in out
+        assert "supersecret" not in out
 
 # ---------------------------------------------------------------------------
 # Tests: env var interpolation

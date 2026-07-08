@@ -1,0 +1,6 @@
+name: injection-guard
+description: "双层注入防护——L1 正则阻断 + L2 DeepSeek Flash 语义审查。覆盖 read_file/web_extract/web_search。"
+version: "1.0"
+hooks:
+  - transform_tool_result
+  - pre_tool_call

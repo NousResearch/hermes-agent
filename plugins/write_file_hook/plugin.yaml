@@ -1,0 +1,5 @@
+name: write_file_hook
+description: "Provenance tracking — log write_file/patch/MCP writes (outputs) + web_extract/web_search/read_file/session_search/send_message (inputs) for /goal cross-reference and source tracing."
+version: "3.0"
+hooks:
+  - post_tool_call

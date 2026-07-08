@@ -1,0 +1,5 @@
+name: l0-safety-guard
+description: "L0 操作安全拦截——§1(gem12唯一主机) §2(SSD-only) §2C(文件名安全) §13(备份目录只读)。pre_tool_call 机械阻断，不依赖 LLM 自觉。"
+version: "1.0"
+hooks:
+  - pre_tool_call

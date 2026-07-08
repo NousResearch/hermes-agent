@@ -441,13 +441,16 @@ def test_urlerror_wrapped_timeout_maps_to_network_error(monkeypatch):
     assert "Could not reach Nous Portal" in str(ei.value)
 
 
-def test_bare_socket_timeout_propagates_uncaught(monkeypatch):
-    # Real urllib wraps timeouts in URLError before this layer; this documents the
-    # catch boundary so the URLError-only handling is not broadened blindly.
+def test_bare_socket_timeout_normalizes_to_network_error(monkeypatch):
+    # urlopen wraps connect-phase timeouts in URLError, but a read-phase timeout
+    # is a bare TimeoutError — it must still honor the typed-BillingError contract.
     _sequence(monkeypatch, socket.timeout())
 
-    with pytest.raises(socket.timeout):
+    with pytest.raises(nb.BillingError) as ei:
         nb.get_billing_state()
+
+    assert ei.value.error == "network_error"
+    assert "timed out" in str(ei.value)
 
 
 def test_401_retry_re_resolves_base_url(monkeypatch):

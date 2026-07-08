@@ -962,6 +962,7 @@ class TestRunJobSessionPersistence:
             "id": "test-job",
             "name": "test",
             "prompt": "hello",
+            "max_tokens": 4096,
         }
         fake_db = MagicMock()
 
@@ -992,6 +993,7 @@ class TestRunJobSessionPersistence:
         assert "ok" in output
 
         kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["max_tokens"] == 4096
         assert kwargs["session_db"] is fake_db
         assert kwargs["platform"] == "cron"
         assert kwargs["session_id"].startswith("cron_test-job_")

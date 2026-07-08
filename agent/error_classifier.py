@@ -293,6 +293,7 @@ _MODEL_NOT_FOUND_PATTERNS = [
     # and the error surfaces as a confusing "model not found" message
     # instead of automatically failing over.  See PR #58446.
     "no endpoints found that support tool use",
+    "model is not supported",
 ]
 
 # Request-validation patterns — the request is malformed and will fail
@@ -868,6 +869,28 @@ def _classify_by_status(
     """Classify based on HTTP status code with message-aware refinement."""
 
     if status_code == 401:
+        # OpenCode Zen misuses 401 for model-not-found errors: the body
+        # carries {"type": "error", "error": {"type": "ModelError", ...}}
+        # rather than an auth failure.  Check the body *before* falling
+        # through to the generic auth classification so the user sees
+        # "Model X is not supported" instead of "Provider authentication
+        # failed".
+        error_inner = body.get("error", {})
+        if isinstance(error_inner, dict):
+            inner_type = error_inner.get("type", "")
+            inner_msg = error_inner.get("message", error_msg)
+        else:
+            inner_type = ""
+            inner_msg = str(error_inner) if error_inner else error_msg
+        if (
+            inner_type == "ModelError"
+            or any(p in inner_msg for p in _MODEL_NOT_FOUND_PATTERNS)
+        ):
+            return result_fn(
+                FailoverReason.model_not_found,
+                retryable=False,
+                should_fallback=True,
+            )
         # Not retryable on its own — credential pool rotation and
         # provider-specific refresh (Codex, Anthropic, Nous) run before
         # the retryability check in run_agent.py.  If those succeed, the

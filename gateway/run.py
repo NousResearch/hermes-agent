@@ -355,6 +355,14 @@ def _redact_approval_command(cmd: "str | None") -> str:
 
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
+    # Model-not-found must be checked BEFORE the generic 401/403 auth
+    # catch-all — some providers (OpenCode Zen) misuse HTTP 401 for
+    # "model not supported" errors whose body carries "is not supported".
+    if re.search(r"(model\s+\S+\s+is\s+not\s+supported|is\s+not\s+a\s+supported\s+model)", text, re.IGNORECASE):
+        return (
+            "⚠️ This model is not supported by the provider. "
+            "Try a different free model from the provider's available list."
+        )
     if _GATEWAY_AUTH_ERROR_RE.search(text):
         return (
             "⚠️ Provider authentication failed. Check the configured credentials; "

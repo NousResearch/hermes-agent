@@ -81,6 +81,13 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     # Match authentication/authorization wording at a word boundary and the
     # 401/403 status codes as whole tokens, so "oauth", "4015" and similar do
     # not trip a misleading auth message.
+    # Model-not-found must be checked BEFORE the 401 auth catch-all — some
+    # providers (OpenCode Zen) misuse HTTP 401 for "model not supported".
+    if re.search(r"model\s+\S+\s+is\s+not\s+supported|is\s+not\s+a\s+supported\s+model", lower):
+        return (
+            f"⚠️ Cron '{job_name}' failed: model not supported by provider. "
+            "Full details saved in cron output."
+        )
     if re.search(r"authenticat|authoriz", lower) or re.search(r"\b(401|403)\b", text):
         return (
             f"⚠️ Cron '{job_name}' failed: provider authentication error. "

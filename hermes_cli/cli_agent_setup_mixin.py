@@ -15,8 +15,16 @@ loaded) so this module never imports ``cli`` at import time -> no import cycle.
 from __future__ import annotations
 
 import sys
+import time
 
 from rich.markup import escape as _escape
+
+
+# How long (seconds) to trust a previously auto-detected local model before
+# re-probing the server. Keeps the per-turn cost to at most one cheap
+# ``GET /v1/models`` every few seconds while still reflecting a mid-session
+# model swap (e.g. loading a different model in LM Studio). See #54454.
+LOCAL_MODEL_REDETECT_TTL_SECONDS = 3.0
 
 
 class CLIAgentSetupMixin:
@@ -163,13 +171,67 @@ class CLIAgentSetupMixin:
         # models when provider is openai-codex).  Fixes #651.
         model_changed = self._normalize_model_for_provider(resolved_provider)
 
+        # Re-detect the loaded model for an auto-detected local endpoint so a
+        # mid-session model swap (e.g. switching the loaded model in LM Studio)
+        # is reflected instead of continuing to report the model that was
+        # loaded when the session started.  Fixes #54454.
+        local_model_changed = self._maybe_refresh_local_model()
+
         # AIAgent/OpenAI client holds auth at init time, so rebuild if key,
         # routing, or the effective model changed.
-        if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
+        if (
+            credentials_changed or routing_changed or model_changed or local_model_changed
+        ) and self.agent is not None:
             self.agent = None
             self._active_agent_route_signature = None
 
         return True
+
+    def _maybe_refresh_local_model(self) -> bool:
+        """Re-detect the loaded model for an auto-detected local endpoint.
+
+        Only acts when the model was auto-detected (never explicitly chosen by
+        the user) *and* the resolved endpoint is local — otherwise it is a
+        no-op.  A short TTL keeps the cost to at most one cheap
+        ``GET /v1/models`` every few seconds.  Returns ``True`` when the
+        detected model differs from the current one (so the caller can rebuild
+        the agent), ``False`` otherwise.  Never raises — detection failures
+        leave the current model untouched.
+
+        Fixes #54454 (LM Studio model swapped mid-session was not reflected).
+        """
+        # Respect an explicit user choice — only refresh the auto-detected case.
+        if not getattr(self, "_model_is_default", False):
+            return False
+
+        base_url = getattr(self, "base_url", "") or ""
+        if "localhost" not in base_url and "127.0.0.1" not in base_url:
+            return False
+
+        now = time.monotonic()
+        last_probe = getattr(self, "_local_model_last_probe", 0.0)
+        if last_probe and (now - last_probe) < LOCAL_MODEL_REDETECT_TTL_SECONDS:
+            return False
+        self._local_model_last_probe = now
+
+        try:
+            from hermes_cli.runtime_provider import _auto_detect_local_model
+            detected = _auto_detect_local_model(base_url)
+        except Exception:
+            return False
+
+        if detected and detected != self.model:
+            try:
+                from cli import logger
+                logger.info(
+                    "Local inference model changed on %s: %s -> %s",
+                    base_url, self.model or "(none)", detected,
+                )
+            except Exception:
+                pass
+            self.model = detected
+            return True
+        return False
 
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Build the effective model/runtime config for a single user turn.

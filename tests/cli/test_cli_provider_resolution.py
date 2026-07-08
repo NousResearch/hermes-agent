@@ -200,6 +200,80 @@ def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     assert shell.api_mode == "codex_responses"
 
 
+def test_local_model_redetect_rebuilds_agent_on_model_swap(monkeypatch):
+    """Auto-detected local model is re-detected each turn and rebuilds the
+    agent when the loaded model changes mid-session (#54454)."""
+    cli = _import_cli()
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "openai",
+            "api_mode": "chat_completions",
+            "base_url": "http://localhost:1234/v1",
+            "api_key": "no-key-required",
+            "source": "config",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+
+    detected = {"model": "gemma-4"}
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider._auto_detect_local_model",
+        lambda base_url: detected["model"],
+    )
+
+    # No explicit model -> auto-detect path (_model_is_default is True).
+    shell = cli.HermesCLI(compact=True, max_turns=1)
+    assert shell._model_is_default is True
+
+    # First turn resolves the currently-loaded local model.
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.model == "gemma-4"
+
+    # User swaps the loaded model in LM Studio; an agent already exists.
+    shell.agent = object()
+    shell._local_model_last_probe = 0.0  # bypass the re-probe TTL for the test
+    detected["model"] = "qwen-3.6"
+
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.model == "qwen-3.6"
+    assert shell.agent is None  # rebuilt so the swapped model is used
+
+
+def test_local_model_redetect_left_alone_for_explicit_model(monkeypatch):
+    """An explicitly chosen model is never overridden by local re-detection."""
+    cli = _import_cli()
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "openai",
+            "api_mode": "chat_completions",
+            "base_url": "http://localhost:1234/v1",
+            "api_key": "no-key-required",
+            "source": "config",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+
+    probes = {"count": 0}
+
+    def _detect(base_url):
+        probes["count"] += 1
+        return "qwen-3.6"
+
+    monkeypatch.setattr("hermes_cli.runtime_provider._auto_detect_local_model", _detect)
+
+    # Explicit --model means _model_is_default is False.
+    shell = cli.HermesCLI(model="my-pinned-model", compact=True, max_turns=1)
+    assert shell._model_is_default is False
+
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.model == "my-pinned-model"
+    assert probes["count"] == 0  # never probed for an explicit choice
+
+
 def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
     cli = _import_cli()
     shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)

@@ -21,6 +21,18 @@ except ImportError:
     _HAS_LARK_OAPI = False
 
 
+class _FakeRequestContent:
+    def __init__(self, body: bytes):
+        self.body = body
+        self.read_sizes: list[int] = []
+
+    async def readexactly(self, size: int) -> bytes:
+        self.read_sizes.append(size)
+        if len(self.body) < size:
+            raise asyncio.IncompleteReadError(self.body, size)
+        return self.body[:size]
+
+
 def _mock_event_dispatcher_builder(mock_handler_class):
     mock_builder = Mock()
     mock_builder.register_p2_im_message_message_read_v1 = Mock(return_value=mock_builder)
@@ -178,7 +190,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         runner = AsyncMock()
         site = AsyncMock()
         web_module = SimpleNamespace(
-            Application=lambda: SimpleNamespace(router=SimpleNamespace(add_post=lambda *_args, **_kwargs: None)),
+            Application=lambda **_kwargs: SimpleNamespace(router=SimpleNamespace(add_post=lambda *_args, **_kwargs: None)),
             AppRunner=lambda _app: runner,
             TCPSite=lambda _runner, host, port: SimpleNamespace(start=site.start, host=host, port=port),
         )
@@ -251,6 +263,77 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             metadata={"platform": "feishu"},
         )
         release_lock.assert_called_once_with("feishu-app-id", "cli_app")
+
+    def test_disconnect_sends_websocket_close_frame(self):
+        """Regression test for #10202: disconnect() must call the WSS
+        client's ``_disconnect()`` coroutine so a WebSocket CLOSE frame
+        is sent to Feishu. Without this, Feishu's server continues
+        routing to the stale connection, silencing the channel.
+        """
+        import threading
+        from types import SimpleNamespace
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        # Real thread loop to schedule the close coroutine on.
+        ws_thread_loop = asyncio.new_event_loop()
+        ready = threading.Event()
+
+        def _run_loop() -> None:
+            asyncio.set_event_loop(ws_thread_loop)
+            ready.set()
+            ws_thread_loop.run_forever()
+
+        thread = threading.Thread(target=_run_loop, daemon=True)
+        thread.start()
+        ready.wait()
+
+        close_called = threading.Event()
+
+        async def _fake_disconnect() -> None:
+            close_called.set()
+
+        ws_client = SimpleNamespace(_disconnect=_fake_disconnect, _auto_reconnect=True)
+        adapter._ws_client = ws_client
+        adapter._ws_thread_loop = ws_thread_loop
+        adapter._ws_future = None
+
+        try:
+            asyncio.run(adapter.disconnect())
+        finally:
+            if not ws_thread_loop.is_closed():
+                ws_thread_loop.call_soon_threadsafe(ws_thread_loop.stop)
+            thread.join(timeout=2.0)
+            if not ws_thread_loop.is_closed():
+                ws_thread_loop.close()
+
+        self.assertTrue(
+            close_called.is_set(),
+            "disconnect() must schedule ws_client._disconnect() on the ws thread loop",
+        )
+        # _disable_websocket_auto_reconnect() must still run.
+        self.assertIsNone(adapter._ws_client)
+
+    def test_disconnect_tolerates_missing_internal_disconnect(self):
+        """If the lark_oapi client layout changes and ``_disconnect``
+        disappears, disconnect() must not raise — fall through to the
+        existing task-cancel path.
+        """
+        from types import SimpleNamespace
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        # No ``_disconnect`` attribute — ``hasattr`` guard should skip.
+        adapter._ws_client = SimpleNamespace(_auto_reconnect=True)
+        adapter._ws_thread_loop = None
+        adapter._ws_future = None
+
+        # Must not raise.
+        asyncio.run(adapter.disconnect())
+        self.assertIsNone(adapter._ws_client)
 
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_app",
@@ -1679,7 +1762,7 @@ class TestAdapterBehavior(unittest.TestCase):
             remote="127.0.0.1",
             content_length=None,
             headers={},
-            read=AsyncMock(return_value=body),
+            content=_FakeRequestContent(body),
         )
 
         response = asyncio.run(adapter._handle_webhook_request(request))
@@ -1708,7 +1791,7 @@ class TestAdapterBehavior(unittest.TestCase):
             remote="203.0.113.10",
             content_length=None,
             headers={},
-            read=AsyncMock(return_value=body),
+            content=_FakeRequestContent(body),
         )
 
         response = asyncio.run(adapter._handle_webhook_request(request))
@@ -3338,6 +3421,30 @@ class TestWebhookSecurity(unittest.TestCase):
         response = asyncio.run(adapter._handle_webhook_request(request))
         self.assertEqual(response.status, 413)
 
+    def test_webhook_request_rejects_oversized_chunked_body_while_reading(self):
+        from gateway.config import PlatformConfig
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from plugins.platforms.feishu.adapter import FeishuAdapter, _FEISHU_WEBHOOK_MAX_BODY_BYTES
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            token = set_hermes_home_override(tmpdir)
+            try:
+                adapter = FeishuAdapter(PlatformConfig())
+            finally:
+                reset_hermes_home_override(token)
+            content = _FakeRequestContent(b"A" * (_FEISHU_WEBHOOK_MAX_BODY_BYTES + 2))
+            request = SimpleNamespace(
+                remote="127.0.0.1",
+                content_length=None,
+                headers={},
+                content=content,
+            )
+
+            response = asyncio.run(adapter._handle_webhook_request(request))
+
+            self.assertEqual(response.status, 413)
+            self.assertEqual(content.read_sizes, [_FEISHU_WEBHOOK_MAX_BODY_BYTES + 1])
+
     @patch.dict(os.environ, {}, clear=True)
     def test_webhook_request_rejects_invalid_json(self):
         from gateway.config import PlatformConfig
@@ -3347,7 +3454,7 @@ class TestWebhookSecurity(unittest.TestCase):
         request = SimpleNamespace(
             remote="127.0.0.1",
             content_length=None,
-            read=AsyncMock(return_value=b"not-json"),
+            content=_FakeRequestContent(b"not-json"),
         )
         response = asyncio.run(adapter._handle_webhook_request(request))
         self.assertEqual(response.status, 400)
@@ -3363,7 +3470,7 @@ class TestWebhookSecurity(unittest.TestCase):
             remote="127.0.0.1",
             content_length=None,
             headers={"x-lark-request-timestamp": "123", "x-lark-request-nonce": "abc", "x-lark-signature": "bad"},
-            read=AsyncMock(return_value=body),
+            content=_FakeRequestContent(body),
         )
         response = asyncio.run(adapter._handle_webhook_request(request))
         self.assertEqual(response.status, 401)
@@ -3412,7 +3519,7 @@ class TestWebhookSecurity(unittest.TestCase):
         request = SimpleNamespace(
             remote="127.0.0.1",
             content_length=None,
-            read=AsyncMock(return_value=body),
+            content=_FakeRequestContent(body),
         )
         response = asyncio.run(adapter._handle_webhook_request(request))
         self.assertEqual(response.status, 200)

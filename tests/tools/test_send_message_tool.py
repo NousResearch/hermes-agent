@@ -39,6 +39,8 @@ from tools.send_message_tool import (
 # and provide a thin ``_send_discord(token, ...)`` shim that mirrors the
 # pre-migration signature so the existing test bodies keep working.
 from plugins.platforms.discord.adapter import (
+    _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES,
+    _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES,
     _derive_forum_thread_name,
     _probe_is_forum_cached,
     _remember_channel_is_forum,
@@ -66,6 +68,54 @@ async def _send_discord(
         thread_id=thread_id,
         media_files=media_files,
     )
+
+
+class _StreamingAiohttpContent:
+    def __init__(self, body: bytes):
+        self._body = body
+        self.read_sizes = []
+
+    async def read(self, size=-1):
+        self.read_sizes.append(size)
+        if not self._body:
+            return b""
+        if size is None or size < 0:
+            chunk = self._body
+            self._body = b""
+            return chunk
+        chunk = self._body[:size]
+        self._body = self._body[size:]
+        return chunk
+
+
+class _StreamingAiohttpResponse:
+    def __init__(self, status: int, body: bytes):
+        self.status = status
+        self.content = _StreamingAiohttpContent(body)
+        self.closed = False
+        self.json = AsyncMock(side_effect=AssertionError("resp.json() should not be used"))
+        self.text = AsyncMock(side_effect=AssertionError("resp.text() should not be used"))
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    def close(self):
+        self.closed = True
+
+
+class _StreamingAiohttpSession:
+    def __init__(self, response: _StreamingAiohttpResponse):
+        self.response = response
+        self.post = MagicMock(return_value=response)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
 
 
 def _discord_entry():
@@ -1795,6 +1845,41 @@ class TestSendDiscordThreadId:
             result = self._run("tok", "111", "hi")
         assert "error" in result
         assert "403" in result["error"]
+
+    def test_success_response_json_read_is_bounded(self):
+        """Standalone Discord sends parse success JSON through the bounded reader."""
+        body = b'{"id":"bounded-json"}'
+        response = _StreamingAiohttpResponse(200, body)
+        session = _StreamingAiohttpSession(response)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = self._run("tok", "111", "hi", thread_id="999")
+
+        assert result["success"] is True
+        assert result["message_id"] == "bounded-json"
+        assert response.content.read_sizes[0] == _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES + 1
+        response.json.assert_not_awaited()
+        response.text.assert_not_awaited()
+
+    def test_error_response_text_read_is_bounded(self):
+        """Oversized Discord API error bodies are capped before formatting."""
+        body = b"E" * (_DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES + 1024)
+        response = _StreamingAiohttpResponse(500, body)
+        session = _StreamingAiohttpSession(response)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = self._run("tok", "111", "hi", thread_id="999")
+
+        assert "error" in result
+        assert "500" in result["error"]
+        assert response.content.read_sizes[0] == _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES + 1
+        assert response.closed is True
+        response.json.assert_not_awaited()
+        response.text.assert_not_awaited()
+        prefix = "Discord API error (500): "
+        assert len(result["error"].encode("utf-8")) <= (
+            len(prefix.encode("utf-8")) + _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES
+        )
 
 
 class TestSendToPlatformDiscordThread:

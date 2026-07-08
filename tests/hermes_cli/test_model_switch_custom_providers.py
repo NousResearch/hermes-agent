@@ -45,6 +45,73 @@ def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
     )
 
 
+def test_list_authenticated_providers_can_skip_custom_provider_live_probe(monkeypatch):
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    fetch = lambda *a, **k: (_ for _ in ()).throw(AssertionError("unexpected probe"))
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+
+    providers = list_authenticated_providers(
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Slow Local",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "api_key": "sk-local",
+                "model": "local-model",
+            }
+        ],
+        probe_custom_providers=False,
+    )
+
+    row = next(p for p in providers if p["slug"] == "custom:slow-local")
+    assert row["models"] == ["local-model"]
+    assert row["total_models"] == 1
+
+
+def test_list_authenticated_providers_can_probe_only_current_custom_provider(monkeypatch):
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fetch(api_key, api_url, **kwargs):
+        calls.append(api_url)
+        if api_url == "http://active.local/v1":
+            return ["active-a", "active-b"]
+        raise AssertionError(f"unexpected probe for {api_url}")
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+
+    providers = list_authenticated_providers(
+        current_provider="custom:active-proxy",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Active Proxy",
+                "base_url": "http://active.local/v1",
+                "api_key": "sk-active",
+                "model": "configured-active",
+            },
+            {
+                "name": "Offline Proxy",
+                "base_url": "http://offline.local/v1",
+                "api_key": "sk-offline",
+                "model": "configured-offline",
+            },
+        ],
+        probe_custom_providers=False,
+        probe_current_custom_provider=True,
+    )
+
+    active = next(p for p in providers if p["slug"] == "custom:active-proxy")
+    offline = next(p for p in providers if p["slug"] == "custom:offline-proxy")
+    assert calls == ["http://active.local/v1"]
+    assert active["is_current"] is True
+    assert active["models"] == ["active-a", "active-b"]
+    assert offline["models"] == ["configured-offline"]
+
+
 def test_resolve_provider_full_finds_named_custom_provider():
     """Explicit /model --provider should resolve saved custom_providers entries."""
     resolved = resolve_provider_full(
@@ -93,6 +160,29 @@ def test_list_authenticated_providers_includes_active_bare_custom_endpoint(monke
     assert bare_custom["is_user_defined"] is True
     assert bare_custom["models"] == ["gpt-4o"]
     assert bare_custom["api_url"] == "https://www.ccsub.net/v1"
+
+
+def test_list_authenticated_providers_can_probe_active_bare_custom_endpoint(monkeypatch):
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_api_models",
+        lambda api_key, api_url, **kwargs: ["gpt-4o", "gpt-4o-mini"],
+    )
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="https://www.ccsub.net/v1",
+        current_model="gpt-4o",
+        user_providers={},
+        custom_providers=[],
+        probe_custom_providers=False,
+        probe_current_custom_provider=True,
+    )
+
+    bare_custom = next(p for p in providers if p["slug"] == "custom")
+    assert bare_custom["is_current"] is True
+    assert bare_custom["models"] == ["gpt-4o", "gpt-4o-mini"]
 
 
 def test_switch_model_accepts_explicit_bare_custom_current_endpoint(monkeypatch):
@@ -901,6 +991,79 @@ def test_custom_providers_discover_models_false_string_is_normalised(monkeypatch
     assert gateway_prov is not None
     assert calls == [], "string 'false' must disable live discovery"
     assert gateway_prov["models"] == ["only-model"]
+
+
+def test_custom_providers_discover_models_false_list_of_dict_ids(monkeypatch):
+    """List-of-dicts ``models: [{id: ...}]`` must be preserved as configured
+    model IDs when discovery is disabled."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
+        return ["live-a", "live-b"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    custom_providers = [
+        {
+            "name": "static-gateway",
+            "api_key": "***",
+            "base_url": "https://router.example.com/v1",
+            "discover_models": False,
+            "model": "claude-3-7-sonnet",
+            "models": [
+                {"id": "claude-3-7-sonnet"},
+                {"id": "claude-sonnet-4"},
+            ],
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    gateway_prov = next(
+        (p for p in providers if p.get("api_url") == "https://router.example.com/v1"),
+        None,
+    )
+
+    assert gateway_prov is not None
+    assert calls == [], "discover_models: false must skip live discovery"
+    assert gateway_prov["models"] == ["claude-3-7-sonnet", "claude-sonnet-4"]
+    assert gateway_prov["total_models"] == 2
+
+
+def test_list_of_dict_models_prefers_id_over_label(monkeypatch):
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        custom_providers=[
+            {
+                "name": "static-gateway",
+                "base_url": "https://router.example.com/v1",
+                "discover_models": False,
+                "models": [{"id": "real-model-id", "name": "Friendly Label"}],
+            }
+        ],
+        max_models=50,
+    )
+
+    gateway_prov = next(
+        (p for p in providers if p.get("api_url") == "https://router.example.com/v1"),
+        None,
+    )
+
+    assert gateway_prov is not None
+    assert gateway_prov["models"] == ["real-model-id"]
 
 
 def test_resolve_custom_provider_passes_key_env():

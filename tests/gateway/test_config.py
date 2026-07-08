@@ -4,6 +4,8 @@ import logging
 import os
 from unittest.mock import patch
 
+from agent.secret_scope import reset_secret_scope, set_secret_scope
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from gateway.config import (
     ChannelOverride,
     GatewayConfig,
@@ -217,7 +219,7 @@ class TestSessionResetPolicy:
 
     def test_defaults(self):
         policy = SessionResetPolicy()
-        assert policy.mode == "both"
+        assert policy.mode == "none"
         assert policy.at_hour == 4
         assert policy.idle_minutes == 1440
         assert policy.bg_process_max_age_hours == 24
@@ -227,7 +229,7 @@ class TestSessionResetPolicy:
             {"mode": None, "at_hour": None, "idle_minutes": None,
              "bg_process_max_age_hours": None}
         )
-        assert restored.mode == "both"
+        assert restored.mode == "none"
         assert restored.at_hour == 4
         assert restored.idle_minutes == 1440
         assert restored.bg_process_max_age_hours == 24
@@ -402,6 +404,32 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
+
+    def test_multiplex_profiles_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        """``gateway.multiplex_profiles: true`` (the nested form written by
+        ``hermes config set gateway.multiplex_profiles true``) must enable
+        multiplexing when loaded via load_gateway_config().
+
+        Regression: load_gateway_config() only surfaced the *top-level*
+        ``multiplex_profiles`` key into gw_data, so a config.yaml that pinned
+        the flag under the nested ``gateway:`` section silently loaded with
+        multiplex_profiles=False. (from_dict honors the nested fallback, but
+        load_gateway_config builds gw_data from the top-level keys before
+        calling from_dict, so the nested value never reached it.)
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.multiplex_profiles is True
 
     def test_relay_platform_enabled_from_env_url(self, tmp_path, monkeypatch):
         """GATEWAY_RELAY_URL must enable Platform.RELAY in config.platforms so
@@ -1170,6 +1198,43 @@ class TestLoadGatewayConfig:
         import os
         assert os.environ.get("TELEGRAM_PROXY") == "socks5://from-env:1080"
 
+    def test_profile_scoped_env_overrides_do_not_fall_back_to_default_profile_env(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        default_home = tmp_path / "default-home"
+        default_home.mkdir()
+        default_config = default_home / "config.yaml"
+        default_config.write_text(
+            "multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+
+        secondary_home = tmp_path / "secondary-home"
+        secondary_home.mkdir()
+        secondary_config = secondary_home / "config.yaml"
+        secondary_config.write_text(
+            "multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "default-token")
+
+        home_token = set_hermes_home_override(str(secondary_home))
+        secret_token = set_secret_scope({"DISCORD_BOT_TOKEN": "worker-token"})
+        try:
+            config = load_gateway_config()
+        finally:
+            reset_secret_scope(secret_token)
+            reset_hermes_home_override(home_token)
+
+        assert config.multiplex_profiles is True
+        assert config.platforms[Platform.DISCORD].token == "worker-token"
+        assert Platform.API_SERVER not in config.platforms
+
 
 class TestHomeChannelEnvOverrides:
     """Home channel env vars should apply even when the platform was already
@@ -1250,3 +1315,96 @@ class TestHomeChannelEnvOverrides:
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
+
+
+class TestMultiplexProfilesEnvOverride:
+    """GATEWAY_MULTIPLEX_PROFILES env override — the 3-tier precedence chain.
+
+    env (recognized token) > config.yaml (top-level or nested gateway.*) >
+    default False. A blank / unrecognized env value is treated as UNSET and
+    falls through to config (the empty-secret trap: a provisioned-but-empty Fly
+    secret arrives as "" and must not shadow a config.yaml opt-in).
+    """
+
+    def _load(self, tmp_path, monkeypatch, config_text=None):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(exist_ok=True)
+        if config_text is not None:
+            (hermes_home / "config.yaml").write_text(config_text, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        return load_gateway_config()
+
+    # ── Tier 1: env wins ──────────────────────────────────────────────────
+    def test_env_true_forces_on_with_no_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "true")
+        config = self._load(tmp_path, monkeypatch, config_text=None)
+        assert config.multiplex_profiles is True
+
+    def test_env_true_overrides_config_false(self, tmp_path, monkeypatch):
+        # THE discriminating test: env-set wins over an explicit config value.
+        monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "1")
+        config = self._load(
+            tmp_path, monkeypatch, config_text="multiplex_profiles: false\n"
+        )
+        assert config.multiplex_profiles is True
+
+    def test_env_false_overrides_config_true(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "off")
+        config = self._load(
+            tmp_path, monkeypatch, config_text="multiplex_profiles: true\n"
+        )
+        assert config.multiplex_profiles is False
+
+    # ── Tier 2: config.yaml when env unset ────────────────────────────────
+    def test_config_true_when_env_unset(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+        config = self._load(
+            tmp_path, monkeypatch, config_text="multiplex_profiles: true\n"
+        )
+        assert config.multiplex_profiles is True
+
+    # ── The empty / unrecognized env trap: fall through, don't force off ──
+    def test_empty_env_does_not_shadow_config_true(self, tmp_path, monkeypatch):
+        # Provisioned-but-unpopulated Fly secret arrives as "". It must NOT
+        # turn OFF a config.yaml opt-in.
+        monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "")
+        config = self._load(
+            tmp_path, monkeypatch, config_text="multiplex_profiles: true\n"
+        )
+        assert config.multiplex_profiles is True
+
+    def test_whitespace_env_does_not_shadow_config_true(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "   ")
+        config = self._load(
+            tmp_path, monkeypatch, config_text="multiplex_profiles: true\n"
+        )
+        assert config.multiplex_profiles is True
+
+    def test_unrecognized_env_falls_through_to_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "maybe")
+        config = self._load(
+            tmp_path, monkeypatch, config_text="multiplex_profiles: true\n"
+        )
+        assert config.multiplex_profiles is True
+
+    # ── Tier 3: default False ─────────────────────────────────────────────
+    def test_default_false_when_neither_set(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+        config = self._load(tmp_path, monkeypatch, config_text=None)
+        assert config.multiplex_profiles is False
+
+    # ── The resolver in isolation ─────────────────────────────────────────
+    def test_resolver_tristate(self, monkeypatch):
+        from gateway.config import _env_multiplex_profiles_override
+
+        monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+        assert _env_multiplex_profiles_override() is None
+        for truthy in ("1", "true", "TRUE", "yes", "on"):
+            monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", truthy)
+            assert _env_multiplex_profiles_override() is True, truthy
+        for falsy in ("0", "false", "FALSE", "no", "off"):
+            monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", falsy)
+            assert _env_multiplex_profiles_override() is False, falsy
+        for noise in ("", "   ", "maybe", "2"):
+            monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", noise)
+            assert _env_multiplex_profiles_override() is None, repr(noise)

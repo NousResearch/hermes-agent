@@ -1750,7 +1750,7 @@ async def _send_qqbot(pconfig, chat_id, message):
             token_data = token_resp.json()
             access_token = token_data.get("access_token")
             if not access_token:
-                return _error(f"QQBot: no access_token in response")
+                return _error("QQBot: no access_token in response")
 
             # Step 2: Send message via REST
             # QQ Bot API has separate endpoints for channels, C2C, and groups.

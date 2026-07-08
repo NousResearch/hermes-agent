@@ -228,6 +228,19 @@ _APPROVAL_LABEL_MAP: Dict[str, str] = {
     "always": "Approved permanently",
     "deny": "Denied",
 }
+
+
+async def _read_limited_feishu_webhook_body(request: Any, max_bytes: int) -> bytes:
+    """Read at most ``max_bytes`` from an aiohttp request body."""
+    try:
+        body = await request.content.readexactly(max_bytes + 1)
+    except asyncio.IncompleteReadError as exc:
+        body = exc.partial
+    if len(body) > max_bytes:
+        raise ValueError("payload too large")
+    return body
+
+
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 
@@ -1806,10 +1819,49 @@ class FeishuAdapter(BasePlatformAdapter):
         await self._cancel_pending_tasks(self._pending_text_batch_tasks)
         await self._cancel_pending_tasks(self._pending_media_batch_tasks)
         self._reset_batch_buffers()
+
+        # Send a WebSocket CLOSE frame to Feishu BEFORE tearing down the
+        # thread loop. Without this, Feishu's server never learns the
+        # connection is dead and continues routing messages to the stale
+        # endpoint — the channel goes silent until the server-side
+        # CLOSE-WAIT expires (minutes to hours). See issue #10202.
+        #
+        # ``_disable_websocket_auto_reconnect()`` nils ``self._ws_client``,
+        # so capture the client reference first.
+        ws_client = self._ws_client
+        ws_thread_loop = self._ws_thread_loop
         self._disable_websocket_auto_reconnect()
         await self._stop_webhook_server()
 
-        ws_thread_loop = self._ws_thread_loop
+        if (
+            ws_client is not None
+            and ws_thread_loop is not None
+            and not ws_thread_loop.is_closed()
+            and hasattr(ws_client, "_disconnect")
+        ):
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    ws_client._disconnect(), ws_thread_loop
+                )
+                # 5s is generous — the CLOSE frame is a single WebSocket
+                # control frame. If it takes longer than that the
+                # connection is already wedged and we gain nothing by
+                # waiting further.
+                await asyncio.wait_for(asyncio.wrap_future(future), timeout=5.0)
+                logger.debug("[Feishu] Sent WebSocket CLOSE frame to Feishu")
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[Feishu] CLOSE frame not acknowledged within 5s — "
+                    "Feishu may briefly route messages to the stale "
+                    "connection until server-side timeout"
+                )
+            except Exception as exc:
+                logger.debug(
+                    "[Feishu] Could not send WebSocket CLOSE frame: %s",
+                    exc,
+                    exc_info=True,
+                )
+
         if ws_thread_loop is not None and not ws_thread_loop.is_closed():
             logger.debug("[Feishu] Cancelling websocket thread tasks and stopping loop")
 
@@ -3479,9 +3531,16 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             body_bytes: bytes = await asyncio.wait_for(
-                request.read(),
+                _read_limited_feishu_webhook_body(
+                    request,
+                    _FEISHU_WEBHOOK_MAX_BODY_BYTES,
+                ),
                 timeout=_FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS,
             )
+        except ValueError:
+            logger.warning("[Feishu] Webhook body exceeds limit from %s", remote_ip)
+            self._record_webhook_anomaly(remote_ip, "413")
+            return web.Response(status=413, text="Request body too large")
         except asyncio.TimeoutError:
             logger.warning("[Feishu] Webhook body read timed out after %ds from %s", _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS, remote_ip)
             self._record_webhook_anomaly(remote_ip, "408")
@@ -3489,11 +3548,6 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             self._record_webhook_anomaly(remote_ip, "400")
             return web.json_response({"code": 400, "msg": "failed to read body"}, status=400)
-
-        if len(body_bytes) > _FEISHU_WEBHOOK_MAX_BODY_BYTES:
-            logger.warning("[Feishu] Webhook body exceeds limit (%d bytes) from %s", len(body_bytes), remote_ip)
-            self._record_webhook_anomaly(remote_ip, "413")
-            return web.Response(status=413, text="Request body too large")
 
         try:
             payload = json.loads(body_bytes.decode("utf-8"))
@@ -4745,7 +4799,10 @@ class FeishuAdapter(BasePlatformAdapter):
         if self._event_handler is None:
             raise RuntimeError("failed to build Feishu event handler")
         await self._hydrate_bot_identity()
-        app = web.Application()
+        # client_max_size backstops the bounded reader in
+        # _handle_webhook_request; aiohttp then enforces the same cap on
+        # every read path (#58536/#58902/#59180 pattern).
+        app = web.Application(client_max_size=_FEISHU_WEBHOOK_MAX_BODY_BYTES)
         app.router.add_post(self._webhook_path, self._handle_webhook_request)
         self._webhook_runner = web.AppRunner(app)
         await self._webhook_runner.setup()

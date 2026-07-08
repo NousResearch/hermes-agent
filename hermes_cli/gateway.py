@@ -19,6 +19,15 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+# Ensure /bin and /usr/bin are on PATH so launchctl/systemctl are discoverable
+# when running under UV's bundled Python which ships a minimal PATH (#3849).
+if os.name == "posix":
+    _sys_dirs = {"/bin", "/usr/bin", "/usr/sbin", "/sbin"}
+    _path_dirs = set(os.environ.get("PATH", "").split(os.pathsep))
+    _missing = _sys_dirs - _path_dirs
+    if _missing:
+        os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + os.pathsep.join(sorted(_missing))
+
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from gateway.status import terminate_pid
@@ -3170,7 +3179,7 @@ def _require_service_installed(action: str, system: bool = False) -> None:
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists():
         scope_flag = " --system" if system else ""
-        print(f"✗ Gateway service is not installed")
+        print("✗ Gateway service is not installed")
         print(f"  Run: {'sudo ' if system else ''}hermes gateway install{scope_flag}")
         sys.exit(1)
 
@@ -4555,16 +4564,29 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
         if not pid or not _pid_exists(pid):
             return
 
-        # (c) default config has multiplexing on
-        cfg_path = default_root / "config.yaml"
-        if not cfg_path.exists():
-            return
-        with open(cfg_path, encoding="utf-8") as f:
-            cfg = _yaml.safe_load(f) or {}
-        multiplex = bool(
-            cfg.get("multiplex_profiles")
-            or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")
-        )
+        # (c) multiplexing is on for the default gateway. Precedence mirrors
+        # gateway.config: the GATEWAY_MULTIPLEX_PROFILES env override wins over
+        # config.yaml when set to a recognized value, so a hosted gateway that
+        # forces multiplex on via env (with no multiplex_profiles in config.yaml)
+        # still trips this guard. A blank/unrecognized env value falls through
+        # to config.yaml.
+        from gateway.config import _env_multiplex_profiles_override
+
+        env_multiplex = _env_multiplex_profiles_override()
+        if env_multiplex is False:
+            return  # explicitly forced OFF by the operator env override
+        if env_multiplex is True:
+            multiplex = True
+        else:
+            cfg_path = default_root / "config.yaml"
+            if not cfg_path.exists():
+                return
+            with open(cfg_path, encoding="utf-8") as f:
+                cfg = _yaml.safe_load(f) or {}
+            multiplex = bool(
+                cfg.get("multiplex_profiles")
+                or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")
+            )
         if not multiplex:
             return
     except Exception:

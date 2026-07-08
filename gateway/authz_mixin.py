@@ -92,10 +92,14 @@ class GatewayAuthorizationMixin:
             if adapter is not None:
                 return adapter
         profile_name = (profile or "").strip() or None
-        if profile_name:
+        if profile_name and profile_name != "default":
             profile_adapters = getattr(self, "_profile_adapters", None) or {}
             if profile_name in profile_adapters:
                 return profile_adapters[profile_name].get(platform)
+            # Fail closed: a stamped secondary profile with no registry entry
+            # (e.g. its adapter failed to connect) must NOT fall back to the
+            # default profile's adapter — that sends replies out the wrong bot.
+            return None
         adapters = getattr(self, "adapters", None) or {}
         return adapters.get(platform)
 
@@ -282,6 +286,21 @@ class GatewayAuthorizationMixin:
         if isinstance(sender_allow, (list, tuple, set)):
             return any(str(item).strip() for item in sender_allow)
         return False
+
+    def _pairing_store_for(self, source: "SessionSource"):
+        """Pick the per-profile PairingStore for a source, falling back to global.
+
+        In a multiplexing gateway, each profile owns its own pairing whitelist
+        so isolation is preserved. When the source has no profile (single-
+        profile gateway, or a path that hasn't stamped profile yet) or the
+        profile isn't registered, fall back to ``self.pairing_store`` (the
+        global default) so existing behavior is preserved.
+        """
+        per_profile = getattr(self, "pairing_stores", None) or {}
+        profile = getattr(source, "profile", None)
+        if profile and profile in per_profile:
+            return per_profile[profile]
+        return getattr(self, "pairing_store", None)
 
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
@@ -491,10 +510,14 @@ class GatewayAuthorizationMixin:
         # allowlist IS configured, operator approval also writes the user into
         # that allowlist (see PairingStore._approve_user), keeping a single
         # operator-visible source of truth. (#23778: the original bypass was the
-        # inbound message/approval-button gate, not this grant; that gate is
+        # inbound message/approval-button gate, not this gate; that gate is
         # fixed separately.)
+        # In multiplex gateways, route to the per-profile PairingStore so each
+        # profile's whitelist is isolated; falls back to the global store when
+        # the source has no profile or the profile isn't registered.
         platform_name = source.platform.value if source.platform else ""
-        if self.pairing_store.is_approved(platform_name, user_id):
+        pairing_store = self._pairing_store_for(source)
+        if pairing_store is not None and pairing_store.is_approved(platform_name, user_id):
             return True
 
         # Check platform-specific and global allowlists

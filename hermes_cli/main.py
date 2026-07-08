@@ -229,9 +229,9 @@ def _read_openai_version_fast() -> str | None:
 def _print_fast_version_info() -> None:
     from hermes_cli import __release_date__, __version__
 
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
     print(f"Hermes Agent v{__version__} ({__release_date__})")
-    print(f"Project: {project_root}")
+    print(f"Install directory: {PROJECT_ROOT}")
+
     print(f"Python: {sys.version.split()[0]}")
 
     openai_version = _read_openai_version_fast()
@@ -399,6 +399,7 @@ def _apply_profile_override() -> None:
         "-t", "--toolsets",
         "-r", "--resume",
         "-s", "--skills",
+        "--usage-file",
     }
     optional_value_flags = {"-c", "--continue"}
     i = 0
@@ -2216,6 +2217,8 @@ def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = _resolve_use_tui(args)
 
+    _apply_safe_mode(args)
+
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)
     if continue_val and not getattr(args, "resume", None):
@@ -2325,18 +2328,6 @@ def cmd_chat(args):
     # --yolo: bypass all dangerous command approvals
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
-
-    # --safe-mode: troubleshooting mode that disables ALL customizations.
-    # Inspired by Claude Code v2.1.169's --safe-mode (June 2026): run with a
-    # pristine environment to isolate whether a problem comes from the user's
-    # setup (config, rules files, plugins, MCP servers) or from Hermes itself.
-    # Implemented as a superset of --ignore-user-config + --ignore-rules plus
-    # plugin/MCP discovery suppression (HERMES_SAFE_MODE is checked by
-    # hermes_cli/plugins.py and tools/mcp_tool.py).
-    if getattr(args, "safe_mode", False):
-        os.environ["HERMES_SAFE_MODE"] = "1"
-        os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
-        os.environ["HERMES_IGNORE_RULES"] = "1"
 
     # --ignore-user-config: make load_cli_config() / load_config() skip the
     # user's ~/.hermes/config.yaml and return built-in defaults. Set BEFORE
@@ -4338,10 +4329,12 @@ def cmd_import(args):
 
 
 def _print_version_info(*, check_updates: bool = True) -> None:
+    from hermes_cli.config import detect_install_method
     from hermes_cli.banner import format_banner_version_label
 
     print(format_banner_version_label())
-    print(f"Project: {PROJECT_ROOT}")
+    print(f"Install directory: {PROJECT_ROOT}")
+    print(f"Install method: {detect_install_method(PROJECT_ROOT)}")
 
     # Show Python version
     print(f"Python: {sys.version.split()[0]}")
@@ -5597,6 +5590,8 @@ def cmd_gui(args: argparse.Namespace):
         env["HERMES_DESKTOP_HERMES_ROOT"] = str(Path(args.hermes_root).expanduser().resolve())
     if getattr(args, "cwd", None):
         env["HERMES_DESKTOP_CWD"] = str(Path(args.cwd).expanduser().resolve())
+    else:
+        env["HERMES_DESKTOP_CWD"] = os.getcwd()
 
     # Desktop launch options from config.yaml (`desktop.electron_flags`,
     # `desktop.disable_gpu`). The GPU policy is bridged to the env var the
@@ -8378,8 +8373,14 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     on a PyPI install we surface a one-line notice instead of silently
     dropping the flag.
     """
-    from hermes_cli.config import detect_install_method
+    from hermes_cli.config import (
+        detect_install_method,
+        format_unsupported_install_warning,
+        is_unsupported_install_method,
+    )
     method = detect_install_method(PROJECT_ROOT)
+    if is_unsupported_install_method(method):
+        print(f"⚠ {format_unsupported_install_warning(method)}")
     if method == "docker":
         # Docker can't ``git fetch`` from within the container.  Surface the
         # same long-form ``docker pull`` guidance ``hermes update`` (apply
@@ -9262,9 +9263,20 @@ def cmd_update(args):
     from hermes_cli.config import (
         detect_install_method,
         format_docker_update_message,
+        format_unsupported_install_warning,
         is_managed,
+        is_unsupported_install_method,
         managed_error,
     )
+
+    # Deprecation notice for pip/Homebrew installs — printed before the
+    # managed-mode early-return below so Homebrew users (who are blocked from
+    # applying the update here) still see it. Warn, don't block: the update
+    # itself still proceeds (except Homebrew, which is managed-mode blocked
+    # for an unrelated reason — brew owns its own upgrade path).
+    _install_method_for_warning = detect_install_method(PROJECT_ROOT)
+    if is_unsupported_install_method(_install_method_for_warning):
+        print(f"⚠ {format_unsupported_install_warning(_install_method_for_warning)}")
 
     if is_managed():
         managed_error("update Hermes Agent")
@@ -11925,6 +11937,11 @@ def cmd_dashboard(args):
         remaining = _find_stale_dashboard_pids()
         sys.exit(1 if remaining else 0)
 
+    # `serve` is the headless backend: no UI build, no SPA mount, neutral
+    # ready sentinel. Resolved once and threaded through the re-exec, the
+    # build gate, and start_server.
+    _headless_backend = getattr(args, "headless_backend", False)
+
     # ── Unified profile launch routing ────────────────────────────────
     # The dashboard is a MACHINE management surface: it can read/write any
     # profile via the per-request ?profile= scoping. Running one dashboard
@@ -11970,7 +11987,9 @@ def cmd_dashboard(args):
         reexec_argv = [
             sys.executable, "-m", "hermes_cli.main",
             "-p", "default",
-            "dashboard",
+            # Preserve the lean serve path across the re-exec so a named-profile
+            # `serve` doesn't silently rebuild the UI as `dashboard`.
+            "serve" if _headless_backend else "dashboard",
             "--port", str(args.port),
             "--host", args.host,
             "--open-profile", _launch_profile,
@@ -12039,7 +12058,11 @@ def cmd_dashboard(args):
     # backend is the desktop's primary entrypoint and needs the same.
     _sync_bundled_skills_quietly()
 
-    if "HERMES_WEB_DIST" not in os.environ and not getattr(args, "skip_build", False):
+    if _headless_backend:
+        # Don't build the SPA, and tell mount_spa() (read at web_server import
+        # below) to disable it even if a stray dist exists. Set it first.
+        os.environ["HERMES_SERVE_HEADLESS"] = "1"
+    elif "HERMES_WEB_DIST" not in os.environ and not getattr(args, "skip_build", False):
         if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
             sys.exit(1)
     elif getattr(args, "skip_build", False):
@@ -12112,6 +12135,7 @@ def cmd_dashboard(args):
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
         initial_profile=getattr(args, "open_profile", "") or "",
+        headless=_headless_backend,
     )
 
 
@@ -12240,6 +12264,7 @@ _TOP_LEVEL_VALUE_FLAGS = frozenset(
         "-t", "--toolsets",
         "-r", "--resume",
         "-s", "--skills",
+        "--usage-file",
         # ``-c / --continue`` is nargs='?' (optional value). Treat it as
         # value-taking: if the next token is a subcommand-looking word
         # the user almost certainly meant it as the session name, and
@@ -12335,6 +12360,8 @@ def _should_background_mcp_startup(args) -> bool:
 
 def _prepare_agent_startup(args) -> None:
     """Discover plugins/MCP/hooks for commands that can run an agent turn."""
+    _apply_safe_mode(args)
+
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
     if not (
         args.command in _AGENT_COMMANDS
@@ -12400,6 +12427,14 @@ def _prepare_agent_startup(args) -> None:
         )
 
 
+def _apply_safe_mode(args) -> None:
+    if not getattr(args, "safe_mode", False):
+        return
+    os.environ["HERMES_SAFE_MODE"] = "1"
+    os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
+    os.environ["HERMES_IGNORE_RULES"] = "1"
+
+
 def _set_chat_arg_defaults(args) -> None:
     for attr, default in [
         ("query", None),
@@ -12463,6 +12498,7 @@ def _try_termux_fast_cli_launch() -> bool:
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
+                usage_file=getattr(args, "usage_file", None),
             )
         )
 
@@ -12787,16 +12823,16 @@ def main():
     fallback_parser.set_defaults(func=cmd_fallback)
 
     # =========================================================================
-    # secrets command — external secret managers (currently: Bitwarden)
+    # secrets command — external secret managers (Bitwarden, 1Password)
     # =========================================================================
     secrets_parser = subparsers.add_parser(
         "secrets",
-        help="Manage external secret sources (Bitwarden Secrets Manager)",
+        help="Manage external secret sources (Bitwarden, 1Password)",
         description=(
             "Pull API keys from an external secret manager at process startup "
-            "instead of storing them in ~/.hermes/.env.  Currently supports "
-            "Bitwarden Secrets Manager.  See: "
-            "https://hermes-agent.nousresearch.com/docs/user-guide/secrets/bitwarden"
+            "instead of storing them in ~/.hermes/.env.  Supports Bitwarden "
+            "Secrets Manager and 1Password.  See: "
+            "https://hermes-agent.nousresearch.com/docs/user-guide/secrets/"
         ),
     )
     secrets_subparsers = secrets_parser.add_subparsers(dest="secrets_command")
@@ -12807,15 +12843,26 @@ def main():
         help="Bitwarden Secrets Manager integration",
     )
 
+    secrets_op = secrets_subparsers.add_parser(
+        "onepassword",
+        aliases=["op", "1password"],
+        help="1Password (op:// references) integration",
+    )
+
     # Lazy import — only pays for itself when this subcommand is actually used.
     from hermes_cli import secrets_cli as _secrets_cli
+    from hermes_cli import onepassword_secrets_cli as _op_secrets_cli
 
     _secrets_cli.register_cli(secrets_bw)
+    _op_secrets_cli.register_cli(secrets_op)
 
     def _dispatch_secrets(args):  # noqa: ANN001
         sub = getattr(args, "secrets_command", None)
         bw_sub = getattr(args, "secrets_bw_command", None)
+        op_sub = getattr(args, "secrets_op_command", None)
         if sub in ("bitwarden", "bw") and bw_sub is not None:
+            return args.func(args)
+        if sub in ("onepassword", "op", "1password") and op_sub is not None:
             return args.func(args)
         secrets_parser.print_help()
         return 0
@@ -13405,23 +13452,6 @@ def main():
         "--limit", type=int, default=20, help="Max sessions to show"
     )
 
-    sessions_export = sessions_subparsers.add_parser(
-        "export", help="Export sessions to a JSONL file"
-    )
-    sessions_export.add_argument(
-        "output", help="Output JSONL file path (use - for stdout)"
-    )
-    sessions_export.add_argument("--source", help="Filter by source")
-    sessions_export.add_argument("--session-id", help="Export a specific session")
-
-    sessions_delete = sessions_subparsers.add_parser(
-        "delete", help="Delete a specific session"
-    )
-    sessions_delete.add_argument("session_id", help="Session ID to delete")
-    sessions_delete.add_argument(
-        "--yes", "-y", action="store_true", help="Skip confirmation"
-    )
-
     def _add_session_filter_args(p, default_older_help):
         p.add_argument(
             "--older-than",
@@ -13518,6 +13548,93 @@ def main():
         p.add_argument(
             "--yes", "-y", action="store_true", help="Skip confirmation"
         )
+
+    sessions_export = sessions_subparsers.add_parser(
+        "export", help="Export sessions to JSONL, Markdown, or QMD"
+    )
+    sessions_export.add_argument(
+        "output",
+        nargs="?",
+        help=(
+            "Output path. JSONL: file path (use - for stdout, required). "
+            "md/qmd: output directory (default: <hermes home>/session-exports)"
+        ),
+    )
+    sessions_export.add_argument(
+        "--format",
+        choices=["jsonl", "md", "qmd", "html", "trace"],
+        default="jsonl",
+        help=(
+            "Export format (default: jsonl). 'trace' emits Claude Code JSONL "
+            "for the Hugging Face Agent Trace Viewer"
+        ),
+    )
+    sessions_export.add_argument(
+        "--upload",
+        action="store_true",
+        help=(
+            "trace only: upload to your Hugging Face traces dataset instead "
+            "of writing a local file (needs HF_TOKEN)"
+        ),
+    )
+    sessions_export.add_argument(
+        "--public",
+        action="store_true",
+        help="trace --upload only: create/update a public dataset instead of private",
+    )
+    sessions_export.add_argument(
+        "--no-redact",
+        action="store_true",
+        help=(
+            "trace only: skip the forced secret redaction; "
+            "only use after manual review"
+        ),
+    )
+    sessions_export.add_argument(
+        "--only",
+        choices=["user-prompts"],
+        help=(
+            "Export only a filtered view (user-prompts: one prompt record "
+            "per line for jsonl, headed sections for md)"
+        ),
+    )
+    sessions_export.add_argument(
+        "--session-id", help="Session ID or unique prefix to export"
+    )
+    _add_session_filter_args(
+        sessions_export,
+        "Only export sessions older than AGE (duration like '5h'/'2d', "
+        "bare number of days, or an ISO timestamp)",
+    )
+    sessions_export.add_argument(
+        "--redact",
+        action="store_true",
+        help="Redact secrets (API keys, tokens, credentials) from exported content",
+    )
+    sessions_export.add_argument(
+        "--lineage",
+        choices=["single", "logical"],
+        default="single",
+        help="md/qmd only: export one row or its compression lineage",
+    )
+    sessions_export.add_argument(
+        "--delete-after-verified",
+        action="store_true",
+        help="md/qmd only: after verified single-session export, delete that session (needs --yes)",
+    )
+    sessions_export.add_argument(
+        "--force",
+        action="store_true",
+        help="md/qmd only: overwrite an existing export file",
+    )
+
+    sessions_delete = sessions_subparsers.add_parser(
+        "delete", help="Delete a specific session"
+    )
+    sessions_delete.add_argument("session_id", help="Session ID to delete")
+    sessions_delete.add_argument(
+        "--yes", "-y", action="store_true", help="Skip confirmation"
+    )
 
     sessions_prune = sessions_subparsers.add_parser(
         "prune",
@@ -13689,34 +13806,411 @@ def main():
                     print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
 
         elif action == "export":
+            from hermes_cli.session_filters import (
+                build_prune_filters,
+                describe_filters,
+            )
+
+            _filter_arg_names = (
+                "older_than", "newer_than", "before", "after",
+                "source", "title", "end_reason", "cwd",
+                "min_messages", "max_messages", "model", "provider",
+                "user", "chat_id", "chat_type", "branch",
+                "min_tokens", "max_tokens", "min_cost", "max_cost",
+                "min_tool_calls", "max_tool_calls",
+            )
+            _any_filters = any(
+                getattr(args, a, None) is not None for a in _filter_arg_names
+            )
+            filters = None
+            if _any_filters:
+                try:
+                    filters = build_prune_filters(args)
+                except ValueError as e:
+                    print(f"Error: {e}")
+                    return
+                # Unlike prune/archive, export includes archived sessions.
+                filters["archived"] = None
+
+            def _redact(data):
+                if not args.redact or data is None:
+                    return data
+                from hermes_cli.session_export_md import redact_session_data
+
+                return redact_session_data(data)
+
+            def _collect_sessions():
+                """Resolve --session-id / filters / bare export into a list
+                of redacted session dicts, or None after printing an error."""
+                if args.session_id:
+                    resolved = db.resolve_session_id(args.session_id)
+                    data = _redact(db.export_session(resolved)) if resolved else None
+                    if not data:
+                        print(f"Session '{args.session_id}' not found.")
+                        return None
+                    return [data]
+                if filters:
+                    candidates = db.list_prune_candidates(**filters)
+                    if args.dry_run:
+                        print(
+                            f"Would export {len(candidates)} session(s) "
+                            f"({describe_filters(filters)})."
+                        )
+                        for row in candidates[:100]:
+                            print(f"  {row.get('id')}  {row.get('source', '')}")
+                        if len(candidates) > 100:
+                            print(f"  ... {len(candidates) - 100} more")
+                        return None
+                    return [
+                        s
+                        for s in (
+                            _redact(db.export_session(row["id"])) for row in candidates
+                        )
+                        if s
+                    ]
+                if args.dry_run:
+                    print("--dry-run requires at least one filter.")
+                    return None
+                return [_redact(s) for s in db.export_all(source=None)]
+
+            # Prompt-only export (--only user-prompts): one prompt record per
+            # line (jsonl) or headed sections (md). Delegates rendering to
+            # hermes_cli.session_export.
+            if getattr(args, "only", None):
+                if args.format not in ("jsonl", "md"):
+                    print("--only user-prompts supports --format jsonl or md.")
+                    return
+                from hermes_cli.session_export import (
+                    export_record_count,
+                    render_sessions_export,
+                )
+
+                sessions = _collect_sessions()
+                if sessions is None:
+                    db.close()
+                    return
+                rendered = render_sessions_export(
+                    sessions,
+                    fmt="markdown" if args.format == "md" else "jsonl",
+                    only=args.only,
+                )
+                if not args.output or args.output == "-":
+                    sys.stdout.write(rendered)
+                    db.close()
+                    return
+                with open(args.output, "w", encoding="utf-8") as f:
+                    f.write(rendered)
+                count, noun = export_record_count(sessions, only=args.only)
+                suffix = "" if count == 1 else "s"
+                print(f"Exported {count} {noun}{suffix} to {args.output}")
+                db.close()
+                return
+
+            # Standalone HTML export: one self-contained file (single session
+            # or multi-session with sidebar navigation).
+            if args.format == "html":
+                if not args.output or args.output == "-":
+                    print("HTML export requires an output file path.")
+                    return
+                from hermes_cli.session_export_html import (
+                    generate_html_export,
+                    generate_multi_session_html_export,
+                )
+
+                sessions = _collect_sessions()
+                if sessions is None:
+                    db.close()
+                    return
+                if len(sessions) == 1:
+                    content = generate_html_export(sessions[0])
+                else:
+                    content = generate_multi_session_html_export(sessions)
+                with open(args.output, "w", encoding="utf-8") as f:
+                    f.write(content)
+                suffix = "" if len(sessions) == 1 else "s"
+                print(f"Exported {len(sessions)} session{suffix} to {args.output} (HTML)")
+                db.close()
+                return
+
+            # Claude Code JSONL trace export — local file or HF upload.
+            # Redaction is ON by default for traces (they leave the machine
+            # when --upload is used); --no-redact opts out after review.
+            if args.format == "trace":
+                if getattr(args, "only", None):
+                    print("--only user-prompts supports --format jsonl or md.")
+                    db.close()
+                    return
+                session_id = args.session_id
+                if not session_id and not filters:
+                    # Match the shell's common intent: "the last thing I did".
+                    rows = db.list_sessions_rich(limit=1, order_by_last_active=True)
+                    session_id = rows[0].get("id") if rows else None
+                    if not session_id:
+                        print("No session found to export. Pass --session-id.")
+                        db.close()
+                        return
+                if session_id and not db.resolve_session_id(session_id):
+                    print(f"Session '{session_id}' not found.")
+                    db.close()
+                    return
+
+                from agent.trace_upload import (
+                    TraceRedactionError,
+                    build_trace_jsonl,
+                    upload_session_trace,
+                )
+
+                redact_trace = not getattr(args, "no_redact", False)
+
+                if getattr(args, "upload", False):
+                    if not session_id:
+                        print("--upload exports one session: pass --session-id (or drop filters to use the most recent).")
+                        db.close()
+                        return
+                    resolved = db.resolve_session_id(session_id)
+                    db.close()
+                    status = upload_session_trace(
+                        resolved,
+                        cwd="",
+                        redact=redact_trace,
+                        private=not getattr(args, "public", False),
+                    )
+                    print(status)
+                    return
+
+                # Local trace file(s)
+                def _trace_ids():
+                    if session_id:
+                        return [db.resolve_session_id(session_id)]
+                    candidates = db.list_prune_candidates(**filters)
+                    if args.dry_run:
+                        print(
+                            f"Would export {len(candidates)} session(s) "
+                            f"({describe_filters(filters)})."
+                        )
+                        for row in candidates[:100]:
+                            print(f"  {row.get('id')}  {row.get('source', '')}")
+                        if len(candidates) > 100:
+                            print(f"  ... {len(candidates) - 100} more")
+                        return None
+                    return [row["id"] for row in candidates]
+
+                ids = _trace_ids()
+                if ids is None:
+                    db.close()
+                    return
+
+                def _render_trace(sid):
+                    meta = db.get_session(sid) or {}
+                    messages = db.get_messages_as_conversation(sid)
+                    if not messages:
+                        return None
+                    return build_trace_jsonl(
+                        messages,
+                        session_id=sid,
+                        model=meta.get("model") or "",
+                        cwd="",
+                        redact=redact_trace,
+                    )
+
+                try:
+                    if len(ids) == 1:
+                        jsonl = _render_trace(ids[0])
+                        if not jsonl:
+                            print(f"No transcript to export for session '{ids[0]}'.")
+                            db.close()
+                            return
+                        if not args.output or args.output == "-":
+                            sys.stdout.write(jsonl)
+                        else:
+                            with open(args.output, "w", encoding="utf-8") as f:
+                                f.write(jsonl)
+                            print(f"Exported 1 session trace to {args.output}")
+                    else:
+                        out_dir = (
+                            Path(args.output).expanduser()
+                            if args.output and args.output != "-"
+                            else get_hermes_home() / "session-exports"
+                        )
+                        out_dir.mkdir(parents=True, exist_ok=True)
+                        exported = 0
+                        for sid in ids:
+                            jsonl = _render_trace(sid)
+                            if not jsonl:
+                                continue
+                            (out_dir / f"{sid}.trace.jsonl").write_text(
+                                jsonl, encoding="utf-8"
+                            )
+                            exported += 1
+                        print(f"Exported {exported} session trace(s) to {out_dir}")
+                except TraceRedactionError:
+                    print("Redaction failed; refusing to export unredacted trace content.")
+                db.close()
+                return
+
+            if args.format == "jsonl":
+                if not args.output:
+                    print("JSONL export requires an output path (use - for stdout).")
+                    return
+                if args.session_id:
+                    resolved_session_id = db.resolve_session_id(args.session_id)
+                    if not resolved_session_id:
+                        print(f"Session '{args.session_id}' not found.")
+                        return
+                    data = _redact(db.export_session(resolved_session_id))
+                    if not data:
+                        print(f"Session '{args.session_id}' not found.")
+                        return
+                    line = _json.dumps(data, ensure_ascii=False) + "\n"
+                    if args.output == "-":
+
+                        sys.stdout.write(line)
+                    else:
+                        with open(args.output, "w", encoding="utf-8") as f:
+                            f.write(line)
+                        print(f"Exported 1 session to {args.output}")
+                else:
+                    if filters:
+                        candidates = db.list_prune_candidates(**filters)
+                        if args.dry_run:
+                            print(
+                                f"Would export {len(candidates)} session(s) "
+                                f"({describe_filters(filters)})."
+                            )
+                            for row in candidates[:100]:
+                                print(f"  {row.get('id')}  {row.get('source', '')}")
+                            if len(candidates) > 100:
+                                print(f"  ... {len(candidates) - 100} more")
+                            return
+                        sessions = [
+                            s
+                            for s in (
+                                db.export_session(row["id"]) for row in candidates
+                            )
+                            if s
+                        ]
+                    else:
+                        if args.dry_run:
+                            print("--dry-run requires at least one filter.")
+                            return
+                        sessions = db.export_all(source=None)
+                    if args.output == "-":
+
+                        for s in sessions:
+                            sys.stdout.write(
+                                _json.dumps(_redact(s), ensure_ascii=False) + "\n"
+                            )
+                    else:
+                        with open(args.output, "w", encoding="utf-8") as f:
+                            for s in sessions:
+                                f.write(
+                                    _json.dumps(_redact(s), ensure_ascii=False) + "\n"
+                                )
+                        print(f"Exported {len(sessions)} sessions to {args.output}")
+                return
+
+            # Markdown / QMD export
+            from hermes_cli.session_export_md import (
+                append_manifest_entry,
+                verify_export_file,
+                write_session_markdown,
+            )
+
+            if args.output == "-":
+                print("Markdown/QMD export writes files; stdout (-) is only supported with --format jsonl.")
+                db.close()
+                return
+            output_dir = Path(args.output).expanduser() if args.output else get_hermes_home() / "session-exports"
+
+            def _export_one(session_id: str):
+                data = (
+                    db.export_session_lineage(session_id)
+                    if getattr(args, "lineage", "single") == "logical"
+                    else db.export_session(session_id)
+                )
+                if not data:
+                    return None, None
+                data = _redact(data)
+                path = write_session_markdown(
+                    data,
+                    output_dir,
+                    fmt=args.format,
+                    force=args.force,
+                )
+                append_manifest_entry(output_dir, data, path, fmt=args.format)
+                return data, path
+
+            if args.delete_after_verified and not args.yes:
+                print("--delete-after-verified requires --yes.")
+                db.close()
+                return
+            if args.delete_after_verified and not args.session_id:
+                print("--delete-after-verified is only supported with --session-id.")
+                db.close()
+                return
+
             if args.session_id:
                 resolved_session_id = db.resolve_session_id(args.session_id)
                 if not resolved_session_id:
                     print(f"Session '{args.session_id}' not found.")
+                    db.close()
                     return
-                data = db.export_session(resolved_session_id)
-                if not data:
+                try:
+                    data, exported_path = _export_one(resolved_session_id)
+                except FileExistsError as e:
+                    print(f"Export already exists: {e}. Pass --force to overwrite.")
+                    db.close()
+                    return
+                if not data or not exported_path:
                     print(f"Session '{args.session_id}' not found.")
+                    db.close()
                     return
-                line = _json.dumps(data, ensure_ascii=False) + "\n"
-                if args.output == "-":
+                message_count = len(data.get("messages") or [])
+                suffix = "" if message_count == 1 else "s"
+                print(f"Exported 1 session ({message_count} message{suffix}) to {exported_path}")
+                if args.delete_after_verified:
+                    ok, reason = verify_export_file(exported_path, data)
+                    if not ok:
+                        print(f"Export verification failed; not deleting: {reason}")
+                        db.close()
+                        return
+                    sessions_dir = get_hermes_home() / "sessions"
+                    if db.delete_session(resolved_session_id, sessions_dir=sessions_dir):
+                        print(f"Deleted exported session '{resolved_session_id}'.")
+                    else:
+                        print(f"Exported, but session '{resolved_session_id}' was not deleted because it was not found.")
+                db.close()
+                return
 
-                    sys.stdout.write(line)
-                else:
-                    with open(args.output, "w", encoding="utf-8") as f:
-                        f.write(line)
-                    print(f"Exported 1 session to {args.output}")
-            else:
-                sessions = db.export_all(source=args.source)
-                if args.output == "-":
-
-                    for s in sessions:
-                        sys.stdout.write(_json.dumps(s, ensure_ascii=False) + "\n")
-                else:
-                    with open(args.output, "w", encoding="utf-8") as f:
-                        for s in sessions:
-                            f.write(_json.dumps(s, ensure_ascii=False) + "\n")
-                    print(f"Exported {len(sessions)} sessions to {args.output}")
+            if not filters:
+                print(
+                    "Refusing bulk export without a filter. Pass --session-id or "
+                    "at least one filter (e.g. --older-than 90, --source telegram)."
+                )
+                db.close()
+                return
+            candidates = db.list_prune_candidates(**filters)
+            if args.dry_run:
+                print(
+                    f"Would export {len(candidates)} session(s) "
+                    f"({describe_filters(filters)})."
+                )
+                for row in candidates[:100]:
+                    print(f"  {row.get('id')}  {row.get('source', '')}")
+                if len(candidates) > 100:
+                    print(f"  ... {len(candidates) - 100} more")
+                db.close()
+                return
+            exported = 0
+            for row in candidates:
+                try:
+                    data, exported_path = _export_one(row["id"])
+                except FileExistsError as e:
+                    print(f"Skipping existing export: {e}. Pass --force to overwrite.")
+                    continue
+                if data and exported_path:
+                    exported += 1
+            print(f"Exported {exported} session(s) to {output_dir}")
 
         elif action == "delete":
             resolved_session_id = db.resolve_session_id(args.session_id)
@@ -14101,6 +14595,7 @@ def main():
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
+                usage_file=getattr(args, "usage_file", None),
             )
         )
 

@@ -444,6 +444,35 @@ class TestPauseResumeJob:
         assert resumed["paused_at"] is None
         assert resumed["paused_reason"] is None
 
+    def test_resume_rejects_past_oneshot(self, tmp_cron_dir, monkeypatch):
+        """Resuming a paused one-shot whose time is now in the past must raise
+        ValueError — the revived job would silently never fire."""
+        now = datetime(2026, 7, 6, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        # Create directly — bypass create_job's past-oneshot guard so we can
+        # test the resume path independently.
+        job = {
+            "id": "test-resume-past",
+            "name": "test-resume-past",
+            "prompt": "Past one-shot",
+            "schedule": {"kind": "once", "run_at": (now - timedelta(minutes=5)).isoformat(), "display": "once"},
+            "repeat": {"times": 1, "completed": 0},
+            "enabled": False,
+            "state": "paused",
+            "paused_at": now.isoformat(),
+            "paused_reason": "test",
+            "next_run_at": None,
+            "last_run_at": None,
+            "last_status": None,
+            "last_error": None,
+            "last_delivery_error": None,
+            "created_at": (now - timedelta(hours=1)).isoformat(),
+            "deliver": "local",
+        }
+        save_jobs([job])
+        with pytest.raises(ValueError, match="in the past"):
+            resume_job("test-resume-past")
+
 
 class TestResolveJobRef:
     """Name-based job lookup for CLI/tool callers (PR #2627, @buntingszn)."""
@@ -898,7 +927,13 @@ class TestGetDueJobs:
         due = get_due_jobs()
 
         assert [job["id"] for job in due] == ["oneshot-recover"]
-        assert get_job("oneshot-recover")["next_run_at"] == run_at
+        # Recovery restores next_run_at to the original run time; the
+        # cross-process double-exec guard (#59229) is a separate run_claim
+        # stamped under the lock, not a next_run_at mutation.
+        recovered = get_job("oneshot-recover")
+        assert recovered["next_run_at"] == run_at
+        assert recovered.get("run_claim") is not None
+        assert recovered["run_claim"]["at"] == now.isoformat()
 
     def test_broken_stale_one_shot_without_next_run_is_not_recovered(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
@@ -928,6 +963,112 @@ class TestGetDueJobs:
 
         assert get_due_jobs() == []
         assert get_job("oneshot-stale")["next_run_at"] is None
+
+    def test_one_shot_not_redispatched_while_running(self, tmp_cron_dir, monkeypatch):
+        """#59229: two concurrent schedulers must not double-execute a one-shot.
+
+        Reproduces the reported failure with a job whose run OUTLIVES the tick
+        interval (a ~2.5-min research prompt). Process A's tick returns it as
+        due and stamps a run_claim; while A is still running, every later tick
+        (process B, or A's own next tick) must see the fresh claim and skip —
+        not just for one tick window but for the whole run.
+        """
+        from cron.jobs import _hermes_now
+        t0 = _hermes_now()
+        run_at = (t0 - timedelta(seconds=5)).isoformat()
+        save_jobs([{
+            "id": "long-oneshot", "name": "R", "prompt": "2.5min research",
+            "schedule": {"kind": "once", "run_at": run_at},
+            "next_run_at": run_at, "enabled": True, "state": "scheduled",
+        }])
+
+        # Process A tick: picks it up + claims it.
+        dueA = get_due_jobs()
+        assert [j["id"] for j in dueA] == ["long-oneshot"]
+        assert get_job("long-oneshot").get("run_claim") is not None
+
+        # Process B (and A's own subsequent ticks) while A is still running:
+        # 28s later (the exact gap in the report) AND 61s later (past any
+        # fixed +60s window) — both must skip.
+        for gap in (28, 61, 130):
+            monkeypatch.setattr("cron.jobs._hermes_now",
+                                lambda t0=t0, g=gap: t0 + timedelta(seconds=g))
+            assert get_due_jobs() == [], f"double-dispatched at +{gap}s"
+
+    def test_one_shot_run_claim_expires_after_ttl(self, tmp_cron_dir, monkeypatch):
+        """A claiming tick that DIED mid-run must not wedge the one-shot forever:
+        once the run_claim is older than the TTL it is re-dispatched (recovered)."""
+        # Pin the inactivity timeout unset so the derived TTL is deterministic.
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        from cron.jobs import _hermes_now, _oneshot_run_claim_ttl_seconds
+        ttl = _oneshot_run_claim_ttl_seconds()
+        t0 = _hermes_now()
+        run_at = (t0 - timedelta(seconds=5)).isoformat()
+        save_jobs([{
+            "id": "wedged", "name": "R", "prompt": "x",
+            "schedule": {"kind": "once", "run_at": run_at},
+            "next_run_at": run_at, "enabled": True, "state": "scheduled",
+        }])
+        assert [j["id"] for j in get_due_jobs()] == ["wedged"]  # A claims, then dies
+
+        # Just inside the TTL: still claimed → skipped.
+        monkeypatch.setattr("cron.jobs._hermes_now",
+                            lambda: t0 + timedelta(seconds=ttl - 10))
+        assert get_due_jobs() == []
+
+        # Just past the TTL: stale claim → re-dispatched (recovered), re-claimed.
+        monkeypatch.setattr("cron.jobs._hermes_now",
+                            lambda: t0 + timedelta(seconds=ttl + 10))
+        recovered = get_due_jobs()
+        assert [j["id"] for j in recovered] == ["wedged"]
+
+    def test_run_claim_ttl_derived_from_cron_timeout(self, tmp_cron_dir, monkeypatch):
+        """The stale-recovery TTL tracks HERMES_CRON_TIMEOUT (3x headroom), with
+        the fixed constant as a floor, and falls back to the constant when runs
+        are unbounded (timeout=0)."""
+        from cron.jobs import (
+            _oneshot_run_claim_ttl_seconds as ttl,
+            ONESHOT_RUN_CLAIM_TTL_SECONDS as FLOOR,
+        )
+        # Unset → default 600s inactivity → 1800s (== the historical constant).
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        assert ttl() == 1800.0
+
+        # A large custom timeout scales the TTL up (3x headroom).
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "1200")
+        assert ttl() == 3600.0
+
+        # A tiny timeout is floored so a claim can never expire mid-run.
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "30")
+        assert ttl() == float(FLOOR)
+
+        # Unlimited runs (0) → no finite bound → fall back to the floor.
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
+        assert ttl() == float(FLOOR)
+
+        # Invalid value → treated as the default 600s → 1800s.
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "not-a-number")
+        assert ttl() == 1800.0
+
+
+    def test_mark_job_run_clears_one_shot_run_claim(self, tmp_cron_dir, monkeypatch):
+        """mark_job_run() clears the run_claim on completion so a re-dispatched
+        one-shot (e.g. a stale-recovered retry) is claimable again."""
+        from cron.jobs import _hermes_now
+        t0 = _hermes_now()
+        run_at = (t0 - timedelta(seconds=5)).isoformat()
+        # Give it repeat headroom so mark_job_run keeps the job around.
+        save_jobs([{
+            "id": "claimclear", "name": "R", "prompt": "x",
+            "schedule": {"kind": "once", "run_at": run_at},
+            "next_run_at": run_at, "enabled": True, "state": "scheduled",
+            "repeat": {"times": 2, "completed": 0},
+        }])
+        assert [j["id"] for j in get_due_jobs()] == ["claimclear"]
+        assert get_job("claimclear").get("run_claim") is not None
+        mark_job_run("claimclear", True)
+        assert get_job("claimclear")["run_claim"] is None
+
 
     def test_broken_cron_without_next_run_is_recovered(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 10, 0, 0, tzinfo=timezone.utc)

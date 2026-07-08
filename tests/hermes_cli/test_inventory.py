@@ -258,6 +258,24 @@ def test_build_models_payload_can_skip_custom_provider_probes():
     assert mock_list.call_args.kwargs["probe_custom_providers"] is False
 
 
+def test_build_models_payload_can_probe_only_current_custom_provider():
+    ctx = _empty_ctx()
+    rows = []
+    with patch(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        return_value=rows,
+    ) as mock_list:
+        build_models_payload(
+            ctx,
+            probe_custom_providers=False,
+            probe_current_custom_provider=True,
+        )
+
+    mock_list.assert_called_once()
+    assert mock_list.call_args.kwargs["probe_custom_providers"] is False
+    assert mock_list.call_args.kwargs["probe_current_custom_provider"] is True
+
+
 def test_list_authenticated_providers_force_fresh_is_keyword_only():
     """``force_fresh_nous_tier`` must be keyword-only on the public listing API.
 
@@ -358,6 +376,44 @@ def test_include_unconfigured_skips_already_present_slugs():
     or_rows = [r for r in payload["providers"] if r["slug"] == "openrouter"]
     assert len(or_rows) == 1
     assert or_rows[0]["models"] == ["m1"]  # the authenticated row, not skeleton
+
+
+def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_rows():
+    rows = [
+        {"slug": "openai-codex", "name": "OpenAI Codex", "models": ["gpt-5.4"],
+         "total_models": 1, "is_current": True, "is_user_defined": False,
+         "source": "hermes"},
+        {"slug": "gemini", "name": "Gemini", "models": ["gemini-2.5-pro"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "built-in"},
+        {"slug": "copilot", "name": "Copilot", "models": ["gpt-5.4"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "hermes"},
+        {"slug": "nous", "name": "Nous", "models": ["anthropic/claude-sonnet-5"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "hermes"},
+        {"slug": "custom:lab", "name": "Lab", "models": ["lab-1"],
+         "total_models": 1, "is_current": False, "is_user_defined": True,
+         "source": "user-config"},
+        {"slug": "moa", "name": "MoA", "models": ["default"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "virtual"},
+    ]
+    ctx = _empty_ctx(provider="openai-codex", model="gpt-5.4")
+    with (
+        _list_auth_returning(rows),
+        patch(
+            "hermes_cli.auth.is_provider_explicitly_configured",
+            side_effect=lambda slug: slug == "gemini",
+        ),
+    ):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    assert [row["slug"] for row in payload["providers"]] == [
+        "openai-codex",
+        "gemini",
+        "custom:lab",
+    ]
 
 
 # ─── picker_hints ──────────────────────────────────────────────────────

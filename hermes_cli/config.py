@@ -441,8 +441,20 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     managed = get_managed_system()
     if managed:
         return managed.lower().replace(" ", "-")
-    if (root / ".git").is_dir():
+    
+    # detect git repo installs (normal installer, development env)
+    git_path = root / ".git"
+    if git_path.is_dir():
         return "git"
+
+    # detect git repo installs from worktrees
+    if git_path.is_file():
+        try:
+            content = git_path.read_text(encoding="utf-8").strip()
+            if content.startswith("gitdir:"):
+                return "git"
+        except OSError:
+            pass
     return "pip"
 
 
@@ -528,8 +540,52 @@ def recommended_update_command() -> str:
     managed_cmd = get_managed_update_command()
     if managed_cmd:
         return managed_cmd
-    method = detect_install_method()
+    method = detect_install_method(get_project_root())
     return recommended_update_command_for_method(method)
+
+
+# =============================================================================
+# Unsupported install methods (pip, Homebrew) — deprecation notice
+# =============================================================================
+#
+# pip/PyPI and Homebrew are NOT an officially supported distribution method
+# (see website/docs/getting-started/platform-support.md, "Unsupported"
+# section). pip exists on PyPI for internal/CI reasons, not end-user installs;
+# Homebrew is a legacy packaging path. Unlike NixOS/Homebrew "managed mode"
+# (which hard-blocks config writes), this is a warn-don't-block deprecation
+# notice surfaced everywhere the user might see install-method state: the CLI
+# banner, the TUI/desktop session info panel, and ``hermes update``. NixOS
+# stays fully supported (Tier 2) and must never hit this path.
+
+PLATFORM_SUPPORT_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/getting-started/platform-support"
+
+_UNSUPPORTED_INSTALL_METHODS = frozenset({"pip", "homebrew"})
+
+
+def is_unsupported_install_method(method: str) -> bool:
+    """Whether ``method`` (from ``detect_install_method()``) is deprecated."""
+    return method in _UNSUPPORTED_INSTALL_METHODS
+
+
+def unsupported_install_method_label(method: str) -> str:
+    """Human-readable name for an unsupported install method."""
+    return "pip" if method == "pip" else "Homebrew"
+
+
+def format_unsupported_install_warning(method: str) -> str:
+    """Plain-text (no markup) deprecation notice for pip/Homebrew installs.
+
+    Shared verbatim across the CLI banner, TUI/desktop ``session.info``, and
+    ``hermes update`` / ``hermes update --check`` so the wording — and the
+    docs link — stays consistent across every surface instead of drifting
+    into three slightly different warnings.
+    """
+    label = unsupported_install_method_label(method)
+    return (
+        f"{label} installs are no longer an officially supported platform and "
+        f"will not receive further updates. See {PLATFORM_SUPPORT_DOCS_URL} "
+        "for supported install methods."
+    )
 
 
 # Long-form text for ``hermes update`` / ``--check`` when running inside the
@@ -1341,7 +1397,11 @@ DEFAULT_CONFIG = {
 
     "compression": {
         "enabled": True,
-        "threshold": 0.50,            # compress when context usage exceeds this ratio
+        "threshold": 0.50,            # compress when context usage exceeds this ratio.
+                                      # Models with context windows below 512K are
+                                      # floored at 0.75 (raise-only) so compaction
+                                      # doesn't fire with half the window still free;
+                                      # set this above 0.75 to override the floor.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
@@ -1362,20 +1422,29 @@ DEFAULT_CONFIG = {
                                       # Default False matches historical behavior; set to
                                       # True if you'd rather pause than silently lose
                                       # context turns when your aux model is flaky.
-        "codex_gpt55_autoraise": True,  # When True, gpt-5.5 on the ChatGPT Codex OAuth
-                                      # route raises its compaction trigger to 85% (vs the
-                                      # global `threshold` above). Codex hard-caps gpt-5.5
-                                      # at a 272K window, so the default 50% would compact
-                                      # at ~136K and waste half the usable context. Set to
-                                      # False to opt back down to the global threshold
-                                      # (e.g. 0.50) for Codex gpt-5.5 sessions. Only this
-                                      # exact route is affected — gpt-5.5 on OpenAI's
-                                      # direct API, OpenRouter, and Copilot keep the
-                                      # global threshold regardless.
-        "codex_gpt55_autoraise_notice": True,  # Display the one-time Codex gpt-5.5
+        "codex_gpt55_autoraise": True,  # Historical key name kept for compatibility.
+                                      # When True, gpt-5.4 / gpt-5.5 on the ChatGPT Codex
+                                      # OAuth route raise their compaction trigger to 85%
+                                      # (vs the global `threshold` above). Codex hard-caps
+                                      # both families at a 272K window, so the default 50%
+                                      # would compact at ~136K and waste half the usable
+                                      # context. Set to False to opt back down to the global
+                                      # threshold (e.g. 0.50) for those Codex sessions.
+                                      # Only this exact route is affected — gpt-5.4 / 5.5
+                                      # on OpenAI's direct API, OpenRouter, and Copilot keep
+                                      # the global threshold regardless.
+        "codex_gpt55_autoraise_notice": True,  # Display the one-time Codex gpt-5.4/5.5
                                       # autoraise banner. Set False to keep the
                                       # 85% threshold autoraise but suppress the
                                       # user-facing notice in CLI/gateway output.
+        "codex_app_server_auto": "native",  # Codex app-server (codex CLI runtime) thread
+                                      # compaction mode. The codex agent owns the real
+                                      # thread context, so Hermes' summarizer cannot
+                                      # shrink it (#36801). native = codex decides when
+                                      # to compact its own thread (default); hermes =
+                                      # Hermes' compression threshold triggers
+                                      # thread/compact/start; off = never auto-trigger
+                                      # (codex may still compact natively).
         "in_place": True,             # When True, compaction rewrites the message
                                       # list and rebuilds the system prompt WITHOUT
                                       # rotating the session id — the conversation
@@ -1717,7 +1786,8 @@ DEFAULT_CONFIG = {
         # Per-platform overrides via display.platforms.<platform>.memory_notifications.
         "memory_notifications": "on",
         "streaming": False,
-        "timestamps": False,      # Show [HH:MM] on user and assistant labels
+        "timestamps": False,      # Show timestamp on user and assistant labels
+        "timestamp_format": "%H:%M",  # strftime format for timestamps (e.g. "%b-%d %H:%M")
         "final_response_markdown": "strip",  # render | strip | raw
         # Preserve recent classic CLI output across Ctrl+L, /redraw, and
         # terminal resize full-screen clears. Disable if a terminal emulator
@@ -2374,6 +2444,11 @@ DEFAULT_CONFIG = {
         # real memory cost. Default 32 MiB matches the historical hardcoded
         # cap. Set to 0 for no cap. Env override: DISCORD_MAX_ATTACHMENT_BYTES.
         "max_attachment_bytes": 33554432,
+        # When True, Discord approval prompts mention numeric allowed users so
+        # owners notice approval requests in shared channels/threads. Env
+        # override: DISCORD_APPROVAL_MENTIONS. Default false avoids surprise
+        # pings.
+        "approval_mentions": False,
         # Voice-channel audio effects (the continuous mixer). OFF by default.
         # When enabled, the bot installs a software mixer on the outgoing voice
         # stream so a low ambient "thinking" bed, verbal acknowledgements, and
@@ -3073,6 +3148,15 @@ DEFAULT_CONFIG = {
     # Pull credentials from external secret managers at process startup
     # rather than storing them in ~/.hermes/.env.
     "secrets": {
+        # Optional explicit ordering of enabled secret sources.  When
+        # omitted, sources run in registration order (bundled first,
+        # then plugin-registered).  Regardless of this list, "mapped"
+        # sources (explicit VAR→ref bindings, e.g. a future 1Password
+        # env: map) always take precedence over "bulk" sources
+        # (project dumps like Bitwarden BSM), and the first source to
+        # claim a var wins — later claims are skipped with a warning.
+        # Example: sources: [onepassword, bitwarden]
+        # "sources": [],
         "bitwarden": {
             # Master switch.  When false, BSM is never contacted and the
             # bws binary is never auto-installed — same as not having
@@ -3103,6 +3187,34 @@ DEFAULT_CONFIG = {
             # as BWS_SERVER_URL.  Prompted for during
             # `hermes secrets bitwarden setup`.
             "server_url": "",
+        },
+        "onepassword": {
+            # Master switch.  When false, the op CLI is never invoked —
+            # same as not having this section at all.
+            "enabled": False,
+            # Mapping of env-var name → 1Password secret reference
+            # (op://vault/item/field).  Each entry is resolved with a
+            # single `op read` at startup.
+            "env": {},
+            # Optional account shorthand / sign-in address passed as
+            # `op read --account <account>`.  Empty = op's default account.
+            "account": "",
+            # Name of the env var holding a 1Password service-account token
+            # for headless auth.  Sourced from ~/.hermes/.env (or the shell)
+            # and exported to the op child as OP_SERVICE_ACCOUNT_TOKEN.
+            # Leave the var unset to use an interactive/desktop op session.
+            "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",
+            # Optional absolute path to the op binary.  When set it is used
+            # verbatim (PATH is not consulted) — pin this to avoid trusting
+            # whatever `op` appears first on PATH.  Empty = resolve via PATH.
+            "binary_path": "",
+            # Seconds to cache resolved values in-process and on disk.  0
+            # disables BOTH cache layers (no values are written to disk).
+            "cache_ttl_seconds": 300,
+            # When True (default), resolved values overwrite existing env
+            # vars so rotating a secret in 1Password takes effect on next
+            # start.  Flip to false to let .env / shell exports win locally.
+            "override_existing": True,
         },
     },
 

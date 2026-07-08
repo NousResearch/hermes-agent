@@ -161,6 +161,7 @@ export interface Translations {
     copyDetailFailed: string
     backendOutOfDateTitle: string
     backendOutOfDateMessage: string
+    installMethodUnsupportedTitle: string
     updateHermes: string
     updateReadyTitle: string
     updateReadyMessage: (count: number) => string
@@ -302,6 +303,8 @@ export interface Translations {
       colorModeDesc: string
       toolViewTitle: string
       toolViewDesc: string
+      uiScaleTitle: string
+      uiScaleDesc: (percent: number) => string
       translucencyTitle: string
       translucencyDesc: string
       embedsTitle: string

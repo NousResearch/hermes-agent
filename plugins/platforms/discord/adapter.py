@@ -114,6 +114,11 @@ import sys
 from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
+try:
+    from .ffmpeg_utils import resolve_ffmpeg_executable
+except ImportError:
+    from ffmpeg_utils import resolve_ffmpeg_executable
+
 from gateway.config import Platform, PlatformConfig
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets
@@ -780,7 +785,7 @@ class VoiceReceiver:
 
             subprocess.run(
                 [
-                    "ffmpeg", "-y", "-loglevel", "error",
+                    resolve_ffmpeg_executable(), "-y", "-loglevel", "error",
                     "-f", "s16le",
                     "-ar", str(src_rate),
                     "-ac", str(src_channels),
@@ -4153,7 +4158,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     lead_ms = 0
                 if lead_ms > 0:
                     ffmpeg_opts["options"] = f"-af adelay={lead_ms}:all=1"
-                source = discord.FFmpegPCMAudio(audio_path, **ffmpeg_opts)
+                source = discord.FFmpegPCMAudio(
+                    audio_path,
+                    executable=resolve_ffmpeg_executable(),
+                    **ffmpeg_opts,
+                )
                 source = discord.PCMVolumeTransformer(source, volume=1.0)
                 vc.play(source, after=_after)
                 try:

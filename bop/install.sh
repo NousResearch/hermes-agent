@@ -45,7 +45,7 @@ cp "$HOOK_SRC/patch_parser.py" "$HOOK_DST/patch_parser.py"
 chmod 644 "$HOOK_DST/patch_parser.py"
 printf 'installed parser: %s\n' "$HOOK_DST/patch_parser.py"
 
-for skill in ledger-writer capture-intake transcript-followup booking email-triage followup-drafter osr-intake dsm-reporter herk2-specforge herk2-watchdog claude-code-delegate; do
+for skill in ledger-writer capture-intake transcript-followup booking email-triage followup-drafter osr-intake dsm-reporter herk2-specforge herk2-watchdog claude-code-delegate brain-note memory-consolidate; do
   mkdir -p "$SKILL_DST/$skill"
   cp -R "$SKILL_SRC/$skill/." "$SKILL_DST/$skill/"
   chmod 644 "$SKILL_DST/$skill/SKILL.md"

@@ -5206,35 +5206,46 @@ def _normalize_custom_provider_entry(
     if isinstance(model_name, str) and model_name.strip():
         normalized["model"] = model_name.strip()
 
-    models = entry.get("models")
-    if not models:
-        models = entry.get("available_models")
-    if isinstance(models, dict) and models:
-        normalized["models"] = models
-    elif isinstance(models, list) and models:
-        # Hand-edited configs (and older Hermes versions) may write
-        # ``models`` as a plain list of ids or as ``[{id: ...}]`` rows.
-        # Preserve both by converting to the dict shape downstream code
-        # expects; otherwise normalize silently drops the list and /model
-        # shows the provider with (0) models.
-        normalized_models: Dict[str, Any] = {}
-        for item in models:
-            if isinstance(item, str) and item.strip():
-                normalized_models[item.strip()] = {}
-                continue
-            if not isinstance(item, dict):
-                continue
-            model_id = item.get("id")
-            if not isinstance(model_id, str) or not model_id.strip():
-                model_id = item.get("name")
-            if not isinstance(model_id, str) or not model_id.strip():
-                continue
-            model_meta = {
-                k: v for k, v in item.items() if k not in {"id", "name"}
-            }
-            normalized_models[model_id.strip()] = model_meta
-        if normalized_models:
-            normalized["models"] = normalized_models
+    # Merge declared models from both ``models`` and its ``available_models``
+    # alias. ``models`` metadata wins on id collision; ``available_models``
+    # contributes any ids ``models`` doesn't already declare. Treating
+    # ``available_models`` as a mere fallback silently dropped its ids whenever
+    # ``models`` was also present (e.g. a config that keeps ``models`` for
+    # per-model context-length metadata *and* ``available_models`` for a plain
+    # id list) — /model would then show the provider with fewer models than the
+    # user declared.
+    def _normalize_model_collection(value: Any) -> Dict[str, Any]:
+        # Hand-edited configs (and older Hermes versions) may write the list as
+        # a plain list of ids or as ``[{id: ...}]`` rows; convert both to the
+        # dict shape downstream code expects. A dict is already in that shape.
+        if isinstance(value, dict):
+            return dict(value)
+        collected: Dict[str, Any] = {}
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    collected.setdefault(item.strip(), {})
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                model_id = item.get("id")
+                if not isinstance(model_id, str) or not model_id.strip():
+                    model_id = item.get("name")
+                if not isinstance(model_id, str) or not model_id.strip():
+                    continue
+                model_meta = {
+                    k: v for k, v in item.items() if k not in {"id", "name"}
+                }
+                collected.setdefault(model_id.strip(), model_meta)
+        return collected
+
+    merged_models = _normalize_model_collection(entry.get("models"))
+    for model_id, model_meta in _normalize_model_collection(
+        entry.get("available_models")
+    ).items():
+        merged_models.setdefault(model_id, model_meta)
+    if merged_models:
+        normalized["models"] = merged_models
 
     context_length = entry.get("context_length")
     if isinstance(context_length, int) and context_length > 0:

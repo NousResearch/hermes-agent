@@ -13,9 +13,12 @@ This module ties together the foundation layers:
 - ``hermes_cli.providers``        -- canonical provider identity + overlays
 - ``hermes_cli.model_normalize``  -- per-provider name formatting
 
-Provider switching uses the ``--provider`` flag exclusively.
-No colon-based ``provider:model`` syntax — colons are reserved for
-OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
+Provider switching uses the ``--provider`` flag. A colon-based
+``provider:model`` (or ``custom:<name>:model``) form is also accepted, but
+*only* when the left-hand side resolves to a user-configured provider (see
+``_parse_configured_provider_model_input``) — for every other provider colons
+stay reserved for OpenRouter variant suffixes (``:free``, ``:extended``,
+``:fast``), so generic model ids that contain colons are never reinterpreted.
 """
 
 from __future__ import annotations
@@ -935,8 +938,9 @@ def _configured_provider_matches(
 
     Matching is exact (case-insensitive); the configured spelling is returned
     so the downstream validation/override path sees the canonical id.  Only the
-    explicitly-declared model collections are scanned (``models``, the singular
-    ``model``, and ``default_model``) — never fuzzy/family matching.
+    explicitly-declared model collections are scanned (``_DECLARED_MODEL_KEYS``:
+    ``models``, its ``available_models`` alias, the singular ``model``, and
+    ``default_model``) — never fuzzy/family matching.
     """
     if not model_name or not model_name.strip():
         return {}
@@ -991,7 +995,7 @@ def _parse_configured_provider_model_input(
 
     candidates: list[tuple[str, str]] = []
     if stripped.lower().startswith("custom:"):
-        first, second, rest = stripped.partition(":")
+        first, _sep, rest = stripped.partition(":")
         custom_name, sep, model = rest.partition(":")
         if sep and custom_name.strip() and model.strip():
             candidates.append((f"{first}:{custom_name.strip()}", model.strip()))

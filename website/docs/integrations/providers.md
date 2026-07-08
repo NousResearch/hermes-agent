@@ -1186,6 +1186,20 @@ custom_providers:
 
 `hermes model` will prompt for context length when configuring a custom endpoint. Leave it blank for auto-detection.
 
+`available_models` is accepted as an alias for `models` when you only need a plain list of ids (no per-model metadata). If you set both, the two are merged — `models` wins on any shared id — so you can keep `models` for context-length overrides and `available_models` for the full switchable list:
+
+```yaml
+custom_providers:
+  - name: tokenplan
+    base_url: "https://token-plan.example/v1"
+    models:
+      qwen3.7-max:
+        context_length: 262144
+    available_models: ["qwen3.7-max", "deepseek-v4-flash", "glm-5.2"]
+```
+
+Switch to any declared model with `/model deepseek-v4-flash`, the `--provider` flag, or the `tokenplan:deepseek-v4-flash` colon form (the colon form is honored only for providers you have configured).
+
 :::tip When to set this manually
 - You're using Ollama with a custom `num_ctx` that's lower than the model's maximum
 - You want to limit context below the model's maximum (e.g., 8k on a 128k model to save VRAM)

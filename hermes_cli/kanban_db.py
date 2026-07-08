@@ -6406,6 +6406,38 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
             if kind == "clean_exit":
+                # Check if this task already has a completed run in
+                # task_runs history. If so, the worker exited cleanly
+                # because the work was genuinely done in an earlier run
+                # (e.g. the dispatcher restarted and re-dispatched an
+                # already-finished task). Treat this as completed rather
+                # than blocking on a protocol-violation breaker trip.
+                _prior_done = conn.execute(
+                    "SELECT 1 FROM task_runs "
+                    "WHERE task_id = ? AND outcome = 'completed' LIMIT 1",
+                    (row["id"],),
+                ).fetchone()
+                if _prior_done:
+                    conn.execute(
+                        """
+                        UPDATE tasks
+                           SET status       = 'done',
+                               completed_at = ?,
+                               claim_lock   = NULL,
+                               claim_expires = NULL,
+                               worker_pid   = NULL
+                         WHERE id = ?
+                           AND status = 'running'
+                        """,
+                        (int(time.time()), row["id"]),
+                    )
+                    _end_run(
+                        conn, row["id"],
+                        outcome="completed", status="done",
+                        summary="already completed in prior run",
+                        metadata={"recovered_via_task_runs_history": True},
+                    )
+                    continue  # skip the remaining crash/failure path
                 # Worker subprocess returned 0 but its task is still
                 # ``running`` in the DB — it exited without calling
                 # ``kanban_complete`` / ``kanban_block``. Retrying won't

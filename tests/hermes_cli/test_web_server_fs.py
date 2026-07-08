@@ -45,6 +45,23 @@ def test_fs_list_sorts_and_hides_noise(client, tmp_path):
     assert all(entry["name"] not in {".git", "node_modules"} for entry in entries)
 
 
+def test_fs_list_follows_symlink_to_directory(client, tmp_path):
+    """A symlink pointing to a directory must report isDirectory=True."""
+    root = tmp_path / "project"
+    root.mkdir()
+    real_dir = tmp_path / "real_dir"
+    real_dir.mkdir()
+    link = root / "link_to_dir"
+    link.symlink_to(real_dir, target_is_directory=True)
+
+    response = client.get("/api/fs/list", params={"path": str(root)})
+
+    assert response.status_code == 200
+    entries = response.json()["entries"]
+    link_entry = next(e for e in entries if e["name"] == "link_to_dir")
+    assert link_entry["isDirectory"] is True
+
+
 def test_fs_list_accepts_relative_paths(client, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "rel").mkdir()

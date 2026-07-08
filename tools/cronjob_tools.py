@@ -818,6 +818,34 @@ def cronjob(
         try:
             job = resolve_job_ref(job_id)
         except AmbiguousJobReference as exc:
+            caller_owner = _caller_owner_id()
+            if caller_owner is not None:
+                owned = [m for m in exc.matches if _owner_matches(m, caller_owner)]
+                if not owned:
+                    return json.dumps(
+                        {"success": False, "error": f"Job with ID or name '{job_id}' not found. Use cronjob(action='list') to inspect jobs."},
+                        indent=2,
+                    )
+                if len(owned) == 1:
+                    job = owned[0]
+                else:
+                    owned_ids = ", ".join(m["id"] for m in owned)
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error": f"Job name '{exc.ref}' is ambiguous — matches {len(owned)} jobs: {owned_ids}. Use the job ID instead.",
+                            "matches": [
+                                {
+                                    "id": m["id"],
+                                    "name": m.get("name"),
+                                    "schedule": m.get("schedule_display"),
+                                    "next_run_at": m.get("next_run_at"),
+                                }
+                                for m in owned
+                            ],
+                        },
+                        indent=2,
+                    )
             return json.dumps(
                 {
                     "success": False,
@@ -839,7 +867,10 @@ def cronjob(
                 {"success": False, "error": f"Job with ID or name '{job_id}' not found. Use cronjob(action='list') to inspect jobs."},
                 indent=2,
             )
-        # Resolve to canonical ID (supports name-based lookup)
+        # Resolve to canonical ID (supports name-based lookup).
+        # Save the original user input for access-denied errors so the resolved
+        # canonical ID is not leaked to a caller who does not own the job.
+        _original_ref = job_id
         job_id = job["id"]
 
         # Ownership gate for multi-user gateway contexts.
@@ -847,7 +878,7 @@ def cronjob(
         caller_owner = _caller_owner_id()
         if caller_owner is not None and not _owner_matches(job, caller_owner):
             return json.dumps(
-                {"success": False, "error": f"Job '{job_id}' not found or access denied. Use cronjob(action='list') to inspect your jobs."},
+                {"success": False, "error": f"Job '{_original_ref}' not found or access denied. Use cronjob(action='list') to inspect your jobs."},
                 indent=2,
             )
 

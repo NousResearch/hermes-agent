@@ -966,12 +966,25 @@ def post_setup(hermes_home: str, config: dict) -> None:
         return
 
     # No --mode flag: show interactive picker
+    # Default cursor to the currently configured mode so the wizard
+    # doesn't silently suggest switching away from an active setup.
+    current_mode = ""
+    config_path = Path(hermes_home) / "mem0.json"
+    if config_path.exists():
+        try:
+            existing = json.loads(config_path.read_text(encoding="utf-8"))
+            current_mode = str(existing.get("mode", "")).lower()
+        except Exception:
+            pass
     mode_items = [
-        ("Platform", "Mem0 Cloud API (lightweight, just needs an API key)"),
-        ("Self-hosted server", "Connect to an existing self-hosted Mem0 server (Docker/FastAPI)"),
-        ("Open Source", "Run Mem0 locally (self-hosted LLM + vector store)"),
+        ("Platform" + (" ← current" if current_mode == "platform" else ""), "Mem0 Cloud API (lightweight, just needs an API key)"),
+        ("Self-hosted server" + (" ← current" if current_mode in ("selfhosted", "self-hosted") else ""), "Connect to an existing self-hosted Mem0 server (Docker/FastAPI)"),
+        ("Open Source" + (" ← current" if current_mode == "oss" else ""), "Run Mem0 locally (self-hosted LLM + vector store)"),
     ]
-    mode_idx = _curses_select("  Select mode", mode_items, 0)
+    # Map config mode → picker index
+    _mode_to_idx = {"platform": 0, "selfhosted": 1, "self-hosted": 1, "oss": 2}
+    default_idx = _mode_to_idx.get(current_mode, 0)
+    mode_idx = _curses_select("  Select mode", mode_items, default_idx)
     if mode_idx == 1:
         _setup_selfhosted(hermes_home, config, flags)
     elif mode_idx == 2:

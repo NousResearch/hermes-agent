@@ -251,13 +251,21 @@ def cmd_setup(args) -> None:
         items.append((name, f"— {desc}"))
     items.append(("Built-in only", "— MEMORY.md / USER.md (default)"))
 
-    builtin_idx = len(items) - 1
-    selected = _curses_select("Memory provider setup", items, default=builtin_idx, cancel_returns=_CANCELLED)
+    # Default to the currently active provider if one is configured
+    config = load_config()
+    current_provider = (config.get("memory") or {}).get("provider", "")
+    default_idx = len(items) - 1  # fall back to "Built-in only"
+    if current_provider:
+        for i, (pname, _, _) in enumerate(providers):
+            if pname == current_provider:
+                default_idx = i
+                break
+
+    selected = _curses_select("Memory provider setup", items, default=default_idx, cancel_returns=_CANCELLED)
     if selected == _CANCELLED:
         _print_cancelled_setup()
         return
 
-    config = load_config()
     if not isinstance(config.get("memory"), dict):
         config["memory"] = {}
 

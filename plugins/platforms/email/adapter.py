@@ -124,7 +124,7 @@ class _IPv4SMTP_SSL(smtplib.SMTP_SSL):
 # Supported image extensions for inline detection
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
-def _send_imap_id(imap: "imaplib.IMAP4") -> None:
+def _send_imap_id(imap: imaplib.IMAP4) -> None:
     """Send RFC 2971 IMAP ID command identifying this client.
 
     Required by 163/NetEase mailbox after LOGIN: without it, every UID
@@ -588,7 +588,7 @@ class EmailAdapter(BasePlatformAdapter):
             _send_imap_id(imap)
             # Establish a startup UID boundary so we only process later messages.
             imap.select("INBOX")
-            startup_count = self._establish_uid_baseline(imap, reset_seen_uids=True)
+            startup_count = self._establish_uid_baseline(imap)
             if startup_count is None:
                 try:
                     imap.logout()
@@ -671,11 +671,10 @@ class EmailAdapter(BasePlatformAdapter):
                         "[Email] INBOX UIDVALIDITY changed; clearing cached UID state"
                     )
                     # UIDs from the previous namespace are no longer comparable.
-                    # Rebaseline and defer dispatch until the next poll.
+                    # Rebaseline and permanently exclude mail already present.
                     startup_count = self._establish_uid_baseline(
                         imap,
                         uidvalidity=current_uidvalidity,
-                        reset_seen_uids=True,
                     )
                     if startup_count is not None:
                         logger.info(
@@ -784,10 +783,9 @@ class EmailAdapter(BasePlatformAdapter):
 
     def _establish_uid_baseline(
         self,
-        imap: "imaplib.IMAP4",
+        imap: imaplib.IMAP4,
         *,
         uidvalidity: Optional[bytes] = None,
-        reset_seen_uids: bool = False,
     ) -> Optional[int]:
         """Capture the selected mailbox's current UID high-water mark."""
         if uidvalidity is None:
@@ -827,15 +825,12 @@ class EmailAdapter(BasePlatformAdapter):
                 )
         self._startup_seen_uidvalidity = uidvalidity
         self._startup_seen_uid_cutoff = startup_cutoff
-        if reset_seen_uids:
-            self._seen_uids = malformed_uids
-        else:
-            self._seen_uids.update(malformed_uids)
+        self._seen_uids = malformed_uids
         self._trim_seen_uids()
         return startup_count
 
     @staticmethod
-    def _selected_uidvalidity(imap: "imaplib.IMAP4") -> Optional[bytes]:
+    def _selected_uidvalidity(imap: imaplib.IMAP4) -> Optional[bytes]:
         """Return the selected mailbox UIDVALIDITY when the server exposes it."""
         try:
             _status, values = imap.response("UIDVALIDITY")

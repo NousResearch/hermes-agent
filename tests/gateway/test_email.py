@@ -1056,6 +1056,22 @@ class TestConnectDisconnect(unittest.TestCase):
         self.assertFalse(result)
         mock_smtp.assert_not_called()
 
+    def test_connect_fails_when_startup_uid_baseline_raises(self):
+        """The initial UID baseline must fail closed on IMAP exceptions."""
+        import asyncio
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.uid.side_effect = Exception("connection dropped")
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp:
+            result = asyncio.run(adapter.connect())
+
+        self.assertFalse(result)
+        self.assertFalse(adapter._running)
+        mock_smtp.assert_not_called()
+
     def test_connect_imap_failure(self):
         """IMAP connection failure returns False."""
         import asyncio

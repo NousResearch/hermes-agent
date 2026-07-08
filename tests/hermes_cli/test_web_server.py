@@ -4601,6 +4601,55 @@ class TestNewEndpoints:
             "top_skills": [],
         }
 
+
+    def test_analytics_usage_all_time_includes_old_sessions(self):
+        import time
+        from hermes_state import SessionDB
+
+        day = 86400
+        now = time.time()
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="usage-all-recent",
+                source="cli",
+                model="all-time-model-recent",
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = 'usage-all-recent'",
+                (now - day,),
+            )
+            db.update_token_counts("usage-all-recent", input_tokens=100, output_tokens=40)
+
+            db.create_session(
+                session_id="usage-all-old",
+                source="cli",
+                model="all-time-model-old",
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = 'usage-all-old'",
+                (now - 45 * day,),
+            )
+            db.update_token_counts("usage-all-old", input_tokens=900, output_tokens=60)
+            db._conn.commit()
+        finally:
+            db.close()
+
+        recent = self.client.get("/api/analytics/usage?days=7")
+        all_time = self.client.get("/api/analytics/usage?days=all")
+
+        assert recent.status_code == 200
+        assert all_time.status_code == 200
+        assert recent.json()["period_days"] == 7
+        assert all_time.json()["period_days"] is None
+
+        recent_models = {row["model"] for row in recent.json()["by_model"]}
+        all_models = {row["model"] for row in all_time.json()["by_model"]}
+        assert "all-time-model-recent" in recent_models
+        assert "all-time-model-old" not in recent_models
+        assert "all-time-model-old" in all_models
+        assert all_time.json()["totals"]["total_input"] >= recent.json()["totals"]["total_input"] + 900
+
     def test_models_analytics_merges_session_only_duplicate_into_accounted_provider(self):
         """Session-only model rows should not render as duplicate zero-token cards.
 

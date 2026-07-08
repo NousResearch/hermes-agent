@@ -99,18 +99,20 @@ class InsightsEngine:
         self.db = db
         self._conn = db._conn
 
-    def generate(self, days: int = 30, source: str = None) -> Dict[str, Any]:
+    def generate(self, days: Optional[int] = 30, source: str = None) -> Dict[str, Any]:
         """
         Generate a complete insights report.
 
         Args:
-            days: Number of days to look back (default: 30)
+            days: Number of days to look back (default: 30), or None for all time
             source: Optional filter by source platform
 
         Returns:
             Dict with all computed insights
         """
-        cutoff = time.time() - (days * 86400)
+        all_time = days is None
+        cutoff = 0 if all_time else time.time() - (days * 86400)
+        period_label = "All time" if all_time else f"Last {days} days"
 
         # Gather raw data
         sessions = self._get_sessions(cutoff, source)
@@ -121,6 +123,7 @@ class InsightsEngine:
         if not sessions:
             return {
                 "days": days,
+                "period_label": period_label,
                 "source_filter": source,
                 "empty": True,
                 "overview": {},
@@ -151,6 +154,7 @@ class InsightsEngine:
 
         return {
             "days": days,
+            "period_label": period_label,
             "source_filter": source,
             "empty": False,
             "generated_at": time.time(),
@@ -717,20 +721,19 @@ class InsightsEngine:
     def format_terminal(self, report: Dict) -> str:
         """Format the insights report for terminal display (CLI)."""
         if report.get("empty"):
-            days = report.get("days", 30)
             src = f" (source: {report['source_filter']})" if report.get("source_filter") else ""
-            return f"  No sessions found in the last {days} days{src}."
+            period_label = report.get("period_label") or f"Last {report.get('days', 30)} days"
+            return f"  No sessions found for {period_label.lower()}{src}."
 
         lines = []
         o = report["overview"]
-        days = report["days"]
         src_filter = report.get("source_filter")
 
         # Header
         lines.append("")
         lines.append("  ╔══════════════════════════════════════════════════════════╗")
         lines.append("  ║                    📊 Hermes Insights                    ║")
-        period_label = f"Last {days} days"
+        period_label = report.get("period_label") or f"Last {report.get('days', 30)} days"
         if src_filter:
             period_label += f" ({src_filter})"
         padding = 58 - len(period_label) - 2
@@ -857,14 +860,14 @@ class InsightsEngine:
     def format_gateway(self, report: Dict) -> str:
         """Format the insights report for gateway/messaging (shorter)."""
         if report.get("empty"):
-            days = report.get("days", 30)
-            return f"No sessions found in the last {days} days."
+            period_label = report.get("period_label") or f"Last {report.get('days', 30)} days"
+            return f"No sessions found for {period_label.lower()}."
 
         lines = []
         o = report["overview"]
-        days = report["days"]
+        period_label = report.get("period_label") or f"Last {report.get('days', 30)} days"
 
-        lines.append(f"📊 **Hermes Insights** — Last {days} days\n")
+        lines.append(f"📊 **Hermes Insights** — {period_label}\n")
 
         # Overview
         lines.append(f"**Sessions:** {o['total_sessions']} | **Messages:** {o['total_messages']:,} | **Tool calls:** {o['total_tool_calls']:,}")

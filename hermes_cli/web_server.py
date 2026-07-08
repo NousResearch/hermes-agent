@@ -13845,12 +13845,24 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
 
 
 @app.get("/api/analytics/usage")
-async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
+async def get_usage_analytics(days: str = "30", profile: Optional[str] = None):
     from agent.insights import InsightsEngine
+
+    raw_days = str(days).strip().lower()
+    if raw_days in {"all", "all-time", "all_time"}:
+        period_days: Optional[int] = None
+        cutoff = 0
+    else:
+        try:
+            period_days = int(raw_days)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="days must be a positive integer or 'all'")
+        if period_days < 1:
+            raise HTTPException(status_code=400, detail="days must be a positive integer or 'all'")
+        cutoff = time.time() - (period_days * 86400)
 
     db = _open_session_db_for_profile(profile)
     try:
-        cutoff = time.time() - (days * 86400)
         cur = db._conn.execute("""
             SELECT date(started_at, 'unixepoch') as day,
                    SUM(input_tokens) as input_tokens,
@@ -13890,7 +13902,7 @@ async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
             FROM sessions WHERE started_at > ?
         """, (cutoff,))
         totals = dict(cur3.fetchone())
-        insights_report = InsightsEngine(db).generate(days=days)
+        insights_report = InsightsEngine(db).generate(days=period_days)
         skills = insights_report.get("skills", {
             "summary": {
                 "total_skill_loads": 0,
@@ -13905,7 +13917,7 @@ async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
             "daily": daily,
             "by_model": by_model,
             "totals": totals,
-            "period_days": days,
+            "period_days": period_days,
             "skills": skills,
             # Per-tool-name call counts (already computed by InsightsEngine);
             # the desktop Capabilities page aggregates these per toolset.

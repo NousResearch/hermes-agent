@@ -8,7 +8,7 @@ import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
 import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateHermes } from '@/hermes'
-import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
+import type { ActionStatusResponse, AnalyticsResponse, StatusResponse, UsageAnalyticsPeriod } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { compactNumber } from '@/lib/format'
@@ -44,8 +44,12 @@ const SECTIONS = ['sessions', 'system', 'usage', 'maintenance'] as const satisfi
 const LOG_FILES = ['agent', 'errors', 'gateway', 'desktop'] as const
 const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
 
-const USAGE_PERIODS = [7, 30, 90] as const
+const USAGE_PERIODS = [7, 30, 90, 'all'] as const satisfies readonly UsageAnalyticsPeriod[]
 type UsagePeriod = (typeof USAGE_PERIODS)[number]
+
+function usagePeriodLabel(period: UsagePeriod, copy: ReturnType<typeof useI18n>['t']['commandCenter']): string {
+  return period === 'all' ? copy.allTime : copy.days(period)
+}
 
 interface CommandCenterViewProps {
   initialSection?: CommandCenterSection
@@ -80,6 +84,24 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
   }, [delayMs, value])
 
   return debounced
+}
+
+
+const usageCostFormatter = new Intl.NumberFormat(undefined, {
+  currency: 'USD',
+  maximumFractionDigits: 2,
+  minimumFractionDigits: 2,
+  style: 'currency'
+})
+
+function formatUsageCost(value: null | number | undefined): string {
+  const amount = Number(value ?? 0)
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return '$0.00'
+  }
+
+  return usageCostFormatter.format(amount)
 }
 
 function RowIconButton({
@@ -334,8 +356,8 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
               )}
               {section === 'usage' && (
                 <SegmentedControl
-                  onChange={id => setUsagePeriod(Number(id) as UsagePeriod)}
-                  options={USAGE_PERIODS.map(value => ({ id: String(value), label: cc.days(value) }))}
+                  onChange={id => setUsagePeriod(id === 'all' ? 'all' : (Number(id) as UsagePeriod))}
+                  options={USAGE_PERIODS.map(value => ({ id: String(value), label: usagePeriodLabel(value, cc) }))}
                   value={String(usagePeriod)}
                 />
               )}
@@ -535,7 +557,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
                 {cc.retry}
               </Button>
             }
-            description={cc.noUsage(period)}
+            description={typeof period === 'number' ? cc.noUsage(period) : cc.noUsageAllTime}
           />
         )}
       </div>
@@ -557,6 +579,11 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
         <UsageStat
           label={cc.statTokens}
           value={`${compactNumber(totals.total_input)} / ${compactNumber(totals.total_output)}`}
+        />
+        <UsageStat
+          hint={totals.total_actual_cost > 0 ? cc.actualCost(formatUsageCost(totals.total_actual_cost)) : undefined}
+          label={cc.statCost}
+          value={formatUsageCost(totals.total_estimated_cost)}
         />
       </div>
 
@@ -614,11 +641,16 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
       <div className="grid min-h-0 gap-x-8 gap-y-5 pt-1 sm:grid-cols-2">
         <UsageList
           emptyLabel={cc.noModelUsage}
-          rows={byModel.slice(0, 6).map(entry => ({
-            key: entry.model,
-            label: entry.model,
-            value: `${compactNumber((entry.input_tokens || 0) + (entry.output_tokens || 0))}`
-          }))}
+          rows={byModel.slice(0, 6).map(entry => {
+            const tokens = compactNumber((entry.input_tokens || 0) + (entry.output_tokens || 0))
+            const cost = entry.estimated_cost > 0 ? ` · ${formatUsageCost(entry.estimated_cost)}` : ''
+
+            return {
+              key: entry.model,
+              label: entry.model,
+              value: `${tokens}${cost}`
+            }
+          })}
           title={cc.topModels}
         />
         <UsageList

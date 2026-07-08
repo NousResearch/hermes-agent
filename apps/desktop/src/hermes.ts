@@ -862,10 +862,14 @@ export function getProfileSetupCommand(name: string): Promise<ProfileSetupComman
   })
 }
 
-export function getUsageAnalytics(days = 30): Promise<AnalyticsResponse> {
+export type UsageAnalyticsPeriod = number | 'all'
+
+export function getUsageAnalytics(days: UsageAnalyticsPeriod = 30): Promise<AnalyticsResponse> {
+  const period = days === 'all' ? 'all' : String(Math.max(1, Math.floor(days)))
+
   return window.hermesDesktop.api<AnalyticsResponse>({
     ...profileScoped(),
-    path: `/api/analytics/usage?days=${Math.max(1, Math.floor(days))}`
+    path: `/api/analytics/usage?days=${period}`
   })
 }
 

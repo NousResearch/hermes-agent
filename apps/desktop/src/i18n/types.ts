@@ -922,6 +922,7 @@ export interface Translations {
     recentLogs: string
     noLogs: string
     days: (count: number) => string
+    allTime: string
     statSessions: string
     statApiCalls: string
     statTokens: string
@@ -929,6 +930,7 @@ export interface Translations {
     actualCost: (cost: string) => string
     loadingUsage: string
     noUsage: (period: number) => string
+    noUsageAllTime: string
     retry: string
     dailyTokens: string
     input: string

@@ -436,6 +436,17 @@ class TestInsightsPopulated:
         # All 5 sessions should be included
         assert report["overview"]["total_sessions"] == 5
 
+    def test_all_time_includes_sessions_outside_day_windows(self, populated_db):
+        engine = InsightsEngine(populated_db)
+        report = engine.generate(days=None)
+        overview = report["overview"]
+
+        assert report["period_label"] == "All time"
+        assert report["days"] is None
+        assert overview["total_sessions"] == 5
+        assert overview["total_input_tokens"] == 50000 + 20000 + 100000 + 10000 + 5000
+        assert overview["total_output_tokens"] == 15000 + 8000 + 40000 + 5000 + 2000
+
 
 # =========================================================================
 # Formatting

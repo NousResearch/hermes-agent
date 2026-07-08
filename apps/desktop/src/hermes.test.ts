@@ -9,6 +9,7 @@ import {
   getProfiles,
   getSessionMessages,
   getStatus,
+  getUsageAnalytics,
   listAllProfileSessions,
   listSessions
 } from './hermes'
@@ -141,6 +142,17 @@ describe('Hermes REST session helpers', () => {
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({
         path: '/api/model/options?explicit_only=1'
+      })
+    )
+  })
+
+
+  it('requests all-time usage analytics without clamping to a numeric day window', async () => {
+    await getUsageAnalytics('all')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/analytics/usage?days=all'
       })
     )
   })

@@ -505,7 +505,7 @@ export interface AnalyticsModelEntry {
 export interface AnalyticsResponse {
   by_model: AnalyticsModelEntry[]
   daily: AnalyticsDailyEntry[]
-  period_days: number
+  period_days: null | number
   skills: {
     summary: AnalyticsSkillsSummary
     top_skills: AnalyticsSkillEntry[]

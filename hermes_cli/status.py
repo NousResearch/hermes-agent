@@ -177,6 +177,9 @@ def show_status(args):
             continue
         value = _resolve_env(env_ref)
         has_key = bool(value)
+        # `--all` means show all status sections, not raw secret values. Keep
+        # API credentials redacted in every status mode so diagnostics can be
+        # safely copied into chats, tickets, and logs.
         display = redact_key(value)
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
 

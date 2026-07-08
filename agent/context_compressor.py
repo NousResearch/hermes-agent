@@ -193,8 +193,10 @@ _HISTORICAL_SUMMARY_PREFIXES = (
 _MIN_SUMMARY_TOKENS = 2000
 # Proportion of compressed content to allocate for summary
 _SUMMARY_RATIO = 0.20
-# Absolute ceiling for summary tokens (even on very large context windows)
-_SUMMARY_TOKENS_CEILING = 12_000
+# Absolute ceiling for summary tokens (even on very large context windows).
+# Summaries must stay within a 1K-10K token envelope — anything larger is
+# itself a context-pressure source and slows every compaction.
+_SUMMARY_TOKENS_CEILING = 10_000
 
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
@@ -226,6 +228,16 @@ _AUTO_FOCUS_MAX_CHARS = 700
 # high for small/light tails, but using all 20 as a hard floor here would bring
 # back the old large-tool-output case where nothing can be compacted.
 _MAX_TAIL_MESSAGE_FLOOR = 8
+
+# Models with context windows below this get their compression threshold
+# floored at ``_SMALL_CTX_THRESHOLD_PERCENT`` (raise-only — an explicitly
+# higher user/model threshold always wins).  At the default 50% trigger a
+# 128K-262K model compacts with only ~64-131K consumed; the incompressible
+# floor (system prompt + tool schemas + protected tail + rolling summary)
+# eats most of the reclaimed headroom, so compaction re-fires every 1-2
+# turns and the session spends most of its wall-clock summarizing.
+_SMALL_CTX_WINDOW_LIMIT = 512_000
+_SMALL_CTX_THRESHOLD_PERCENT = 0.75
 
 
 _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
@@ -980,6 +992,18 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.context_length = context_length
+        # Re-apply the small-context threshold floor for the NEW window,
+        # starting from the originally-configured percent (not the possibly
+        # floored live value) so a small -> large switch drops back to the
+        # configured threshold and a large -> small switch gains the floor.
+        # Guard with getattr: compressors unpickled/constructed before this
+        # attribute existed fall back to the live value.
+        _configured_pct = getattr(
+            self, "_configured_threshold_percent", self.threshold_percent,
+        )
+        self.threshold_percent = self._effective_threshold_percent(
+            context_length, _configured_pct,
+        )
         # max_tokens=None here means "caller didn't specify" → keep the existing
         # output reservation. A switch that genuinely changes the output budget
         # passes the new value explicitly. (#43547)
@@ -1041,6 +1065,23 @@ class ContextCompressor(ContextEngine):
         except (TypeError, ValueError):
             return None
         return ivalue if ivalue > 0 else None
+
+    @staticmethod
+    def _effective_threshold_percent(
+        context_length: int, threshold_percent: float,
+    ) -> float:
+        """Apply the small-context threshold floor (raise-only).
+
+        Models under ``_SMALL_CTX_WINDOW_LIMIT`` (512K) trigger at no less
+        than ``_SMALL_CTX_THRESHOLD_PERCENT`` (75%) of the window.  An
+        explicitly higher threshold (user config or per-model autoraise,
+        e.g. Codex gpt-5.5's 85%) always wins; only lower values are raised.
+        Large-context models keep the configured value — at 512K+ the default
+        50% trigger already leaves ample post-compaction headroom.
+        """
+        if context_length and context_length < _SMALL_CTX_WINDOW_LIMIT:
+            return max(threshold_percent, _SMALL_CTX_THRESHOLD_PERCENT)
+        return threshold_percent
 
     @staticmethod
     def _compute_threshold_tokens(
@@ -1129,6 +1170,18 @@ class ContextCompressor(ContextEngine):
             config_context_length=config_context_length,
             provider=provider,
         )
+        # Small-context threshold floor: models under 512K trigger at >=75%
+        # so compaction doesn't fire with half the window still free (the
+        # incompressible floor makes 50%-triggered compaction thrash on
+        # 128K-262K models). Raise-only; must run AFTER context_length is
+        # resolved and BEFORE threshold_tokens is derived. The pre-floor
+        # value is kept so update_model() can re-derive for a new window
+        # (switching small -> large must drop back to the configured value).
+        self._configured_threshold_percent = self.threshold_percent
+        self.threshold_percent = self._effective_threshold_percent(
+            self.context_length, self.threshold_percent,
+        )
+        threshold_percent = self.threshold_percent
         # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
         # the percentage would suggest a lower value.  This prevents premature
         # compression on large-context models at 50% while keeping the % sane
@@ -1507,11 +1560,26 @@ class ContextCompressor(ContextEngine):
         (API keys, tokens, passwords) from leaking into the summary that
         gets sent to the auxiliary model and persisted across compactions.
         """
+        # Lazy import (matches title_generator.py) — agent_runtime_helpers
+        # pulls in heavy transitive imports we don't want at module load.
+        from agent.agent_runtime_helpers import strip_think_blocks
+
         parts = []
         for msg in turns:
             role = msg.get("role", "unknown")
             content = redact_sensitive_text(msg.get("content") or "")
             content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
+            # Strip inline reasoning blocks (<think>, <reasoning>, etc.) from
+            # assistant content before it reaches the summarizer. Reasoning
+            # traces are transient scratch work — feeding them to the aux
+            # model wastes summarizer context and risks scratch-work
+            # conclusions being preserved as facts in the summary. The native
+            # ``reasoning`` message field is already excluded (only
+            # ``content`` is serialized); this closes the inline-tag path
+            # used when native thinking is disabled or the provider inlines
+            # traces into content.
+            if role == "assistant" and content:
+                content = strip_think_blocks(None, content)
 
             # Tool results: keep enough content for the summarizer
             if role == "tool":
@@ -1977,7 +2045,15 @@ This compaction should PRIORITISE preserving all information related to the focu
                     "api_mode": self.api_mode,
                 },
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": int(summary_budget * 1.3),
+                # NO max_tokens: the output cap must never truncate a summary.
+                # ``summary_budget`` is prompt-level guidance only ("Target ~N
+                # tokens" above). Most OpenAI-compatible wires already omit the
+                # param (see _build_call_kwargs), but the Anthropic Messages
+                # wire and NVIDIA NIM forward it — a hard cap there cut
+                # summaries mid-section (thinking models burn the cap on
+                # reasoning first), producing truncated/thinking-only
+                # summaries and compaction loops. Omitting lets the adapter
+                # fall back to the model's native output ceiling.
                 # timeout resolved from auxiliary.compression.timeout config by call_llm
             }
             if self.summary_model:
@@ -2017,6 +2093,16 @@ This compaction should PRIORITISE preserving all information related to the focu
                     f"(provider={self.provider or 'auto'} "
                     f"model={self.summary_model or self.model})"
                 )
+            # Strip reasoning blocks the summarizer model may have emitted
+            # (<think>...</think> etc. from thinking models like MiniMax,
+            # DeepSeek, QwQ). Without this the trace is stored in
+            # _previous_summary, injected into the conversation, AND fed back
+            # into every subsequent iterative-update prompt — compounding
+            # token bloat across compactions. Mirrors title_generator.py.
+            from agent.agent_runtime_helpers import strip_think_blocks
+            stripped = strip_think_blocks(None, content).strip()
+            if stripped:
+                content = stripped
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
             summary = redact_sensitive_text(content.strip())

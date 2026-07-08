@@ -15462,6 +15462,8 @@ def mount_spa(application: FastAPI):
             html = html.replace('href="/assets/', f'href="{prefix}/assets/')
             html = html.replace('src="/assets/', f'src="{prefix}/assets/')
             html = html.replace('href="/favicon.ico"', f'href="{prefix}/favicon.ico"')
+            html = html.replace('href="/icon-', f'href="{prefix}/icon-')
+            html = html.replace('href="/manifest.webmanifest"', f'href="{prefix}/manifest.webmanifest"')
             html = html.replace('href="/fonts/', f'href="{prefix}/fonts/')
             html = html.replace('href="/ds-assets/', f'href="{prefix}/ds-assets/')
             html = html.replace('src="/ds-assets/', f'src="{prefix}/ds-assets/')

@@ -204,9 +204,14 @@ async def _lifespan(app: "FastAPI"):
         )
         cron_thread.start()
 
+    # Reap idle/dead keep-alive PTY sessions in the background (30-min TTL).
+    pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
+
     try:
         yield
     finally:
+        pty_reaper_task.cancel()
+        await PTY_REGISTRY.close_all()
         if cron_stop is not None:
             cron_stop.set()
 
@@ -2247,6 +2252,136 @@ async def git_branch_switch_route(body: GitBranchSwitchBody):
     return await _git_op(_web_git.branch_switch, _git_path(body.path), body.branch)
 
 
+# Host TCP ports each port-binding gateway platform listens on, as
+# ``platform-name -> (config port key, adapter default)``.  Mirrors
+# ``_PORT_BINDING_PLATFORM_VALUES`` in gateway/run.py and each adapter's
+# DEFAULT_PORT / DEFAULT_WEBHOOK_PORT constant.  Used only for the dashboard's
+# gateway-topology readout — best-effort display data, not a bind source.
+_PORT_BINDING_PLATFORM_PORTS: Dict[str, Tuple[str, int]] = {
+    "webhook": ("port", 8644),
+    "api_server": ("port", 8642),
+    "msgraph_webhook": ("port", 8646),
+    "feishu": ("webhook_port", 8765),
+    "wecom_callback": ("port", 8645),
+    "bluebubbles": ("webhook_port", 8645),
+    "sms": ("webhook_port", 8080),
+    "whatsapp_cloud": ("webhook_port", 8090),
+    "line": ("port", 8646),
+}
+
+# Platform states that mean the adapter is NOT serving its port right now.
+_PLATFORM_DEAD_STATES = frozenset({"fatal", "disconnected", "stopped"})
+
+
+def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> Dict[str, int]:
+    """Best-effort map of ``platform -> host TCP port`` for one profile's gateway.
+
+    Reads the platforms the running gateway reported in its
+    ``gateway_state.json`` and resolves each port-binding platform's port from
+    the profile's ``config.yaml`` (top-level ``platforms:`` wins over
+    ``gateway.platforms:``, matching ``load_gateway_config`` precedence),
+    falling back to the adapter default.  Display-only: env-var port overrides
+    (e.g. ``WEBHOOK_PORT`` in that profile's .env) are not resolved here.
+    """
+    platforms = (runtime or {}).get("platforms") or {}
+    active = [
+        name for name, state in platforms.items()
+        if name in _PORT_BINDING_PLATFORM_PORTS
+        and isinstance(state, dict)
+        and state.get("state") not in _PLATFORM_DEAD_STATES
+    ]
+    if not active:
+        return {}
+
+    blocks: Dict[str, dict] = {}
+    try:
+        with open(profile_home / "config.yaml", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        gateway_cfg = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
+        # gateway.platforms first, top-level platforms second — later wins,
+        # matching the precedence in gateway.config.load_gateway_config().
+        for src in ((gateway_cfg or {}).get("platforms"), cfg.get("platforms")):
+            if not isinstance(src, dict):
+                continue
+            for plat_name, plat_block in src.items():
+                if isinstance(plat_block, dict):
+                    blocks.setdefault(plat_name, {}).update(plat_block)
+    except Exception:
+        blocks = {}
+
+    ports: Dict[str, int] = {}
+    for name in active:
+        port_key, default_port = _PORT_BINDING_PLATFORM_PORTS[name]
+        block = blocks.get(name) or {}
+        extra = block.get("extra") if isinstance(block.get("extra"), dict) else {}
+        raw = block.get(port_key, (extra or {}).get(port_key, default_port))
+        try:
+            ports[name] = int(raw)
+        except (TypeError, ValueError):
+            ports[name] = default_port
+    return ports
+
+
+def _collect_profile_gateway_topology() -> Dict[str, Any]:
+    """Enumerate profiles and the gateways serving them for ``/api/status``.
+
+    Returns ``{"profiles": [...], "gateway_mode": ..., "gateways": [...]}``:
+
+    * ``profiles`` — every profile on the host (default + named), from
+      ``profiles_to_serve(True)`` (the cheap enumeration chokepoint — no
+      per-profile config reads or skill counts).
+    * ``gateways`` — one entry per profile with a LIVE gateway process:
+      ``{"profile", "ports", "served_profiles"?}``.  Liveness reuses
+      ``_check_gateway_running`` so this agrees with the profiles sidebar.
+    * ``gateway_mode`` — ``"multiplex"`` when the default gateway serves
+      multiple profiles (gateway.multiplex_profiles), ``"single"`` for one
+      live gateway, ``"multiple"`` for independent per-profile gateways,
+      ``"none"`` when nothing is running.
+    """
+    try:
+        from hermes_cli.profiles import _check_gateway_running, profiles_to_serve
+        from gateway.status import read_runtime_status
+        homes = profiles_to_serve(True)
+    except Exception:
+        _log.debug("profile/gateway topology enumeration failed", exc_info=True)
+        return {"profiles": [], "gateway_mode": "unknown", "gateways": []}
+
+    profile_names = [name for name, _home in homes]
+    gateways: List[Dict[str, Any]] = []
+    multiplex = False
+    for name, home in homes:
+        try:
+            if not _check_gateway_running(home):
+                continue
+        except Exception:
+            continue
+        try:
+            runtime = read_runtime_status(home / "gateway_state.json")
+        except Exception:
+            runtime = None
+        served = [str(p) for p in ((runtime or {}).get("served_profiles") or [])]
+        if name == "default" and len(served) > 1:
+            multiplex = True
+        entry: Dict[str, Any] = {
+            "profile": name,
+            "ports": _profile_platform_ports(home, runtime),
+        }
+        if served:
+            entry["served_profiles"] = served
+        gateways.append(entry)
+
+    if multiplex:
+        mode = "multiplex"
+    elif len(gateways) > 1:
+        mode = "multiple"
+    elif len(gateways) == 1:
+        mode = "single"
+    else:
+        mode = "none"
+
+    return {"profiles": profile_names, "gateway_mode": mode, "gateways": gateways}
+
+
 @app.get("/api/status")
 async def get_status(profile: Optional[str] = None):
     status_scope = None
@@ -2451,12 +2586,23 @@ async def get_status(profile: Optional[str] = None):
         # dashboard is local-only and the caller is already inside the trust
         # envelope — the same loopback/gated split ``should_require_auth`` draws.
         if not auth_required:
+            # Profile + gateway topology: which profiles exist, whether one
+            # multiplexed gateway or several per-profile gateways serve them,
+            # and which host ports the live gateways' port-binding platforms
+            # listen on.  Enumerating profiles walks the filesystem and probes
+            # the process table, so keep it off the event loop.
+            topology = await asyncio.get_running_loop().run_in_executor(
+                None, _collect_profile_gateway_topology
+            )
             status.update({
                 "hermes_home": str(get_hermes_home()),
                 "config_path": str(get_config_path()),
                 "env_path": str(get_env_path()),
                 "gateway_pid": gateway_pid,
                 "gateway_health_url": _GATEWAY_HEALTH_URL,
+                "profiles": topology["profiles"],
+                "gateway_mode": topology["gateway_mode"],
+                "gateways": topology["gateways"],
             })
 
         return status
@@ -4284,7 +4430,12 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
 
 
 @app.get("/api/model/options")
-def get_model_options(profile: Optional[str] = None, refresh: bool = False):
+def get_model_options(
+    profile: Optional[str] = None,
+    refresh: bool = False,
+    include_unconfigured: bool = False,
+    explicit_only: bool = False,
+):
     """Return authenticated providers + their curated model lists.
 
     REST equivalent of the ``model.options`` JSON-RPC on tui_gateway, so the
@@ -4303,18 +4454,15 @@ def get_model_options(profile: Optional[str] = None, refresh: bool = False):
     try:
         from hermes_cli.inventory import build_models_payload, load_picker_context
 
-        # include_unconfigured + picker_hints + canonical_order mirror the
-        # tui_gateway `model.options` JSON-RPC handler exactly, so every GUI
-        # surface fed by this endpoint (Settings → Model, the first-run
-        # onboarding picker) sees the SAME full provider universe `hermes model`
-        # exposes — not just the authenticated subset. Unconfigured providers
-        # come back as skeleton rows carrying `authenticated=False` +
-        # `auth_type`/`key_env`/`warning` so the GUI can render a setup
-        # affordance instead of hiding the provider entirely.
+        # Most desktop surfaces should only list providers the user has already
+        # configured. Onboarding opts into the full provider universe via
+        # include_unconfigured=1 so it can still render setup affordances for
+        # providers that are not yet authenticated.
         with _profile_scope(profile):
             return build_models_payload(
                 load_picker_context(),
-                include_unconfigured=True,
+                explicit_only=bool(explicit_only),
+                include_unconfigured=bool(include_unconfigured),
                 picker_hints=True,
                 canonical_order=True,
                 pricing=True,
@@ -12538,6 +12686,105 @@ else:
 
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
 _PTY_READ_CHUNK_TIMEOUT = 0.2
+
+# Keep-alive PTY sessions: a terminal connecting with ``?attach=<token>`` is
+# bound to a process that survives disconnect/refresh and is reattachable.
+from hermes_cli.pty_session import PtySessionRegistry, RegistryFull, run_reaper  # noqa: E402
+
+PTY_REGISTRY = PtySessionRegistry(
+    ttl=30 * 60,
+    max_sessions=16,
+    buffer_cap=1 * 1024 * 1024,
+    read_timeout=_PTY_READ_CHUNK_TIMEOUT,
+)
+
+
+async def _legacy_pump(ws: "WebSocket", bridge) -> None:
+    """Original 1:1 socket<->PTY pump: stream until disconnect, then close the
+    bridge. Used when no ``?attach=`` token is supplied (keep-alive opt-in).
+
+    Behavior is identical to the pre-keep-alive ``pty_ws`` body, including the
+    #54028 half-open-socket protection (reader EOF → close the WS so the
+    writer's ``ws.receive()`` unparks) and the #53227 ``to_thread`` offloads
+    for the blocking ``bridge.close()``.
+    """
+    loop = asyncio.get_running_loop()
+
+    # --- reader task: PTY master → WebSocket ----------------------------
+    async def pump_pty_to_ws() -> None:
+        try:
+            while True:
+                chunk = await loop.run_in_executor(
+                    None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
+                )
+                if chunk is None:  # EOF
+                    return
+                if not chunk:  # no data this tick; yield control and retry
+                    await asyncio.sleep(0)
+                    continue
+                try:
+                    await ws.send_bytes(chunk)
+                except Exception:
+                    return
+        finally:
+            # The child has exited (EOF) or the send side broke.  Close the
+            # WebSocket so the writer loop's ``ws.receive()`` returns instead
+            # of blocking forever — otherwise, when the browser's socket is
+            # half-open (no FIN delivered, common on macOS/launchd) the
+            # handler never reaches its ``finally`` and the PTY's fds leak.
+            # With dashboard auto-reconnect (#52962) every dropped socket then
+            # stacks a fresh PTY on top of the orphaned one, exhausting fds.
+            #
+            # Reap the bridge here too (close() is idempotent): on child EOF the
+            # writer loop's ``finally`` is the usual closer, but if the handler
+            # task is cancelled the instant we close the WS, that ``finally``
+            # can be skipped, leaking the PTY. Closing from the EOF path makes
+            # the reap independent of that cancellation race (#54028).
+            try:
+                await asyncio.to_thread(bridge.close)
+            except Exception:
+                pass
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+    reader_task = asyncio.create_task(pump_pty_to_ws())
+
+    # --- writer loop: WebSocket → PTY master ----------------------------
+    try:
+        while True:
+            try:
+                msg = await ws.receive()
+            except RuntimeError:
+                # Raised when ws.receive() is called after the socket is
+                # already disconnected (e.g. closed by the reader task above).
+                break
+            if msg.get("type") == "websocket.disconnect":
+                break
+            raw = msg.get("bytes")
+            if raw is None:
+                text = msg.get("text")
+                raw = text.encode("utf-8") if isinstance(text, str) else b""
+            if not raw:
+                continue
+            # Resize escape is consumed locally, never written to the PTY.
+            match = _RESIZE_RE.match(raw)
+            if match and match.end() == len(raw):
+                bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
+                continue
+            bridge.write(raw)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        reader_task.cancel()
+        try:
+            await reader_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        await asyncio.to_thread(bridge.close)
+
+
 _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # Starlette's TestClient reports the peer as "testclient"; treat it as
 # loopback so tests don't need to rewrite request scope.
@@ -13743,71 +13990,57 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
 
+    attach_token = ws.query_params.get("attach") or None
+
+    def _spawn():
+        return PtyBridge.spawn(argv, cwd=cwd, env=env)
+
+    if attach_token is None:
+        # Legacy path: 1:1 socket<->PTY, killed on disconnect (unchanged).
+        try:
+            bridge = _spawn()
+        except PtyUnavailableError as exc:
+            await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
+            await ws.close(code=1011)
+            return
+        except (FileNotFoundError, OSError) as exc:
+            await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
+            await ws.close(code=1011)
+            return
+        await _legacy_pump(ws, bridge)
+        return
+
+    # Keep-alive path: the PTY outlives this socket; reattach by token.
     try:
-        bridge = await asyncio.to_thread(PtyBridge.spawn, argv, cwd=cwd, env=env)
+        session, _created = await PTY_REGISTRY.attach_or_spawn(
+            attach_token, spawn=_spawn
+        )
     except PtyUnavailableError as exc:
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
         return
-    except (FileNotFoundError, OSError) as exc:
-        await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
+    except (FileNotFoundError, OSError, RegistryFull) as exc:
+        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
         return
 
-    loop = asyncio.get_running_loop()
-
-    # --- reader task: PTY master → WebSocket ----------------------------
-    async def pump_pty_to_ws() -> None:
-        try:
-            while True:
-                chunk = await loop.run_in_executor(
-                    None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
-                )
-                if chunk is None:  # EOF
-                    return
-                if not chunk:  # no data this tick; yield control and retry
-                    await asyncio.sleep(0)
-                    continue
-                try:
-                    await ws.send_bytes(chunk)
-                except Exception:
-                    return
-        finally:
-            # The child has exited (EOF) or the send side broke.  Close the
-            # WebSocket so the writer loop's ``ws.receive()`` returns instead
-            # of blocking forever — otherwise, when the browser's socket is
-            # half-open (no FIN delivered, common on macOS/launchd) the
-            # handler never reaches its ``finally`` and the PTY's fds leak.
-            # With dashboard auto-reconnect (#52962) every dropped socket then
-            # stacks a fresh PTY on top of the orphaned one, exhausting fds.
-            #
-            # Reap the bridge here too (close() is idempotent): on child EOF the
-            # writer loop's ``finally`` is the usual closer, but if the handler
-            # task is cancelled the instant we close the WS, that ``finally``
-            # can be skipped, leaking the PTY. Closing from the EOF path makes
-            # the reap independent of that cancellation race (#54028).
-            try:
-                await asyncio.to_thread(bridge.close)
-            except Exception:
-                pass
-            try:
-                await ws.close()
-            except Exception:
-                pass
-
-    reader_task = asyncio.create_task(pump_pty_to_ws())
+    await session.attach(ws)
 
     # --- writer loop: WebSocket → PTY master ----------------------------
+    # No reader task here: the session's drain task (spawned once per PTY,
+    # inside the registry) forwards PTY output to whichever socket is
+    # attached and rings-buffers it while detached.  On child EOF the drain
+    # closes the attached socket with 4410, which unparks ``ws.receive()``
+    # below — same half-open-socket protection the legacy pump has (#54028).
     try:
         while True:
             try:
                 msg = await ws.receive()
             except RuntimeError:
-                # Raised when ws.receive() is called after the socket is
-                # already disconnected (e.g. closed by the reader task above).
+                # ws.receive() after the socket is already disconnected
+                # (e.g. closed by the drain task on process exit).
                 break
-            msg_type = msg.get("type")
-            if msg_type == "websocket.disconnect":
+            if msg.get("type") == "websocket.disconnect":
                 break
             raw = msg.get("bytes")
             if raw is None:
@@ -13819,21 +14052,16 @@ async def pty_ws(ws: WebSocket) -> None:
             # Resize escape is consumed locally, never written to the PTY.
             match = _RESIZE_RE.match(raw)
             if match and match.end() == len(raw):
-                cols = int(match.group(1))
-                rows = int(match.group(2))
-                bridge.resize(cols=cols, rows=rows)
+                session.bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
                 continue
 
-            bridge.write(raw)
+            session.bridge.write(raw)
     except WebSocketDisconnect:
         pass
     finally:
-        reader_task.cancel()
-        try:
-            await reader_task
-        except (asyncio.CancelledError, Exception):
-            pass
-        await asyncio.to_thread(bridge.close)
+        # Detach only — the PTY keeps running for a reattach; the registry
+        # reaper closes it after the TTL (or immediately on process exit).
+        PTY_REGISTRY.detach(attach_token, ws)
 
 
 # ---------------------------------------------------------------------------

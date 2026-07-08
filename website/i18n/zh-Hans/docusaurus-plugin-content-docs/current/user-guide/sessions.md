@@ -271,6 +271,21 @@ What's the weather in Las Vegas?                    3d ago        tele   2025030
 
 ### 导出 Session
 
+`hermes sessions export` 是所有导出格式的统一入口，用 `--format` 选择：
+
+| 格式 | 输出 | 适用场景 |
+|------|------|----------|
+| `jsonl`（默认） | 每个 session 一个 JSON 对象 | 备份、机器可读的往返格式 |
+| `md` / `qmd` | 每个 session 一个 Markdown/Quarto 文件 + manifest | 可读归档、笔记 |
+| `html` | 单个独立页面（多 session 带侧边栏） | 分享、浏览 |
+| `trace` | Claude Code JSONL | HF Agent Trace Viewer、`--upload` |
+
+另有 `--only user-prompts` 只导出你的 prompt（jsonl 或 md）。
+
+所有格式共享同一套选择方式：`--session-id` 导出单个 session，或使用与 `prune` / `archive` 相同的完整过滤器进行批量导出 — `--older-than` / `--newer-than` / `--before` / `--after`（时长如 `5h`/`2d`/`1w`、纯数字天数或 ISO 时间戳）、`--source`、`--title`、`--model`、`--provider`、`--cwd`、`--min/--max-messages`、`--min/--max-tokens`、`--min/--max-cost`、`--min/--max-tool-calls`、`--user`、`--chat-id`、`--chat-type`、`--branch`、`--end-reason`。`--dry-run` 可预览匹配集而不写入。`--redact` 在任意格式下从导出内容中清除密钥（API key、token、凭据）— 任何打算分享的导出都建议加上。注意：带过滤器的批量导出只匹配*已结束*的 session；不带过滤器的 `export` 会导出所有 session（包括活跃的）。
+
+#### JSONL（默认）
+
 ```bash
 # 将所有 session 导出到 JSONL 文件
 hermes sessions export backup.jsonl
@@ -287,9 +302,7 @@ hermes sessions export backup.jsonl --redact
 
 导出文件每行包含一个 JSON 对象，包含完整的 session 元数据和所有消息。
 
-`export` 接受与 `prune` / `archive` 相同的过滤器 — `--older-than` / `--newer-than` / `--before` / `--after`（时长如 `5h`/`2d`/`1w`、纯数字天数或 ISO 时间戳）、`--source`、`--title`、`--model`、`--provider`、`--cwd`、`--min-messages` / `--max-messages`、`--min-tokens` / `--max-tokens`、`--min-cost` / `--max-cost`、`--min-tool-calls` / `--max-tool-calls`、`--user`、`--chat-id`、`--chat-type`、`--branch` 和 `--end-reason`。加 `--dry-run` 可预览匹配的 session 而不写入任何内容。注意：带过滤器的批量导出只匹配*已结束*的 session；不带过滤器的 `export` 会导出所有 session（包括活跃的）。
-
-### 导出 Session 为 HTML
+#### HTML
 
 `--format html` 生成一个完全独立的 HTML 文件 — 无远程依赖 — 带样式化的消息气泡、可折叠的工具输出，多 session 导出时还带侧边栏导航：
 
@@ -301,7 +314,7 @@ hermes sessions export --format html --session-id 20250305_091523_a1b2c3d4 trans
 hermes sessions export --format html --newer-than 1w --source telegram --redact archive.html
 ```
 
-### 只导出你的 Prompt
+#### 只导出 Prompt
 
 `--only user-prompts` 只导出你写的 prompt — 不含助手回复、工具输出或系统上下文。适合构建 prompt 库或回顾你问过什么：
 
@@ -315,7 +328,24 @@ hermes sessions export - --session-id 20250305_091523_a1b2c3d4 --only user-promp
 
 支持 `--format jsonl`（默认）或 `md`，批量导出时同样支持全部过滤器，也可与 `--redact` 组合。
 
-### 导出 Session 为 Markdown/QMD
+#### Trace（HF Agent Trace Viewer）
+
+`--format trace` 生成 Claude Code JSONL — Hugging Face Hub 的 [Agent Trace Viewer](https://huggingface.co/docs/hub/agent-traces) 可自动识别的转录格式。可以写入本地文件，或加 `--upload` 推送到你自己的私有 `hermes-traces` 数据集（读取 `HF_TOKEN`）：
+
+```bash
+# 最近一个 session 的 trace，输出到 stdout
+hermes sessions export --format trace
+
+# 将一个 session 导出为本地 trace 文件
+hermes sessions export --format trace --session-id 20250305_091523_a1b2c3d4 trace.jsonl
+
+# 直接上传到你的私有 HF traces 数据集
+hermes sessions export --format trace --session-id 20250305_091523_a1b2c3d4 --upload
+```
+
+Trace 导出默认强制脱敏（它们本来就是要离开本机的）；`--no-redact` 需人工审查后才建议使用。`--upload` 默认私有，除非加 `--public`。带过滤器的批量 trace 导出会为每个 session 写一个 `<id>.trace.jsonl`。
+
+#### Markdown / QMD
 
 当你想在隐藏或删除旧 session 之前保留一份可读的文件归档时，传入 `--format md` 或 `--format qmd`。Markdown/QMD 导出会为每个 session 写入一个文件到目录中（默认：`~/.hermes/session-exports`）。
 

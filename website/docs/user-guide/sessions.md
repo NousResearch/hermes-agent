@@ -294,6 +294,21 @@ What's the weather in Las Vegas?                    3d ago        tele   2025030
 
 ### Export Sessions
 
+`hermes sessions export` is one surface for every export format, selected with `--format`:
+
+| Format | Output | Use it for |
+|--------|--------|------------|
+| `jsonl` (default) | one JSON object per session | backups, machine round-trip |
+| `md` / `qmd` | one Markdown/Quarto file per session + manifest | readable archives, notes |
+| `html` | single self-contained page (sidebar for multi-session) | sharing, browsing |
+| `trace` | Claude Code JSONL | HF Agent Trace Viewer, `--upload` |
+
+Plus `--only user-prompts` for a prompts-only view (jsonl or md).
+
+All formats share the same selection knobs: `--session-id` for one session, or the full `prune`/`archive` filter set for bulk — `--older-than` / `--newer-than` / `--before` / `--after` (durations like `5h`/`2d`/`1w`, bare days, or ISO timestamps), `--source`, `--title`, `--model`, `--provider`, `--cwd`, `--min/--max-messages`, `--min/--max-tokens`, `--min/--max-cost`, `--min/--max-tool-calls`, `--user`, `--chat-id`, `--chat-type`, `--branch`, `--end-reason`. `--dry-run` previews the match set without writing. `--redact` scrubs secrets (API keys, tokens, credentials) from exported content on any format — recommended for anything you plan to share. Note: bulk filters match *ended* sessions; unfiltered `export` dumps everything, including active ones.
+
+#### JSONL (default)
+
 ```bash
 # Export all sessions to a JSONL file
 hermes sessions export backup.jsonl
@@ -310,9 +325,7 @@ hermes sessions export backup.jsonl --redact
 
 Exported files contain one JSON object per line with full session metadata and all messages.
 
-`export` accepts the same filters as `prune` / `archive` — `--older-than` / `--newer-than` / `--before` / `--after` (durations like `5h`/`2d`/`1w`, bare days, or ISO timestamps), `--source`, `--title`, `--model`, `--provider`, `--cwd`, `--min-messages` / `--max-messages`, `--min-tokens` / `--max-tokens`, `--min-cost` / `--max-cost`, `--min-tool-calls` / `--max-tool-calls`, `--user`, `--chat-id`, `--chat-type`, `--branch`, and `--end-reason`. Add `--dry-run` to preview which sessions match without writing anything. Note: bulk filters match *ended* sessions; unfiltered `export` dumps everything, including active ones.
-
-### Export Sessions to HTML
+#### HTML
 
 `--format html` writes a single self-contained HTML file — no remote dependencies — with styled message bubbles, collapsible tool output, and (for multi-session exports) a sidebar to switch between sessions:
 
@@ -324,7 +337,7 @@ hermes sessions export --format html --session-id 20250305_091523_a1b2c3d4 trans
 hermes sessions export --format html --newer-than 1w --source telegram --redact archive.html
 ```
 
-### Export Only Your Prompts
+#### Prompts Only
 
 `--only user-prompts` exports just the prompts you wrote — no assistant replies, tool output, or system context. Useful for building prompt libraries or reviewing what you asked:
 
@@ -338,7 +351,24 @@ hermes sessions export - --session-id 20250305_091523_a1b2c3d4 --only user-promp
 
 Works with `--format jsonl` (default) or `md`, honors the same filters for bulk export, and combines with `--redact`.
 
-### Export Sessions to Markdown/QMD
+#### Traces (HF Agent Trace Viewer)
+
+`--format trace` emits Claude Code JSONL — the transcript shape the Hugging Face Hub auto-detects for its [Agent Trace Viewer](https://huggingface.co/docs/hub/agent-traces). Write it locally, or add `--upload` to push it to your own private `hermes-traces` dataset (reads `HF_TOKEN`):
+
+```bash
+# Trace of the most recent session, to stdout
+hermes sessions export --format trace
+
+# One session to a local trace file
+hermes sessions export --format trace --session-id 20250305_091523_a1b2c3d4 trace.jsonl
+
+# Upload straight to your private HF traces dataset
+hermes sessions export --format trace --session-id 20250305_091523_a1b2c3d4 --upload
+```
+
+Trace exports are secret-redacted by default (they're meant to leave the machine); `--no-redact` opts out after manual review. `--upload` is private unless `--public`. Bulk trace export with filters writes one `<id>.trace.jsonl` per session.
+
+#### Markdown / QMD
 
 Pass `--format md` or `--format qmd` when you want a readable, file-based archive before hiding or deleting old sessions. Markdown/QMD exports write one file per session into a directory (default: `~/.hermes/session-exports`).
 

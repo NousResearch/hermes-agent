@@ -3480,9 +3480,20 @@ class TestOrchestratorRoleBehavior(unittest.TestCase):
             max_spawn_depth=2, child_depth=1,
         )
         # The contract is keyed off the two-state field + the never-fake rule.
+        self.assertIn("FINAL REPORT PROVENANCE REQUIREMENT", prompt)
+        self.assertIn("In your final report, tag each external-state claim", prompt)
         self.assertIn("[verified:", prompt)
         self.assertIn("[unverified]", prompt)
         self.assertIn("external-state claim", prompt)
+
+    def test_verify_status_contract_comes_after_context(self):
+        """Child context may carry task-specific output shape; the shared final-report
+        provenance rule must remain after it so ad-hoc delegates are still pointed."""
+        prompt = _build_child_system_prompt("Fix tests", "Return blockers only")
+        self.assertLess(
+            prompt.index("CONTEXT"),
+            prompt.index("FINAL REPORT PROVENANCE REQUIREMENT"),
+        )
 
     def test_orchestrator_prompt_carries_verify_status_contract(self):
         """The contract lives in the SHARED summary block, so orchestrator

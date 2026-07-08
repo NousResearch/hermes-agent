@@ -742,6 +742,9 @@ compression:
   protect_last_n: 20                                # Min recent messages to keep uncompressed
   protect_first_n: 3                                # Non-system head messages pinned across compactions (0 = pin nothing)
   hygiene_hard_message_limit: 5000                  # Gateway safety valve — see below
+  model_thresholds:                                 # Per-model threshold overrides (longest substring match wins)
+    glm-5.2-1M: 0.25                                # e.g. 1M window → compact at ~250K
+    glm-5.2: 0.70                                   # e.g. 256K window → compact at ~179K
 
 # The summarization model/provider is configured under auxiliary:
 auxiliary:
@@ -758,6 +761,20 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 `hygiene_hard_message_limit` is a gateway-only **pre-compression safety valve**. It exists to break a death spiral: when API calls keep disconnecting on an oversized session, the gateway never receives token-usage data, so the token-based threshold can't fire, so the transcript keeps growing and disconnects get worse. This count-based floor fires on message count alone (always known, regardless of API failures) to force compression and recover the session. Default `5000` — far above any normal session, including large-context (1M+) models doing thousands of short turns, which compress on the token threshold long before this. Raise it further for unusual platforms, lower it to force more aggressive compression. Editing this value on a running gateway takes effect on the next message (see below).
 
 `protect_first_n` controls how many **non-system** head messages are pinned across every compaction. Default `3` — the opening user/assistant exchange survives every summarizer pass so the original goal stays visible. On long-running rolling-compaction sessions where the opening turn is no longer relevant, set `protect_first_n: 0` to pin nothing but the system prompt + summary + tail. The system prompt itself is always preserved regardless of this setting.
+
+#### Per-model threshold overrides
+
+`model_thresholds` lets you set different compaction trigger points for different models. Keys are matched as substrings against the model name — the **longest match wins** — and the matched value replaces the global `threshold` for that model. This is essential when switching between models with very different context windows (e.g. a 256K model and a 1M model) where a single global threshold can't be optimal for both.
+
+```yaml
+compression:
+  threshold: 0.50           # global default
+  model_thresholds:
+    glm-5.2-1M: 0.25        # 1M window → compact at ~250K (earlier DAG building)
+    glm-5.2: 0.70           # 256K window → compact at ~179K (more raw context)
+```
+
+Overrides work in both directions — they can raise or lower the threshold relative to the global value. The existing `codex_gpt55_autoraise` and Arcee Trinity hardcoded overrides still apply on top of this config. Plugin context engines (e.g. LCM) receive the dict via `self.model_thresholds` and can resolve thresholds the same way using `resolve_model_threshold()` from `agent.context_compressor`.
 
 :::tip Gateway hot-reload of compression and context length
 As of recent releases, editing `model.context_length` or any `compression.*` key in `config.yaml` on a running gateway takes effect on the next message — no gateway restart, no `/reset`, no session rotation required. The cached-agent signature includes these keys, so the gateway transparently rebuilds the agent when it sees a change. API keys and tool/skill config still require the usual reload paths.

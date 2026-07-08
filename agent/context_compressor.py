@@ -696,6 +696,32 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
     return f"[{tool_name}]{first_arg} ({content_len:,} chars result)"
 
 
+def resolve_model_threshold(
+    model: str,
+    model_thresholds: dict[str, float] | None,
+    default: float,
+) -> float:
+    """Resolve the effective compression threshold for a given model.
+
+    ``model_thresholds`` maps substring keys to override fractions.  The
+    longest matching key wins (so ``glm-5.2-1M`` beats ``glm-5.2`` when the
+    model is ``glm-5.2-1M``).  When no override matches, or when
+    ``model_thresholds`` is empty/None, ``default`` is returned unchanged.
+
+    This is a module-level helper so plugin context engines (e.g. LCM) can
+    import and reuse the same resolution logic as the built-in compressor.
+    """
+    if not model_thresholds or not model:
+        return default
+    best_key = ""
+    for key in model_thresholds:
+        if key in model and len(key) > len(best_key):
+            best_key = key
+    if best_key:
+        return float(model_thresholds[best_key])
+    return default
+
+
 class ContextCompressor(ContextEngine):
     """Default context engine — compresses conversation context via lossy summarization.
 
@@ -866,6 +892,16 @@ class ContextCompressor(ContextEngine):
         except Exception as exc:
             logger.debug("compression failure cooldown clear failed (non-sqlite): %s", exc)
 
+    def _effective_threshold_percent(self, model: str) -> float:
+        """Return the threshold for *model* after applying per-model overrides.
+
+        Falls back to ``self._base_threshold_percent`` (the global
+        ``compression.threshold`` config value) when no override matches.
+        """
+        return resolve_model_threshold(
+            model, self.model_thresholds, self._base_threshold_percent,
+        )
+
     def update_model(
         self,
         model: str,
@@ -883,6 +919,10 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.context_length = context_length
+        # Re-resolve per-model threshold on switch — the new model may have
+        # a different override, or the user may be switching between a 256K
+        # and a 1M context model that need very different compaction points.
+        self.threshold_percent = self._effective_threshold_percent(model)
         # max_tokens=None here means "caller didn't specify" → keep the existing
         # output reservation. A switch that genuinely changes the output budget
         # passes the new value explicitly. (#43547)
@@ -1003,13 +1043,18 @@ class ContextCompressor(ContextEngine):
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
         max_tokens: int | None = None,
+        model_thresholds: dict[str, float] | None = None,
     ):
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
         self.provider = provider
         self.api_mode = api_mode
-        self.threshold_percent = threshold_percent
+        # Per-model threshold overrides (longest substring match wins).
+        # Stored as a plain dict; resolved in _effective_threshold().
+        self.model_thresholds = model_thresholds or {}
+        self._base_threshold_percent = threshold_percent
+        self.threshold_percent = self._effective_threshold_percent(model)
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
@@ -1039,7 +1084,7 @@ class ContextCompressor(ContextEngine):
         # guards the degenerate case where the floor would equal/exceed the
         # window (small models), so auto-compression can still fire (#14690).
         self.threshold_tokens = self._compute_threshold_tokens(
-            self.context_length, threshold_percent, self.max_tokens,
+            self.context_length, self.threshold_percent, self.max_tokens,
         )
         self.compression_count = 0
 
@@ -1051,12 +1096,18 @@ class ContextCompressor(ContextEngine):
         )
 
         if not quiet_mode:
+            _override_note = ""
+            if self.threshold_percent != self._base_threshold_percent:
+                _override_note = " (per-model override from %.0f%%)" % (
+                    self._base_threshold_percent * 100,
+                )
             logger.info(
                 "Context compressor initialized: model=%s context_length=%d "
-                "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
+                "threshold=%d (%.0f%%%s) target_ratio=%.0f%% tail_budget=%d "
                 "provider=%s base_url=%s",
                 model, self.context_length, self.threshold_tokens,
-                threshold_percent * 100, self.summary_target_ratio * 100,
+                self.threshold_percent * 100, _override_note,
+                self.summary_target_ratio * 100,
                 self.tail_token_budget,
                 provider or "none", base_url or "none",
             )

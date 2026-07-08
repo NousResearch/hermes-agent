@@ -415,6 +415,16 @@ compression:
   # for the ChatGPT Codex OAuth route. Set false to opt back down to threshold.
   codex_gpt55_autoraise: true
 
+  # Per-model threshold overrides. Keys are matched as substrings against the
+  # model name (longest match wins). When a key matches, its value replaces
+  # the global `threshold` above for that model. Useful when switching between
+  # models with very different context windows (e.g. 256K vs 1M tokens).
+  # Example:
+  #   model_thresholds:
+  #     glm-5.2-1M: 0.25   # 1M window → compact at ~250K
+  #     glm-5.2: 0.70      # 256K window → compact at ~179K
+  model_thresholds: {}
+
   # Fraction of the threshold to preserve as recent tail (default: 0.20 = 20%)
   # e.g. 20% of 50% threshold = 10% of total context kept as recent messages.
   # Summary output is separately capped at 12K tokens (Gemini output limit).

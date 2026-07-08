@@ -212,6 +212,12 @@ class ContextEngine(ABC):
 
     # -- Optional: model switch support ------------------------------------
 
+    # Per-model threshold overrides (longest substring match wins).
+    # Engines that support per-model thresholds should read this dict
+    # in their update_model() override. The base class stores it but
+    # does not use it (threshold_percent is left untouched).
+    model_thresholds: dict = {}
+
     def update_model(
         self,
         model: str,
@@ -228,4 +234,12 @@ class ContextEngine(ABC):
         (e.g. recalculate DAG budgets, switch summary models).
         """
         self.context_length = context_length
+        # Apply per-model threshold override if configured. Engines that
+        # override update_model() should call resolve_model_threshold() from
+        # agent.context_compressor for the same logic.
+        if self.model_thresholds and model:
+            from agent.context_compressor import resolve_model_threshold
+            self.threshold_percent = resolve_model_threshold(
+                model, self.model_thresholds, self.threshold_percent,
+            )
         self.threshold_tokens = int(context_length * self.threshold_percent)

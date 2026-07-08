@@ -1441,6 +1441,19 @@ DEFAULT_CONFIG = {
                                       # Hermes' compression threshold triggers
                                       # thread/compact/start; off = never auto-trigger
                                       # (codex may still compact natively).
+        "model_thresholds": {},        # Per-model compression threshold overrides.
+                                      # Keys are matched as substrings against the
+                                      # model name (longest match wins). Example:
+                                      #   model_thresholds:
+                                      #     glm-5.2-1M: 0.25   # 1M window → compact at ~250K
+                                      #     glm-5.2: 0.70      # 256K window → compact at ~179K
+                                      # When empty (default), the global `threshold`
+                                      # above applies to all models. Matched values
+                                      # override the global threshold unconditionally
+                                      # (both raise and lower), giving the user full
+                                      # control. The existing codex_gpt55_autoraise
+                                      # and Arcee Trinity hardcoded overrides still
+                                      # apply on top of this config.
         "in_place": True,             # When True, compaction rewrites the message
                                       # list and rebuilds the system prompt WITHOUT
                                       # rotating the session id — the conversation

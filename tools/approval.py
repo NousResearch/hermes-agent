@@ -257,7 +257,7 @@ _HERMES_CONFIG_PATH = (
 # ---------------------------------------------------------------------------
 
 _INTERPRETER_FAMILY_PATTERN = re.compile(
-    r'^(?P<python>python[23]?(?:\.\d+)*(?:\.exe)?)$'
+    r'^(?P<python>py(?:\.exe)?|python[23]?(?:\.\d+)*(?:\.exe)?)$'
     r'|^(?P<node>node(?:js)?(?:\.exe)?)$'
     r'|^(?P<perl>perl[0-9]*(?:\.\d+)*(?:\.exe)?)$'
     r'|^(?P<ruby>ruby[0-9]*(?:[0-9.]+)*(?:\.exe)?)$'

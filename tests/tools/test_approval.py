@@ -1624,6 +1624,24 @@ class TestTokenizerInlineScriptExecution:
         assert "script execution via heredoc" in aliases
 
 
+    def test_windows_py_launcher_detected(self):
+        # `py` (and `py.exe`) is the Windows Python launcher, installed by
+        # the official Python installer since 3.3 — often the only Python
+        # reliably on PATH on Windows, distinct from `python`/`python3`.
+        dangerous, key, desc = detect_dangerous_command('py -c "print(1)"')
+        assert dangerous is True
+
+    def test_windows_py_exe_launcher_detected(self):
+        dangerous, key, desc = detect_dangerous_command('py.exe -c "print(1)"')
+        assert dangerous is True
+
+    def test_pypy_not_confused_with_py_launcher(self):
+        # `pypy` (an alternative Python implementation) must not be
+        # matched by the `py` launcher alias — anchored regex prevents
+        # `py` from matching as a prefix of a longer, unrelated name.
+        dangerous, key, desc = detect_dangerous_command("pypy script.py")
+        assert dangerous is False
+
 class TestPgrepKillExpansion:
     """kill -9 $(pgrep hermes) bypasses the pkill/killall name-matching
     pattern because the command substitution is opaque to regex.

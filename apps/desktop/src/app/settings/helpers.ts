@@ -7,6 +7,16 @@ import { BUILTIN_PERSONALITIES, ENUM_OPTIONS, PROVIDER_GROUPS } from './constant
 // settings/capabilities call sites keep their import path.
 export { asText, includesQuery, prettyName } from '@/lib/text'
 
+const BUILT_IN_MEMORY_PROVIDER_ALIASES = new Set(['built-in', 'builtin', 'none'])
+
+export const memoryProviderValue = (v: unknown): string => {
+  const provider = asText(v).trim()
+
+  return BUILT_IN_MEMORY_PROVIDER_ALIASES.has(provider.toLowerCase()) ? '' : provider
+}
+
+export const isPluginMemoryProvider = (v: unknown): boolean => Boolean(memoryProviderValue(v))
+
 /** Strip leading emoji from toolset titles (CLI registry prefixes labels with icons). */
 export const stripToolsetLabel = (label: string): string =>
   label.replace(/^[\p{Emoji}\p{Extended_Pictographic}\s]+/u, '').trim() || label
@@ -144,7 +154,7 @@ export function enumOptionsFor(
     return undefined
   }
 
-  const current = asText(value)
+  const current = key === 'memory.provider' ? memoryProviderValue(value) : asText(value)
 
   return current && !opts.includes(current) ? [...opts, current] : opts
 }

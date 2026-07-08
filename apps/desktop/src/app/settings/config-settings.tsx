@@ -21,7 +21,7 @@ import { PanelEmpty } from '../overlays/panel'
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
-import { enumOptionsFor, getNested, prettyName, setNested } from './helpers'
+import { enumOptionsFor, getNested, isPluginMemoryProvider, memoryProviderValue, prettyName, setNested } from './helpers'
 import { MemoryConnect } from './memory/connect'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
@@ -130,11 +130,12 @@ function ConfigField({
         <SelectContent>
           {selectOptions.map(option => (
             <SelectItem key={option || EMPTY_SELECT_VALUE} value={option || EMPTY_SELECT_VALUE}>
-              {option
-                ? (optionLabels?.[option] ?? prettyName(option))
-                : schemaKey === 'display.personality'
-                  ? c.none
-                  : c.noneParen}
+              {optionLabels?.[option] ??
+                (option
+                  ? prettyName(option)
+                  : schemaKey === 'display.personality'
+                    ? c.none
+                    : c.noneParen)}
             </SelectItem>
           ))}
         </SelectContent>
@@ -455,30 +456,41 @@ export function ConfigSettings({
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : (
         <div className="grid gap-1">
-          {visibleFields.map(([key, field]) => (
-            <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
-              <ConfigField
-                descriptionExtra={
-                  key === 'memory.provider' && Boolean(getNested(config, key)) ? (
-                    <MemoryConnect provider={String(getNested(config, key))} />
-                  ) : undefined
-                }
-                enumOptions={
-                  key === 'tts.elevenlabs.voice_id'
-                    ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
-                    : enumOptionsFor(key, getNested(config, key), config)
-                }
-                onChange={value => updateConfig(setNested(config, key, value))}
-                optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
-                schema={field}
-                schemaKey={key}
-                value={getNested(config, key)}
-              />
-              {key === 'memory.provider' && typeof getNested(config, key) === 'string' && getNested(config, key) ? (
-                <ProviderConfigPanel provider={String(getNested(config, key))} />
-              ) : null}
-            </div>
-          ))}
+          {visibleFields.map(([key, field]) => {
+            const value =
+              key === 'memory.provider' ? memoryProviderValue(getNested(config, key)) : getNested(config, key)
+
+            return (
+              <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
+                <ConfigField
+                  descriptionExtra={
+                    key === 'memory.provider' && isPluginMemoryProvider(value) ? (
+                      <MemoryConnect provider={String(value)} />
+                    ) : undefined
+                  }
+                  enumOptions={
+                    key === 'tts.elevenlabs.voice_id'
+                      ? enumOptionsFor(key, value, config, elevenLabsVoiceOptions ?? undefined)
+                      : enumOptionsFor(key, value, config)
+                  }
+                  onChange={nextValue => updateConfig(setNested(config, key, nextValue))}
+                  optionLabels={
+                    key === 'tts.elevenlabs.voice_id'
+                      ? elevenLabsVoiceLabels
+                      : key === 'memory.provider'
+                        ? { '': c.builtIn }
+                        : undefined
+                  }
+                  schema={field}
+                  schemaKey={key}
+                  value={value}
+                />
+                {key === 'memory.provider' && isPluginMemoryProvider(value) ? (
+                  <ProviderConfigPanel provider={String(value)} />
+                ) : null}
+              </div>
+            )
+          })}
         </div>
       )}
       <input

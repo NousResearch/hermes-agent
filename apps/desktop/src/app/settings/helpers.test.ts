@@ -3,13 +3,28 @@ import { describe, expect, it } from 'vitest'
 import type { HermesConfigRecord } from '@/types/hermes'
 
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
-import { enumOptionsFor, getNested, providerGroup, setNested, stripToolsetLabel, toolsetDisplayLabel } from './helpers'
+import {
+  enumOptionsFor,
+  getNested,
+  memoryProviderValue,
+  providerGroup,
+  setNested,
+  stripToolsetLabel,
+  toolsetDisplayLabel
+} from './helpers'
 
 describe('settings helpers', () => {
-  it('lists Hindsight as a built-in desktop memory provider option', () => {
+  it('lists plugin memory providers without exposing the built-in alias as a plugin', () => {
     const options = enumOptionsFor('memory.provider', '', {})
 
+    expect(options).toContain('')
     expect(options).toContain('hindsight')
+    expect(options).not.toContain('builtin')
+    expect(enumOptionsFor('memory.provider', 'builtin', {})).not.toContain('builtin')
+  })
+
+  it.each(['built-in', 'builtin', 'none'])('normalizes the %s memory provider alias', alias => {
+    expect(memoryProviderValue(alias)).toBe('')
   })
 
   describe('defineFieldCopy', () => {

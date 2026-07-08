@@ -590,6 +590,7 @@ export const zhHant = defineLocale({
     config: {
       none: '無',
       noneParen: '(無)',
+      builtIn: '內建',
       notSet: '未設定',
       commaSeparated: '逗號分隔的值',
       loading: '正在載入 Hermes 設定...',

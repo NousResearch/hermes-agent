@@ -1647,9 +1647,24 @@ class GatewaySlashCommandsMixin:
                                     _persist_cfg["model"] = _persist_model_cfg
                                 _persist_model_cfg["default"] = result.new_model
                                 _persist_model_cfg["provider"] = result.target_provider
+                                # Named providers always resolve base_url/api_mode fresh,
+                                # so any leftover is cleared unconditionally below. Custom
+                                # providers have no registry entry to re-derive from, so
+                                # they need an explicit set-or-clear here — the previous
+                                # lone `if result.base_url:` left a stale base_url behind
+                                # when switching to a custom provider whose resolver
+                                # returned an empty base_url (#25107).
+                                _is_custom_target = str(result.target_provider or "").strip().lower() == "custom"
                                 if result.base_url:
                                     _persist_model_cfg["base_url"] = result.base_url
-                                if str(result.target_provider or "").strip().lower() != "custom":
+                                elif _is_custom_target:
+                                    _persist_model_cfg.pop("base_url", None)
+                                if _is_custom_target:
+                                    if result.api_mode:
+                                        _persist_model_cfg["api_mode"] = result.api_mode
+                                    else:
+                                        _persist_model_cfg.pop("api_mode", None)
+                                else:
                                     clear_model_endpoint_credentials(_persist_model_cfg, clear_base_url=True)
                                 from hermes_cli.config import save_config
                                 save_config(_persist_cfg)
@@ -1897,9 +1912,19 @@ class GatewaySlashCommandsMixin:
                         cfg["model"] = model_cfg
                     model_cfg["default"] = result.new_model
                     model_cfg["provider"] = result.target_provider
+                    # See the picker handler above for why custom providers need an
+                    # explicit set-or-clear instead of the old lone truthy check (#25107).
+                    _is_custom_target = str(result.target_provider or "").strip().lower() == "custom"
                     if result.base_url:
                         model_cfg["base_url"] = result.base_url
-                    if str(result.target_provider or "").strip().lower() != "custom":
+                    elif _is_custom_target:
+                        model_cfg.pop("base_url", None)
+                    if _is_custom_target:
+                        if result.api_mode:
+                            model_cfg["api_mode"] = result.api_mode
+                        else:
+                            model_cfg.pop("api_mode", None)
+                    else:
                         clear_model_endpoint_credentials(model_cfg, clear_base_url=True)
                     from hermes_cli.config import save_config
                     save_config(cfg)

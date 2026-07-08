@@ -7868,6 +7868,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
                 save_config_value("model.provider", result.target_provider)
+            # base_url/api_mode were previously never persisted here, so a
+            # global switch left the OLD provider's endpoint/wire-protocol in
+            # config.yaml. result.base_url/api_mode are always freshly
+            # resolved for the target provider (see model_switch.py), so sync
+            # them every time; None clears a value the new provider doesn't
+            # need (#25106).
+            save_config_value("model.base_url", result.base_url or None)
+            save_config_value("model.api_mode", result.api_mode or None)
             _cprint("    Saved to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")
@@ -8180,6 +8188,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
                 save_config_value("model.provider", result.target_provider)
+            # See _apply_model_switch_result above for why base_url/api_mode
+            # must be synced on every global switch (#25106).
+            save_config_value("model.base_url", result.base_url or None)
+            save_config_value("model.api_mode", result.api_mode or None)
             _cprint("    Saved to config.yaml")
         else:
             _cprint("    (session only — add --global to persist)")

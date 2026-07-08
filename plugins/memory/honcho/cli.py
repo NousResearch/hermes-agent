@@ -1058,6 +1058,7 @@ def cmd_status(args) -> None:
 
     api_key = hcfg.api_key or ""
     masked = f"...{api_key[-8:]}" if len(api_key) > 8 else ("set" if api_key else "not set")
+    configured = bool(hcfg.enabled and (hcfg.api_key or hcfg.base_url))
 
     # Auth line distinguishes an OAuth grant (refreshable) from a static API key
     # — the OAuth access token is also stored under apiKey, so masking alone hides it.
@@ -1073,6 +1074,7 @@ def cmd_status(args) -> None:
         print(f"  Profile:        {profile}")
     print(f"  Host:           {hcfg.host}")
     print(f"  Enabled:        {hcfg.enabled}")
+    print(f"  Configured:     {configured}")
     if cred is not None:
         import time as _time
         remaining = int(cred.expires_at - _time.time())
@@ -1107,56 +1109,55 @@ def cmd_status(args) -> None:
     print(f"  Observation:    user(me={hcfg.user_observe_me},others={hcfg.user_observe_others}) ai(me={hcfg.ai_observe_me},others={hcfg.ai_observe_others})")
     print(f"  Write freq:     {hcfg.write_frequency}")
 
-    if hcfg.enabled and (hcfg.api_key or hcfg.base_url):
-        print("\n  Connection... ", end="", flush=True)
+    if configured:
         try:
             client = get_honcho_client(hcfg)
-            _show_peer_cards(hcfg, client)
-            print("OK")
+            card, ai_text = _load_peer_cards(hcfg, client)
+            print("  Reachable:      yes")
+            _print_peer_cards(card, ai_text)
+            print()
         except Exception as e:
-            print(f"FAILED ({e})\n")
+            print(f"  Reachable:      no ({e})\n")
     else:
         reason = "disabled" if not hcfg.enabled else "no API key or base URL"
-        print(f"\n  Not connected ({reason})\n")
+        print(f"  Reachable:      not checked ({reason})\n")
 
 
-def _show_peer_cards(hcfg, client) -> None:
-    """Fetch and display peer cards for the active profile.
+def _load_peer_cards(hcfg, client):
+    """Return user-card facts and AI representation for status display.
 
     Uses get_or_create to ensure the session exists with peers configured.
     This is idempotent -- if the session already exists on the server it's
     just retrieved, not duplicated.
     """
-    try:
-        from plugins.memory.honcho.session import HonchoSessionManager
-        mgr = HonchoSessionManager(honcho=client, config=hcfg)
-        session_key = hcfg.resolve_session_name()
-        mgr.get_or_create(session_key)
+    from plugins.memory.honcho.session import HonchoSessionManager
 
-        # User peer card
-        card = mgr.get_peer_card(session_key)
-        if card:
-            print(f"\n  User peer card ({len(card)} facts):")
-            for fact in card[:10]:
-                print(f"    - {fact}")
-            if len(card) > 10:
-                print(f"    ... and {len(card) - 10} more")
+    mgr = HonchoSessionManager(honcho=client, config=hcfg)
+    session_key = hcfg.resolve_session_name()
+    mgr.get_or_create(session_key)
+    card = mgr.get_peer_card(session_key)
+    ai_rep = mgr.get_ai_representation(session_key)
+    ai_text = ai_rep.get("representation", "")
+    return card, ai_text
 
-        # AI peer representation
-        ai_rep = mgr.get_ai_representation(session_key)
-        ai_text = ai_rep.get("representation", "")
-        if ai_text:
-            # Truncate to first 200 chars
-            display = ai_text[:200] + ("..." if len(ai_text) > 200 else "")
-            print("\n  AI peer representation:")
-            print(f"    {display}")
 
-        if not card and not ai_text:
-            print("\n  No peer data yet (accumulates after first conversation)")
+def _print_peer_cards(card, ai_text: str) -> None:
+    """Render status-only peer-card diagnostics after reachability succeeds."""
+    if card:
+        print(f"\n  User peer card ({len(card)} facts):")
+        for fact in card[:10]:
+            print(f"    - {fact}")
+        if len(card) > 10:
+            print(f"    ... and {len(card) - 10} more")
 
-        print()
-    except Exception as e:
-        print(f"\n  Peer data unavailable: {e}\n")
+    if ai_text:
+        # Truncate to first 200 chars
+        display = ai_text[:200] + ("..." if len(ai_text) > 200 else "")
+        print("\n  AI peer representation:")
+        print(f"    {display}")
+
+    if not card and not ai_text:
+        print("\n  No peer data yet (accumulates after first conversation)")
 
 
 def _cmd_status_all() -> None:

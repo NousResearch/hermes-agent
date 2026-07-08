@@ -20,6 +20,8 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
+from contextlib import contextmanager
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -556,6 +558,127 @@ def _get_lock_paths() -> tuple[Path, Path]:
     hermes_home = _get_hermes_home()
     lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
+
+
+def _cron_job_mode(job: dict) -> str:
+    """Return the coarse cron execution mode for telemetry."""
+    if job.get("no_agent"):
+        return "no_agent"
+    if job.get("script"):
+        return "agent_with_script_gate"
+    return "agent"
+
+
+def _emit_cron_run_event(
+    job: dict,
+    *,
+    success: bool,
+    final_response: str = "",
+    error: str | None = None,
+    duration_ms: int = 0,
+) -> None:
+    """Best-effort privacy-preserving cron completion telemetry."""
+    try:
+        from hermes_telemetry import error_fingerprint, safe_emit_event, stable_hash
+
+        final_text = final_response or ""
+        if final_text.startswith(SILENT_MARKER):
+            delivery_state = "silent"
+        elif final_text.strip():
+            delivery_state = "non_empty"
+        else:
+            delivery_state = "empty"
+
+        payload = {
+            "job_id_hash": stable_hash(job.get("id")),
+            "schedule_hash": stable_hash(job.get("schedule") or job.get("schedule_display")),
+            "mode": _cron_job_mode(job),
+            "has_script": bool(job.get("script")),
+            "has_workdir": bool(job.get("workdir")),
+            "profile_hash": stable_hash(job.get("profile")),
+            "enabled_toolsets_count": len(job.get("enabled_toolsets") or []),
+            "skills_count": len(job.get("skills") or []),
+            "context_from_count": len(job.get("context_from") or []),
+            "delivery_state": delivery_state,
+            "final_response_chars": len(final_text),
+            "duration_ms": max(0, int(duration_ms)),
+            "error_fingerprint": error_fingerprint(error),
+            "error_type": (str(error).split(":", 1)[0] if error else None),
+        }
+        safe_emit_event(
+            "cron_run",
+            payload,
+            status="ok" if success else "error",
+            source="cron.scheduler",
+            hermes_home=_get_hermes_home(),
+        )
+    except Exception as exc:  # pragma: no cover - telemetry must never break cron
+        logger.debug("Job '%s': failed to emit cron telemetry: %s", job.get("id", "?"), exc)
+
+
+@contextmanager
+def _job_profile_context(job_id: str, profile: Optional[str]):
+    """Temporarily run a job under a specific Hermes profile.
+
+    Cron jobs are stored and scheduled by the profile running the scheduler, but
+    an individual job can opt into a different runtime profile. While active,
+    the scheduler's test/override hook and a context-local Hermes home override
+    both point at the resolved profile directory so _get_hermes_home(),
+    .env/config loading, script resolution, AIAgent construction, and downstream
+    get_hermes_home() callers agree on the same home.
+
+    Some existing provider/config paths still load profile .env values through
+    os.environ, so profile jobs also snapshot and restore the process
+    environment on exit. tick() runs profile jobs sequentially to keep that
+    temporary mutation isolated from other scheduled jobs.
+    """
+    raw_profile = str(profile or "").strip()
+    if not raw_profile:
+        yield None
+        return
+
+    global _hermes_home
+    prior_override = _hermes_home
+    env_snapshot = os.environ.copy()
+
+    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    normalized_profile = normalize_profile_name(raw_profile)
+    try:
+        profile_home = Path(resolve_profile_env(normalized_profile)).resolve()
+    except (FileNotFoundError, ValueError) as exc:
+        logger.warning(
+            "Job '%s': configured profile %r no longer valid (%s) — "
+            "falling back to scheduler default",
+            job_id, raw_profile, exc,
+        )
+        yield None
+        return
+
+    override_token = None
+    try:
+        override_token = set_hermes_home_override(profile_home)
+        _hermes_home = profile_home
+        logger.info(
+            "Job '%s': using Hermes profile '%s' (%s)",
+            job_id,
+            normalized_profile,
+            profile_home,
+        )
+        yield normalized_profile
+    finally:
+        _hermes_home = prior_override
+        if override_token is not None:
+            reset_hermes_home_override(override_token)
+        # Delta-based restore: remove added keys, restore changed keys.
+        # Avoids a brief window where other threads see an empty env.
+        added = set(os.environ.keys()) - set(env_snapshot.keys())
+        for k in added:
+            os.environ.pop(k, None)
+        for k, v in env_snapshot.items():
+            if os.environ.get(k) != v:
+                os.environ[k] = v
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -2479,8 +2602,41 @@ def _guard_job_credential_exfil(job: dict) -> None:
         )
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
-
 def run_job(
+    job: dict, *, defer_agent_teardown: Optional[list] = None
+) -> tuple[bool, str, str, Optional[str]]:
+    """Execute a single cron job, applying profile context and telemetry."""
+    job_id = job["id"]
+    started = time.perf_counter()
+    with _job_profile_context(job_id, job.get("profile")):
+        try:
+            success, output, final_response, error = _run_job_impl(
+                job, defer_agent_teardown=defer_agent_teardown
+            )
+        except Exception as exc:
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            _emit_cron_run_event(
+                job,
+                success=False,
+                final_response="",
+                error=f"{type(exc).__name__}: {exc}",
+                duration_ms=duration_ms,
+            )
+            raise
+
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        _emit_cron_run_event(
+            job,
+            success=success,
+            final_response=final_response,
+            error=error,
+            duration_ms=duration_ms,
+        )
+        return success, output, final_response, error
+
+
+
+def _run_job_impl(
     job: dict, *, defer_agent_teardown: Optional[list] = None
 ) -> tuple[bool, str, str, Optional[str]]:
     """

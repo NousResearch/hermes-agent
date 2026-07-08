@@ -105,6 +105,17 @@ class TestKimiMoonshotOnOpenRouter:
         )
         assert agent._anthropic_prompt_cache_policy() == (True, False)
 
+    def test_kimi_bare_release_slug_on_openrouter_caches(self):
+        """Bare release slugs (k2-thinking) lack the 'kimi'/'moonshot' substring;
+        the canonical family matcher must still catch them."""
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="k2-thinking",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
     def test_kimi_on_non_openrouter_host_does_not_cache(self):
         agent = _make_agent(
             provider="custom",

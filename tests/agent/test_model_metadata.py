@@ -30,6 +30,7 @@ from agent.model_metadata import (
     save_context_length,
     fetch_model_metadata,
     _MODEL_CACHE_TTL,
+    estimate_request_tokens_rough,
 )
 
 
@@ -118,6 +119,28 @@ class TestEstimateMessagesTokensRough:
         ]}
         result = estimate_messages_tokens_rough([msg])
         assert result < 5000
+
+
+class TestEstimateRequestTokensRough:
+    def test_caches_tools_estimate(self):
+        messages = [{"role": "user", "content": "hello"}]
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "description": "Run a command",
+                    "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+                },
+            }
+        ]
+
+        # json.dumps is used for params sizing; ensure the tools estimate is cached
+        # so repeated calls don't keep re-serializing the same schema list.
+        with patch("agent.model_metadata.json.dumps", wraps=__import__("json").dumps) as dumps:
+            estimate_request_tokens_rough(messages, system_prompt="x" * 8, tools=tools)
+            estimate_request_tokens_rough(messages, system_prompt="x" * 8, tools=tools)
+            assert dumps.call_count == 1
 
 
 # =========================================================================

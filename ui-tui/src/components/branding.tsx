@@ -44,9 +44,9 @@ export function ArtLines({ lines }: { lines: [string, string][] }) {
 // Terminals can't scale glyphs, so "responsive" means picking a layout that
 // fits the available columns. Thresholds are picked so each tier reads
 // comfortably without forcing wrap or truncation drift on box-drawing edges.
-const TAG_FULL = 'Nous Research · Messenger of the Digital Gods'
-const TAG_MID = 'Messenger of the Digital Gods'
-const TAG_TINY = 'Nous Research'
+const TAG_FULL = 'HT AI Agent · your personal AI agent'
+const TAG_MID = 'your personal AI agent'
+const TAG_TINY = 'HT AI Agent'
 const HIDE_BELOW = 34
 const COMPACT_FROM = 58
 
@@ -291,7 +291,6 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
           <Text color={t.color.accent}>
             {info.model.split('/').pop()}
-            <Text color={t.color.muted}> · Nous Research</Text>
           </Text>
 
           <Text color={t.color.muted} wrap="truncate-end">
@@ -322,7 +321,6 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           <Box flexDirection="column" marginBottom={1}>
             <Text color={t.color.accent} wrap="truncate-end">
               {info.model.split('/').pop()}
-              <Text color={t.color.muted}> · Nous Research</Text>
             </Text>
             <Text color={t.color.muted} wrap="truncate-end">
               {info.cwd || process.cwd()}
@@ -404,7 +402,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
               - run{' '}
             </Text>
             <Text bold color={t.color.warn}>
-              {info.update_command || 'hermes update'}
+              {info.update_command || 'ht update'}
             </Text>
             <Text bold={false} color={t.color.warn} dimColor>
               {' '}

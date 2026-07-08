@@ -30,6 +30,7 @@ import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
+import QRCode from 'qrcode';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
@@ -389,6 +390,9 @@ async function startSocket() {
     if (qr) {
       console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
       qrcode.generate(qr, { small: true });
+      QRCode.toFile('/tmp/hermes-wa-qr.png', qr, { width: 800, margin: 2 })
+        .then(() => console.log('PNG written: /tmp/hermes-wa-qr.png'))
+        .catch((e) => console.error('PNG write failed:', e.message));
       console.log('\nWaiting for scan...\n');
     }
 
@@ -656,6 +660,17 @@ async function startSocket() {
       });
       event.fromOwner = fromOwner;
 
+      // Rewrite @<LID> mentions in inbound body to @<phone> so the agent sees
+      // canonical phone numbers (the same form it uses for outbound mentions).
+      // WhatsApp puts the participant LID in mention text, but agents are
+      // configured with phone-number contacts in SOUL.md.
+      if (event.body && event.body.includes('@')) {
+        event.body = event.body.replace(/(?<![\w@])@(\d{8,})\b/g, (full, digits) => {
+          const phone = lidToPhone[digits];
+          return phone ? `@${phone}` : full;
+        });
+      }
+
       // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
       if (msg.key.fromMe && ((REPLY_PREFIX && event.body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id))) {
         if (WHATSAPP_DEBUG) {
@@ -732,7 +747,7 @@ app.post('/send', async (req, res) => {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
 
-  const { chatId, message, replyTo } = req.body;
+  const { chatId, message, replyTo, mentions } = req.body;
   if (!chatId || !message) {
     return res.status(400).json({ error: 'chatId and message are required' });
   }
@@ -745,6 +760,7 @@ app.post('/send', async (req, res) => {
         chatId,
         replyTo: i === 0 ? replyTo : undefined,
         messageStore,
+        mentions: i === 0 ? mentions : undefined,
       });
       const sent = await sendWithTimeout(chatId, payload, options);
       trackSentMessageId(sent);

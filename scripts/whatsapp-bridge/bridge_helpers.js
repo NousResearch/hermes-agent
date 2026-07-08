@@ -157,9 +157,26 @@ export function pollUpdateForAggregation({
   return null;
 }
 
-export function buildTextSendPayload(text, { replyTo, messageStore } = {}) {
+export function buildTextSendPayload(text, { replyTo, messageStore, mentions } = {}) {
   const content = { text };
   const options = {};
+  // Auto-extract @<digits> mentions from the text if not explicitly passed
+  if (!Array.isArray(mentions) || mentions.length === 0) {
+    const matches = [...text.matchAll(/(?<![\w@])@(\d{8,})\b/g)];
+    if (matches.length > 0) {
+      mentions = [...new Set(matches.map((m) => m[1]))];
+    }
+  }
+  if (Array.isArray(mentions) && mentions.length > 0) {
+    content.mentions = mentions.map((m) => {
+      const raw = String(m).trim();
+      if (!raw) return m;
+      if (raw.endsWith('@lid') || raw.endsWith('@s.whatsapp.net')) return raw;
+      const digits = raw.replace(/\D/g, '');
+      if (!digits) return m;
+      return `${digits}@s.whatsapp.net`;
+    });
+  }
   const quoted = messageStore?.get(replyTo);
   if (quoted?.key && quoted?.message) {
     // Baileys expects quoted messages as sendMessage options, not inside the

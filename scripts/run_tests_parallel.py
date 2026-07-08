@@ -317,6 +317,33 @@ def _run_one_file(
         # zero-collect run reports green ("green because it didn't run").
         rc = 0
         summary["noop_exit5"] = 1
+        # Distinguish a LEGITIMATE optional-dep skip (a module-level
+        # ``pytest.importorskip("numpy")`` or ``pytest.skip(..., allow_module_level=True)``
+        # aborts collection with exit-5 AND prints a skip line, but reports 0
+        # collected — so `skipped` stays 0 and it would otherwise trip the
+        # explicit-no-op RED gate) from a genuine no-op (bad selector / broken
+        # import). A skip reason in the output means the file opted out on
+        # purpose; tag it so Gate 2 excludes it (skip ≠ caller-intent no-op).
+        _low = output.lower()
+        if ("importorskip" in _low or "skipped" in _low
+                or "allow_module_level" in _low or "collected 0 items / 1 skipped" in _low):
+            summary["noop_skip"] = 1
+        else:
+            # No skip reason. Distinguish an INTENTIONALLY testless file (an empty
+            # tombstone left after a feature was removed, or a __main__-driven
+            # standalone script with no pytest test functions at all) from a file
+            # that SHOULD have tests but collected zero (a real no-op / broken
+            # selector). A file whose source defines no ``def test``/``class Test``
+            # is not a pytest target — flag it ⚠, don't RED the whole suite on it.
+            try:
+                _src = file.read_text(errors="replace")
+                import re as _re
+                _has_tests = bool(_re.search(r"^\s*(async\s+)?def\s+test|^\s*class\s+Test",
+                                             _src, _re.MULTILINE))
+                if not _has_tests:
+                    summary["noop_testless"] = 1
+            except Exception:
+                pass
     subproc_wall = time.monotonic() - subproc_start
     return file, rc, output, summary, subproc_wall
 
@@ -1063,14 +1090,25 @@ def _noop_guard(
     # ── ⚠ skip-storm surfacing (unconditional, never a gate) ──────────────
     skip_storms = [
         (f, s) for f, s in all_summaries
-        if s.get("skipped", 0) > 0 and s.get("passed", 0) == 0 and s.get("failed", 0) == 0
+        if (s.get("skipped", 0) > 0 and s.get("passed", 0) == 0 and s.get("failed", 0) == 0)
+        or s.get("noop_skip")  # exit-5 from a module-level importorskip/skip
     ]
     if skip_storms:
         print()
         print(f"⚠  {len(skip_storms)} file{'s' if len(skip_storms) != 1 else ''} skipped every test and executed none "
               f"(importorskip fired? missing optional dep?) — surfaced, not failed:")
         for f, s in skip_storms:
-            print(f"  ⚠  {_format_file(f, repo_root)}  ({s.get('skipped', 0)} skipped, 0 run)")
+            _n = s.get("skipped", 0)
+            print(f"  ⚠  {_format_file(f, repo_root)}  ({_n} skipped, 0 run)")
+
+    # ── ⚠ intentionally-testless files (tombstones / __main__ scripts) ────
+    testless = [(f, s) for f, s in all_summaries if s.get("noop_testless")]
+    if testless:
+        print()
+        print(f"⚠  {len(testless)} file{'s' if len(testless) != 1 else ''} in the set define no pytest tests "
+              f"(empty tombstone or __main__ script) — surfaced, not failed:")
+        for f, s in testless:
+            print(f"  ⚠  {_format_file(f, repo_root)}  (no def test / class Test)")
 
     # ── Gate 1: whole-suite-zero (hard RED, always) ───────────────────────
     if total_executed == 0:
@@ -1083,7 +1121,15 @@ def _noop_guard(
     if explicit_files:
         noop_explicit = [
             (f, s) for f, s in all_summaries
+            # An explicit file that executed 0 tests is a caller-intent no-op —
+            # EXCEPT (a) a legitimate optional-dep skip (noop_skip): a module-level
+            # importorskip opting out in an env without the dep, or (b) an
+            # intentionally-testless file (noop_testless): an empty tombstone or a
+            # __main__-driven script that defines no pytest tests at all. Neither is
+            # a broken request; both surface as ⚠ above, never as a RED gate. A file
+            # that DOES define tests but collected zero still REDs (real no-op).
             if f.resolve() in explicit_files and _executed(s) == 0
+            and not s.get("noop_skip") and not s.get("noop_testless")
         ]
         if noop_explicit:
             print()

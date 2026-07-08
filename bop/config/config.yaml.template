@@ -7,6 +7,41 @@ model:
 
 platform_toolsets:
   cli: [hermes-cli]
+  # A1 restriction: Telegram stays limited to file, skills, and todo.
+  # Add gcal/gmail only during A3/A4 acceptance after MCP tool review.
+  telegram: [file, skills, todo]
+
+# Telegram secrets live in ~/.hermes/.env, not config.yaml:
+# TELEGRAM_BOT_TOKEN=<bot-token>
+# TELEGRAM_ALLOWED_USERS=<comma-separated-user-ids>
+
+# A3/A4 MCP placeholders only. Package choice and OAuth happen with Mike.
+# Use `hermes mcp add ...` then `hermes mcp configure <name>` / `hermes tools`.
+# tools.include is REQUIRED - an mcp_servers entry with NO tools key registers ALL of that server's tools (update/delete/send included). Never add a server entry without it.
+# mcp_servers:
+#   gcal:
+#     command: "<stdio-command>"
+#     args:
+#       - "<arg>"
+#     env:
+#       <ENV_VAR_NAME>: "${<ENV_VAR_NAME>}"
+#     tools:
+#       include:
+#         - list-calendars
+#         - list-events
+#         - create-event
+#   gmail:
+#     command: "<stdio-command>"
+#     args:
+#       - "<arg>"
+#     env:
+#       <ENV_VAR_NAME>: "${<ENV_VAR_NAME>}"
+#     tools:
+#       include:
+#         - search
+#         - read
+#         - create_draft
+#         - list_labels
 
 approvals:
   mode: manual
@@ -36,9 +71,3 @@ delegation:
 stt:
   enabled: true
   provider: local
-
-# Telegram setup is intentionally commented out. A1 fills token/chat IDs.
-# platform_toolsets:
-#   telegram: [hermes-telegram]
-# telegram:
-#   allowed_chats: "<chat-id>"

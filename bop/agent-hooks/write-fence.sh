@@ -147,6 +147,7 @@ def npi_reason(tool_input):
         ("ssn", re.compile(r"\b(?:\d{3}[- .]\d{2}[- .]\d{4}|\d{9})\b")),
         ("fico", re.compile(r"\b(fico|credit\s*score)\b\D{0,24}\d{3}\b", re.IGNORECASE)),
         ("income", re.compile(r"\b(income|salary|agi)\b\D{0,24}\$?\d{2,3}[,.]?\d{3}\b", re.IGNORECASE)),
+        ("acct", re.compile(r"\b(account|acct|routing)\s*(number|no\.?|#)?\s*[:=]?\s*\d{6,17}\b", re.IGNORECASE)),  # bare 9-digit hits ssn first; acct catches 6-17 digit account/routing forms the ssn shape misses
     ]
     for label, pattern in checks:
         if pattern.search(text):

@@ -116,6 +116,7 @@ expect_invalid_rg='{"decision":"block","reason":"repo-guard: invalid hook input"
 expect_ssn='{"decision":"block","reason":"write-fence: NPI pattern detected: ssn"}'
 expect_fico='{"decision":"block","reason":"write-fence: NPI pattern detected: fico"}'
 expect_income='{"decision":"block","reason":"write-fence: NPI pattern detected: income"}'
+expect_acct='{"decision":"block","reason":"write-fence: NPI pattern detected: acct"}'
 expect_git='{"decision":"block","reason":"repo-guard: protected repo git/gh mutation"}'
 expect_file='{"decision":"block","reason":"repo-guard: protected repo file mutation"}'
 
@@ -156,6 +157,8 @@ run_case "NPI ssn blocked" "$WRITE_FENCE" "$(wf_payload write_file '{"path":"~/a
 run_case "NPI spaced ssn blocked" "$WRITE_FENCE" "$(wf_payload write_file '{"path":"~/assistant/npi.md","content":"ssn 123 45 6789"}')" "$expect_ssn"
 run_case "NPI fico blocked" "$WRITE_FENCE" "$(wf_payload write_file '{"path":"~/assistant/npi.md","content":"FICO 742"}')" "$expect_fico"
 run_case "NPI income blocked" "$WRITE_FENCE" "$(wf_payload write_file '{"path":"~/assistant/npi.md","content":"income $85,000"}')" "$expect_income"
+run_case "NPI account number blocked" "$WRITE_FENCE" "$(wf_payload write_file '{"path":"~/assistant/npi.md","content":"account number: 123456789012"}')" "$expect_acct"
+run_case "NPI account manager clean allowed" "$WRITE_FENCE" "$(wf_payload write_file '{"path":"~/assistant/clean.md","content":"account manager follow-up, stage: submitted"}')" ""
 run_case "NPI clean allowed" "$WRITE_FENCE" "$(wf_payload write_file '{"path":"~/assistant/clean.md","content":"loan stage: submitted, next action: call"}')" ""
 run_case "patch missing target" "$WRITE_FENCE" "$(wf_payload patch '{"mode":"patch","patch":"*** Begin Patch\n*** End Patch"}')" "$expect_missing"
 mv "$PARSER_FILE" "$PARSER_ABSENT"

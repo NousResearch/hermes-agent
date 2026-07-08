@@ -6,6 +6,7 @@ set -u
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 INSTALL_SH="$ROOT_DIR/bop/install.sh"
 SKILLS_DIR="$ROOT_DIR/bop/skills"
+SKILLS="ledger-writer capture-intake transcript-followup booking email-triage followup-drafter"
 
 TMP_DIR=$(mktemp -d) && [ -n "$TMP_DIR" ] || exit 1
 
@@ -130,9 +131,15 @@ check_skill_file() {
   else
     pass "$skill NPI self-audit"
   fi
+
+  if grep -Eiq '(account|acct|routing)[[:space:]]*(number|no\.?|#)?[[:space:]]*[:=]?[[:space:]]*[0-9]{6,17}' "$file"; then
+    fail "$skill account-number self-audit" "digit-bearing account/routing literal found"
+  else
+    pass "$skill account-number self-audit"
+  fi
 }
 
-for skill in ledger-writer capture-intake transcript-followup; do
+for skill in $SKILLS; do
   check_skill_file "$skill"
 done
 
@@ -150,13 +157,13 @@ else
 fi
 
 installed_lines=$(grep -c '^installed skill:' "$TMP_DIR/install-1.out" || true)
-if [ "$installed_lines" -eq 3 ]; then
-  pass "install.sh prints three installed skill lines"
+if [ "$installed_lines" -eq 6 ]; then
+  pass "install.sh prints six installed skill lines"
 else
-  fail "install.sh prints three installed skill lines" "got $installed_lines"
+  fail "install.sh prints six installed skill lines" "got $installed_lines"
 fi
 
-for skill in ledger-writer capture-intake transcript-followup; do
+for skill in $SKILLS; do
   if [ -d "$HERMES_TEST_HOME/skills/$skill" ]; then
     pass "$skill installed directory exists"
   else

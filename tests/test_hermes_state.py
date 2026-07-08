@@ -2060,6 +2060,25 @@ class TestTitleLineage:
     def test_resolve_nonexistent_title(self, db):
         assert db.resolve_session_by_title("nonexistent") is None
 
+    def test_resolve_scoped_by_source_and_user_id(self, db):
+        """Testing resolve_session_by_title limits search to matching source/user_id."""
+        db.create_session("s1", "cli", user_id="userA")
+        db.set_session_title("s1", "private project")
+
+        db.create_session("s2", "telegram", user_id="userB")
+        db.set_session_title("s2", "private project #2")
+
+        # Resolving without constraint returns latest matching (s2)
+        assert db.resolve_session_by_title("private project") == "s2"
+
+        # Resolving with match
+        assert db.resolve_session_by_title("private project", source="cli", user_id="userA") == "s1"
+        assert db.resolve_session_by_title("private project", source="telegram", user_id="userB") == "s2"
+
+        # Resolving with mismatch returns None
+        assert db.resolve_session_by_title("private project", source="telegram", user_id="userA") is None
+        assert db.resolve_session_by_title("private project", source="cli", user_id="userB") is None
+
     def test_next_title_no_existing(self, db):
         """With no existing sessions, base title is returned as-is."""
         assert db.get_next_title_in_lineage("my project") == "my project"

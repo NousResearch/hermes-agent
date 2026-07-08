@@ -12683,7 +12683,11 @@ class GatewayRunner:
                 return t("gateway.resume.list_failed", error=e)
 
         # Resolve the name to a session ID.
-        target_id = self._session_db.resolve_session_by_title(name)
+        user_source = source.platform.value if source.platform else None
+        user_id = str(source.user_id) if getattr(source, "user_id", None) else None
+        target_id = self._session_db.resolve_session_by_title(
+            name, source=user_source, user_id=user_id
+        )
         if not target_id:
             return t("gateway.resume.not_found", name=name)
         # Compression creates child continuations that hold the live transcript.

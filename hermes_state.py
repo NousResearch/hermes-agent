@@ -1065,35 +1065,59 @@ class SessionDB:
             row = cursor.fetchone()
         return row["title"] if row else None
 
-    def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
-        """Look up a session by exact title. Returns session dict or None."""
+    def get_session_by_title(
+        self, title: str, *, source: Optional[str] = None, user_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Look up a session by exact title, scoped optionally by source and user_id.
+
+        Returns session dict or None.
+        """
+        query = "SELECT * FROM sessions WHERE title = ?"
+        params = [title]
+        if source is not None:
+            query += " AND source = ?"
+            params.append(source)
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT * FROM sessions WHERE title = ?", (title,)
-            )
+            cursor = self._conn.execute(query, tuple(params))
             row = cursor.fetchone()
         return dict(row) if row else None
 
-    def resolve_session_by_title(self, title: str) -> Optional[str]:
+    def resolve_session_by_title(
+        self, title: str, *, source: Optional[str] = None, user_id: Optional[str] = None
+    ) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest in a lineage.
 
         If the exact title exists, returns that session's ID.
         If not, searches for "title #N" variants and returns the latest one.
         If the exact title exists AND numbered variants exist, returns the
         latest numbered variant (the most recent continuation).
+
+        This query is scoped optionally by source and user_id to prevent
+        unauthorized cross-context session access.
         """
         # First try exact match
-        exact = self.get_session_by_title(title)
+        exact = self.get_session_by_title(title, source=source, user_id=user_id)
 
         # Also search for numbered variants: "title #2", "title #3", etc.
         # Escape SQL LIKE wildcards (%, _) in the title to prevent false matches
         escaped = title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+        query = "SELECT id, title, started_at FROM sessions WHERE title LIKE ? ESCAPE '\\'"
+        params = [f"{escaped} #%"]
+        if source is not None:
+            query += " AND source = ?"
+            params.append(source)
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        query += " ORDER BY started_at DESC"
+
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT id, title, started_at FROM sessions "
-                "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
-                (f"{escaped} #%",),
-            )
+            cursor = self._conn.execute(query, tuple(params))
             numbered = cursor.fetchall()
 
         if numbered:

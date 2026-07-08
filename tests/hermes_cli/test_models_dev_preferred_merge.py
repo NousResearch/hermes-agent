@@ -17,7 +17,7 @@ Merging is what lets new models (e.g. ``mimo-v2.5-pro`` on opencode-go)
 appear in ``/model`` without a Hermes release.
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 from hermes_cli.models import (
@@ -96,6 +96,58 @@ class TestProviderModelIdsPreferred:
             out = provider_model_ids("opencode-zen")
         assert "claude-opus-4-7" in out
         assert "kimi-k2.6" in out
+
+    def test_nvidia_offline_catalog_uses_curated_models_before_profile_fallback(self):
+        """NVIDIA's profile fallback must not hide the broader curated catalog."""
+        assert "nvidia" in _MODELS_DEV_PREFERRED
+        profile = MagicMock()
+        profile.auth_type = "api_key"
+        profile.base_url = "https://integrate.api.nvidia.com/v1"
+        profile.fallback_models = (
+            "nvidia/llama-3.1-nemotron-70b-instruct",
+            "nvidia/llama-3.3-70b-instruct",
+        )
+
+        with (
+            patch("providers.get_provider_profile", return_value=profile),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": "", "base_url": ""},
+            ),
+            patch("agent.models_dev.list_agentic_models", return_value=[]),
+        ):
+            out = provider_model_ids("nvidia")
+
+        assert out == _PROVIDER_MODELS["nvidia"]
+        assert "nvidia/nemotron-3-ultra-550b-a55b" in out
+        assert "z-ai/glm-5.2" in out
+
+    def test_nvidia_unavailable_live_catalog_merges_fresh_models_dev_entries(self):
+        """An empty NVIDIA API response still uses the models.dev-preferred path."""
+        profile = MagicMock()
+        profile.auth_type = "api_key"
+        profile.base_url = "https://integrate.api.nvidia.com/v1"
+        profile.fallback_models = ("nvidia/llama-3.1-nemotron-70b-instruct",)
+        profile.fetch_models.return_value = []
+        fresh_model = "nvidia/new-model-from-models-dev"
+
+        with (
+            patch("providers.get_provider_profile", return_value=profile),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={
+                    "api_key": "nvapi-test",
+                    "base_url": "https://integrate.api.nvidia.com/v1",
+                },
+            ),
+            patch("agent.models_dev.list_agentic_models", return_value=[fresh_model]),
+        ):
+            out = provider_model_ids("nvidia")
+
+        profile.fetch_models.assert_called_once()
+        assert out[0] == fresh_model
+        assert "nvidia/nemotron-3-ultra-550b-a55b" in out
+        assert "z-ai/glm-5.2" in out
 
     def test_kimi_coding_offline_catalog_includes_k2_7_code(self):
         """Native Kimi users must see the newest Code model without live catalog help."""

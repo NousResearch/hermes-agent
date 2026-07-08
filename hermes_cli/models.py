@@ -2500,6 +2500,15 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                                 merged_lower.add(m.lower())
                         return merged
                     return live
+            # For models.dev-preferred providers, keep the richer picker
+            # catalog even when no API key is configured. Profile fallback
+            # lists are a last-resort floor and can lag the curated catalog.
+            curated = list(_PROVIDER_MODELS.get(normalized, []))
+            if normalized in _MODELS_DEV_PREFERRED:
+                preferred_floor = curated or list(_p.fallback_models or [])
+                if preferred_floor:
+                    return _merge_with_models_dev(normalized, preferred_floor)
+
             # Use profile's fallback_models if defined
             if _p.fallback_models:
                 return list(_p.fallback_models)

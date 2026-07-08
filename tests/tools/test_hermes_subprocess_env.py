@@ -209,3 +209,24 @@ class TestInternalDynamicSecrets:
         assert {
             "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET", "GATEWAY_RELAY_DELIVERY_KEY",
         } <= _ALWAYS_STRIP_KEYS
+
+
+class TestToolCredentialPassthrough:
+    """Tool credentials should pass through when inherit_credentials=True."""
+
+    def test_hass_token_passes_through_when_inheriting(self):
+        """HASS_TOKEN is a tool secret, not a gateway bot token.
+        It must be passed to TUI/desktop chat subprocesses (#60667)."""
+        assert "HASS_TOKEN" not in _ALWAYS_STRIP_KEYS, (
+            "HASS_TOKEN should not be in _ALWAYS_STRIP_KEYS"
+        )
+        result = _build(
+            {"HASS_TOKEN": "test-hass-token"},
+            inherit_credentials=True,
+        )
+        assert result.get("HASS_TOKEN") == "test-hass-token"
+        result_no = _build(
+            {"HASS_TOKEN": "test-hass-token"},
+            inherit_credentials=False,
+        )
+        assert "HASS_TOKEN" not in result_no

@@ -421,7 +421,6 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "GATEWAY_RELAY_ID",
     "GATEWAY_RELAY_SECRET",
     "GATEWAY_RELAY_DELIVERY_KEY",
-    "HASS_TOKEN",
     "EMAIL_PASSWORD",
     "HERMES_DASHBOARD_SESSION_TOKEN",
     # Remote-compute / infrastructure secrets

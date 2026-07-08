@@ -479,6 +479,9 @@ class EmailAdapter(BasePlatformAdapter):
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
+        # Watermark: highest UID dropped during trimming. Any UID <= this
+        # is treated as already-seen to prevent replaying old mail (#60637).
+        self._uid_watermark: int = 0
         self._poll_task: Optional[asyncio.Task] = None
 
         # Map chat_id (sender email) -> last subject + message-id for threading
@@ -493,17 +496,21 @@ class EmailAdapter(BasePlatformAdapter):
         beyond the cap, we keep only the highest half — old UIDs are safe to
         drop because new messages always have higher UIDs and IMAP's UNSEEN
         flag prevents re-delivery regardless.
+
+        The highest dropped UID is saved as ``_uid_watermark`` so the poll
+        loop can skip any UID at or below it — prevents replaying old mail
+        when the inbox exceeds the cap (#60637).
         """
         if len(self._seen_uids) <= self._seen_uids_max:
             return
         try:
-            # UIDs are bytes like b'1234' — sort numerically and keep top half
             sorted_uids = sorted(self._seen_uids, key=lambda u: int(u))
             keep = self._seen_uids_max // 2
+            # Watermark = highest UID we're about to drop
+            self._uid_watermark = int(sorted_uids[-keep - 1])
             self._seen_uids = set(sorted_uids[-keep:])
-            logger.debug("[Email] Trimmed seen UIDs to %d entries", len(self._seen_uids))
+            logger.debug("[Email] Trimmed seen UIDs to %d entries (watermark=%d)", len(self._seen_uids), self._uid_watermark)
         except (ValueError, TypeError):
-            # Fallback: just clear old entries if sort fails
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
 
     def _connect_smtp(self) -> smtplib.SMTP:
@@ -664,6 +671,13 @@ class EmailAdapter(BasePlatformAdapter):
                 for uid in data[0].split():
                     if uid in self._seen_uids:
                         continue
+                    # Skip UIDs at or below the watermark — they were dropped
+                    # during trimming and are old mail, not new (#60637)
+                    try:
+                        if self._uid_watermark and int(uid) <= self._uid_watermark:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
                     self._seen_uids.add(uid)
                     # Trim periodically to prevent unbounded memory growth
                     if len(self._seen_uids) > self._seen_uids_max:

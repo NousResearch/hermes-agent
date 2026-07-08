@@ -278,3 +278,47 @@ class TestSessionEntryAutoResetRoundtrip:
         assert reloaded.was_auto_reset is False
         assert reloaded.auto_reset_reason is None
         assert reloaded.reset_had_activity is False
+
+
+# ---------------------------------------------------------------------------
+# resume_pending_expired respects session_reset.mode: none
+# ---------------------------------------------------------------------------
+
+class TestResumePendingExpiredModeNone:
+    """resume_pending_expired freshness gate must honor session_reset.mode."""
+
+    def test_mode_none_prevents_freshness_gate(self, tmp_path):
+        """session_reset.mode: none → resume_pending must NOT be freshness-reset."""
+        store = _make_store(
+            SessionResetPolicy(mode="none"),
+            tmp_path,
+        )
+        source = _make_source()
+
+        entry = store.get_or_create_session(source)
+        entry.resume_pending = True
+        entry.last_resume_marked_at = datetime.now() - timedelta(hours=48)
+        store._save()
+
+        entry2 = store.get_or_create_session(source)
+        assert not entry2.was_auto_reset
+        assert entry2.auto_reset_reason is None
+        assert entry2.session_id == entry.session_id
+
+    def test_mode_idle_still_fires_freshness_gate(self, tmp_path):
+        """session_reset.mode: idle → resume_pending freshness gate still works."""
+        store = _make_store(
+            SessionResetPolicy(mode="idle", idle_minutes=9999),
+            tmp_path,
+        )
+        source = _make_source()
+
+        entry = store.get_or_create_session(source)
+        entry.resume_pending = True
+        entry.last_resume_marked_at = datetime.now() - timedelta(hours=48)
+        store._save()
+
+        entry2 = store.get_or_create_session(source)
+        assert entry2.was_auto_reset
+        assert entry2.auto_reset_reason == "resume_pending_expired"
+        assert entry2.session_id != entry.session_id

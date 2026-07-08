@@ -487,3 +487,65 @@ class TestBaseProfile:
         eb, tl = p.build_api_kwargs_extras()
         assert eb == {}
         assert tl == {}
+
+
+class TestGeminiProfileExtraBody:
+    """Guards for the Gemini provider profile's build_extra_body.
+
+    Known providers route through _build_kwargs_from_profile, so the Gemini
+    plugin's build_extra_body — not the legacy transport inline builder — is what
+    actually shapes live requests. Regression guards for two issues:
+      1. wire shape MUST be extra_body.google.* (top-level `google` → HTTP 400)
+      2. gemini-2.5 MUST carry an explicit thinking_budget (unset → empty completion)
+    """
+
+    OPENAI_COMPAT = "https://generativelanguage.googleapis.com/v1beta/openai"
+    NATIVE = "https://generativelanguage.googleapis.com/v1beta"
+
+    def test_openai_compat_shape_is_double_nested(self):
+        p = get_provider_profile("gemini")
+        body = p.build_extra_body(
+            model="gemini-2.5-flash",
+            reasoning_config={"enabled": False},
+            base_url=self.OPENAI_COMPAT,
+        )
+        # Google's OpenAI-compat endpoint wants a top-level field literally named
+        # `extra_body`; the SDK merges api_kwargs["extra_body"] to top level, so
+        # this must stay double-nested. A top-level `google` key would 400.
+        assert body == {
+            "extra_body": {
+                "google": {
+                    "thinking_config": {
+                        "include_thoughts": False,
+                        "thinking_budget": 0,
+                    }
+                }
+            }
+        }
+        assert "google" not in body
+
+    def test_openai_compat_enabled_reasoning_carries_budget(self):
+        p = get_provider_profile("gemini")
+        body = p.build_extra_body(
+            model="gemini-2.5-flash",
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url=self.OPENAI_COMPAT,
+        )
+        tc = body["extra_body"]["google"]["thinking_config"]
+        assert tc["thinking_budget"] == 8192
+        assert tc["include_thoughts"] is True
+
+    def test_native_shape_uses_thinking_config_directly(self):
+        p = get_provider_profile("gemini")
+        body = p.build_extra_body(
+            model="gemini-2.5-flash",
+            reasoning_config={"enabled": True, "effort": "low"},
+            base_url=self.NATIVE,
+        )
+        assert body == {
+            "thinking_config": {"includeThoughts": True, "thinkingBudget": 2048}
+        }
+
+    def test_no_reasoning_config_returns_empty(self):
+        p = get_provider_profile("gemini")
+        assert p.build_extra_body(model="gemini-2.5-flash") == {}

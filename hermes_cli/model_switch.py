@@ -97,6 +97,19 @@ _NOUS_HERMES_NON_AGENTIC_RE = re.compile(
 )
 
 
+# Numbered Claude failover-lane providers (claude-api-proxy-fN / claude-bridge-fN,
+# any integer N). These are INTERNAL auto-failover targets that the fallback
+# router selects on its own — a user never manually switches to a specific lane.
+# There can be 20+ of them, which crowds real, hand-selectable providers out of
+# the interactive /model picker (Discord's select menu hard-caps at 25 options),
+# so a newly-added provider past slot 25 becomes unreachable from the dropdown.
+# We hide these lanes from the picker (see list_picker_providers). They remain
+# fully reachable by typed `/model claude-bridge-f5/...` and unaffected as
+# failover routing targets — this only affects the interactive dropdown. Mirrors
+# agent/usage_pricing.py::_NOTIONAL_ANTHROPIC_FN_RE (same lane family).
+_PICKER_HIDDEN_FAILOVER_LANE_RE = re.compile(r"^claude-(?:api-proxy|bridge)-f\d+$")
+
+
 def is_nous_hermes_non_agentic(model_name: str) -> bool:
     """Return True if *model_name* is a real Nous Hermes 3/4 chat model.
 
@@ -2506,8 +2519,17 @@ def list_picker_providers(
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)
 
     filtered: List[dict] = []
+    _cur = str(current_provider or "").strip().lower()
     for p in providers:
         slug = str(p.get("slug", "")).lower()
+        # Hide numbered Claude failover lanes (claude-{api-proxy,bridge}-fN) from
+        # the interactive picker — they're internal auto-failover targets, not
+        # hand-selectable providers, and 20+ of them crowd real providers past
+        # the dropdown's 25-option cap. Keep the lane visible only if it's the
+        # CURRENTLY-active provider (so a user on a lane can still see/change it).
+        # Typed `/model <lane>/...` and failover routing are unaffected.
+        if _PICKER_HIDDEN_FAILOVER_LANE_RE.match(slug) and slug != _cur:
+            continue
         if slug == "openrouter":
             try:
                 live = fetch_openrouter_models()

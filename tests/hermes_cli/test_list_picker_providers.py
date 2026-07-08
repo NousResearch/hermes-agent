@@ -264,6 +264,12 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
                         lambda *a, **kw: [])
+    # Hermeticity: the custom-endpoint branch calls fetch_api_models() against
+    # the base_url (localhost:11434). On a machine running a real Ollama that
+    # returns live models and the assertion below (which expects the config's
+    # models) fails. Force it to report no live catalog so the config models win.
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models",
+                        lambda *a, **kw: [])
 
     result = model_switch.list_picker_providers(
         current_provider="custom:ollama",
@@ -372,3 +378,95 @@ def test_current_model_injected_when_genuinely_absent(monkeypatch):
     assert current_rows, "expected a current row"
     row = current_rows[0]
     assert "some-uncurated-model" in row["models"], row["models"]
+
+
+def test_numbered_failover_lanes_hidden_from_picker(monkeypatch):
+    """claude-{api-proxy,bridge}-fN lanes are hidden from the interactive picker.
+
+    They are internal auto-failover targets, not hand-selectable providers, and
+    20+ of them crowd real providers out of the dropdown's 25-option cap. They
+    must NOT appear in the picker; the base (non-numbered) claude-api-proxy /
+    claude-bridge providers and everything else must survive.
+    """
+    base = [
+        _make_provider("anthropic", models=["claude-opus-4-8"]),
+        _make_provider("claude-app", models=["claude-opus-4-8"]),
+        _make_provider("claude-bpp", models=["claude-opus-4-8"]),
+        _make_provider("claude-api-proxy", models=["claude-opus-4-8"]),
+        _make_provider("claude-bridge", models=["claude-opus-4-8"]),
+        _make_provider("claude-api-proxy-f1", models=["claude-opus-4-8"]),
+        _make_provider("claude-api-proxy-f10", models=["claude-opus-4-8"]),
+        _make_provider("claude-bridge-f5", models=["claude-opus-4-8"]),
+        _make_provider("yunwu", models=["claude-opus-4-8"]),
+    ]
+
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **kw: list(base))
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: pytest.fail("should not be called"))
+
+    result = [p["slug"] for p in model_switch.list_picker_providers(max_models=50)]
+
+    # Every numbered lane is gone.
+    assert "claude-api-proxy-f1" not in result
+    assert "claude-api-proxy-f10" not in result
+    assert "claude-bridge-f5" not in result
+    # Base providers + real providers survive.
+    for keep in ("anthropic", "claude-app", "claude-bpp",
+                 "claude-api-proxy", "claude-bridge", "yunwu"):
+        assert keep in result, f"{keep} should remain visible"
+
+
+def test_current_failover_lane_stays_visible(monkeypatch):
+    """A numbered lane is kept ONLY when it's the currently-active provider.
+
+    So a user who is actually running on claude-bridge-f5 can still see it in
+    the picker (to switch away), while the other lanes stay hidden.
+    """
+    base = [
+        _make_provider("claude-bridge-f1", models=["claude-opus-4-8"]),
+        _make_provider("claude-bridge-f5", models=["claude-opus-4-8"],
+                       is_current=True),
+        _make_provider("yunwu", models=["claude-opus-4-8"]),
+    ]
+
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **kw: list(base))
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: pytest.fail("should not be called"))
+
+    result = [p["slug"] for p in model_switch.list_picker_providers(
+        current_provider="claude-bridge-f5", max_models=50)]
+
+    assert "claude-bridge-f5" in result   # current lane visible
+    assert "claude-bridge-f1" not in result  # other lanes still hidden
+    assert "yunwu" in result
+
+
+def test_non_failover_claude_providers_never_hidden(monkeypatch):
+    """The hide-rule must be surgical: only claude-{api-proxy,bridge}-fN match.
+
+    Base claude-* providers and unrelated slugs that merely contain '-f' must
+    not be swept up by the failover-lane regex.
+    """
+    base = [
+        _make_provider("claude-app"),        # not a lane
+        _make_provider("claude-bpp"),        # not a lane
+        _make_provider("claude-api-proxy"),  # base, not numbered
+        _make_provider("claude-bridge"),     # base, not numbered
+        _make_provider("claude-fable-proxy"),  # '-f' but not the -fN pattern
+    ]
+    for p in base:
+        p["models"] = ["m"]
+
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **kw: list(base))
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: pytest.fail("should not be called"))
+
+    result = [p["slug"] for p in model_switch.list_picker_providers(max_models=50)]
+
+    assert result == [
+        "claude-app", "claude-bpp", "claude-api-proxy",
+        "claude-bridge", "claude-fable-proxy",
+    ]

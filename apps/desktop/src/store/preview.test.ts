@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { $rightRailActiveTabId, PREVIEW_PANE_ID, RIGHT_RAIL_PREVIEW_TAB_ID } from './layout'
+import { $rightRailActiveTabId, PREVIEW_PANE_ID } from './layout'
 import { $paneOpen } from './panes'
 import {
   $filePreviewTabs,
   $filePreviewTarget,
   $previewServerRestart,
   $previewServerRestartStatus,
+  $previewTabs,
   $previewTarget,
   $sessionPreviewRegistry,
   beginPreviewServerRestart,
@@ -15,6 +16,7 @@ import {
   closeRightRail,
   dismissPreviewTarget,
   getSessionPreviewRecord,
+  previewTabId,
   type PreviewTarget,
   progressPreviewServerRestart,
   setCurrentSessionPreviewTarget
@@ -102,23 +104,31 @@ describe('preview store', () => {
     expect(getSessionPreviewRecord('session-1')?.dismissedAt).toBeUndefined()
   })
 
-  it('replaces the session preview instead of keeping a back stack', () => {
+  it('keeps multiple live preview tabs and closes only the active preview tab', () => {
     const first = previewTarget('/work/first.html')
     const second = previewTarget('/work/second.html')
 
     setCurrentSessionPreviewTarget(first, 'tool-result')
     setCurrentSessionPreviewTarget(second, 'tool-result')
 
-    expect($sessionPreviewRegistry.get()['session-1']).toHaveLength(1)
+    expect($previewTabs.get().map(tab => tab.target)).toEqual([
+      withRenderMode(first, 'preview'),
+      withRenderMode(second, 'preview')
+    ])
+    expect($sessionPreviewRegistry.get()['session-1']).toHaveLength(2)
     expect(getSessionPreviewRecord('session-1')?.normalized).toEqual(withRenderMode(second, 'preview'))
 
     dismissPreviewTarget()
 
+    expect($previewTabs.get().map(tab => tab.target)).toEqual([withRenderMode(first, 'preview')])
+    expect($previewTarget.get()).toEqual(withRenderMode(first, 'preview'))
+    expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(true)
+
+    dismissPreviewTarget()
+
+    expect($previewTabs.get()).toEqual([])
     expect($previewTarget.get()).toBeNull()
-    expect(getSessionPreviewRecord('session-1')).toBeNull()
-    expect($sessionPreviewRegistry.get()['session-1']?.map(record => record.normalized.url)).toEqual([
-      'file:///work/second.html'
-    ])
+    expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(false)
   })
 
   it('keeps file inspection separate from live preview', () => {
@@ -148,7 +158,7 @@ describe('preview store', () => {
 
     expect($filePreviewTabs.get().map(tab => tab.target)).toEqual([withRenderMode(file, 'source')])
     expect($filePreviewTarget.get()).toBeNull()
-    expect($rightRailActiveTabId.get()).toBe(RIGHT_RAIL_PREVIEW_TAB_ID)
+    expect($rightRailActiveTabId.get()).toBe(previewTabId(live))
     expect($previewTarget.get()).toEqual(withRenderMode(live, 'preview'))
   })
 

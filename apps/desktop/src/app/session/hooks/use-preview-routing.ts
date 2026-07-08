@@ -7,9 +7,9 @@ import {
   $sessionPreviewRegistry,
   beginPreviewServerRestart,
   completePreviewServerRestart,
-  getSessionPreviewRecord,
   progressPreviewServerRestart,
   requestPreviewReload,
+  restoreSessionPreviewTabs,
   setPreviewTarget
 } from '@/store/preview'
 import { $currentCwd } from '@/store/session'
@@ -62,9 +62,7 @@ export function usePreviewRouting({
       return
     }
 
-    const record = getSessionPreviewRecord(previewSessionId)
-
-    setPreviewTarget(record?.normalized ?? null)
+    restoreSessionPreviewTabs(previewSessionId)
   }, [currentView, previewRegistry, previewSessionId])
 
   const restartPreviewServer = useCallback(

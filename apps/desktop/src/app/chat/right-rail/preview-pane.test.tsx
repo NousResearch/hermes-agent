@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $paneStates } from '@/store/panes'
-import { $connection } from '@/store/session'
+import { $activeSessionId, $connection, $selectedStoredSessionId } from '@/store/session'
 
 import { PreviewPane } from './preview-pane'
 
@@ -20,7 +20,9 @@ describe('PreviewPane console state', () => {
     cleanup()
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: ORIGINAL_INNER_WIDTH })
     $paneStates.set({})
+    $activeSessionId.set(null)
     $connection.set(null)
+    $selectedStoredSessionId.set(null)
     vi.unstubAllGlobals()
   })
 
@@ -84,6 +86,30 @@ describe('PreviewPane console state', () => {
     expect(setTitlebarToolGroup).toHaveBeenCalledTimes(initialCalls)
   })
 
+
+  it('navigates the docked preview from the editable address bar', () => {
+    const rendered = render(
+      <PreviewPane
+        setTitlebarToolGroup={vi.fn()}
+        target={{
+          kind: 'url',
+          label: 'Preview',
+          source: 'http://localhost:5174',
+          url: 'http://localhost:5174'
+        }}
+      />
+    )
+
+    const input = screen.getByLabelText('Preview address') as HTMLInputElement
+    const iframe = rendered.container.querySelector('iframe')
+
+    fireEvent.change(input, { target: { value: 'example.org/docs' } })
+    fireEvent.submit(input.closest('form')!)
+
+    expect(iframe?.getAttribute('src')).toBe('https://example.org/docs')
+    expect(input.value).toBe('https://example.org/docs')
+  })
+
   it('offers responsive preview width presets without replacing manual pane resizing', () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1600 })
 
@@ -133,5 +159,38 @@ describe('PreviewPane console state', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Set preview to iPhone 9:16' }))
 
     expect($paneStates.get().preview?.widthOverride).toBe(405)
+  })
+
+  it('scopes Electron preview webview storage to the active chat session', () => {
+    const createdWebviews: HTMLElement[] = []
+    const originalCreateElement = document.createElement.bind(document)
+
+    vi.spyOn(document, 'createElement').mockImplementation(((tagName: string, options?: ElementCreationOptions) => {
+      if (tagName.toLowerCase() !== 'webview') {
+        return originalCreateElement(tagName, options)
+      }
+
+      const webview = originalCreateElement('div') as unknown as HTMLElement & { reload: () => void }
+      webview.reload = vi.fn()
+      createdWebviews.push(webview)
+
+      return webview
+    }) as typeof document.createElement)
+
+    $activeSessionId.set('chat/with unsafe spaces')
+
+    render(
+      <PreviewPane
+        setTitlebarToolGroup={vi.fn()}
+        target={{
+          kind: 'url',
+          label: 'Preview',
+          source: 'https://example.com',
+          url: 'https://example.com'
+        }}
+      />
+    )
+
+    expect(createdWebviews[0]?.getAttribute('partition')).toBe('persist:hermes-preview-chat-with-unsafe-spaces')
   })
 })

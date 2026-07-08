@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { assistantTextPart, type ChatMessage } from '@/lib/chat-messages'
 import {
+  $previewTabs,
   $previewTarget,
   clearSessionPreviewRegistry,
   type PreviewTarget,
@@ -37,6 +38,20 @@ function previewTarget(source: string): PreviewTarget {
 
 let handleEvent: (event: RpcEvent) => void = () => undefined
 
+function installLocalStorageForTest() {
+  const store = new Map<string, string>()
+
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      clear: () => store.clear(),
+      getItem: (key: string) => store.get(key) ?? null,
+      removeItem: (key: string) => store.delete(key),
+      setItem: (key: string, value: string) => store.set(key, String(value))
+    }
+  })
+}
+
 function PreviewRoutingHarness({ onEvent }: { onEvent: (handler: (event: RpcEvent) => void) => void }) {
   const activeSessionIdRef = useRef<string | null>('session-1')
 
@@ -61,7 +76,7 @@ describe('usePreviewRouting', () => {
   beforeEach(() => {
     $currentCwd.set('/work')
     $messages.set([])
-    $previewTarget.set(null)
+    installLocalStorageForTest()
     window.localStorage.clear()
     clearSessionPreviewRegistry()
     handleEvent = () => undefined
@@ -77,7 +92,6 @@ describe('usePreviewRouting', () => {
   afterEach(() => {
     cleanup()
     $messages.set([])
-    $previewTarget.set(null)
     window.localStorage.clear()
     clearSessionPreviewRegistry()
     vi.restoreAllMocks()
@@ -97,6 +111,31 @@ describe('usePreviewRouting', () => {
 
     await waitFor(() => {
       expect($previewTarget.get()).toEqual({ ...target, renderMode: 'preview' })
+    })
+  })
+
+
+
+  it('restores multiple live preview tabs for the active chat session', async () => {
+    const first = previewTarget('/work/first.html')
+    const second = previewTarget('/work/second.html')
+
+    registerSessionPreview('session-1', first, 'tool-result')
+    registerSessionPreview('session-1', second, 'tool-result')
+    render(
+      <PreviewRoutingHarness
+        onEvent={handler => {
+          handleEvent = handler
+        }}
+      />
+    )
+
+    await waitFor(() => {
+      expect($previewTabs.get().map(tab => tab.target)).toEqual([
+        { ...first, renderMode: 'preview' },
+        { ...second, renderMode: 'preview' }
+      ])
+      expect($previewTarget.get()).toEqual({ ...second, renderMode: 'preview' })
     })
   })
 

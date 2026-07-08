@@ -12,6 +12,7 @@ import { PREVIEW_PANE_ID } from '@/store/layout'
 import { notify, notifyError } from '@/store/notifications'
 import { setPaneWidthOverride } from '@/store/panes'
 import { $previewServerRestart, failPreviewServerRestart, type PreviewTarget } from '@/store/preview'
+import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
 import {
   clampConsoleHeight,
@@ -50,6 +51,31 @@ interface PreviewLoadErrorState {
 
 const FILE_RELOAD_DEBOUNCE_MS = 200
 const SERVER_RESTART_TIMEOUT_MS = 45_000
+const PREVIEW_WEBVIEW_PARTITION_PREFIX = 'persist:hermes-preview'
+
+function previewWebviewPartition(sessionId: string | null | undefined): string {
+  const safeSessionId = sessionId
+    ?.trim()
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80)
+
+  return safeSessionId ? `${PREVIEW_WEBVIEW_PARTITION_PREFIX}-${safeSessionId}` : PREVIEW_WEBVIEW_PARTITION_PREFIX
+}
+
+function normalizePreviewAddress(value: string): string {
+  const trimmed = value.trim()
+
+  if (!trimmed) {
+    return ''
+  }
+
+  if (/^(https?:|file:|data:|blob:)/i.test(trimmed)) {
+    return trimmed
+  }
+
+  return `https://${trimmed}`
+}
 
 function loadErrorTitle(error: PreviewLoadErrorState, copy: Translations['preview']['web']): string {
   const description = error.description.toLowerCase()
@@ -143,7 +169,10 @@ export function PreviewPane({
   const previewServerRestart = useStore($previewServerRestart)
   const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
+  const activeSessionId = useStore($activeSessionId)
+  const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const [currentUrl, setCurrentUrl] = useState(target.url)
+  const [addressDraft, setAddressDraft] = useState(target.url)
   const [devtoolsAvailable, setDevtoolsAvailable] = useState(false)
   const [devtoolsOpen, setDevtoolsOpen] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -151,6 +180,7 @@ export function PreviewPane({
   const [localReloadKey, setLocalReloadKey] = useState(0)
   const isWebPreview = target.kind === 'url' || (target.previewKind === 'html' && target.renderMode !== 'source')
   const currentLabel = compactUrl(currentUrl)
+  const webviewPartition = previewWebviewPartition(selectedStoredSessionId || activeSessionId)
 
   const previewLabel =
     target.label && target.label.replace(/\/$/, '') !== currentLabel.replace(/\/$/, '') ? target.label : currentLabel
@@ -230,6 +260,32 @@ export function PreviewPane({
 
     setPaneWidthOverride(PREVIEW_PANE_ID, previewWidthForRatio({ height, ratio: preset.ratio }))
   }, [])
+
+
+  const navigatePreview = useCallback((rawAddress: string) => {
+    const nextUrl = normalizePreviewAddress(rawAddress)
+
+    if (!nextUrl) {
+      setAddressDraft(currentUrl)
+
+      return
+    }
+
+    setLoadError(null)
+    setLoading(true)
+    setCurrentUrl(nextUrl)
+    setAddressDraft(nextUrl)
+
+    const webview = webviewRef.current
+
+    if (webview) {
+      webview.setAttribute('src', nextUrl)
+
+      if (webview instanceof HTMLIFrameElement) {
+        webview.src = nextUrl
+      }
+    }
+  }, [currentUrl])
 
   const appendConsoleEntry = useCallback(
     (entry: Omit<ConsoleEntry, 'id'>) => {
@@ -516,6 +572,7 @@ export function PreviewPane({
     host.replaceChildren()
     webviewRef.current = null
     setCurrentUrl(target.url)
+    setAddressDraft(target.url)
     setDevtoolsAvailable(false)
     setDevtoolsOpen(false)
     setLoadError(null)
@@ -530,7 +587,7 @@ export function PreviewPane({
 
     const webview = document.createElement('webview') as PreviewWebview
     webview.className = 'flex h-full w-full flex-1 bg-transparent'
-    webview.setAttribute('partition', 'persist:hermes-preview')
+    webview.setAttribute('partition', webviewPartition)
     webview.setAttribute('src', target.url)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
 
@@ -566,6 +623,7 @@ export function PreviewPane({
         setLoading(false)
         setLoadError(null)
         setCurrentUrl(iframe.src || target.url)
+        setAddressDraft(iframe.src || target.url)
       }
 
       const onIframeError = () => {
@@ -627,6 +685,7 @@ export function PreviewPane({
       if (detail.url) {
         setLoadError(null)
         setCurrentUrl(detail.url)
+        setAddressDraft(detail.url)
       }
     }
 
@@ -676,25 +735,35 @@ export function PreviewPane({
       webview.removeEventListener('did-stop-loading', onStop)
       webview.remove()
     }
-  }, [appendConsoleEntry, consoleState, copy, isWebPreview, target.url])
+  }, [appendConsoleEntry, consoleState, copy, isWebPreview, target.url, webviewPartition])
 
   return (
     <aside className="relative flex h-full w-full min-w-0 flex-col overflow-hidden bg-transparent text-muted-foreground">
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {(!embedded || isWebPreview) && (
           <div className="pointer-events-none flex min-h-(--titlebar-height) items-center gap-1.5 border-b border-border/60 bg-background px-2 py-1">
-            <div className="min-w-0 flex-1">
+            <form
+              className="pointer-events-auto min-w-0 flex-1"
+              onSubmit={event => {
+                event.preventDefault()
+                navigatePreview(addressDraft)
+              }}
+            >
+              <label className="sr-only" htmlFor="preview-address">
+                Preview address
+              </label>
               <Tip label={copy.openTarget(currentUrl)}>
-                <a
-                  className="pointer-events-auto inline max-w-full truncate text-left text-xs font-medium text-foreground underline-offset-4 decoration-current/20 transition-colors hover:text-primary hover:underline"
-                  href={currentUrl}
-                  rel="noreferrer"
-                  target="_blank"
-                >
-                  {previewLabel || copy.fallbackTitle}
-                </a>
+                <input
+                  aria-label="Preview address"
+                  className="h-6 w-full min-w-0 rounded-sm border border-transparent bg-(--ui-editor-surface-background)/55 px-2 text-xs font-medium text-foreground outline-none transition-colors placeholder:text-muted-foreground/55 hover:border-(--ui-stroke-quaternary) focus:border-(--ui-stroke-secondary) focus:bg-background"
+                  id="preview-address"
+                  onBlur={() => setAddressDraft(currentUrl)}
+                  onChange={event => setAddressDraft(event.currentTarget.value)}
+                  title={previewLabel || copy.fallbackTitle}
+                  value={addressDraft}
+                />
               </Tip>
-            </div>
+            </form>
             {isWebPreview && (
               <div aria-label="Preview responsive sizes" className="pointer-events-auto flex shrink-0 items-center gap-1">
                 {PREVIEW_RATIO_PRESETS.map(preset => (

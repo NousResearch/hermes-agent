@@ -55,6 +55,11 @@ export interface SessionPreviewRecord {
 
 type SessionPreviewRegistry = Record<string, SessionPreviewRecord[]>
 
+export interface PreviewTab {
+  id: `preview:${string}`
+  target: PreviewTarget
+}
+
 export interface FilePreviewTab {
   id: `file:${string}`
   target: PreviewTarget
@@ -62,10 +67,10 @@ export interface FilePreviewTab {
 
 const REGISTRY_STORAGE_KEY = 'hermes.desktop.sessionPreviews.v1'
 const TABS_STORAGE_KEY = 'hermes.desktop.filePreviewTabs.v1'
-const MAX_RECORDS_PER_SESSION = 1
+const MAX_RECORDS_PER_SESSION = 8
 const MAX_SESSIONS = 120
 
-export const $previewTarget = atom<PreviewTarget | null>(null)
+export const $previewTabs = atom<PreviewTab[]>([])
 // Persisted so open file-preview tabs survive a relaunch; content is re-read
 // from each target's path/url on demand. Invalid rows are dropped on load and
 // inline image bytes (megabytes) are stripped on save, mirroring the registry.
@@ -78,14 +83,45 @@ export const $filePreviewTabs = persistentAtom<FilePreviewTab[]>(TABS_STORAGE_KE
   encode: tabs => JSON.stringify(tabs, (key, value) => (key === 'dataUrl' ? undefined : value))
 })
 
-// Drop a restored active file-tab that didn't survive validation so the rail
-// never points at a tab that isn't there.
-if (
-  $rightRailActiveTabId.get().startsWith('file:') &&
-  !$filePreviewTabs.get().some(tab => tab.id === $rightRailActiveTabId.get())
-) {
-  selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
+function isPreviewTabId(id: RightRailTabId): id is PreviewTab['id'] {
+  return id.startsWith('preview:')
 }
+
+export function previewTabId(target: PreviewTarget): PreviewTab['id'] {
+  return `preview:${target.url || target.source}`
+}
+
+function activePreviewTab(tabs = $previewTabs.get()): PreviewTab | null {
+  const activeId = $rightRailActiveTabId.get()
+
+  if (isPreviewTabId(activeId)) {
+    const active = tabs.find(tab => tab.id === activeId)
+
+    if (active) {
+      return active
+    }
+  }
+
+  return tabs.at(-1) ?? null
+}
+
+function livePreviewTabsFromRecords(records: readonly SessionPreviewRecord[] | undefined): PreviewTab[] {
+  return (records ?? [])
+    .filter(record => record.autoOpen !== false && !record.dismissedAt)
+    .map(record => ({ id: previewTabId(record.normalized), target: record.normalized }))
+}
+
+function ensureRightRailActiveTabIsValid() {
+  const activeId = $rightRailActiveTabId.get()
+
+  if (activeId.startsWith('file:') && !$filePreviewTabs.get().some(tab => tab.id === activeId)) {
+    selectRightRailTab($previewTabs.get()[0]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
+  } else if (isPreviewTabId(activeId) && !$previewTabs.get().some(tab => tab.id === activeId)) {
+    selectRightRailTab($previewTabs.get().at(-1)?.id ?? $filePreviewTabs.get()[0]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
+  }
+}
+
+ensureRightRailActiveTabIsValid()
 
 export const $filePreviewTarget = computed([$filePreviewTabs, $rightRailActiveTabId], (tabs, activeTabId) => {
   if (!activeTabId.startsWith('file:')) {
@@ -94,6 +130,15 @@ export const $filePreviewTarget = computed([$filePreviewTabs, $rightRailActiveTa
 
   return tabs.find(tab => tab.id === activeTabId)?.target ?? null
 })
+
+export const $previewTarget = computed([$previewTabs, $rightRailActiveTabId], (tabs, activeTabId) => {
+  if (isPreviewTabId(activeTabId)) {
+    return tabs.find(tab => tab.id === activeTabId)?.target ?? tabs.at(-1)?.target ?? null
+  }
+
+  return tabs.at(-1)?.target ?? null
+})
+
 export const $previewReloadRequest = atom(0)
 export const $previewServerRestart = atom<PreviewServerRestart | null>(null)
 export const $previewServerRestartStatus = computed($previewServerRestart, restart => restart?.status ?? 'idle')
@@ -119,29 +164,37 @@ function isSamePreviewTarget(a: PreviewTarget | null, b: PreviewTarget | null): 
   )
 }
 
-function showLivePreviewTab() {
-  setPaneOpen(PREVIEW_PANE_ID, true)
-  selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
+function syncPreviewPaneOpen() {
+  setPaneOpen(PREVIEW_PANE_ID, Boolean($previewTabs.get().length > 0 || $filePreviewTabs.get().length > 0))
 }
 
-function syncPreviewPaneOpen() {
-  setPaneOpen(PREVIEW_PANE_ID, Boolean($previewTarget.get() || $filePreviewTabs.get().length > 0))
+function openPreviewTab(target: PreviewTarget) {
+  const id = previewTabId(target)
+  const current = $previewTabs.get()
+  const index = current.findIndex(tab => tab.id === id)
+  const tab: PreviewTab = { id, target }
+
+  $previewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
+  setPaneOpen(PREVIEW_PANE_ID, true)
+  selectRightRailTab(id)
 }
 
 export function setPreviewTarget(target: PreviewTarget | null) {
-  if (isSamePreviewTarget($previewTarget.get(), target)) {
-    if (target) {
-      showLivePreviewTab()
-    }
+  if (!target) {
+    $previewTabs.set([])
+    ensureRightRailActiveTabIsValid()
+    syncPreviewPaneOpen()
 
     return
   }
 
-  $previewTarget.set(target)
+  if (isSamePreviewTarget(activePreviewTab()?.target ?? null, target)) {
+    openPreviewTab(target)
 
-  if (target) {
-    showLivePreviewTab()
+    return
   }
+
+  openPreviewTab(target)
 }
 
 export function filePreviewTabId(target: PreviewTarget): `file:${string}` {
@@ -251,7 +304,7 @@ function loadSessionPreviewRegistry(): SessionPreviewRegistry {
         continue
       }
 
-      const valid = records.filter(isPreviewRecord).slice(0, MAX_RECORDS_PER_SESSION)
+      const valid = records.filter(isPreviewRecord).slice(-MAX_RECORDS_PER_SESSION)
 
       if (valid.length > 0) {
         out[sessionId] = valid
@@ -273,7 +326,15 @@ function persistSessionPreviewRegistry(registry: SessionPreviewRegistry) {
     // Drop the inline image bytes before persisting — a screenshot data URL is
     // megabytes and would blow the localStorage quota. On reload the record
     // falls back to reading its `path`/`url`.
-    const lean = JSON.stringify(pruneRegistry(registry), (key, value) => (key === 'dataUrl' ? undefined : value))
+    const pruned = pruneRegistry(registry)
+
+    if (Object.keys(pruned).length === 0) {
+      window.localStorage.removeItem(REGISTRY_STORAGE_KEY)
+
+      return
+    }
+
+    const lean = JSON.stringify(pruned, (key, value) => (key === 'dataUrl' ? undefined : value))
     window.localStorage.setItem(REGISTRY_STORAGE_KEY, lean)
   } catch {
     // Session previews are a desktop convenience; storage failures are nonfatal.
@@ -284,10 +345,10 @@ function pruneRegistry(registry: SessionPreviewRegistry): SessionPreviewRegistry
   const entries = Object.entries(registry)
     .map(
       ([sessionId, records]) =>
-        [sessionId, [...records].sort((a, b) => b.createdAt - a.createdAt).slice(0, MAX_RECORDS_PER_SESSION)] as const
+        [sessionId, [...records].sort((a, b) => a.createdAt - b.createdAt).slice(-MAX_RECORDS_PER_SESSION)] as const
     )
     .filter(([, records]) => records.length > 0)
-    .sort(([, a], [, b]) => (b[0]?.createdAt ?? 0) - (a[0]?.createdAt ?? 0))
+    .sort(([, a], [, b]) => (b.at(-1)?.createdAt ?? 0) - (a.at(-1)?.createdAt ?? 0))
     .slice(0, MAX_SESSIONS)
 
   return Object.fromEntries(entries)
@@ -316,8 +377,8 @@ export function registerSessionPreview(
   const current = $sessionPreviewRegistry.get()
   const now = Date.now()
   const records = current[id] ?? []
-  const existing = records.find(record => record.normalized.url === target.url)
   const normalized = previewTargetForSource(target, source)
+  const existing = records.find(record => record.normalized.url === normalized.url)
 
   const nextRecord: SessionPreviewRecord = {
     autoOpen: true,
@@ -332,11 +393,39 @@ export function registerSessionPreview(
   $sessionPreviewRegistry.set(
     pruneRegistry({
       ...current,
-      [id]: [nextRecord]
+      [id]: [...records.filter(record => record.normalized.url !== normalized.url), nextRecord]
     })
   )
 
   return nextRecord
+}
+
+export function getSessionPreviewRecords(sessionId: string | null | undefined): SessionPreviewRecord[] {
+  const id = sessionId?.trim()
+
+  if (!id) {
+    return []
+  }
+
+  return ($sessionPreviewRegistry.get()[id] ?? []).filter(record => !record.dismissedAt && record.autoOpen !== false)
+}
+
+export function getSessionPreviewRecord(sessionId: string | null | undefined): SessionPreviewRecord | null {
+  return getSessionPreviewRecords(sessionId).at(-1) ?? null
+}
+
+export function restoreSessionPreviewTabs(sessionId: string | null | undefined) {
+  const tabs = livePreviewTabsFromRecords(getSessionPreviewRecords(sessionId))
+
+  $previewTabs.set(tabs)
+
+  if (tabs.length > 0) {
+    setPaneOpen(PREVIEW_PANE_ID, true)
+    selectRightRailTab(tabs.at(-1)!.id)
+  } else {
+    ensureRightRailActiveTabIsValid()
+    syncPreviewPaneOpen()
+  }
 }
 
 export function setSessionPreviewTarget(
@@ -350,8 +439,9 @@ export function setSessionPreviewTarget(
   }
 
   const record = registerSessionPreview(sessionId, target, source, rawTarget)
+  const normalized = record?.normalized ?? previewTargetForSource(target, source)
 
-  setPreviewTarget(record?.normalized ?? previewTargetForSource(target, source))
+  openPreviewTab(normalized)
 
   return record
 }
@@ -362,16 +452,6 @@ export function setCurrentSessionPreviewTarget(
   rawTarget = target.source
 ): SessionPreviewRecord | null {
   return setSessionPreviewTarget(currentPreviewSessionId(), target, source, rawTarget)
-}
-
-export function getSessionPreviewRecord(sessionId: string | null | undefined): SessionPreviewRecord | null {
-  const id = sessionId?.trim()
-
-  if (!id) {
-    return null
-  }
-
-  return $sessionPreviewRegistry.get()[id]?.find(record => !record.dismissedAt && record.autoOpen !== false) ?? null
 }
 
 export function dismissSessionPreview(sessionId: string | null | undefined, url?: string) {
@@ -389,20 +469,21 @@ export function dismissSessionPreview(sessionId: string | null | undefined, url?
   }
 
   const now = Date.now()
-  const targetUrl = url || records.find(record => !record.dismissedAt)?.normalized.url
+  const targetUrl = url || activePreviewTab()?.target.url || records.find(record => !record.dismissedAt)?.normalized.url
 
   if (!targetUrl) {
     return
   }
 
-  // The preview rail is a single active file, not a back stack. Dismissing the
-  // current preview should leave the rail closed instead of revealing an older
-  // record for the same session.
-  const dismissedRecords = records.map(record => ({
-    ...record,
-    autoOpen: false,
-    dismissedAt: now
-  }))
+  const dismissedRecords = records.map(record =>
+    record.normalized.url === targetUrl
+      ? {
+          ...record,
+          autoOpen: false,
+          dismissedAt: now
+        }
+      : record
+  )
 
   $sessionPreviewRegistry.set({
     ...current,
@@ -410,21 +491,44 @@ export function dismissSessionPreview(sessionId: string | null | undefined, url?
   })
 }
 
-/** User clicked the close X — clear the target and persist dismissal for the current session. */
-export function dismissPreviewTarget() {
-  const current = $previewTarget.get()
+function closePreviewTab(tabId: RightRailTabId, persistDismissal = true) {
+  const current = $previewTabs.get()
 
-  if (current?.url) {
-    dismissSessionPreview(currentPreviewSessionId(), current.url)
+  const targetTab =
+    isPreviewTabId(tabId) ? current.find(tab => tab.id === tabId) : tabId === RIGHT_RAIL_PREVIEW_TAB_ID ? activePreviewTab(current) : null
+
+  if (!targetTab) {
+    syncPreviewPaneOpen()
+
+    return
   }
 
-  $previewTarget.set(null)
+  const index = current.findIndex(tab => tab.id === targetTab.id)
 
-  if ($rightRailActiveTabId.get() === RIGHT_RAIL_PREVIEW_TAB_ID) {
-    selectRightRailTab($filePreviewTabs.get()[0]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
+  if (persistDismissal) {
+    dismissSessionPreview(currentPreviewSessionId(), targetTab.target.url)
   }
 
-  setPaneOpen(PREVIEW_PANE_ID, $filePreviewTabs.get().length > 0)
+  const next = current.filter(tab => tab.id !== targetTab.id)
+
+  $previewTabs.set(next)
+
+  if ($rightRailActiveTabId.get() === targetTab.id || $rightRailActiveTabId.get() === RIGHT_RAIL_PREVIEW_TAB_ID) {
+    selectRightRailTab(next[Math.min(index, next.length - 1)]?.id ?? $filePreviewTabs.get()[0]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
+  }
+
+  syncPreviewPaneOpen()
+}
+
+/** User clicked a close/hide control — clear the matching or active live-preview tab and persist dismissal. */
+export function dismissPreviewTarget(target?: string) {
+  const matchingTab = target
+    ? $previewTabs
+        .get()
+        .find(tab => tab.target.source === target || tab.target.url === target || tab.target.path === target)
+    : null
+
+  closePreviewTab(matchingTab?.id ?? $rightRailActiveTabId.get())
 }
 
 function closeFilePreviewTab(tabId: RightRailTabId) {
@@ -444,21 +548,15 @@ function closeFilePreviewTab(tabId: RightRailTabId) {
   $filePreviewTabs.set(next)
 
   if ($rightRailActiveTabId.get() === tabId) {
-    selectRightRailTab(next[Math.min(index, next.length - 1)]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
+    selectRightRailTab(next[Math.min(index, next.length - 1)]?.id ?? $previewTabs.get().at(-1)?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
   }
 
-  if (next.length === 0 && !$previewTarget.get()) {
-    setPaneOpen(PREVIEW_PANE_ID, false)
-  }
+  syncPreviewPaneOpen()
 }
 
 export function closeRightRailTab(tabId: RightRailTabId) {
-  if (tabId === RIGHT_RAIL_PREVIEW_TAB_ID) {
-    if ($previewTarget.get()) {
-      dismissPreviewTarget()
-    } else {
-      syncPreviewPaneOpen()
-    }
+  if (tabId === RIGHT_RAIL_PREVIEW_TAB_ID || isPreviewTabId(tabId)) {
+    closePreviewTab(tabId)
 
     return
   }
@@ -468,21 +566,11 @@ export function closeRightRailTab(tabId: RightRailTabId) {
 
 export const closeActiveRightRailTab = () => closeRightRailTab($rightRailActiveTabId.get())
 
-// The rail's visible tab order: the live preview tab (when present) first, then
-// the file tabs in their stored order. Mirrors `ChatPreviewRail`'s `tabs` memo
-// so "close others / to the right" act on what the user actually sees.
+// The rail's visible tab order: live preview tabs first, then the file tabs in
+// their stored order. Mirrors `ChatPreviewRail`'s `tabs` memo so "close others /
+// to the right" act on what the user actually sees.
 function rightRailTabOrder(): RightRailTabId[] {
-  const ids: RightRailTabId[] = []
-
-  if ($previewTarget.get()) {
-    ids.push(RIGHT_RAIL_PREVIEW_TAB_ID)
-  }
-
-  for (const tab of $filePreviewTabs.get()) {
-    ids.push(tab.id)
-  }
-
-  return ids
+  return [...$previewTabs.get().map(tab => tab.id), ...$filePreviewTabs.get().map(tab => tab.id)]
 }
 
 /** Close every rail tab except `keepId`, then make `keepId` active. */
@@ -510,19 +598,21 @@ export function closeRightRailTabsToRight(tabId: RightRailTabId) {
   }
 }
 
-/** Dismisses the active preview + every file tab so the rail pane unmounts. */
+/** Dismisses every live preview + every file tab so the rail pane unmounts. */
 export function closeRightRail() {
-  if ($previewTarget.get()) {
-    dismissPreviewTarget()
+  for (const tab of $previewTabs.get()) {
+    dismissSessionPreview(currentPreviewSessionId(), tab.target.url)
   }
 
+  $previewTabs.set([])
   $filePreviewTabs.set([])
   setPaneOpen(PREVIEW_PANE_ID, false)
+  selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
 }
 
 export function clearSessionPreviewRegistry() {
   $sessionPreviewRegistry.set({})
-  setPreviewTarget(null)
+  $previewTabs.set([])
   $filePreviewTabs.set([])
   setPaneOpen(PREVIEW_PANE_ID, false)
   selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)

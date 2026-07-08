@@ -24,7 +24,7 @@ import {
 import {
   $filePreviewTabs,
   $previewReloadRequest,
-  $previewTarget,
+  $previewTabs,
   closeOtherRightRailTabs,
   closeRightRail,
   closeRightRailTab,
@@ -60,17 +60,15 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   const activeTabId = useStore($rightRailActiveTabId)
   const panesFlipped = useStore($panesFlipped)
   const filePreviewTabs = useStore($filePreviewTabs)
-  const previewTarget = useStore($previewTarget)
+  const previewTabs = useStore($previewTabs)
   const dirtyPreviewUrls = useStore($dirtyPreviewUrls)
 
   const tabs = useMemo<readonly RailTab[]>(
     () => [
-      ...(previewTarget
-        ? [{ id: RIGHT_RAIL_PREVIEW_TAB_ID, label: t.preview.tab, target: previewTarget } as RailTab]
-        : []),
+      ...previewTabs.map(({ id, target }) => ({ id, label: tabLabelFor(target) || t.preview.tab, target }) as RailTab),
       ...filePreviewTabs.map(({ id, target }) => ({ id, label: tabLabelFor(target), target }) as RailTab)
     ],
-    [filePreviewTabs, previewTarget, t.preview.tab]
+    [filePreviewTabs, previewTabs, t.preview.tab]
   )
 
   const activeTab = tabs.find(tab => tab.id === activeTabId) ?? tabs[0]
@@ -85,7 +83,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
     return null
   }
 
-  const isPreview = activeTab.id === RIGHT_RAIL_PREVIEW_TAB_ID
+  const isPreview = activeTab.id === RIGHT_RAIL_PREVIEW_TAB_ID || activeTab.id.startsWith('preview:')
 
   return (
     <aside

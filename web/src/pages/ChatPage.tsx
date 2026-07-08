@@ -40,6 +40,34 @@ import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
 
+// Stable per-browser token identifying THIS chat tab's keep-alive PTY session.
+// Sent as ?attach=; lets a refresh/disconnect reattach to the same live process
+// instead of spawning a fresh one. Per-localStorage, so other devices can't grab it.
+// ``rotate`` mints a new token — used when the user explicitly starts a fresh
+// session so the old keep-alive PTY is NOT reattached (the registry reaps it).
+const PTY_ATTACH_TOKEN_KEY = "hermes.pty.token.chat";
+function ptyAttachToken(rotate = false): string {
+  let t = "";
+  if (!rotate) {
+    try {
+      t = window.localStorage.getItem(PTY_ATTACH_TOKEN_KEY) ?? "";
+    } catch {
+      /* private mode / storage blocked */
+    }
+  }
+  if (!t) {
+    const a = new Uint8Array(16);
+    crypto.getRandomValues(a);
+    t = Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
+    try {
+      window.localStorage.setItem(PTY_ATTACH_TOKEN_KEY, t);
+    } catch {
+      /* ignore */
+    }
+  }
+  return t;
+}
+
 // Channel id ties this chat tab's PTY child (publisher) to its sidebar
 // (subscriber).  Generated once per mount so a tab refresh starts a fresh
 // channel — the previous PTY child terminates with the old WS, and its
@@ -264,7 +292,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let cancelled = false;
 
     api
-      .getSessionLatestDescendant(resumeParam)
+      .getSessionLatestDescendant(resumeParam, scopedProfile)
       .then((res) => {
         if (cancelled || !res.session_id || res.session_id === resumeParam) {
           return;
@@ -281,7 +309,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [resumeParam, searchParams, setSearchParams]);
+  }, [resumeParam, scopedProfile, searchParams, setSearchParams]);
 
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 1023px)");
@@ -679,6 +707,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const params: Record<string, string> = { channel };
       if (resumeParam) params.resume = resumeParam;
       if (forceFresh) params.fresh = "1";
+      // Keep-alive identity: reattach to this tab's living PTY across
+      // refresh/transient drops. A forced-fresh start rotates the token so
+      // the previous keep-alive PTY is not reattached (registry reaps it).
+      params.attach = ptyAttachToken(forceFresh);
       // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
       // selected profile, so the conversation runs with that profile's model,
       // skills, memory, and sessions (see web_server._resolve_chat_argv).
@@ -693,6 +725,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       reconnectAttemptRef.current = 0;
       setBanner(null);
       setSessionEnded(false);
+      // Connected — cancel any pending reconnect from a prior transient drop.
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
       // Send the initial RESIZE immediately so Ink has *a* size to lay
       // out against on its first paint.  The double-rAF block above will
       // follow up with the authoritative measurement — at worst Ink
@@ -775,7 +812,21 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // Server already wrote an ANSI error frame.
         return;
       }
+      // Keep-alive close-code contract (web_server.pty_ws + pty_session):
+      //   4410 = the agent PROCESS exited (real end) → restart affordance.
+      //   4409 = superseded by a newer tab attaching the same token → stay quiet.
+      if (ev.code === 4410) {
+        term.write(`\r\n\x1b[90m[session ended]\x1b[0m\r\n`);
+        setSessionEnded(true);
+        return;
+      }
+      if (ev.code === 4409) {
+        return;
+      }
       if (!ev.wasClean || ev.code === 1001 || ev.code === 1006) {
+        // Transient transport drop (refresh, sleep/wake, signal loss).
+        // Reconnect with backoff; the same ?attach= token reattaches to
+        // the still-living PTY, so the conversation continues in place.
         scheduleReconnect(ev.code);
         return;
       }
@@ -853,6 +904,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (copyResetRef.current) {
         clearTimeout(copyResetRef.current);
         copyResetRef.current = null;
+      }
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
       }
     };
   }, [channel, clearReconnectTimer, resumeParam, scopedProfile, reconnectNonce]);

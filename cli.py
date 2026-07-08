@@ -8647,7 +8647,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         elif canonical == "yolo":
             self._toggle_yolo()
         elif canonical == "auto":
-            self._toggle_auto_mode()
+            self._handle_auto_command(cmd_original)
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
         elif canonical == "fast":
@@ -9397,9 +9397,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         session_key = getattr(self, "session_id", None) or "default"
         return is_session_auto_enabled(session_key)
 
-    def _toggle_auto_mode(self):
-        """Toggle Auto Mode — a safety classifier decides approve/decline per
+    def _handle_auto_command(self, cmd_original: str = ""):
+        """Handle /auto — a safety classifier decides approve/decline per
         flagged command instead of prompting you.
+
+        Usage (mirrors /footer, /fast, /voice — explicit subcommand plus a
+        bare-call toggle, rather than /yolo's blind toggle-only style):
+            /auto           → toggle
+            /auto on|off    → explicit
+            /auto status    → show current state
 
         Distinct from ``/yolo``: YOLO bypasses approval unconditionally with
         no judgment call. Auto Mode still evaluates every flagged command
@@ -9407,10 +9413,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         on an interactive prompt to get that judgment, which is what makes it
         suitable for long, unattended sessions. Also distinct from the
         persistent ``approvals.mode: smart`` config value: this is a runtime,
-        per-session toggle (mirrors ``/yolo``'s session-scoped bypass) with a
+        per-session toggle (mirrors ``/yolo``'s session-scoped state) with a
         two-way approve/deny verdict — there is no escalate-to-manual-prompt
         fallback, since Auto Mode exists specifically for when no human is
-        present to escalate to.
+        present to escalate to. Session-scoped (not persisted to config),
+        same as /yolo.
         """
         from hermes_cli.colors import Colors as _Colors
         from tools.approval import (
@@ -9419,19 +9426,49 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             is_session_auto_enabled,
         )
 
+        arg = ""
+        try:
+            parts = (cmd_original or "").strip().split(None, 1)
+            if len(parts) > 1:
+                arg = parts[1].strip().lower()
+        except Exception:
+            arg = ""
+
         session_key = self.session_id or "default"
-        if is_session_auto_enabled(session_key):
-            disable_session_auto(session_key)
-            _cprint(
-                f"  ⚠ Auto Mode {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}"
-                " — flagged commands will require approval."
+        current = is_session_auto_enabled(session_key)
+
+        if arg in {"status", "?"}:
+            state = (
+                f"{_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}" if current
+                else f"{_Colors.DIM}OFF{_Colors.RESET}"
             )
+            _cprint(f"  🤖 Auto Mode: {state}")
+            _cprint(f"  {_Colors.DIM}Usage: /auto [on|off|status]{_Colors.RESET}")
+            return
+
+        if arg in {"on", "enable", "true", "1"}:
+            new_state = True
+        elif arg in {"off", "disable", "false", "0"}:
+            new_state = False
+        elif arg == "":
+            new_state = not current
         else:
+            _cprint(f"  {_Colors.DIM}(._.) Unknown argument: {arg}{_Colors.RESET}")
+            _cprint(f"  {_Colors.DIM}Usage: /auto [on|off|status]{_Colors.RESET}")
+            return
+
+        if new_state:
             enable_session_auto(session_key)
             _cprint(
                 f"  🤖 Auto Mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
                 " — flagged commands are approved or declined automatically"
                 " by a safety classifier. No prompts; use with awareness."
+            )
+        else:
+            disable_session_auto(session_key)
+            _cprint(
+                f"  ⚠ Auto Mode {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}"
+                " — flagged commands will require approval."
             )
 
 

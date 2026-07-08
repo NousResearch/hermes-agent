@@ -361,11 +361,13 @@ terminal:
 #   cron_mode: "deny"       # "deny" (default) | "approve" — cron jobs run
 #                           # with nobody present to approve a flagged command
 #
-# Independent of approvals.mode, the CLI's `/auto` command toggles Auto Mode
-# for the current session: a two-way (approve/deny, no escalate) classifier
-# that never blocks on a prompt — see auxiliary.auto_mode in "Auxiliary
-# Models" above. `/yolo` remains the unconditional bypass (no judgment at
-# all, skips every check).
+# Independent of approvals.mode, the CLI's `/auto [on|off|status]` command
+# controls Auto Mode for the current session: a two-way (approve/deny, no
+# escalate) classifier that never blocks on a prompt — see auxiliary.auto_mode
+# in "Auxiliary Models" above. Bare `/auto` toggles; `/auto on`/`/auto off` set
+# it explicitly; `/auto status` reports the current state without changing it
+# (same convention as `/footer`, `/fast`, `/voice`). `/yolo` remains the
+# unconditional bypass (no judgment at all, skips every check).
 
 # =============================================================================
 # Security Scanning (tirith)

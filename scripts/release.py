@@ -233,6 +233,7 @@ AUTHOR_MAP = {
     "victor@rocketfueldev.com": "victor-kyriazakos",
     "87440198+JoaoMarcos44@users.noreply.github.com": "JoaoMarcos44",
     "joaomarcosdias444@gmail.com": "JoaoMarcos44",
+    "neoguyver@icloud.com": "neoguyverx",  # PR #60526 salvage (fail-closed write syntax gate; #60525)
     "286497132+srojk34@users.noreply.github.com": "srojk34",
     "srojk34@users.noreply.github.com": "srojk34",  # legacy prefix-less noreply (PR #50098 salvage; #38763)
     "pinkiilqwq@users.noreply.github.com": "PINKIIILQWQ",  # PR #45035 salvage (resume-to-tip; #38763)

@@ -8950,6 +8950,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     break
 
         # Build source
+        # Extract business_connection_id for Secretary Mode messages.
+        # Present on business_message updates; None for normal messages.
+        business_conn_id = getattr(message, "business_connection_id", None)
+
         source = self.build_source(
             chat_id=str(chat.id),
             chat_name=chat.title or (chat.full_name if hasattr(chat, "full_name") else None),
@@ -8972,6 +8976,7 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_topic=chat_topic,
             message_id=str(message.message_id),
             is_bot=bool(getattr(user, "is_bot", False)) if user else False,
+            business_connection_id=business_conn_id,
         )
         
         # Extract reply context if this message is a reply.

@@ -2,7 +2,7 @@
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import (
     _prepare_gateway_status_message,
     _sanitize_gateway_final_response,
@@ -241,3 +241,165 @@ def test_chat_gateways_redact_all_issue_23810_credential_shapes(platform, shape_
     # Prose around the secret is preserved — redaction is surgical.
     assert "here is the token you asked me to echo" in sanitized
     assert sanitized.endswith("done.")
+
+
+# ---------------------------------------------------------------------------
+# Operator-configured outbound suppression (suppress_outbound)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def suppress_config(monkeypatch):
+    """Install a GatewayConfig into the suppress_outbound resolution path.
+
+    Returns a setter: call it with (global_patterns, per_platform) to make the
+    gateway resolve those patterns. Clears the mtime-keyed config cache and
+    the compiled-pattern cache before and after each test so tests cannot
+    leak into each other (or into the unrelated tests above).
+    """
+    import gateway.run as run
+
+    def _clear():
+        run._SUPPRESS_OUTBOUND_CFG_CACHE.clear()
+        run._SUPPRESS_OUTBOUND_COMPILED.clear()
+
+    def _set(global_patterns=None, per_platform=None):
+        platforms = {}
+        for platform, patterns in (per_platform or {}).items():
+            platforms[platform] = PlatformConfig(
+                enabled=True, extra={"suppress_outbound": list(patterns)}
+            )
+        cfg = GatewayConfig(
+            platforms=platforms,
+            suppress_outbound=list(global_patterns or []),
+        )
+        _clear()
+        monkeypatch.setattr(run, "load_gateway_config", lambda: cfg)
+        return cfg
+
+    _clear()
+    yield _set
+    _clear()
+
+
+def test_suppress_outbound_drops_matching_final_response(suppress_config):
+    """A configured pattern drops the final reply on a chat surface."""
+    suppress_config(global_patterns=[r"^Liked it\.$"])
+
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, "Liked it.") == ""
+    # re.search semantics: unanchored patterns match anywhere.
+    suppress_config(global_patterns=[r"Interrupting current task"])
+    assert (
+        _sanitize_gateway_final_response(
+            Platform.TELEGRAM, "Interrupting current task to handle your message..."
+        )
+        == ""
+    )
+
+
+def test_suppress_outbound_drops_matching_status_message(suppress_config):
+    """The same patterns cover the status/notice send path."""
+    suppress_config(global_patterns=[r"Interrupting current task"])
+
+    assert (
+        _prepare_gateway_status_message(
+            Platform.TELEGRAM, "lifecycle", "Interrupting current task..."
+        )
+        is None
+    )
+
+
+def test_suppress_outbound_exempts_raw_platforms(suppress_config):
+    """Programmatic surfaces must never be muted by operator patterns."""
+    suppress_config(global_patterns=[r".*"])  # suppress everything
+
+    text = "Liked it."
+    for platform in ("local", "api_server", "webhook", "msgraph_webhook"):
+        assert _sanitize_gateway_final_response(platform, text) == text
+        assert _prepare_gateway_status_message(platform, "warn", text) == text
+
+
+def test_suppress_outbound_per_platform_extends_global(suppress_config):
+    """platforms.<name>.suppress_outbound extends (not replaces) the global list."""
+    suppress_config(
+        global_patterns=[r"^Liked it\.$"],
+        per_platform={Platform.TELEGRAM: [r"^Gateway restarted"]},
+    )
+
+    # Telegram gets global + its own pattern.
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, "Liked it.") == ""
+    assert (
+        _sanitize_gateway_final_response(Platform.TELEGRAM, "Gateway restarted (v2)")
+        == ""
+    )
+    # Other chat platforms only get the global pattern.
+    assert _sanitize_gateway_final_response(Platform.DISCORD, "Liked it.") == ""
+    assert (
+        _sanitize_gateway_final_response(Platform.DISCORD, "Gateway restarted (v2)")
+        == "Gateway restarted (v2)"
+    )
+
+
+def test_suppress_outbound_invalid_regex_warns_and_skips(suppress_config, caplog):
+    """An invalid regex warns once, is skipped, and never crashes or over-drops."""
+    import logging
+
+    suppress_config(global_patterns=[r"[unclosed", r"^Liked it\.$"])
+
+    with caplog.at_level(logging.WARNING):
+        # Valid pattern still enforced despite the broken sibling.
+        assert _sanitize_gateway_final_response(Platform.TELEGRAM, "Liked it.") == ""
+        # Non-matching text passes through untouched.
+        answer = "Here is the clean summary you asked for."
+        assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
+
+    assert any(
+        "invalid suppress_outbound pattern" in record.getMessage()
+        and "[unclosed" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_suppress_outbound_empty_config_is_passthrough(suppress_config):
+    """No configured patterns = zero behavior change."""
+    suppress_config(global_patterns=[])
+
+    answer = "Liked it."
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
+    assert (
+        _prepare_gateway_status_message(Platform.TELEGRAM, "info", answer) == answer
+    )
+
+
+def test_suppress_outbound_non_matching_text_untouched(suppress_config):
+    """Patterns only drop matches; everything else flows through unchanged."""
+    suppress_config(global_patterns=[r"^Liked it\.$"])
+
+    answer = "I liked it. Here is the longer review you asked for."
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
+
+
+def test_suppress_outbound_case_sensitive_as_written(suppress_config):
+    """Patterns compile as written; operators opt into (?i) themselves."""
+    suppress_config(global_patterns=[r"^liked it\.$"])
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, "Liked it.") == "Liked it."
+
+    suppress_config(global_patterns=[r"(?i)^liked it\.$"])
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, "Liked it.") == ""
+
+
+def test_get_suppress_outbound_resolution_order():
+    """GatewayConfig.get_suppress_outbound: global first, then platform, deduped."""
+    cfg = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(
+                enabled=True,
+                extra={"suppress_outbound": [r"^B$", r"^A$"]},
+            )
+        },
+        suppress_outbound=[r"^A$"],
+    )
+
+    assert cfg.get_suppress_outbound(Platform.TELEGRAM) == [r"^A$", r"^B$"]
+    assert cfg.get_suppress_outbound(Platform.DISCORD) == [r"^A$"]
+    assert cfg.get_suppress_outbound(None) == [r"^A$"]

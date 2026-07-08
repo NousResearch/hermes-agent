@@ -131,6 +131,31 @@ user: next message
 
 Failed turns still surface as errors; Hermes does not hide failures just because the text resembles a silence token.
 
+## Outbound Suppression Patterns
+
+Operators can drop unwanted outbound messages on chat surfaces with `suppress_outbound`: a list of regex strings in `config.yaml`, settable globally and per platform. Any outbound gateway message (final replies, status updates, and operational notices) that matches a pattern is dropped before send and logged with a truncated preview. This is the user-controlled complement to the built-in provider-error sanitization — useful for muting operational chatter (lifecycle acks, setup nags) or redundant reaction narration in a personal inbox.
+
+```yaml
+# Global: applies to every chat platform
+suppress_outbound:
+  - '^Liked it\.$'                # bare reaction narration
+  - 'Interrupting current task'   # lifecycle acks
+
+platforms:
+  telegram:
+    suppress_outbound:            # extends the global list on Telegram
+      - '^Gateway restarted'
+```
+
+Rules:
+
+- Matching uses `re.search`, so an unanchored pattern matches anywhere in the message; anchor with `^...$` for a full-message match.
+- Patterns compile exactly as written (case-sensitive); add `(?i)` for case-insensitive matching.
+- Per-platform lists extend the global list, they never replace it.
+- Invalid regexes are skipped with a warning; they never crash the gateway.
+- Programmatic surfaces (`local`, `api_server`, `webhook`, `msgraph_webhook`) are always exempt — API and webhook consumers keep the raw text.
+- Default is an empty list: no configuration means no behavior change.
+
 ## Quick Setup
 
 The easiest way to configure messaging platforms is the interactive wizard:

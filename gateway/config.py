@@ -148,6 +148,37 @@ def _normalize_notice_delivery(value: Any, default: str = "public") -> str:
     return default
 
 
+def _normalize_suppress_outbound(value: Any) -> List[str]:
+    """Coerce a ``suppress_outbound`` config value to a list of pattern strings.
+
+    Accepts a list of regex strings (the documented shape) or a single string
+    (treated as a one-element list). Non-string entries and unrecognized
+    shapes are skipped with a warning — configuration mistakes must never
+    crash the gateway. Pattern validity (regex compilation) is checked at the
+    enforcement point, not here.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, (list, tuple)):
+        patterns: List[str] = []
+        for item in value:
+            if isinstance(item, str) and item:
+                patterns.append(item)
+            elif item is not None:
+                logger.warning(
+                    "Ignoring non-string suppress_outbound entry: %r", item
+                )
+        return patterns
+    logger.warning(
+        "Ignoring invalid suppress_outbound value (expected list of regex "
+        "strings, got %s)",
+        type(value).__name__,
+    )
+    return []
+
+
 def _ensure_platform_extra_dict(platforms_data: dict, name: str) -> tuple[dict, dict]:
     """Get-or-create ``platforms_data[name]`` and its nested ``extra`` dict.
 
@@ -703,6 +734,14 @@ class GatewayConfig:
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
+    # Operator-configured outbound suppression: regex strings matched
+    # (re.search) against every outbound chat-surface message; a match drops
+    # the message before send. Global list here; per-platform lists under
+    # platforms.<name>.suppress_outbound extend (never replace) it. Empty by
+    # default = zero behavior change. Programmatic surfaces (local,
+    # api_server, webhook, msgraph_webhook) are always exempt.
+    suppress_outbound: List[str] = field(default_factory=list)
+
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
@@ -817,6 +856,7 @@ class GatewayConfig:
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
+            "suppress_outbound": self.suppress_outbound,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
         }
@@ -901,6 +941,13 @@ class GatewayConfig:
             "pair",
         )
 
+        # suppress_outbound: top-level wins; nested gateway.* fallback
+        # (matches the multiplex_profiles / write_sessions_json precedence).
+        suppress_outbound_raw = data.get("suppress_outbound")
+        if suppress_outbound_raw is None and isinstance(nested_gateway, dict):
+            suppress_outbound_raw = nested_gateway.get("suppress_outbound")
+        suppress_outbound = _normalize_suppress_outbound(suppress_outbound_raw)
+
         try:
             session_store_max_age_days = int(data.get("session_store_max_age_days", 90))
             session_store_max_age_days = max(session_store_max_age_days, 0)
@@ -927,6 +974,7 @@ class GatewayConfig:
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
+            suppress_outbound=suppress_outbound,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
         )
@@ -948,6 +996,24 @@ class GatewayConfig:
             if platform == Platform.EMAIL:
                 return "ignore"
         return self.unauthorized_dm_behavior
+
+    def get_suppress_outbound(self, platform: Optional[Platform] = None) -> List[str]:
+        """Return the effective outbound-suppression patterns for a platform.
+
+        Per-platform ``platforms.<name>.suppress_outbound`` extends the global
+        list (it never replaces it). Order is preserved (global first) and
+        duplicates are dropped.
+        """
+        patterns = list(self.suppress_outbound)
+        if platform:
+            platform_cfg = self.platforms.get(platform)
+            if platform_cfg:
+                patterns.extend(
+                    _normalize_suppress_outbound(
+                        platform_cfg.extra.get("suppress_outbound")
+                    )
+                )
+        return list(dict.fromkeys(patterns))
 
     def get_notice_delivery(self, platform: Optional[Platform] = None) -> str:
         """Return the effective notice-delivery mode for a platform."""
@@ -1083,6 +1149,13 @@ def load_gateway_config() -> GatewayConfig:
                     "pair",
                 )
 
+            # suppress_outbound: top-level wins; nested gateway.* fallback
+            # (matches the write_sessions_json precedence pattern).
+            if "suppress_outbound" in yaml_cfg:
+                gw_data["suppress_outbound"] = yaml_cfg["suppress_outbound"]
+            elif isinstance(_gw_section, dict) and "suppress_outbound" in _gw_section:
+                gw_data["suppress_outbound"] = _gw_section["suppress_outbound"]
+
             # Merge platform config into gw_data so runtime-only settings under
             # ``gateway.platforms`` are loaded the same way as top-level
             # ``platforms``. Merge nested first so top-level config keeps
@@ -1172,6 +1245,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["notice_delivery"] = _normalize_notice_delivery(
                         platform_cfg.get("notice_delivery"),
                         "public",
+                    )
+                if "suppress_outbound" in platform_cfg:
+                    bridged["suppress_outbound"] = _normalize_suppress_outbound(
+                        platform_cfg.get("suppress_outbound")
                     )
                 if "reply_prefix" in platform_cfg:
                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]

@@ -826,8 +826,24 @@ platform_toolsets:
 # Optional per-platform messaging settings.
 # Platform-specific knobs live under `extra`.
 #
+# Outbound suppression (opt-in; default empty = no behavior change): regex
+# strings matched (re.search) against every outbound message on human-facing
+# chat surfaces; a match drops the message before send. Useful for muting
+# operational chatter or redundant narration in personal chat threads.
+# Patterns compile as written — add (?i) for case-insensitive matching and
+# anchor with ^...$ for a full-message match. Invalid regexes are skipped
+# with a warning. Programmatic surfaces (local, api_server, webhook,
+# msgraph_webhook) are never suppressed. The global list applies to all chat
+# platforms; a platform's own list extends (never replaces) it.
+#
+# suppress_outbound:
+#   - '^Liked it\.$'                # bare reaction narration
+#   - 'Interrupting current task'   # lifecycle acks
+#
 # platforms:
 #   telegram:
+#     suppress_outbound:
+#       - '^Gateway restarted'
 #     reply_to_mode: "first"  # off | first | all
 #     # guest_mode lets explicit @mentions from non-allowlisted groups through.
 #     # Default false; ordinary messages, replies, and regex wake words stay blocked.

@@ -411,6 +411,92 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
+# Operator-configured outbound suppression (the user-controlled complement to
+# the built-in provider-error sanitizer above). Compiled-pattern cache keyed
+# by pattern string; None marks a pattern that failed to compile — warned once
+# at load, then skipped without retrying.
+_SUPPRESS_OUTBOUND_COMPILED: Dict[str, Optional["re.Pattern[str]"]] = {}
+
+# Resolved-config cache so the per-message hot path does not re-parse
+# config.yaml. Keyed by the config file's mtime stamp.
+_SUPPRESS_OUTBOUND_CFG_CACHE: Dict[str, Any] = {}
+
+
+def _compile_suppress_outbound_pattern(pattern: str) -> Optional["re.Pattern[str]"]:
+    """Compile one suppress_outbound regex, caching successes and failures.
+
+    Patterns are compiled exactly as written (case-sensitive; operators add
+    ``(?i)`` themselves) and matched with ``re.search`` semantics — anchor
+    with ``^...$`` for a full-message match. Invalid regexes warn once and
+    are skipped; a config typo must never crash the gateway.
+    """
+    if pattern in _SUPPRESS_OUTBOUND_COMPILED:
+        return _SUPPRESS_OUTBOUND_COMPILED[pattern]
+    try:
+        compiled: Optional["re.Pattern[str]"] = re.compile(pattern)
+    except re.error as exc:
+        logger.warning(
+            "Ignoring invalid suppress_outbound pattern %r: %s", pattern, exc
+        )
+        compiled = None
+    _SUPPRESS_OUTBOUND_COMPILED[pattern] = compiled
+    return compiled
+
+
+def _suppress_outbound_patterns_for(platform: Any) -> List[str]:
+    """Resolve the effective suppress_outbound pattern list for a platform.
+
+    Reads the GatewayConfig (global list + per-platform extension) with an
+    mtime-keyed cache so repeated outbound sends do not re-parse config.yaml.
+    Fail-open: any config error resolves to no suppression.
+    """
+    try:
+        config_path = _gateway_config_home() / "config.yaml"
+        try:
+            stamp: Any = config_path.stat().st_mtime_ns
+        except OSError:
+            stamp = None
+        if _SUPPRESS_OUTBOUND_CFG_CACHE.get("stamp") != stamp or "config" not in _SUPPRESS_OUTBOUND_CFG_CACHE:
+            _SUPPRESS_OUTBOUND_CFG_CACHE["config"] = load_gateway_config()
+            _SUPPRESS_OUTBOUND_CFG_CACHE["stamp"] = stamp
+        cfg = _SUPPRESS_OUTBOUND_CFG_CACHE["config"]
+        try:
+            platform_enum: Optional[Platform] = Platform(_gateway_platform_value(platform))
+        except (ValueError, KeyError):
+            platform_enum = None
+        return cfg.get_suppress_outbound(platform_enum)
+    except Exception:
+        logger.debug("suppress_outbound config resolution failed", exc_info=True)
+        return []
+
+
+def _outbound_suppressed_by_config(platform: Any, text: str) -> bool:
+    """True when an operator suppress_outbound regex matches outbound text.
+
+    Matching uses ``re.search``; a match drops the message before send and
+    logs an info line with a redacted, truncated preview. Programmatic
+    surfaces in ``_GATEWAY_RAW_TEXT_PLATFORMS`` are always exempt — operators
+    can only mute human-facing chat surfaces, never API/webhook payloads.
+    """
+    if not text or _gateway_surface_passes_raw_text(platform):
+        return False
+    patterns = _suppress_outbound_patterns_for(platform)
+    if not patterns:
+        return False
+    body = str(text)
+    for pattern in patterns:
+        compiled = _compile_suppress_outbound_pattern(pattern)
+        if compiled is not None and compiled.search(body):
+            logger.info(
+                "Dropped outbound %s message matching suppress_outbound %r: %s",
+                _gateway_platform_value(platform) or "unknown",
+                pattern,
+                _redact_gateway_user_facing_secrets(body)[:120],
+            )
+            return True
+    return False
+
+
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to chat surfaces.
 
@@ -431,6 +517,11 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
         return ""
 
+    # Operator-configured suppression: same drop convention as the interrupt
+    # sentinel above (empty string = nothing sent).
+    if _outbound_suppressed_by_config(platform, text):
+        return ""
+
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
@@ -448,6 +539,11 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return None
     if _gateway_surface_passes_raw_text(platform):
         return text
+
+    # Operator-configured suppression: same drop convention as the built-in
+    # noisy-status filter below (None = nothing sent).
+    if _outbound_suppressed_by_config(platform, text):
+        return None
 
     text = _redact_gateway_user_facing_secrets(text)
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
@@ -8803,6 +8899,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Deliver a setup/operational notice using platform-specific privacy rules."""
         adapter = self._adapter_for_source(source)
         if not adapter:
+            return
+
+        # Operator-configured suppression covers the notice rail too (setup
+        # nags, lifecycle notices) — final-response sanitize never sees these.
+        if _outbound_suppressed_by_config(getattr(source, "platform", None), content):
             return
 
         config = getattr(self, "config", None)

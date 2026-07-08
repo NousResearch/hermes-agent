@@ -7001,6 +7001,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.agent.session_id = self.session_id
             self.agent.session_start = self.session_start
             self.agent.reset_session_state()
+            try:
+                from tools.process_registry import process_registry
+                process_registry.kill_all()
+            except Exception:
+                pass
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = 0
             if hasattr(self.agent, "_todo_store"):

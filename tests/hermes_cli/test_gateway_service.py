@@ -2029,6 +2029,115 @@ class TestSystemUnitHermesHome:
         assert f'HERMES_HOME={hermes_home}' in unit
 
 
+class TestSystemUnitRefreshSyncsHermesHome:
+    """sudo system refresh must not flip TimeoutStopSec via /root/.hermes."""
+
+    def test_refresh_adopts_unit_hermes_home_before_rewriting(self, tmp_path, monkeypatch):
+        root_home = tmp_path / "root"
+        alice_home = tmp_path / "alice"
+        root_hermes = root_home / ".hermes"
+        alice_hermes = alice_home / ".hermes"
+        root_hermes.mkdir(parents=True)
+        alice_hermes.mkdir(parents=True)
+        (root_hermes / "config.yaml").write_text(
+            "agent:\n  restart_drain_timeout: 60\n", encoding="utf-8"
+        )
+        (alice_hermes / "config.yaml").write_text(
+            "agent:\n  restart_drain_timeout: 180\n", encoding="utf-8"
+        )
+
+        unit_path = tmp_path / "hermes-gateway.service"
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: root_home))
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", str(alice_home)),
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_build_user_local_paths", lambda home, existing: []
+        )
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: None)
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", lambda *a, **k: None)
+        monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
+
+        # Correct installed unit (operator's HERMES_HOME + drain timeout).
+        monkeypatch.setenv("HERMES_HOME", str(alice_hermes))
+        good_unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+        assert "TimeoutStopSec=210" in good_unit
+        unit_path.write_text(good_unit, encoding="utf-8")
+
+        # Simulate sudo without inherited HERMES_HOME (falls back to root).
+        monkeypatch.setenv("HERMES_HOME", str(root_hermes))
+        assert gateway_cli.refresh_systemd_unit_if_needed(system=True) is False
+        assert unit_path.read_text(encoding="utf-8") == good_unit
+        assert os.environ["HERMES_HOME"] == str(alice_hermes)
+        assert gateway_cli.systemd_unit_is_current(system=True) is True
+
+    def test_systemd_restart_syncs_before_refresh(self, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: True)
+        monkeypatch.setattr(gateway_cli, "_require_root_for_system_service", lambda action: None)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_sync_hermes_home_from_systemd_unit",
+            lambda system: calls.append(("sync", system)),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "refresh_systemd_unit_if_needed",
+            lambda system=False: calls.append(("refresh", system)),
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway_cli, "_systemd_main_pid", lambda system=False: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_run_systemctl",
+            lambda args, **kwargs: calls.append(("systemctl", args))
+            or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_systemd_service_restart",
+            lambda system=False, previous_pid=None: True,
+        )
+
+        gateway_cli.systemd_restart(system=True)
+
+        assert calls[0] == ("sync", True)
+        assert calls[1] == ("refresh", True)
+
+    def test_systemd_start_syncs_before_refresh(self, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: True)
+        monkeypatch.setattr(gateway_cli, "_require_root_for_system_service", lambda action: None)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_sync_hermes_home_from_systemd_unit",
+            lambda system: calls.append(("sync", system)),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "refresh_systemd_unit_if_needed",
+            lambda system=False: calls.append(("refresh", system)),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_run_systemctl",
+            lambda args, **kwargs: calls.append(("systemctl", args))
+            or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        gateway_cli.systemd_start(system=True)
+
+        assert calls[0] == ("sync", True)
+        assert calls[1] == ("refresh", True)
+
+
 class TestHermesHomeForTargetUser:
     """Unit tests for _hermes_home_for_target_user()."""
 

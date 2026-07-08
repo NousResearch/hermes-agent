@@ -10,7 +10,7 @@ import subprocess
 import shutil
 from pathlib import Path
 
-from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_cli.config import get_project_root, get_hermes_home, get_env_path, get_managed_system
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
 from hermes_constants import agent_browser_runnable
@@ -1348,7 +1348,13 @@ def run_doctor(args):
     _check_s6_supervision(issues)
 
     if sys.platform != "win32":
-        _section("Command Installation")
+        _managed_system = get_managed_system()
+        if _managed_system:
+            _section("Command Installation (managed by {})".format(_managed_system))
+            check_info(f"Hermes is managed by {_managed_system};"
+                       f" use its package manager (e.g. brew upgrade) to update.")
+        else:
+            _section("Command Installation")
         # Determine the venv entry point location
         _venv_bin = None
         for _venv_name in ("venv", ".venv"):
@@ -1368,7 +1374,10 @@ def run_doctor(args):
             _cmd_link_display = "~/.local/bin"
         _cmd_link = _cmd_link_dir / "hermes"
 
-        if _venv_bin is None:
+        # For managed installs, skip venv checks — package manager handles it
+        if _managed_system:
+            check_ok("Entry points handled by package manager")
+        elif _venv_bin is None:
             check_warn(
                 "Venv entry point not found",
                 "(hermes not in venv/bin/ or .venv/bin/ — reinstall with pip install -e '.[all]')"

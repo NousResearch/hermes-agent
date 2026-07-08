@@ -5567,9 +5567,21 @@ def _desktop_launch_options() -> tuple[list[str], str]:
 
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
-    desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+    # Resolve desktop source dir — check HERMES_DESKTOP_SOURCE env var first
+    # (set by Homebrew/Nix packaging), then fall back to PROJECT_ROOT/apps/desktop
+    # for pip/git installs.
+    _desktop_source_env = os.getenv("HERMES_DESKTOP_SOURCE", "").strip()
+    if _desktop_source_env:
+        desktop_dir = Path(_desktop_source_env).resolve()
+        npm_project_root = desktop_dir.parent.parent
+    else:
+        desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+        npm_project_root = PROJECT_ROOT
+
     if not (desktop_dir / "package.json").exists():
         print(f"Desktop GUI source not found at: {desktop_dir}")
+        if _desktop_source_env:
+            print("(HERMES_DESKTOP_SOURCE points to a path without a desktop package.json)")
         sys.exit(1)
 
     try:
@@ -5623,9 +5635,9 @@ def cmd_gui(args: argparse.Namespace):
                 print("  Pre-build first:  cd apps/desktop && npm run build")
                 print("  Or drop --skip-build to install dependencies and build automatically.")
                 sys.exit(1)
-            if not (_electron_dir(PROJECT_ROOT) / "package.json").exists():
+            if not (_electron_dir(npm_project_root) / "package.json").exists():
                 print("✗ --skip-build --source requires existing desktop workspace dependencies.")
-                print(f"  Install first:  cd {PROJECT_ROOT} && npm ci")
+                print(f"  Install first:  cd {npm_project_root} && npm ci")
                 print("  Or drop --skip-build to install dependencies and build automatically.")
                 sys.exit(1)
             print(f"→ Skipping desktop source build (--skip-build --source); using dist at {desktop_dir / 'dist'}")
@@ -5642,7 +5654,7 @@ def cmd_gui(args: argparse.Namespace):
         # skip the npm install + build entirely (saves a ton of useless work).
         # --force-build overrides the stamp and always rebuilds.
         build_needed = force_build or _desktop_build_needed(
-            desktop_dir, PROJECT_ROOT, source_mode=source_mode
+            desktop_dir, npm_project_root, source_mode=source_mode
         )
         if not build_needed:
             build_label = "source build" if source_mode else "packaged app"
@@ -5650,13 +5662,13 @@ def cmd_gui(args: argparse.Namespace):
         else:
             print("→ Installing desktop workspace dependencies...")
             nixos_env = _nixos_build_env()
-            install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
+            install_result = _run_npm_install_deterministic(npm, npm_project_root, capture_output=False, env=nixos_env)
             if install_result.returncode != 0:
-                if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
+                if not _electron_pkg_staged_missing_dist(npm_project_root):
                     print("✗ Desktop dependency install failed")
-                    print(f"  Run manually:  cd {PROJECT_ROOT} && npm ci")
+                    print(f"  Run manually:  cd {npm_project_root} && npm ci")
                     sys.exit(install_result.returncode or 1)
-                repaired = _try_redownload_electron_dist(PROJECT_ROOT, env)
+                repaired = _try_redownload_electron_dist(npm_project_root, env)
                 if repaired:
                     print("  ⚠ Dependency install failed with a missing Electron dist; "
                           "repopulated it and continuing.")
@@ -5697,9 +5709,9 @@ def cmd_gui(args: argparse.Namespace):
                 # retry would only add another slow, identical failure (#40187).
                 purged: list[Path] = []
                 restored = False
-                if not _electron_dist_ok(PROJECT_ROOT):
+                if not _electron_dist_ok(npm_project_root):
                     purged = _purge_electron_build_cache(desktop_dir)
-                    restored = _redownload_electron_dist(PROJECT_ROOT, env)
+                    restored = _redownload_electron_dist(npm_project_root, env)
                 if restored:
                     print("  ⚠ Desktop build failed; refreshed the Electron download and retrying once...")
                     for p in purged:
@@ -5720,8 +5732,8 @@ def cmd_gui(args: argparse.Namespace):
                 mirror = _ELECTRON_FALLBACK_MIRROR
                 mirror_env = dict(env)
                 mirror_env["ELECTRON_MIRROR"] = mirror
-                if not _electron_dist_ok(PROJECT_ROOT):
-                    _redownload_electron_dist(PROJECT_ROOT, env, mirror=mirror)
+                if not _electron_dist_ok(npm_project_root):
+                    _redownload_electron_dist(npm_project_root, env, mirror=mirror)
                 _stop_desktop_processes_locking_build(desktop_dir)
                 build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
             if build_result.returncode != 0:
@@ -5741,7 +5753,7 @@ def cmd_gui(args: argparse.Namespace):
                 _desktop_macos_relaunchable_fixup(desktop_dir)
 
             # Build succeeded — write the stamp so next run can skip
-            _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)
+            _write_desktop_build_stamp(npm_project_root, source_mode=source_mode)
 
     # --build-only: produce the artifact but do NOT launch. The installer's
     # --update flow drives the rebuild headlessly and then launches the desktop

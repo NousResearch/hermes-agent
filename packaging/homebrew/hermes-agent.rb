@@ -25,6 +25,8 @@ class HermesAgent < Formula
     venv.pip_install buildpath
 
     pkgshare.install "skills", "optional-skills"
+    (pkgshare/"apps").install "apps/desktop"
+    pkgshare.install "package.json", "package-lock.json"
 
     %w[hermes hermes-agent hermes-acp].each do |exe|
       next unless (libexec/"bin"/exe).exist?
@@ -33,7 +35,8 @@ class HermesAgent < Formula
         libexec/"bin"/exe,
         HERMES_BUNDLED_SKILLS: pkgshare/"skills",
         HERMES_OPTIONAL_SKILLS: pkgshare/"optional-skills",
-        HERMES_MANAGED: "homebrew"
+        HERMES_MANAGED: "homebrew",
+        HERMES_DESKTOP_SOURCE: pkgshare/"apps"/"desktop"
       )
     end
   end

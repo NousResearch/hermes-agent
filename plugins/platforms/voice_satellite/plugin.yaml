@@ -1,0 +1,17 @@
+name: voice-satellite-platform
+label: Voice Satellite
+kind: platform
+version: 1.0.0
+description: >
+  Wyoming-protocol voice satellite gateway adapter ("Hey Hermes").
+  Connects out to wyoming-satellite devices (Raspberry Pi, ReSpeaker)
+  on the local network: the satellite does local wake-word detection
+  and streams mic audio; Hermes transcribes with the configured STT
+  provider, runs the agent, and speaks the reply through the
+  satellite's speaker with the configured TTS provider.
+
+  Configuration lives in config.yaml under a top-level
+  `voice_satellite:` section (satellites list, endpointing tuning) —
+  no environment variables. Satellites are trusted by being listed;
+  keep them LAN-only.
+author: Vincent Colombo

@@ -425,6 +425,13 @@ const WINDOW_BUTTON_POSITION = {
 // It's only the pre-layout fallback — the renderer measures the exact overlay
 // width live via the Window Controls Overlay API.
 const APP_ICON_PATHS = [
+  // .ico is required on Windows for taskbar + notification icons.
+  // The Apple-touch-icon.png fallback works on macOS/Linux but Windows
+  // Electron ignores PNG in BrowserWindow({ icon }) and Notification({ icon }).
+  ...(IS_WINDOWS ? [
+    path.join(APP_ROOT, 'assets', 'icon.ico'),
+    path.join(unpackedPathFor(APP_ROOT), 'assets', 'icon.ico'),
+  ] : []),
   path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
   path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
   path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png')
@@ -6604,6 +6611,7 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
     title: payload?.title || 'Hermes',
     body: payload?.body || '',
     silent: Boolean(payload?.silent),
+    icon: getAppIconPath(),
     actions: actions.map(action => ({ type: 'button', text: String(action?.text || '') }))
   })
   notification.on('click', () => {

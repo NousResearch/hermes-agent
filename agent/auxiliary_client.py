@@ -293,6 +293,67 @@ def _is_codex_gpt55(model: Optional[str], provider: Optional[str] = None) -> boo
     return bare == "gpt-5.5" or bare.startswith("gpt-5.5-") or bare.startswith("gpt-5.5.")
 
 
+def _model_vendor_family(model: Optional[str]) -> Optional[str]:
+    """Best-effort vendor family for a bare/prefixed model id (or None).
+
+    Uses the same first-token → vendor map that drives aggregator slug
+    normalization (``hermes_cli.model_normalize._VENDOR_PREFIXES``): e.g.
+    ``claude-opus-4-8`` → ``anthropic``, ``gpt-5.5`` → ``openai``,
+    ``gemini-2.5-pro`` → ``google``. Returns ``None`` for an unrecognized /
+    empty model so callers treat it as "can't prove a mismatch — don't block".
+    A ``vendor/model`` composite resolves on the bare tail.
+    """
+    if not model:
+        return None
+    bare = str(model).strip().lower().rsplit("/", 1)[-1]
+    if not bare:
+        return None
+    first = bare.split("-", 1)[0]
+    try:
+        from hermes_cli.model_normalize import _VENDOR_PREFIXES
+
+        return _VENDOR_PREFIXES.get(first)
+    except Exception:
+        return None
+
+
+# First-class direct providers whose wire API is single-vendor: a model from a
+# different vendor family sent here is a hard reject (400 / "model does not
+# exist"). Aggregators (openrouter/nous/kilocode), custom, and auto are
+# deliberately absent — they route many vendors, so a family mismatch there is
+# not a leak. Maps provider id → the model vendor family it serves.
+_DIRECT_PROVIDER_VENDOR_FAMILY: Dict[str, str] = {
+    "openai-codex": "openai",
+    "anthropic": "anthropic",
+    "gemini": "google",
+    "deepseek": "deepseek",
+}
+
+
+def _pinned_model_incompatible_with_provider(
+    model: Optional[str], provider: Optional[str]
+) -> bool:
+    """True when a concrete pinned model is provably wrong for *provider*.
+
+    Fires ONLY when both the provider is a known single-vendor first-class
+    direct route (``_DIRECT_PROVIDER_VENDOR_FAMILY``) AND the model's vendor
+    family is known AND the two differ — e.g. a ``claude-*`` id pinned against
+    the ``openai-codex`` route (the documented ``400 ... not supported when
+    using Codex`` mismatch). Unknown model / unknown-or-aggregator provider →
+    ``False`` (never block what we can't prove wrong). Conservative by design:
+    a false negative just sends the pin as before; a false positive would
+    wrongly discard a legitimate pin, so the bar to fire is high.
+    """
+    prov = (provider or "").strip().lower()
+    expected = _DIRECT_PROVIDER_VENDOR_FAMILY.get(prov)
+    if not expected:
+        return False
+    actual = _model_vendor_family(model)
+    if not actual:
+        return False
+    return actual != expected
+
+
 def _fixed_temperature_for_model(
     model: Optional[str],
     base_url: Optional[str] = None,
@@ -5931,6 +5992,41 @@ def call_llm(
         task, provider, model, base_url, api_key)
     if api_mode:
         resolved_api_mode = api_mode
+
+    # ── B-2: guard a config-pinned compression model against a provider the
+    #    live session swapped to that can't serve it. ──────────────────────
+    # When ``auxiliary.compression.model`` is a concrete id (not ``auto``) it
+    # wins in _resolve_task_provider_model regardless of the session's live
+    # model. If it's e.g. a Claude id and the session failed over / switched to
+    # the Codex/Gemini route, sending it produces a hard 400 ("model does not
+    # exist" / "not supported when using Codex") and compaction degrades to a
+    # static marker (losing the real handoff). Detect the provable
+    # vendor-family mismatch and DROP the pinned model to None so _resolve_auto
+    # inherits the LIVE main model instead of shipping a known-bad id. The
+    # effective route provider is the live main provider (from main_runtime or
+    # the runtime globals) when the task provider is auto/unset; otherwise the
+    # explicitly resolved provider. Single warning, no spam. Never raises.
+    if task == "compression" and resolved_model:
+        try:
+            _route_prov = (resolved_provider or "").strip().lower()
+            if _route_prov in {"", "auto"}:
+                _rt = _normalize_main_runtime(main_runtime)
+                _route_prov = (
+                    str(_rt.get("provider") or "").strip().lower()
+                    or (_read_main_provider() or "").strip().lower()
+                )
+            if _pinned_model_incompatible_with_provider(resolved_model, _route_prov):
+                logger.warning(
+                    "Auxiliary compression: pinned model %r is incompatible with "
+                    "the live provider %r — falling through to the live main "
+                    "model instead of sending an unsupported id.",
+                    resolved_model, _route_prov,
+                )
+                resolved_model = None
+        except Exception:
+            # A guard failure must never block a real compression call.
+            pass
+
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 

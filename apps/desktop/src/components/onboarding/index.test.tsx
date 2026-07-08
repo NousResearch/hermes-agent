@@ -56,12 +56,15 @@ afterEach(() => {
 })
 
 describe('onboarding Picker', () => {
-  it('features Nous Portal and hides other providers behind a disclosure', () => {
+  it('features Nous Portal and Fireworks, and hides other providers behind a disclosure', () => {
     setProviders([provider('anthropic', 'Anthropic Claude'), provider('nous', 'Nous Portal')])
     render(<Picker ctx={ctx} />)
 
     expect(screen.getByText('Nous Portal')).toBeTruthy()
-    expect(screen.getByText('Recommended')).toBeTruthy()
+    // Fireworks is the preferred BYOK provider — a second hero card after Nous.
+    expect(screen.getByText('Fireworks AI')).toBeTruthy()
+    // Both hero cards carry a Recommended badge; the plain rows below do not.
+    expect(screen.getAllByText('Recommended')).toHaveLength(2)
     expect(screen.queryByText('Anthropic API Key')).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Other providers' }))
@@ -70,14 +73,25 @@ describe('onboarding Picker', () => {
     expect(screen.getByRole('button', { name: 'Collapse' })).toBeTruthy()
   })
 
-  it('shows every provider directly when Nous Portal is absent', () => {
+  it('still features Fireworks when Nous Portal is absent', () => {
     setProviders([provider('anthropic', 'Anthropic Claude'), provider('openai-codex', 'OpenAI Codex / ChatGPT')])
     render(<Picker ctx={ctx} />)
 
     expect(screen.getByText('Anthropic API Key')).toBeTruthy()
     expect(screen.getByText('OpenAI OAuth (ChatGPT)')).toBeTruthy()
     expect(screen.queryByText('Other sign-in options')).toBeNull()
-    expect(screen.queryByText('Recommended')).toBeNull()
+    // Fireworks stays featured even without Nous — exactly one Recommended badge.
+    expect(screen.getByText('Fireworks AI')).toBeTruthy()
+    expect(screen.getAllByText('Recommended')).toHaveLength(1)
+  })
+
+  it('routes the Fireworks hero card into the API-key form', () => {
+    setProviders([provider('nous', 'Nous Portal')])
+    render(<Picker ctx={ctx} />)
+
+    fireEvent.click(screen.getByText('Fireworks AI'))
+
+    expect($desktopOnboarding.get().mode).toBe('apikey')
   })
 
   it('offers "choose later" on first run and persists the skip', () => {

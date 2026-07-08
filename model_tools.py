@@ -965,6 +965,54 @@ def _tool_result_observer_fields(result: Any) -> tuple[str, Optional[str], Optio
     return "ok", None, None
 
 
+def _emit_tool_call_event(
+    *,
+    function_name: str,
+    function_args: Dict[str, Any],
+    result: Any = None,
+    duration_ms: int = 0,
+    status: Optional[str] = None,
+    error_type: Optional[str] = None,
+    error_message: Optional[str] = None,
+    task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
+    api_request_id: Optional[str] = None,
+    middleware_trace: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    """Emit best-effort privacy-preserving telemetry for tool execution."""
+    try:
+        from hermes_telemetry import error_fingerprint, safe_emit_event, stable_hash
+
+        if status is None:
+            status, error_type, error_message = _tool_result_observer_fields(result)
+        result_text = "" if result is None else str(result)
+        payload = {
+            "tool_name_hash": stable_hash(function_name),
+            "toolset": registry.get_toolset_for_tool(function_name) or "unknown",
+            "duration_ms": max(0, int(duration_ms)),
+            "arg_count": len(function_args or {}),
+            "result_chars": len(result_text),
+            "has_task_id": bool(task_id),
+            "session_id_hash": stable_hash(session_id),
+            "tool_call_id_hash": stable_hash(tool_call_id),
+            "turn_id_hash": stable_hash(turn_id),
+            "api_request_id_hash": stable_hash(api_request_id),
+            "middleware_trace_count": len(middleware_trace or []),
+            "error_type": error_type,
+            "error_fingerprint": error_fingerprint(error_message),
+        }
+        safe_emit_event(
+            "tool_call",
+            payload,
+            status="ok" if status == "ok" else "error",
+            source="model_tools.handle_function_call",
+        )
+    except Exception as exc:  # pragma: no cover - telemetry must never break tools
+        logger.debug("Failed to emit tool telemetry for %s: %s", function_name, exc)
+
+
 def _emit_post_tool_call_hook(
     *,
     function_name: str,
@@ -1191,6 +1239,20 @@ def handle_function_call(
 
             if block_message is not None:
                 result = json.dumps({"error": block_message}, ensure_ascii=False)
+                _emit_tool_call_event(
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=result,
+                    task_id=task_id,
+                    session_id=session_id,
+                    tool_call_id=tool_call_id,
+                    turn_id=turn_id,
+                    api_request_id=api_request_id,
+                    status="blocked",
+                    error_type="plugin_block",
+                    error_message=block_message,
+                    middleware_trace=list(_tool_middleware_trace),
+                )
                 _emit_post_tool_call_hook(
                     function_name=function_name,
                     function_args=function_args,
@@ -1215,11 +1277,40 @@ def handle_function_call(
 
             edit_block_message = maybe_require_edit_approval(function_name, function_args)
             if edit_block_message is not None:
+                _emit_tool_call_event(
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=edit_block_message,
+                    task_id=task_id,
+                    session_id=session_id,
+                    tool_call_id=tool_call_id,
+                    turn_id=turn_id,
+                    api_request_id=api_request_id,
+                    status="blocked",
+                    error_type="edit_approval_denied",
+                    error_message=edit_block_message,
+                    middleware_trace=list(_tool_middleware_trace),
+                )
                 return edit_block_message
         except Exception as _edit_approval_err:
             logger.debug("ACP edit approval guard error: %s", _edit_approval_err)
             if function_name in {"write_file", "patch"}:
-                return json.dumps({"error": "Edit approval denied: approval guard failed"}, ensure_ascii=False)
+                result = json.dumps({"error": "Edit approval denied: approval guard failed"}, ensure_ascii=False)
+                _emit_tool_call_event(
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=result,
+                    task_id=task_id,
+                    session_id=session_id,
+                    tool_call_id=tool_call_id,
+                    turn_id=turn_id,
+                    api_request_id=api_request_id,
+                    status="error",
+                    error_type="edit_approval_guard_failed",
+                    error_message=str(_edit_approval_err),
+                    middleware_trace=list(_tool_middleware_trace),
+                )
+                return result
 
         # Notify the read-loop tracker when a non-read/search tool runs,
         # so the *consecutive* counter resets (reads after other work are fine).
@@ -1291,6 +1382,19 @@ def handle_function_call(
                     pass
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
 
+        _emit_tool_call_event(
+            function_name=function_name,
+            function_args=function_args,
+            result=result,
+            task_id=task_id,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            turn_id=turn_id,
+            api_request_id=api_request_id,
+            duration_ms=duration_ms,
+            middleware_trace=list(_tool_middleware_trace),
+        )
+
         _emit_post_tool_call_hook(
             function_name=function_name,
             function_args=function_args,
@@ -1343,7 +1447,22 @@ def handle_function_call(
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.exception(error_msg)
-        return json.dumps({"error": _sanitize_tool_error(error_msg)}, ensure_ascii=False)
+        result = json.dumps({"error": _sanitize_tool_error(error_msg)}, ensure_ascii=False)
+        _emit_tool_call_event(
+            function_name=function_name,
+            function_args=function_args if isinstance(function_args, dict) else {},
+            result=result,
+            task_id=task_id,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            turn_id=turn_id,
+            api_request_id=api_request_id,
+            status="error",
+            error_type=type(e).__name__,
+            error_message=str(e),
+            middleware_trace=list(_tool_middleware_trace) if "_tool_middleware_trace" in locals() else [],
+        )
+        return result
 
 
 # =============================================================================

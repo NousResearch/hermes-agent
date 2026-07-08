@@ -180,6 +180,8 @@ class TestVoiceAttachmentSSRFProtection:
         client = mock.AsyncMock()
         with mock.patch("gateway.platforms.qqbot.adapter.httpx.AsyncClient", return_value=client) as async_client_cls:
             adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+            adapter._acquire_platform_lock = mock.Mock(return_value=True)
+            adapter._release_platform_lock = mock.Mock()
             adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("stop after client creation"))
 
             connected = asyncio.run(adapter.connect())
@@ -189,6 +191,18 @@ class TestVoiceAttachmentSSRFProtection:
         kwargs = async_client_cls.call_args.kwargs
         assert kwargs.get("follow_redirects") is True
         assert kwargs.get("event_hooks", {}).get("response") == [_ssrf_redirect_guard]
+
+    def test_connect_accepts_is_reconnect_kwarg(self):
+        from gateway.platforms.qqbot import QQAdapter
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        adapter._acquire_platform_lock = mock.Mock(return_value=True)
+        adapter._release_platform_lock = mock.Mock()
+        adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("stop after kwarg acceptance"))
+
+        connected = asyncio.run(adapter.connect(is_reconnect=True))
+
+        assert connected is False
 
 
 # ---------------------------------------------------------------------------

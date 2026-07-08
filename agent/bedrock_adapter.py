@@ -37,6 +37,51 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# 1M context beta (native Bedrock Converse path)
+# ---------------------------------------------------------------------------
+# The AnthropicBedrock (OpenAI-compat) client path already forwards
+# ``context-1m-2025-08-07`` via _CONTEXT_1M_BETA in agent/anthropic_adapter.py
+# (PR #16793). The native boto3 Converse path (this module) is separate and
+# was never wired up — Opus 4.6/4.7/4.8 and Sonnet 4.6 stayed capped at
+# 200K here even on accounts with the 1M entitlement. See issue #31277.
+#
+# Off by default: Anthropic gates the entitlement per-account, and sending
+# the beta header to an account without it can be rejected outright. Users
+# opt in explicitly once they've confirmed AWS/Anthropic granted access.
+_BEDROCK_1M_CONTEXT_ENV = "HERMES_BEDROCK_1M_CONTEXT"
+_BEDROCK_CONTEXT_1M_BETA = "context-1m-2025-08-07"
+
+# Model families verified to support the 1M context beta on Bedrock.
+# Substring-matched against the (lowercased) model id, so cross-region
+# inference profile prefixes (us., global., eu.) and version suffixes
+# (-v1:0, -20250514, etc.) don't break the match.
+_BEDROCK_1M_CAPABLE_SUBSTRINGS = (
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-sonnet-4-6",
+    "claude-sonnet-5",
+)
+
+
+def bedrock_1m_context_enabled() -> bool:
+    """Return True when the user has opted in to 1M-context Bedrock requests.
+
+    Opt-in only — accounts without the Anthropic 1M-context entitlement
+    should not have this beta header sent on their behalf.
+    """
+    return os.environ.get(_BEDROCK_1M_CONTEXT_ENV, "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def is_bedrock_1m_context_capable(model_id: str) -> bool:
+    """Return True if ``model_id`` is a Claude family known to support 1M context."""
+    model_lower = (model_id or "").lower()
+    return any(sub in model_lower for sub in _BEDROCK_1M_CAPABLE_SUBSTRINGS)
+
+
+# ---------------------------------------------------------------------------
 # Ensure boto3/botocore are installed before any code in this module runs.
 # Upstream removed boto3 from [all] extras (PRs #24220, #24515); lazy_deps
 # handles on-demand installation so the Bedrock provider still works in the
@@ -983,6 +1028,12 @@ def build_converse_kwargs(
     if guardrail_config:
         kwargs["guardrailConfig"] = guardrail_config
 
+    if bedrock_1m_context_enabled() and is_bedrock_1m_context_capable(model):
+        additional_fields = kwargs.setdefault("additionalModelRequestFields", {})
+        existing_betas = additional_fields.get("anthropic_beta", [])
+        if _BEDROCK_CONTEXT_1M_BETA not in existing_betas:
+            additional_fields["anthropic_beta"] = [*existing_betas, _BEDROCK_CONTEXT_1M_BETA]
+
     return kwargs
 
 
@@ -1297,7 +1348,9 @@ def classify_bedrock_error(error_message: str) -> str:
 
 BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     # Anthropic Claude models on Bedrock
+    "anthropic.claude-opus-4-8":     200_000,
     "anthropic.claude-opus-4-6":     200_000,
+    "anthropic.claude-sonnet-5":     200_000,
     "anthropic.claude-sonnet-4-6":   200_000,
     "anthropic.claude-sonnet-4-5":   200_000,
     "anthropic.claude-haiku-4-5":    200_000,
@@ -1331,7 +1384,13 @@ def get_bedrock_context_length(model_id: str) -> int:
 
     Uses substring matching so versioned IDs like
     ``anthropic.claude-sonnet-4-6-20250514-v1:0`` resolve correctly.
+
+    Returns 1M when the user has opted in via ``HERMES_BEDROCK_1M_CONTEXT``
+    and the model is a known 1M-capable Claude family (see issue #31277).
     """
+    if bedrock_1m_context_enabled() and is_bedrock_1m_context_capable(model_id):
+        return 1_000_000
+
     model_lower = model_id.lower()
     best_key = ""
     best_val = BEDROCK_DEFAULT_CONTEXT_LENGTH

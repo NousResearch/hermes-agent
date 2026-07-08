@@ -210,6 +210,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "claude-opus-4.7": 1000000,
     "claude-opus-4-6": 1000000,
     "claude-sonnet-4-6": 1000000,
+    "claude-sonnet-5": 1000000,
     "claude-opus-4.6": 1000000,
     "claude-sonnet-4.6": 1000000,
     # Catch-all for older Claude models (must sort after specific entries)

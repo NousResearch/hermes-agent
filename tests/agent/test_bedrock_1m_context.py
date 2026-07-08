@@ -61,3 +61,89 @@ class TestBedrockContext1MBeta:
         # Other common betas still present — no regression.
         assert "interleaved-thinking-2025-05-14" in beta_header
         assert "fine-grained-tool-streaming-2025-05-14" in beta_header
+
+
+class TestBedrockConverse1MContextOptIn:
+    """Native boto3 Converse path (agent/bedrock_adapter.py) — issue #31277.
+
+    Opus 4.8 and Sonnet 5 (and the earlier 4.6/4.7 families) need the
+    ``context-1m-2025-08-07`` beta forwarded via ``additionalModelRequestFields``
+    on the Converse API. Off by default — only active when the user opts in
+    via ``HERMES_BEDROCK_1M_CONTEXT``, since the entitlement is gated
+    per-account and an unentitled account gets a hard rejection otherwise.
+    """
+
+    def test_capability_matrix(self):
+        from agent.bedrock_adapter import is_bedrock_1m_context_capable
+
+        capable = [
+            "anthropic.claude-opus-4-8-v1:0",
+            "us.anthropic.claude-opus-4-8-v1:0",
+            "global.anthropic.claude-sonnet-5-20260201-v1:0",
+            "anthropic.claude-sonnet-4-6-v1:0",
+            "anthropic.claude-opus-4-6-v1:0",
+            "anthropic.claude-opus-4-7-v1:0",
+        ]
+        not_capable = [
+            "anthropic.claude-sonnet-4-5-v1:0",
+            "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "amazon.nova-pro-v1:0",
+        ]
+        for model_id in capable:
+            assert is_bedrock_1m_context_capable(model_id), model_id
+        for model_id in not_capable:
+            assert not is_bedrock_1m_context_capable(model_id), model_id
+
+    def test_opt_in_env_var(self, monkeypatch):
+        from agent.bedrock_adapter import bedrock_1m_context_enabled
+
+        monkeypatch.delenv("HERMES_BEDROCK_1M_CONTEXT", raising=False)
+        assert bedrock_1m_context_enabled() is False
+
+        monkeypatch.setenv("HERMES_BEDROCK_1M_CONTEXT", "true")
+        assert bedrock_1m_context_enabled() is True
+
+        monkeypatch.setenv("HERMES_BEDROCK_1M_CONTEXT", "0")
+        assert bedrock_1m_context_enabled() is False
+
+    def test_build_converse_kwargs_adds_beta_when_opted_in(self, monkeypatch):
+        from agent.bedrock_adapter import build_converse_kwargs
+
+        monkeypatch.setenv("HERMES_BEDROCK_1M_CONTEXT", "true")
+        kwargs = build_converse_kwargs(
+            model="anthropic.claude-opus-4-8-v1:0",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        betas = kwargs["additionalModelRequestFields"]["anthropic_beta"]
+        assert "context-1m-2025-08-07" in betas
+
+    def test_build_converse_kwargs_no_beta_when_not_opted_in(self, monkeypatch):
+        from agent.bedrock_adapter import build_converse_kwargs
+
+        monkeypatch.delenv("HERMES_BEDROCK_1M_CONTEXT", raising=False)
+        kwargs = build_converse_kwargs(
+            model="anthropic.claude-opus-4-8-v1:0",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        assert "additionalModelRequestFields" not in kwargs
+
+    def test_build_converse_kwargs_no_beta_for_incapable_model(self, monkeypatch):
+        from agent.bedrock_adapter import build_converse_kwargs
+
+        monkeypatch.setenv("HERMES_BEDROCK_1M_CONTEXT", "true")
+        kwargs = build_converse_kwargs(
+            model="anthropic.claude-sonnet-4-5-v1:0",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        assert "additionalModelRequestFields" not in kwargs
+
+    def test_get_bedrock_context_length_opt_in(self, monkeypatch):
+        from agent.bedrock_adapter import get_bedrock_context_length
+
+        monkeypatch.delenv("HERMES_BEDROCK_1M_CONTEXT", raising=False)
+        assert get_bedrock_context_length("anthropic.claude-opus-4-8-v1:0") == 200_000
+
+        monkeypatch.setenv("HERMES_BEDROCK_1M_CONTEXT", "true")
+        assert get_bedrock_context_length("anthropic.claude-opus-4-8-v1:0") == 1_000_000
+        # Non-capable model is unaffected by opt-in.
+        assert get_bedrock_context_length("amazon.nova-pro-v1:0") == 300_000

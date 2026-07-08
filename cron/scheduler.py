@@ -715,6 +715,48 @@ def _maybe_mirror_cron_delivery(
         )
 
 
+def _deliver_to_webui_session(job: dict, session_id: str, content: str) -> Optional[str]:
+    """Persist a cron delivery into a local WebUI/Hermes session.
+
+    WebUI has no gateway adapter to push through — the session's own
+    ``SessionDB`` row *is* the delivery surface. Appends a labelled USER-role
+    message (same alternation rationale as ``_maybe_mirror_cron_delivery``: a
+    cron delivery is not the agent speaking, and a user-role turn merges
+    safely on every provider instead of landing assistant→assistant). The
+    browser picks it up on next reload/poll; no live-push in this phase.
+
+    Returns ``None`` on success, or an error string on failure — never
+    raises, matching the other delivery paths in ``_deliver_result``.
+    """
+    text = (content or "").strip()
+    if not text:
+        return None
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            resolve = getattr(db, "resolve_session_id", None)
+            sid = (resolve(session_id) if callable(resolve) else None) or session_id
+            if not db.get_session(sid):
+                return f"webui session '{session_id}' not found"
+            label = job.get("name") or job.get("id") or "cron"
+            db.append_message(
+                sid,
+                "user",
+                f"[Cron delivery: {label}]\n{text}",
+                observed=True,
+            )
+            logger.info("Job '%s': delivered to webui session %s", job.get("id", "?"), sid)
+            return None
+        finally:
+            db.close()
+    except Exception as e:
+        msg = f"webui delivery to {session_id} failed: {e}"
+        logger.warning("Job '%s': %s", job.get("id", "?"), msg)
+        return msg
+
+
 def _open_continuable_cron_thread(
     job: dict,
     adapter,
@@ -1092,6 +1134,29 @@ def cron_delivery_targets() -> list[dict]:
     return targets
 
 
+# WebUI delivery is a local session-store surface, not a gateway platform
+# adapter — it must never reach `gateway.config.Platform(...)`. These targets
+# are tagged `kind=_WEBUI_TARGET_KIND` so `_deliver_result` can split them out
+# before the gateway delivery loop.
+_WEBUI_PLATFORM = "webui"
+_WEBUI_TARGET_KIND = "webui_session"
+
+
+def _is_webui_origin(origin: Optional[dict]) -> bool:
+    return bool(origin) and str(origin.get("platform", "")).lower() == _WEBUI_PLATFORM
+
+
+def _webui_delivery_target(session_id: str, thread_id: Optional[str] = None) -> dict:
+    sid = str(session_id)
+    return {
+        "kind": _WEBUI_TARGET_KIND,
+        "platform": _WEBUI_PLATFORM,
+        "chat_id": sid,
+        "session_id": sid,
+        "thread_id": thread_id,
+    }
+
+
 def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
     """Resolve one concrete auto-delivery target for a cron job."""
 
@@ -1100,7 +1165,13 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     if deliver_value == "local":
         return None
 
+    if deliver_value.lower().startswith(f"{_WEBUI_PLATFORM}:"):
+        session_id = deliver_value.split(":", 1)[1].strip()
+        return _webui_delivery_target(session_id) if session_id else None
+
     if deliver_value == "origin":
+        if origin and _is_webui_origin(origin):
+            return _webui_delivery_target(origin["chat_id"], origin.get("thread_id"))
         if origin:
             return {
                 "platform": origin["platform"],
@@ -1479,16 +1550,31 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         _, mirror_text = BasePlatformAdapter.extract_media(content)
         mirror_text = (mirror_text or "").strip()
 
+    # WebUI targets are a local session-store surface, not a gateway platform
+    # — split them out before touching gateway config at all, so a WebUI-only
+    # delivery never depends on (or fails because of) gateway setup.
+    webui_targets = [t for t in targets if t.get("kind") == _WEBUI_TARGET_KIND]
+    gateway_targets = [t for t in targets if t.get("kind") != _WEBUI_TARGET_KIND]
+
+    delivery_errors = []
+
+    for target in webui_targets:
+        err = _deliver_to_webui_session(job, target.get("session_id") or target["chat_id"], content)
+        if err:
+            delivery_errors.append(err)
+
+    if not gateway_targets:
+        return "; ".join(delivery_errors) if delivery_errors else None
+
     try:
         config = load_gateway_config()
     except Exception as e:
         msg = f"failed to load gateway config: {e}"
         logger.error("Job '%s': %s", job["id"], msg)
-        return msg
+        delivery_errors.append(msg)
+        return "; ".join(delivery_errors)
 
-    delivery_errors = []
-
-    for target in targets:
+    for target in gateway_targets:
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")

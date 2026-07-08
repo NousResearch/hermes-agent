@@ -271,17 +271,30 @@ def test_compression_pin_falls_through_to_live_model_on_provider_swap(monkeypatc
 def test_c1_recovers_provider_from_composite_when_provider_empty():
     from plugins.blackbox import _recover_provider_from_model as rec
 
-    # Empty provider + first-class fN composite model -> split out the lane.
-    prov, mdl = rec("claude-apx-6/claude-haiku-4-5", "")
-    assert (prov, mdl) == ("claude-apx-6", "claude-haiku-4-5"), (prov, mdl)
+    # Empty provider + a REAL first-class provider prefix -> split out the provider.
+    # Use 'anthropic' (always registered) so the assertion is env-independent: a
+    # fleet-local lane id like claude-apx-N is only in PROVIDER_REGISTRY on the live
+    # box, so it would (correctly) NOT split in a clean CI env.
+    prov, mdl = rec("anthropic/claude-haiku-4-5", "")
+    assert (prov, mdl) == ("anthropic", "claude-haiku-4-5"), (prov, mdl)
 
 
 def test_c1_leaves_composite_untouched_when_provider_already_set():
     from plugins.blackbox import _recover_provider_from_model as rec
 
     # Provider already populated -> canonical fix trusts the split turn, no rewrite.
-    prov, mdl = rec("claude-apx-6/claude-haiku-4-5", "claude-apx-6")
-    assert (prov, mdl) == ("claude-apx-6", "claude-apx-6/claude-haiku-4-5"), (prov, mdl)
+    prov, mdl = rec("anthropic/claude-haiku-4-5", "anthropic")
+    assert (prov, mdl) == ("anthropic", "anthropic/claude-haiku-4-5"), (prov, mdl)
+
+
+def test_c1_leaves_unregistered_prefix_untouched():
+    from plugins.blackbox import _recover_provider_from_model as rec
+
+    # A prefix that is NOT a real first-class provider (an aggregator vendor slug,
+    # or an env-specific lane absent from the registry) is left verbatim — the fix
+    # only recovers a genuine provider prefix, never a vendor/model composite.
+    prov, mdl = rec("meta-llama/llama-3.1", "")
+    assert mdl == "meta-llama/llama-3.1", (prov, mdl)
 
 
 def test_c1_preserves_aggregator_vendor_prefix_verbatim():

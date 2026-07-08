@@ -2869,14 +2869,6 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         if verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
-        # Advance next_run_at for all recurring jobs FIRST, under the file lock,
-        # before any execution begins.  This preserves at-most-once semantics.
-        # For parallel jobs that are already running, advance_next_run keeps
-        # bumping next_run_at forward so the grace window never expires.
-        # mark_job_run() overwrites next_run_at on completion.
-        for job in due_jobs:
-            advance_next_run(job["id"])
-
         # Resolve max parallel workers: env var > config.yaml > unbounded.
         # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
         _max_workers: Optional[int] = None
@@ -2927,6 +2919,10 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             Returns the future, or None if the job was skipped because a prior
             tick's run of the same job is still in flight.  The running-set
             membership is released in the worker's finally block.
+
+            advance_next_run is called ONLY when the job is successfully
+            claimed (not already running), preserving at-most-once semantics
+            without advancing next_run_at for silently-dropped jobs.
             """
             job_id = job["id"]
             with _running_lock:
@@ -2934,6 +2930,12 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     logger.info("Job '%s' already running — skipping", job.get("name", job_id))
                     return None
                 _running_job_ids.add(job_id)
+
+            # Advance next_run_at NOW — this job is being dispatched, so the
+            # scheduler won't pick it up again until after it completes.
+            # (mark_job_run overwrites next_run_at on completion.)
+            advance_next_run(job_id)
+
             _ctx = contextvars.copy_context()
 
             def _run_and_release(j=job, ctx=_ctx):

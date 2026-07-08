@@ -22,6 +22,7 @@ stopwords = [
   "2mno",        # gsk_ab...2mno / sk-ant...2mno (redaction fixtures)
   "mnop",        # sk-or-...mnop (key-masking fixture)
   "cdef",        # ghp_01...cdef (blackbox redaction-test fixture, test_seam_integration.py)
+  "l012",        # sk-pro...l012 (redaction fixture, test_copilot_acp_client.py) — surfaced when the ACP-relay PR re-touched the whole file
 ]
 # Path allowlist — TEST FIXTURES and DOC PLACEHOLDERS only.
 # Added 2026-06-29 during the upstream parity sync: the merge pulled in ~1546

@@ -450,6 +450,13 @@ _PASSWORD_FORM_SCRIPT = """\
   }
   var forms = document.querySelectorAll('form.provider-form');
   for (var i = 0; i < forms.length; i++) { handle(forms[i]); }
+  var toggles = document.querySelectorAll('input[data-password-toggle]');
+  for (var j = 0; j < toggles.length; j++) {
+    toggles[j].addEventListener('change', function () {
+      var input = document.getElementById(this.getAttribute('data-password-toggle'));
+      if (input) { input.type = this.checked ? 'text' : 'password'; }
+    });
+  }
 })();
 </script>
 """
@@ -512,21 +519,29 @@ def _render_password_form(provider, next_path: str) -> str:
     pname = html.escape(provider.name, quote=True)
     plabel = html.escape(provider.display_name)
     safe_next = html.escape(next_path, quote=True) if next_path else ""
+    username_id = f"dashboard-{pname}-username"
+    password_id = f"dashboard-{pname}-password"
     return (
         f'      <form class="provider-form" data-provider="{pname}" '
-        f'autocomplete="on">\n'
+        f'action="/auth/password-login" method="post" autocomplete="on">\n'
         f'        <div class="form-title">Sign in with {plabel}</div>\n'
         f'        <input type="hidden" name="next" value="{safe_next}">\n'
-        f'        <label class="field">\n'
+        f'        <label class="field" for="{username_id}">\n'
         f'          <span class="field-label">Username</span>\n'
-        f'          <input class="field-input" type="text" name="username" '
+        f'          <input id="{username_id}" class="field-input" type="text" '
+        f'name="username" inputmode="text" '
         f'autocomplete="username" autocapitalize="none" '
-        f'autocorrect="off" spellcheck="false" required>\n'
+        f'autocorrect="off" spellcheck="false" required autofocus>\n'
         f'        </label>\n'
-        f'        <label class="field">\n'
+        f'        <label class="field" for="{password_id}">\n'
         f'          <span class="field-label">Password</span>\n'
-        f'          <input class="field-input" type="password" name="password" '
+        f'          <input id="{password_id}" class="field-input" '
+        f'type="password" name="password" '
         f'autocomplete="current-password" required>\n'
+        f'        </label>\n'
+        f'        <label class="show-password">\n'
+        f'          <input type="checkbox" data-password-toggle="{password_id}">\n'
+        f'          <span>Show password</span>\n'
         f'        </label>\n'
         f'        <div class="form-error" role="alert" hidden></div>\n'
         f'        <button class="provider-btn" type="submit">Sign in</button>\n'

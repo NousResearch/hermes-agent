@@ -215,6 +215,18 @@ class TestProviderListFlag:
             web_server.app.state.auth_required = prev
 
 
+class TestPasswordOnlyGate:
+    def test_password_only_provider_renders_login_form_not_oauth_redirect(self, gated_app):
+        resp = gated_app.get("/", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login?next=%2F"
+
+        login = gated_app.get("/login")
+        assert login.status_code == 200
+        assert "Sign in with Test Password" in login.text
+        assert 'action="/auth/password-login"' in login.text
+
+
 # ---------------------------------------------------------------------------
 # /auth/password-login — end-to-end through the real middleware
 # ---------------------------------------------------------------------------
@@ -406,6 +418,12 @@ class TestLoginPageRender:
         try:
             html = render_login_html(next_path="/sessions")
             assert '<form class="provider-form" data-provider="testpw"' in html
+            assert 'action="/auth/password-login" method="post"' in html
+            assert 'autocomplete="on"' in html
+            assert 'autocomplete="username"' in html
+            assert 'autocomplete="current-password"' in html
+            assert 'data-password-toggle=' in html
+            assert "Show password" in html
             assert 'name="username"' in html
             assert 'name="password"' in html
             assert 'value="/sessions"' in html

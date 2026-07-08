@@ -3993,6 +3993,16 @@ class AIAgent:
         with self._openai_client_lock():
             old_client = getattr(self, "client", None)
             try:
+                # Keep _client_kwargs["api_key"] in sync with self.api_key so
+                # out-of-band updates (credential rotation, pool swap) are
+                # always reflected when the client is rebuilt.  This guards
+                # against stale-stream cleanup rebuilds (stale_stream_pool_cleanup,
+                # stream_retry_pool_cleanup) that race a credential swap and
+                # see a dict whose "api_key" value was written before the swap.
+                if self.api_mode == "chat_completions":
+                    current_key = getattr(self, "api_key", None)
+                    if current_key is not None:
+                        self._client_kwargs["api_key"] = current_key
                 new_client = self._create_openai_client(self._client_kwargs, reason=reason, shared=True)
             except Exception as exc:
                 logger.warning(
@@ -4013,6 +4023,12 @@ class AIAgent:
                 return client
             old_client = client
             try:
+                # Same api_key sync as _replace_primary_openai_client — keep
+                # the dict current before every rebuild attempt.
+                if self.api_mode == "chat_completions":
+                    current_key = getattr(self, "api_key", None)
+                    if current_key is not None:
+                        self._client_kwargs["api_key"] = current_key
                 new_client = self._create_openai_client(
                     self._client_kwargs, reason=reason, shared=True
                 )

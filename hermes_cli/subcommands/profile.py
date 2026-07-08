@@ -16,7 +16,7 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     # =========================================================================
     profile_parser = subparsers.add_parser(
         "profile",
-        help="Manage profiles — multiple isolated Hermes instances",
+        help="Manage profiles — multiple isolated HT AI Agent instances",
     )
     profile_subparsers = profile_parser.add_subparsers(dest="profile_action")
 
@@ -148,7 +148,7 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         "install",
         help="Install a profile distribution from a git URL or local directory",
         description=(
-            "Install a Hermes profile distribution. SOURCE can be a git URL "
+            "Install a HT AI Agent profile distribution. SOURCE can be a git URL "
             "(github.com/user/repo, https://..., git@...) or a local "
             "directory containing distribution.yaml at its root."
         ),

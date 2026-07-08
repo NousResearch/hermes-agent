@@ -44,7 +44,7 @@ def build_slack_parser(subparsers, *, cmd_slack: Callable) -> None:
     slack_manifest.add_argument(
         "--name",
         default=None,
-        help='Bot display name (default: "Hermes")',
+        help='Bot display name (default: "HT AI Agent")',
     )
     slack_manifest.add_argument(
         "--description",

@@ -300,6 +300,7 @@ AUTHOR_MAP = {
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
     "iamgexin@qq.com": "nullptr0807",  # PR #60956 salvage (gateway hygiene in-place compaction; #60947)
+    "embwl0x@users.noreply.github.com": "embwl0x",  # PR #60810 salvage (channel directory offload)
     "caztronics@yahoo.com": "doncazper",
     "30668368+alex107ivanov@users.noreply.github.com": "alex107ivanov",
     "210088133+rungmc357@users.noreply.github.com": "rungmc357",

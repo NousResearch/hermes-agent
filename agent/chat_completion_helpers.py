@@ -820,6 +820,14 @@ def _pool_lane_src(agent, aux_task=None) -> str:
     return f"platform={platform};delegate_depth={dd};aux_task={task}"
 
 
+# The api-proxy pool by ANY of its names: canonical `claude-apr` (2026-07-08
+# rename) + retained alias `claude-app` (legacy-pinned sessions still resolve
+# through it). Rename-proof gate for _pool_affinity_headers — a stale single
+# literal here silently killed affinity/lane stamping when the provider was
+# renamed (caught 2026-07-08).
+_POOL_AFFINITY_PROVIDERS = frozenset({"claude-apr", "claude-app"})
+
+
 def _pool_affinity_headers(agent, aux_task=None) -> dict:
     """Return the routing-only headers for the claude relay POOL: the x-hermes-session
     affinity id AND the x-hermes-lane / x-hermes-lane-src lane classification.
@@ -831,13 +839,13 @@ def _pool_affinity_headers(agent, aux_task=None) -> dict:
         rotates correctly when compaction mints a child id (NOT a static default_header,
         NOT the HERMES_SESSION_ID ContextVar which could go stale across the httpx
         worker-thread boundary → cross-conversation key bleed).
-      * POOL-SCOPED — only stamped for ``claude-app`` (the api-proxy pool, api_mode
-        ``anthropic_messages``), so they are never sent to a direct Anthropic endpoint
+      * POOL-SCOPED — only stamped for ``claude-apr`` (the api-proxy pool, api_mode
+        ``anthropic_messages``; legacy alias ``claude-app`` also accepted), so they are never sent to a direct Anthropic endpoint
         or any third party. The relay strips them before dispatching upstream (routing
         metadata on a loopback hop, no egress, no telemetry — satisfies the
         no-outbound-attribution rubric).
 
-    SCOPE NOTE (Greptile #205): ``claude-bpp`` (the bridge pool) resolves to api_mode
+    SCOPE NOTE (Greptile #205): ``claude-bpr`` (the bridge pool, formerly ``claude-bpp``) resolves to api_mode
     ``chat_completions`` — a DIFFERENT branch of ``build_api_kwargs`` — and is a
     secondary failover surface with its own separate daemon that agents rarely route
     to as primary. It is deliberately OUT of scope here so this helper only claims what
@@ -848,7 +856,7 @@ def _pool_affinity_headers(agent, aux_task=None) -> dict:
     criticality split; a main turn passes ``aux_task=None``.
     """
     provider = (getattr(agent, "provider", "") or "").strip().lower()
-    if provider != "claude-app":
+    if provider not in _POOL_AFFINITY_PROVIDERS:
         return {}
     sid = getattr(agent, "session_id", None)
     out = {}

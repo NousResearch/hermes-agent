@@ -1,7 +1,7 @@
 """x-hermes-session + x-hermes-lane pool routing headers (reset-weighted router +
 lanes, 2026-07-05).
 
-Proves the stamps are (a) present ONLY for claude-app (never egress to a direct/
+Proves the stamps are (a) present ONLY for the api-proxy pool — canonical claude-apr + legacy alias claude-app (never egress to a direct/
 third-party endpoint), (b) read per-request off the live agent (session id rotates
 with compaction; lane reflects the live delegate_depth/platform), (c) the lane
 classifier splits interactive/background correctly incl. the critical-aux (B1) case.
@@ -24,10 +24,20 @@ def _agent(provider="claude-app", session_id="20260705_120000_abc123",
 # --------------------------------------------------------------------------- #
 # session id (unchanged contract) + lane presence
 # --------------------------------------------------------------------------- #
-def test_headers_present_for_claude_app():
-    h = _pool_affinity_headers(_agent("claude-app"))
+def test_headers_present_for_claude_apr():
+    # canonical name (2026-07-08 rename): the gate MUST fire for claude-apr —
+    # a stale single-literal gate silently killed stamping post-rename.
+    h = _pool_affinity_headers(_agent("claude-apr"))
     assert h["x-hermes-session"] == "20260705_120000_abc123"
     assert h["x-hermes-lane"] == "interactive"          # top-level main turn
+    assert "delegate_depth=0" in h["x-hermes-lane-src"]
+
+
+def test_headers_present_for_claude_app_legacy_alias():
+    # retained alias: legacy claude-app-pinned sessions still get affinity/lanes
+    h = _pool_affinity_headers(_agent("claude-app"))
+    assert h["x-hermes-session"] == "20260705_120000_abc123"
+    assert h["x-hermes-lane"] == "interactive"
     assert "delegate_depth=0" in h["x-hermes-lane-src"]
 
 
@@ -35,11 +45,13 @@ def test_headers_absent_for_claude_bpp_out_of_scope():
     # Greptile #205: claude-bpp is chat_completions (a different build_api_kwargs
     # branch) — deliberately OUT of scope so the helper only claims what's wired.
     assert _pool_affinity_headers(_agent("claude-bpp")) == {}
+    assert _pool_affinity_headers(_agent("claude-bpr")) == {}
 
 
 def test_headers_absent_for_direct_anthropic():
     assert _pool_affinity_headers(_agent("anthropic")) == {}
     assert _pool_affinity_headers(_agent("claude-api-proxy-f2")) == {}
+    assert _pool_affinity_headers(_agent("claude-apx-2")) == {}
 
 
 def test_headers_absent_for_third_party():
@@ -48,7 +60,7 @@ def test_headers_absent_for_third_party():
 
 
 def test_case_insensitive_provider():
-    h = _pool_affinity_headers(_agent("Claude-App"))
+    h = _pool_affinity_headers(_agent("Claude-Apr"))
     assert h["x-hermes-session"] == "20260705_120000_abc123"
 
 
@@ -134,8 +146,8 @@ def test_lane_src_carries_inputs():
     assert "aux_task=session_search" in src
 
 
-def test_lane_headers_stamped_in_affinity_for_claude_app_only():
-    # the lane headers ride the same claude-app-only gate as the session header
-    assert _pool_affinity_headers(_agent("claude-app")).get("x-hermes-lane") == "interactive"
+def test_lane_headers_stamped_in_affinity_for_pool_only():
+    # the lane headers ride the same pool-only gate as the session header
+    assert _pool_affinity_headers(_agent("claude-apr")).get("x-hermes-lane") == "interactive"
     assert "x-hermes-lane" not in _pool_affinity_headers(_agent("anthropic"))
     assert "x-hermes-lane" not in _pool_affinity_headers(_agent("openai-codex"))

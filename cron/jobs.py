@@ -84,6 +84,15 @@ TICKER_INTERVAL_SECONDS = 60
 # concurrent mark_job_run / advance_next_run calls can clobber each other.
 _jobs_file_lock = threading.RLock()
 _jobs_lock_state = threading.local()
+
+# Upper bound on waiting for the cross-process .jobs.lock flock (#60703).
+# Every cron function in the process funnels through _jobs_lock(), and the
+# flock is taken while holding the process-wide RLock — so an unbounded wait
+# on a lock held by a wedged sibling process silently freezes the ticker
+# heartbeat and every job forever.  30s is orders of magnitude above any
+# legitimate critical section (field updates only) while keeping the ticker's
+# worst-case stall well under one status-alarm threshold.
+_JOBS_LOCK_TIMEOUT_SECONDS = 30.0
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
@@ -177,7 +186,42 @@ def _jobs_lock():
                 lock_fd = open(_jobs_lock_file(), "a+", encoding="utf-8")
                 lock_fd.seek(0)
                 if fcntl is not None:
-                    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                    # Bounded acquisition (#60703): a plain blocking
+                    # fcntl.flock(LOCK_EX) here has NO timeout, and it is
+                    # taken while holding the process-wide _jobs_file_lock
+                    # RLock above.  If another process wedges while holding
+                    # .jobs.lock (e.g. an old gateway draining through a
+                    # restart), a single blocked acquirer freezes EVERY cron
+                    # function in this process — including the ticker's
+                    # get_due_jobs() — silently and forever: the heartbeat
+                    # file stops updating and all jobs stop firing with no
+                    # error logged.  Poll LOCK_NB against a deadline instead;
+                    # on timeout, log loudly and fall through to the same
+                    # in-process-only degraded mode used when locking is
+                    # unavailable.  A briefly-torn cross-process write is
+                    # strictly better than a permanently dead scheduler.
+                    _deadline = time.monotonic() + _JOBS_LOCK_TIMEOUT_SECONDS
+                    while True:
+                        try:
+                            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            break
+                        except (OSError, IOError):
+                            if time.monotonic() >= _deadline:
+                                logger.error(
+                                    "Timed out after %.0fs waiting for the cron "
+                                    "jobs lock (%s) — another process is holding "
+                                    "it. Proceeding with in-process locking only "
+                                    "so the scheduler stays alive (#60703).",
+                                    _JOBS_LOCK_TIMEOUT_SECONDS,
+                                    _jobs_lock_file(),
+                                )
+                                try:
+                                    lock_fd.close()
+                                except OSError:
+                                    pass
+                                lock_fd = None
+                                break
+                            time.sleep(0.1)
                 elif msvcrt is not None:
                     getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
             except (OSError, IOError) as e:
@@ -1565,7 +1609,14 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
             if existing:
                 try:
                     claimed_at = _ensure_aware(datetime.fromisoformat(existing["at"]))
-                    if (now - claimed_at).total_seconds() < claim_ttl_seconds:
+                    # Bounded on BOTH sides (#60703): a claim stamped in the
+                    # future (clock/TZ skew across a restart, or a corrupted
+                    # timestamp) would otherwise have a negative age and stay
+                    # "fresh" forever — the job becomes permanently unfireable
+                    # and every manual `cron run` reports "already being
+                    # fired". Treat future-dated claims as stale/overwritable.
+                    _age = (now - claimed_at).total_seconds()
+                    if 0 <= _age < claim_ttl_seconds:
                         return False  # someone holds a fresh claim
                 except Exception:
                     pass  # malformed claim → overwrite
@@ -1626,7 +1677,11 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 claimed_at = _ensure_aware(
                     datetime.fromisoformat(existing_claim["at"])
                 )
-                if (now - claimed_at).total_seconds() < _run_claim_ttl:
+                # 0 <= age: a future-dated claim (clock/TZ skew across a
+                # restart) must be treated as stale, not eternally fresh,
+                # or the one-shot is skipped forever (#60703).
+                _age = (now - claimed_at).total_seconds()
+                if 0 <= _age < _run_claim_ttl:
                     continue  # a fresh claim is held by an in-flight run
             except (KeyError, ValueError, TypeError):
                 pass  # malformed claim → fall through and (re)claim

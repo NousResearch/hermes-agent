@@ -150,10 +150,14 @@ def _preview_text(text: str, max_len: int) -> str:
 def tail_preview(session_id: str, max_len: int = 140) -> Dict[str, Any]:
     """Describe the CURRENT active tail of a session for at-a-glance confirmation.
 
-    Returns ``{"role": <role|None>, "preview": <str|None>, "empty": <bool>}``.
-    ``preview`` is ``None`` when the tail carries no text (e.g. a tool-call-only
-    assistant row); callers should then fall back to naming the role. Note that
-    a half-turn is a *transcript* row (one party's run), not a platform display
+    Returns ``{"role": <role|None>, "preview": <str|None>, "empty": <bool>,
+    "error": <bool>}``. ``preview`` is ``None`` when the tail carries no text
+    (e.g. a tool-call-only assistant row); callers should then fall back to
+    naming the role. ``error`` is ``True`` when the tail could not be read at
+    all (a transient DB failure) — distinct from ``empty`` (the transcript is
+    genuinely at the start): callers should OMIT the confirmation suffix on
+    ``error`` rather than tell the user the thread is empty. Note that a
+    half-turn is a *transcript* row (one party's run), not a platform display
     bubble — a long assistant reply that a chat platform splits into several
     messages is a single tail row here.
     """
@@ -161,16 +165,20 @@ def tail_preview(session_id: str, max_len: int = 140) -> Dict[str, Any]:
     try:
         msgs = db.get_messages(session_id, include_inactive=False)
     except Exception:
-        return {"role": None, "preview": None, "empty": True}
+        # Distinct from empty: the read FAILED, we don't know the tail. The
+        # primary undo/redo already succeeded, so the caller should drop the
+        # suffix, NOT claim the thread is empty.
+        return {"role": None, "preview": None, "empty": False, "error": True}
     tail = _new_tail(msgs)
     if tail is None:
-        return {"role": None, "preview": None, "empty": True}
+        return {"role": None, "preview": None, "empty": True, "error": False}
     text = _content_to_text(tail.get("content"))
     preview = _preview_text(text, max_len) if text else None
     return {
         "role": tail.get("role") or "message",
         "preview": preview or None,
         "empty": False,
+        "error": False,
     }
 
 

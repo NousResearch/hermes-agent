@@ -135,6 +135,26 @@ def test_cached_agent_evicted_after_undo_and_after_redo(store):
     assert store.load_transcript(entry.session_id) == store._db.get_messages_as_conversation(entry.session_id)
 
 
+def test_tail_preview_runs_off_event_loop(store, monkeypatch):
+    src = _source("tail-thread")
+    entry = store.get_or_create_session(src)
+    _seed(store._db, entry.session_id)
+    runner = _runner(store)
+    loop_thread = threading.get_ident()
+    preview_threads = []
+    render_suffix = runner._undo_tail_suffix
+
+    def tracked_suffix(session_id):
+        preview_threads.append(threading.get_ident())
+        return render_suffix(session_id)
+
+    monkeypatch.setattr(runner, "_undo_tail_suffix", tracked_suffix)
+    asyncio.run(runner._handle_undo_command(_event("/undo", src)))
+
+    assert preview_threads
+    assert preview_threads[0] != loop_thread
+
+
 def test_null_content_tail_confirmation_does_not_stringify_none(store):
     src = _source("null-tail")
     entry = store.get_or_create_session(src)
@@ -232,3 +252,54 @@ def test_tail_preview_notext_fallback_for_tool_only_tail(store):
     assert "Now at" in msg
     assert "None" not in msg
     assert "q2" in msg
+
+
+def test_tail_preview_read_failure_omits_suffix_not_empty(store, monkeypatch):
+    """A transient tail-read failure AFTER a successful undo must omit the
+    suffix, never claim the thread is at its start (Greptile #224 P1)."""
+    src = _source("tail-readfail")
+    entry = store.get_or_create_session(src)
+    db = store._db
+    db.append_message(entry.session_id, "user", "q1")
+    db.append_message(entry.session_id, "assistant", "a1")
+    db.append_message(entry.session_id, "user", "q2")
+    db.append_message(entry.session_id, "assistant", "a2")
+    runner = _runner(store)
+
+    import hermes_undo
+
+    msg = asyncio.run(runner._handle_undo_command(_event("/undo", src)))
+    # Primary op reported; suffix present here (no failure yet).
+    assert "Undid" in msg
+
+    # Now make the tail read fail and prove the helper reports a DISTINCT
+    # error state (not "empty") and the gateway omits the suffix entirely.
+    def boom(*a, **kw):
+        raise RuntimeError("simulated transient DB failure")
+
+    monkeypatch.setattr(db, "get_messages", boom)
+    hermes_undo._session_db = db
+    info = hermes_undo.tail_preview(entry.session_id)
+    assert info["error"] is True
+    assert info["empty"] is False
+    suffix = runner._undo_tail_suffix(entry.session_id)
+    assert suffix == ""
+    assert "start of the thread" not in suffix
+
+
+def test_tail_preview_unexpected_role_bounds_to_message(store):
+    """A tail with a role lacking a party label (system/developer/legacy
+    function) must not leak a raw i18n key path (Greptile #224 P1)."""
+    src = _source("tail-role")
+    entry = store.get_or_create_session(src)
+    db = store._db
+    db.append_message(entry.session_id, "user", "q")
+    db.append_message(entry.session_id, "assistant", "a")
+    # A row with an unusual role at the tail.
+    db.append_message(entry.session_id, "system", "some system note")
+    runner = _runner(store)
+
+    suffix = runner._undo_tail_suffix(entry.session_id)
+    # Must render a readable label, never the raw key path.
+    assert "gateway.undo.party" not in suffix
+    assert "the last message" in suffix

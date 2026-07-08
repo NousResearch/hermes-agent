@@ -2405,7 +2405,9 @@ class GatewaySlashCommandsMixin:
             "gateway.undo.removed",
             turns=n,
             count=len(result.get("rewound_ids") or []),
-        ) + self._undo_tail_suffix(session_entry.session_id)
+        ) + await asyncio.to_thread(
+            self._undo_tail_suffix, session_entry.session_id
+        )
 
     def _undo_tail_suffix(self, session_id: str) -> str:
         """Render a one-line '↦ now at …' confirmation of the active tail.
@@ -2422,9 +2424,18 @@ class GatewaySlashCommandsMixin:
         except Exception as e:
             logger.debug("undo/redo tail preview skipped: %s", e)
             return ""
+        # The read itself failed (transient DB error) — the primary undo/redo
+        # already succeeded, so omit the suffix rather than misreport "empty".
+        if info.get("error"):
+            return ""
         if info.get("empty"):
             return "\n" + t("gateway.undo.now_empty")
+        # Bound the role to the set that has a translated party label; an
+        # unexpected role (system/developer/legacy function) would otherwise
+        # ask t() for a missing key and render the raw key path to the user.
         role = info.get("role") or "message"
+        if role not in {"user", "assistant", "tool", "message"}:
+            role = "message"
         who = t(f"gateway.undo.party.{role}")
         preview = info.get("preview")
         if preview:
@@ -2465,7 +2476,9 @@ class GatewaySlashCommandsMixin:
             "gateway.redo.restored",
             ops=n,
             count=reactivated,
-        ) + self._undo_tail_suffix(session_entry.session_id)
+        ) + await asyncio.to_thread(
+            self._undo_tail_suffix, session_entry.session_id
+        )
 
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""

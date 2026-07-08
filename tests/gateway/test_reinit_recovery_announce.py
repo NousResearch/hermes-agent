@@ -178,3 +178,26 @@ class TestReinitRecoveryAnnounce:
             agent=agent, session_key="k", served_provider="p", served_model=None, was_reinit=True,
         )
         assert agent._announced == []
+
+    def test_active_model_override_suppresses_recovery(self, tmp_path, monkeypatch):
+        """Greptile P2: while a user has a deliberate /model override active, a
+        route change is user-driven (opus→fable→opus dance), NOT a system
+        recovery — no announce and no sink line, but the served route is still
+        tracked."""
+        monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path, raising=False)
+        (tmp_path / "config.yaml").write_text("model:\n  announce_recovery: true\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        store = _store(tmp_path)
+        key = "agent:main:discord:c1:c1"
+        e = _entry(key, last_served={"provider": "claude-api-proxy-f3", "model": "claude-opus-4-8"})
+        e.model_override_identity = {"model": "claude-fable-5", "provider": "yunwu"}
+        store._entries[key] = e
+        runner = _runner(store)
+        agent = _agent()
+        _call(runner, agent, key, "yunwu", "claude-fable-5", was_reinit=True)
+        assert agent._announced == []  # suppressed: deliberate override active
+        assert _sink_lines(str(tmp_path)) == []  # no misleading audit line
+        # Served route still tracked for the next comparison.
+        assert store._entries[key].last_served_identity == {
+            "provider": "yunwu", "model": "claude-fable-5",
+        }

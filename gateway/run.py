@@ -6549,14 +6549,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ``model.announce_recovery``. Then we persist this turn's served route for
         the next comparison. Identity-only (``{provider, model}``) — never a
         secret. Best-effort: never raises into the turn.
+
+        Concurrency: the persist is routed through ``session_store.update_session``
+        so it happens UNDER the store's lock (every other write path does the
+        same); we never write ``_entries``/``_save()`` directly here.
+
+        A session with an active ``/model`` override is EXCLUDED: while a user has
+        deliberately pinned a model, route changes are user-driven (e.g. opus →
+        fable → opus via ``/model``), not system recoveries — announcing them
+        would be a false positive and pollute the durable audit sink.
         """
         if not (agent and session_key and served_model and served_provider):
             return
         try:
-            entry = self.session_store._entries.get(session_key)
             served_identity = {"provider": served_provider, "model": served_model}
-            prev_identity = getattr(entry, "last_served_identity", None) if entry else None
-            if isinstance(prev_identity, dict):
+            # Read prior state under the store lock (mirrors every other reader).
+            lock = getattr(self.session_store, "_lock", None)
+            if lock is not None:
+                lock.acquire()
+            try:
+                entry = self.session_store._entries.get(session_key)
+                prev_identity = getattr(entry, "last_served_identity", None) if entry else None
+                has_model_override = bool(getattr(entry, "model_override_identity", None)) if entry else False
+            finally:
+                if lock is not None:
+                    lock.release()
+
+            if entry is None:
+                return
+            # Skip while a deliberate /model override is active — route changes
+            # are user-driven, not system recoveries (Greptile P2: no false
+            # "recovery" sink lines on a user opus→fable→opus /model dance).
+            if not has_model_override and isinstance(prev_identity, dict):
                 prev_route = (prev_identity.get("provider"), prev_identity.get("model"))
                 now_route = (served_provider, served_model)
                 # Announce only a genuine model return: the previous served model
@@ -6592,10 +6616,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                     except Exception:
                         logger.debug("recovery announce failed", exc_info=True)
-            # Persist THIS turn's served route for the next comparison.
-            if entry is not None:
-                entry.last_served_identity = served_identity
-                self.session_store._save()
+            # Persist THIS turn's served route for the next comparison — UNDER the
+            # store lock, via update_session (never a bare _entries/_save here).
+            self.session_store.update_session(session_key, served_identity=served_identity)
         except Exception:
             logger.debug("served-route announce/persist failed", exc_info=True)
 

@@ -20,7 +20,9 @@ import { execFileSync } from 'node:child_process'
 // Returns the raw value string (spaces inside the value preserved), or null when
 // the requested value line isn't present.
 function parseRegQueryValue(stdout, name) {
-  if (!stdout || !name) {return null}
+  if (!stdout || !name) {
+    return null
+  }
   const typePattern = /^(\S+)\s+(?:REG_SZ|REG_EXPAND_SZ|REG_MULTI_SZ|REG_DWORD|REG_QWORD|REG_BINARY|REG_NONE)\s+(.*)$/
 
   for (const rawLine of String(stdout).split(/\r?\n/)) {
@@ -39,7 +41,9 @@ function parseRegQueryValue(stdout, name) {
 // unexpanded references; plain REG_SZ paths have none, so this is a no-op for
 // the common F:\... case. Unknown references are left verbatim.
 function expandWindowsEnvRefs(value, env = process.env) {
-  if (!value) {return value}
+  if (!value) {
+    return value
+  }
 
   return value.replace(/%([^%]+)%/g, (whole, name) => {
     const key = Object.keys(env).find(k => k.toUpperCase() === String(name).toUpperCase())
@@ -51,10 +55,21 @@ function expandWindowsEnvRefs(value, env = process.env) {
 // Read a User-scoped env var from HKCU\Environment. Windows-only: returns null
 // off-Windows (without spawning), on any spawn error, when `reg` exits non-zero
 // (the value doesn't exist), or when the value is empty.
-function readWindowsUserEnvVar(name, { platform = process.platform, env = process.env, exec = execFileSync }: {
-  platform?: NodeJS.Platform, env?: NodeJS.ProcessEnv, exec?: typeof execFileSync | ((file?: string, args?: any) => string)
-} = {}) {
-  if (platform !== 'win32' || !name) {return null}
+function readWindowsUserEnvVar(
+  name,
+  {
+    platform = process.platform,
+    env = process.env,
+    exec = execFileSync
+  }: {
+    platform?: NodeJS.Platform
+    env?: NodeJS.ProcessEnv
+    exec?: typeof execFileSync | ((file?: string, args?: any) => string)
+  } = {}
+) {
+  if (platform !== 'win32' || !name) {
+    return null
+  }
   let stdout
 
   try {
@@ -70,12 +85,12 @@ function readWindowsUserEnvVar(name, { platform = process.platform, env = proces
 
   const raw = parseRegQueryValue(stdout, name)
 
-  if (raw == null) {return null}
+  if (raw == null) {
+    return null
+  }
   const expanded = expandWindowsEnvRefs(raw, env).trim()
 
   return expanded || null
 }
 
-export { expandWindowsEnvRefs,
-  parseRegQueryValue,
-  readWindowsUserEnvVar }
+export { expandWindowsEnvRefs, parseRegQueryValue, readWindowsUserEnvVar }

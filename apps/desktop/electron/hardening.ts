@@ -110,9 +110,9 @@ function sensitiveFileBlockReason(filePath) {
   return null
 }
 
-function ipcPathError(code: any, message: string): Error & {code: any} {
-  const error = new Error(message) as Error & {code: any}
-  (error as any).code = code
+function ipcPathError(code: any, message: string): Error & { code: any } {
+  const error = new Error(message) as Error & { code: any }
+  ;(error as any).code = code
 
   return error
 }
@@ -146,7 +146,7 @@ function rejectUnsafePathSyntax(filePath, purpose = 'File read') {
   return raw
 }
 
-function resolveRequestedPathForIpc(filePath, options: {purpose?: string, baseDir?: fs.PathOrFileDescriptor} = {}) {
+function resolveRequestedPathForIpc(filePath, options: { purpose?: string; baseDir?: fs.PathOrFileDescriptor } = {}) {
   const purpose = String(options.purpose || 'File read')
   let raw = rejectUnsafePathSyntax(filePath, purpose)
 
@@ -187,7 +187,7 @@ function resolveRequestedPathForIpc(filePath, options: {purpose?: string, baseDi
   return resolvedPath
 }
 
-async function statForIpc(fsImpl: {promises: {stat: typeof fs.promises.stat}}, resolvedPath, purpose, typeLabel) {
+async function statForIpc(fsImpl: { promises: { stat: typeof fs.promises.stat } }, resolvedPath, purpose, typeLabel) {
   try {
     return await fsImpl.promises.stat(resolvedPath)
   } catch (error) {
@@ -231,7 +231,14 @@ function rejectSensitiveFilePath(filePath, purpose) {
   }
 }
 
-async function resolveDirectoryForIpc(dirPath, options: {purpose?: string , baseDir?: fs.PathOrFileDescriptor, fs?: {promises:{stat: typeof fs.promises.stat}}} = {}) {
+async function resolveDirectoryForIpc(
+  dirPath,
+  options: {
+    purpose?: string
+    baseDir?: fs.PathOrFileDescriptor
+    fs?: { promises: { stat: typeof fs.promises.stat } }
+  } = {}
+) {
   const purpose = String(options.purpose || 'Directory read')
   const fsImpl = options.fs || fs
   const resolvedPath = resolveRequestedPathForIpc(dirPath, { baseDir: options.baseDir, purpose })
@@ -246,7 +253,16 @@ async function resolveDirectoryForIpc(dirPath, options: {purpose?: string , base
   return { realPath, resolvedPath, stat }
 }
 
-async function resolveReadableFileForIpc(filePath, options: {purpose?: string , baseDir?: fs.PathOrFileDescriptor, fs?: typeof fs, blockSensitive?: boolean, maxBytes?: number} = {}) {
+async function resolveReadableFileForIpc(
+  filePath,
+  options: {
+    purpose?: string
+    baseDir?: fs.PathOrFileDescriptor
+    fs?: typeof fs
+    blockSensitive?: boolean
+    maxBytes?: number
+  } = {}
+) {
   const purpose = String(options.purpose || 'File read')
   const fsImpl = options.fs || fs
   const resolvedPath = resolveRequestedPathForIpc(filePath, { baseDir: options.baseDir, purpose })
@@ -286,7 +302,8 @@ async function resolveReadableFileForIpc(filePath, options: {purpose?: string , 
   return { realPath, resolvedPath, stat }
 }
 
-export { DATA_URL_READ_MAX_BYTES,
+export {
+  DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret,
   rejectUnsafePathSyntax,
@@ -295,4 +312,5 @@ export { DATA_URL_READ_MAX_BYTES,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
   sensitiveFileBlockReason,
-  TEXT_PREVIEW_SOURCE_MAX_BYTES }
+  TEXT_PREVIEW_SOURCE_MAX_BYTES
+}

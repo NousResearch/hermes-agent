@@ -19,7 +19,9 @@ const OFFICIAL_REPO_CANONICAL = 'github.com/nousresearch/hermes-agent'
 // no trailing slash, no .git suffix) so SSH and HTTPS forms of the same repo
 // compare equal.
 function canonicalGitHubRemote(url) {
-  if (!url) {return ''}
+  if (!url) {
+    return ''
+  }
   let value = String(url).trim()
 
   if (value.startsWith('git@github.com:')) {
@@ -30,7 +32,9 @@ function canonicalGitHubRemote(url) {
     try {
       const parsed = new URL(value)
 
-      if (parsed.hostname && parsed.pathname) {value = `${parsed.hostname}${parsed.pathname}`}
+      if (parsed.hostname && parsed.pathname) {
+        value = `${parsed.hostname}${parsed.pathname}`
+      }
     } catch {
       // Leave non-URL forms unchanged.
     }
@@ -38,7 +42,9 @@ function canonicalGitHubRemote(url) {
 
   value = value.trim().replace(/\/+$/, '')
 
-  if (value.endsWith('.git')) {value = value.slice(0, -4)}
+  if (value.endsWith('.git')) {
+    value = value.slice(0, -4)
+  }
 
   return value.toLowerCase()
 }
@@ -55,8 +61,4 @@ function isOfficialSshRemote(url) {
   return isSshRemote(url) && canonicalGitHubRemote(url) === OFFICIAL_REPO_CANONICAL
 }
 
-export { canonicalGitHubRemote,
-  isOfficialSshRemote,
-  isSshRemote,
-  OFFICIAL_REPO_CANONICAL,
-  OFFICIAL_REPO_HTTPS_URL }
+export { canonicalGitHubRemote, isOfficialSshRemote, isSshRemote, OFFICIAL_REPO_CANONICAL, OFFICIAL_REPO_HTTPS_URL }

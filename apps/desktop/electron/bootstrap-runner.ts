@@ -70,7 +70,9 @@ function installScriptKind() {
 }
 
 function resolveLocalInstallScript(sourceRepoRoot) {
-  if (!sourceRepoRoot) {return null}
+  if (!sourceRepoRoot) {
+    return null
+  }
   const candidate = path.join(sourceRepoRoot, 'scripts', installScriptName())
 
   try {
@@ -91,7 +93,9 @@ function bootstrapCacheDir(hermesHome) {
 // the pinned commit can't be fetched from GitHub (e.g. a locally-built desktop
 // app stamped to an unpushed HEAD).
 function installedAgentInstallScript(hermesHome) {
-  if (!hermesHome) {return null}
+  if (!hermesHome) {
+    return null
+  }
   const candidate = path.join(hermesHome, 'hermes-agent', 'scripts', installScriptName())
 
   try {
@@ -300,7 +304,9 @@ function resolveWindowsPowerShell() {
       const candidate = powershellUnderRoot(root)
 
       try {
-        if (fs.statSync(candidate).isFile()) {return candidate}
+        if (fs.statSync(candidate).isFile()) {
+          return candidate
+        }
       } catch {
         void 0
       }
@@ -314,7 +320,9 @@ function resolveWindowsPowerShell() {
       const candidate = path.join(dir, exe)
 
       try {
-        if (fs.statSync(candidate).isFile()) {return candidate}
+        if (fs.statSync(candidate).isFile()) {
+          return candidate
+        }
       } catch {
         void 0
       }
@@ -379,7 +387,9 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
         const line = stdoutBuf.slice(0, nl).replace(/\r$/, '')
         stdoutBuf = stdoutBuf.slice(nl + 1)
 
-        if (line) {emit && emit({ type: 'log', stage: stageName, line, stream: 'stdout' })}
+        if (line) {
+          emit && emit({ type: 'log', stage: stageName, line, stream: 'stdout' })
+        }
       }
     })
 
@@ -393,22 +403,32 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
         const line = stderrBuf.slice(0, nl).replace(/\r$/, '')
         stderrBuf = stderrBuf.slice(nl + 1)
 
-        if (line) {emit && emit({ type: 'log', stage: stageName, line, stream: 'stderr' })}
+        if (line) {
+          emit && emit({ type: 'log', stage: stageName, line, stream: 'stderr' })
+        }
       }
     })
 
     child.on('error', err => {
-      if (abortSignal) {abortSignal.removeEventListener('abort', onAbort)}
+      if (abortSignal) {
+        abortSignal.removeEventListener('abort', onAbort)
+      }
       reject(err)
     })
 
     child.on('close', (code, signal) => {
-      if (abortSignal) {abortSignal.removeEventListener('abort', onAbort)}
+      if (abortSignal) {
+        abortSignal.removeEventListener('abort', onAbort)
+      }
 
       // Flush any trailing bytes
-      if (stdoutBuf) {emit && emit({ type: 'log', stage: stageName, line: stdoutBuf, stream: 'stdout' } as any)}
+      if (stdoutBuf) {
+        emit && emit({ type: 'log', stage: stageName, line: stdoutBuf, stream: 'stdout' } as any)
+      }
 
-      if (stderrBuf) {emit && emit({ type: 'log', stage: stageName, line: stderrBuf, stream: 'stderr' } as any)}
+      if (stderrBuf) {
+        emit && emit({ type: 'log', stage: stageName, line: stderrBuf, stream: 'stderr' } as any)
+      }
       resolve({ stdout, stderr, code, signal, killed } as any)
     })
   })
@@ -459,7 +479,9 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
         const line = stdoutBuf.slice(0, nl).replace(/\r$/, '')
         stdoutBuf = stdoutBuf.slice(nl + 1)
 
-        if (line) {emit && emit({ type: 'log', stage: stageName, line, stream: 'stdout' })}
+        if (line) {
+          emit && emit({ type: 'log', stage: stageName, line, stream: 'stdout' })
+        }
       }
     })
 
@@ -473,21 +495,31 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
         const line = stderrBuf.slice(0, nl).replace(/\r$/, '')
         stderrBuf = stderrBuf.slice(nl + 1)
 
-        if (line) {emit && emit({ type: 'log', stage: stageName, line, stream: 'stderr' })}
+        if (line) {
+          emit && emit({ type: 'log', stage: stageName, line, stream: 'stderr' })
+        }
       }
     })
 
     child.on('error', err => {
-      if (abortSignal) {abortSignal.removeEventListener('abort', onAbort)}
+      if (abortSignal) {
+        abortSignal.removeEventListener('abort', onAbort)
+      }
       reject(err)
     })
 
     child.on('close', (code, signal) => {
-      if (abortSignal) {abortSignal.removeEventListener('abort', onAbort)}
+      if (abortSignal) {
+        abortSignal.removeEventListener('abort', onAbort)
+      }
 
-      if (stdoutBuf) {emit && emit({ type: 'log', stage: stageName, line: stdoutBuf, stream: 'stdout' })}
+      if (stdoutBuf) {
+        emit && emit({ type: 'log', stage: stageName, line: stdoutBuf, stream: 'stdout' })
+      }
 
-      if (stderrBuf) {emit && emit({ type: 'log', stage: stageName, line: stderrBuf, stream: 'stderr' })}
+      if (stderrBuf) {
+        emit && emit({ type: 'log', stage: stageName, line: stderrBuf, stream: 'stderr' })
+      }
       resolve({ stdout, stderr, code, signal, killed })
     })
   })
@@ -723,7 +755,9 @@ async function runBootstrap(opts) {
     }
 
     try {
-      if (typeof onEvent === 'function') {onEvent(ev)}
+      if (typeof onEvent === 'function') {
+        onEvent(ev)
+      }
     } catch (err) {
       // Don't let a subscriber bug crash the bootstrap
       runLog.stream.write(`emit error: ${err && err.message}\n`)
@@ -812,10 +846,12 @@ async function runBootstrap(opts) {
   }
 }
 
-export { cachedScriptPath,
+export {
+  cachedScriptPath,
   installedAgentInstallScript,
   // Exposed for testability
   parseStageResult,
   resolveInstallScript,
   resolveLocalInstallScript,
-  runBootstrap }
+  runBootstrap
+}

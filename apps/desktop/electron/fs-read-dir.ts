@@ -36,7 +36,9 @@ function direntIsSymbolicLink(dirent) {
 }
 
 function shouldStatDirent(dirent) {
-  if (direntIsDirectory(dirent)) {return false}
+  if (direntIsDirectory(dirent)) {
+    return false
+  }
 
   return direntIsSymbolicLink(dirent) || !direntIsFile(dirent)
 }

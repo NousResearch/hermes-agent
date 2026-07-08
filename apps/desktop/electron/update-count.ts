@@ -17,7 +17,9 @@ function shouldCountCommits({ isShallow, hasMergeBase }) {
 // (developers / Docker dev images) keep the exact count path unchanged.
 function resolveBehindCount({ countStr, currentSha, targetSha, isShallow, hasMergeBase }) {
   if (!shouldCountCommits({ isShallow, hasMergeBase })) {
-    if (currentSha && targetSha && currentSha === targetSha) {return 0}
+    if (currentSha && targetSha && currentSha === targetSha) {
+      return 0
+    }
 
     return 1 // behind by an unknown amount — show a generic "update available"
   }

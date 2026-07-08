@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { bundledRuntimeImportCheck,
+import {
+  bundledRuntimeImportCheck,
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
-  isWslEnvironment } from './bootstrap-platform'
+  isWslEnvironment
+} from './bootstrap-platform'
 
 test('isWslEnvironment detects WSL2 env vars on linux', () => {
   assert.equal(isWslEnvironment({ WSL_DISTRO_NAME: 'Ubuntu' }, 'linux'), true)

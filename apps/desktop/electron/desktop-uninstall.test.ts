@@ -12,14 +12,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildPosixCleanupScript,
+import {
+  buildPosixCleanupScript,
   buildWindowsCleanupScript,
   modeRemovesAgent,
   modeRemovesUserData,
   resolveRemovableAppPath,
   shouldRemoveAppBundle,
   UNINSTALL_MODES,
-  uninstallArgsForMode } from './desktop-uninstall'
+  uninstallArgsForMode
+} from './desktop-uninstall'
 
 // --- uninstallArgsForMode ---
 

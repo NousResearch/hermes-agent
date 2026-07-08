@@ -13,7 +13,9 @@ const MIN_ZOOM_LEVEL = -9
 const MAX_ZOOM_LEVEL = 9
 
 export function clampZoomLevel(value) {
-  if (!Number.isFinite(value)) {return 0}
+  if (!Number.isFinite(value)) {
+    return 0
+  }
 
   return Math.min(Math.max(value, MIN_ZOOM_LEVEL), MAX_ZOOM_LEVEL)
 }
@@ -23,7 +25,9 @@ export function zoomLevelToPercent(level) {
 }
 
 export function percentToZoomLevel(percent) {
-  if (!Number.isFinite(percent) || percent <= 0) {return 0}
+  if (!Number.isFinite(percent) || percent <= 0) {
+    return 0
+  }
 
   return clampZoomLevel(Math.log(percent / 100) / Math.log(ZOOM_FACTOR_BASE))
 }

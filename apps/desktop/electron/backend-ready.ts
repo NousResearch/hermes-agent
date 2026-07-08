@@ -57,7 +57,9 @@ function waitForDashboardPort(child, timeoutMs = resolvePortAnnounceTimeoutMs())
     let done = false
 
     function cleanup() {
-      if (done) {return}
+      if (done) {
+        return
+      }
       done = true
       clearTimeout(timer)
       child.stdout.off('data', onData)
@@ -105,7 +107,9 @@ function waitForDashboardPort(child, timeoutMs = resolvePortAnnounceTimeoutMs())
 }
 
 function readDashboardReadyFile(readyFile: fs.PathOrFileDescriptor) {
-  if (!readyFile) {return null}
+  if (!readyFile) {
+    return null
+  }
 
   try {
     const parsed = JSON.parse(fs.readFileSync(readyFile, 'utf8'))
@@ -123,11 +127,15 @@ function waitForDashboardReadyFile(readyFile, child, timeoutMs = resolvePortAnno
     let interval = null
 
     function cleanup() {
-      if (done) {return}
+      if (done) {
+        return
+      }
       done = true
       clearTimeout(timer)
 
-      if (interval) {clearInterval(interval)}
+      if (interval) {
+        clearInterval(interval)
+      }
       child.off('exit', onExit)
       child.off('error', onError)
     }
@@ -160,15 +168,20 @@ function waitForDashboardReadyFile(readyFile, child, timeoutMs = resolvePortAnno
     child.on('error', onError)
     interval = setInterval(check, 50)
 
-    if (typeof interval.unref === 'function') {interval.unref()}
+    if (typeof interval.unref === 'function') {
+      interval.unref()
+    }
     check()
   })
 }
 
-function waitForDashboardPortAnnouncement(child, options: {
-  readyFile?: fs.PathOrFileDescriptor,
-  timeoutMs?: number
-} = {}) {
+function waitForDashboardPortAnnouncement(
+  child,
+  options: {
+    readyFile?: fs.PathOrFileDescriptor
+    timeoutMs?: number
+  } = {}
+) {
   const timeoutMs = options.timeoutMs ?? resolvePortAnnounceTimeoutMs()
 
   if (options.readyFile) {
@@ -178,10 +191,12 @@ function waitForDashboardPortAnnouncement(child, options: {
   return waitForDashboardPort(child, timeoutMs)
 }
 
-export { DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS,
+export {
+  DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS,
   MIN_PORT_ANNOUNCE_TIMEOUT_MS,
   readDashboardReadyFile,
   resolvePortAnnounceTimeoutMs,
   waitForDashboardPort,
   waitForDashboardPortAnnouncement,
-  waitForDashboardReadyFile }
+  waitForDashboardReadyFile
+}

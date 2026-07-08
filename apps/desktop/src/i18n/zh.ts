@@ -372,7 +372,8 @@ export const zh: Translations = {
       toolViewTitle: '工具调用显示',
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
       uiScaleTitle: '界面缩放',
-      uiScaleDesc: (percent: number) => `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
+      uiScaleDesc: (percent: number) =>
+        `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
       translucencyTitle: '窗口透明',
       translucencyDesc: '让整个窗口透出桌面。仅支持 macOS 和 Windows。',
       embedsTitle: '内嵌预览',

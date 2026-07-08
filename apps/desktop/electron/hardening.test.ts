@@ -5,13 +5,15 @@ import path from 'node:path'
 import test from 'node:test'
 import { pathToFileURL } from 'node:url'
 
-import { DEFAULT_FETCH_TIMEOUT_MS,
+import {
+  DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret,
   resolveDirectoryForIpc,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
-  sensitiveFileBlockReason } from './hardening'
+  sensitiveFileBlockReason
+} from './hardening'
 
 async function rejectsWithCode(promise, code: string) {
   await assert.rejects(promise, (error: any) => {

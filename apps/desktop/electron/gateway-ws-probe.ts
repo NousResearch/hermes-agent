@@ -38,11 +38,14 @@ const DEFAULT_READY_GRACE_MS = 750
  * @param {string} wsUrl - Fully-formed ws(s):// URL including the credential.
  * @returns {Promise<{ ok: boolean, reason?: string }>}
  */
-function probeGatewayWebSocket<T>(wsUrl: string, options:{
-  WebSocketImpl?: any,
-  connectTimeoutMs?: number
-  readyGraceMs?: number
-} = {}) {
+function probeGatewayWebSocket<T>(
+  wsUrl: string,
+  options: {
+    WebSocketImpl?: any
+    connectTimeoutMs?: number
+    readyGraceMs?: number
+  } = {}
+) {
   const WebSocketImpl = options.WebSocketImpl
   const connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
   const readyGraceMs = options.readyGraceMs ?? DEFAULT_READY_GRACE_MS
@@ -74,7 +77,9 @@ function probeGatewayWebSocket<T>(wsUrl: string, options:{
     }
 
     const finish = result => {
-      if (settled) {return}
+      if (settled) {
+        return
+      }
       settled = true
       clearTimers()
 
@@ -99,7 +104,9 @@ function probeGatewayWebSocket<T>(wsUrl: string, options:{
     }
 
     const onOpen = () => {
-      if (settled) {return}
+      if (settled) {
+        return
+      }
       opened = true
       // Upgrade accepted. Give the server a brief window to reject the
       // credential post-handshake (early close) before declaring success.
@@ -122,7 +129,9 @@ function probeGatewayWebSocket<T>(wsUrl: string, options:{
     }
 
     const onClose = event => {
-      if (settled) {return}
+      if (settled) {
+        return
+      }
 
       if (opened) {
         // Opened, then closed inside the grace window: the upgrade was accepted
@@ -173,14 +182,22 @@ function addListener(socket, type, handler) {
 }
 
 function extractErrorReason(event) {
-  if (!event) {return ''}
+  if (!event) {
+    return ''
+  }
 
-  if (event instanceof Error) {return event.message}
+  if (event instanceof Error) {
+    return event.message
+  }
   const err = event.error || event.message
 
-  if (err instanceof Error) {return err.message}
+  if (err instanceof Error) {
+    return err.message
+  }
 
-  if (typeof err === 'string') {return err}
+  if (typeof err === 'string') {
+    return err
+  }
 
   return ''
 }
@@ -189,15 +206,19 @@ function closeReason(event, fallback) {
   const code = event && typeof event.code === 'number' ? event.code : null
   const reason = event && typeof event.reason === 'string' ? event.reason.trim() : ''
 
-  if (code && reason) {return `${fallback} (code ${code}: ${reason})`}
+  if (code && reason) {
+    return `${fallback} (code ${code}: ${reason})`
+  }
 
-  if (code) {return `${fallback} (code ${code})`}
+  if (code) {
+    return `${fallback} (code ${code})`
+  }
 
-  if (reason) {return `${fallback} (${reason})`}
+  if (reason) {
+    return `${fallback} (${reason})`
+  }
 
   return fallback
 }
 
-export { DEFAULT_CONNECT_TIMEOUT_MS,
-  DEFAULT_READY_GRACE_MS,
-  probeGatewayWebSocket }
+export { DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_READY_GRACE_MS, probeGatewayWebSocket }

@@ -5,12 +5,14 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
-import { addWorktree,
+import {
+  addWorktree,
   ensureGitRepo,
   listBranches,
   parseWorktrees,
   sanitizeBranch,
-  switchBranch } from './git-worktree-ops'
+  switchBranch
+} from './git-worktree-ops'
 
 test('sanitizeBranch: spaces → hyphens, forbidden chars dropped, edges trimmed', () => {
   assert.equal(sanitizeBranch('beach vibes'), 'beach-vibes')

@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { decodeClipboardImageBase64,
+import {
+  decodeClipboardImageBase64,
   encodePowerShellCommand,
   powershellCandidates,
-  readWslWindowsClipboardImage } from './wsl-clipboard-image'
+  readWslWindowsClipboardImage
+} from './wsl-clipboard-image'
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 
@@ -66,11 +68,11 @@ test('readWslWindowsClipboardImage decodes the first candidate that returns a PN
 test('readWslWindowsClipboardImage returns null and stops when stdout is empty (no image)', () => {
   let count = 0
 
-  const exec =(() => {
+  const exec = (() => {
     count += 1
 
-    return '' 
-  } )as any
+    return ''
+  }) as any
 
   const result = readWslWindowsClipboardImage({
     exec,

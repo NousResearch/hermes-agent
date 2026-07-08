@@ -23,7 +23,9 @@ function pathModuleForPlatform(platform = process.platform) {
 }
 
 function pathEnvKey(env = process.env, platform = process.platform) {
-  if (platform !== 'win32') {return 'PATH'}
+  if (platform !== 'win32') {
+    return 'PATH'
+  }
 
   return Object.keys(env || {}).find(key => key.toUpperCase() === 'PATH') || 'PATH'
 }
@@ -39,11 +41,15 @@ function appendUniquePathEntries(entries, { delimiter = path.delimiter } = {}) {
   const ordered = []
 
   for (const entry of entries) {
-    if (!entry) {continue}
+    if (!entry) {
+      continue
+    }
     const parts = Array.isArray(entry) ? entry : String(entry).split(delimiter)
 
     for (const part of parts) {
-      if (!part || seen.has(part)) {continue}
+      if (!part || seen.has(part)) {
+        continue
+      }
       seen.add(part)
       ordered.push(part)
     }
@@ -68,7 +74,9 @@ function buildDesktopBackendPath({
 }
 
 function normalizeHermesHomeRoot(hermesHome, { pathModule = pathModuleForPlatform(process.platform) }: any = {}) {
-  if (!hermesHome) {return hermesHome}
+  if (!hermesHome) {
+    return hermesHome
+  }
   const resolved = pathModule.resolve(String(hermesHome))
   const parent = pathModule.dirname(resolved)
 
@@ -103,10 +111,12 @@ function buildDesktopBackendEnv({
   }
 }
 
-export { appendUniquePathEntries,
+export {
+  appendUniquePathEntries,
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
   delimiterForPlatform,
   normalizeHermesHomeRoot,
   pathEnvKey,
-  POSIX_SANE_PATH_ENTRIES }
+  POSIX_SANE_PATH_ENTRIES
+}

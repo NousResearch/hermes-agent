@@ -1,15 +1,16 @@
 type Method = string
-import type { ExecFileSyncOptionsWithStringEncoding} from 'node:child_process';
+import type { ExecFileSyncOptionsWithStringEncoding } from 'node:child_process'
 import { execFileSync, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
 import https from 'node:https'
-import os from "node:os"
+import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { app,
+import {
+  app,
   BrowserWindow,
   clipboard,
   dialog,
@@ -25,16 +26,18 @@ import { app,
   screen,
   session,
   shell,
-  systemPreferences } from 'electron'
-import nodePty from "node-pty"
+  systemPreferences
+} from 'electron'
+import nodePty from 'node-pty'
 
-import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command';
+import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
 import { canImportHermesCli, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
 import { runBootstrap } from './bootstrap-runner'
-import { authModeFromStatus,
+import {
+  authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
@@ -46,20 +49,24 @@ import { authModeFromStatus,
   profileRemoteOverride,
   resolveAuthMode,
   resolveTestWsUrl,
-  tokenPreview } from './connection-config'
+  tokenPreview
+} from './connection-config'
 import { adoptServedDashboardToken } from './dashboard-token'
-import { buildPosixCleanupScript,
+import {
+  buildPosixCleanupScript,
   buildWindowsCleanupScript,
   modeRemovesAgent,
   modeRemovesUserData,
   resolveRemovableAppPath,
   shouldRemoveAppBundle,
-  uninstallArgsForMode } from './desktop-uninstall'
+  uninstallArgsForMode
+} from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
-import { fileDiffVsHead,
+import {
+  fileDiffVsHead,
   repoStatus,
   reviewCommit,
   reviewCommitContext,
@@ -71,41 +78,50 @@ import { fileDiffVsHead,
   reviewRevParse,
   reviewShipInfo,
   reviewStage,
-  reviewUnstage } from './git-review-ops'
+  reviewUnstage
+} from './git-review-ops'
 import { gitRootForIpc } from './git-root'
 import { addWorktree, listBranches, listWorktrees, removeWorktree, switchBranch } from './git-worktree-ops'
-import { DATA_URL_READ_MAX_BYTES,
+import {
+  DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret as encryptDesktopSecretStrict,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
-  TEXT_PREVIEW_SOURCE_MAX_BYTES } from './hardening'
+  TEXT_PREVIEW_SOURCE_MAX_BYTES
+} from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
-import { buildSessionWindowUrl,
+import {
+  buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
   SESSION_WINDOW_MIN_HEIGHT,
-  SESSION_WINDOW_MIN_WIDTH } from './session-windows'
+  SESSION_WINDOW_MIN_WIDTH
+} from './session-windows'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
 import { runRebuildWithRetry } from './update-rebuild'
-import { buildRelaunchScript,
+import {
+  buildRelaunchScript,
   collectRelaunchArgs,
   collectRelaunchEnv,
   decideRelaunchOutcome,
   resolveUnpackedRelease,
   sandboxFallbackFromEnv,
-  sandboxPreflight } from './update-relaunch'
+  sandboxPreflight
+} from './update-relaunch'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
-import { computeWindowOptions,
+import {
+  computeWindowOptions,
   debounce,
   sanitizeWindowState,
   MIN_HEIGHT as WINDOW_MIN_HEIGHT,
-  MIN_WIDTH as WINDOW_MIN_WIDTH } from './window-state'
+  MIN_WIDTH as WINDOW_MIN_WIDTH
+} from './window-state'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
@@ -134,7 +150,7 @@ const PRELOAD_PATH = IS_PACKAGED
   ? path.join(APP_ROOT, 'dist', 'electron-preload.js')
   : path.join(import.meta.dirname, 'preload.ts')
 
-function hiddenWindowsChildOptions(options: any = {}): ExecFileSyncOptionsWithStringEncoding  {
+function hiddenWindowsChildOptions(options: any = {}): ExecFileSyncOptionsWithStringEncoding {
   if (!IS_WINDOWS || Object.prototype.hasOwnProperty.call(options, 'windowsHide')) {
     return options as any
   }
@@ -212,9 +228,8 @@ function loadInstallStamp() {
   // sees a stamp without needing a packaged build.
   const candidates = [
     process.resourcesPath ? path.join(process.resourcesPath, 'install-stamp.json') : null,
-    path.join(APP_ROOT, 'build', 'install-stamp.json'),
+    path.join(APP_ROOT, 'build', 'install-stamp.json')
   ].filter(Boolean)
-
 
   for (const p of candidates) {
     try {
@@ -279,9 +294,13 @@ if (INSTALL_STAMP) {
 // HERMES_HOME beneath the throwaway userData dir so a fresh-install run never
 // touches the user's real ~/.hermes / %LOCALAPPDATA%\hermes.
 function resolveHermesHome() {
-  if (process.env.HERMES_HOME) {return normalizeHermesHomeRoot(process.env.HERMES_HOME)}
+  if (process.env.HERMES_HOME) {
+    return normalizeHermesHomeRoot(process.env.HERMES_HOME)
+  }
 
-  if (USER_DATA_OVERRIDE) {return path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home')}
+  if (USER_DATA_OVERRIDE) {
+    return path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home')
+  }
 
   if (IS_WINDOWS) {
     // A GUI app launched from Explorer inherits the environment block captured
@@ -292,7 +311,9 @@ function resolveHermesHome() {
     // Consult the live User-scoped registry value before the default below.
     const fromRegistry = readWindowsUserEnvVar('HERMES_HOME')
 
-    if (fromRegistry) {return normalizeHermesHomeRoot(fromRegistry)}
+    if (fromRegistry) {
+      return normalizeHermesHomeRoot(fromRegistry)
+    }
   }
 
   if (IS_WINDOWS && process.env.LOCALAPPDATA) {
@@ -301,7 +322,9 @@ function resolveHermesHome() {
 
     // Migrate transparently to LOCALAPPDATA, but honour an existing legacy
     // ~/.hermes setup (no LOCALAPPDATA install yet) so users don't lose state.
-    if (!directoryExists(localappdata) && directoryExists(legacy)) {return legacy}
+    if (!directoryExists(localappdata) && directoryExists(legacy)) {
+      return legacy
+    }
 
     return localappdata
   }
@@ -393,7 +416,9 @@ const BOOT_FAKE_MODE = process.env.HERMES_DESKTOP_BOOT_FAKE === '1'
 const BOOT_FAKE_STEP_MS = (() => {
   const raw = Number.parseInt(String(process.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
 
-  if (!Number.isFinite(raw) || raw <= 0) {return 650}
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return 650
+  }
 
   return Math.max(120, raw)
 })()
@@ -636,15 +661,21 @@ const PREVIEW_LANGUAGE_BY_EXT = {
 }
 
 function looksBinary(buffer) {
-  if (!buffer.length) {return false}
+  if (!buffer.length) {
+    return false
+  }
 
   let suspicious = 0
 
   for (const byte of buffer) {
-    if (byte === 0) {return true}
+    if (byte === 0) {
+      return true
+    }
 
     // Allow common whitespace controls: tab, LF, CR.
-    if (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13) {suspicious += 1}
+    if (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13) {
+      suspicious += 1
+    }
   }
 
   return suspicious / buffer.length > 0.12
@@ -831,7 +862,9 @@ let bootProgressState = {
 // Each step is ['rm', path] or ['mv', src, dst]; executed best-effort so a
 // missing chain link never aborts the rest.
 function planDesktopLogRotation(size) {
-  if (size < DESKTOP_LOG_MAX_BYTES) {return []}
+  if (size < DESKTOP_LOG_MAX_BYTES) {
+    return []
+  }
   const backups = n => Array.from({ length: n }, (_, i) => desktopLogBackupPath(i + 1))
 
   // Pathological boot-loop log: reclaim live + every backup outright.
@@ -862,8 +895,11 @@ function rotateDesktopLogIfNeededSync() {
 
   for (const [op, src, dst] of planDesktopLogRotation(size)) {
     try {
-      if (op === 'rm') {fs.rmSync(src, { force: true })}
-      else {fs.renameSync(src, dst)}
+      if (op === 'rm') {
+        fs.rmSync(src, { force: true })
+      } else {
+        fs.renameSync(src, dst)
+      }
     } catch {
       // Best-effort — logging must never block startup/shutdown.
     }
@@ -881,8 +917,11 @@ async function rotateDesktopLogIfNeededAsync() {
 
   for (const [op, src, dst] of planDesktopLogRotation(size)) {
     try {
-      if (op === 'rm') {await fs.promises.rm(src, { force: true })}
-      else {await fs.promises.rename(src, dst)}
+      if (op === 'rm') {
+        await fs.promises.rm(src, { force: true })
+      } else {
+        await fs.promises.rename(src, dst)
+      }
     } catch {
       // Best-effort — logging must never crash the shell.
     }
@@ -890,7 +929,9 @@ async function rotateDesktopLogIfNeededAsync() {
 }
 
 function flushDesktopLogBufferSync() {
-  if (!desktopLogBuffer) {return}
+  if (!desktopLogBuffer) {
+    return
+  }
   const chunk = desktopLogBuffer
   desktopLogBuffer = ''
 
@@ -904,7 +945,9 @@ function flushDesktopLogBufferSync() {
 }
 
 function flushDesktopLogBufferAsync() {
-  if (!desktopLogBuffer) {return desktopLogFlushPromise}
+  if (!desktopLogBuffer) {
+    return desktopLogFlushPromise
+  }
   const chunk = desktopLogBuffer
   desktopLogBuffer = ''
 
@@ -922,7 +965,9 @@ function flushDesktopLogBufferAsync() {
 }
 
 function scheduleDesktopLogFlush() {
-  if (desktopLogFlushTimer) {return}
+  if (desktopLogFlushTimer) {
+    return
+  }
   desktopLogFlushTimer = setTimeout(() => {
     desktopLogFlushTimer = null
     void flushDesktopLogBufferAsync()
@@ -932,7 +977,9 @@ function scheduleDesktopLogFlush() {
 function rememberLog(chunk) {
   const text = String(chunk || '').trim()
 
-  if (!text) {return}
+  if (!text) {
+    return
+  }
   const lines = text.split(/\r?\n/).map(line => `[hermes] ${line}`)
   hermesLog.push(...lines)
 
@@ -959,7 +1006,9 @@ function rememberLog(chunk) {
 function openExternalUrl(rawUrl) {
   const raw = String(rawUrl || '').trim()
 
-  if (!raw) {return false}
+  if (!raw) {
+    return false
+  }
 
   let parsed
 
@@ -1035,7 +1084,9 @@ function openExternalUrl(rawUrl) {
 async function openPreviewInBrowser(rawUrl) {
   const raw = String(rawUrl || '').trim()
 
-  if (!raw) {return false}
+  if (!raw) {
+    return false
+  }
 
   let parsed
 
@@ -1063,7 +1114,9 @@ async function openPreviewInBrowser(rawUrl) {
 }
 
 function ensureWslWindowsFonts() {
-  if (!IS_WSL) {return}
+  if (!IS_WSL) {
+    return
+  }
 
   const fontsDir = ['/mnt/c/Windows/Fonts', '/mnt/c/windows/fonts'].find(candidate => {
     try {
@@ -1073,7 +1126,9 @@ function ensureWslWindowsFonts() {
     }
   })
 
-  if (!fontsDir) {return}
+  if (!fontsDir) {
+    return
+  }
 
   try {
     const confDir = path.join(app.getPath('home'), '.config', 'fontconfig', 'conf.d')
@@ -1086,7 +1141,9 @@ function ensureWslWindowsFonts() {
       existing = ''
     }
 
-    if (existing.includes(fontsDir)) {return}
+    if (existing.includes(fontsDir)) {
+      return
+    }
 
     fs.mkdirSync(confDir, { recursive: true })
     fs.writeFileSync(
@@ -1110,16 +1167,22 @@ function sleep(ms) {
 function clampBootProgress(value) {
   const numeric = Number(value)
 
-  if (!Number.isFinite(numeric)) {return 0}
+  if (!Number.isFinite(numeric)) {
+    return 0
+  }
 
   return Math.max(0, Math.min(100, Math.round(numeric)))
 }
 
 function broadcastBootProgress() {
-  if (!mainWindow || mainWindow.isDestroyed()) {return}
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
   const { webContents } = mainWindow
 
-  if (!webContents || webContents.isDestroyed()) {return}
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
   webContents.send('hermes:boot-progress', bootProgressState)
 }
 
@@ -1196,10 +1259,14 @@ function broadcastBootstrapEvent(ev) {
     }
   }
 
-  if (!mainWindow || mainWindow.isDestroyed()) {return}
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
   const { webContents } = mainWindow
 
-  if (!webContents || webContents.isDestroyed()) {return}
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
   webContents.send('hermes:bootstrap:event', ev)
 }
 
@@ -1207,7 +1274,7 @@ function getBootstrapState() {
   return bootstrapState
 }
 
-function updateBootProgress(update, options: {allowDecrease?: boolean} = {}) {
+function updateBootProgress(update, options: { allowDecrease?: boolean } = {}) {
   const nextProgressRaw =
     typeof update.progress === 'number' ? clampBootProgress(update.progress) : bootProgressState.progress
 
@@ -1292,7 +1359,9 @@ const UPDATE_HANDOFF_DWELL_MS = 2500
 async function waitForUpdateToFinish() {
   let marker = readLiveUpdateMarker(HERMES_HOME)
 
-  if (!marker) {return false}
+  if (!marker) {
+    return false
+  }
 
   rememberLog(`[updates] update in progress (pid=${marker.pid}); deferring backend start until it finishes`)
   const deadline = Date.now() + UPDATE_WAIT_TIMEOUT_MS
@@ -1321,12 +1390,18 @@ function unpackedPathFor(filePath) {
 }
 
 function findOnPath(command) {
-  if (!command) {return null}
+  if (!command) {
+    return null
+  }
 
   if (path.isAbsolute(command) || command.includes(path.sep) || (IS_WINDOWS && command.includes('/'))) {
-    if (!fileExists(command)) {return null}
+    if (!fileExists(command)) {
+      return null
+    }
 
-    if (isWindowsBinaryPathInWsl(command, { isWsl: IS_WSL })) {return null}
+    if (isWindowsBinaryPathInWsl(command, { isWsl: IS_WSL })) {
+      return null
+    }
 
     return command
   }
@@ -1349,7 +1424,9 @@ function findOnPath(command) {
     for (const extension of extensions) {
       const candidate = path.join(entry, `${command}${extension}`)
 
-      if (fileExists(candidate)) {return candidate}
+      if (fileExists(candidate)) {
+        return candidate
+      }
     }
   }
 
@@ -1361,20 +1438,28 @@ function isCommandScript(command) {
 }
 
 function unwrapWindowsVenvHermesCommand(command, backendArgs) {
-  if (!IS_WINDOWS || !command || isCommandScript(command)) {return null}
+  if (!IS_WINDOWS || !command || isCommandScript(command)) {
+    return null
+  }
 
   const resolved = path.resolve(String(command))
 
-  if (!/^hermes(?:\.exe)?$/i.test(path.basename(resolved))) {return null}
+  if (!/^hermes(?:\.exe)?$/i.test(path.basename(resolved))) {
+    return null
+  }
 
   const scriptsDir = path.dirname(resolved)
 
-  if (path.basename(scriptsDir).toLowerCase() !== 'scripts') {return null}
+  if (path.basename(scriptsDir).toLowerCase() !== 'scripts') {
+    return null
+  }
 
   const venvRoot = path.dirname(scriptsDir)
   const python = getVenvPython(venvRoot)
 
-  if (!fileExists(python)) {return null}
+  if (!fileExists(python)) {
+    return null
+  }
 
   const root = path.dirname(venvRoot)
 
@@ -1389,7 +1474,9 @@ function unwrapWindowsVenvHermesCommand(command, backendArgs) {
   if (
     !canImportHermesCli(python, {
       env: {
-        PYTHONPATH: [...(directoryExists(root) ? [root] : []), process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
+        PYTHONPATH: [...(directoryExists(root) ? [root] : []), process.env.PYTHONPATH]
+          .filter(Boolean)
+          .join(path.delimiter)
       }
     })
   ) {
@@ -1431,10 +1518,14 @@ function unwrapWindowsVenvHermesCommand(command, backendArgs) {
 const _serveSupportCache = new Map()
 
 function backendSupportsServe(backend) {
-  if (!backend || !backend.command) {return true}
+  if (!backend || !backend.command) {
+    return true
+  }
   const key = `${backend.command}::${backend.root || ''}`
 
-  if (_serveSupportCache.has(key)) {return _serveSupportCache.get(key)}
+  if (_serveSupportCache.has(key)) {
+    return _serveSupportCache.get(key)
+  }
 
   let supported = null
 
@@ -1479,7 +1570,9 @@ function getBackendArgsForRuntime(backend) {
 }
 
 function normalizeExecutablePathForCompare(commandPath) {
-  if (!commandPath) {return null}
+  if (!commandPath) {
+    return null
+  }
 
   let resolved = path.resolve(String(commandPath))
 
@@ -1493,7 +1586,9 @@ function normalizeExecutablePathForCompare(commandPath) {
 }
 
 function looksLikeDesktopAppBinary(commandPath) {
-  if (!IS_WINDOWS || !commandPath) {return false}
+  if (!IS_WINDOWS || !commandPath) {
+    return false
+  }
 
   const normalizedCandidate = normalizeExecutablePathForCompare(commandPath)
   const normalizedCurrentExec = normalizeExecutablePathForCompare(process.execPath)
@@ -1524,7 +1619,9 @@ function isHermesSourceRoot(root) {
 function findPythonForRoot(root) {
   const override = process.env.HERMES_DESKTOP_PYTHON
 
-  if (override && fileExists(override)) {return override}
+  if (override && fileExists(override)) {
+    return override
+  }
 
   const relativePaths = IS_WINDOWS
     ? [path.join('.venv', 'Scripts', 'python.exe'), path.join('venv', 'Scripts', 'python.exe')]
@@ -1533,7 +1630,9 @@ function findPythonForRoot(root) {
   for (const relativePath of relativePaths) {
     const candidate = path.join(root, relativePath)
 
-    if (fileExists(candidate)) {return candidate}
+    if (fileExists(candidate)) {
+      return candidate
+    }
   }
 
   return findSystemPython()
@@ -1545,7 +1644,9 @@ function findSystemPython() {
     for (const command of ['python3', 'python']) {
       const candidate = findOnPath(command)
 
-      if (candidate) {return candidate}
+      if (candidate) {
+        return candidate
+      }
     }
 
     return null
@@ -1611,7 +1712,9 @@ function findSystemPython() {
           const installPath = match[1].trim()
           const pythonExe = path.join(installPath, 'python.exe')
 
-          if (fileExists(pythonExe)) {return pythonExe}
+          if (fileExists(pythonExe)) {
+            return pythonExe
+          }
         }
       } catch {
         // Key not present — try next.
@@ -1626,12 +1729,16 @@ function findSystemPython() {
   for (const versionDir of SUPPORTED_VERSIONS_NO_DOT) {
     const systemWide = path.join(programFiles, `Python${versionDir}`, 'python.exe')
 
-    if (fileExists(systemWide)) {return systemWide}
+    if (fileExists(systemWide)) {
+      return systemWide
+    }
 
     if (localAppData) {
       const perUser = path.join(localAppData, 'Programs', 'Python', `Python${versionDir}`, 'python.exe')
 
-      if (fileExists(perUser)) {return perUser}
+      if (fileExists(perUser)) {
+        return perUser
+      }
     }
   }
 
@@ -1656,7 +1763,9 @@ function findSystemPython() {
 
         const candidate = out.trim()
 
-        if (candidate && fileExists(candidate)) {return candidate}
+        if (candidate && fileExists(candidate)) {
+          return candidate
+        }
       } catch {
         // py couldn't find that version — try next.
       }
@@ -1705,7 +1814,9 @@ function findGitBash() {
   }
 
   for (const candidate of candidates) {
-    if (fileExists(candidate)) {return candidate}
+    if (fileExists(candidate)) {
+      return candidate
+    }
   }
 
   // Last resort — bash on PATH (covers WSL bash, MSYS2, custom installs).
@@ -1742,12 +1853,16 @@ function getVenvPython(venvRoot) {
 function getVenvSitePackagesEntries(venvRoot) {
   const entries = []
 
-  if (!venvRoot) {return entries}
+  if (!venvRoot) {
+    return entries
+  }
 
   if (IS_WINDOWS) {
     const sitePackages = path.join(venvRoot, 'Lib', 'site-packages')
 
-    if (directoryExists(sitePackages)) {entries.push(sitePackages)}
+    if (directoryExists(sitePackages)) {
+      entries.push(sitePackages)
+    }
 
     return entries
   }
@@ -1766,7 +1881,9 @@ function getVenvSitePackagesEntries(venvRoot) {
   if (version) {
     const sitePackages = path.join(venvRoot, 'lib', `python${version}`, 'site-packages')
 
-    if (directoryExists(sitePackages)) {entries.push(sitePackages)}
+    if (directoryExists(sitePackages)) {
+      entries.push(sitePackages)
+    }
   }
 
   return entries
@@ -1787,7 +1904,9 @@ function makeDashboardReadyFile() {
 let _gitBinaryCache = null
 
 function resolveGitBinary() {
-  if (_gitBinaryCache) {return _gitBinaryCache}
+  if (_gitBinaryCache) {
+    return _gitBinaryCache
+  }
 
   if (!IS_WINDOWS) {
     _gitBinaryCache = findOnPath('git') || 'git'
@@ -1822,7 +1941,9 @@ function resolveGitBinary() {
 let _ghBinaryCache = null
 
 function resolveGhBinary() {
-  if (_ghBinaryCache) {return _ghBinaryCache}
+  if (_ghBinaryCache) {
+    return _ghBinaryCache
+  }
 
   const candidates = []
 
@@ -1886,7 +2007,9 @@ function readWindowState() {
 // getNormalBounds() keeps the pre-maximize size, so un-maximizing next session
 // lands back where the user actually sized the window.
 function persistWindowState() {
-  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized()) {return}
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized()) {
+    return
+  }
 
   try {
     const { x, y, width, height } = mainWindow.getNormalBounds()
@@ -1916,14 +2039,14 @@ function resolveUpdateRoot() {
   return candidates.find(c => directoryExists(path.join(c, '.git'))) || candidates[0] || ACTIVE_HERMES_ROOT
 }
 
-function runGit(args, options: any = {}): Promise<{code: number, stdout: string, stderr: string}> {
+function runGit(args, options: any = {}): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(
       resolveGitBinary(),
       IS_WINDOWS ? ['-c', 'windows.appendAtomically=false', ...args] : args,
       hiddenWindowsChildOptions({
         cwd: options.cwd,
-        env: { ...process.env, ...(options.env || {}) as any, GIT_TERMINAL_PROMPT: '0' },
+        env: { ...process.env, ...((options.env || {}) as any), GIT_TERMINAL_PROMPT: '0' },
         stdio: ['ignore', 'pipe', 'pipe']
       })
     )
@@ -2154,7 +2277,9 @@ function resolveUpdaterBinary() {
 }
 
 function repairMacUpdaterHelper(updater) {
-  if (!IS_MAC || !updater) {return}
+  if (!IS_MAC || !updater) {
+    return
+  }
 
   try {
     execFileSync('/usr/bin/xattr', ['-cr', updater], { stdio: 'ignore' })
@@ -2193,7 +2318,9 @@ function venvHermesShimPath(updateRoot) {
 // this practically always succeeds (no mandatory locking), so it returns false
 // — correct, since the shim-contention brick is Windows-only.
 function isShimLocked(shimPath) {
-  if (!IS_WINDOWS) {return false}
+  if (!IS_WINDOWS) {
+    return false
+  }
   let fd
 
   try {
@@ -2224,9 +2351,13 @@ function isShimLocked(shimPath) {
 // not a process-group leader — a POSIX negative-pgid kill would be meaningless
 // here anyway). POSIX teardown stays with the existing before-quit SIGTERM.
 function forceKillProcessTree(pid) {
-  if (!IS_WINDOWS) {return}
+  if (!IS_WINDOWS) {
+    return
+  }
 
-  if (!Number.isInteger(pid) || pid <= 0) {return}
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return
+  }
 
   try {
     execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], hiddenWindowsChildOptions({ stdio: 'ignore' }))
@@ -2267,15 +2398,21 @@ async function releaseBackendLockForUpdate(updateRoot) {
 // `tag` only flavors the log lines. No-op off Windows (POSIX has no mandatory
 // locks — the before-quit SIGTERM + the cleanup script's own PID-wait suffice).
 async function releaseBackendLock(updateRoot, tag) {
-  if (!IS_WINDOWS) {return { unlocked: true }}
+  if (!IS_WINDOWS) {
+    return { unlocked: true }
+  }
 
   // Collect every backend PID the desktop owns: primary window backend + pool.
   const pids = []
 
-  if (hermesProcess && Number.isInteger(hermesProcess.pid)) {pids.push(hermesProcess.pid)}
+  if (hermesProcess && Number.isInteger(hermesProcess.pid)) {
+    pids.push(hermesProcess.pid)
+  }
 
   for (const entry of backendPool.values()) {
-    if (entry.process && Number.isInteger(entry.process.pid)) {pids.push(entry.process.pid)}
+    if (entry.process && Number.isInteger(entry.process.pid)) {
+      pids.push(entry.process.pid)
+    }
   }
 
   // Graceful first (lets Python flush), then tree-kill to catch grandchildren.
@@ -2289,7 +2426,9 @@ async function releaseBackendLock(updateRoot, tag) {
 
   stopAllPoolBackends()
 
-  for (const pid of pids) {forceKillProcessTree(pid)}
+  for (const pid of pids) {
+    forceKillProcessTree(pid)
+  }
 
   const shim = venvHermesShimPath(updateRoot)
   const deadlineMs = Date.now() + 15000
@@ -2306,13 +2445,19 @@ async function releaseBackendLock(updateRoot, tag) {
     // instead of trusting the initial sweep.
     const stragglers = []
 
-    if (hermesProcess && Number.isInteger(hermesProcess.pid)) {stragglers.push(hermesProcess.pid)}
-
-    for (const entry of backendPool.values()) {
-      if (entry.process && Number.isInteger(entry.process.pid)) {stragglers.push(entry.process.pid)}
+    if (hermesProcess && Number.isInteger(hermesProcess.pid)) {
+      stragglers.push(hermesProcess.pid)
     }
 
-    for (const pid of stragglers) {forceKillProcessTree(pid)}
+    for (const entry of backendPool.values()) {
+      if (entry.process && Number.isInteger(entry.process.pid)) {
+        stragglers.push(entry.process.pid)
+      }
+    }
+
+    for (const pid of stragglers) {
+      forceKillProcessTree(pid)
+    }
     await new Promise(r => setTimeout(r, 300))
   }
 
@@ -2323,7 +2468,9 @@ async function releaseBackendLock(updateRoot, tag) {
   // imports broken (the July 2026 brotlicffi/_sodium.pyd incidents). Failing
   // the update loudly and keeping the app running is strictly better than a
   // bricked install that needs manual venv surgery.
-  rememberLog(`[${tag}] venv shim still locked after 15s; aborting hand-off (something outside this app holds the venv)`)
+  rememberLog(
+    `[${tag}] venv shim still locked after 15s; aborting hand-off (something outside this app holds the venv)`
+  )
 
   return { unlocked: false }
 }
@@ -2378,7 +2525,9 @@ async function applyUpdates(opts = {}) {
         if (head.code === 0 && current && current !== 'HEAD') {
           const branch = await resolveHealedBranch(updateRoot, current)
 
-          if (branch !== 'main') {command = `hermes update --branch ${branch}`}
+          if (branch !== 'main') {
+            command = `hermes update --branch ${branch}`
+          }
         }
       } catch {
         // Best-effort: fall back to bare `hermes update` if branch detection fails.
@@ -2478,11 +2627,15 @@ async function applyUpdates(opts = {}) {
 }
 
 async function handOffWindowsBootstrapRecovery(reason) {
-  if (!IS_WINDOWS || !IS_PACKAGED) {return false}
+  if (!IS_WINDOWS || !IS_PACKAGED) {
+    return false
+  }
 
   const updater = resolveUpdaterBinary()
 
-  if (!updater) {return false}
+  if (!updater) {
+    return false
+  }
 
   const updateRoot = resolveUpdateRoot()
   const { branch: configuredBranch } = readDesktopUpdateConfig()
@@ -2548,7 +2701,9 @@ async function handOffWindowsBootstrapRecovery(reason) {
 function resolveHermesCliBinary(updateRoot) {
   const venvHermes = path.join(updateRoot, 'venv', 'bin', 'hermes')
 
-  if (fileExists(venvHermes)) {return venvHermes}
+  if (fileExists(venvHermes)) {
+    return venvHermes
+  }
 
   return findOnPath('hermes') || null
 }
@@ -2578,7 +2733,9 @@ function runStreamedUpdate(command, args, { cwd, env, stage }: any = {}) {
       for (const line of chunk.toString().split('\n')) {
         const trimmed = line.trim()
 
-        if (trimmed) {emitUpdateProgress({ stage, message: trimmed, percent: null })}
+        if (trimmed) {
+          emitUpdateProgress({ stage, message: trimmed, percent: null })
+        }
       }
     }
 
@@ -2592,10 +2749,14 @@ function runStreamedUpdate(command, args, { cwd, env, stage }: any = {}) {
 // The running app's .app bundle (packaged macOS): execPath is
 // <App>.app/Contents/MacOS/<exe>; climb three levels to the bundle root.
 function runningAppBundle() {
-  if (!IS_MAC) {return null}
+  if (!IS_MAC) {
+    return null
+  }
   let dir = path.dirname(app.getPath('exe')) // .../Contents/MacOS
 
-  for (let i = 0; i < 2; i++) {dir = path.dirname(dir)} // -> .../X.app
+  for (let i = 0; i < 2; i++) {
+    dir = path.dirname(dir)
+  } // -> .../X.app
 
   return dir.endsWith('.app') ? dir : null
 }
@@ -2670,11 +2831,11 @@ async function applyUpdatesPosixInApp(opts: any) {
 
   emitUpdateProgress({ stage: 'update', message: 'Updating Hermes (git + dependencies)…', percent: 10 })
 
-  const updated = await runStreamedUpdate(hermes, ['update', '--yes', ...branchArgs], {
+  const updated = (await runStreamedUpdate(hermes, ['update', '--yes', ...branchArgs], {
     cwd: updateRoot,
     env,
     stage: 'update'
-  }) as any
+  })) as any
 
   if (updated.code !== 0) {
     emitUpdateProgress({ stage: 'error', message: 'hermes update failed.', error: updated.error || 'update-failed' })
@@ -2940,11 +3101,17 @@ function isActiveRuntimeUsable() {
 function isBootstrapComplete() {
   const marker = readBootstrapMarker()
 
-  if (!marker || typeof marker !== 'object') {return false}
+  if (!marker || typeof marker !== 'object') {
+    return false
+  }
 
-  if (marker.schemaVersion !== BOOTSTRAP_MARKER_SCHEMA_VERSION) {return false}
+  if (marker.schemaVersion !== BOOTSTRAP_MARKER_SCHEMA_VERSION) {
+    return false
+  }
 
-  if (typeof marker.pinnedCommit !== 'string' || marker.pinnedCommit.length < 7) {return false}
+  if (typeof marker.pinnedCommit !== 'string' || marker.pinnedCommit.length < 7) {
+    return false
+  }
 
   // We DELIBERATELY do NOT verify that the checkout is currently at the
   // pinned commit -- users update via the in-app update path or `hermes
@@ -2975,11 +3142,15 @@ function writeBootstrapMarker(payload) {
 function resolveWebDist() {
   const override = process.env.HERMES_DESKTOP_WEB_DIST
 
-  if (override && directoryExists(path.resolve(override))) {return path.resolve(override)}
+  if (override && directoryExists(path.resolve(override))) {
+    return path.resolve(override)
+  }
 
   const unpackedDist = path.join(unpackedPathFor(APP_ROOT), 'dist')
 
-  if (directoryExists(unpackedDist)) {return unpackedDist}
+  if (directoryExists(unpackedDist)) {
+    return unpackedDist
+  }
 
   // Final fallback: APP_ROOT/dist. When packaged with asar:true this lives
   // INSIDE app.asar — not a servable filesystem directory — so the embedded
@@ -3004,7 +3175,9 @@ function resolveRendererIndex() {
   const candidates = [path.join(APP_ROOT, 'dist', 'index.html'), path.join(resolveWebDist(), 'index.html')]
   const found = candidates.find(fileExists)
 
-  if (found) {return found}
+  if (found) {
+    return found
+  }
   // Nothing on disk. A packaged build with no renderer bundle blank-pages with
   // a bare ERR_FILE_NOT_FOUND and no clue why (see #39484). Surface the cause
   // and the fix before Electron loads the missing file.
@@ -3050,14 +3223,18 @@ function resolveHermesCwd() {
   ]
 
   for (const candidate of candidates) {
-    if (!candidate) {continue}
+    if (!candidate) {
+      continue
+    }
     const resolved = path.resolve(String(candidate))
 
     if (isPackagedInstallPath(resolved)) {
       continue
     }
 
-    if (directoryExists(resolved)) {return resolved}
+    if (directoryExists(resolved)) {
+      return resolved
+    }
   }
 
   return app.getPath('home')
@@ -3128,7 +3305,9 @@ function writeDefaultProjectDir(dir) {
 function createPythonBackend(root, label, backendArgs, options: any = {}) {
   const python = findPythonForRoot(root)
 
-  if (!python) {return null}
+  if (!python) {
+    return null
+  }
 
   const venvRoot = path.join(root, 'venv')
   const venvPython = getVenvPython(venvRoot)
@@ -3182,7 +3361,9 @@ function resolveHermesBackend(backendArgs) {
   if (overrideRoot && isHermesSourceRoot(overrideRoot)) {
     const backend = createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, backendArgs)
 
-    if (backend) {return backend}
+    if (backend) {
+      return backend
+    }
   }
 
   // 2. Development source -- when running `npm run dev` from a checkout, the
@@ -3192,7 +3373,9 @@ function resolveHermesBackend(backendArgs) {
   if (!IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT)) {
     const backend = createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, backendArgs)
 
-    if (backend) {return backend}
+    if (backend) {
+      return backend
+    }
   }
 
   // 3. Bootstrap-complete ACTIVE_HERMES_ROOT -- the canonical install at
@@ -3346,7 +3529,7 @@ async function ensureRuntime(backend) {
     rememberLog('[bootstrap] no Hermes install found; starting first-launch bootstrap')
 
     if (await handOffWindowsBootstrapRecovery('bootstrap-needed')) {
-      const handoffError: Error & {isBootstrapFailure?: boolean, bootstrapHandedOff?: boolean} = new Error(
+      const handoffError: Error & { isBootstrapFailure?: boolean; bootstrapHandedOff?: boolean } = new Error(
         'Hermes recovery was handed off to Hermes Setup. The desktop will restart when recovery completes.'
       )
 
@@ -3564,7 +3747,9 @@ function fetchJson(url, token, options: any = {}) {
       req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
     })
 
-    if (body) {req.write(body)}
+    if (body) {
+      req.write(body)
+    }
     req.end()
   })
 }
@@ -3651,7 +3836,9 @@ function fetchPublicJson(url, options: any = {}) {
       req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
     })
 
-    if (body) {req.write(body)}
+    if (body) {
+      req.write(body)
+    }
     req.end()
   })
 }
@@ -3668,17 +3855,29 @@ function extensionForMimeType(mimeType) {
     .trim()
     .toLowerCase()
 
-  if (type === 'image/png') {return '.png'}
+  if (type === 'image/png') {
+    return '.png'
+  }
 
-  if (type === 'image/jpeg') {return '.jpg'}
+  if (type === 'image/jpeg') {
+    return '.jpg'
+  }
 
-  if (type === 'image/gif') {return '.gif'}
+  if (type === 'image/gif') {
+    return '.gif'
+  }
 
-  if (type === 'image/webp') {return '.webp'}
+  if (type === 'image/webp') {
+    return '.webp'
+  }
 
-  if (type === 'image/bmp') {return '.bmp'}
+  if (type === 'image/bmp') {
+    return '.bmp'
+  }
 
-  if (type === 'image/svg+xml') {return '.svg'}
+  if (type === 'image/svg+xml') {
+    return '.svg'
+  }
 
   return ''
 }
@@ -3738,7 +3937,9 @@ const renderTitleQueue = []
 function canonicalTitleCacheKey(rawUrl) {
   const value = String(rawUrl || '').trim()
 
-  if (!value) {return ''}
+  if (!value) {
+    return ''
+  }
 
   try {
     const url = new URL(value)
@@ -3752,7 +3953,9 @@ function canonicalTitleCacheKey(rawUrl) {
 }
 
 function cacheTitle(key, title) {
-  if (titleCache.size >= TITLE_CACHE_LIMIT) {titleCache.delete(titleCache.keys().next().value)}
+  if (titleCache.size >= TITLE_CACHE_LIMIT) {
+    titleCache.delete(titleCache.keys().next().value)
+  }
   titleCache.set(key, title)
 }
 
@@ -3773,7 +3976,9 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<string> {
   return new Promise(resolve => {
     const url = String(rawUrl || '').trim()
 
-    if (!url) {return resolve('')}
+    if (!url) {
+      return resolve('')
+    }
 
     const args = [
       '--silent',
@@ -3802,7 +4007,9 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<string> {
     let bytes = 0
 
     child.stdout.on('data', chunk => {
-      if (bytes >= TITLE_BYTE_BUDGET) {return}
+      if (bytes >= TITLE_BYTE_BUDGET) {
+        return
+      }
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
       const remaining = TITLE_BYTE_BUDGET - bytes
       const next = buffer.length > remaining ? buffer.subarray(0, remaining) : buffer
@@ -3812,14 +4019,18 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<string> {
 
     child.on('error', () => resolve(''))
     child.on('close', () => {
-      if (!chunks.length) {return resolve('')}
+      if (!chunks.length) {
+        return resolve('')
+      }
       resolve(parseHtmlTitle(Buffer.concat(chunks).toString('utf8')))
     })
   })
 }
 
 function getLinkTitleSession() {
-  if (linkTitleSession || !app.isReady()) {return linkTitleSession}
+  if (linkTitleSession || !app.isReady()) {
+    return linkTitleSession
+  }
   linkTitleSession = session.fromPartition('hermes:link-titles', { cache: false })
   linkTitleSession.webRequest.onBeforeRequest((details, callback) => {
     callback({ cancel: RENDER_TITLE_BLOCKED_RESOURCES.has(details.resourceType) })
@@ -3843,11 +4054,15 @@ function dequeueRenderTitle() {
 
 function runRenderTitleJob(rawUrl) {
   return new Promise(resolve => {
-    if (!app.isReady()) {return resolve('')}
+    if (!app.isReady()) {
+      return resolve('')
+    }
 
     const partitionSession = getLinkTitleSession()
 
-    if (!partitionSession) {return resolve('')}
+    if (!partitionSession) {
+      return resolve('')
+    }
 
     let settled = false
     let window = null
@@ -3855,16 +4070,24 @@ function runRenderTitleJob(rawUrl) {
     let graceTimer = null
 
     const finish = title => {
-      if (settled) {return}
+      if (settled) {
+        return
+      }
       settled = true
 
-      if (hardTimer) {clearTimeout(hardTimer)}
+      if (hardTimer) {
+        clearTimeout(hardTimer)
+      }
 
-      if (graceTimer) {clearTimeout(graceTimer)}
+      if (graceTimer) {
+        clearTimeout(graceTimer)
+      }
       const value = (title || '').replace(/\s+/g, ' ').trim()
 
       try {
-        if (window && !window.isDestroyed()) {window.destroy()}
+        if (window && !window.isDestroyed()) {
+          window.destroy()
+        }
       } catch {
         // BrowserWindow may already be torn down; ignore.
       }
@@ -3881,7 +4104,9 @@ function runRenderTitleJob(rawUrl) {
     const finishWithTitle = () => finish(readLinkTitleWindowTitle(window))
 
     const scheduleGrace = () => {
-      if (graceTimer) {clearTimeout(graceTimer)}
+      if (graceTimer) {
+        clearTimeout(graceTimer)
+      }
       graceTimer = setTimeout(finishWithTitle, RENDER_TITLE_GRACE_MS)
     }
 
@@ -3891,7 +4116,9 @@ function runRenderTitleJob(rawUrl) {
     window.webContents.on('page-title-updated', scheduleGrace)
     window.webContents.on('did-finish-load', scheduleGrace)
     window.webContents.on('did-fail-load', (_event, _code, _desc, _validatedURL, isMainFrame) => {
-      if (isMainFrame) {finish('')}
+      if (isMainFrame) {
+        finish('')
+      }
     })
 
     window
@@ -3912,19 +4139,25 @@ function fetchHtmlTitleWithRenderer(rawUrl: string): Promise<string> {
 
 // Strips known error/captcha titles (e.g. "GetYourGuide – Error", "Just a
 // moment...") so they don't get cached as the resolved title.
-function usableTitle (value: string): string {
-  return (value && !TITLE_ERROR_RE.test(value) ? value : '')
+function usableTitle(value: string): string {
+  return value && !TITLE_ERROR_RE.test(value) ? value : ''
 }
 
 function fetchLinkTitle(rawUrl) {
   const url = String(rawUrl || '').trim()
   const key = canonicalTitleCacheKey(url)
 
-  if (!key) {return Promise.resolve('')}
+  if (!key) {
+    return Promise.resolve('')
+  }
 
-  if (titleCache.has(key)) {return Promise.resolve(titleCache.get(key))}
+  if (titleCache.has(key)) {
+    return Promise.resolve(titleCache.get(key))
+  }
 
-  if (titleInflight.has(key)) {return titleInflight.get(key)}
+  if (titleInflight.has(key)) {
+    return titleInflight.get(key)
+  }
 
   const pending = fetchHtmlTitleWithCurl(url)
     .catch(() => '')
@@ -3945,12 +4178,16 @@ function fetchLinkTitle(rawUrl) {
 }
 
 async function resourceBufferFromUrl(rawUrl) {
-  if (!rawUrl) {throw new Error('Missing URL')}
+  if (!rawUrl) {
+    throw new Error('Missing URL')
+  }
 
   if (rawUrl.startsWith('data:')) {
     const match = rawUrl.match(/^data:([^;,]+)?(;base64)?,(.*)$/s)
 
-    if (!match) {throw new Error('Invalid data URL')}
+    if (!match) {
+      throw new Error('Invalid data URL')
+    }
     const mimeType = match[1] || 'application/octet-stream'
     const encoded = match[3] || ''
     const buffer = match[2] ? Buffer.from(encoded, 'base64') : Buffer.from(decodeURIComponent(encoded), 'utf8')
@@ -3993,15 +4230,17 @@ async function resourceBufferFromUrl(rawUrl) {
 }
 
 async function copyImageFromUrl(rawUrl) {
-  const { buffer } = await resourceBufferFromUrl(rawUrl) as any
+  const { buffer } = (await resourceBufferFromUrl(rawUrl)) as any
   const image = nativeImage.createFromBuffer(buffer)
 
-  if (image.isEmpty()) {throw new Error('Could not read image')}
+  if (image.isEmpty()) {
+    throw new Error('Could not read image')
+  }
   clipboard.writeImage(image)
 }
 
 async function saveImageFromUrl(rawUrl) {
-  const { buffer, mimeType } = await resourceBufferFromUrl(rawUrl) as any
+  const { buffer, mimeType } = (await resourceBufferFromUrl(rawUrl)) as any
   const fallbackName = filenameFromUrl(rawUrl, `image${extensionForMimeType(mimeType) || '.png'}`)
 
   const result = await dialog.showSaveDialog(mainWindow, {
@@ -4009,7 +4248,9 @@ async function saveImageFromUrl(rawUrl) {
     defaultPath: fallbackName
   })
 
-  if (result.canceled || !result.filePath) {return false}
+  if (result.canceled || !result.filePath) {
+    return false
+  }
   await fs.promises.writeFile(result.filePath, buffer)
 
   return true
@@ -4141,10 +4382,14 @@ async function filePathFromPreviewUrl(rawUrl) {
 }
 
 function sendPreviewFileChanged(payload) {
-  if (!mainWindow || mainWindow.isDestroyed()) {return}
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
   const { webContents } = mainWindow
 
-  if (!webContents || webContents.isDestroyed()) {return}
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
   webContents.send('hermes:preview-file-changed', payload)
 }
 
@@ -4162,18 +4407,24 @@ async function watchPreviewFile(rawUrl) {
       return
     }
 
-    if (timer) {clearTimeout(timer)}
+    if (timer) {
+      clearTimeout(timer)
+    }
     timer = setTimeout(() => {
       timer = null
 
-      if (!fileExists(filePath)) {return}
+      if (!fileExists(filePath)) {
+        return
+      }
       sendPreviewFileChanged({ id, path: filePath, url: pathToFileURL(filePath).toString() })
     }, PREVIEW_WATCH_DEBOUNCE_MS)
   })
 
   previewWatchers.set(id, {
     close: () => {
-      if (timer) {clearTimeout(timer)}
+      if (timer) {
+        clearTimeout(timer)
+      }
       watcher.close()
     }
   })
@@ -4219,7 +4470,9 @@ async function waitForHermes(baseUrl, token) {
 }
 
 function getWindowButtonPosition() {
-  if (!IS_MAC) {return null}
+  if (!IS_MAC) {
+    return null
+  }
 
   return mainWindow?.getWindowButtonPosition?.() || WINDOW_BUTTON_POSITION
 }
@@ -4237,18 +4490,26 @@ function getWindowState() {
 }
 
 function sendBackendExit(payload) {
-  if (!mainWindow || mainWindow.isDestroyed()) {return}
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
   const { webContents } = mainWindow
 
-  if (!webContents || webContents.isDestroyed()) {return}
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
   webContents.send('hermes:backend-exit', payload)
 }
 
 function sendClosePreviewRequested() {
-  if (!mainWindow || mainWindow.isDestroyed()) {return}
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
   const { webContents } = mainWindow
 
-  if (!webContents || webContents.isDestroyed()) {return}
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
   webContents.send('hermes:close-preview-requested')
 }
 
@@ -4256,17 +4517,23 @@ function sendClosePreviewRequested() {
 // renderer's WebSocket to the local backend; the renderer reconnects on this
 // signal so the chat composer doesn't stay stuck on "Starting Hermes...".
 function sendPowerResume() {
-  if (!mainWindow || mainWindow.isDestroyed()) {return}
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
   const { webContents } = mainWindow
 
-  if (!webContents || webContents.isDestroyed()) {return}
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
   webContents.send('hermes:power-resume')
 }
 
 let powerResumeRegistered = false
 
 function registerPowerResumeListeners() {
-  if (powerResumeRegistered) {return}
+  if (powerResumeRegistered) {
+    return
+  }
   powerResumeRegistered = true
 
   try {
@@ -4285,21 +4552,31 @@ function getAppIconPath() {
 }
 
 function sendOpenUpdatesRequested() {
-  if (!mainWindow || mainWindow.isDestroyed()) {return}
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
   const { webContents } = mainWindow
 
-  if (!webContents || webContents.isDestroyed()) {return}
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
   webContents.send('hermes:open-updates')
 
-  if (!mainWindow.isVisible()) {mainWindow.show()}
+  if (!mainWindow.isVisible()) {
+    mainWindow.show()
+  }
   mainWindow.focus()
 }
 
 function sendWindowStateChanged(nextIsFullscreen?: boolean) {
-  if (!mainWindow || mainWindow.isDestroyed()) {return}
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
   const { webContents } = mainWindow
 
-  if (!webContents || webContents.isDestroyed()) {return}
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
   const state = getWindowState()
 
   if (typeof nextIsFullscreen === 'boolean') {
@@ -4441,7 +4718,9 @@ function installDevToolsShortcut(window) {
       (IS_MAC && input.meta && input.alt && key === 'i') ||
       (!IS_MAC && input.control && input.shift && key === 'i')
 
-    if (!isInspectShortcut) {return}
+    if (!isInspectShortcut) {
+      return
+    }
     event.preventDefault()
     toggleDevTools(window)
   })
@@ -4452,7 +4731,9 @@ function installPreviewShortcut(window) {
     const key = String(input.key || '').toLowerCase()
     const isPreviewCloseShortcut = key === 'w' && (IS_MAC ? input.meta : input.control) && !input.alt && !input.shift
 
-    if (!isPreviewCloseShortcut || !previewShortcutActive) {return}
+    if (!isPreviewCloseShortcut || !previewShortcutActive) {
+      return
+    }
 
     event.preventDefault()
     sendClosePreviewRequested()
@@ -4465,9 +4746,10 @@ function installPreviewShortcut(window) {
 // read it back on did-finish-load to re-apply after reloads or crash recovery.
 import { clampZoomLevel, percentToZoomLevel, ZOOM_STORAGE_KEY, zoomLevelToPercent } from './zoom'
 
-
 function setAndPersistZoomLevel(window, zoomLevel) {
-  if (!window || window.isDestroyed()) {return}
+  if (!window || window.isDestroyed()) {
+    return
+  }
   const next = clampZoomLevel(zoomLevel)
   window.webContents.setZoomLevel(next)
   // Keep any open settings UI in sync, including changes made via the
@@ -4481,13 +4763,17 @@ function setAndPersistZoomLevel(window, zoomLevel) {
 }
 
 function restorePersistedZoomLevel(window) {
-  if (!window || window.isDestroyed()) {return}
+  if (!window || window.isDestroyed()) {
+    return
+  }
   window.webContents
     .executeJavaScript(
       `(() => { try { return localStorage.getItem(${JSON.stringify(ZOOM_STORAGE_KEY)}) } catch { return null } })()`
     )
     .then(stored => {
-      if (stored == null || !window || window.isDestroyed()) {return}
+      if (stored == null || !window || window.isDestroyed()) {
+        return
+      }
       const level = clampZoomLevel(Number(stored))
       window.webContents.setZoomLevel(level)
     })
@@ -4503,7 +4789,9 @@ function installZoomShortcuts(window) {
   window.webContents.on('before-input-event', (event, input) => {
     const mod = IS_MAC ? input.meta : input.control
 
-    if (!mod || input.alt || input.shift) {return}
+    if (!mod || input.alt || input.shift) {
+      return
+    }
 
     const key = input.key
 
@@ -4559,7 +4847,9 @@ function installContextMenu(window) {
     }
 
     if (hasLink) {
-      if (template.length) {template.push({ type: 'separator' })}
+      if (template.length) {
+        template.push({ type: 'separator' })
+      }
       template.push(
         {
           label: 'Open Link',
@@ -4578,7 +4868,9 @@ function installContextMenu(window) {
     const suggestions = Array.isArray(params.dictionarySuggestions) ? params.dictionarySuggestions : []
 
     if (isEditable && params.misspelledWord && suggestions.length > 0) {
-      if (template.length) {template.push({ type: 'separator' })}
+      if (template.length) {
+        template.push({ type: 'separator' })
+      }
 
       for (const suggestion of suggestions.slice(0, 5)) {
         template.push({
@@ -4595,7 +4887,9 @@ function installContextMenu(window) {
     }
 
     if (hasSelection || isEditable) {
-      if (template.length) {template.push({ type: 'separator' })}
+      if (template.length) {
+        template.push({ type: 'separator' })
+      }
 
       if (isEditable) {
         template.push(
@@ -4659,7 +4953,7 @@ function installMediaPermissions() {
   // the check defaults to false and the mic is denied before the request
   // handler ever runs.
   session.defaultSession.setPermissionCheckHandler((_webContents, permission, _origin, details) => {
-    if (permission === 'media' || permission === 'audioCapture' as any /* todo: is this needed? */) {
+    if (permission === 'media' || permission === ('audioCapture' as any) /* todo: is this needed? */) {
       // details.mediaType is a single string here (not the mediaTypes array).
       const mediaType = details?.mediaType
 
@@ -4706,7 +5000,9 @@ function installMediaPermissions() {
 const OAUTH_SESSION_PARTITION = 'persist:hermes-remote-oauth'
 
 function getOauthSession() {
-  if (oauthSession || !app.isReady()) {return oauthSession}
+  if (oauthSession || !app.isReady()) {
+    return oauthSession
+  }
   oauthSession = session.fromPartition(OAUTH_SESSION_PARTITION)
 
   return oauthSession
@@ -4719,7 +5015,9 @@ function getOauthSession() {
 async function hasOauthSessionCookie(baseUrl) {
   const sess = getOauthSession()
 
-  if (!sess) {return false}
+  if (!sess) {
+    return false
+  }
   const parsed = new URL(baseUrl)
 
   try {
@@ -4749,7 +5047,9 @@ async function hasOauthSessionCookie(baseUrl) {
 async function hasLiveOauthSession(baseUrl) {
   const sess = getOauthSession()
 
-  if (!sess) {return false}
+  if (!sess) {
+    return false
+  }
   const parsed = new URL(baseUrl)
 
   try {
@@ -4770,7 +5070,9 @@ async function hasLiveOauthSession(baseUrl) {
 async function clearOauthSession(baseUrl) {
   const sess = getOauthSession()
 
-  if (!sess) {return}
+  if (!sess) {
+    return
+  }
 
   try {
     const cookies = await sess.cookies.get(baseUrl ? { url: baseUrl } : {})
@@ -4813,25 +5115,38 @@ function openOauthLoginWindow(baseUrl) {
     let pollTimer = null
 
     const finish = err => {
-      if (settled) {return}
+      if (settled) {
+        return
+      }
       settled = true
 
-      if (pollTimer) {clearInterval(pollTimer)}
+      if (pollTimer) {
+        clearInterval(pollTimer)
+      }
 
       try {
-        if (win && !win.isDestroyed()) {win.destroy()}
+        if (win && !win.isDestroyed()) {
+          win.destroy()
+        }
       } catch {
         // window already torn down
       }
 
-      if (err) {reject(err)}
-      else {resolve({ baseUrl, ok: true })}
+      if (err) {
+        reject(err)
+      } else {
+        resolve({ baseUrl, ok: true })
+      }
     }
 
     const checkCookie = async () => {
-      if (settled) {return}
+      if (settled) {
+        return
+      }
 
-      if (await hasOauthSessionCookie(baseUrl)) {finish(null)}
+      if (await hasOauthSessionCookie(baseUrl)) {
+        finish(null)
+      }
     }
 
     try {
@@ -4863,7 +5178,9 @@ function openOauthLoginWindow(baseUrl) {
     pollTimer = setInterval(() => void checkCookie(), 750)
 
     win.on('closed', () => {
-      if (!settled) {finish(new Error('Login window closed before authentication completed.'))}
+      if (!settled) {
+        finish(new Error('Login window closed before authentication completed.'))
+      }
     })
 
     // ``next`` is intentionally omitted: the gateway lands on ``/`` after
@@ -4936,7 +5253,9 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
       const chunks = []
       res.on('data', chunk => chunks.push(Buffer.from(chunk)))
       res.on('end', () => {
-        if (timedOut) {return}
+        if (timedOut) {
+          return
+        }
         clearTimeout(timer)
         const text = Buffer.concat(chunks).toString('utf8')
         const statusCode = res.statusCode || 500
@@ -4972,12 +5291,16 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
       })
     })
     request.on('error', error => {
-      if (timedOut) {return}
+      if (timedOut) {
+        return
+      }
       clearTimeout(timer)
       reject(error)
     })
 
-    if (body) {request.write(body)}
+    if (body) {
+      request.write(body)
+    }
     request.end()
   })
 }
@@ -4986,10 +5309,10 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
 // Throws (with statusCode 401) if the session cookie is missing/expired —
 // callers treat that as "needs re-login".
 async function mintGatewayWsTicket(baseUrl) {
-  const body = await fetchJsonViaOauthSession(`${baseUrl}/api/auth/ws-ticket`, {
+  const body = (await fetchJsonViaOauthSession(`${baseUrl}/api/auth/ws-ticket`, {
     method: 'POST',
     timeoutMs: 8_000
-  }) as any
+  })) as any
 
   const ticket = body?.ticket
 
@@ -5070,7 +5393,9 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
       continue
     }
 
-    const cleaned: {mode: 'remote' | 'local', url?: string, authMode?: string, token?: object } ={ mode: entry.mode === 'remote' ? 'remote' : 'local', }
+    const cleaned: { mode: 'remote' | 'local'; url?: string; authMode?: string; token?: object } = {
+      mode: entry.mode === 'remote' ? 'remote' : 'local'
+    }
     const url = String(entry.url || '').trim()
 
     if (url) {
@@ -5231,7 +5556,7 @@ function buildRemoteBlock(remoteUrl, authMode, token) {
   return { url: normalizeRemoteBaseUrl(remoteUrl), authMode, token }
 }
 
-function coerceDesktopConnectionConfig(input :any= {}, existing = readDesktopConnectionConfig(), options: any = {}) {
+function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopConnectionConfig(), options: any = {}) {
   const persistToken = options.persistToken !== false
   const key = connectionScopeKey(input.profile)
   const mode = input.mode === 'remote' ? 'remote' : 'local'
@@ -5467,7 +5792,7 @@ async function probeRemoteAuthMode(rawUrl) {
     // an OAuth-redirect one (``supports_password``). A failure here doesn't
     // change the auth mode, so swallow it.
     try {
-      const body = await fetchPublicJson(`${baseUrl}/api/auth/providers`, { timeoutMs: 8_000 }) as any
+      const body = (await fetchPublicJson(`${baseUrl}/api/auth/providers`, { timeoutMs: 8_000 })) as any
 
       if (Array.isArray(body?.providers)) {
         providers = body.providers
@@ -5526,7 +5851,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
     authMode = normAuthMode(remote.authMode)
   }
 
-  const status = await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: 8_000 }) as any
+  const status = (await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: 8_000 })) as any
 
   // The HTTP status check above proves the backend is reachable, but the chat
   // surface only works once the renderer's live WebSocket to ``/api/ws``
@@ -5572,7 +5897,9 @@ function resetBootProgressForReconnect() {
 }
 
 function stopBackendChild(child) {
-  if (!child || child.killed) {return}
+  if (!child || child.killed) {
+    return
+  }
 
   try {
     if (IS_WINDOWS && Number.isInteger(child.pid)) {
@@ -5683,10 +6010,14 @@ async function ensureBackend(profile) {
 function touchPoolBackend(profile) {
   const key = profile && String(profile).trim() ? String(profile).trim() : null
 
-  if (!key) {return}
+  if (!key) {
+    return
+  }
   const entry = backendPool.get(key)
 
-  if (entry) {entry.lastActiveAt = Date.now()}
+  if (entry) {
+    entry.lastActiveAt = Date.now()
+  }
 }
 
 // Evict least-recently-used pool backends until at most `keep` remain — but only
@@ -5694,7 +6025,9 @@ function touchPoolBackend(profile) {
 // window). When every backend is actively kept alive we let the pool exceed the
 // soft cap rather than kill a running session.
 function evictLruPoolBackends(keep) {
-  if (backendPool.size <= keep) {return}
+  if (backendPool.size <= keep) {
+    return
+  }
   const now = Date.now()
 
   const evictable = [...backendPool.entries()]
@@ -5704,7 +6037,9 @@ function evictLruPoolBackends(keep) {
   let removable = backendPool.size - Math.max(0, keep)
 
   for (const [profile] of evictable) {
-    if (removable <= 0) {break}
+    if (removable <= 0) {
+      break
+    }
     rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${POOL_MAX_BACKENDS})`)
     stopPoolBackend(profile)
     removable -= 1
@@ -5712,7 +6047,9 @@ function evictLruPoolBackends(keep) {
 }
 
 function startPoolIdleReaper() {
-  if (poolIdleReaper) {return}
+  if (poolIdleReaper) {
+    return
+  }
   poolIdleReaper = setInterval(() => {
     const now = Date.now()
 
@@ -5729,7 +6066,9 @@ function startPoolIdleReaper() {
     }
   }, 60_000)
 
-  if (typeof poolIdleReaper.unref === 'function') {poolIdleReaper.unref()}
+  if (typeof poolIdleReaper.unref === 'function') {
+    poolIdleReaper.unref()
+  }
 }
 
 // Spawn an additional dashboard backend pinned to a named profile. Mirrors the
@@ -5860,7 +6199,9 @@ async function spawnPoolBackend(profile, entry) {
 function stopPoolBackend(profile) {
   const entry = backendPool.get(profile)
 
-  if (!entry) {return}
+  if (!entry) {
+    return
+  }
   backendPool.delete(profile)
   stopBackendChild(entry.process)
 }
@@ -5868,7 +6209,9 @@ function stopPoolBackend(profile) {
 async function teardownPoolBackendAndWait(profile) {
   const entry = backendPool.get(profile)
 
-  if (!entry) {return}
+  if (!entry) {
+    return
+  }
   backendPool.delete(profile)
 
   stopBackendChild(entry.process)
@@ -5952,7 +6295,9 @@ async function startHermes() {
     throw backendStartFailure
   }
 
-  if (connectionPromise) {return connectionPromise}
+  if (connectionPromise) {
+    return connectionPromise
+  }
 
   connectionPromise = (async () => {
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
@@ -6191,15 +6536,25 @@ function wireCommonWindowHandlers(win) {
 const sessionWindows = createSessionWindowRegistry()
 
 function focusWindow(win) {
-  if (!win || win.isDestroyed()) {return}
+  if (!win || win.isDestroyed()) {
+    return
+  }
 
-  if (win.isMinimized()) {win.restore()}
+  if (win.isMinimized()) {
+    win.restore()
+  }
 
-  if (!win.isVisible()) {win.show()}
+  if (!win.isVisible()) {
+    win.show()
+  }
   win.focus()
 }
 
-function spawnSecondaryWindow({ sessionId, watch, newSession }:{ sessionId?: string, watch?: boolean, newSession?: boolean } = {}) {
+function spawnSecondaryWindow({
+  sessionId,
+  watch,
+  newSession
+}: { sessionId?: string; watch?: boolean; newSession?: boolean } = {}) {
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
@@ -6230,7 +6585,9 @@ function spawnSecondaryWindow({ sessionId, watch, newSession }:{ sessionId?: str
   }
 
   win.once('ready-to-show', () => {
-    if (!win.isDestroyed()) {win.show()}
+    if (!win.isDestroyed()) {
+      win.show()
+    }
   })
 
   win.on('enter-full-screen', () => sendWindowStateChanged(true))
@@ -6349,7 +6706,9 @@ function spawnPetOverlayWindow(bounds) {
   wireCommonWindowHandlers(win)
 
   win.once('ready-to-show', () => {
-    if (!win.isDestroyed()) {win.showInactive()}
+    if (!win.isDestroyed()) {
+      win.showInactive()
+    }
   })
 
   win.on('closed', () => {
@@ -6448,10 +6807,14 @@ function createWindow() {
     }
   }
 
-  if (savedWindowState?.isMaximized) {mainWindow.maximize()}
+  if (savedWindowState?.isMaximized) {
+    mainWindow.maximize()
+  }
 
   mainWindow.once('ready-to-show', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {mainWindow.show()}
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show()
+    }
   })
 
   mainWindow.on('will-enter-full-screen', () => sendWindowStateChanged(true))
@@ -6491,7 +6854,9 @@ function createWindow() {
 
       rendererReloadTimes.push(now)
       setImmediate(() => {
-        if (!mainWindow || mainWindow.isDestroyed()) {return}
+        if (!mainWindow || mainWindow.isDestroyed()) {
+          return
+        }
 
         try {
           mainWindow.webContents.reload()
@@ -6512,7 +6877,9 @@ function createWindow() {
     const details = detailsOrLevel && typeof detailsOrLevel === 'object' ? detailsOrLevel : null
     const level = details ? details.level : detailsOrLevel
 
-    if (level !== 3) {return}
+    if (level !== 3) {
+      return
+    }
 
     const text = details ? details.message : message
     const src = details ? details.sourceUrl : sourceId
@@ -6611,7 +6978,9 @@ ipcMain.handle('hermes:zoom:get', event => {
 ipcMain.on('hermes:zoom:set-percent', (event, percent) => {
   const window = BrowserWindow.fromWebContents(event.sender)
 
-  if (!window || window.isDestroyed()) {return}
+  if (!window || window.isDestroyed()) {
+    return
+  }
   setAndPersistZoomLevel(window, percentToZoomLevel(Number(percent)))
 })
 
@@ -6936,7 +7305,9 @@ async function interceptSessionRequestForRemote(request) {
 
       const body = request.body && typeof request.body === 'object' ? { ...request.body } : request.body
 
-      if (body) {delete body.profile}
+      if (body) {
+        delete body.profile
+      }
 
       return requestJsonForProfile(profile, pathname, method, body)
     }
@@ -6989,10 +7360,10 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
 
   const primary = await ensureBackend(null)
 
-  const base = await fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
+  const base = (await fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
     method: 'GET',
     timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
-  }).catch(() => ({ sessions: [], total: 0, profile_totals: {} })) as any
+  }).catch(() => ({ sessions: [], total: 0, profile_totals: {} }))) as any
 
   // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
   // is correct for this page — mirrors the primary's per-profile over-fetch.
@@ -7078,7 +7449,9 @@ ipcMain.handle('hermes:api', async (_event, request) => {
 })
 
 ipcMain.handle('hermes:notify', (_event, payload) => {
-  if (!Notification.isSupported()) {return false}
+  if (!Notification.isSupported()) {
+    return false
+  }
   // Action buttons render only on signed macOS builds; elsewhere they're dropped
   // and the body click still works.
   const actions = Array.isArray(payload?.actions) ? payload.actions : []
@@ -7091,7 +7464,9 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
   })
 
   notification.on('click', () => {
-    if (!mainWindow || mainWindow.isDestroyed()) {return}
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return
+    }
     focusWindow(mainWindow)
 
     if (payload?.sessionId) {
@@ -7099,7 +7474,9 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
     }
   })
   notification.on('action', (_actionEvent, index) => {
-    if (!mainWindow || mainWindow.isDestroyed()) {return}
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return
+    }
     const action = actions[index]
 
     if (action?.id) {
@@ -7153,7 +7530,9 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
 ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
   const properties = options?.directories ? ['openDirectory'] : ['openFile']
 
-  if (options?.multiple !== false) {properties.push('multiSelections')}
+  if (options?.multiple !== false) {
+    properties.push('multiSelections')
+  }
 
   let resolvedDefaultPath
 
@@ -7172,7 +7551,9 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
     filters: Array.isArray(options?.filters) ? options.filters : undefined
   })
 
-  if (result.canceled) {return []}
+  if (result.canceled) {
+    return []
+  }
 
   return result.filePaths
 })
@@ -7188,7 +7569,9 @@ ipcMain.handle('hermes:saveImageFromUrl', (_event, url) => saveImageFromUrl(Stri
 ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
   const data = payload?.data
 
-  if (!data) {throw new Error('saveImageBuffer: missing data')}
+  if (!data) {
+    throw new Error('saveImageBuffer: missing data')
+  }
 
   const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data)
 
@@ -7830,7 +8213,9 @@ async function getUninstallSummary() {
     let settled = false
 
     const done = value => {
-      if (settled) {return}
+      if (settled) {
+        return
+      }
       settled = true
       resolve(value)
     }
@@ -7851,7 +8236,9 @@ async function getUninstallSummary() {
       })
       child.on('error', () => done(fallback()))
       child.on('exit', code => {
-        if (code !== 0) {return done(fallback())}
+        if (code !== 0) {
+          return done(fallback())
+        }
 
         try {
           const line = stdout.trim().split('\n').filter(Boolean).pop() || '{}'
@@ -8012,13 +8399,17 @@ let _pendingDeepLink = null
 let _rendererReadyForDeepLink = false
 
 function _extractDeepLink(argv) {
-  if (!Array.isArray(argv)) {return null}
+  if (!Array.isArray(argv)) {
+    return null
+  }
 
   return argv.find(a => typeof a === 'string' && a.startsWith(`${HERMES_PROTOCOL}://`)) || null
 }
 
 function handleDeepLink(url) {
-  if (!url || typeof url !== 'string') {return}
+  if (!url || typeof url !== 'string') {
+    return
+  }
   let parsed
 
   try {
@@ -8045,7 +8436,9 @@ function handleDeepLink(url) {
   }
 
   try {
-    if (mainWindow.isMinimized()) {mainWindow.restore()}
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore()
+    }
     mainWindow.focus()
     mainWindow.webContents.send('hermes:deep-link', payload)
     rememberLog(`[deeplink] delivered ${kind}/${name}`)
@@ -8096,9 +8489,12 @@ if (!_gotSingleInstanceLock) {
   app.on('second-instance', (_event, argv) => {
     const url = _extractDeepLink(argv)
 
-    if (url) {handleDeepLink(url)}
-    else if (mainWindow) {
-      if (mainWindow.isMinimized()) {mainWindow.restore()}
+    if (url) {
+      handleDeepLink(url)
+    } else if (mainWindow) {
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore()
+      }
       mainWindow.focus()
     }
   })
@@ -8130,7 +8526,9 @@ app.whenReady().then(() => {
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)
 
-  if (_coldStartLink) {handleDeepLink(_coldStartLink)}
+  if (_coldStartLink) {
+    handleDeepLink(_coldStartLink)
+  }
 
   app.on('activate', () => {
     // Recreate the primary window if it's gone. Guard on mainWindow directly
@@ -8206,5 +8604,7 @@ app.on('window-all-closed', () => {
   // the bundle and relaunch — without this the script's PID-wait spins to its
   // full timeout and the user is left with an invisible app (or an uninstall
   // that appears to do nothing).
-  if (process.platform !== 'darwin' || isQuittingForHandoff) {app.quit()}
+  if (process.platform !== 'darwin' || isQuittingForHandoff) {
+    app.quit()
+  }
 })

@@ -334,10 +334,4 @@ async function fetchMarketplaceThemes(id) {
 
 const __testing = { themeEntryName, looksLikeIconTheme }
 
-export {
-  __testing,
-  extractThemes,
-  fetchMarketplaceThemes,
-  readCentralDirectory,
-  searchMarketplaceThemes
-}
+export { __testing, extractThemes, fetchMarketplaceThemes, readCentralDirectory, searchMarketplaceThemes }

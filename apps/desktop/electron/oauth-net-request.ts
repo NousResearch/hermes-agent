@@ -14,5 +14,4 @@ function setJsonRequestHeaders(request) {
   request.setHeader('Content-Type', 'application/json')
 }
 
-export { serializeJsonBody,
-  setJsonRequestHeaders }
+export { serializeJsonBody, setJsonRequestHeaders }

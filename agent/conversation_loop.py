@@ -2304,6 +2304,18 @@ def run_conversation(
                 if agent.thinking_callback:
                     agent.thinking_callback("")
 
+                # ── Eager Fallback Trigger ─────────────────────────────────
+                # Check for rate limits or billing issues immediately before
+                # handling transient retries (unicode/transport/etc.) to
+                # prevent special-case 'continue' paths from bypassing
+                # user-configured fallback providers (#60955).
+                classified = classify_api_error(api_error)
+                if classified.reason in {FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit}:
+                    if agent._fallback_index < len(getattr(agent, "_fallback_chain", [])):
+                        if agent._try_activate_fallback(reason=classified.reason):
+                            _retry.primary_recovery_attempted = False
+                            continue
+
                 # -----------------------------------------------------------
                 # UnicodeEncodeError recovery.  Two common causes:
                 #   1. Lone surrogates (U+D800..U+DFFF) from clipboard paste

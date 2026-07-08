@@ -477,7 +477,13 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if role == "user":
             if text.strip():
                 last_user_content = text
-            rendered.append({"role": "user", "content": text})
+                rendered.append({"role": "user", "content": text})
+            # Empty/whitespace-only user messages are skipped entirely.
+            # ZAI (glm-5.2) rejects empty user content with error 1213
+            # ("The prompt parameter was not received normally"), and other
+            # strict providers may behave similarly. Dropping them avoids
+            # both the 1213 and any consecutive-role alternation violation
+            # they might create.
         elif role == "assistant":
             parts: list[str] = []
             if text.strip():

@@ -926,7 +926,7 @@ def test_curator_review_prompt_is_umbrella_first():
     assert "scripts/" in CURATOR_REVIEW_PROMPT
     # Must say the counter argument: usage=0 is not a reason to skip
     assert "use_count" in CURATOR_REVIEW_PROMPT or "counter" in lower, (
-        "must pre-empt the 'usage counters are zero, I can't judge' bailout"
+        "must preempt the 'usage counters are zero, I can't judge' bailout"
     )
 
 

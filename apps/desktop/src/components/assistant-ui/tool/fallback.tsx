@@ -163,7 +163,7 @@ function ToolGlyph({
   return node ? <span className={TOOL_HEADER_GLYPH_WRAP_CLASS}>{node}</span> : null
 }
 
-// Which status (if any) should pre-empt the tool's icon in the leading
+// Which status (if any) should preempt the tool's icon in the leading
 // slot. Success is silent — the row reads as "done" without a checkmark.
 function leadingStatus(isPending: boolean, status: ToolStatus): ToolStatus | undefined {
   if (isPending) {

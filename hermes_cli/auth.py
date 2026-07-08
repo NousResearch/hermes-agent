@@ -5563,7 +5563,7 @@ def refresh_nous_oauth_pure(
             # default instead of leaving a previously-persisted bad host (e.g. a
             # stale staging URL) in place. Without this reset, an auth.json that
             # was poisoned before the allowlist existed keeps re-validating to
-            # None on every refresh and silently re-uses the dead endpoint —
+            # None on every refresh and silently reuses the dead endpoint —
             # the "falling back to default" warning never actually takes effect.
             refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
             state["inference_base_url"] = refreshed_url or DEFAULT_NOUS_INFERENCE_URL

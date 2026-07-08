@@ -148,7 +148,7 @@ class ProviderProfile:
     def get_max_tokens(self, model: str | None) -> int | None:
         """Return the default max_tokens cap for *model*.
 
-        Overrideable hook for providers that need per-model output caps —
+        Overridable hook for providers that need per-model output caps —
         e.g. a relay that fronts several upstream backends, each with a
         different completion-token limit. The transport calls this when
         the user hasn't set an explicit max_tokens.

@@ -541,7 +541,7 @@ def curses_checklist(
     Args:
         title: Header line displayed above the checklist.
         items: Display labels for each row.
-        selected: Indices that start checked (pre-selected).
+        selected: Indices that start checked (preselected).
         cancel_returns: Returned on ESC/q. Defaults to the original *selected*.
         status_fn: Optional callback ``f(chosen_indices) -> str`` whose return
             value is rendered on the bottom row of the terminal.  Use this for
@@ -633,7 +633,7 @@ def curses_radiolist(
     Args:
         title: Header line displayed above the list.
         items: Display labels for each row.
-        selected: Index that starts selected (pre-selected).
+        selected: Index that starts selected (preselected).
         cancel_returns: Returned on ESC/q. Defaults to the original *selected*.
         description: Optional multi-line text shown between the title and
             the item list.  Useful for context that should survive the

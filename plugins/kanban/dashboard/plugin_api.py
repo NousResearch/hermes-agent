@@ -1692,7 +1692,7 @@ def get_config():
     """Return kanban dashboard preferences from ~/.hermes/config.yaml.
 
     Reads the ``dashboard.kanban`` section if present; defaults otherwise.
-    Used by the UI to pre-select tenant filters, toggle markdown rendering,
+    Used by the UI to preselect tenant filters, toggle markdown rendering,
     or set column-width preferences without a round-trip per page load.
     """
     try:

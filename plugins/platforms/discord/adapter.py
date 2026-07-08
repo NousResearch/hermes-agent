@@ -1358,7 +1358,7 @@ class DiscordAdapter(BasePlatformAdapter):
             except ValueError:
                 pass
         # Stay strictly below the budget so the gateway's outer wait_for can't
-        # pre-empt our own straggler cancellation. Reserve ~20% (min 0.5s) of
+        # preempt our own straggler cancellation. Reserve ~20% (min 0.5s) of
         # headroom, and never let the floor push us back up to/over the budget
         # on tiny budgets — cap at 90% of the budget as a hard ceiling.
         headroom = max(0.5, budget * 0.2)

@@ -5899,7 +5899,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # instead of requiring a second Enter. Submission in this CLI is
             # driven by the custom `enter` keybinding, NOT the buffer's
             # accept_handler, so validate_and_handle can't route through it;
-            # chain a done-callback on the returned Task that re-uses the
+            # chain a done-callback on the returned Task that reuses the
             # real submit pipeline via _submit_editor_buffer().
             task = target_buffer.open_in_editor(validate_and_handle=False)
             if task is not None and hasattr(task, "add_done_callback"):

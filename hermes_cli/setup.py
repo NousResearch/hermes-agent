@@ -1971,7 +1971,7 @@ def setup_gateway(config: dict):
 
     platforms = _all_platforms()
 
-    # Build checklist, pre-selecting already-configured platforms.
+    # Build checklist, preselecting already-configured platforms.
     items = []
     pre_selected = []
     for i, plat in enumerate(platforms):

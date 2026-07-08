@@ -619,7 +619,7 @@ def send_relay_policy() -> bool:
     free-response / allow-bots behavior the agent applies directly also governs
     relay delivery, and excluded traffic never wakes a scaled-to-zero agent.
 
-    Self-healing: the agent is the source of truth and re-declares every boot
+    Self-healing: the agent is the source of truth and redeclares every boot
     (mirrors the ``routeKeys`` upsert at provision). Idempotent — a full replace.
 
     NEVER raises and NEVER blocks boot: relevance is an optimization layered on

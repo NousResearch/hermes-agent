@@ -213,7 +213,7 @@ def _goal_judge_available() -> bool:
 # in-process timestamp) doesn't reclaim an actively-running worker as
 # stale. The model is not required to call the explicit ``kanban_heartbeat``
 # tool for this to work — that tool stays available for workers that want
-# to attach a note or pre-emptively extend a claim across a known-long op.
+# to attach a note or preemptively extend a claim across a known-long op.
 #
 # Constraints:
 #   - Best-effort: never raise. The agent loop must not care if the bridge

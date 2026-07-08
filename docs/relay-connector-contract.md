@@ -544,7 +544,7 @@ Body (`gateway/relay/__init__.py` `relay_relevance_policy()` → `send_relay_pol
 
 Auth is the per-gateway upgrade token (§6.1), so the connector attaches the
 policy to the authenticated instance. The gateway is the **source of truth** and
-re-declares **every boot** (a full replace, mirroring the `routeKeys` upsert at
+redeclares **every boot** (a full replace, mirroring the `routeKeys` upsert at
 provision — self-healing). When the projected policy is all-default the gateway
 sends nothing (the connector's absent-row default already matches). The POST is
 **fail-soft**: a failure logs and boot proceeds — relevance is an optimization

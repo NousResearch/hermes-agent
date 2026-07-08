@@ -269,7 +269,7 @@ function MessageBubble({
             ...msg,
             content: compactionSplit.remainder,
             // The remainder is the original assistant reply that the
-            // compressor pre-pended the summary to — render with the
+            // compressor prepended the summary to — render with the
             // normal assistant styling, NOT the muted handoff style.
             // ``isCompactionMessage`` returns false on this stripped
             // content because it no longer starts with the prefix.

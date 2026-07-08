@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-# Re-use the shared discord-stub bootstrap and FakeBot from the connect
+# Reuse the shared discord-stub bootstrap and FakeBot from the connect
 # test module so this file doesn't duplicate the (large) mock surface.
 from tests.gateway.test_discord_connect import (  # noqa: E402
     FakeBot,

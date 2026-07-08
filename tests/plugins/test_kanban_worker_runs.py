@@ -34,7 +34,7 @@ def _load_plugin_router():
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
 
     mod_name = "hermes_dashboard_plugin_kanban_worker_runs_test"
-    # Re-use a cached module if already loaded to avoid duplicate-router issues.
+    # Reuse a cached module if already loaded to avoid duplicate-router issues.
     if mod_name in sys.modules:
         return sys.modules[mod_name].router
 

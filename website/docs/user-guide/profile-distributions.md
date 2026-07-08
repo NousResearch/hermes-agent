@@ -613,7 +613,7 @@ The installer hard-excludes these paths even if an author accidentally ships the
 When you clone a distribution as an installer, these simply aren't copied into your profile directory. When you update, your copies stay put. If you installed the same distribution on five machines, you have five isolated sets of this data — one per machine.
 
 :::caution
-This exclusion runs at **install / update time on the installer's machine**. It does **not** prevent an author from commiting sensitive/unnecessary files. Authors must use a [`.gitignore`](#step-3--create-a-gitignore-before-the-first-commit) to keep secrets out of the repo.
+This exclusion runs at **install / update time on the installer's machine**. It does **not** prevent an author from committing sensitive/unnecessary files. Authors must use a [`.gitignore`](#step-3--create-a-gitignore-before-the-first-commit) to keep secrets out of the repo.
 :::
 
 ## Security and trust

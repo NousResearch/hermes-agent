@@ -1700,7 +1700,7 @@ class SessionStore:
 
         Used by ``/resume`` to restore a previously-named session.
         Ends the current session in SQLite (like reset), but instead of
-        generating a fresh session ID, re-uses ``target_session_id`` so the
+        generating a fresh session ID, reuses ``target_session_id`` so the
         old transcript is loaded on the next message. If the target session was
         previously ended, re-open it so gateway resume semantics match the CLI.
         """

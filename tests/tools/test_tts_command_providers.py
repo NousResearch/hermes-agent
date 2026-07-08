@@ -152,7 +152,7 @@ class TestIterCommandProviders:
     def test_iterates_only_user_command_providers(self):
         cfg = {
             "providers": {
-                "openai": {"type": "command", "command": "shouldnt show up"},
+                "openai": {"type": "command", "command": "shouldn't show up"},
                 "piper-cli": {"type": "command", "command": "piper-cli"},
                 "voxcpm": {"type": "command", "command": "voxcpm"},
                 "broken": {"type": "command", "command": ""},

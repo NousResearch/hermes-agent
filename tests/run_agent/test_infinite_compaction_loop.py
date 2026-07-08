@@ -142,7 +142,7 @@ class TestTailCutRawBudgetFallback:
 
     def test_meaningful_cut_with_large_ratio(self):
         """With summary_target_ratio=0.45, _find_tail_cut_by_tokens still
-        leaves a meaningful compressable region."""
+        leaves a meaningful compressible region."""
         comp = _make_compressor(
             summary_target_ratio=0.45,
             config_context_length=96000,
@@ -156,7 +156,7 @@ class TestTailCutRawBudgetFallback:
         n = len(messages)
         middle_size = cut - head_end
         assert middle_size >= 3, (
-            f"Expected at least 3 messages in compressable region, got {middle_size} "
+            f"Expected at least 3 messages in compressible region, got {middle_size} "
             f"(cut={cut}, head_end={head_end}, n={n})"
         )
 
@@ -195,7 +195,7 @@ class TestTailCutRawBudgetFallback:
         # With the fix, cut should be well past head_end
         assert cut > head_end + 1, (
             f"Expected cut ({cut}) > head_end ({head_end}) + 1, "
-            f"meaning the compressable window is non-trivial"
+            f"meaning the compressible window is non-trivial"
         )
 
 

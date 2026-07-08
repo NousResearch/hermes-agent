@@ -2496,7 +2496,7 @@ def cmd_whatsapp(args):
     # bridge-bootstrap timeout and queued WhatsApp for indefinite retries.
     # Now: aborted setup leaves WHATSAPP_ENABLED unset → gateway skips it.
     # Re-runs that already have WHATSAPP_ENABLED=true (from a prior
-    # successful pairing) stay enabled — we just don't write it pre-emptively.
+    # successful pairing) stay enabled — we just don't write it preemptively.
     print()
     if (get_env_value("WHATSAPP_ENABLED") or "").lower() == "true":
         print("✓ WhatsApp is already enabled")
@@ -2978,7 +2978,7 @@ def select_provider_and_model(args=None):
     canonical_descs = {p.slug: p.tui_desc for p in CANONICAL_PROVIDERS}
     grouped_rows = group_providers([p.slug for p in CANONICAL_PROVIDERS])
 
-    # The group/slug that should be pre-selected: the active provider's group
+    # The group/slug that should be preselected: the active provider's group
     # if it's grouped, otherwise the active slug itself.
     active_group = provider_group_for_slug(active) if active else ""
 
@@ -7351,7 +7351,7 @@ def _format_concurrent_instances_message(
 def _quarantine_running_hermes_exe(
     scripts_dir: Path, *, max_attempts: int = 4
 ) -> list[tuple[Path, Path]]:
-    """Pre-empt Windows file lock on the running ``hermes.exe``.
+    """Preempt Windows file lock on the running ``hermes.exe``.
 
     Windows allows RENAMING a mapped/running executable (the kernel tracks the
     file by handle, not path), but blocks DELETE/REPLACE while it's loaded. uv

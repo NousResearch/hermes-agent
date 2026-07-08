@@ -4,6 +4,7 @@ import pytest
 
 from gateway.config import Platform
 from gateway.run import (
+    _GATEWAY_GIVEUP_REPLY,
     _prepare_gateway_status_message,
     _sanitize_gateway_final_response,
 )
@@ -203,6 +204,68 @@ def test_telegram_final_response_keeps_normal_answers():
     answer = "Here is the clean summary you asked for."
 
     assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
+
+
+# Every engine give-up diagnostic the conversation loop can return as the
+# final response when a turn ends with no usable answer. Attempt counts vary
+# at runtime, so a couple of entries deliberately use counts different from
+# the literals in agent/conversation_loop.py to prove the parameterization.
+GIVEUP_SENTINELS = [
+    "Codex response remained incomplete after 3 continuation attempts",
+    "Codex response remained incomplete after 12 continuation attempts",
+    "Response remained truncated after 4 continuation attempts",
+    "Incomplete REASONING_SCRATCHPAD after 2 retries",
+    "Response truncated due to output length limit",
+    "First response truncated due to output length limit",
+    "Stream repeatedly dropped mid tool-call (network); the tool was not executed",
+]
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+@pytest.mark.parametrize("sentinel", GIVEUP_SENTINELS)
+def test_chat_gateways_replace_giveup_sentinels(platform, sentinel):
+    """Engine give-up diagnostics become a human retry nudge on chat surfaces.
+
+    When a turn ends with no usable answer, the conversation loop returns its
+    raw diagnostic string as the final response. That must never land in a
+    user's chat verbatim — but it also must not be dropped silently, or the
+    user's question vanishes without a trace.
+    """
+    assert _sanitize_gateway_final_response(platform, sentinel) == _GATEWAY_GIVEUP_REPLY
+
+
+@pytest.mark.parametrize("sentinel", GIVEUP_SENTINELS)
+def test_giveup_sentinel_with_warning_prefix_is_replaced(sentinel):
+    """The empty-response fallback re-emits the error with a warning glyph."""
+    prefixed = f"⚠️ {sentinel}"
+
+    assert (
+        _sanitize_gateway_final_response(Platform.TELEGRAM, prefixed)
+        == _GATEWAY_GIVEUP_REPLY
+    )
+
+
+@pytest.mark.parametrize("sentinel", GIVEUP_SENTINELS)
+def test_programmatic_surfaces_keep_giveup_sentinels(sentinel):
+    """Raw surfaces (CLI/TUI, API JSON, webhooks) must keep the exact text."""
+    for platform in ("local", "api_server", "webhook", "msgraph_webhook"):
+        assert _sanitize_gateway_final_response(platform, sentinel) == sentinel
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+def test_reply_quoting_giveup_phrase_passes_through(platform):
+    """A normal answer that quotes a sentinel phrase is never rewritten.
+
+    The give-up match is an anchored full-match on the whole reply, so prose
+    that merely mentions one of the templates mid-sentence must survive.
+    """
+    answer = (
+        'Earlier you saw "Codex response remained incomplete after 3 '
+        'continuation attempts" because the provider kept truncating output; '
+        "raising the token budget fixed it."
+    )
+
+    assert _sanitize_gateway_final_response(platform, answer) == answer
 
 
 # Synthetic credential shapes from #23810. Bodies are placeholder gibberish —

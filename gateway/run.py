@@ -136,6 +136,38 @@ _GATEWAY_PROVIDER_POLICY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Engine give-up sentinels: when a turn ends with no usable answer — the
+# provider output stayed incomplete/truncated past the continuation budget,
+# the stream kept dropping, or the reasoning scratchpad never closed — the
+# conversation loop returns its raw diagnostic string as ``final_response``
+# (see agent/conversation_loop.py). On a chat surface that lands in the
+# user's thread as a cryptic developer string. Unlike lifecycle noise these
+# must NOT be dropped silently: the user asked something, and a silent drop
+# makes the question vanish. Chat surfaces get a short retry nudge instead
+# (these failures are transient, so resending typically succeeds).
+# Anchored full-match on the exact engine templates (variable parts such as
+# attempt counts are parameterized) so a normal reply that merely quotes one
+# of these phrases mid-sentence is never rewritten. Like
+# ``_GATEWAY_PROVIDER_ERROR_SHAPE_RE``, an optional symbol/whitespace prefix
+# is tolerated because the empty-response fallback path re-emits the error
+# field with a leading warning glyph.
+_GATEWAY_GIVEUP_SENTINEL_RE = re.compile(
+    r"(?:\W*\s*)?(?:"
+    r"Codex response remained incomplete after \d+ continuation attempts?"
+    r"|Response remained truncated after \d+ continuation attempts?"
+    r"|Incomplete REASONING_SCRATCHPAD after \d+ retr(?:y|ies)"
+    r"|(?:First )?response truncated due to output length limit"
+    r"|Stream repeatedly dropped mid tool-call \(network\); "
+    r"the tool was not executed"
+    r")\.?\s*",
+    re.IGNORECASE,
+)
+
+_GATEWAY_GIVEUP_REPLY = (
+    "⚠️ I hit a snag generating that response — please send that message again."
+)
+
+
 _GATEWAY_AUTH_ERROR_RE = re.compile(
     r"(provider\s+authentication\s+failed|incorrect\s+api\s+key|invalid\s+api\s+key|\b401\b)",
     re.IGNORECASE,
@@ -430,6 +462,12 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     # this sentinel; chat surfaces should too (#7921).
     if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
         return ""
+
+    # Engine give-up diagnostic leaked out as the reply. Replace it with a
+    # human retry nudge rather than dropping it (a silent drop would make the
+    # user's question vanish) or delivering the raw dev-string.
+    if _GATEWAY_GIVEUP_SENTINEL_RE.fullmatch(str(text).strip()):
+        return _GATEWAY_GIVEUP_REPLY
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):

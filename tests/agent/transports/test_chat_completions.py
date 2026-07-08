@@ -84,16 +84,6 @@ class TestChatCompletionsBasic:
                 "google": {"thought_signature": "SIG_123"}
             }, model
 
-    def test_convert_messages_strips_extra_content_for_gemma(self, transport):
-        """Gemma can be served by Google, but it is not Gemini and rejects
-        Gemini-only request fields. Stale thought signatures from a prior
-        Gemini turn must be stripped when switching to Gemma.
-        """
-        msgs = self._msg_with_extra_content()
-        result = transport.convert_messages(msgs, model="google/gemma-4-31b-it")
-        assert "extra_content" not in result[0]["tool_calls"][0]
-        assert "extra_content" in msgs[0]["tool_calls"][0]
-
     def test_convert_messages_strips_tool_name(self, transport):
         """Internal `tool_name` (used for FTS indexing in the SQLite store) is
         not part of the OpenAI Chat Completions schema. Strict providers like

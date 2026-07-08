@@ -99,7 +99,7 @@ def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
 
 
 def _model_consumes_thought_signature(model: Any) -> bool:
-    """True when the outgoing model is a Gemini model that requires
+    """True when the outgoing model is a Gemini family model that requires
     ``extra_content`` (thought_signature) to be replayed on tool calls.
 
     Gemini 3 thinking models attach ``extra_content`` to each tool call and
@@ -111,7 +111,7 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     ``extra_content`` from earlier in a mixed-provider session.
     """
     m = str(model or "").lower()
-    return "gemini" in m
+    return "gemini" in m or "gemma" in m
 
 
 class ChatCompletionsTransport(ProviderTransport):
@@ -135,7 +135,7 @@ class ChatCompletionsTransport(ProviderTransport):
           ``codex_message_items`` on the message, ``call_id`` /
           ``response_item_id`` on ``tool_calls`` entries.
         - ``extra_content`` on ``tool_calls`` (Gemini thought_signature) —
-          stripped unless the outgoing ``model`` is itself Gemini.
+          stripped unless the outgoing ``model`` is itself Gemini-family.
           Gemini 3 thinking models attach it for replay, but strict providers
           (Fireworks, Mistral) reject any payload containing it with
           ``Extra inputs are not permitted, field: 'messages[N].tool_calls[M].extra_content'``.

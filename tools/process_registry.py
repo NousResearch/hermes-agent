@@ -1569,13 +1569,20 @@ class ProcessRegistry:
     def count_running(self) -> int:
         """Return the count of currently-running background processes.
 
-        Cheap O(1) read of the running dict, suitable for status-bar polling
-        on every render tick. CPython dict ``len()`` is atomic; callers do not
-        need to hold ``self._lock``. Reflects ``_running`` only: sessions are
-        moved to ``_finished`` when their subprocess exits.
+        Status-bar polling can be the only process-registry touchpoint after a
+        child exits, so reconcile stale local/detached sessions before reading
+        the count.
         """
         try:
-            return len(self._running)
+            with self._lock:
+                sessions = list(self._running.values())
+
+            for session in sessions:
+                self._refresh_detached_session(session)
+                self._reconcile_local_exit(session)
+
+            with self._lock:
+                return len(self._running)
         except Exception:
             return 0
 

@@ -12398,17 +12398,18 @@ def _(rid, params: dict) -> dict:
             ),
             current_base_url=getattr(agent, "base_url", "") if agent else "",
         )
-        # picker_hints + canonical_order produce the TUI's required shape:
+        # picker_hints + canonical_order produce the TUI/desktop picker shape:
         # `authenticated`/`auth_type`/`key_env`/`warning` per row, in
-        # CANONICAL_PROVIDERS declaration order. include_unconfigured=True
-        # so the picker can show the full provider universe (with the
-        # setup-hint warning attached) instead of only authed rows.
+        # CANONICAL_PROVIDERS declaration order. Desktop pickers default to the
+        # configured subset; callers that need setup affordances can pass
+        # include_unconfigured=true explicitly.
         # Curated model lists are preserved — list_authenticated_providers
         # populates `models` from the curated catalog, not provider_model_ids
         # (which would pull non-agentic models like TTS/embeddings/etc.).
         payload = build_models_payload(
             ctx,
-            include_unconfigured=True,
+            explicit_only=bool(params.get("explicit_only")),
+            include_unconfigured=bool(params.get("include_unconfigured")),
             picker_hints=True,
             canonical_order=True,
             pricing=True,

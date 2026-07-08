@@ -9446,6 +9446,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
+            # #56391 — Compression protection (PRIORITY path). Same
+            # rationale as ``_handle_active_session_busy_message``: context
+            # compression is interrupt-protected (#23975), but an interrupt
+            # here starts a new turn against the pre-rotation parent
+            # session while the still-running compression later rotates
+            # the id out from under it, forking orphaned compression
+            # siblings. Demote to queue semantics so the follow-up waits
+            # for the in-flight compression + rotation to land.
+            if self._session_has_compression_in_flight(_quick_key):
+                logger.info(
+                    "PRIORITY interrupt demoted to queue for session %s "
+                    "because context compression is in flight (#56391)",
+                    _quick_key,
+                )
+                self._queue_or_replace_pending_event(_quick_key, event)
+                return None
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
             running_agent.interrupt(event.text)
             # NOTE: self._pending_messages was write-only (never consumed).
@@ -18241,11 +18257,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "conversation context (possible FTS write corruption)",
                         session_key, len(agent_history), len(_selected),
                     )
-                    # The live in-memory history bypassed the replay-cleanup
-                    # pass inside _build_gateway_agent_history — re-apply the
-                    # stale-confirmation expiry (#59607) so a dangerous
-                    # confirmation can't slip through this path either.
-                    # Idempotent; messages without timestamps are untouched.
+                    # The live in-memory history bypassed the
+                    # _build_gateway_agent_history cleanup pipeline above —
+                    # re-apply the stale-confirmation expiry (#59607) so a
+                    # dangerous confirmation can't slip through this path
+                    # either. Idempotent; messages without timestamps are
+                    # untouched.
                     agent_history = _strip_stale_dangerous_confirmations(
                         _selected, now=time.time()
                     )

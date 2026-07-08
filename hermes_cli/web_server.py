@@ -28,6 +28,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shlex
 import shutil
 import stat
 import subprocess
@@ -72,11 +73,6 @@ from hermes_cli.config import (
     redact_key,
     write_platform_config_field,
     _deep_merge,
-)
-from hermes_cli.memory_providers import (
-    MemoryProvider,
-    ProviderField,
-    get_memory_provider,
 )
 from gateway.status import (
     derive_gateway_busy,
@@ -204,9 +200,14 @@ async def _lifespan(app: "FastAPI"):
         )
         cron_thread.start()
 
+    # Reap idle/dead keep-alive PTY sessions in the background (30-min TTL).
+    pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
+
     try:
         yield
     finally:
+        pty_reaper_task.cancel()
+        await PTY_REGISTRY.close_all()
         if cron_stop is not None:
             cron_stop.set()
 
@@ -663,11 +664,6 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Input behavior while agent is running",
         "options": ["interrupt", "queue", "steer"],
     },
-    "memory.provider": {
-        "type": "select",
-        "description": "Memory provider plugin",
-        "options": ["builtin", "honcho"],
-    },
     "approvals.mode": {
         "type": "select",
         "description": "Dangerous command approval mode",
@@ -780,7 +776,7 @@ def _build_schema_from_config(
         full_key = f"{prefix}.{key}" if prefix else key
 
         # Skip internal / version keys
-        if full_key in {"_config_version",}:
+        if full_key in {"_config_version", "memory.provider"}:
             continue
 
         # Category is the first path component for nested keys, or "general"
@@ -852,7 +848,11 @@ class EnvVarReveal(BaseModel):
 
 
 class MemoryProviderConfigUpdate(BaseModel):
-    values: Dict[str, str] = {}
+    values: Dict[str, Any] = {}
+
+
+class MemoryProviderSetupRequest(BaseModel):
+    values: Dict[str, Any] = {}
 
 
 class MessagingPlatformUpdate(BaseModel):
@@ -870,6 +870,18 @@ class TelegramOnboardingStart(BaseModel):
 
 class TelegramOnboardingApply(BaseModel):
     allowed_user_ids: List[str]
+    profile: Optional[str] = None
+
+
+class WhatsAppOnboardingStart(BaseModel):
+    mode: Optional[str] = "bot"
+    allowed_users: Optional[str] = ""
+    profile: Optional[str] = None
+
+
+class WhatsAppOnboardingApply(BaseModel):
+    mode: Optional[str] = None
+    allowed_users: Optional[str] = None
     profile: Optional[str] = None
 
 
@@ -2265,6 +2277,136 @@ def _session_activity_flags(s: dict, now: float) -> tuple[bool, bool]:
     return is_active, bg_active
 
 
+# Host TCP ports each port-binding gateway platform listens on, as
+# ``platform-name -> (config port key, adapter default)``.  Mirrors
+# ``_PORT_BINDING_PLATFORM_VALUES`` in gateway/run.py and each adapter's
+# DEFAULT_PORT / DEFAULT_WEBHOOK_PORT constant.  Used only for the dashboard's
+# gateway-topology readout — best-effort display data, not a bind source.
+_PORT_BINDING_PLATFORM_PORTS: Dict[str, Tuple[str, int]] = {
+    "webhook": ("port", 8644),
+    "api_server": ("port", 8642),
+    "msgraph_webhook": ("port", 8646),
+    "feishu": ("webhook_port", 8765),
+    "wecom_callback": ("port", 8645),
+    "bluebubbles": ("webhook_port", 8645),
+    "sms": ("webhook_port", 8080),
+    "whatsapp_cloud": ("webhook_port", 8090),
+    "line": ("port", 8646),
+}
+
+# Platform states that mean the adapter is NOT serving its port right now.
+_PLATFORM_DEAD_STATES = frozenset({"fatal", "disconnected", "stopped"})
+
+
+def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> Dict[str, int]:
+    """Best-effort map of ``platform -> host TCP port`` for one profile's gateway.
+
+    Reads the platforms the running gateway reported in its
+    ``gateway_state.json`` and resolves each port-binding platform's port from
+    the profile's ``config.yaml`` (top-level ``platforms:`` wins over
+    ``gateway.platforms:``, matching ``load_gateway_config`` precedence),
+    falling back to the adapter default.  Display-only: env-var port overrides
+    (e.g. ``WEBHOOK_PORT`` in that profile's .env) are not resolved here.
+    """
+    platforms = (runtime or {}).get("platforms") or {}
+    active = [
+        name for name, state in platforms.items()
+        if name in _PORT_BINDING_PLATFORM_PORTS
+        and isinstance(state, dict)
+        and state.get("state") not in _PLATFORM_DEAD_STATES
+    ]
+    if not active:
+        return {}
+
+    blocks: Dict[str, dict] = {}
+    try:
+        with open(profile_home / "config.yaml", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        gateway_cfg = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
+        # gateway.platforms first, top-level platforms second — later wins,
+        # matching the precedence in gateway.config.load_gateway_config().
+        for src in ((gateway_cfg or {}).get("platforms"), cfg.get("platforms")):
+            if not isinstance(src, dict):
+                continue
+            for plat_name, plat_block in src.items():
+                if isinstance(plat_block, dict):
+                    blocks.setdefault(plat_name, {}).update(plat_block)
+    except Exception:
+        blocks = {}
+
+    ports: Dict[str, int] = {}
+    for name in active:
+        port_key, default_port = _PORT_BINDING_PLATFORM_PORTS[name]
+        block = blocks.get(name) or {}
+        extra = block.get("extra") if isinstance(block.get("extra"), dict) else {}
+        raw = block.get(port_key, (extra or {}).get(port_key, default_port))
+        try:
+            ports[name] = int(raw)
+        except (TypeError, ValueError):
+            ports[name] = default_port
+    return ports
+
+
+def _collect_profile_gateway_topology() -> Dict[str, Any]:
+    """Enumerate profiles and the gateways serving them for ``/api/status``.
+
+    Returns ``{"profiles": [...], "gateway_mode": ..., "gateways": [...]}``:
+
+    * ``profiles`` — every profile on the host (default + named), from
+      ``profiles_to_serve(True)`` (the cheap enumeration chokepoint — no
+      per-profile config reads or skill counts).
+    * ``gateways`` — one entry per profile with a LIVE gateway process:
+      ``{"profile", "ports", "served_profiles"?}``.  Liveness reuses
+      ``_check_gateway_running`` so this agrees with the profiles sidebar.
+    * ``gateway_mode`` — ``"multiplex"`` when the default gateway serves
+      multiple profiles (gateway.multiplex_profiles), ``"single"`` for one
+      live gateway, ``"multiple"`` for independent per-profile gateways,
+      ``"none"`` when nothing is running.
+    """
+    try:
+        from hermes_cli.profiles import _check_gateway_running, profiles_to_serve
+        from gateway.status import read_runtime_status
+        homes = profiles_to_serve(True)
+    except Exception:
+        _log.debug("profile/gateway topology enumeration failed", exc_info=True)
+        return {"profiles": [], "gateway_mode": "unknown", "gateways": []}
+
+    profile_names = [name for name, _home in homes]
+    gateways: List[Dict[str, Any]] = []
+    multiplex = False
+    for name, home in homes:
+        try:
+            if not _check_gateway_running(home):
+                continue
+        except Exception:
+            continue
+        try:
+            runtime = read_runtime_status(home / "gateway_state.json")
+        except Exception:
+            runtime = None
+        served = [str(p) for p in ((runtime or {}).get("served_profiles") or [])]
+        if name == "default" and len(served) > 1:
+            multiplex = True
+        entry: Dict[str, Any] = {
+            "profile": name,
+            "ports": _profile_platform_ports(home, runtime),
+        }
+        if served:
+            entry["served_profiles"] = served
+        gateways.append(entry)
+
+    if multiplex:
+        mode = "multiplex"
+    elif len(gateways) > 1:
+        mode = "multiple"
+    elif len(gateways) == 1:
+        mode = "single"
+    else:
+        mode = "none"
+
+    return {"profiles": profile_names, "gateway_mode": mode, "gateways": gateways}
+
+
 @app.get("/api/status")
 async def get_status(profile: Optional[str] = None):
     status_scope = None
@@ -2456,16 +2598,35 @@ async def get_status(profile: Optional[str] = None):
             "nous_session_valid": nous_session_valid,
         }
 
-        # Absolute host paths, the gateway PID, and the internal gateway health
-        # URL are deployment recon a liveness probe never needs. ``/api/status``
-        # is in ``PUBLIC_API_PATHS`` so it bypasses dashboard auth; on a
-        # network-exposed (gated) bind that means *any* unauthenticated caller
-        # reaches it, and leaking host metadata there contradicts the allowlist's
-        # own contract ("version, gateway state, active session count, and the
-        # dashboard auth-gate shape. No bodies, no session content, no secrets").
-        # Surface this detail only on a loopback / ``--insecure`` bind, where the
-        # dashboard is local-only and the caller is already inside the trust
-        # envelope — the same loopback/gated split ``should_require_auth`` draws.
+        # Profile + gateway topology: which profiles exist, whether one
+        # multiplexed gateway or several per-profile gateways serve them, and
+        # (gated) which host ports the live gateways' port-binding platforms
+        # listen on.  Enumerating profiles walks the filesystem and probes the
+        # process table, so keep it off the event loop.
+        #
+        # Split by sensitivity: profile NAMES (``profiles``) and the gateway
+        # ``gateway_mode`` are low-sensitivity PRODUCT surface — Hermes Cloud
+        # renders the profile list in the Portal, which reads this endpoint over
+        # the network (a gated bind), so they must survive the auth gate. The
+        # per-gateway ``gateways[]`` detail carries host ports (deployment
+        # recon), so it stays gated with the host paths / PID below.
+        topology = await asyncio.get_running_loop().run_in_executor(
+            None, _collect_profile_gateway_topology
+        )
+        status["profiles"] = topology["profiles"]
+        status["gateway_mode"] = topology["gateway_mode"]
+
+        # Absolute host paths, the gateway PID, the internal gateway health
+        # URL, and per-gateway ports are deployment recon a liveness probe never
+        # needs. ``/api/status`` is in ``PUBLIC_API_PATHS`` so it bypasses
+        # dashboard auth; on a network-exposed (gated) bind that means *any*
+        # unauthenticated caller reaches it, and leaking host metadata there
+        # contradicts the allowlist's own contract ("version, gateway state,
+        # active session count, and the dashboard auth-gate shape. No bodies, no
+        # session content, no secrets"). Surface this detail only on a loopback
+        # / ``--insecure`` bind, where the dashboard is local-only and the
+        # caller is already inside the trust envelope — the same loopback/gated
+        # split ``should_require_auth`` draws.
         if not auth_required:
             status.update({
                 "hermes_home": str(get_hermes_home()),
@@ -2473,6 +2634,7 @@ async def get_status(profile: Optional[str] = None):
                 "env_path": str(get_env_path()),
                 "gateway_pid": gateway_pid,
                 "gateway_health_url": _GATEWAY_HEALTH_URL,
+                "gateways": topology["gateways"],
             })
 
         return status
@@ -4006,151 +4168,824 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
-def _memory_provider_config_path(provider: MemoryProvider) -> Path:
-    return get_hermes_home() / provider.name / "config.json"
+def _memory_provider_label(name: str) -> str:
+    return name.replace("_", " ").replace("-", " ").title()
 
 
-def _read_memory_provider_file(provider: MemoryProvider) -> Dict[str, Any]:
-    path = _memory_provider_config_path(provider)
+def _normalize_memory_provider_name(name: Any) -> str:
+    provider = str(name or "").strip()
+    if provider.lower() in {"built-in", "builtin", "none"}:
+        return ""
+    return provider
+
+
+def _load_memory_provider(name: str):
+    try:
+        from plugins.memory import load_memory_provider
+
+        return load_memory_provider(name)
+    except Exception:
+        _log.debug("Failed to load memory provider %s", name, exc_info=True)
+        return None
+
+
+def _memory_provider_manifest(name: str) -> Dict[str, Any]:
+    try:
+        from plugins.memory import find_provider_dir
+
+        provider_dir = find_provider_dir(name)
+        if provider_dir is None:
+            return {}
+        manifest_path = provider_dir / "plugin.yaml"
+        if not manifest_path.exists():
+            return {}
+        with manifest_path.open(encoding="utf-8-sig") as handle:
+            manifest = yaml.safe_load(handle) or {}
+        return manifest if isinstance(manifest, dict) else {}
+    except Exception:
+        _log.debug("Failed to read memory provider manifest for %s", name, exc_info=True)
+        return {}
+
+
+def _string_list(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _memory_provider_setup_manifest(name: str) -> Dict[str, Any]:
+    manifest = _memory_provider_manifest(name)
+    external_dependencies: List[Dict[str, str]] = []
+    for raw in manifest.get("external_dependencies") or []:
+        if not isinstance(raw, dict):
+            continue
+        dep = {
+            "name": str(raw.get("name") or "").strip(),
+            "install": str(raw.get("install") or "").strip(),
+            "check": str(raw.get("check") or "").strip(),
+        }
+        if dep["name"] or dep["install"] or dep["check"]:
+            external_dependencies.append(dep)
+
+    return {
+        "pip_dependencies": _string_list(manifest.get("pip_dependencies")),
+        "external_dependencies": external_dependencies,
+        "required_env": _string_list(manifest.get("requires_env")),
+    }
+
+
+def _memory_provider_setup_info(name: str) -> Dict[str, Any]:
+    setup = _memory_provider_setup_manifest(name)
+    setup["dependencies_installed"] = _memory_provider_dependencies_installed(setup)
+    return setup
+
+
+_MEMORY_PROVIDER_IMPORT_NAMES = {
+    "honcho-ai": "honcho",
+    "mem0ai": "mem0",
+    "hindsight-client": "hindsight_client",
+    "hindsight-all": "hindsight",
+}
+
+
+def _memory_provider_dependency_package(dep: str) -> str:
+    return re.split(r"[\[<>=!~;]", dep, maxsplit=1)[0].strip()
+
+
+def _memory_provider_import_name(dep: str) -> str:
+    package = _memory_provider_dependency_package(dep)
+    return _MEMORY_PROVIDER_IMPORT_NAMES.get(package, package.replace("-", "_"))
+
+
+def _dependency_importable(dep: str) -> bool:
+    import_name = _memory_provider_import_name(dep)
+    if not import_name:
+        return False
+    try:
+        __import__(import_name)
+        return True
+    except ImportError:
+        return False
+
+
+def _trim_setup_output(value: Optional[str], limit: int = 4000) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}\n... truncated ..."
+
+
+def _memory_provider_setup_env() -> Dict[str, str]:
+    env = os.environ.copy()
+    home = Path.home()
+    extra_bins = [
+        home / ".brv-cli" / "bin",
+        home / ".local" / "bin",
+        home / ".npm-global" / "bin",
+        Path("/usr/local/bin"),
+    ]
+    existing_path = env.get("PATH", "")
+    prefix = os.pathsep.join(str(path) for path in extra_bins if path.exists())
+    if prefix:
+        env["PATH"] = prefix + os.pathsep + existing_path
+    return env
+
+
+def _command_result(
+    *,
+    kind: str,
+    name: str,
+    status: str,
+    command: str = "",
+    completed: Optional[subprocess.CompletedProcess] = None,
+    error: Optional[str] = None,
+) -> Dict[str, Any]:
+    return {
+        "kind": kind,
+        "name": name,
+        "status": status,
+        "command": command,
+        "returncode": None if completed is None else completed.returncode,
+        "stdout": "" if completed is None else _trim_setup_output(completed.stdout),
+        "stderr": _trim_setup_output(error or ("" if completed is None else completed.stderr)),
+    }
+
+
+def _run_setup_command(
+    command: Any,
+    *,
+    display: str,
+    shell: bool = False,
+    timeout: int = 180,
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        command,
+        shell=shell,
+        executable="/bin/bash" if shell else None,
+        env=_memory_provider_setup_env(),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def _memory_provider_dependencies_installed(setup: Dict[str, Any]) -> bool:
+    pip_dependencies = _string_list(setup.get("pip_dependencies"))
+    external_dependencies = setup.get("external_dependencies") or []
+
+    pip_ok = all(_dependency_importable(dep) for dep in pip_dependencies)
+    external_ok = True
+    for dep in external_dependencies:
+        if not isinstance(dep, dict):
+            continue
+        check_cmd = str(dep.get("check") or "").strip()
+        install_cmd = str(dep.get("install") or "").strip()
+        if not check_cmd:
+            if install_cmd:
+                external_ok = False
+            continue
+        try:
+            completed = _run_setup_command(
+                shlex.split(check_cmd),
+                display=check_cmd,
+                timeout=20,
+            )
+        except Exception:
+            external_ok = False
+            continue
+        if completed.returncode != 0:
+            external_ok = False
+
+    return pip_ok and external_ok
+
+
+def _install_memory_provider_pip_dependencies(dependencies: List[str]) -> List[Dict[str, Any]]:
+    missing = [dep for dep in dependencies if not _dependency_importable(dep)]
+    if not dependencies:
+        return []
+    if not missing:
+        return [
+            _command_result(kind="pip", name=", ".join(dependencies), status="already_installed")
+        ]
+
+    uv_path = shutil.which("uv")
+    if uv_path:
+        command: Any = [uv_path, "pip", "install", "--python", sys.executable, "--quiet", *missing]
+        display = f"uv pip install --python {sys.executable} {' '.join(missing)}"
+    else:
+        command = [sys.executable, "-m", "pip", "install", "--quiet", *missing]
+        display = f"{sys.executable} -m pip install {' '.join(missing)}"
+
+    try:
+        completed = _run_setup_command(command, display=display, timeout=240)
+    except Exception as exc:
+        return [
+            _command_result(
+                kind="pip",
+                name=", ".join(missing),
+                status="failed",
+                command=display,
+                error=str(exc),
+            )
+        ]
+
+    return [
+        _command_result(
+            kind="pip",
+            name=", ".join(missing),
+            status="installed" if completed.returncode == 0 else "failed",
+            command=display,
+            completed=completed,
+        )
+    ]
+
+
+def _install_memory_provider_external_dependencies(
+    dependencies: List[Dict[str, str]],
+) -> List[Dict[str, Any]]:
+    results: List[Dict[str, Any]] = []
+    for dep in dependencies:
+        name = dep.get("name") or "dependency"
+        check_cmd = dep.get("check") or ""
+        install_cmd = dep.get("install") or ""
+
+        if check_cmd:
+            try:
+                check = _run_setup_command(
+                    shlex.split(check_cmd),
+                    display=check_cmd,
+                    timeout=20,
+                )
+            except Exception as exc:
+                results.append(
+                    _command_result(
+                        kind="external_check",
+                        name=name,
+                        status="missing" if install_cmd else "failed",
+                        command=check_cmd,
+                        error=str(exc),
+                    )
+                )
+            else:
+                if check.returncode == 0:
+                    results.append(
+                        _command_result(
+                            kind="external_check",
+                            name=name,
+                            status="already_installed",
+                            command=check_cmd,
+                            completed=check,
+                        )
+                    )
+                    continue
+                results.append(
+                    _command_result(
+                        kind="external_check",
+                        name=name,
+                        status="missing" if install_cmd else "failed",
+                        command=check_cmd,
+                        completed=check,
+                    )
+                )
+
+            if not install_cmd:
+                continue
+
+        if install_cmd:
+            try:
+                install = _run_setup_command(
+                    install_cmd,
+                    display=install_cmd,
+                    shell=True,
+                    timeout=300,
+                )
+            except Exception as exc:
+                results.append(
+                    _command_result(
+                        kind="external_install",
+                        name=name,
+                        status="failed",
+                        command=install_cmd,
+                        error=str(exc),
+                    )
+                )
+                continue
+
+            results.append(
+                _command_result(
+                    kind="external_install",
+                    name=name,
+                    status="installed" if install.returncode == 0 else "failed",
+                    command=install_cmd,
+                    completed=install,
+                )
+            )
+
+            if check_cmd and install.returncode == 0:
+                try:
+                    post_check = _run_setup_command(
+                        shlex.split(check_cmd),
+                        display=check_cmd,
+                        timeout=20,
+                    )
+                    results.append(
+                        _command_result(
+                            kind="external_check",
+                            name=name,
+                            status="verified" if post_check.returncode == 0 else "failed",
+                            command=check_cmd,
+                            completed=post_check,
+                        )
+                    )
+                except Exception as exc:
+                    results.append(
+                        _command_result(
+                            kind="external_check",
+                            name=name,
+                            status="failed",
+                            command=check_cmd,
+                            error=str(exc),
+                        )
+                    )
+
+    return results
+
+
+def _install_memory_provider_setup(name: str) -> Dict[str, Any]:
+    provider = _load_memory_provider(name)
+    manifest = _memory_provider_manifest(name)
+    if provider is None and not manifest:
+        raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
+
+    setup = _memory_provider_setup_manifest(name)
+    results = []
+    results.extend(_install_memory_provider_pip_dependencies(setup["pip_dependencies"]))
+    results.extend(
+        _install_memory_provider_external_dependencies(setup["external_dependencies"])
+    )
+
+    if not results:
+        results.append(
+            _command_result(
+                kind="setup",
+                name=name,
+                status="no_declared_steps",
+            )
+        )
+
+    ok = all(result["status"] not in {"failed"} for result in results)
+    statuses = {row["name"]: row for row in _discover_memory_provider_statuses()}
+    return {
+        "ok": ok,
+        "provider": name,
+        "results": results,
+        "status": statuses.get(name),
+    }
+
+
+def _normalize_memory_provider_schema(name: str, provider: Any) -> List[Dict[str, Any]]:
+    raw_schema: List[Dict[str, Any]] = []
+    if provider is not None and hasattr(provider, "get_config_schema"):
+        try:
+            raw = provider.get_config_schema()
+            if isinstance(raw, list):
+                raw_schema = [field for field in raw if isinstance(field, dict)]
+        except Exception:
+            _log.warning("Failed to read memory provider schema for %s", name, exc_info=True)
+
+    fields: List[Dict[str, Any]] = []
+    for raw in raw_schema:
+        key = str(raw.get("key") or "").strip()
+        if not key:
+            continue
+
+        choices = raw.get("choices") or raw.get("options") or []
+        if not isinstance(choices, list):
+            choices = []
+
+        explicit_kind = str(raw.get("kind") or raw.get("type") or "").strip().lower()
+        if raw.get("secret"):
+            kind = "secret"
+        elif choices:
+            kind = "select"
+        elif explicit_kind in {"bool", "boolean"} or isinstance(raw.get("default"), bool):
+            kind = "boolean"
+        else:
+            kind = "text"
+
+        options = []
+        for choice in choices:
+            value = str(choice)
+            options.append({"value": value, "label": value, "description": ""})
+
+        description = str(raw.get("description") or "")
+        fields.append({
+            "key": key,
+            "label": str(raw.get("label") or key.replace("_", " ").title()),
+            "kind": kind,
+            "description": description,
+            "placeholder": str(raw.get("placeholder") or ""),
+            "required": bool(raw.get("required", False)),
+            "default": raw.get("default", ""),
+            "options": options,
+            "url": str(raw.get("url") or ""),
+            "when": raw.get("when") if isinstance(raw.get("when"), dict) else None,
+            "_env_key": str(raw.get("env_var") or "") or None,
+        })
+
+    return fields
+
+
+def _read_json_file(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        _log.warning("Failed to read memory provider config from %s", path, exc_info=True)
+        _log.debug("Failed to read JSON config from %s", path, exc_info=True)
         return {}
     return data if isinstance(data, dict) else {}
 
 
-def _read_field_value(field: ProviderField, data: Dict[str, Any]) -> str:
-    """Resolve the stored value for a non-secret field, honoring legacy reads."""
+def _read_memory_provider_existing_values(name: str) -> Dict[str, Any]:
+    """Best-effort read of existing provider config across legacy/native stores."""
 
-    for source_key in (field.key, *field.aliases):
-        value = data.get(source_key)
-        if value:
-            return str(value)
+    hermes_home = get_hermes_home()
+    values: Dict[str, Any] = {}
 
+    # Common native provider stores.
+    for path in (
+        hermes_home / f"{name}.json",
+        hermes_home / name / "config.json",
+    ):
+        values.update(_read_json_file(path))
+
+    try:
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+
+    memory_cfg = cfg.get("memory") if isinstance(cfg, dict) else {}
+    if isinstance(memory_cfg, dict):
+        provider_cfg = memory_cfg.get(name)
+        if isinstance(provider_cfg, dict):
+            values.update(provider_cfg)
+        legacy_cfg = memory_cfg.get("provider_config")
+        if isinstance(legacy_cfg, dict):
+            values = {**legacy_cfg, **values}
+
+    # Holographic stores under plugins.hermes-memory-store.
+    plugins_cfg = cfg.get("plugins") if isinstance(cfg, dict) else {}
+    if name == "holographic" and isinstance(plugins_cfg, dict):
+        holographic_cfg = plugins_cfg.get("hermes-memory-store")
+        if isinstance(holographic_cfg, dict):
+            values.update(holographic_cfg)
+
+    return values
+
+
+def _env_lookup(env_key: Optional[str]) -> str:
+    if not env_key:
+        return ""
     env_on_disk = load_env()
-    for env_key in field.env_fallbacks:
-        value = env_on_disk.get(env_key)
-        if value:
-            return str(value)
-
-    return field.default
+    return str(env_on_disk.get(env_key) or os.environ.get(env_key) or "")
 
 
-def _field_is_set(field: ProviderField, data: Dict[str, Any]) -> bool:
-    """Whether a secret field has a value anywhere it may have been written."""
+def _coerce_bool(value: Any, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None or value == "":
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"Invalid boolean value: {value}")
 
-    env_on_disk = load_env()
-    for env_key in (field.env_key, *field.env_fallbacks):
-        if env_key and env_on_disk.get(env_key):
-            return True
-    return any(data.get(source_key) for source_key in (field.key, *field.aliases))
+
+def _field_default(field: Dict[str, Any]) -> Any:
+    default = field.get("default", "")
+    if field["kind"] == "boolean":
+        return _coerce_bool(default, default=False)
+    return default
 
 
-def _memory_provider_payload(provider: MemoryProvider) -> Dict[str, Any]:
-    data = _read_memory_provider_file(provider)
-    fields: List[Dict[str, Any]] = []
+def _field_value(field: Dict[str, Any], data: Dict[str, Any]) -> Any:
+    if field["kind"] == "secret":
+        return ""
 
-    for field in provider.fields:
-        entry: Dict[str, Any] = {
-            "key": field.key,
-            "label": field.label,
-            "kind": field.kind,
-            "description": field.description,
-            "placeholder": field.placeholder,
-            "options": [
-                {"value": opt.value, "label": opt.label, "description": opt.description}
-                for opt in field.options
-            ],
+    value = data.get(field["key"])
+    if value in (None, ""):
+        value = _env_lookup(field.get("_env_key"))
+    if value in (None, ""):
+        value = _field_default(field)
+
+    if field["kind"] == "select":
+        allowed = {opt["value"] for opt in field.get("options", [])}
+        value = str(value)
+        return value if value in allowed else str(_field_default(field))
+    if field["kind"] == "boolean":
+        return _coerce_bool(value, default=_coerce_bool(_field_default(field), default=False))
+    return str(value)
+
+
+def _field_is_set(field: Dict[str, Any], data: Dict[str, Any]) -> bool:
+    if field["kind"] == "secret":
+        return bool(_env_lookup(field.get("_env_key")) or data.get(field["key"]))
+    value = _field_value(field, data)
+    return value not in (None, "")
+
+
+def _field_visible(
+    field: Dict[str, Any],
+    data: Dict[str, Any],
+    fields_by_key: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> bool:
+    when = field.get("when")
+    if not isinstance(when, dict) or not when:
+        return True
+    for dep_key, expected in when.items():
+        dep_field = (fields_by_key or {}).get(str(dep_key)) or {
+            "key": str(dep_key),
+            "kind": "text",
+            "default": "",
+            "_env_key": None,
+        }
+        actual = _field_value(dep_field, data)
+        if str(actual) != str(expected):
+            return False
+    return True
+
+
+def _public_memory_provider_field(field: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, Any]:
+    entry = {
+        "key": field["key"],
+        "label": field["label"],
+        "kind": field["kind"],
+        "description": field["description"],
+        "placeholder": field["placeholder"],
+        "required": field["required"],
+        "value": "" if field["kind"] == "secret" else _field_value(field, data),
+        "is_set": _field_is_set(field, data),
+        "options": field.get("options", []),
+        "url": field.get("url", ""),
+        "when": field.get("when"),
+    }
+    return entry
+
+
+def _memory_provider_payload(name: str, provider: Any) -> Dict[str, Any]:
+    data = _read_memory_provider_existing_values(name)
+    fields = [
+        _public_memory_provider_field(field, data)
+        for field in _normalize_memory_provider_schema(name, provider)
+    ]
+    return {
+        "name": name,
+        "label": _memory_provider_label(name),
+        "fields": fields,
+        "setup": _memory_provider_setup_info(name),
+    }
+
+
+def _coerce_schema_field(field: Dict[str, Any], raw: Any) -> Any:
+    if field["kind"] == "boolean":
+        return _coerce_bool(raw, default=_coerce_bool(_field_default(field), default=False))
+
+    value = str(raw if raw is not None else "").strip()
+    if field["kind"] == "select":
+        if not value:
+            value = str(_field_default(field))
+        allowed = {opt["value"] for opt in field.get("options", [])}
+        if value not in allowed:
+            raise ValueError(f"Invalid value for '{field['key']}'")
+        return value
+
+    return value or _field_default(field)
+
+
+def _save_memory_provider_native_config(name: str, provider: Any, values: Dict[str, Any]) -> None:
+    if provider is not None and hasattr(provider, "save_config"):
+        try:
+            from agent.memory_provider import MemoryProvider as _BaseMemoryProvider
+        except Exception:
+            provider.save_config(values, str(get_hermes_home()))
+            return
+        if type(provider).save_config is not _BaseMemoryProvider.save_config:
+            provider.save_config(values, str(get_hermes_home()))
+            return
+
+    cfg = load_config()
+    memory_cfg = cfg.get("memory")
+    if not isinstance(memory_cfg, dict):
+        memory_cfg = {}
+        cfg["memory"] = memory_cfg
+    current = memory_cfg.get(name)
+    if not isinstance(current, dict):
+        current = {}
+    current.update(values)
+    memory_cfg[name] = current
+    save_config(cfg)
+
+
+def _memory_provider_is_configured(name: str, provider: Any) -> bool:
+    data = _read_memory_provider_existing_values(name)
+    fields = _normalize_memory_provider_schema(name, provider)
+    fields_by_key = {field["key"]: field for field in fields}
+    visible_fields = [
+        field for field in fields if _field_visible(field, data, fields_by_key)
+    ]
+    required_fields = [field for field in visible_fields if field.get("required")]
+    if not required_fields:
+        return True
+    return all(_field_is_set(field, data) for field in required_fields)
+
+
+def _discover_memory_provider_statuses() -> List[Dict[str, Any]]:
+    discovered: Dict[str, Dict[str, Any]] = {}
+    try:
+        from plugins.memory import discover_memory_providers
+
+        for name, description, available in discover_memory_providers():
+            discovered[str(name)] = {
+                "name": str(name),
+                "description": str(description or ""),
+                "available": bool(available),
+                "missing": False,
+            }
+    except Exception:
+        _log.exception("discover_memory_providers failed")
+
+    cfg = load_config()
+    active = ""
+    mem = cfg.get("memory")
+    if isinstance(mem, dict):
+        active = _normalize_memory_provider_name(mem.get("provider"))
+    if active and active not in discovered:
+        discovered[active] = {
+            "name": active,
+            "description": "Configured provider was not found.",
+            "available": False,
+            "missing": True,
         }
 
-        if field.is_secret:
-            # Secrets are write-only over the API; only expose whether one is set.
-            entry["value"] = ""
-            entry["is_set"] = _field_is_set(field, data)
+    providers: List[Dict[str, Any]] = []
+    for name in sorted(discovered):
+        row = discovered[name]
+        provider = None if row["missing"] else _load_memory_provider(name)
+        setup = _memory_provider_setup_info(name)
+        configured = False if row["missing"] else _memory_provider_is_configured(name, provider)
+        schema_fields = [] if row["missing"] else _normalize_memory_provider_schema(name, provider)
+        if row["missing"]:
+            status = "missing"
+        elif not row["available"] and not setup.get("dependencies_installed", True):
+            status = "unavailable"
+        elif not configured:
+            status = "needs_config"
+        elif not row["available"] and schema_fields:
+            status = "needs_config"
+        elif not row["available"]:
+            status = "unavailable"
         else:
-            value = _read_field_value(field, data)
-            if field.kind == "select" and value not in field.allowed_values():
-                value = field.default
-            entry["value"] = value
-            entry["is_set"] = bool(value)
+            status = "ready"
+        providers.append({
+            "name": name,
+            "description": row["description"],
+            "available": row["available"],
+            "configured": configured,
+            "status": status,
+            "setup": setup,
+        })
+    return providers
 
-        fields.append(entry)
 
-    return {"name": provider.name, "label": provider.label, "fields": fields}
+def _require_memory_provider_ready(name: str) -> None:
+    if not name:
+        return
+    statuses = {row["name"]: row for row in _discover_memory_provider_statuses()}
+    row = statuses.get(name)
+    if row is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown memory provider '{name}'.",
+        )
+    if row["status"] != "ready":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Memory provider '{name}' is not ready "
+                f"({row['status'].replace('_', ' ')}). Configure it in the dashboard first."
+            ),
+        )
 
 
-def _coerce_field_value(field: ProviderField, raw: str) -> str:
-    """Validate and normalize a submitted non-secret value, or raise ValueError."""
+def _write_memory_provider_config_values(
+    name: str,
+    provider: Any,
+    values: Dict[str, Any],
+) -> None:
+    existing = _read_memory_provider_existing_values(name)
+    fields = _normalize_memory_provider_schema(name, provider)
+    fields_by_key = {field["key"]: field for field in fields}
+    config_values: Dict[str, Any] = {}
+    secrets: Dict[str, str] = {}
 
-    value = (raw or "").strip()
-    if field.kind == "select":
-        if not value:
-            value = field.default
-        if value not in field.allowed_values():
-            raise ValueError(f"Invalid value for '{field.key}'")
-        return value
-    return value or field.default
+    for field in fields:
+        if not _field_visible(field, {**existing, **config_values}, fields_by_key):
+            continue
+
+        if field["kind"] == "secret":
+            submitted = str(values.get(field["key"]) or "").strip()
+            if submitted and field.get("_env_key"):
+                secrets[str(field["_env_key"])] = submitted
+            continue
+
+        raw = (
+            values[field["key"]]
+            if field["key"] in values
+            else existing.get(field["key"], _field_default(field))
+        )
+        config_values[field["key"]] = _coerce_schema_field(field, raw)
+
+    _save_memory_provider_native_config(name, provider, config_values)
+
+    for env_key, secret in secrets.items():
+        save_env_value(env_key, secret)
+
+
+_MEMORY_PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+def _require_valid_memory_provider_name(name: str) -> None:
+    """Reject provider names that could traverse outside the plugin dirs.
+
+    ``name`` is interpolated into filesystem paths by ``find_provider_dir()``
+    and gates which plugin manifest's setup commands run. A strict charset
+    allowlist (no path separators, no dots) makes traversal impossible
+    regardless of how the downstream lookup evolves.
+    """
+    if not _MEMORY_PROVIDER_NAME_RE.fullmatch(name or ""):
+        raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
 
 
 @app.get("/api/memory/providers/{name}/config")
 async def get_memory_provider_config(name: str):
-    provider = get_memory_provider(name)
+    _require_valid_memory_provider_name(name)
+    provider = _load_memory_provider(name)
     if provider is None:
         # Undeclared providers (e.g. builtin) have no config surface. Return an
         # empty schema so the generic panel simply renders nothing.
-        return {"name": name, "label": name, "fields": []}
-    return _memory_provider_payload(provider)
+        return {"name": name, "label": name, "fields": [], "setup": _memory_provider_setup_info(name)}
+    return _memory_provider_payload(name, provider)
+
+
+@app.post("/api/memory/providers/{name}/setup")
+async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest):
+    _require_valid_memory_provider_name(name)
+    provider = _load_memory_provider(name)
+    if provider is None and not _memory_provider_manifest(name):
+        # No discoverable plugin directory → nothing whose manifest could
+        # legitimately declare setup commands. Refuse before the
+        # command-running path. (provider may be None with a manifest present
+        # when its pip deps aren't installed yet — that's the setup use case.)
+        raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
+    if provider is not None and body.values:
+        try:
+            _write_memory_provider_config_values(name, provider, body.values)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception:
+            _log.exception("Failed to persist memory provider setup values for %s", name)
+            raise HTTPException(status_code=500, detail="Internal server error")
+    return _install_memory_provider_setup(name)
 
 
 @app.put("/api/memory/providers/{name}/config")
 async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpdate):
-    provider = get_memory_provider(name)
+    _require_valid_memory_provider_name(name)
+    provider = _load_memory_provider(name)
     if provider is None:
         raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
 
     values = body.values or {}
 
     try:
-        existing = _read_memory_provider_file(provider)
-        json_values: Dict[str, Any] = {}
-        secrets: Dict[str, str] = {}
-
-        for field in provider.fields:
-            if field.is_secret:
-                submitted = (values.get(field.key) or "").strip()
-                if submitted and field.env_key:
-                    secrets[field.env_key] = submitted
-                continue
-
-            raw = (
-                values[field.key]
-                if field.key in values
-                else str(existing.get(field.key, field.default))
-            )
-            json_values[field.key] = _coerce_field_value(field, raw)
+        _write_memory_provider_config_values(name, provider, values)
+        _require_memory_provider_ready(name)
 
         config = load_config()
         memory_config = config.get("memory")
         if not isinstance(memory_config, dict):
             memory_config = {}
             config["memory"] = memory_config
-        memory_config["provider"] = provider.name
+        memory_config["provider"] = name
         save_config(config)
 
-        path = _memory_provider_config_path(provider)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        existing.update(json_values)
-        from utils import atomic_json_write
-
-        atomic_json_write(path, existing, mode=0o600)
-
-        for env_key, secret in secrets.items():
-            save_env_value(env_key, secret)
-
-        return {"ok": True}
+        return {"ok": True, "active": name}
     except HTTPException:
         raise
     except ValueError as exc:
@@ -4294,7 +5129,12 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
 
 
 @app.get("/api/model/options")
-def get_model_options(profile: Optional[str] = None, refresh: bool = False):
+def get_model_options(
+    profile: Optional[str] = None,
+    refresh: bool = False,
+    include_unconfigured: bool = False,
+    explicit_only: bool = False,
+):
     """Return authenticated providers + their curated model lists.
 
     REST equivalent of the ``model.options`` JSON-RPC on tui_gateway, so the
@@ -4313,18 +5153,15 @@ def get_model_options(profile: Optional[str] = None, refresh: bool = False):
     try:
         from hermes_cli.inventory import build_models_payload, load_picker_context
 
-        # include_unconfigured + picker_hints + canonical_order mirror the
-        # tui_gateway `model.options` JSON-RPC handler exactly, so every GUI
-        # surface fed by this endpoint (Settings → Model, the first-run
-        # onboarding picker) sees the SAME full provider universe `hermes model`
-        # exposes — not just the authenticated subset. Unconfigured providers
-        # come back as skeleton rows carrying `authenticated=False` +
-        # `auth_type`/`key_env`/`warning` so the GUI can render a setup
-        # affordance instead of hiding the provider entirely.
+        # Most desktop surfaces should only list providers the user has already
+        # configured. Onboarding opts into the full provider universe via
+        # include_unconfigured=1 so it can still render setup affordances for
+        # providers that are not yet authenticated.
         with _profile_scope(profile):
             return build_models_payload(
                 load_picker_context(),
-                include_unconfigured=True,
+                explicit_only=bool(explicit_only),
+                include_unconfigured=bool(include_unconfigured),
                 picker_hints=True,
                 canonical_order=True,
                 pricing=True,
@@ -5296,7 +6133,12 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         "name": "WhatsApp",
         "description": "Use Hermes through the bundled WhatsApp bridge with QR-based auth.",
         "docs_url": "https://github.com/tulir/whatsmeow",
-        "env_vars": ("WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS"),
+        "env_vars": (
+            "WHATSAPP_ENABLED",
+            "WHATSAPP_MODE",
+            "WHATSAPP_DM_POLICY",
+            "WHATSAPP_ALLOWED_USERS",
+        ),
         "required_env": (),
     },
     "homeassistant": {
@@ -5488,6 +6330,11 @@ _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
     "WHATSAPP_MODE": {
         "description": "WhatsApp bridge mode",
         "prompt": "WhatsApp mode",
+        "advanced": True,
+    },
+    "WHATSAPP_DM_POLICY": {
+        "description": "How WhatsApp direct messages are authorized",
+        "prompt": "WhatsApp DM policy",
         "advanced": True,
     },
     "WHATSAPP_ALLOWED_USERS": {
@@ -5886,7 +6733,23 @@ def _messaging_platform_payload(
         error_code = error_code or "startup_failed"
         error_message = error_message or runtime_gateway_error
 
-    return {
+    whatsapp_setup = None
+    if platform_id == "whatsapp":
+        whatsapp_mode = (
+            env_on_disk.get("WHATSAPP_MODE")
+            or ("" if scoped else os.getenv("WHATSAPP_MODE", ""))
+        ).strip()
+        allowed_users_value = (
+            env_on_disk.get("WHATSAPP_ALLOWED_USERS")
+            or ("" if scoped else os.getenv("WHATSAPP_ALLOWED_USERS", ""))
+        ).strip()
+        whatsapp_setup = {
+            "mode": whatsapp_mode if whatsapp_mode in {"bot", "self-chat"} else "",
+            "allowed_users_set": bool(allowed_users_value),
+            "home_channel_set": bool(home_channel),
+        }
+
+    payload = {
         "id": platform_id,
         "name": entry["name"],
         "description": entry["description"],
@@ -5905,10 +6768,503 @@ def _messaging_platform_payload(
         "home_channel": home_channel,
         "env_vars": env_vars,
     }
+    if whatsapp_setup is not None:
+        payload["whatsapp_setup"] = whatsapp_setup
+    return payload
 
 
 def _write_platform_enabled(platform_id: str, enabled: bool) -> None:
     write_platform_config_field(platform_id, "enabled", enabled)
+
+
+_WHATSAPP_ONBOARDING_TTL_SECONDS = 600
+_WHATSAPP_ONBOARDING_TERMINAL_STATUSES = {"connected", "error", "expired", "cancelled"}
+
+
+@dataclass
+class _WhatsAppOnboardingSession:
+    proc: subprocess.Popen | None
+    mode: str
+    allowed_users: str
+    session_path: str
+    expires_at: str
+    expires_at_ts: float
+    profile: str | None = None
+    status: str = "starting"
+    qr_payload: str | None = None
+    account_id: str | None = None
+    account_name: str | None = None
+    account_phone: str | None = None
+    error: str | None = None
+
+
+_whatsapp_onboarding_sessions: dict[str, _WhatsAppOnboardingSession] = {}
+_whatsapp_onboarding_lock = threading.RLock()
+
+
+def _utc_iso_from_ts(ts: float) -> str:
+    return datetime.fromtimestamp(ts, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _normalize_whatsapp_onboarding_mode(value: Any) -> str:
+    mode = str(value or "bot").strip().lower()
+    if mode not in {"bot", "self-chat"}:
+        raise HTTPException(status_code=400, detail="WhatsApp mode must be 'bot' or 'self-chat'.")
+    return mode
+
+
+def _normalize_whatsapp_allowed_users(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return ",".join(part.replace(" ", "") for part in raw.split(",") if part.strip())
+
+
+def _whatsapp_session_path() -> Path:
+    from hermes_constants import get_hermes_dir
+
+    return get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
+
+
+def _whatsapp_phone_from_identifier(value: Any) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    candidate = raw.split("@", 1)[0].split(":", 1)[0]
+    digits = re.sub(r"\D+", "", candidate)
+    return digits or None
+
+
+def _whatsapp_linked_account_from_session(session_path: Path) -> tuple[str | None, str | None, str | None]:
+    creds_path = session_path / "creds.json"
+    try:
+        payload = json.loads(creds_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None, None, None
+
+    account_id: str | None = None
+    account_name: str | None = None
+
+    def collect(candidate: Any) -> None:
+        nonlocal account_id, account_name
+        if not isinstance(candidate, dict):
+            return
+        if account_id is None:
+            for key in ("id", "jid", "lid"):
+                value = str(candidate.get(key) or "").strip()
+                if value:
+                    account_id = value
+                    break
+        if account_name is None:
+            for key in ("name", "verifiedName", "notify", "pushName"):
+                value = str(candidate.get(key) or "").strip()
+                if value:
+                    account_name = value
+                    break
+
+    collect(payload.get("me"))
+    collect(payload.get("account"))
+    collect(payload)
+    return account_id, account_name, _whatsapp_phone_from_identifier(account_id)
+
+
+def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
+    """Install bridge dependencies when the dashboard is the setup surface."""
+    if (bridge_dir / "node_modules").exists():
+        return
+
+    from hermes_constants import find_node_executable, with_hermes_node_path
+    from utils import env_int
+
+    npm = find_node_executable("npm")
+    if not npm:
+        raise HTTPException(
+            status_code=500,
+            detail="npm was not found. WhatsApp setup needs Node.js and npm.",
+        )
+
+    timeout = env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300)
+    try:
+        result = subprocess.run(
+            [npm, "install", "--silent"],
+            cwd=str(bridge_dir),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=with_hermes_node_path(),
+            creationflags=windows_hide_flags(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Installing WhatsApp bridge dependencies timed out.",
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to install WhatsApp bridge dependencies: {exc}",
+        ) from exc
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        if detail:
+            detail = "\n".join(detail.splitlines()[-10:])
+        raise HTTPException(
+            status_code=500,
+            detail=f"npm install failed for WhatsApp bridge: {detail or 'no output'}",
+        )
+
+
+def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess.Popen:
+    from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+    from hermes_constants import find_node_executable, with_hermes_node_path
+
+    bridge_dir = resolve_whatsapp_bridge_dir()
+    bridge_script = bridge_dir / "bridge.js"
+    if not bridge_script.exists():
+        raise HTTPException(
+            status_code=500,
+            detail=f"WhatsApp bridge script was not found at {bridge_script}.",
+        )
+    node = find_node_executable("node")
+    if not node:
+        raise HTTPException(
+            status_code=500,
+            detail="Node.js was not found. WhatsApp setup needs Node.js.",
+        )
+
+    _ensure_whatsapp_bridge_dependencies(bridge_dir)
+    session_path.mkdir(parents=True, exist_ok=True)
+
+    env = with_hermes_node_path()
+    env["WHATSAPP_MODE"] = mode
+    env["WHATSAPP_DM_POLICY"] = "pairing"
+    return subprocess.Popen(
+        [
+            node,
+            str(bridge_script),
+            "--pair-only",
+            "--pair-json",
+            "--session",
+            str(session_path),
+        ],
+        cwd=str(bridge_dir),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        start_new_session=True,
+        env=env,
+        creationflags=windows_hide_flags(),
+    )
+
+
+def _terminate_whatsapp_pairing(proc: subprocess.Popen | None) -> None:
+    if proc is None:
+        return
+    if proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=3)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _watch_whatsapp_pairing(pairing_id: str, proc: subprocess.Popen) -> None:
+    try:
+        stream = proc.stdout
+        if stream is not None:
+            for line in stream:
+                raw = line.strip()
+                if not raw:
+                    continue
+                try:
+                    payload = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                event = str(payload.get("event") or "").strip()
+                with _whatsapp_onboarding_lock:
+                    record = _whatsapp_onboarding_sessions.get(pairing_id)
+                    if not record or record.proc is not proc:
+                        return
+                    if event == "qr":
+                        qr = str(payload.get("qr") or "").strip()
+                        if qr:
+                            record.qr_payload = qr
+                            record.status = "waiting"
+                            record.error = None
+                    elif event == "connected":
+                        user = payload.get("user")
+                        if isinstance(user, dict):
+                            account_id = str(user.get("id") or "").strip()
+                            account_name = str(user.get("name") or "").strip()
+                            record.account_id = account_id or None
+                            record.account_name = account_name or None
+                            record.account_phone = _whatsapp_phone_from_identifier(account_id)
+                        record.status = "connected"
+                        record.error = None
+                    elif event == "error":
+                        record.status = "error"
+                        record.error = str(payload.get("error") or "WhatsApp pairing failed.")
+                    elif event == "disconnected" and record.status == "starting":
+                        record.status = "waiting"
+        returncode = proc.wait()
+    except Exception as exc:
+        with _whatsapp_onboarding_lock:
+            record = _whatsapp_onboarding_sessions.get(pairing_id)
+            if record and record.proc is proc and record.status not in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES:
+                record.status = "error"
+                record.error = str(exc)
+        return
+
+    with _whatsapp_onboarding_lock:
+        record = _whatsapp_onboarding_sessions.get(pairing_id)
+        if not record or record.proc is not proc:
+            return
+        if record.status in {"connected", "cancelled", "expired"}:
+            return
+        record.status = "error"
+        record.error = (
+            "WhatsApp pairing process exited before pairing completed."
+            if returncode == 0
+            else f"WhatsApp pairing process exited with code {returncode}."
+        )
+
+
+def _run_whatsapp_pairing(pairing_id: str, session_path: Path, mode: str) -> None:
+    with _whatsapp_onboarding_lock:
+        record = _whatsapp_onboarding_sessions.get(pairing_id)
+        if not record or record.status in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES:
+            return
+        record.status = "installing"
+
+    try:
+        proc = _spawn_whatsapp_pairing_process(session_path, mode)
+    except Exception as exc:
+        with _whatsapp_onboarding_lock:
+            record = _whatsapp_onboarding_sessions.get(pairing_id)
+            if record and record.status not in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES:
+                record.status = "error"
+                record.error = str(exc)
+        return
+
+    with _whatsapp_onboarding_lock:
+        record = _whatsapp_onboarding_sessions.get(pairing_id)
+        if not record or record.status in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES:
+            _terminate_whatsapp_pairing(proc)
+            return
+        record.proc = proc
+        record.status = "starting"
+
+    _watch_whatsapp_pairing(pairing_id, proc)
+
+
+def _prune_whatsapp_onboarding_sessions() -> None:
+    now = time.time()
+    remove_ids: list[str] = []
+    for pairing_id, record in _whatsapp_onboarding_sessions.items():
+        if (
+            record.proc is not None
+            and record.status not in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES
+            and record.proc.poll() is not None
+        ):
+            record.status = "error"
+            record.error = "WhatsApp pairing process exited before pairing completed."
+        if record.expires_at_ts <= now and record.status not in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES:
+            _terminate_whatsapp_pairing(record.proc)
+            record.status = "expired"
+            record.error = "WhatsApp QR setup expired. Start a new setup."
+        if record.status in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES and record.expires_at_ts + 300 <= now:
+            remove_ids.append(pairing_id)
+    for pairing_id in remove_ids:
+        _whatsapp_onboarding_sessions.pop(pairing_id, None)
+
+
+def _supersede_whatsapp_onboarding_sessions(session_path: Path) -> None:
+    for existing in _whatsapp_onboarding_sessions.values():
+        if existing.session_path == str(session_path) and existing.status not in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES:
+            existing.status = "cancelled"
+            existing.error = "Superseded by a newer WhatsApp setup session."
+            _terminate_whatsapp_pairing(existing.proc)
+
+
+def _whatsapp_onboarding_payload(pairing_id: str, record: _WhatsAppOnboardingSession) -> dict[str, Any]:
+    return {
+        "pairing_id": pairing_id,
+        "status": record.status,
+        "qr_payload": record.qr_payload,
+        "expires_at": record.expires_at,
+        "mode": record.mode,
+        "allowed_users": record.allowed_users,
+        "account_id": record.account_id,
+        "account_name": record.account_name,
+        "account_phone": record.account_phone,
+        "error": record.error,
+    }
+
+
+def _restart_gateway_after_whatsapp_onboarding(profile: Optional[str] = None) -> dict[str, Any]:
+    try:
+        proc, reused = _spawn_gateway_restart(profile)
+    except Exception as exc:
+        _log.exception("Failed to auto-restart gateway after WhatsApp onboarding")
+        return {
+            "restart_started": False,
+            "restart_error": str(exc),
+        }
+    if reused:
+        _log.info(
+            "WhatsApp onboarding: reusing in-flight gateway restart (pid %s)",
+            proc.pid,
+        )
+    return {
+        "restart_started": True,
+        "restart_action": "gateway-restart",
+        "restart_pid": proc.pid,
+    }
+
+
+@app.post("/api/messaging/whatsapp/onboarding/start")
+async def start_whatsapp_onboarding(body: WhatsAppOnboardingStart):
+    mode = _normalize_whatsapp_onboarding_mode(body.mode)
+    allowed_users = _normalize_whatsapp_allowed_users(body.allowed_users)
+    effective_profile = body.profile
+
+    with _config_profile_scope(effective_profile):
+        session_path = _whatsapp_session_path()
+        expires_at_ts = time.time() + _WHATSAPP_ONBOARDING_TTL_SECONDS
+        expires_at = _utc_iso_from_ts(expires_at_ts)
+        if (session_path / "creds.json").exists():
+            pairing_id = secrets.token_urlsafe(16)
+            account_id, account_name, account_phone = _whatsapp_linked_account_from_session(session_path)
+            record = _WhatsAppOnboardingSession(
+                proc=None,
+                mode=mode,
+                allowed_users=allowed_users,
+                session_path=str(session_path),
+                expires_at=expires_at,
+                expires_at_ts=expires_at_ts,
+                profile=effective_profile,
+                status="connected",
+                account_id=account_id,
+                account_name=account_name,
+                account_phone=account_phone,
+            )
+            with _whatsapp_onboarding_lock:
+                _prune_whatsapp_onboarding_sessions()
+                _supersede_whatsapp_onboarding_sessions(session_path)
+                _whatsapp_onboarding_sessions[pairing_id] = record
+            return _whatsapp_onboarding_payload(pairing_id, record)
+
+    pairing_id = secrets.token_urlsafe(16)
+    record = _WhatsAppOnboardingSession(
+        proc=None,
+        mode=mode,
+        allowed_users=allowed_users,
+        session_path=str(session_path),
+        expires_at=expires_at,
+        expires_at_ts=expires_at_ts,
+        profile=effective_profile,
+    )
+
+    with _whatsapp_onboarding_lock:
+        _prune_whatsapp_onboarding_sessions()
+        _supersede_whatsapp_onboarding_sessions(session_path)
+        _whatsapp_onboarding_sessions[pairing_id] = record
+
+    threading.Thread(
+        target=_run_whatsapp_pairing,
+        args=(pairing_id, session_path, mode),
+        daemon=True,
+    ).start()
+
+    return _whatsapp_onboarding_payload(pairing_id, record)
+
+
+@app.get("/api/messaging/whatsapp/onboarding/{pairing_id}")
+async def get_whatsapp_onboarding_status(pairing_id: str):
+    with _whatsapp_onboarding_lock:
+        _prune_whatsapp_onboarding_sessions()
+        record = _whatsapp_onboarding_sessions.get(pairing_id)
+        if not record:
+            raise HTTPException(
+                status_code=404,
+                detail="WhatsApp setup session was not found. Start a new setup.",
+            )
+        if record.status == "expired":
+            raise HTTPException(status_code=410, detail=record.error or "WhatsApp setup expired.")
+        return _whatsapp_onboarding_payload(pairing_id, record)
+
+
+@app.post("/api/messaging/whatsapp/onboarding/{pairing_id}/apply")
+async def apply_whatsapp_onboarding(
+    pairing_id: str, body: WhatsAppOnboardingApply, profile: Optional[str] = None
+):
+    with _whatsapp_onboarding_lock:
+        _prune_whatsapp_onboarding_sessions()
+        record = _whatsapp_onboarding_sessions.get(pairing_id)
+        if not record:
+            raise HTTPException(
+                status_code=404,
+                detail="WhatsApp setup session was not found. Start a new setup.",
+            )
+        if record.status != "connected":
+            raise HTTPException(status_code=409, detail="WhatsApp setup is not connected yet.")
+        mode = _normalize_whatsapp_onboarding_mode(body.mode or record.mode)
+        allowed_users = _normalize_whatsapp_allowed_users(
+            record.allowed_users if body.allowed_users is None else body.allowed_users
+        )
+        if mode == "self-chat" and not allowed_users:
+            allowed_users = record.account_phone or record.account_id or ""
+        record_profile = record.profile
+
+    effective_profile = body.profile or profile or record_profile
+    try:
+        with _config_profile_scope(effective_profile):
+            save_env_value("WHATSAPP_MODE", mode)
+            save_env_value("WHATSAPP_DM_POLICY", "pairing")
+            if allowed_users:
+                save_env_value("WHATSAPP_ALLOWED_USERS", allowed_users)
+            # Blank means "keep the existing allowlist"; explicit clearing
+            # still lives in the normal config editor where the field is visible.
+            save_env_value("WHATSAPP_ENABLED", "true")
+            _write_platform_enabled("whatsapp", True)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        _log.exception("WhatsApp onboarding apply failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to save WhatsApp setup.",
+        ) from exc
+
+    with _whatsapp_onboarding_lock:
+        _whatsapp_onboarding_sessions.pop(pairing_id, None)
+
+    restart_result = _restart_gateway_after_whatsapp_onboarding(effective_profile)
+    return {
+        "ok": True,
+        "platform": "whatsapp",
+        "needs_restart": not restart_result["restart_started"],
+        **restart_result,
+    }
+
+
+@app.delete("/api/messaging/whatsapp/onboarding/{pairing_id}")
+async def cancel_whatsapp_onboarding(pairing_id: str):
+    with _whatsapp_onboarding_lock:
+        record = _whatsapp_onboarding_sessions.pop(pairing_id, None)
+    if record:
+        record.status = "cancelled"
+        _terminate_whatsapp_pairing(record.proc)
+    return {"ok": True}
 
 
 _TELEGRAM_ONBOARDING_DEFAULT_URL = "https://setup.hermes-agent.nousresearch.com"
@@ -7060,26 +8416,15 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
         "refreshToken": refresh_token,
         "expiresAt": expires_at_ms,
     }
-    oauth_file.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = oauth_file.with_name(
-        f"{oauth_file.name}.tmp.{os.getpid()}.{secrets.token_hex(8)}"
-    )
-    try:
-        with tmp_path.open("w", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, indent=2))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, oauth_file)
-        try:
-            oauth_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
-        except OSError:
-            pass
-    finally:
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
+    # atomic_json_write creates the temp with mode 0o600 (via mkstemp) *before*
+    # any content is written, then fsyncs and atomically replaces the target.
+    # The previous os.replace + post-hoc chmod left a TOCTOU window in which the
+    # OAuth token file was world-readable at the default umask (0o644 on most
+    # hosts) between the rename and the chmod. atomic_json_write also preserves
+    # the existing file's owner and cleans up its temp on failure.
+    from utils import atomic_json_write
+
+    atomic_json_write(oauth_file, payload, indent=2, mode=0o600)
     # Best-effort credential-pool insert. Failure here doesn't invalidate
     # the file write — pool registration only matters for the rotation
     # strategy, not for runtime credential resolution.
@@ -7871,14 +9216,12 @@ async def cancel_oauth_session(
 
 
 
-def _session_latest_descendant(session_id: str):
+def _session_latest_descendant(session_id: str, db):
     """Resolve a session id to the newest child leaf session.
 
     /model may create child sessions. Dashboard refresh should continue the
     newest child instead of reopening the old parent.
     """
-    from hermes_state import SessionDB
-
     def row_get(row, key, index):
         if isinstance(row, dict):
             return row.get(key)
@@ -7890,62 +9233,58 @@ def _session_latest_descendant(session_id: str):
             except Exception:
                 return None
 
-    db = SessionDB()
-    try:
-        sid = db.resolve_session_id(session_id)
-        if not sid or not db.get_session(sid):
-            return None, []
+    sid = db.resolve_session_id(session_id)
+    if not sid or not db.get_session(sid):
+        return None, []
 
-        conn = (
-            getattr(db, "conn", None)
-            or getattr(db, "_conn", None)
-            or getattr(db, "connection", None)
-            or getattr(db, "_connection", None)
-        )
+    conn = (
+        getattr(db, "conn", None)
+        or getattr(db, "_conn", None)
+        or getattr(db, "connection", None)
+        or getattr(db, "_connection", None)
+    )
 
-        rows = []
-        if conn is not None:
-            raw_rows = conn.execute(
-                "SELECT id, parent_session_id, started_at FROM sessions"
-            ).fetchall()
-            for row in raw_rows:
-                rows.append({
-                    "id": row_get(row, "id", 0),
-                    "parent_session_id": row_get(row, "parent_session_id", 1),
-                    "started_at": row_get(row, "started_at", 2),
-                })
-        else:
-            rows = db.list_sessions_rich(limit=10000, offset=0)
+    rows = []
+    if conn is not None:
+        raw_rows = conn.execute(
+            "SELECT id, parent_session_id, started_at FROM sessions"
+        ).fetchall()
+        for row in raw_rows:
+            rows.append({
+                "id": row_get(row, "id", 0),
+                "parent_session_id": row_get(row, "parent_session_id", 1),
+                "started_at": row_get(row, "started_at", 2),
+            })
+    else:
+        rows = db.list_sessions_rich(limit=10000, offset=0)
 
-        children = {}
-        for row in rows:
-            rid = row.get("id")
-            parent = row.get("parent_session_id")
-            if rid and parent:
-                children.setdefault(parent, []).append(row)
+    children = {}
+    for row in rows:
+        rid = row.get("id")
+        parent = row.get("parent_session_id")
+        if rid and parent:
+            children.setdefault(parent, []).append(row)
 
-        def started(row):
-            try:
-                return float(row.get("started_at") or 0)
-            except Exception:
-                return 0.0
+    def started(row):
+        try:
+            return float(row.get("started_at") or 0)
+        except Exception:
+            return 0.0
 
-        current = sid
-        path = [sid]
-        seen = {sid}
+    current = sid
+    path = [sid]
+    seen = {sid}
 
-        while children.get(current):
-            candidates = [r for r in children[current] if r.get("id") not in seen]
-            if not candidates:
-                break
-            candidates.sort(key=started, reverse=True)
-            current = candidates[0]["id"]
-            path.append(current)
-            seen.add(current)
+    while children.get(current):
+        candidates = [r for r in children[current] if r.get("id") not in seen]
+        if not candidates:
+            break
+        candidates.sort(key=started, reverse=True)
+        current = candidates[0]["id"]
+        path.append(current)
+        seen.add(current)
 
-        return current, path
-    finally:
-        db.close()
+    return current, path
 
 
 # CRITICAL — every literal-path route below MUST be declared BEFORE the
@@ -8119,16 +9458,23 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
 
 
 @app.get("/api/sessions/{session_id}/latest-descendant")
-async def get_session_latest_descendant(session_id: str):
-    latest, path = _session_latest_descendant(session_id)
-    if not latest:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return {
-        "requested_session_id": path[0] if path else session_id,
-        "session_id": latest,
-        "path": path,
-        "changed": bool(path and latest != path[0]),
-    }
+async def get_session_latest_descendant(
+    session_id: str,
+    profile: Optional[str] = None,
+):
+    db = _open_session_db_for_profile(profile)
+    try:
+        latest, path = _session_latest_descendant(session_id, db)
+        if not latest:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return {
+            "requested_session_id": path[0] if path else session_id,
+            "session_id": latest,
+            "path": path,
+            "changed": bool(path and latest != path[0]),
+        }
+    finally:
+        db.close()
 
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str, profile: Optional[str] = None):
@@ -9897,11 +11243,9 @@ async def remove_credential_pool_entry(provider: str, index: int):
 # ---------------------------------------------------------------------------
 # Memory provider endpoints — status / list providers / select / disable / reset.
 #
-# Selecting a provider only writes config.memory.provider (full interactive
-# provider setup, with its API-key prompts, stays on the CLI via
-# `hermes memory setup`).  The dashboard covers the common admin actions:
-# see which provider is active, switch the built-in store on/off, and wipe
-# built-in memory files.
+# Provider setup is dashboard-native when a provider exposes get_config_schema().
+# The dashboard never runs interactive provider setup hooks; activation is only
+# allowed once the provider is discoverable, available, and has required config.
 # ---------------------------------------------------------------------------
 
 
@@ -9917,24 +11261,11 @@ class MemoryReset(BaseModel):
 
 @app.get("/api/memory")
 async def get_memory_status():
-    from plugins.memory import discover_memory_providers
-
     cfg = load_config()
     active = ""
     mem = cfg.get("memory")
     if isinstance(mem, dict):
-        active = str(mem.get("provider") or "")
-
-    providers = []
-    try:
-        for name, description, configured in discover_memory_providers():
-            providers.append({
-                "name": name,
-                "description": description,
-                "configured": bool(configured),
-            })
-    except Exception:
-        _log.exception("discover_memory_providers failed")
+        active = _normalize_memory_provider_name(mem.get("provider"))
 
     # Built-in memory file sizes (so the UI can show what a reset would erase).
     mem_dir = get_hermes_home() / "memories"
@@ -9945,26 +11276,16 @@ async def get_memory_status():
 
     return {
         "active": active,
-        "providers": providers,
+        "providers": _discover_memory_provider_statuses(),
         "builtin_files": files,
     }
 
 
 @app.put("/api/memory/provider")
 async def set_memory_provider(body: MemoryProviderSelect):
-    provider = (body.provider or "").strip()
-    if provider.lower() in {"built-in", "builtin", "none"}:
-        provider = ""
+    provider = _normalize_memory_provider_name(body.provider)
 
-    if provider:
-        from plugins.memory import discover_memory_providers
-
-        valid = {name for name, _d, _c in discover_memory_providers()}
-        if provider not in valid:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown memory provider '{provider}'. Run `hermes memory setup` to configure a new one.",
-            )
+    _require_memory_provider_ready(provider)
 
     cfg = load_config()
     if not isinstance(cfg.get("memory"), dict):
@@ -12556,6 +13877,105 @@ else:
 
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
 _PTY_READ_CHUNK_TIMEOUT = 0.2
+
+# Keep-alive PTY sessions: a terminal connecting with ``?attach=<token>`` is
+# bound to a process that survives disconnect/refresh and is reattachable.
+from hermes_cli.pty_session import PtySessionRegistry, RegistryFull, run_reaper  # noqa: E402
+
+PTY_REGISTRY = PtySessionRegistry(
+    ttl=30 * 60,
+    max_sessions=16,
+    buffer_cap=1 * 1024 * 1024,
+    read_timeout=_PTY_READ_CHUNK_TIMEOUT,
+)
+
+
+async def _legacy_pump(ws: "WebSocket", bridge) -> None:
+    """Original 1:1 socket<->PTY pump: stream until disconnect, then close the
+    bridge. Used when no ``?attach=`` token is supplied (keep-alive opt-in).
+
+    Behavior is identical to the pre-keep-alive ``pty_ws`` body, including the
+    #54028 half-open-socket protection (reader EOF → close the WS so the
+    writer's ``ws.receive()`` unparks) and the #53227 ``to_thread`` offloads
+    for the blocking ``bridge.close()``.
+    """
+    loop = asyncio.get_running_loop()
+
+    # --- reader task: PTY master → WebSocket ----------------------------
+    async def pump_pty_to_ws() -> None:
+        try:
+            while True:
+                chunk = await loop.run_in_executor(
+                    None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
+                )
+                if chunk is None:  # EOF
+                    return
+                if not chunk:  # no data this tick; yield control and retry
+                    await asyncio.sleep(0)
+                    continue
+                try:
+                    await ws.send_bytes(chunk)
+                except Exception:
+                    return
+        finally:
+            # The child has exited (EOF) or the send side broke.  Close the
+            # WebSocket so the writer loop's ``ws.receive()`` returns instead
+            # of blocking forever — otherwise, when the browser's socket is
+            # half-open (no FIN delivered, common on macOS/launchd) the
+            # handler never reaches its ``finally`` and the PTY's fds leak.
+            # With dashboard auto-reconnect (#52962) every dropped socket then
+            # stacks a fresh PTY on top of the orphaned one, exhausting fds.
+            #
+            # Reap the bridge here too (close() is idempotent): on child EOF the
+            # writer loop's ``finally`` is the usual closer, but if the handler
+            # task is cancelled the instant we close the WS, that ``finally``
+            # can be skipped, leaking the PTY. Closing from the EOF path makes
+            # the reap independent of that cancellation race (#54028).
+            try:
+                await asyncio.to_thread(bridge.close)
+            except Exception:
+                pass
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+    reader_task = asyncio.create_task(pump_pty_to_ws())
+
+    # --- writer loop: WebSocket → PTY master ----------------------------
+    try:
+        while True:
+            try:
+                msg = await ws.receive()
+            except RuntimeError:
+                # Raised when ws.receive() is called after the socket is
+                # already disconnected (e.g. closed by the reader task above).
+                break
+            if msg.get("type") == "websocket.disconnect":
+                break
+            raw = msg.get("bytes")
+            if raw is None:
+                text = msg.get("text")
+                raw = text.encode("utf-8") if isinstance(text, str) else b""
+            if not raw:
+                continue
+            # Resize escape is consumed locally, never written to the PTY.
+            match = _RESIZE_RE.match(raw)
+            if match and match.end() == len(raw):
+                bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
+                continue
+            bridge.write(raw)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        reader_task.cancel()
+        try:
+            await reader_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        await asyncio.to_thread(bridge.close)
+
+
 _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # Starlette's TestClient reports the peer as "testclient"; treat it as
 # loopback so tests don't need to rewrite request scope.
@@ -12858,13 +14278,30 @@ def _resolve_chat_argv(
     # the dashboard PTY path.
     env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
     env.setdefault("HERMES_TUI_INLINE", "1")
+    # The dashboard terminal is xterm.js, which always renders 24-bit RGB.
+    # But chalk inside the TUI child decides its color depth from the
+    # SERVER process env — and hosted/cloud deploys run the dashboard under
+    # a process manager (container init, systemd) with no COLORTERM, so
+    # chalk downgrades every hex color to the xterm 256 palette. The skin's
+    # bronze border #CD7F32 snaps to palette 173 (#D7875F, salmon-red) and
+    # the banner reads red/yellow instead of gold. Local launches dodge
+    # this only because the operator's interactive terminal leaks
+    # COLORTERM=truecolor into os.environ. Backfill it for the PTY child;
+    # setdefault so an explicit operator value still wins.
+    env.setdefault("COLORTERM", "truecolor")
     env["HERMES_TUI_DASHBOARD"] = "1"
 
     if profile_dir is not None:
         env["HERMES_HOME"] = str(profile_dir)
 
     if resume:
-        latest_resume, _latest_path = _session_latest_descendant(resume)
+        _resume_db = _open_session_db_for_profile(
+            requested if profile_dir is not None else None
+        )
+        try:
+            latest_resume, _latest_path = _session_latest_descendant(resume, _resume_db)
+        finally:
+            _resume_db.close()
         if latest_resume:
             resume = latest_resume
         env["HERMES_TUI_RESUME"] = resume
@@ -13761,71 +15198,57 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
 
+    attach_token = ws.query_params.get("attach") or None
+
+    def _spawn():
+        return PtyBridge.spawn(argv, cwd=cwd, env=env)
+
+    if attach_token is None:
+        # Legacy path: 1:1 socket<->PTY, killed on disconnect (unchanged).
+        try:
+            bridge = _spawn()
+        except PtyUnavailableError as exc:
+            await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
+            await ws.close(code=1011)
+            return
+        except (FileNotFoundError, OSError) as exc:
+            await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
+            await ws.close(code=1011)
+            return
+        await _legacy_pump(ws, bridge)
+        return
+
+    # Keep-alive path: the PTY outlives this socket; reattach by token.
     try:
-        bridge = await asyncio.to_thread(PtyBridge.spawn, argv, cwd=cwd, env=env)
+        session, _created = await PTY_REGISTRY.attach_or_spawn(
+            attach_token, spawn=_spawn
+        )
     except PtyUnavailableError as exc:
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
         return
-    except (FileNotFoundError, OSError) as exc:
-        await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
+    except (FileNotFoundError, OSError, RegistryFull) as exc:
+        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
         return
 
-    loop = asyncio.get_running_loop()
-
-    # --- reader task: PTY master → WebSocket ----------------------------
-    async def pump_pty_to_ws() -> None:
-        try:
-            while True:
-                chunk = await loop.run_in_executor(
-                    None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
-                )
-                if chunk is None:  # EOF
-                    return
-                if not chunk:  # no data this tick; yield control and retry
-                    await asyncio.sleep(0)
-                    continue
-                try:
-                    await ws.send_bytes(chunk)
-                except Exception:
-                    return
-        finally:
-            # The child has exited (EOF) or the send side broke.  Close the
-            # WebSocket so the writer loop's ``ws.receive()`` returns instead
-            # of blocking forever — otherwise, when the browser's socket is
-            # half-open (no FIN delivered, common on macOS/launchd) the
-            # handler never reaches its ``finally`` and the PTY's fds leak.
-            # With dashboard auto-reconnect (#52962) every dropped socket then
-            # stacks a fresh PTY on top of the orphaned one, exhausting fds.
-            #
-            # Reap the bridge here too (close() is idempotent): on child EOF the
-            # writer loop's ``finally`` is the usual closer, but if the handler
-            # task is cancelled the instant we close the WS, that ``finally``
-            # can be skipped, leaking the PTY. Closing from the EOF path makes
-            # the reap independent of that cancellation race (#54028).
-            try:
-                await asyncio.to_thread(bridge.close)
-            except Exception:
-                pass
-            try:
-                await ws.close()
-            except Exception:
-                pass
-
-    reader_task = asyncio.create_task(pump_pty_to_ws())
+    await session.attach(ws)
 
     # --- writer loop: WebSocket → PTY master ----------------------------
+    # No reader task here: the session's drain task (spawned once per PTY,
+    # inside the registry) forwards PTY output to whichever socket is
+    # attached and rings-buffers it while detached.  On child EOF the drain
+    # closes the attached socket with 4410, which unparks ``ws.receive()``
+    # below — same half-open-socket protection the legacy pump has (#54028).
     try:
         while True:
             try:
                 msg = await ws.receive()
             except RuntimeError:
-                # Raised when ws.receive() is called after the socket is
-                # already disconnected (e.g. closed by the reader task above).
+                # ws.receive() after the socket is already disconnected
+                # (e.g. closed by the drain task on process exit).
                 break
-            msg_type = msg.get("type")
-            if msg_type == "websocket.disconnect":
+            if msg.get("type") == "websocket.disconnect":
                 break
             raw = msg.get("bytes")
             if raw is None:
@@ -13837,21 +15260,16 @@ async def pty_ws(ws: WebSocket) -> None:
             # Resize escape is consumed locally, never written to the PTY.
             match = _RESIZE_RE.match(raw)
             if match and match.end() == len(raw):
-                cols = int(match.group(1))
-                rows = int(match.group(2))
-                bridge.resize(cols=cols, rows=rows)
+                session.bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
                 continue
 
-            bridge.write(raw)
+            session.bridge.write(raw)
     except WebSocketDisconnect:
         pass
     finally:
-        reader_task.cancel()
-        try:
-            await reader_task
-        except (asyncio.CancelledError, Exception):
-            pass
-        await asyncio.to_thread(bridge.close)
+        # Detach only — the PTY keeps running for a reattach; the registry
+        # reaper closes it after the TTL (or immediately on process exit).
+        PTY_REGISTRY.detach(attach_token, ws)
 
 
 # ---------------------------------------------------------------------------
@@ -14680,7 +16098,6 @@ def _merged_plugins_hub() -> Dict[str, Any]:
         _get_current_context_engine,
         _get_current_memory_provider,
         _discover_context_engines,
-        _discover_memory_providers,
         _get_disabled_set,
         _get_enabled_set,
         _read_manifest as _read_plugin_manifest_at,
@@ -14768,12 +16185,7 @@ def _merged_plugins_hub() -> Dict[str, Any]:
         if str(p["name"]) not in agent_names
     ]
 
-    memory_providers: List[Dict[str, str]] = []
-    try:
-        for n, desc in _discover_memory_providers():
-            memory_providers.append({"name": n, "description": desc})
-    except Exception:
-        memory_providers = []
+    memory_providers = _discover_memory_provider_statuses()
 
     context_engines: List[Dict[str, str]] = []
     try:
@@ -14786,7 +16198,7 @@ def _merged_plugins_hub() -> Dict[str, Any]:
         "plugins": rows,
         "orphan_dashboard_plugins": orphan_dashboard,
         "providers": {
-            "memory_provider": _get_current_memory_provider() or "",
+            "memory_provider": _normalize_memory_provider_name(_get_current_memory_provider()),
             "memory_options": memory_providers,
             "context_engine": _get_current_context_engine(),
             "context_options": context_engines,
@@ -14899,7 +16311,9 @@ async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody):
     )
 
     if body.memory_provider is not None:
-        _save_memory_provider(body.memory_provider)
+        memory_provider = _normalize_memory_provider_name(body.memory_provider)
+        _require_memory_provider_ready(memory_provider)
+        _save_memory_provider(memory_provider)
     if body.context_engine is not None:
         _save_context_engine(body.context_engine)
     return {"ok": True}

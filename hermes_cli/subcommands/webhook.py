@@ -31,6 +31,30 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
     wh_sub.add_argument(
         "--events", default="", help="Comma-separated event types to accept"
     )
+    wh_sub.add_argument(
+        "--actions",
+        default="",
+        help="Comma-separated action whitelist within the event, e.g. "
+        "opened,synchronize,reopened for pull_request. Omit to accept any "
+        "action (including closed/labeled/review re-fires).",
+    )
+    wh_sub.add_argument(
+        "--ignore-senders",
+        default="",
+        help="Comma-separated GitHub logins to ignore (case-insensitive). "
+        "Set this to the account used for --deliver github_comment on this "
+        "route so the agent doesn't reply to its own comments and loop.",
+    )
+    wh_sub.add_argument(
+        "--mark-own-comments",
+        action="store_true",
+        help="Alternative to --ignore-senders for when the bot posts as the "
+        "same GitHub account a human also comments from. Appends an "
+        "invisible marker to every comment this route posts, and ignores "
+        "incoming comments/reviews carrying that marker, so the agent still "
+        "responds to your comments but not its own. Makes bot comments "
+        "identifiable via the raw markdown source (not the rendered view).",
+    )
     wh_sub.add_argument("--description", default="", help="What this subscription does")
     wh_sub.add_argument(
         "--skills", default="", help="Comma-separated skill names to load"
@@ -44,6 +68,18 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "--deliver-chat-id",
         default="",
         help="Target chat ID for cross-platform delivery",
+    )
+    wh_sub.add_argument(
+        "--deliver-repo",
+        default="",
+        help="GitHub repo (org/name) for deliver: github_comment. Supports "
+        "{dot.notation} payload refs, e.g. {repository.full_name}.",
+    )
+    wh_sub.add_argument(
+        "--deliver-pr-number",
+        default="",
+        help="GitHub PR or issue number for deliver: github_comment. Supports "
+        "{dot.notation} payload refs, e.g. {number} or {issue.number}.",
     )
     wh_sub.add_argument(
         "--secret", default="", help="HMAC secret (auto-generated if omitted)"

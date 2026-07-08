@@ -37,7 +37,7 @@ plugins:
       compact_head_lines: 80
       compact_tail_lines: 120
       compact_signal_limit: 80
-      record_ledger: true
+      record_all_terminal: false
       allow_danger_full_access: false
 ```
 

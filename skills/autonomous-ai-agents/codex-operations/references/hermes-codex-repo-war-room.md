@@ -1,7 +1,7 @@
 # Hermes/Codex Repository Adaptation War Room
 
-Date: 2026-07-04  
-Target repo: `hermes-agent`  
+Date: 2026-07-04
+Target repo: `hermes-agent`
 External clone workspace: `/tmp/hermes-repo-warroom-mNN06w`
 
 ## Decision summary

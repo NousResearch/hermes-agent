@@ -99,6 +99,33 @@ def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
     return normalized.endswith("/openai")
 
 
+def _is_vibeproxy_claude_family(provider_name: str, model: str) -> bool:
+    model_lower = (model or "").strip().lower()
+    return provider_name == "vibeproxy" and (
+        "claude" in model_lower
+        or any(alias in model_lower for alias in ("opus", "sonnet", "haiku", "mythos", "fable"))
+    )
+
+
+def _vibeproxy_claude_reasoning_model(model: str, effort: str) -> str:
+    """Encode Claude reasoning effort in the model name for VibeProxy.
+
+    VibeProxy/CLIProxyAPI's Claude subscription route accepts OpenAI-compatible
+    ``extra_body.reasoning`` but does not consistently apply it. Its reliable
+    compatibility format is ``claude-...(high)`` / ``claude-...(medium)``.
+    Leave already-suffixed model names alone so explicit user selections win.
+    """
+    model_name = (model or "").strip()
+    if not model_name or "(" in model_name or model_name.endswith("-thinking"):
+        return model
+    normalized_effort = str(effort or "").strip().lower()
+    if normalized_effort == "minimal":
+        normalized_effort = "low"
+    if normalized_effort not in {"low", "medium", "high", "xhigh", "max"}:
+        return model
+    return f"{model_name}({normalized_effort})"
+
+
 def _model_consumes_thought_signature(model: Any) -> bool:
     """True when the outgoing model is a Gemini family model that requires
     ``extra_content`` (thought_signature) to be replayed on tool calls.
@@ -113,6 +140,49 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     """
     m = str(model or "").lower()
     return "gemini" in m or "gemma" in m
+
+
+def _normalize_mcp_wire_tool_name(name: str) -> str:
+    """Map Anthropic OAuth-safe ``mcp__`` wire names back to Hermes tool names.
+
+    Claude subscription-backed OpenAI-compatible gateways may require tools to
+    be sent as ``mcp__read_file`` / ``mcp__linear_get_issue`` to avoid the
+    single-underscore MCP third-party-app classifier. Hermes' dispatcher still
+    knows those tools as ``read_file`` or ``mcp_linear_get_issue``. Reverse the
+    cloak only when the wire name itself is not registered.
+    """
+    if not isinstance(name, str) or not name.startswith("mcp__"):
+        return name
+    try:
+        from tools.registry import registry as _tool_registry
+
+        if _tool_registry.get_entry(name):
+            return name
+        bare = name[len("mcp__"):]
+        single = "mcp_" + bare
+        if _tool_registry.get_entry(single):
+            return single
+        if _tool_registry.get_entry(bare):
+            return bare
+        # In narrow unit-test/import contexts the registry may not have loaded
+        # core tools yet. Fall back using the same two shapes as the native
+        # Anthropic adapter: known Hermes-native names stay bare, MCP-server
+        # names become mcp_<server>_<tool>.
+        _known_native = {
+            "browser_back", "browser_cdp", "browser_click", "browser_console",
+            "browser_dialog", "browser_get_images", "browser_navigate",
+            "browser_press", "browser_scroll", "browser_snapshot", "browser_type",
+            "browser_vision", "clarify", "computer_use", "cronjob",
+            "delegate_task", "execute_code", "image_generate", "memory",
+            "patch", "process", "read_file", "search_files", "session_search",
+            "skill_manage", "skill_view", "skills_list", "terminal",
+            "text_to_speech", "todo", "tool_call", "tool_describe", "tool_search",
+            "vision_analyze", "web_extract", "web_search", "write_file",
+        }
+        return bare if bare in _known_native else single
+    except Exception:
+        pass
+    return name
 
 
 class ChatCompletionsTransport(ProviderTransport):
@@ -385,6 +455,7 @@ class ChatCompletionsTransport(ProviderTransport):
         is_github_models = params.get("is_github_models", False)
         provider_name = str(params.get("provider_name") or "").strip().lower()
         base_url = params.get("base_url")
+        is_vibeproxy_claude_family = _is_vibeproxy_claude_family(provider_name, model)
 
         provider_prefs = params.get("provider_preferences")
         if provider_prefs and is_openrouter:
@@ -423,10 +494,31 @@ class ChatCompletionsTransport(ProviderTransport):
                 if gh_reasoning is not None:
                     extra_body["reasoning"] = gh_reasoning
             else:
-                _effort = "medium"
-                if reasoning_config and isinstance(reasoning_config, dict):
-                    _effort = reasoning_config.get("effort", "medium") or "medium"
-                extra_body["reasoning"] = {"enabled": True, "effort": _effort}
+                if (
+                    reasoning_config
+                    and isinstance(reasoning_config, dict)
+                    and reasoning_config.get("enabled") is False
+                ):
+                    extra_body["reasoning"] = {"enabled": False}
+                else:
+                    _effort = "medium"
+                    if reasoning_config and isinstance(reasoning_config, dict):
+                        _e = str(reasoning_config.get("effort") or "").strip().lower()
+                        if _e in {"minimal", "low"}:
+                            _effort = "low"
+                        elif _e == "medium":
+                            _effort = "medium"
+                        elif _e == "high":
+                            _effort = "high"
+                        elif _e == "xhigh":
+                            _effort = "xhigh" if is_vibeproxy_claude_family else "high"
+                        elif _e == "max" and is_vibeproxy_claude_family:
+                            _effort = "max"
+                    extra_body["reasoning"] = {"enabled": True, "effort": _effort}
+                    if is_vibeproxy_claude_family:
+                        api_kwargs["model"] = _vibeproxy_claude_reasoning_model(
+                            model, _effort
+                        )
 
         if provider_name == "gemini":
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)
@@ -637,7 +729,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 tool_calls.append(
                     ToolCall(
                         id=tc.id,
-                        name=tc.function.name,
+                        name=_normalize_mcp_wire_tool_name(tc.function.name),
                         arguments=tc.function.arguments,
                         provider_data=tc_provider_data or None,
                     )

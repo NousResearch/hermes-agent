@@ -460,6 +460,67 @@ class TestChatCompletionsBuildKwargs:
         )
         assert "thinking_config" not in kw.get("extra_body", {})
 
+    @pytest.mark.parametrize(
+        ("requested", "expected"),
+        [
+            ("minimal", "low"),
+            ("low", "low"),
+            ("medium", "medium"),
+            ("high", "high"),
+            ("xhigh", "xhigh"),
+            ("max", "max"),
+        ],
+    )
+    def test_vibeproxy_claude_reasoning_effort_is_encoded_in_model_name(
+        self, transport, requested, expected
+    ):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="claude-opus-4-8",
+            messages=msgs,
+            provider_name="vibeproxy",
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": requested},
+        )
+        assert kw["model"] == f"claude-opus-4-8({expected})"
+        assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": expected}
+
+    def test_vibeproxy_claude_reasoning_suffix_is_not_doubled(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="claude-opus-4-8(high)",
+            messages=msgs,
+            provider_name="vibeproxy",
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert kw["model"] == "claude-opus-4-8(high)"
+        assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "medium"}
+
+    def test_vibeproxy_claude_disabled_reasoning_does_not_suffix_model(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="claude-opus-4-8",
+            messages=msgs,
+            provider_name="vibeproxy",
+            supports_reasoning=True,
+            reasoning_config={"enabled": False},
+        )
+        assert kw["model"] == "claude-opus-4-8"
+        assert kw["extra_body"]["reasoning"] == {"enabled": False}
+
+    def test_non_vibeproxy_reasoning_does_not_rewrite_model_name(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="anthropic/claude-sonnet-4.6",
+            messages=msgs,
+            provider_name="openrouter",
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+        )
+        assert kw["model"] == "anthropic/claude-sonnet-4.6"
+        assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "high"}
+
     def test_max_tokens_with_fn(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
@@ -777,6 +838,24 @@ class TestChatCompletionsNormalize:
         assert len(nr.tool_calls) == 1
         assert nr.tool_calls[0].name == "terminal"
         assert nr.tool_calls[0].id == "call_123"
+
+    def test_tool_call_response_uncloaks_mcp_double_underscore_wire_name(self, transport):
+        """Claude subscription routes use mcp__ names on the wire; Hermes must
+        dispatch the original registered tool name after normalization."""
+        tc = SimpleNamespace(
+            id="call_123",
+            function=SimpleNamespace(name="mcp__terminal", arguments='{"command": "pwd"}'),
+        )
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content=None, tool_calls=[tc], reasoning_content=None),
+                finish_reason="tool_calls",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert len(nr.tool_calls) == 1
+        assert nr.tool_calls[0].name == "terminal"
 
     def test_tool_call_extra_content_preserved(self, transport):
         """Gemini 3 thinking models attach extra_content with thought_signature

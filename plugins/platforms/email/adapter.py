@@ -670,6 +670,8 @@ class EmailAdapter(BasePlatformAdapter):
                     logger.info(
                         "[Email] INBOX UIDVALIDITY changed; clearing cached UID state"
                     )
+                    # UIDs from the previous namespace are no longer comparable.
+                    # Rebaseline and defer dispatch until the next poll.
                     startup_count = self._establish_uid_baseline(
                         imap,
                         uidvalidity=current_uidvalidity,
@@ -682,7 +684,15 @@ class EmailAdapter(BasePlatformAdapter):
                         )
                     return results
 
-                status, data = imap.uid("search", None, "UNSEEN")
+                search_args = (None, "UNSEEN")
+                if self._startup_seen_uid_cutoff is not None:
+                    search_args = (
+                        None,
+                        "UID",
+                        f"{self._startup_seen_uid_cutoff + 1}:*",
+                        "UNSEEN",
+                    )
+                status, data = imap.uid("search", *search_args)
                 if status != "OK" or not data or not data[0]:
                     return results
 

@@ -22,6 +22,7 @@ import {
   inlineErrorMessage,
   isProviderSetupError,
   isSessionBusyError,
+  isGatewayTimeoutError,
   isSessionNotFoundError,
   type SubmitTextOptions,
   withSessionBusyRetry
@@ -212,6 +213,34 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         setMessages(current => [...current, buildUserMessage()])
       }
 
+      if (!sessionId && selectedStoredSessionIdRef.current) {
+        // A stored session is SELECTED but its runtime binding is gone (the
+        // live session was orphan-reaped, or a timeout/reconnect cleared
+        // activeSessionId). Continuing the selected conversation must mean
+        // resuming it — minting a brand-new backend session here silently
+        // splits the user's chat in two (#55578 symptom b). Only fall through
+        // to session creation when NO stored session is selected (a genuine
+        // new-chat draft).
+        try {
+          const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+            session_id: selectedStoredSessionIdRef.current
+          })
+
+          if (resumed?.session_id) {
+            sessionId = resumed.session_id
+            activeSessionIdRef.current = sessionId
+          }
+        } catch {
+          // Resume failed (session gone from state.db, gateway hiccup) —
+          // fall through to creating a fresh session rather than dead-ending
+          // the user's message.
+        }
+
+        if (sessionId) {
+          seedOptimistic(sessionId)
+        }
+      }
+
       if (!sessionId) {
         try {
           sessionId = await createBackendSessionForSend(visibleText)
@@ -254,8 +283,15 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         try {
           await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: sessionId, text }))
         } catch (firstErr) {
-          if (isSessionNotFoundError(firstErr) && selectedStoredSessionIdRef.current) {
+          if (
+            (isSessionNotFoundError(firstErr) || isGatewayTimeoutError(firstErr)) &&
+            selectedStoredSessionIdRef.current
+          ) {
             // Re-register the session in the gateway and get a fresh live ID.
+            // Timeouts recover the same way as "session not found": a starved
+            // backend loop (#55578 symptom d) rejects the submit even though
+            // the stored session is fine — resume + retry instead of erroring
+            // out and losing the session binding.
             const resumed = await requestGateway<{ session_id: string }>('session.resume', {
               session_id: selectedStoredSessionIdRef.current,
               source: 'desktop'

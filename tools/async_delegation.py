@@ -128,6 +128,7 @@ def dispatch_async_delegation(
     role: str,
     model: Optional[str],
     session_key: str,
+    parent_session_id: Optional[str] = None,
     runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
@@ -145,6 +146,11 @@ def dispatch_async_delegation(
         captured on the parent thread BEFORE dispatch, because the daemon
         worker thread won't carry the contextvar. Used to route the
         completion back to the originating session.
+    parent_session_id
+        The durable ``state.db`` session id of the parent agent that spawned
+        the delegation. Carried on the completion event so the gateway can
+        pin routing to the spawning session instead of recovering the latest
+        ``ended_at IS NULL`` row for the peer tuple (#57498).
     runner
         Zero-arg callable that builds + runs the child and returns the same
         result dict ``_run_single_child`` produces. Runs on the worker thread.
@@ -173,6 +179,7 @@ def dispatch_async_delegation(
         "model": model,
         "session_key": session_key,
         "origin_ui_session_id": origin_ui_session_id,
+        "parent_session_id": parent_session_id,
         "status": "running",
         "dispatched_at": dispatched_at,
         "completed_at": None,
@@ -284,6 +291,7 @@ def _push_completion_event(
         # session; empty string => CLI (single-session) path.
         "session_key": record.get("session_key", ""),
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),
+        "parent_session_id": record.get("parent_session_id"),
         "goal": record.get("goal", ""),
         "context": record.get("context"),
         "toolsets": record.get("toolsets"),
@@ -318,6 +326,7 @@ def dispatch_async_delegation_batch(
     role: str,
     model: Optional[str],
     session_key: str,
+    parent_session_id: Optional[str] = None,
     runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
@@ -360,6 +369,7 @@ def dispatch_async_delegation_batch(
         "model": model,
         "session_key": session_key,
         "origin_ui_session_id": origin_ui_session_id,
+        "parent_session_id": parent_session_id,
         "status": "running",
         "dispatched_at": dispatched_at,
         "completed_at": None,
@@ -458,6 +468,7 @@ def _finalize_batch(
         "delegation_id": delegation_id,
         "session_key": event_record.get("session_key", ""),
         "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
+        "parent_session_id": event_record.get("parent_session_id"),
         "goal": event_record.get("goal", ""),
         "goals": event_record.get("goals"),
         "context": event_record.get("context"),
@@ -527,6 +538,7 @@ def interrupt_all(reason: str = "shutdown") -> int:
 def interrupt_for_session(
     session_key: str = "",
     origin_ui_session_id: str = "",
+    parent_session_id: str = "",
     reason: str = "session_end",
 ) -> int:
     """Signal running async delegations owned by ONE session to stop.
@@ -537,11 +549,17 @@ def interrupt_for_session(
     with no live owner, either leaking into another chat or burning tokens
     with no one listening (#55578).
 
-    Matches on ``origin_ui_session_id`` (the live UI session that
-    commissioned the work) and/or the durable ``session_key``; either
-    matching field claims the record. Returns how many were interrupted.
+    Selectors (any matching field claims the record):
+    - ``origin_ui_session_id``: the live TUI tab/window that commissioned it.
+    - ``session_key``: the durable routing key captured at dispatch.
+    - ``parent_session_id``: the spawning agent's durable session-db id —
+      the right selector for gateway chats, whose ``session_key`` (the
+      platform conversation key) SURVIVES a ``/new`` reset while the
+      session id rotates.
+
+    Returns how many were interrupted.
     """
-    if not session_key and not origin_ui_session_id:
+    if not session_key and not origin_ui_session_id and not parent_session_id:
         return 0
     count = 0
     with _records_lock:
@@ -551,6 +569,7 @@ def interrupt_for_session(
             and (
                 (origin_ui_session_id and str(r.get("origin_ui_session_id") or "") == origin_ui_session_id)
                 or (session_key and str(r.get("session_key") or "") == session_key)
+                or (parent_session_id and str(r.get("parent_session_id") or "") == parent_session_id)
             )
         ]
     for r in targets:

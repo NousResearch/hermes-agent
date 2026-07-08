@@ -33,13 +33,13 @@ logger = logging.getLogger(__name__)
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 _SENSITIVE_QS_RE = re.compile(
-    r"(?i)([?&](?:[^&=]*(?:key|token|secret|password|apikey|access_token)[^&=]*)=)([^&]+)"
+    r"(?i)([?&](?:[^&#=]*(?:key|token|secret|password|apikey|access_token)[^&#=]*)=)([^&#]+)"
 )
 
 
-def _redact_url(url: str) -> str:
+def _redact_url(url: Any) -> str:
     """Mask sensitive-looking query parameter values in a URL."""
-    return _SENSITIVE_QS_RE.sub(r"\1***", url)
+    return _SENSITIVE_QS_RE.sub(r"\1***", str(url))
 
 
 _MCP_PRESETS: Dict[str, Dict[str, Any]] = {

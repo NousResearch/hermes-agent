@@ -878,6 +878,16 @@ class WebhookAdapter(BasePlatformAdapter):
             ).hexdigest()
             return hmac.compare_digest(gh_sig, expected)
 
+        # Exit1.dev: X-Exit1-Signature = sha256=<hex HMAC-SHA256>
+        exit1_sig = request.headers.get("X-Exit1-Signature", "")
+        if exit1_sig:
+            # Strip optional sha256= prefix (Exit1 sends this format)
+            raw_sig = exit1_sig.replace("sha256=", "", 1) if exit1_sig.startswith("sha256=") else exit1_sig
+            expected = hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return hmac.compare_digest(raw_sig, expected)
+
         # GitLab: X-Gitlab-Token = <plain secret>
         gl_token = request.headers.get("X-Gitlab-Token", "")
         if gl_token:

@@ -4415,11 +4415,15 @@ def _print_version_info(*, check_updates: bool = True) -> None:
 
     # Show update status (synchronous — acceptable since user asked for version info)
     try:
-        from hermes_cli.banner import check_for_updates
+        from hermes_cli.banner import UPDATE_AVAILABLE_NO_COUNT, check_for_updates
         from hermes_cli.config import recommended_update_command
 
         behind = check_for_updates()
-        if behind and behind > 0:
+        if behind == UPDATE_AVAILABLE_NO_COUNT:
+            print(
+                f"Update available — run '{recommended_update_command()}'"
+            )
+        elif behind and behind > 0:
             commits_word = "commit" if behind == 1 else "commits"
             print(
                 f"Update available: {behind} {commits_word} behind — "

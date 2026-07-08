@@ -410,6 +410,28 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.should_rotate_credential is True
 
+    def test_message_only_rate_limit_exceeded_is_rate_limit_not_billing(self):
+        """A status-less 'rate limit exceeded' (e.g. an SSE error frame with
+        status_code=None) must classify as a retryable rate limit, not
+        permanent billing exhaustion.
+
+        Regression: 'rate limit exceeded' contains the usage-limit substring
+        'limit exceeded', and the usage-limit disambiguation ran before the
+        rate-limit check — so with no transient signal it was routed to
+        billing (non-retryable, rotate credential) instead of rate_limit."""
+        e = MockAPIError("rate limit exceeded")  # no status_code
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    def test_message_only_usage_limit_still_billing(self):
+        """Guard: a genuine status-less 'usage limit exceeded' (no rate-limit
+        wording, no transient signal) must still classify as billing."""
+        e = MockAPIError("usage limit exceeded")  # no status_code
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
     # ── 5xx that are actually request-validation errors ──
     # Some OpenAI-compatible gateways (e.g. codex.nekos.me) return
     # request-validation failures with a 5xx status. These are

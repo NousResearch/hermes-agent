@@ -1242,7 +1242,16 @@ def _classify_by_message(
     # surface "usage limit" errors without an HTTP status code.  A transient
     # signal ("try again", "resets at", …) means it's a periodic quota, not
     # billing exhaustion.
-    has_usage_limit = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
+    #
+    # But an unambiguous rate-limit phrase must NOT be captured here: e.g.
+    # "rate limit exceeded" contains the usage-limit substring "limit
+    # exceeded", and with no transient signal it would be misclassified as
+    # permanent billing exhaustion (non-retryable + credential rotation)
+    # instead of a retryable rate limit.  Defer those to the rate-limit check
+    # below by excluding messages that also match a rate-limit pattern.
+    has_usage_limit = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS) and not any(
+        p in error_msg for p in _RATE_LIMIT_PATTERNS
+    )
     if has_usage_limit:
         has_transient_signal = any(p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS)
         if has_transient_signal:

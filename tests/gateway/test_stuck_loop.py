@@ -113,3 +113,54 @@ class TestStuckLoopDetection:
         assert runner._suspend_stuck_loop_sessions() == 0
         # Clear on nonexistent file — should not crash
         runner._clear_restart_failure_count("nonexistent")
+
+
+class TestResetStuckLoopCounts:
+    """The set-based reset used by the clean-drain path (#7536 false-suspend fix).
+
+    Distinct from the singular ``_clear_restart_failure_count`` (drops the whole
+    entry on a successful turn): this resets the COUNT axis for a set of
+    drained-clean sessions while preserving the separate replay-loop breaker's
+    state (``replay_marks``/``armed``).
+    """
+
+    def test_reset_clears_plain_count(self, runner_with_home):
+        runner, home = runner_with_home
+        runner._increment_restart_failure_counts({"session:a", "session:b"})
+        runner._increment_restart_failure_counts({"session:a", "session:b"})
+        # session:a drained cleanly this restart → its count resets to 0.
+        runner._reset_stuck_loop_counts({"session:a"})
+        counts = json.loads((home / runner._STUCK_LOOP_FILE).read_text())
+        assert "session:a" not in counts  # pruned (no replay state, count 0)
+        assert counts["session:b"] == 2  # untouched
+
+    def test_reset_preserves_replay_state(self, runner_with_home):
+        runner, home = runner_with_home
+        # Seed an entry that also carries replay-loop breaker state.
+        path = home / runner._STUCK_LOOP_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "session:a": {"count": 2, "replay_marks": [123.0], "armed": True},
+        }))
+        runner._reset_stuck_loop_counts({"session:a"})
+        counts = json.loads(path.read_text())
+        # Count reset, but replay-breaker state (the SEPARATE mechanism) kept.
+        assert counts["session:a"]["count"] == 0
+        assert counts["session:a"]["replay_marks"] == [123.0]
+        assert counts["session:a"]["armed"] is True
+
+    def test_reset_empty_set_is_noop(self, runner_with_home):
+        runner, home = runner_with_home
+        runner._increment_restart_failure_counts({"session:a"})
+        runner._reset_stuck_loop_counts(set())
+        counts = json.loads((home / runner._STUCK_LOOP_FILE).read_text())
+        assert counts["session:a"] == 1
+
+    def test_reset_missing_key_no_crash(self, runner_with_home):
+        runner, home = runner_with_home
+        # No file / unknown key — must not crash.
+        runner._reset_stuck_loop_counts({"nonexistent"})
+        runner._increment_restart_failure_counts({"session:a"})
+        runner._reset_stuck_loop_counts({"nonexistent"})
+        counts = json.loads((home / runner._STUCK_LOOP_FILE).read_text())
+        assert counts["session:a"] == 1

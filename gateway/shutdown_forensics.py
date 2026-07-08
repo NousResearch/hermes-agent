@@ -361,10 +361,21 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
         return None
 
     # Query systemctl for TimeoutStopUSec.  Use --user OR system depending
-    # on which manager actually owns the unit.  Try user first since
-    # that's the common case for hermes.
+    # on which manager actually owns the unit.  Verify ownership with a
+    # lightweight status check first — `systemctl --user show` can silently
+    # return stale data for units owned by the system manager, leading to
+    # false-positive mismatch warnings (#60737).
     timeout_us: Optional[int] = None
     for flag in (["--user"], []):
+        try:
+            _status = subprocess.run(
+                ["systemctl", *flag, "status", unit_name],
+                capture_output=True, text=True, timeout=2.0,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            continue
+        if _status.returncode != 0:
+            continue
         try:
             result = subprocess.run(
                 ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],

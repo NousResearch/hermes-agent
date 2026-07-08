@@ -3346,7 +3346,7 @@ class TelegramAdapter(BasePlatformAdapter):
             
             self._mark_connected()
             mode = "webhook" if self._webhook_mode else "polling"
-            logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
+            logger.warning("[%s] Connected to Telegram (%s mode)", self.name, mode)
 
             # Start the persistent heartbeat loop in polling mode. Webhook mode
             # receives updates via incoming pushes — there is no long-poll

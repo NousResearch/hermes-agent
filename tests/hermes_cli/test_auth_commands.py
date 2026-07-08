@@ -1553,6 +1553,49 @@ def test_auth_remove_env_seeded_dotenv_only_no_shell_hint(tmp_path, monkeypatch,
     assert (hermes_home / ".env").read_text().strip() == ""
 
 
+def test_auth_remove_env_seeded_dotenv_with_bom_no_shell_hint(tmp_path, monkeypatch, capsys):
+    """A Notepad-edited .env carries a UTF-8 BOM. The dotenv-vs-shell
+    detector must still see the first variable as living in .env (and not
+    warn about a phantom shell export). Regression for the reader that
+    dropped encoding='utf-8-sig' and misread the BOM'd first line.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    # BOM prefix (utf-8-sig) + the target var as the FIRST line.
+    (hermes_home / ".env").write_bytes(
+        b"\xef\xbb\xbfDEEPSEEK_API_KEY=sk-ds-only\n"
+    )
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds-only")
+
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "deepseek": [{
+                    "id": "env-1",
+                    "label": "DEEPSEEK_API_KEY",
+                    "auth_type": "api_key",
+                    "priority": 0,
+                    "source": "env:DEEPSEEK_API_KEY",
+                    "access_token": "sk-ds-only",
+                }]
+            },
+        },
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_remove_command
+    auth_remove_command(SimpleNamespace(provider="deepseek", target="1"))
+
+    out = capsys.readouterr().out
+    assert "Cleared DEEPSEEK_API_KEY from .env" in out
+    assert "still set in your shell environment" not in out
+
+
 def test_auth_add_clears_env_suppression_for_provider(tmp_path, monkeypatch):
     """Re-adding a credential via `hermes auth add <provider>` clears any
     env:<VAR> suppression marker — strong signal the user wants auth back.

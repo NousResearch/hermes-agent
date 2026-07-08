@@ -238,6 +238,45 @@ def tmp_cron_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+def test_storage_re_resolves_hermes_home_after_import(tmp_path, monkeypatch):
+    """Changing HERMES_HOME after import must not write to the old jobs file."""
+    import importlib
+    import cron.jobs as jobs_module
+
+    old_home = tmp_path / "old-home"
+    new_home = tmp_path / "new-home"
+
+    with monkeypatch.context() as m:
+        m.setenv("HERMES_HOME", str(old_home))
+        jobs_module = importlib.reload(jobs_module)
+
+        m.setenv("HERMES_HOME", str(new_home))
+        jobs_module.create_job(prompt="echo hi", schedule="every 5m", name="w")
+
+        assert (new_home / "cron" / "jobs.json").exists()
+        assert not (old_home / "cron" / "jobs.json").exists()
+        assert jobs_module.get_jobs_file() == new_home / "cron" / "jobs.json"
+
+    importlib.reload(jobs_module)
+
+
+def test_explicit_jobs_file_override_still_wins_over_env(tmp_path, monkeypatch):
+    """Existing tests and callers can still pin cron paths explicitly."""
+    import cron.jobs as jobs_module
+
+    env_home = tmp_path / "env-home"
+    override_cron = tmp_path / "override" / "cron"
+    monkeypatch.setenv("HERMES_HOME", str(env_home))
+    monkeypatch.setattr(jobs_module, "CRON_DIR", override_cron)
+    monkeypatch.setattr(jobs_module, "JOBS_FILE", override_cron / "jobs.json")
+    monkeypatch.setattr(jobs_module, "OUTPUT_DIR", override_cron / "output")
+
+    jobs_module.create_job(prompt="say hello", schedule="every 1h", name="alpha")
+
+    assert (override_cron / "jobs.json").exists()
+    assert not (env_home / "cron" / "jobs.json").exists()
+
+
 class TestJobCRUD:
     def test_create_and_get(self, tmp_cron_dir):
         job = create_job(prompt="Check server status", schedule="30m")

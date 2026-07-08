@@ -137,14 +137,17 @@ def _real_pass_file(d: Path) -> Path:
 # ── A5-A: the founding case + mutation proof ───────────────────────────────────
 
 def test_explicit_zero_collect_file_is_RED(tmp_path: Path) -> None:
-    """Explicitly-requested file that collects 0 tests with NO skip reason → RED.
+    """Explicitly-requested file that collects 0 with NO skip reason → RED under
+    the opt-in --strict-noop gate.
 
     This is the exact silent no-op: pre-guard the file exit-5→0-coerced to a
-    pass and the run went green. Now it must exit non-zero. (An all-SKIP file, by
-    contrast, is a ⚠ not a RED — see test_all_skip_file_is_surfaced_not_red.)
+    pass and the run went green. Under --strict-noop it must exit non-zero. (An
+    all-SKIP file is a ⚠ not a RED even with --strict-noop — see
+    test_all_skip_file_is_surfaced_not_red. The gate is opt-in because a full
+    suite run legitimately lists many files that filter to zero in a lane.)
     """
     probe = _silent_noop_file(tmp_path)
-    proc = _run_runner(str(probe))
+    proc = _run_runner(str(probe), "--strict-noop")
     assert proc.returncode != 0, (
         f"zero-collect explicit file went GREEN — guard did not fire:\n{proc.stdout}"
     )
@@ -152,13 +155,13 @@ def test_explicit_zero_collect_file_is_RED(tmp_path: Path) -> None:
 
 
 def test_all_skip_file_is_surfaced_not_red(tmp_path: Path) -> None:
-    """Spec: a skip-storm (every test skips) is a loud ⚠, NOT a RED gate — so a
-    dep-less env where an importorskip/skip fires does not false-red the suite.
+    """Spec: a skip-storm (every test skips) is a loud ⚠, NOT a RED gate — even
+    under --strict-noop — so a dep-less env (importorskip/skip) never false-reds.
     Paired with a real-pass file so total_executed>0 (whole-suite-zero gate off).
     """
     skip = _all_skip_file(tmp_path)
     real = _real_pass_file(tmp_path)
-    proc = _run_runner(str(skip), str(real))
+    proc = _run_runner(str(skip), str(real), "--strict-noop")
     assert proc.returncode == 0, (
         f"all-skip file should be ⚠ (surfaced), not RED:\n{proc.stdout}"
     )
@@ -178,10 +181,10 @@ def _deselected_to_zero_file(d: Path) -> Path:
     )
 
 
-def test_mutation_proof_guard_off_goes_green(tmp_path: Path) -> None:
-    """MUTATION PROOF (test-gate-honesty §2): flip the strict-noop gate off,
-    same invocation goes GREEN — proving the gate is the load-bearing RED and
-    not vacuous. --no-strict-noop is the one-line flip.
+def test_mutation_proof_guard_on_reds_off_greens(tmp_path: Path) -> None:
+    """MUTATION PROOF (test-gate-honesty §2): --strict-noop ON → RED, the default
+    (OFF) → GREEN on the SAME invocation — proving the gate is the load-bearing
+    RED and not vacuous.
 
     Uses a file that collects 0 via an explicit ``-k`` mismatch (exit-5, cleanly
     coercible to green) so the strict-noop gate is the ONLY thing deciding RED vs
@@ -194,15 +197,15 @@ def test_mutation_proof_guard_off_goes_green(tmp_path: Path) -> None:
     # -k matches the real file's tests (test_a/b/c) but NOT the noop file's
     # test_present_but_filtered_out → real runs (total>0, Gate 1 off), noop
     # collects 0 (exit-5) → only Gate 2 (strict-noop) decides RED vs GREEN.
-    red = _run_runner(str(noop), str(real), "-k", "test_a or test_b or test_c")
-    assert red.returncode != 0, f"guard-on should be RED:\n{red.stdout}"
+    red = _run_runner(str(noop), str(real), "-k", "test_a or test_b or test_c",
+                      "--strict-noop")
+    assert red.returncode != 0, f"--strict-noop should be RED:\n{red.stdout}"
     assert "collected 0 tests (no-op)" in red.stdout, red.stdout
 
-    green = _run_runner(str(noop), str(real), "-k", "test_a or test_b or test_c",
-                        "--no-strict-noop")
+    green = _run_runner(str(noop), str(real), "-k", "test_a or test_b or test_c")
     assert green.returncode == 0, (
-        "guard-off (--no-strict-noop) should go GREEN, proving the strict-noop "
-        f"gate is load-bearing:\n{green.stdout}"
+        "default (strict-noop OFF) should go GREEN, proving --strict-noop is the "
+        f"load-bearing gate:\n{green.stdout}"
     )
     # And the no-op is still SURFACED even when not gated (visibility ≠ gating).
     assert "no-op" in green.stdout, green.stdout

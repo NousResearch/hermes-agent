@@ -702,16 +702,26 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--strict-noop",
+        dest="strict_noop",
+        action="store_true",
+        default=False,
+        help=(
+            "OPT-IN: hard RED on an EXPLICITLY-requested test file that executed "
+            "0 tests (--files entries / positional .py files). OFF by default "
+            "because a full suite run legitimately lists many files that filter to "
+            "zero in a given lane (marker-filtered integration tests, platform "
+            "importorskips, module skipif). Whole-suite-zero is ALWAYS a hard RED "
+            "regardless of this flag (the load-bearing 'green because it didn't "
+            "run' guard); skip-storm/testless ⚠ surfacing is also unconditional. "
+            "Turn this on for a targeted run where every named file MUST have run."
+        ),
+    )
+    parser.add_argument(
         "--no-strict-noop",
         dest="strict_noop",
         action="store_false",
-        default=True,
-        help=(
-            "Disable the hard RED on an EXPLICITLY-requested test file that "
-            "executed 0 tests (--files entries / positional .py files). "
-            "Whole-suite-zero stays a hard RED regardless; skip-storm ⚠ "
-            "surfacing stays unconditional. Default: strict-noop ON."
-        ),
+        help="Explicit off (already the default); kept for back-compat.",
     )
     parser.add_argument(
         "paths_positional",
@@ -742,7 +752,7 @@ def main() -> int:
     OUR_FLAGS = {
         "-j", "--jobs", "--paths", "--include-integration",
         "--file-timeout", "--slice", "--generate-slices", "--files",
-        "--min-tests", "--no-strict-noop",
+        "--min-tests", "--strict-noop", "--no-strict-noop",
     }
     # pytest short flags that consume the NEXT token as their value.
     PYTEST_VALUE_FLAGS = {"-k", "-m", "-p", "-o", "-c", "-r", "-W"}

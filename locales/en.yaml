@@ -103,6 +103,7 @@ gateway:
     not_enough:            "Not enough conversation to compress (need at least 4 messages)."
     no_provider:           "No provider configured -- cannot compress."
     nothing_to_do:         "Nothing to compress yet (the transcript is still all protected context)."
+    aggressive_unsupported: "--aggressive is not supported; use '/compress here [N]' to keep only recent exchanges, or /undo to drop turns."
     focus_line:            "Focus: \"{topic}\""
     summary_failed:        "⚠️ Summary generation failed ({error}). {count} historical message(s) were removed and replaced with a placeholder; earlier context is no longer recoverable. Consider checking your auxiliary.compression model configuration."
     aborted:               "⚠️ Compression aborted ({error}). No messages were dropped — conversation is unchanged. Run /compress to retry, /reset for a clean session, or check your auxiliary.compression model configuration."
@@ -121,6 +122,8 @@ gateway:
     no_pending:            "No pending command to deny."
     denied_singular:       "❌ Command denied."
     denied_plural:         "❌ Commands denied ({count} commands)."
+    denied_reason_singular: "❌ Command denied. Reason relayed to the agent: \"{reason}\""
+    denied_reason_plural:  "❌ Commands denied ({count} commands). Reason relayed to the agent: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast is only available for OpenAI models that support Priority Processing."
@@ -379,6 +382,7 @@ gateway:
     mode_new:              "⚙️ Tool progress: **NEW** — shown when tool changes (preview length: `display.tool_preview_length`, default 40)."
     mode_all:              "⚙️ Tool progress: **ALL** — every tool call shown (preview length: `display.tool_preview_length`, default 40)."
     mode_verbose:          "⚙️ Tool progress: **VERBOSE** — every tool call with full arguments."
+    mode_log:              "⚙️ Tool progress: **LOG** — silent in chat; tool calls written to ~/.hermes/logs/tool_calls.log."
     saved_suffix:          "_(saved for **{platform}** — takes effect on next message)_"
     save_failed:           "_(could not save to config: {error})_"
 

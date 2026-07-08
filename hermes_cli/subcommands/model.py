@@ -46,16 +46,6 @@ def build_model_parser(subparsers, *, cmd_model: Callable) -> None:
         help="Do not attempt to open the browser automatically during Nous login",
     )
     model_parser.add_argument(
-        "--manual-paste",
-        action="store_true",
-        help=(
-            "For loopback OAuth providers (xai-oauth, ...): skip the local "
-            "callback listener and paste the failed callback URL from your "
-            "browser instead. Use on browser-only remotes (Cloud Shell, "
-            "Codespaces, EC2 Instance Connect, ...). See #26923."
-        ),
-    )
-    model_parser.add_argument(
         "--timeout",
         type=float,
         default=15.0,

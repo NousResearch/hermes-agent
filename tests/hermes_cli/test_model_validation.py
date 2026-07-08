@@ -424,6 +424,9 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-zen", "opencode-zen/claude-sonnet-4-6") == "anthropic_messages"
         assert opencode_model_api_mode("opencode-zen", "gemini-3-flash") == "chat_completions"
         assert opencode_model_api_mode("opencode-zen", "minimax-m2.5") == "chat_completions"
+        # Qwen on Zen is served via /v1/messages per the Zen endpoint table.
+        assert opencode_model_api_mode("opencode-zen", "qwen3.7-max") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-zen", "qwen3.6-plus") == "anthropic_messages"
 
     def test_opencode_go_api_modes_match_docs(self):
         assert opencode_model_api_mode("opencode-go", "glm-5.1") == "chat_completions"
@@ -436,6 +439,80 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-go", "opencode-go/minimax-m2.5") == "anthropic_messages"
         assert opencode_model_api_mode("opencode-go", "qwen3.7-max") == "anthropic_messages"
         assert opencode_model_api_mode("opencode-go", "opencode-go/qwen3.7-max") == "anthropic_messages"
+        # All Qwen models on Go route via /v1/messages (Go endpoint table).
+        assert opencode_model_api_mode("opencode-go", "qwen3.7-plus") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-go", "qwen3.6-plus") == "anthropic_messages"
+        # DeepSeek / MiMo on Go are OpenAI-compatible chat completions.
+        assert opencode_model_api_mode("opencode-go", "deepseek-v4-pro") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "deepseek-v4-flash") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "mimo-v2.5") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "kimi-k2.7-code") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "glm-5.2") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "minimax-m3") == "anthropic_messages"
+
+
+class TestNormalizeOpencodeBaseUrl:
+    """Symmetric /v1 normalization for OpenCode Zen / Go base URLs.
+
+    Regression for the 'only minimax works on opencode-go' bug: switching into
+    an anthropic-routed model strips /v1 from the base URL and that stripped
+    URL gets persisted to model.base_url; every later chat_completions model
+    (glm, deepseek, kimi) then POSTed to https://opencode.ai/zen/go/chat/completions
+    — a 404 (the marketing site).  The normalizer must heal a stripped URL.
+    """
+
+    def test_strips_v1_for_anthropic_messages(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        assert normalize_opencode_base_url(
+            "opencode-go", "anthropic_messages", "https://opencode.ai/zen/go/v1"
+        ) == "https://opencode.ai/zen/go"
+        assert normalize_opencode_base_url(
+            "opencode-zen", "anthropic_messages", "https://opencode.ai/zen/v1/"
+        ) == "https://opencode.ai/zen"
+
+    def test_strip_is_idempotent(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        assert normalize_opencode_base_url(
+            "opencode-go", "anthropic_messages", "https://opencode.ai/zen/go"
+        ) == "https://opencode.ai/zen/go"
+
+    def test_reappends_v1_for_chat_completions(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        # The healing case: a stripped URL persisted by a prior anthropic switch.
+        assert normalize_opencode_base_url(
+            "opencode-go", "chat_completions", "https://opencode.ai/zen/go"
+        ) == "https://opencode.ai/zen/go/v1"
+        assert normalize_opencode_base_url(
+            "opencode-zen", "codex_responses", "https://opencode.ai/zen"
+        ) == "https://opencode.ai/zen/v1"
+
+    def test_reappend_is_idempotent(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        assert normalize_opencode_base_url(
+            "opencode-go", "chat_completions", "https://opencode.ai/zen/go/v1"
+        ) == "https://opencode.ai/zen/go/v1"
+
+    def test_custom_host_not_suffixed(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        # A user's proxy override without /v1 is left alone (we can't know its
+        # path layout), but the anthropic strip still applies when it has /v1.
+        assert normalize_opencode_base_url(
+            "opencode-go", "chat_completions", "https://myproxy.example.com/opencode"
+        ) == "https://myproxy.example.com/opencode"
+        assert normalize_opencode_base_url(
+            "opencode-go", "anthropic_messages", "https://myproxy.example.com/opencode/v1"
+        ) == "https://myproxy.example.com/opencode"
+
+    def test_non_opencode_provider_untouched(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        assert normalize_opencode_base_url(
+            "openrouter", "chat_completions", "https://openrouter.ai/api"
+        ) == "https://openrouter.ai/api"
+
+    def test_empty_url_passthrough(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        assert normalize_opencode_base_url("opencode-go", "chat_completions", "") == ""
+        assert normalize_opencode_base_url("opencode-go", "chat_completions", None) == ""
 
 
 class TestAzureFoundryModelApiMode:

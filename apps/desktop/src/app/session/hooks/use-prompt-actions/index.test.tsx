@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
-import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
+import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $busy, $connection, $messages, $sessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -54,6 +54,7 @@ function Harness({
   busyRef,
   onReady,
   onSeedState,
+  openMemoryGraph,
   refreshSessions,
   requestGateway,
   resumeStoredSession,
@@ -63,6 +64,7 @@ function Harness({
   busyRef?: MutableRefObject<boolean>
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
+  openMemoryGraph?: () => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
@@ -91,6 +93,7 @@ function Harness({
     busyRef: localBusyRef,
     createBackendSessionForSend: async () => RUNTIME_SESSION_ID,
     handleSkinCommand: () => '',
+    openMemoryGraph: openMemoryGraph ?? (() => undefined),
     refreshSessions,
     requestGateway,
     resumeStoredSession: resumeStoredSession ?? (() => undefined),
@@ -272,6 +275,72 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     expect(renderedText).toContain('⊙ Goal set. Starting now.')
     expect(renderedText).not.toContain('/goal: no output')
   })
+
+  it('dispatches a slash command with a multiline arg instead of "empty slash command" (#41323, #55510)', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const states: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'slash.exec') {
+        return { type: 'send', message: 'Write a Python script\nthat prints Hello World' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/goal Write a Python script\nthat prints Hello World')
+
+    // The newline lives in the arg — the command still reaches the gateway
+    // whole, exactly as the CLI and Telegram handle it.
+    expect(calls.map(c => c.method)).toEqual(['slash.exec', 'prompt.submit'])
+    expect(calls[0]?.params).toEqual({
+      command: 'goal Write a Python script\nthat prints Hello World',
+      session_id: RUNTIME_SESSION_ID
+    })
+
+    const renderedText = states
+      .flatMap(state => {
+        const messages = Array.isArray(state.messages)
+          ? (state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+          : []
+
+        return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      })
+      .join('\n')
+
+    expect(renderedText).not.toContain('empty slash command')
+  })
+
+  it('restores a degenerate slash payload to the composer instead of losing it', async () => {
+    setComposerDraft('')
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    // `/ text` parses to an empty command name on every surface (CLI parity).
+    // The composer draft was already cleared on submit and slash input never
+    // enters the Up-arrow history ring, so the payload must be handed back.
+    await handle!.submitText('/ pasted context that must not vanish')
+
+    expect($composerDraft.get()).toBe('/ pasted context that must not vanish')
+    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+  })
 })
 
 describe('usePromptActions desktop slash pickers', () => {
@@ -303,6 +372,29 @@ describe('usePromptActions desktop slash pickers', () => {
 
     expect(resumeStoredSession).toHaveBeenCalledWith('20260610_130000_123abc')
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+  })
+
+  it('opens the memory graph overlay for /journey and its aliases instead of hitting the backend', async () => {
+    const openMemoryGraph = vi.fn()
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        openMemoryGraph={openMemoryGraph}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/journey')
+    await handle!.submitText('/memory-graph')
+    await handle!.submitText('/learning')
+
+    expect(openMemoryGraph).toHaveBeenCalledTimes(3)
+    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+    expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
   })
 
   it('marks a timed-out handoff as failed so the next attempt can retry', async () => {

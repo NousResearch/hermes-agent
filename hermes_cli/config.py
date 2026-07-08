@@ -1978,6 +1978,24 @@ DEFAULT_CONFIG = {
         "public_url": "",
     },
 
+    # Cloudflare Tunnel exposure for user-built services (hermes tunnel).
+    # See .plans/2026-07-08-cloudflare-noit2-tunnel-design.md and
+    # website/docs/user-guide/tunnel.md. Each key is overridable by a
+    # HERMES_TUNNEL_* env var (env wins when non-empty), mirroring the
+    # dashboard.public_url / HERMES_DASHBOARD_PUBLIC_URL precedent.
+    "tunnel": {
+        "enabled": False,
+        "zone": "",                      # e.g. "noit2.com"
+        "tunnel_name": "",               # cloudflared named tunnel
+        "credentials_file": "",          # path to <uuid>.json
+        "metrics_port": 0,               # 0 = auto-pick a free port
+        "idle_timeout_seconds": 1800,    # 30-min idle-reset dead-man's switch
+        "drain_seconds": 15,
+        "poll_interval_seconds": 5,
+        "admin": [],                     # identities permitted to approve/deny holds
+        "routes": [],                    # [{"subdomain": str, "host": str, "port": int}]
+    },
+
     # Privacy settings
     "privacy": {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context

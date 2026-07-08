@@ -222,6 +222,18 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # these, so production tests must not see them either.
     "HERMES_DASHBOARD_OAUTH_CLIENT_ID",
     "HERMES_DASHBOARD_PORTAL_URL",
+    # Cloudflare Tunnel exposure (hermes tunnel). Each is overridable by
+    # the matching HERMES_TUNNEL_* env var in tunnel_config.resolve_tunnel_config;
+    # scrub so a developer shell can't leak tunnel settings into tests.
+    "HERMES_TUNNEL_ZONE",
+    "HERMES_TUNNEL_NAME",
+    "HERMES_TUNNEL_CREDS",
+    "HERMES_TUNNEL_METRICS_PORT",
+    "HERMES_TUNNEL_IDLE_TIMEOUT",
+    "HERMES_TUNNEL_DRAIN_SECONDS",
+    "HERMES_TUNNEL_POLL_INTERVAL",
+    "HERMES_TUNNEL_ADMIN",
+    "HERMES_TUNNEL_HOLD_REQUEST",
     "TERMINAL_CWD",
     "TERMINAL_ENV",
     "TERMINAL_CONTAINER_CPU",

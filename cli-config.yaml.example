@@ -1394,6 +1394,30 @@ updates:
 #       #   client_secret: ""
 
 # =============================================================================
+# Cloudflare Tunnel exposure (hermes tunnel)
+# =============================================================================
+# Expose user-built local apps/services/APIs to the internet on per-user
+# subdomains of your zone (e.g. alice.noit2.com) via a Cloudflare named
+# tunnel. The exposure is ephemeral: an idle-reset 30-minute dead-man's
+# switch closes the tunnel when traffic stops, so a forgotten test build
+# cannot leak to the internet. Longer exposure needs admin-approved hold.
+#
+# Each key is overridable by a HERMES_TUNNEL_* env var (env wins when
+# non-empty), mirroring dashboard.public_url / HERMES_DASHBOARD_PUBLIC_URL.
+#
+# tunnel:
+#   enabled: false
+#   zone: "noit2.com"
+#   tunnel_name: ""              # cloudflared named tunnel
+#   credentials_file: ""         # path to <uuid>.json
+#   metrics_port: 0              # 0 = auto-pick a free port
+#   idle_timeout_seconds: 1800   # 30-min idle-reset dead-man's switch
+#   drain_seconds: 15
+#   poll_interval_seconds: 5
+#   admin: []                    # identities permitted to approve/deny holds
+#   routes: []                   # [{"subdomain": "alice", "host": "127.0.0.1", "port": 3000}]
+
+# =============================================================================
 # External secret sources
 # =============================================================================
 # Pull provider credentials from external secret managers at process startup

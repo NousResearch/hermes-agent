@@ -1119,17 +1119,36 @@ def _noop_guard(
 
     # ── Gate 2: explicitly-requested paths that collected 0 tests ─────────
     if explicit_files:
+        # Aggregate per resolved path first: a file can appear in all_summaries
+        # more than once (e.g. a skip-reported entry AND a separate exit-5→0 entry
+        # under parallel/retry). It is a legit skip if ANY entry indicates a skip
+        # — so fold the skip signals across all of a file's entries before gating,
+        # else a duplicate no-skip entry false-REDs a file already surfaced as ⚠.
+        by_path: dict = {}
+        for f, s in all_summaries:
+            rp = f.resolve()
+            agg = by_path.setdefault(rp, {"f": f, "executed": 0, "skipped": 0,
+                                          "noop_skip": False, "noop_testless": False,
+                                          "noop_exit5": False})
+            agg["executed"] += _executed(s)
+            agg["skipped"] += s.get("skipped", 0)
+            agg["noop_skip"] = agg["noop_skip"] or bool(s.get("noop_skip"))
+            agg["noop_testless"] = agg["noop_testless"] or bool(s.get("noop_testless"))
+            agg["noop_exit5"] = agg["noop_exit5"] or bool(s.get("noop_exit5"))
         noop_explicit = [
-            (f, s) for f, s in all_summaries
+            (agg["f"], agg) for rp, agg in by_path.items()
             # An explicit file that executed 0 tests is a caller-intent no-op —
-            # EXCEPT (a) a legitimate optional-dep skip (noop_skip): a module-level
-            # importorskip opting out in an env without the dep, or (b) an
-            # intentionally-testless file (noop_testless): an empty tombstone or a
-            # __main__-driven script that defines no pytest tests at all. Neither is
-            # a broken request; both surface as ⚠ above, never as a RED gate. A file
-            # that DOES define tests but collected zero still REDs (real no-op).
-            if f.resolve() in explicit_files and _executed(s) == 0
-            and not s.get("noop_skip") and not s.get("noop_testless")
+            # EXCEPT it legitimately SKIPPED rather than silently no-op'd:
+            #   (a) noop_skip: a module-level importorskip opted out (missing dep);
+            #   (b) noop_testless: an empty tombstone / __main__ script with no tests;
+            #   (c) skipped>0: every test skipped (module skipif / empty-parametrize /
+            #       per-test pytest.skip()) — pytest ran the file, the tests opted out.
+            # None is a broken request; all surface as ⚠ above, never a RED gate. A
+            # file that DOES define tests, skipped none, and collected zero still REDs
+            # (the real silent no-op the guard exists to catch).
+            if rp in explicit_files and agg["executed"] == 0
+            and not agg["noop_skip"] and not agg["noop_testless"]
+            and agg["skipped"] == 0
         ]
         if noop_explicit:
             print()

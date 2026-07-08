@@ -7879,19 +7879,42 @@ def _claude_code_only_status() -> Dict[str, Any]:
 
 
 def _copilot_acp_status() -> Dict[str, Any]:
-    """Status for copilot-acp — credentials are owned by the Copilot CLI.
+    """Status for copilot-acp, delegated to the canonical auth dispatcher."""
+    try:
+        from hermes_cli import auth as hauth
 
-    There is no cheap programmatic credential probe for the ACP subprocess, so
-    this is a read-only "managed by the Copilot CLI" card (like claude-code):
-    Hermes never claims a login state it can't verify.
-    """
+        raw = hauth.get_auth_status("copilot-acp")
+    except Exception as e:
+        return {
+            "logged_in": False,
+            "configured": False,
+            "source": "copilot_cli",
+            "source_label": "Managed by the GitHub Copilot CLI",
+            "token_preview": None,
+            "expires_at": None,
+            "has_refresh_token": False,
+            "error": str(e),
+        }
+    if not isinstance(raw, dict):
+        raw = {}
+    source_label = (
+        raw.get("resolved_command")
+        or raw.get("base_url")
+        or raw.get("name")
+        or "Managed by the GitHub Copilot CLI"
+    )
     return {
-        "logged_in": False,
+        "logged_in": bool(raw.get("logged_in")),
+        "configured": bool(raw.get("configured")),
         "source": "copilot_cli",
-        "source_label": "Managed by the GitHub Copilot CLI",
+        "source_label": source_label,
         "token_preview": None,
         "expires_at": None,
         "has_refresh_token": False,
+        "command": raw.get("command"),
+        "args": raw.get("args") or [],
+        "resolved_command": raw.get("resolved_command"),
+        "base_url": raw.get("base_url"),
     }
 
 

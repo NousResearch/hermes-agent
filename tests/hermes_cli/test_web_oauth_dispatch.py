@@ -502,6 +502,33 @@ def test_copilot_acp_now_in_accounts():
     assert providers["copilot-acp"]["disconnectable"] is False
 
 
+def test_copilot_acp_accounts_status_uses_auth_dispatcher():
+    with patch("hermes_cli.auth.get_auth_status") as get_auth_status:
+        get_auth_status.return_value = {
+            "provider": "copilot-acp",
+            "name": "GitHub Copilot ACP",
+            "configured": True,
+            "logged_in": True,
+            "command": "copilot",
+            "args": ["--acp", "--stdio"],
+            "resolved_command": "/usr/local/bin/copilot",
+            "base_url": "acp://copilot",
+        }
+
+        resp = client.get("/api/providers/oauth", headers=HEADERS)
+
+    assert resp.status_code == 200, resp.text
+    get_auth_status.assert_called_once_with("copilot-acp")
+    providers = {p["id"]: p for p in resp.json()["providers"]}
+    status = providers["copilot-acp"]["status"]
+    assert status["logged_in"] is True
+    assert status["configured"] is True
+    assert status["source"] == "copilot_cli"
+    assert status["source_label"] == "/usr/local/bin/copilot"
+    assert status["resolved_command"] == "/usr/local/bin/copilot"
+    assert status["base_url"] == "acp://copilot"
+
+
 def test_oauth_catalog_marks_external_providers_not_disconnectable():
     """External CLI credentials are visible in Accounts but cannot be removed by Hermes."""
     resp = client.get("/api/providers/oauth", headers=HEADERS)

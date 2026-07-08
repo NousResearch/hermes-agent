@@ -204,7 +204,7 @@ def test_codex_gpt55_autoraise_still_applies_to_builtin_compressor():
 
         agent = AIAgent(**_codex_agent_kwargs())
 
-    assert agent._compression_threshold_autoraised == {"from": 0.50, "to": 0.85}
+    assert agent._compression_threshold_autoraised == {"model": "gpt-5.5", "from": 0.50, "to": 0.85}
     assert agent.context_compressor.threshold_percent == 0.85
     # Gateway parity: the notice is stashed for replay on turn 1.
     assert agent._compression_warning and "85%" in agent._compression_warning
@@ -235,5 +235,5 @@ def test_codex_gpt55_autoraise_applies_when_plugin_engine_missing():
 
         agent = AIAgent(**_codex_agent_kwargs())
 
-    assert agent._compression_threshold_autoraised == {"from": 0.50, "to": 0.85}
+    assert agent._compression_threshold_autoraised == {"model": "gpt-5.5", "from": 0.50, "to": 0.85}
     assert agent.context_compressor.threshold_percent == 0.85

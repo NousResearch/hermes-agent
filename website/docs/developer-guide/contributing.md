@@ -22,7 +22,7 @@ We value contributions in this order:
 
 ## Common contribution paths
 
-- Building a custom/local tool without modifying Hermes core? Start with [Build a Hermes Plugin](../guides/build-a-hermes-plugin.md)
+- Building a custom/local tool without modifying Hermes core? Start with [Build a Hermes Plugin](../developer-guide/plugins/index.md)
 - Building a new built-in core tool for Hermes itself? Start with [Adding Tools](./adding-tools.md)
 - Building a new skill? Start with [Creating Skills](./creating-skills.md)
 - Building a new inference provider? Start with [Adding Providers](./adding-providers.md)
@@ -34,7 +34,7 @@ We value contributions in this order:
 | Requirement | Notes |
 |-------------|-------|
 | **Git** | With the `git-lfs` extension installed |
-| **Python 3.11+** | uv will install it if missing |
+| **Python 3.11–3.13** | uv will install it if missing |
 | **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
 | **Node.js 20+** | Optional — needed for browser tools and WhatsApp bridge (matches root `package.json` engines) |
 
@@ -74,13 +74,20 @@ this way, make sure you run the `hermes` entrypoint from this venv; running the
 system `python3 -m hermes_cli.main` can pick up unrelated system Python
 packages.
 
+Create the venv **outside** the cloned source tree. A venv that lives inside
+the directory the agent operates from can be wiped by a relative-path command
+the agent runs against its own checkout (`rm -rf venv`, `uv venv venv`, etc.),
+which silently destroys the running runtime mid-session. Keeping it outside the
+tree means no relative path from the workspace resolves to it.
+
 ```bash
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 
-# Create venv with Python 3.11
-uv venv venv --python 3.11
-export VIRTUAL_ENV="$(pwd)/venv"
+# Create venv with Python 3.11, OUTSIDE the source tree
+uv venv ~/.hermes/venvs/hermes-dev --python 3.11
+export VIRTUAL_ENV="$HOME/.hermes/venvs/hermes-dev"
+export PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Install with all extras (messaging, cron, CLI menus, dev tools)
 uv pip install -e ".[all,dev]"
@@ -132,7 +139,7 @@ scripts/run_tests.sh
 
 ## Cross-Platform Compatibility
 
-Hermes officially supports **Linux, macOS, WSL2, and native Windows (via PowerShell install)**.  Native Windows uses Git Bash (from [Git for Windows](https://git-scm.com/download/win)) for shell commands.  A few features require POSIX kernel primitives and are gated: the dashboard's embedded PTY terminal pane (`/chat` tab) is WSL2-only. If you're doing Windows-heavy dev, run the Windows-footgun lint (`scripts/check-windows-footguns.py`) before pushing.
+See **[Platform Support](../getting-started/platform-support.md)**. Native Windows uses Git Bash (from [Git for Windows](https://git-scm.com/download/win)) for shell commands. A few features require POSIX kernel primitives and are gated: the dashboard's embedded PTY terminal pane (`/chat` tab) needs a POSIX PTY (Linux, macOS, or WSL2). If you're doing Windows-heavy dev, run the Windows-footgun lint (`scripts/check-windows-footguns.py`) before pushing.
 
 When contributing code, keep these rules in mind:
 
@@ -223,9 +230,9 @@ refactor/description   # Code restructuring
 
 ### Before Submitting
 
-1. **Run tests**: `pytest tests/ -v`
+1. **Run tests**: `scripts/run_tests.sh` for CI-parity. Use direct `python -m pytest ...` only when the wrapper is unavailable or you are intentionally debugging outside the wrapper.
 2. **Test manually**: Run `hermes` and exercise the code path you changed
-3. **Check cross-platform impact**: Consider macOS and different Linux distros
+3. **Check cross-platform impact**: Consider macOS, Linux, WSL2, and native Windows. If you touch file I/O, process management, terminal handling, subprocesses, or signals, run `scripts/check-windows-footguns.py`.
 4. **Keep PRs focused**: One logical change per PR
 
 ### PR Description

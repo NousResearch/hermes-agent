@@ -1,3 +1,5 @@
+import { buildHermesWebSocketUrl } from "@hermes/shared";
+
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
 // (e.g. https://mission-control.tilos.com/hermes/). The Python backend
@@ -73,9 +75,11 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/mcp",
   "/api/messaging/platforms",
   "/api/messaging/telegram/onboarding",
+  "/api/messaging/whatsapp/onboarding",
   "/api/model/info",
   "/api/model/set",
   "/api/model/auxiliary",
+  "/api/model/moa",
   "/api/model/options",
 ];
 
@@ -290,11 +294,12 @@ export async function buildWsUrl(
   path: string,
   params?: Record<string, string>,
 ): Promise<string> {
-  const [authName, authValue] = await buildWsAuthParam();
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const qs = new URLSearchParams(params ?? {});
-  qs.set(authName, authValue);
-  return `${proto}//${window.location.host}${BASE}${path}?${qs}`;
+  return buildHermesWebSocketUrl({
+    authParam: await buildWsAuthParam(),
+    basePath: BASE,
+    params,
+    path,
+  });
 }
 
 /** Build a ``?profile=<name>`` query suffix, or "" when unset.
@@ -311,6 +316,7 @@ function appendProfileParam(url: string, profile?: string): string {
 }
 
 export const api = {
+  buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
@@ -344,17 +350,32 @@ export const api = {
       window.location.assign("/login");
       return r;
     }),
-  getSessions: (limit = 20, offset = 0, profile = getManagementProfile()) =>
+  getSessions: (
+    limit = 20,
+    offset = 0,
+    profile = getManagementProfile(),
+    order: "created" | "recent" = "created",
+  ) =>
     fetchJSON<PaginatedSessions>(
-      appendProfileParam(`/api/sessions?limit=${limit}&offset=${offset}`, profile),
+      appendProfileParam(
+        `/api/sessions?limit=${limit}&offset=${offset}&order=${order}`,
+        profile,
+      ),
     ),
   getSessionMessages: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionMessagesResponse>(
       appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/messages`, profile),
     ),
-  getSessionLatestDescendant: (id: string) =>
+  getSessionDetail: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<SessionInfo>(
+      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
+    ),
+  getSessionLatestDescendant: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionLatestDescendantResponse>(
-      `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
+      appendProfileParam(
+        `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
+        profile,
+      ),
     ),
   deleteSession: (id: string, profile = getManagementProfile()) =>
     fetchJSON<{ ok: boolean }>(
@@ -454,27 +475,67 @@ export const api = {
     fetchJSON<ModelsAnalyticsResponse>(
       appendProfileParam(`/api/analytics/models?days=${days}`, profile),
     ),
-  getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
+  getConfig: (profile = getManagementProfile()) =>
+    fetchJSON<Record<string, unknown>>(appendProfileParam("/api/config", profile)),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
-  getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
-  getModelOptions: () => fetchJSON<ModelOptionsResponse>("/api/model/options"),
-  getAuxiliaryModels: () => fetchJSON<AuxiliaryModelsResponse>("/api/model/auxiliary"),
-  setModelAssignment: (body: ModelAssignmentRequest) =>
-    fetchJSON<ModelAssignmentResponse>("/api/model/set", {
-      method: "POST",
+  getModelInfo: (profile = getManagementProfile()) =>
+    fetchJSON<ModelInfoResponse>(appendProfileParam("/api/model/info", profile)),
+  getModelOptions: (
+    profileOrOptions?: string | { profile?: string; refresh?: boolean },
+  ) => {
+    const profile =
+      typeof profileOrOptions === "string"
+        ? profileOrOptions
+        : profileOrOptions?.profile;
+    const refresh =
+      typeof profileOrOptions === "object" && !!profileOrOptions.refresh;
+    const qs = new URLSearchParams();
+    if (profile) qs.set("profile", profile);
+    if (refresh) qs.set("refresh", "1");
+    // Dashboard surfaces (Models page, profile builder, cron) are
+    // management/setup UIs: keep the full provider universe with setup
+    // affordances. The endpoint now defaults to the configured subset for
+    // desktop chat pickers (#56974), so opt in explicitly here.
+    qs.set("include_unconfigured", "1");
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return fetchJSON<ModelOptionsResponse>(`/api/model/options${suffix}`);
+  },
+  getAuxiliaryModels: (profile = getManagementProfile()) =>
+    fetchJSON<AuxiliaryModelsResponse>(
+      appendProfileParam("/api/model/auxiliary", profile),
+    ),
+  getMoaModels: () => fetchJSON<MoaConfigResponse>("/api/model/moa"),
+  saveMoaModels: (body: MoaConfigResponse) =>
+    fetchJSON<MoaConfigResponse & { ok: boolean }>("/api/model/moa", {
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
-  saveConfig: (config: Record<string, unknown>) =>
-    fetchJSON<{ ok: boolean }>("/api/config", {
+  setModelAssignment: (
+    body: ModelAssignmentRequest,
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<ModelAssignmentResponse>(
+      appendProfileParam("/api/model/set", profile),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  saveConfig: (config: Record<string, unknown>, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean }>(appendProfileParam("/api/config", profile), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ config }),
     }),
-  getConfigRaw: () => fetchJSON<{ yaml: string; path?: string }>("/api/config/raw"),
-  saveConfigRaw: (yaml_text: string) =>
-    fetchJSON<{ ok: boolean }>("/api/config/raw", {
+  getConfigRaw: (profile = getManagementProfile()) =>
+    fetchJSON<{ yaml: string; path?: string }>(
+      appendProfileParam("/api/config/raw", profile),
+    ),
+  saveConfigRaw: (yaml_text: string, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean }>(appendProfileParam("/api/config/raw", profile), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ yaml_text }),
@@ -509,7 +570,7 @@ export const api = {
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
   getCronDeliveryTargets: () =>
     fetchJSON<{ targets: CronDeliveryTarget[] }>("/api/cron/delivery-targets"),
-  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string; skills?: string[] }, profile = "default") =>
+  createCronJob: (job: CronJobMutation, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -519,7 +580,7 @@ export const api = {
     fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/pause?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
   updateCronJob: (
     id: string,
-    updates: { prompt?: string; schedule?: string; name?: string; deliver?: string; skills?: string[] },
+    updates: CronJobMutation,
     profile = "default",
   ) =>
     fetchJSON<CronJob>(
@@ -827,6 +888,39 @@ export const api = {
       `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
       { method: "DELETE" },
     ),
+  startWhatsAppOnboarding: (body: {
+    mode?: "bot" | "self-chat";
+    allowed_users?: string;
+  }) =>
+    fetchJSON<WhatsAppOnboardingStartResponse>(
+      "/api/messaging/whatsapp/onboarding/start",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  getWhatsAppOnboardingStatus: (pairingId: string) =>
+    fetchJSON<WhatsAppOnboardingStatusResponse>(
+      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
+    ),
+  applyWhatsAppOnboarding: (
+    pairingId: string,
+    body: { mode?: "bot" | "self-chat"; allowed_users?: string; profile?: string },
+  ) =>
+    fetchJSON<WhatsAppOnboardingApplyResponse>(
+      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}/apply`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  cancelWhatsAppOnboarding: (pairingId: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
+      { method: "DELETE" },
+    ),
 
   // Gateway / update actions
   restartGateway: () =>
@@ -1027,6 +1121,28 @@ export const api = {
 
   // ── Admin: Memory provider ──────────────────────────────────────────
   getMemory: () => fetchJSON<MemoryStatus>("/api/memory"),
+  getMemoryProviderConfig: (provider: string) =>
+    fetchJSON<MemoryProviderConfig>(
+      `/api/memory/providers/${encodeURIComponent(provider)}/config`,
+    ),
+  updateMemoryProviderConfig: (provider: string, values: Record<string, unknown>) =>
+    fetchJSON<{ ok: boolean; active: string }>(
+      `/api/memory/providers/${encodeURIComponent(provider)}/config`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values }),
+      },
+    ),
+  setupMemoryProvider: (provider: string, values: Record<string, unknown> = {}) =>
+    fetchJSON<MemoryProviderSetupResponse>(
+      `/api/memory/providers/${encodeURIComponent(provider)}/setup`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values }),
+      },
+    ),
   setMemoryProvider: (provider: string) =>
     fetchJSON<{ ok: boolean; active: string }>("/api/memory/provider", {
       method: "PUT",
@@ -1057,12 +1173,25 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ output }),
     }),
+  downloadBackup: (archive: string) =>
+    authedFetch(
+      `/api/ops/backup/download?archive=${encodeURIComponent(archive)}`,
+    ),
   runImport: (archive: string, force = false) =>
     fetchJSON<ActionResponse>("/api/ops/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ archive, force }),
     }),
+  runImportUpload: (file: File, force = false) => {
+    const form = new FormData();
+    form.append("force", String(force));
+    form.append("file", file, file.name);
+    return fetchJSON<ActionResponse>("/api/ops/import-upload", {
+      method: "POST",
+      body: form,
+    });
+  },
   getHooks: () => fetchJSON<HooksResponse>("/api/ops/hooks"),
   createHook: (body: HookCreate) =>
     fetchJSON<{ ok: boolean; event: string; command: string; approved: boolean }>(
@@ -1173,11 +1302,13 @@ export interface AuthMeResponse {
 }
 
 export interface ActionResponse {
+  archive?: string;
   name: string;
   ok: boolean;
   pid: number | null;
   error?: string;
   message?: string;
+  uploaded_bytes?: number;
   update_command?: string;
 }
 
@@ -1346,6 +1477,7 @@ export interface MessagingPlatformEnvVar {
   redacted_value: string | null;
   description: string;
   prompt: string;
+  help: string;
   url: string | null;
   is_password: boolean;
   advanced: boolean;
@@ -1368,6 +1500,11 @@ export interface MessagingPlatform {
   error_message: string | null;
   updated_at: string | null;
   home_channel: { platform: string; chat_id: string; name: string; thread_id?: string } | null;
+  whatsapp_setup?: {
+    mode?: string;
+    allowed_users_set?: boolean;
+    home_channel_set?: boolean;
+  } | null;
   env_vars: MessagingPlatformEnvVar[];
 }
 
@@ -1465,13 +1602,73 @@ export interface CredentialPoolProvider {
 export interface MemoryProviderInfo {
   name: string;
   description: string;
+  available: boolean;
   configured: boolean;
+  status: "ready" | "needs_config" | "unavailable" | "missing";
+  setup?: MemoryProviderSetupInfo;
 }
 
 export interface MemoryStatus {
   active: string;
   providers: MemoryProviderInfo[];
   builtin_files: { memory: number; user: number };
+}
+
+export interface MemoryProviderExternalDependency {
+  name: string;
+  install: string;
+  check: string;
+}
+
+export interface MemoryProviderSetupInfo {
+  pip_dependencies: string[];
+  external_dependencies: MemoryProviderExternalDependency[];
+  required_env: string[];
+  dependencies_installed: boolean;
+}
+
+export interface MemoryProviderSetupResult {
+  kind: string;
+  name: string;
+  status: string;
+  command: string;
+  returncode: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+export interface MemoryProviderSetupResponse {
+  ok: boolean;
+  provider: string;
+  results: MemoryProviderSetupResult[];
+  status?: MemoryProviderInfo | null;
+}
+
+export interface MemoryProviderFieldOption {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+export interface MemoryProviderField {
+  key: string;
+  label: string;
+  kind: "text" | "secret" | "select" | "boolean";
+  description: string;
+  placeholder: string;
+  required: boolean;
+  value: string | boolean;
+  is_set: boolean;
+  options: MemoryProviderFieldOption[];
+  url: string;
+  when?: Record<string, string | boolean | number> | null;
+}
+
+export interface MemoryProviderConfig {
+  name: string;
+  label: string;
+  fields: MemoryProviderField[];
+  setup?: MemoryProviderSetupInfo;
 }
 
 export interface HookEntry {
@@ -1659,6 +1856,8 @@ export interface EnvVarInfo {
   advanced: boolean;
   /** True when this var is a messaging-platform credential owned by the Channels page. */
   channel_managed?: boolean;
+  /** True when this key is set in .env but not in any catalog (user-added custom key). */
+  custom?: boolean;
 }
 
 export interface TelegramOnboardingStartResponse {
@@ -1682,6 +1881,38 @@ export interface TelegramOnboardingApplyResponse {
   ok: boolean;
   platform: "telegram";
   bot_username?: string;
+  needs_restart: boolean;
+  restart_started?: boolean;
+  restart_action?: string;
+  restart_pid?: number | null;
+  restart_error?: string;
+}
+
+export interface WhatsAppOnboardingStartResponse {
+  pairing_id: string;
+  status:
+    | "starting"
+    | "installing"
+    | "waiting"
+    | "connected"
+    | "error"
+    | "expired"
+    | "cancelled";
+  qr_payload?: string | null;
+  expires_at: string;
+  mode: "bot" | "self-chat";
+  allowed_users: string;
+  account_id?: string | null;
+  account_name?: string | null;
+  account_phone?: string | null;
+  error?: string | null;
+}
+
+export type WhatsAppOnboardingStatusResponse = WhatsAppOnboardingStartResponse;
+
+export interface WhatsAppOnboardingApplyResponse {
+  ok: boolean;
+  platform: "whatsapp";
   needs_restart: boolean;
   restart_started?: boolean;
   restart_action?: string;
@@ -1874,6 +2105,27 @@ export interface ModelsAnalyticsResponse {
   period_days: number;
 }
 
+export interface CronJobRepeat {
+  times: number | null;
+  completed?: number;
+}
+
+export interface CronJobMutation {
+  name?: string;
+  prompt?: string;
+  schedule?: string;
+  deliver?: string;
+  skills?: string[];
+  provider?: string | null;
+  model?: string | null;
+  base_url?: string | null;
+  script?: string | null;
+  no_agent?: boolean;
+  context_from?: string[] | null;
+  enabled_toolsets?: string[] | null;
+  workdir?: string | null;
+}
+
 export interface CronJob {
   id: string;
   profile?: string | null;
@@ -1884,14 +2136,24 @@ export interface CronJob {
   prompt?: string | null;
   script?: string | null;
   skills?: string[] | null;
-  schedule?: { kind?: string; expr?: string; display?: string };
+  schedule?: { kind?: string; expr?: string; run_at?: string; display?: string };
   schedule_display?: string | null;
+  repeat?: CronJobRepeat | null;
   enabled: boolean;
   state?: string | null;
   deliver?: string | null;
+  model?: string | null;
+  provider?: string | null;
+  base_url?: string | null;
+  no_agent?: boolean | null;
+  context_from?: string[] | string | null;
+  enabled_toolsets?: string[] | null;
+  workdir?: string | null;
   last_run_at?: string | null;
   next_run_at?: string | null;
+  last_status?: string | null;
   last_error?: string | null;
+  last_delivery_error?: string | null;
 }
 
 export interface CronDeliveryTarget {
@@ -2028,6 +2290,7 @@ export interface ModelOptionProvider {
   is_user_defined?: boolean;
   source?: string;
   warning?: string;
+  authenticated?: boolean;
 }
 
 export interface ModelOptionsResponse {
@@ -2046,6 +2309,30 @@ export interface AuxiliaryTaskAssignment {
 export interface AuxiliaryModelsResponse {
   tasks: AuxiliaryTaskAssignment[];
   main: { provider: string; model: string };
+}
+
+export interface MoaModelSlot {
+  provider: string;
+  model: string;
+}
+
+export interface MoaConfigResponse {
+  default_preset: string;
+  active_preset: string;
+  presets: Record<string, {
+    reference_models: MoaModelSlot[];
+    aggregator: MoaModelSlot;
+    reference_temperature: number;
+    aggregator_temperature: number;
+    max_tokens: number;
+    enabled: boolean;
+  }>;
+  reference_models: MoaModelSlot[];
+  aggregator: MoaModelSlot;
+  reference_temperature: number;
+  aggregator_temperature: number;
+  max_tokens: number;
+  enabled: boolean;
 }
 
 export interface ModelAssignmentRequest {
@@ -2200,7 +2487,7 @@ export interface HubAgentPluginRow {
 
 export interface PluginsHubProviders {
   memory_provider: string;
-  memory_options: Array<{ name: string; description: string }>;
+  memory_options: MemoryProviderInfo[];
   context_engine: string;
   context_options: Array<{ name: string; description: string }>;
 }

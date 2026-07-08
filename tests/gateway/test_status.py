@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -174,6 +175,54 @@ class TestGatewayPidState:
         assert status.get_running_pid() is None
         assert not pid_path.exists()
 
+    def test_get_running_pid_accepts_no_supervisor_restart_runtime(self, tmp_path, monkeypatch):
+        """WSL/no-systemd restart fallback runs the gateway in a restart argv process."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        record = {
+            "pid": os.getpid(),
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "restart"],
+            "start_time": 123,
+        }
+        pid_path.write_text(json.dumps(record))
+
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda pid: "python -m hermes_cli.main gateway restart",
+        )
+
+        assert status.acquire_gateway_runtime_lock() is True
+        try:
+            assert status.get_running_pid() == os.getpid()
+        finally:
+            status.release_gateway_runtime_lock()
+
+    def test_get_running_pid_falls_back_to_no_supervisor_runtime_state(self, tmp_path, monkeypatch):
+        """A live gateway_state.json PID should keep status accurate without a pidfile."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "gateway_state": "running",
+            "pid": os.getpid(),
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "restart"],
+            "start_time": 123,
+        }))
+
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda pid: "python -m hermes_cli.main gateway restart",
+        )
+
+        assert status.get_running_pid() == os.getpid()
+
     def test_get_running_pid_cleans_stale_metadata_from_dead_foreign_pid(self, tmp_path, monkeypatch):
         """Stale PID file from a *different* PID (crashed process) must still be cleaned.
 
@@ -244,6 +293,41 @@ class TestGatewayPidState:
         finally:
             status.release_gateway_runtime_lock()
 
+    def test_gateway_identity_files_use_process_home_not_context_override(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: pid/lock/state files must use process-level HERMES_HOME.
+
+        When a profile context override is active (e.g., during session dispatch
+        for a named profile), gateway identity files should still be written to
+        the process-level HERMES_HOME, not the profile's directory.  See #56986.
+        """
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+        process_home = tmp_path / "default"
+        process_home.mkdir()
+        profile_home = tmp_path / "profiles" / "cfo"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(process_home))
+
+        # Simulate a profile context override being active during write.
+        token = set_hermes_home_override(str(profile_home))
+        try:
+            status.write_pid_file()
+        finally:
+            reset_hermes_home_override(token)
+
+        # PID file must land in the process-level home, not the profile home.
+        assert (process_home / "gateway.pid").exists()
+        assert not (profile_home / "gateway.pid").exists()
+
+        payload = json.loads((process_home / "gateway.pid").read_text())
+        assert payload["pid"] == os.getpid()
+
+        # Cleanup for atexit hooks.
+        monkeypatch.setenv("HERMES_HOME", str(process_home))
+        (process_home / "gateway.pid").unlink(missing_ok=True)
+
 
 class TestGatewayRuntimeStatus:
     def test_write_json_file_uses_atomic_json_write(self, tmp_path, monkeypatch):
@@ -311,6 +395,168 @@ class TestGatewayRuntimeStatus:
         assert payload["pid"] == os.getpid()
         assert payload["start_time"] == 2000
 
+    def test_runtime_status_running_pid_rejects_stale_record_for_supervisor_pid(self, monkeypatch):
+        """Regression: stale profile runtime state must not mark s6 supervisors live.
+
+        Docker per-profile supervision can leave a named profile with
+        ``gateway_state=running`` metadata while the real gateway process is gone
+        and the recorded PID now belongs to ``s6-supervise`` or ``s6-log``.  If
+        the live command line is readable, it wins over the stale record argv.
+        """
+        payload = {
+            "pid": 132,
+            "start_time": 123,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["/opt/hermes/.venv/bin/hermes", "gateway", "run", "--replace"],
+        }
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "s6-supervise gateway-coder")
+
+        assert status.get_runtime_status_running_pid(payload) is None
+
+    def test_runtime_status_running_pid_uses_record_when_cmdline_unreadable(self, monkeypatch):
+        """Keep the cross-platform fallback for hosts where cmdline is unavailable."""
+        payload = {
+            "pid": 132,
+            "start_time": 123,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["/opt/hermes/.venv/bin/hermes", "gateway", "run", "--replace"],
+        }
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        assert status.get_runtime_status_running_pid(payload) == 132
+
+    def test_runtime_status_running_pid_rejects_pid_reused_by_other_profile(self, monkeypatch):
+        """Regression (user report): a stale profile's recycled PID must not be
+        reported running just because it now hosts a DIFFERENT profile's gateway.
+
+        Per-profile Docker supervision: ``coder``'s gateway died leaving a
+        ``gateway_state=running`` record at PID 139.  The OS then recycled 139
+        onto the live *default* gateway (``hermes gateway run``).  The recorded
+        ``start_time`` is absent (older state file), so the start-time PID-reuse
+        guard does not catch it.  Without the profile scope the live command
+        line still ``looks_like_gateway`` and ``coder`` is wrongly reported up.
+        """
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+        }
+        coder_home = Path("/opt/data/profiles/coder")
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        # PID 139 is now the live DEFAULT gateway (bare, no -p coder).
+        monkeypatch.setattr(
+            status, "_read_process_cmdline", lambda pid: "hermes gateway run --replace"
+        )
+
+        assert (
+            status.get_runtime_status_running_pid(payload, expected_home=coder_home)
+            is None
+        )
+
+    def test_runtime_status_running_pid_accepts_matching_profile_cmdline(self, monkeypatch):
+        """A genuinely-live named gateway carries ``-p <profile>`` / ``--profile``
+        on its command line and must be reported running for that profile."""
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "start_time": 1000,
+        }
+        coder_home = Path("/opt/data/profiles/coder")
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+        for cmdline in (
+            "hermes -p coder gateway run --replace",
+            "/opt/hermes/.venv/bin/hermes --profile coder gateway run --replace",
+            "hermes_home=/opt/data/profiles/coder hermes gateway run --replace",
+        ):
+            monkeypatch.setattr(status, "_read_process_cmdline", lambda pid, c=cmdline: c)
+            assert (
+                status.get_runtime_status_running_pid(payload, expected_home=coder_home)
+                == 139
+            ), cmdline
+
+    def test_runtime_status_running_pid_default_profile_rejects_named_cmdline(self, monkeypatch):
+        """The default/root profile runs a bare gateway (no profile flag).  A
+        recycled PID now hosting a *named* profile gateway must not be reported
+        running for the default profile."""
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+        }
+        default_home = Path("/opt/data")
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        monkeypatch.setattr(
+            status, "_read_process_cmdline", lambda pid: "hermes -p coder gateway run --replace"
+        )
+
+        assert (
+            status.get_runtime_status_running_pid(payload, expected_home=default_home)
+            is None
+        )
+
+    def test_runtime_status_running_pid_default_profile_accepts_bare_cmdline(self, monkeypatch):
+        """The default/root gateway (bare ``hermes gateway run``) is reported
+        running for the default profile."""
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "start_time": 1000,
+        }
+        default_home = Path("/opt/data")
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+        monkeypatch.setattr(
+            status, "_read_process_cmdline", lambda pid: "hermes gateway run --replace"
+        )
+
+        assert (
+            status.get_runtime_status_running_pid(payload, expected_home=default_home)
+            == 139
+        )
+
+    def test_runtime_status_running_pid_profile_scope_falls_back_when_cmdline_unreadable(self, monkeypatch):
+        """When the live command line is unreadable (Windows/permission), the
+        profile scope cannot apply — fall back to the persisted record so the
+        cross-platform behavior is preserved."""
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "start_time": 1000,
+        }
+        coder_home = Path("/opt/data/profiles/coder")
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        assert (
+            status.get_runtime_status_running_pid(payload, expected_home=coder_home)
+            == 139
+        )
+
     def test_write_runtime_status_records_platform_failure(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -359,21 +605,74 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["error_message"] is None
 
 
+class TestGetProcessStartTime:
+    """Start-time fingerprint backing the PID-reuse guard (#43846 / #50468).
+
+    Must be stable across repeated reads of the same live process and degrade to
+    a cross-platform psutil fallback when /proc is unavailable (macOS/Windows),
+    so the guard isn't a Linux-only no-op.
+    """
+
+    def test_live_process_is_stable_int(self):
+        import subprocess
+        import time
+        p = subprocess.Popen(["sleep", "20"])
+        try:
+            a = status._get_process_start_time(p.pid)
+            time.sleep(0.2)
+            b = status._get_process_start_time(p.pid)
+            assert a is not None and isinstance(a, int)
+            assert a == b  # same process → identical fingerprint
+        finally:
+            p.kill()
+            p.wait()
+
+    def test_dead_pid_returns_none(self):
+        assert status._get_process_start_time(999999999) is None
+
+    def test_psutil_fallback_when_no_proc(self, monkeypatch):
+        """When /proc is missing (macOS/Windows), psutil supplies a stable int."""
+        import subprocess
+        orig_read_text = Path.read_text
+
+        def no_proc(self, *args, **kwargs):
+            if str(self).startswith("/proc/"):
+                raise FileNotFoundError
+            return orig_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", no_proc)
+        p = subprocess.Popen(["sleep", "20"])
+        try:
+            a = status._get_process_start_time(p.pid)
+            b = status._get_process_start_time(p.pid)
+            assert a is not None and isinstance(a, int)
+            assert a == b  # fallback is stable across reads
+        finally:
+            p.kill()
+            p.wait()
+
+
 class TestTerminatePid:
     def test_force_uses_taskkill_on_windows(self, monkeypatch):
         calls = []
         monkeypatch.setattr(status, "_IS_WINDOWS", True)
 
-        def fake_run(cmd, capture_output=False, text=False, timeout=None, **kwargs):
-            calls.append((cmd, capture_output, text, timeout))
+        def fake_run(cmd, capture_output=False, text=False, timeout=None, creationflags=0):
+            calls.append((cmd, capture_output, text, timeout, creationflags))
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(status.subprocess, "run", fake_run)
 
         status.terminate_pid(123, force=True)
 
+        # taskkill is spawned with the no-window flag so the windowless
+        # pythonw.exe backend doesn't flash a conhost window on force-kill.
+        # windows_hide_flags() is 0 on the POSIX test host (a valid no-op
+        # creationflags value); on real Windows it is CREATE_NO_WINDOW.
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
         assert calls == [
-            (["taskkill", "/PID", "123", "/T", "/F"], True, True, 10)
+            (["taskkill", "/PID", "123", "/T", "/F"], True, True, 10, windows_hide_flags())
         ]
 
     def test_force_falls_back_to_sigterm_when_taskkill_missing(self, monkeypatch):
@@ -871,6 +1170,64 @@ class TestTakeoverMarker:
         # We are not the target — must NOT consume as planned
         assert result is False
 
+    def test_write_marker_records_replacer_hermes_home(self, tmp_path, monkeypatch):
+        """The marker stamps the replacer's HERMES_HOME for cross-profile guard (#29092)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 42)
+
+        status.write_takeover_marker(target_pid=12345)
+
+        payload = json.loads((tmp_path / ".gateway-takeover.json").read_text())
+        assert payload["replacer_hermes_home"] == str(tmp_path)
+
+    def test_consume_rejects_marker_from_different_profile(self, tmp_path, monkeypatch):
+        """Regression (#29092): a marker written by a gateway under a DIFFERENT
+        HERMES_HOME must be rejected even when PID + start_time coincidentally
+        match — otherwise two profile services sharing a default ~/.hermes flap
+        each other in an infinite SIGTERM/Restart loop. The mismatched marker is
+        left in place so the profile it was actually meant for can consume it.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+        marker_path = tmp_path / ".gateway-takeover.json"
+        from datetime import datetime, timezone
+        # Marker names OUR pid + start_time (the coincidental match the bug
+        # relied on) but was written by a gateway in a different profile.
+        marker_path.write_text(json.dumps({
+            "target_pid": os.getpid(),
+            "target_start_time": 100,
+            "replacer_pid": 99999,
+            "replacer_hermes_home": str(tmp_path / "profiles" / "other"),
+            "written_at": datetime.now(timezone.utc).isoformat(),
+        }))
+
+        result = status.consume_takeover_marker_for_self()
+
+        assert result is False
+        # Left in place for the correct profile, not griefed away.
+        assert marker_path.exists()
+
+    def test_consume_accepts_legacy_marker_without_hermes_home(self, tmp_path, monkeypatch):
+        """Back-compat (#29092): markers written by older Hermes versions have no
+        ``replacer_hermes_home`` field; an absent field is treated as same-home so
+        single-profile setups and mixed old/new deployments keep working.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+        marker_path = tmp_path / ".gateway-takeover.json"
+        from datetime import datetime, timezone
+        marker_path.write_text(json.dumps({
+            "target_pid": os.getpid(),
+            "target_start_time": 100,
+            "replacer_pid": 99999,
+            "written_at": datetime.now(timezone.utc).isoformat(),
+        }))
+
+        result = status.consume_takeover_marker_for_self()
+
+        assert result is True
+        assert not marker_path.exists()
+
 
 class TestPlannedStopMarker:
     """Tests for intentional service/manual gateway stop markers."""
@@ -1030,6 +1387,7 @@ class TestReadProcessCmdlinePsFallback:
 
     def test_ps_fallback_when_proc_unavailable(self, monkeypatch):
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
         monkeypatch.setattr(
             status.subprocess, "run",
             lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="/usr/libexec/bluetoothuserd\n"),
@@ -1039,6 +1397,7 @@ class TestReadProcessCmdlinePsFallback:
 
     def test_ps_fallback_returns_none_on_failure(self, monkeypatch):
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
         monkeypatch.setattr(
             status.subprocess, "run",
             lambda args, **kwargs: SimpleNamespace(returncode=1, stdout=""),
@@ -1060,12 +1419,41 @@ class TestReadProcessCmdlinePsFallback:
 
     def test_ps_fallback_used_when_proc_returns_empty(self, monkeypatch):
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: b"")
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
         monkeypatch.setattr(
             status.subprocess, "run",
             lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="python hermes_cli/main.py gateway run\n"),
         )
         result = status._read_process_cmdline(12345)
         assert "hermes_cli/main.py" in result
+
+    def test_windows_skips_ps_fallback_and_uses_psutil(self, monkeypatch):
+        monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
+        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+        ps_calls = []
+        monkeypatch.setattr(
+            status.subprocess,
+            "run",
+            lambda args, **kwargs: ps_calls.append((args, kwargs)) or SimpleNamespace(returncode=0, stdout="ps should not run\n"),
+        )
+
+        class _Proc:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def cmdline(self):
+                return ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"]
+
+        monkeypatch.setitem(
+            sys.modules,
+            "psutil",
+            SimpleNamespace(Process=_Proc),
+        )
+
+        result = status._read_process_cmdline(12345)
+
+        assert result == "pythonw.exe -m hermes_cli.main gateway run"
+        assert ps_calls == []
 
 
 class TestCorruptStatusFiles:
@@ -1091,3 +1479,119 @@ class TestCorruptStatusFiles:
         p = tmp_path / "gateway.pid"
         p.write_text("4242", encoding="utf-8")
         assert status._read_pid_record(p) == {"pid": 4242}
+
+
+class TestParseActiveAgents:
+    """The shared read-side coercion used by BOTH HTTP surfaces (/api/status
+    and /health/detailed) so the exposed active_agents field is consistent and
+    never negative regardless of what the status file holds."""
+
+    def test_valid_int_passthrough(self):
+        assert status.parse_active_agents(3) == 3
+
+    def test_zero(self):
+        assert status.parse_active_agents(0) == 0
+
+    def test_numeric_string_coerced(self):
+        assert status.parse_active_agents("5") == 5
+
+    def test_negative_clamped_to_zero(self):
+        assert status.parse_active_agents(-3) == 0
+
+    def test_none_degrades_to_zero(self):
+        assert status.parse_active_agents(None) == 0
+
+    def test_garbage_string_degrades_to_zero(self):
+        assert status.parse_active_agents("garbage") == 0
+
+    def test_float_truncates(self):
+        # int() truncation, then clamp — never raises.
+        assert status.parse_active_agents(2.9) == 2
+
+
+class TestActiveAgentsTurnBoundaryWrite:
+    """The load-bearing Phase 1a contract: writing the in-flight count at a
+    turn boundary must PRESERVE the lifecycle gateway_state. The whole readout
+    depends on active_agents being refreshed per-turn while gateway_state is
+    only touched by lifecycle transitions — so an active_agents-only write must
+    not clobber it."""
+
+    def test_active_agents_only_write_preserves_gateway_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        # Lifecycle transition sets running.
+        status.write_runtime_status(gateway_state="running", active_agents=0)
+        assert status.read_runtime_status()["gateway_state"] == "running"
+
+        # Turn-boundary write: ONLY active_agents (gateway_state left _UNSET).
+        status.write_runtime_status(active_agents=2)
+
+        rec = status.read_runtime_status()
+        assert rec["active_agents"] == 2
+        # The state must survive the per-turn write — this is what makes the
+        # _persist_active_agents helper safe to call on every turn.
+        assert rec["gateway_state"] == "running"
+
+    def test_active_agents_only_write_preserves_draining_state(self, tmp_path, monkeypatch):
+        """Same invariant while draining — a turn finishing mid-drain (count
+        falling) must not flip the state back to running."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(gateway_state="draining", active_agents=3)
+        status.write_runtime_status(active_agents=2)
+
+        rec = status.read_runtime_status()
+        assert rec["active_agents"] == 2
+        assert rec["gateway_state"] == "draining"
+
+    def test_active_agents_clamped_non_negative(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        status.write_runtime_status(gateway_state="running", active_agents=-5)
+        assert status.read_runtime_status()["active_agents"] == 0
+class TestGatewayBusyDerivation:
+    """Pure contract for derive_gateway_busy / derive_gateway_drainable — the
+    single shared definition both /api/status and /health/detailed consume."""
+
+    def test_busy_requires_running_state_and_positive_count(self):
+        assert status.derive_gateway_busy(
+            gateway_running=True, gateway_state="running", active_agents=1
+        ) is True
+        assert status.derive_gateway_busy(
+            gateway_running=True, gateway_state="running", active_agents=0
+        ) is False
+
+    def test_busy_false_when_not_live_even_if_file_says_active(self):
+        # Liveness wins: gateway_running False ⇒ never busy, regardless of count.
+        assert status.derive_gateway_busy(
+            gateway_running=False, gateway_state="running", active_agents=9
+        ) is False
+
+    def test_busy_false_for_non_running_states(self):
+        for state in ("draining", "stopping", "stopped", "startup_failed", None):
+            assert status.derive_gateway_busy(
+                gateway_running=True, gateway_state=state, active_agents=5
+            ) is False, state
+
+    def test_busy_degrades_on_unparseable_count(self):
+        for bad in (None, "garbage", object()):
+            assert status.derive_gateway_busy(
+                gateway_running=True, gateway_state="running", active_agents=bad
+            ) is False
+
+    def test_drainable_is_running_and_live_independent_of_count(self):
+        # Idle running gateway is drainable but NOT busy.
+        assert status.derive_gateway_drainable(
+            gateway_running=True, gateway_state="running"
+        ) is True
+        assert status.derive_gateway_busy(
+            gateway_running=True, gateway_state="running", active_agents=0
+        ) is False
+
+    def test_drainable_false_when_down_or_not_running(self):
+        assert status.derive_gateway_drainable(
+            gateway_running=False, gateway_state="running"
+        ) is False
+        for state in ("draining", "stopped", None):
+            assert status.derive_gateway_drainable(
+                gateway_running=True, gateway_state=state
+            ) is False, state

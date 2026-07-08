@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Callable, Dict, Any, Optional
 from urllib.parse import urljoin
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_constants import display_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 
@@ -172,6 +173,11 @@ DEFAULT_ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB"  # Adam
 DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
+# The managed OpenAI audio gateway (Nous portal proxy) only proxies these speech
+# models. A user's tts.openai.model set for *direct* OpenAI (e.g. "tts-1-hd")
+# is rejected with a 400 "Unsupported managed OpenAI speech model", so it must be
+# coerced to a supported model when routing through the gateway.
+MANAGED_OPENAI_TTS_MODELS = frozenset({"gpt-4o-mini-tts"})
 DEFAULT_KITTENTTS_MODEL = "KittenML/kitten-tts-nano-0.8-int8"  # 25MB
 DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
@@ -188,6 +194,13 @@ DEFAULT_XAI_SAMPLE_RATE = 24000
 DEFAULT_XAI_BIT_RATE = 128000
 DEFAULT_XAI_AUTO_SPEECH_TAGS = False
 DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
+# xAI TTS `speed` accepts 0.7..1.5; 1.0 is the API default (omitted => default).
+DEFAULT_XAI_SPEED_MIN = 0.7
+DEFAULT_XAI_SPEED_MAX = 1.5
+DEFAULT_XAI_SPEED_DEFAULT = 1.0
+# xAI TTS `optimize_streaming_latency` accepts 0, 1, or 2; 0 (best quality) is
+# the API default (omitted => default). Values >0 trade quality for time-to-first-audio.
+DEFAULT_XAI_OPTIMIZE_STREAMING_LATENCY_DEFAULT = 0
 DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
@@ -905,6 +918,7 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
              "-ac", "1", "-b:a", "64k", "-vbr", "off", ogg_path, "-y"],
             capture_output=True, timeout=30,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             logger.warning("ffmpeg conversion failed with return code %d: %s", 
@@ -1012,13 +1026,28 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     Returns:
         Path to the saved audio file.
     """
-    api_key, base_url = _resolve_openai_audio_client_config()
+    api_key, base_url, is_managed = _resolve_openai_audio_client_config()
 
     oai_config = tts_config.get("openai", {})
     model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
     voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
-    base_url = oai_config.get("base_url", base_url)
+    custom_base_url = oai_config.get("base_url")
+    if custom_base_url:
+        base_url = custom_base_url
     speed = float(oai_config.get("speed", tts_config.get("speed", 1.0)))
+
+    # The managed OpenAI audio gateway only proxies MANAGED_OPENAI_TTS_MODELS.
+    # A model set for direct OpenAI (e.g. "tts-1-hd") 400s there with
+    # "Unsupported managed OpenAI speech model", so coerce it — unless the user
+    # redirected base_url to their own endpoint, in which case respect it.
+    if is_managed and not custom_base_url and model not in MANAGED_OPENAI_TTS_MODELS:
+        logger.warning(
+            "TTS: managed OpenAI audio gateway does not support model %r; "
+            "falling back to %s. Set VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY "
+            "to use %r directly.",
+            model, DEFAULT_OPENAI_MODEL, model,
+        )
+        model = DEFAULT_OPENAI_MODEL
 
     # Determine response format from extension
     if output_path.endswith(".ogg"):
@@ -1094,22 +1123,71 @@ def _xai_bool_config(value: Any, default: bool = False) -> bool:
 
 
 def _apply_xai_auto_speech_tags(text: str) -> str:
-    """Add light xAI speech tags for more natural voice-mode replies.
+    """Add xAI speech tags for more natural voice-mode replies.
 
-    The transform is intentionally conservative: it only inserts pauses. It
-    never fabricates laughter or whispering, and it leaves explicit user/model
-    speech tags untouched.
+    First applies a conservative local transform (inserts [pause] between
+    paragraphs and after the first sentence). Then, if the result contains
+    no explicit user/model speech tags, asks the configured auxiliary model
+    to rewrite the transcript with a richer set of xAI-supported tags
+    (laughs, sighs, whispers, soft/loud, slow/fast, etc.) so the voice
+    output sounds more expressive. Falls back to the local result on any
+    auxiliary-model failure.
     """
     clean = text.strip()
-    if not clean or _XAI_SPEECH_TAG_RE.search(clean):
+    if not clean:
         return text
 
-    clean = re.sub(r"\n\s*\n+", " [pause] ", clean)
-    clean = re.sub(r"\s*\n\s*", " ", clean)
-    if not _XAI_SPEECH_TAG_RE.search(clean):
-        clean = _XAI_FIRST_SENTENCE_RE.sub(r"\1 [pause] ", clean, count=1)
-    clean = re.sub(r"\s{2,}", " ", clean).strip()
-    return clean
+    # Local conservative pass: pauses only.
+    local = clean
+    local = re.sub(r"\n\s*\n+", " [pause] ", local)
+    local = re.sub(r"\s*\n\s*", " ", local)
+    if not _XAI_SPEECH_TAG_RE.search(local):
+        local = _XAI_FIRST_SENTENCE_RE.sub(r"\1 [pause] ", local, count=1)
+    local = re.sub(r"\s{2,}", " ", local).strip()
+
+    # If the user/model already supplied explicit speech tags, trust them
+    # and don't re-rewrite.
+    if _XAI_SPEECH_TAG_RE.search(clean):
+        return local
+
+    # Auxiliary rewrite for richer emotion tags (mirrors the Gemini path).
+    inline = ", ".join(_XAI_INLINE_SPEECH_TAGS)
+    wrapping = ", ".join(_XAI_WRAPPING_SPEECH_TAGS)
+    system_prompt = (
+        "You rewrite transcripts for the xAI /v1/tts endpoint by inserting "
+        "expressive speech tags.\n\n"
+        "Valid inline tags (use as `[tag]`): " + inline + ".\n"
+        "Valid wrapping tags (use as `[tag]...[/tag]`): " + wrapping + ".\n\n"
+        "Rules:\n"
+        "- Preserve the spoken words, order, and meaning.\n"
+        "- Do not add new spoken sentences or remove existing spoken words.\n"
+        "- Use inline `[tag]` for short modifiers (laughs, sighs, pause, etc.).\n"
+        "- Use wrapping `[tag]...[/tag]` for sustained effects (whisper, soft, slow, fast, loud, etc.).\n"
+        "- Do not use angle-bracket tags like `<tag>...</tag>` — xAI uses BBCode-style closing tags with `[/tag]`.\n"
+        "- Do not use SSML.\n"
+        "- Do not explain or comment.\n"
+        "- Return only the tagged TTS script."
+    )
+    try:
+        from agent.auxiliary_client import call_llm
+
+        response = call_llm(
+            task="tts_audio_tags",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"TRANSCRIPT TO TAG:\n{local}"},
+            ],
+            temperature=0.7,
+        )
+        tagged = _extract_auxiliary_message_content(response).strip()
+        # Strip markdown fences if the LLM wrapped the response.
+        fence = re.fullmatch(r"```(?:[A-Za-z0-9_-]+)?\s*(.*?)\s*```", tagged, flags=re.DOTALL)
+        if fence:
+            tagged = fence.group(1).strip()
+        return tagged or local
+    except Exception as exc:
+        logger.debug("xAI TTS audio tag rewrite failed; using locally-tagged text: %s", exc)
+        return local
 
 
 def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
@@ -1137,6 +1215,31 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         xai_config.get("auto_speech_tags", xai_config.get("speech_tags")),
         DEFAULT_XAI_AUTO_SPEECH_TAGS,
     )
+    # ``tts.xai.speed`` overrides global ``tts.speed``; the xAI TTS API
+    # accepts 0.7..1.5 (1.0 = normal). Out-of-range values are clamped so a
+    # misconfigured agent can't 400 the request — the API would reject
+    # anything outside the band.
+    speed = xai_config.get("speed", tts_config.get("speed"))
+    if speed is not None and speed != "":
+        try:
+            speed = float(speed)
+        except (TypeError, ValueError):
+            speed = None
+    if speed is not None:
+        speed = max(DEFAULT_XAI_SPEED_MIN, min(DEFAULT_XAI_SPEED_MAX, speed))
+    # ``tts.xai.optimize_streaming_latency`` is 0, 1, or 2 (xAI-specific;
+    # trades chunk-boundary quality for time-to-first-audio).
+    optimize_streaming_latency = xai_config.get(
+        "optimize_streaming_latency",
+        tts_config.get("optimize_streaming_latency"),
+    )
+    if optimize_streaming_latency is not None and optimize_streaming_latency != "":
+        try:
+            optimize_streaming_latency = int(optimize_streaming_latency)
+        except (TypeError, ValueError):
+            optimize_streaming_latency = None
+    if optimize_streaming_latency is not None:
+        optimize_streaming_latency = max(0, min(2, optimize_streaming_latency))
     if auto_speech_tags:
         text = _apply_xai_auto_speech_tags(text)
     base_url = str(
@@ -1165,6 +1268,18 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         if codec == "mp3" and bit_rate:
             output_format["bit_rate"] = bit_rate
         payload["output_format"] = output_format
+    # Only attach `speed` when the caller asked for something other than the
+    # API default (1.0). Keeps the existing minimal-payload contract for
+    # users who never touch the knob.
+    if speed is not None and speed != DEFAULT_XAI_SPEED_DEFAULT:
+        payload["speed"] = speed
+    # Only attach `optimize_streaming_latency` when the caller explicitly
+    # opts in to a non-default value (anything other than 0).
+    if (
+        optimize_streaming_latency is not None
+        and optimize_streaming_latency != DEFAULT_XAI_OPTIMIZE_STREAMING_LATENCY_DEFAULT
+    ):
+        payload["optimize_streaming_latency"] = optimize_streaming_latency
 
     response = requests.post(
         f"{base_url}/tts",
@@ -1685,7 +1800,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
                 ]
             else:
                 cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            result = subprocess.run(cmd, capture_output=True, timeout=30, stdin=subprocess.DEVNULL)
+            result = subprocess.run(cmd, capture_output=True, timeout=30, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
             if result.returncode != 0:
                 stderr = result.stderr.decode("utf-8", errors="ignore")[:300]
                 raise RuntimeError(f"ffmpeg conversion failed: {stderr}")
@@ -1780,7 +1895,7 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
             conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
+            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
             os.remove(wav_path)
         else:
             # No ffmpeg — just rename the WAV to the expected path
@@ -1891,6 +2006,18 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
 
     model_path = _resolve_piper_voice_path(voice_name, download_dir)
 
+    # Tolerant speaker_id parse: drop bad input (non-int strings, lists, dicts)
+    # to 0 (Piper's own default). Booleans are rejected outright — True/False
+    # would silently coerce to 1/0 and hide a config mistake.
+    _raw_speaker = piper_config.get("speaker_id", 0)
+    if isinstance(_raw_speaker, bool) or not isinstance(_raw_speaker, int):
+        speaker_id = 0
+    else:
+        speaker_id = _raw_speaker
+
+    # speaker_id is applied per-call via syn_config.speaker_id — the same
+    # PiperVoice instance serves all speakers, so it stays out of the cache
+    # key. Multi-speaker workflows share one model load.
     cache_key = f"{model_path}::cuda={use_cuda}"
     global _piper_voice_cache
     if cache_key not in _piper_voice_cache:
@@ -1905,7 +2032,14 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
     syn_config = None
     has_advanced = any(
         k in piper_config
-        for k in ("length_scale", "noise_scale", "noise_w_scale", "volume", "normalize_audio")
+        for k in (
+            "length_scale",
+            "noise_scale",
+            "noise_w_scale",
+            "volume",
+            "normalize_audio",
+            "speaker_id",
+        )
     )
     if has_advanced:
         try:
@@ -1916,6 +2050,7 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
                 noise_w_scale=float(piper_config.get("noise_w_scale", 0.8)),
                 volume=float(piper_config.get("volume", 1.0)),
                 normalize_audio=bool(piper_config.get("normalize_audio", True)),
+                speaker_id=speaker_id,
             )
         except ImportError:
             logger.warning(
@@ -1939,7 +2074,7 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
             conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
+            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
             try:
                 os.remove(wav_path)
             except OSError:
@@ -2005,7 +2140,7 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
             conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
+            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
             os.remove(wav_path)
         else:
             # No ffmpeg — rename the WAV to the expected path
@@ -2389,15 +2524,17 @@ def check_tts_requirements() -> bool:
     return False
 
 
-def _resolve_openai_audio_client_config() -> tuple[str, str]:
-    """Return direct OpenAI audio config or a managed gateway fallback.
+def _resolve_openai_audio_client_config() -> tuple[str, str, bool]:
+    """Return ``(api_key, base_url, is_managed)`` for the OpenAI audio client.
 
-    When ``tts.use_gateway`` is set in config, the Tool Gateway is preferred
+    ``is_managed`` is True when the config resolves to the Nous managed audio
+    gateway (a restricted proxy), so callers can coerce the request to what the
+    gateway supports. When ``tts.use_gateway`` is set the gateway is preferred
     even if direct OpenAI credentials are present.
     """
     direct_api_key = resolve_openai_audio_api_key()
     if direct_api_key and not prefers_gateway("tts"):
-        return direct_api_key, DEFAULT_OPENAI_BASE_URL
+        return direct_api_key, DEFAULT_OPENAI_BASE_URL, False
 
     managed_gateway = resolve_managed_tool_gateway("openai-audio")
     if managed_gateway is None:
@@ -2411,8 +2548,10 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
             )
         raise ValueError(message)
 
-    return managed_gateway.nous_user_token, urljoin(
-        f"{managed_gateway.gateway_origin.rstrip('/')}/", "v1"
+    return (
+        managed_gateway.nous_user_token,
+        urljoin(f"{managed_gateway.gateway_origin.rstrip('/')}/", "v1"),
+        True,
     )
 
 

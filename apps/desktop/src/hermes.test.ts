@@ -1,7 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { deleteSession, getSessionMessages, listAllProfileSessions, listSessions, setSessionArchived } from './hermes'
-import { getSessionMessages, listAllProfileSessions, listSessions } from './hermes'
+import {
+  getCronJobs,
+  getGlobalModelInfo,
+  getGlobalModelOptions,
+  getHermesConfig,
+  getHermesConfigDefaults,
+  getProfiles,
+  getSessionMessages,
+  getStatus,
+  listAllProfileSessions,
+  listSessions
+} from './hermes'
+import { refreshActiveProfile } from './store/profile'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -48,45 +59,69 @@ describe('Hermes REST session helpers', () => {
     )
   })
 
-  // The owning profile must reach the SERVER as ?profile=, not just Electron's
-  // backend router: the serving process can be scoped to a different profile
-  // than the desktop believes (sticky active_profile honored on a legacy
-  // launch), so without it the delete 404s against the wrong state.db (#44117).
-  it('passes the owning profile to the server when deleting a session', async () => {
-    await deleteSession('sess-1', 'default')
+  it('uses a longer timeout for profile listing during desktop startup', async () => {
+    api.mockResolvedValue({ profiles: [] })
+
+    await getProfiles()
 
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({
-        method: 'DELETE',
-        path: '/api/sessions/sess-1?profile=default',
-        profile: 'default'
+        path: '/api/profiles',
+        timeoutMs: 60_000
       })
     )
   })
 
-  it('omits the profile param when deleting without an owning profile', async () => {
-    await deleteSession('sess-1')
+  it('uses a longer timeout for active profile refresh during desktop startup', async () => {
+    api.mockResolvedValueOnce({ current: 'default' }).mockResolvedValueOnce({ profiles: [] })
 
-    expect(api).toHaveBeenCalledWith(
+    await refreshActiveProfile()
+
+    expect(api).toHaveBeenNthCalledWith(
+      1,
       expect.objectContaining({
-        method: 'DELETE',
-        path: '/api/sessions/sess-1'
+        path: '/api/profiles/active',
+        timeoutMs: 60_000
       })
     )
-    expect(api.mock.calls[0][0]).not.toHaveProperty('profile')
+    expect(api).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        path: '/api/profiles',
+        timeoutMs: 60_000
+      })
+    )
   })
 
-  it('passes the owning profile in the body when archiving a session', async () => {
-    await setSessionArchived('sess-1', true, 'default')
+  it('gives the whole startup data burst the long timeout, not just profiles', async () => {
+    api.mockResolvedValue({})
 
-    expect(api).toHaveBeenCalledWith(
-      expect.objectContaining({
-        body: { archived: true, profile: 'default' },
-        method: 'PATCH',
-        path: '/api/sessions/sess-1',
-        profile: 'default'
-      })
-    )
+    const bootCalls: [() => Promise<unknown>, string][] = [
+      [getHermesConfig, '/api/config'],
+      [getHermesConfigDefaults, '/api/config/defaults'],
+      [getGlobalModelInfo, '/api/model/info'],
+      [() => getGlobalModelOptions(), '/api/model/options?explicit_only=1'],
+      [getCronJobs, '/api/cron/jobs']
+    ]
+
+    for (const [call, path] of bootCalls) {
+      api.mockClear()
+      await call()
+      expect(api).toHaveBeenCalledWith(expect.objectContaining({ path, timeoutMs: 60_000 }))
+    }
+  })
+
+  it('keeps the liveness poll on the short default so a dead backend fails fast', async () => {
+    api.mockResolvedValue({})
+    api.mockClear()
+
+    await getStatus()
+
+    // /api/status must NOT carry the long startup timeout — it is the runtime
+    // liveness probe and has to fail quickly when the backend drops.
+    const call = api.mock.calls[0]?.[0] as { path: string; timeoutMs?: number }
+    expect(call.path).toBe('/api/status')
+    expect(call.timeoutMs).toBeUndefined()
   })
 
   it('tags cross-profile message reads for Electron routing and backend lookup', async () => {
@@ -98,5 +133,25 @@ describe('Hermes REST session helpers', () => {
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
       profile: 'xiaoxuxu'
     })
+  })
+
+  it('defaults model options to configured providers only', async () => {
+    await getGlobalModelOptions()
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/model/options?explicit_only=1'
+      })
+    )
+  })
+
+  it('can opt into unconfigured providers for onboarding flows', async () => {
+    await getGlobalModelOptions({ includeUnconfigured: true, refresh: true, explicitOnly: false })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/model/options?refresh=1&include_unconfigured=1'
+      })
+    )
   })
 })

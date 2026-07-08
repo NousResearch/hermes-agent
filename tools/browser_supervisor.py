@@ -34,6 +34,32 @@ from websockets.asyncio.client import ClientConnection
 logger = logging.getLogger(__name__)
 
 
+def _redact_cdp_error_text(exc: object) -> str:
+    """Redact any CDP endpoint credentials from an error's string form.
+
+    ``websockets`` bakes the raw target URL into its exception messages
+    (``InvalidURI``, connection errors, TLS failures all embed the full
+    ``self.cdp_url`` — including a ``?token=`` query credential or
+    ``user:pass@`` userinfo). Every supervisor egress point that turns such an
+    exception into log text or a re-raised message MUST route through here so
+    those credentials never reach Hermes logs or tracebacks. Falls back to a
+    fixed sentinel if redaction itself raises, erring toward masking.
+    """
+    try:
+        from agent.redact import redact_cdp_url
+
+        return redact_cdp_url(str(exc))
+    except Exception:
+        return "<error redacted>"
+
+
+def _redact_supervisor_text(value: str) -> str:
+    """Redact page-originated text before exposing supervisor snapshots."""
+    from agent.redact import redact_sensitive_text
+
+    return redact_sensitive_text(value, force=True)
+
+
 # ── Config defaults ───────────────────────────────────────────────────────────
 
 DIALOG_POLICY_MUST_RESPOND = "must_respond"
@@ -46,7 +72,6 @@ _VALID_POLICIES = frozenset(
 
 DEFAULT_DIALOG_POLICY = DIALOG_POLICY_MUST_RESPOND
 DEFAULT_DIALOG_TIMEOUT_S = 300.0
-DEFAULT_MAX_RECONNECT_ATTEMPTS = 10
 
 # Snapshot caps for frame_tree — keep payloads bounded on ad-heavy pages.
 FRAME_TREE_MAX_ENTRIES = 30
@@ -148,8 +173,8 @@ class PendingDialog:
         return {
             "id": self.id,
             "type": self.type,
-            "message": self.message,
-            "default_prompt": self.default_prompt,
+            "message": _redact_supervisor_text(self.message),
+            "default_prompt": _redact_supervisor_text(self.default_prompt),
             "opened_at": self.opened_at,
             "frame_id": self.frame_id,
         }
@@ -176,7 +201,7 @@ class DialogRecord:
         return {
             "id": self.id,
             "type": self.type,
-            "message": self.message,
+            "message": _redact_supervisor_text(self.message),
             "opened_at": self.opened_at,
             "closed_at": self.closed_at,
             "closed_by": self.closed_by,
@@ -281,7 +306,6 @@ class CDPSupervisor:
         *,
         dialog_policy: str = DEFAULT_DIALOG_POLICY,
         dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S,
-        max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS,
     ) -> None:
         if dialog_policy not in _VALID_POLICIES:
             raise ValueError(
@@ -292,7 +316,6 @@ class CDPSupervisor:
         self.cdp_url = cdp_url
         self.dialog_policy = dialog_policy
         self.dialog_timeout_s = float(dialog_timeout_s)
-        self.max_reconnect_attempts = max_reconnect_attempts
 
         # State protected by ``_state_lock`` for cross-thread reads.
         self._state_lock = threading.Lock()
@@ -344,14 +367,26 @@ class CDPSupervisor:
         self._thread.start()
         if not self._ready_event.wait(timeout=timeout):
             self.stop()
+            try:
+                from agent.redact import redact_cdp_url
+                _safe_url = redact_cdp_url(self.cdp_url)
+            except Exception:
+                _safe_url = "<cdp_url redacted>"
             raise TimeoutError(
                 f"CDP supervisor did not attach within {timeout}s "
-                f"(cdp_url={self.cdp_url[:80]}...)"
+                f"(cdp_url={_safe_url[:80]}...)"
             )
         if self._start_error is not None:
             err = self._start_error
             self.stop()
-            raise err
+            # ``err`` is a raw ``websockets`` exception whose message embeds the
+            # full cdp_url (token / userinfo). Re-raise a redacted RuntimeError
+            # and suppress the raw cause (``from None``) so no credential leaks
+            # via the message OR the traceback chain. Type is not load-bearing:
+            # the sole caller (_ensure_cdp_supervisor) only logs it.
+            raise RuntimeError(
+                f"CDP supervisor failed to start: {_redact_cdp_error_text(err)}"
+            ) from None
 
     def stop(self, timeout: float = 5.0) -> None:
         """Cancel the supervisor task and join the thread."""
@@ -610,14 +645,8 @@ class CDPSupervisor:
         every time a short-lived client (e.g. agent-browser's per-command
         CDP client) disconnects.  We drop our state snapshot keys that
         depend on specific CDP session ids, re-attach, and keep going.
-
-        Reconnection is bounded: after ``max_reconnect_attempts`` consecutive
-        failures (default 10) the supervisor gives up.  HTTP 502/503 errors
-        (infrastructure failures) are treated as immediately fatal — retrying
-        won't help when the upstream service is down.
         """
         attempt = 0
-        consecutive_failures = 0
         last_success_at = 0.0
         backoff = 0.5
         while not self._stop_requested:
@@ -628,38 +657,14 @@ class CDPSupervisor:
                 )
             except Exception as e:
                 attempt += 1
-                consecutive_failures += 1
                 if not self._ready_event.is_set():
                     # Never connected once — fatal for start().
                     self._start_error = e
                     self._ready_event.set()
                     return
-
-                # Treat infrastructure failures (HTTP 502/503) as fatal —
-                # retrying won't bring the upstream service back.
-                err_str = str(e)
-                is_infra_failure = any(
-                    code in err_str
-                    for code in ("502", "503", "Service Unavailable", "Bad Gateway")
-                )
-                if is_infra_failure:
-                    logger.error(
-                        "CDP supervisor %s: infrastructure failure after %d attempts: %s — giving up",
-                        self.task_id, consecutive_failures, e,
-                    )
-                    return
-
-                # Check if we've exceeded reconnect attempts
-                if consecutive_failures >= self.max_reconnect_attempts:
-                    logger.error(
-                        "CDP supervisor %s: max reconnect attempts (%d) reached after %d failures — giving up",
-                        self.task_id, self.max_reconnect_attempts, consecutive_failures,
-                    )
-                    return
-
                 logger.warning(
-                    "CDP supervisor %s: connect failed (attempt %d/%d): %s",
-                    self.task_id, consecutive_failures, self.max_reconnect_attempts, e,
+                    "CDP supervisor %s: connect failed (attempt %s): %s",
+                    self.task_id, attempt, _redact_cdp_error_text(e),
                 )
                 await asyncio.sleep(min(backoff, 10.0))
                 backoff = min(backoff * 2, 10.0)
@@ -682,8 +687,6 @@ class CDPSupervisor:
                     self._active = True
                 last_success_at = time.time()
                 backoff = 0.5  # reset after a successful attach
-                consecutive_failures = 0  # reset failure counter on success
-                attempt = 0
                 if not self._ready_event.is_set():
                     self._ready_event.set()
                 # Run until the reader returns.
@@ -698,7 +701,7 @@ class CDPSupervisor:
                     "CDP supervisor %s: session dropped after %.1fs: %s",
                     self.task_id,
                     time.time() - last_success_at,
-                    e,
+                    _redact_cdp_error_text(e),
                 )
             finally:
                 with self._state_lock:

@@ -16,12 +16,6 @@ Three concerns, all tied to ``AIAgent`` boot-time / runtime IO setup:
    ``HTTPS_PROXY`` / ``HTTP_PROXY`` / ``ALL_PROXY``;
    ``_get_proxy_for_base_url`` respects ``NO_PROXY`` for the given base URL.
 
-4. **TLS version override** — ``_get_tls_ssl_context`` honors
-   ``network.tls_max_version`` from config.yaml (bridged to the internal
-   ``HERMES_TLS_MAX_VERSION`` env var at startup) so users behind
-   TLS-1.3-hostile networks or CDN edges can cap provider connections
-   at TLS 1.2.
-
 ``run_agent`` re-exports every name so existing
 ``from run_agent import _get_proxy_from_env`` imports keep working
 unchanged.
@@ -32,7 +26,7 @@ from __future__ import annotations
 import os
 import sys
 import urllib.request
-from typing import Optional
+from typing import Any, Optional
 
 from utils import base_url_hostname, normalize_proxy_url
 
@@ -148,65 +142,63 @@ def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
     return proxy
 
 
-def _get_tls_ssl_context() -> Optional["ssl.SSLContext"]:
-    """Build an ``ssl.SSLContext`` capped by ``HERMES_TLS_MAX_VERSION``.
+def build_keepalive_http_client(
+    base_url: str = "",
+    *,
+    async_mode: bool = False,
+    verify: Any = True,
+) -> Optional[Any]:
+    """Build an httpx client for OpenAI SDK calls with env-only proxy policy.
 
-    Some CDN edges and middleboxes accept TLS 1.2 handshakes but kill
-    TLS 1.3 ClientHellos, surfacing as ``[SSL: UNEXPECTED_EOF_WHILE_READING]``
-    roughly 15s into every request while ``curl`` (which uses the OS TLS
-    stack on Windows/macOS) works fine (#44365, DeepSeek's edge).  The
-    user-facing knob is ``network.tls_max_version: "1.2"`` in config.yaml,
-    bridged onto ``HERMES_TLS_MAX_VERSION`` at process startup by
-    ``hermes_constants.apply_tls_max_version`` (this layer has no config
-    access, and spawned agent subprocesses must inherit the cap; an
-    explicitly exported env var wins over config.yaml).
+    Uses explicit ``HTTPS_PROXY`` / ``NO_PROXY`` env vars via
+    ``_get_proxy_for_base_url``. Plain no-proxy mounts disable httpx's default
+    ``trust_env`` proxy path, so macOS system proxy settings from
+    ``urllib.request.getproxies()`` (which omit the ExceptionsList) are not
+    applied. Mirrors ``AIAgent._build_keepalive_http_client``.
 
-    Accepted values: ``1.2`` / ``1.3``, optionally prefixed ``tls``/``tlsv``
-    (case-insensitive).  Returns ``None`` — meaning "use httpx defaults" —
-    when the variable is unset, empty, or invalid.  The context honors the
-    same CA-bundle overrides as the rest of the CLI: ``HERMES_CA_BUNDLE`` >
-    ``REQUESTS_CA_BUNDLE`` > ``SSL_CERT_FILE``.
+    Connection lifecycle is managed at the HTTP pool layer
+    (``keepalive_expiry=20.0`` reaps idle connections before reverse proxies'
+    typical 30-60 s timeouts) instead of the former custom
+    ``socket_options`` transport, which broke streaming behind reverse
+    proxies (#54049, #12952) and stalled TLS handshakes by stripping
+    ``TCP_NODELAY``.
+
+    ``verify`` is forwarded to httpx so auxiliary-client calls (compression,
+    vision, web_extract, title generation, etc.) honor the same per-provider
+    ``ssl_ca_cert`` / ``ssl_verify`` and ``HERMES_CA_BUNDLE`` settings the main
+    client uses. It is passed on the client AND on the plain no-proxy mounts
+    (a mounted transport owns the SSL context for its scheme).
     """
-    raw = os.environ.get("HERMES_TLS_MAX_VERSION", "").strip()
-    if not raw:
-        return None
-
-    import logging
-    import ssl
-
-    logger = logging.getLogger(__name__)
-
-    normalized = raw.lower()
-    for prefix in ("tlsv", "tls"):
-        if normalized.startswith(prefix):
-            normalized = normalized[len(prefix):]
-            break
-    max_version = {
-        "1.2": ssl.TLSVersion.TLSv1_2,
-        "1.3": ssl.TLSVersion.TLSv1_3,
-    }.get(normalized)
-    if max_version is None:
-        logger.warning(
-            "Ignoring HERMES_TLS_MAX_VERSION=%r: expected '1.2' or '1.3'", raw
-        )
-        return None
-
-    cafile = None
-    for env_var in ("HERMES_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"):
-        path = os.environ.get(env_var, "").strip()
-        if path:
-            cafile = path
-            break
     try:
-        ctx = ssl.create_default_context(cafile=cafile)
-    except OSError as exc:
-        logger.warning(
-            "Ignoring HERMES_TLS_MAX_VERSION=%r: failed to load CA bundle "
-            "%r: %s", raw, cafile, exc
+        import httpx
+
+        proxy = _get_proxy_for_base_url(base_url)
+
+        limits = httpx.Limits(
+            max_keepalive_connections=20,
+            max_connections=100,
+            keepalive_expiry=20.0,
         )
+        # Generous read=None for SSE streaming endpoints.
+        timeout = httpx.Timeout(connect=15.0, read=None, write=15.0, pool=10.0)
+
+        transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
+        client_cls = httpx.AsyncClient if async_mode else httpx.Client
+        mounts = {}
+        if proxy is None:
+            mounts = {
+                "http://": transport_cls(verify=verify),
+                "https://": transport_cls(verify=verify),
+            }
+        return client_cls(
+            limits=limits,
+            timeout=timeout,
+            proxy=proxy,
+            mounts=mounts or None,
+            verify=verify,
+        )
+    except Exception:
         return None
-    ctx.maximum_version = max_version
-    return ctx
 
 
 def _install_safe_stdio() -> None:
@@ -231,5 +223,5 @@ __all__ = [
     "_install_safe_stdio",
     "_get_proxy_from_env",
     "_get_proxy_for_base_url",
-    "_get_tls_ssl_context",
+    "build_keepalive_http_client",
 ]

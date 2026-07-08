@@ -1,4 +1,5 @@
 import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { capitalize } from '@/lib/text'
 import { $connection } from '@/store/session'
 
 export type MediaKind = 'audio' | 'image' | 'video' | 'file'
@@ -115,27 +116,17 @@ export function isRemoteGateway(): boolean {
   return $connection.get()?.mode === 'remote'
 }
 
-// Fetch a gateway-local image as a data URL via the authenticated REST bridge.
-// Used in remote mode where readFileDataUrl (which reads THIS machine's disk)
-// can't see files the agent wrote on the gateway. Requires the gateway to
-// expose GET /api/media (hermes_cli/web_server.py).
+// Fetch gateway-local media as a data URL via the authenticated desktop FS
+// bridge. Remote Desktop artifacts can live anywhere the gateway can read
+// (workspace, skills, ~/.hermes/cache, etc.); /api/media is intentionally
+// narrower and rejects non-images plus images outside its media roots.
 export async function gatewayMediaDataUrl(path: string): Promise<string> {
-  const file = filePathFromMediaPath(path)
-
-  const result = await window.hermesDesktop!.api<{ data_url: string }>({
-    path: `/api/media?path=${encodeURIComponent(file)}`
-  })
-
-  return result.data_url
+  return readDesktopFileDataUrl(filePathFromMediaPath(path))
 }
 
-// Fetch a gateway-side file over the authenticated REST bridge and hand it to
-// the user as a browser download. Remote-mode replacement for the `file://`
-// fallback link: that URL names the gateway's absolute path on the *client*
-// machine, so clicking it silently does nothing. Unlike /api/media this path
-// also serves non-images (PDFs etc.) — /api/fs/read-data-url is the same
-// endpoint the remote file browser preview reads through, with its size cap.
-// Rejects when the gateway refuses the read so callers can show a real error.
+// Remote-mode replacement for opening gateway-local file paths with file://.
+// The file lives on the gateway, so fetch it over the authenticated fs bridge
+// and hand the bytes to the local browser shell as a download.
 export async function downloadGatewayMediaFile(path: string): Promise<void> {
   const dataUrl = await readDesktopFileDataUrl(filePathFromMediaPath(path))
 
@@ -143,7 +134,8 @@ export async function downloadGatewayMediaFile(path: string): Promise<void> {
     throw new Error('Gateway returned no file data')
   }
 
-  const blobUrl = URL.createObjectURL(await (await fetch(dataUrl)).blob())
+  const response = await fetch(dataUrl)
+  const blobUrl = URL.createObjectURL(await response.blob())
   const anchor = document.createElement('a')
   anchor.href = blobUrl
   anchor.download = mediaName(path)
@@ -158,5 +150,5 @@ export function mediaDisplayLabel(path: string): string {
   const escaped = mediaName(path).replace(/[[\]\\]/g, '\\$&')
   const kind = mediaKind(path)
 
-  return `${kind[0].toUpperCase()}${kind.slice(1)}: ${escaped}`
+  return `${capitalize(kind)}: ${escaped}`
 }

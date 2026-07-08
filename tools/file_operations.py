@@ -1388,6 +1388,28 @@ class ShellFileOperations(FileOperations):
         if self._file_has_bom(path, pre_content) and not _has_bom(content):
             content = _UTF8_BOM + content
 
+        # ── Fail-closed syntax gate for structured config formats ─────
+        # JSON / YAML / TOML are structured config formats where an
+        # unparseable write is data corruption, not a partial draft:
+        # a malformed ``cron/jobs.json`` silently disables scheduled
+        # jobs, a broken ``config.yaml`` breaks startup, etc.  The
+        # post-write lint layer below *reports* a parse failure but
+        # never sets the top-level ``error`` key, so the file_tools
+        # wrapper — which gates ``files_modified`` on ``not error`` —
+        # reports the corrupt write as a success and the bad file lands
+        # on disk undetected.  Check syntax on the final content BEFORE
+        # the atomic write and refuse outright on failure: no temp file,
+        # no rename, ``error`` set so the write is correctly reported as
+        # failed and any existing file is left untouched.
+        #
+        # Deliberately scoped to JSON/YAML/TOML.  ``.py`` is excluded on
+        # purpose — writing an in-progress / partial Python draft is a
+        # legitimate workflow, and the post-write lint already surfaces
+        # the syntax problem as a non-fatal signal for those.
+        gate = self._structured_syntax_gate(path, content)
+        if gate is not None:
+            return WriteResult(error=gate)
+
         # Snapshot LSP diagnostics for this file (best-effort) so the
         # post-write LSP layer can return only diagnostics introduced
         # by this specific edit.  Mirrors claude-code's
@@ -1615,6 +1637,49 @@ class ShellFileOperations(FileOperations):
         result = apply_v4a_operations(operations, self)
         return result
     
+    # Structured config formats that are gated fail-closed on write: an
+    # unparseable write is data corruption, not a partial draft.  A subset
+    # of ``LINTERS_INPROC`` — ``.py`` is intentionally excluded so partial
+    # Python drafts still write (their lint result is surfaced separately).
+    _SYNTAX_GATE_EXTS = frozenset({'.json', '.yaml', '.yml', '.toml'})
+
+    def _structured_syntax_gate(self, path: str, content: str) -> Optional[str]:
+        """Pre-write syntax gate for structured config formats.
+
+        Returns an error string when ``content`` fails to parse for a gated
+        extension (JSON/YAML/TOML), or ``None`` when the write should
+        proceed (extension not gated, no in-process linter, linter
+        unavailable, or content parses cleanly).
+
+        Called BEFORE the atomic write so a parse failure refuses the
+        write outright — the original file (if any) is left untouched and
+        the top-level ``error`` key is set so the file_tools wrapper
+        reports the write as failed instead of a silent success.
+        """
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in self._SYNTAX_GATE_EXTS:
+            return None
+        linter = LINTERS_INPROC.get(ext)
+        if linter is None:
+            return None
+        # Strip a BOM before parsing: json/yaml/tomllib all choke on a
+        # leading U+FEFF even though the file is otherwise valid, and the
+        # BOM was only re-attached above to preserve the byte signature.
+        probe, _ = _strip_bom(content)
+        ok, message = linter(probe)
+        # ``__SKIP__`` signals the linter dependency is missing (e.g. no
+        # PyYAML) — treat as "no linter" and let the write through rather
+        # than blocking on an unavailable check.
+        if ok or message == "__SKIP__":
+            return None
+        return (
+            f"Refusing to write {os.path.basename(path)}: content is not "
+            f"valid {ext.lstrip('.').upper()} and would corrupt this "
+            f"structured config file. {message}. "
+            "Fix the syntax and write again; the file on disk was left "
+            "unchanged."
+        )
+
     def _check_lint(self, path: str, content: Optional[str] = None) -> LintResult:
         """
         Run syntax check on a file after editing.

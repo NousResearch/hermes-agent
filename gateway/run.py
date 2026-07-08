@@ -20306,6 +20306,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         _stderr_handler = logging.StreamHandler(_safe_stderr())
         _stderr_handler.setLevel(_stderr_level)
         _stderr_handler.setFormatter(RedactingFormatter('%(levelname)s %(name)s: %(message)s'))
+    # ── Cross-instance platform duplicate guard ────────────────
+    from gateway.platform_detect import check_duplicate_platform_gateways
+    await check_duplicate_platform_gateways()
         logging.getLogger().addHandler(_stderr_handler)
         # Lower root logger level if needed so DEBUG records can reach the handler
         if _stderr_level < logging.getLogger().level:

@@ -15078,9 +15078,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from agent.memory_manager import sanitize_context
 
         analysis_prompt = (
-            "Describe everything visible in this image in thorough detail. "
-            "Include any text, code, data, objects, people, layout, colors, "
-            "and any other notable visual information."
+            "Concisely describe this image in 2-4 sentences. Include the main "
+            "subject, important visible text/data/code, and enough context for "
+            "the next answer. Skip decorative details unless they affect the "
+            "user's request."
         )
 
         enriched_parts = []
@@ -15090,6 +15091,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 result_json = await vision_analyze_tool(
                     image_url=path,
                     user_prompt=analysis_prompt,
+                    max_tokens=500,
                 )
                 result = json.loads(result_json)
                 if result.get("success"):

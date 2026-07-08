@@ -480,6 +480,37 @@ class TestVisionConfig:
         assert mock_llm.await_args.kwargs["temperature"] == 0.1
         assert mock_llm.await_args.kwargs["timeout"] == 120.0
 
+    @pytest.mark.asyncio
+    async def test_vision_max_tokens_override_is_per_call(self, tmp_path):
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Bounded image analysis"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch("hermes_cli.config.load_config", return_value={"auxiliary": {"vision": {}}}),
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ) as mock_llm,
+        ):
+            await vision_analyze_tool(str(img), "describe this", "test/model")
+            await vision_analyze_tool(
+                str(img), "describe this", "test/model", max_tokens=500
+            )
+
+        first_call, second_call = mock_llm.await_args_list
+        assert first_call.kwargs["max_tokens"] == 2000
+        assert second_call.kwargs["max_tokens"] == 500
+
 
 class TestVisionSafetyGuards:
     @pytest.mark.asyncio
@@ -824,8 +855,7 @@ class TestVisionRegistration:
         assert schema["name"] == "vision_analyze"
         params = schema.get("parameters", {})
         props = params.get("properties", {})
-        assert "image_url" in props
-        assert "question" in props
+        assert set(props) == {"image_url", "question"}
 
     def test_handler_is_callable(self):
         from tools.registry import registry

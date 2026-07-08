@@ -42,6 +42,22 @@ class TestEnrichMessageWithVision:
             out = _run(gateway_runner._enrich_message_with_vision("caption", ["/tmp/img.jpg"]))
         assert "sunset over the ocean" in out
 
+    def test_auto_analysis_uses_bounded_prompt_and_output_cap(self, gateway_runner):
+        """Gateway image preprocessing should avoid long auxiliary descriptions."""
+        fake_result = json.dumps({
+            "success": True,
+            "analysis": "A concise screenshot summary.",
+        })
+        mock_vision = AsyncMock(return_value=fake_result)
+
+        with patch("tools.vision_tools.vision_analyze_tool", new=mock_vision):
+            _run(gateway_runner._enrich_message_with_vision("caption", ["/tmp/img.jpg"]))
+
+        kwargs = mock_vision.call_args.kwargs
+        assert kwargs["max_tokens"] == 500
+        assert "2-4 sentences" in kwargs["user_prompt"]
+        assert "thorough detail" not in kwargs["user_prompt"]
+
     def test_memory_context_fence_stripped(self, gateway_runner):
         """<memory-context>...</memory-context> fenced block is scrubbed."""
         leaked = (

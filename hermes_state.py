@@ -31,6 +31,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
+_MISSING_SESSION_REPAIR_MARKER = "_repaired_missing_session_row"
+
 def _delegate_from_json(col: str = "model_config") -> str:
     return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
 
@@ -1600,7 +1602,7 @@ class SessionDB:
         session_id: str,
         source: str,
         model: str = None,
-        model_config: Dict[str, Any] = None,
+        model_config: Optional[Dict[str, Any]] = None,
         system_prompt: str = None,
         user_id: str = None,
         session_key: str = None,
@@ -1628,6 +1630,9 @@ class SessionDB:
         switching to it (IDOR scoping — without them the ``sessions`` table has
         no chat/thread to compare).
         """
+        model_config_json = json.dumps(model_config) if model_config else None
+        source_norm = (source or "").strip().lower()
+
         def _do(conn):
             conn.execute(
                 """INSERT INTO sessions (
@@ -1654,11 +1659,60 @@ class SessionDB:
                     chat_type,
                     thread_id,
                     model,
-                    json.dumps(model_config) if model_config else None,
+                    model_config_json,
                     system_prompt,
                     parent_session_id,
                     cwd,
                     time.time(),
+                ),
+            )
+            if source_norm == "unknown":
+                return
+
+            # Token accounting can create a provisional repair row when legacy
+            # message rows exist without a sessions row. If the normal session
+            # create path later catches up, promote only that explicitly marked
+            # repair row so it becomes visible again instead of remaining a
+            # hidden source='unknown' auto-resume exclusion.
+            marker_path = f"$.{_MISSING_SESSION_REPAIR_MARKER}"
+            conn.execute(
+                """UPDATE sessions SET
+                       source = ?,
+                       user_id = COALESCE(user_id, ?),
+                       model = COALESCE(model, ?),
+                       model_config = NULLIF(
+                           json_patch(
+                               json_remove(COALESCE(model_config, '{}'), ?),
+                               ?
+                           ),
+                           '{}'
+                       ),
+                       session_key = COALESCE(session_key, ?),
+                       chat_id = COALESCE(chat_id, ?),
+                       chat_type = COALESCE(chat_type, ?),
+                       thread_id = COALESCE(thread_id, ?),
+                       system_prompt = COALESCE(system_prompt, ?),
+                       parent_session_id = COALESCE(parent_session_id, ?),
+                       cwd = COALESCE(cwd, ?)
+                   WHERE id = ?
+                     AND source = 'unknown'
+                     AND json_valid(COALESCE(model_config, '{}'))
+                     AND json_extract(COALESCE(model_config, '{}'), ?) IS NOT NULL""",
+                (
+                    source,
+                    user_id,
+                    model,
+                    marker_path,
+                    model_config_json or "{}",
+                    session_key,
+                    chat_id,
+                    chat_type,
+                    thread_id,
+                    system_prompt,
+                    parent_session_id,
+                    cwd,
+                    session_id,
+                    marker_path,
                 ),
             )
         self._execute_write(_do)
@@ -2433,11 +2487,6 @@ class SessionDB:
         the caller already holds cumulative totals (gateway path, where the
         cached agent accumulates across messages).
         """
-        # Ensure the session row exists so the UPDATE doesn't silently affect
-        # 0 rows.  Under concurrent load (cron + kanban + delegate_task) the
-        # initial create_session() may have failed due to SQLite locking.
-        # INSERT OR IGNORE is cheap and idempotent.
-        self._insert_session_row(session_id, "unknown", model=model)
         if absolute:
             sql = """UPDATE sessions SET
                    input_tokens = ?,
@@ -2499,7 +2548,22 @@ class SessionDB:
             api_call_count,
             session_id,
         )
+        repair_marker = json.dumps({_MISSING_SESSION_REPAIR_MARKER: "update_token_counts"})
         def _do(conn):
+            # Ensure the session row exists in the same write transaction as
+            # the counter update, so the UPDATE cannot silently affect 0 rows.
+            conn.execute(
+                """INSERT OR IGNORE INTO sessions
+                   (id, source, model, model_config, started_at)
+                   VALUES (
+                       ?, 'unknown', ?, ?,
+                       COALESCE(
+                           (SELECT MIN(timestamp) FROM messages WHERE session_id = ?),
+                           ?
+                       )
+                   )""",
+                (session_id, model, repair_marker, session_id, time.time()),
+            )
             conn.execute(sql, params)
         self._execute_write(_do)
 
@@ -3173,6 +3237,8 @@ class SessionDB:
                         (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
                         s.started_at
                     ) AS last_active,
+                    (SELECT MIN(m3.timestamp) FROM messages m3 WHERE m3.session_id = s.id)
+                        AS first_message_at,
                     COALESCE(cm.effective_last_active, s.started_at) AS _effective_last_active
                 FROM sessions s
                 LEFT JOIN chain_max cm ON cm.root_id = s.id
@@ -3196,7 +3262,9 @@ class SessionDB:
                     COALESCE(
                         (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
                         s.started_at
-                    ) AS last_active
+                    ) AS last_active,
+                    (SELECT MIN(m3.timestamp) FROM messages m3 WHERE m3.session_id = s.id)
+                        AS first_message_at
                 FROM sessions s
                 {where_sql}
                 ORDER BY s.started_at DESC
@@ -3247,6 +3315,7 @@ class SessionDB:
                     "id", "ended_at", "end_reason", "message_count",
                     "tool_call_count", "title", "last_active", "preview",
                     "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
+                    "first_message_at",
                 ):
                     if key in tip_row:
                         merged[key] = tip_row[key]
@@ -3300,7 +3369,9 @@ class SessionDB:
                 COALESCE(
                     (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
                     s.started_at
-                ) AS last_active
+                ) AS last_active,
+                (SELECT MIN(m3.timestamp) FROM messages m3 WHERE m3.session_id = s.id)
+                    AS first_message_at
             FROM sessions s
             WHERE s.source = 'cron' AND s.id >= ? AND s.id < ?
             ORDER BY s.started_at DESC, s.id DESC
@@ -3339,7 +3410,9 @@ class SessionDB:
                 COALESCE(
                     (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
                     s.started_at
-                ) AS last_active
+                ) AS last_active,
+                (SELECT MIN(m3.timestamp) FROM messages m3 WHERE m3.session_id = s.id)
+                    AS first_message_at
             FROM sessions s
             WHERE s.id = ?
         """
@@ -3498,15 +3571,19 @@ class SessionDB:
 
             # Update counters
             if num_tool_calls > 0:
-                conn.execute(
+                update = conn.execute(
                     """UPDATE sessions SET message_count = message_count + 1,
                        tool_call_count = tool_call_count + ? WHERE id = ?""",
                     (num_tool_calls, session_id),
                 )
             else:
-                conn.execute(
+                update = conn.execute(
                     "UPDATE sessions SET message_count = message_count + 1 WHERE id = ?",
                     (session_id,),
+                )
+            if update.rowcount == 0:
+                raise sqlite3.IntegrityError(
+                    f"append_message missing session row: {session_id}"
                 )
             return msg_id
 

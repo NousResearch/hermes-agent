@@ -24,7 +24,7 @@ from hermes_constants import (
     set_hermes_home_override,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
-from utils import is_truthy_value
+from utils import is_truthy_value, safe_json_loads
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
 from tui_gateway import git_probe
@@ -5190,6 +5190,79 @@ def _(rid, params: dict) -> dict:
     )
 
 
+_HUMAN_SESSION_DENY_SOURCES = frozenset({"tool"})
+_MISSING_SESSION_REPAIR_MARKER = "_repaired_missing_session_row"
+_HUMAN_SESSION_PAGE_SIZE = 200
+_HUMAN_SESSION_MAX_SCAN = 1000
+
+
+def _session_model_config(row: dict) -> dict:
+    raw = row.get("model_config")
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    parsed = safe_json_loads(raw, {})
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _is_repaired_unknown_session(row: dict) -> bool:
+    """Identify legacy token-counter repairs that should not auto-resume."""
+    src = (row.get("source") or "").strip().lower()
+    if src != "unknown":
+        return False
+    if _session_model_config(row).get(_MISSING_SESSION_REPAIR_MARKER):
+        return True
+    if any(row.get(key) for key in ("title", "cwd", "system_prompt", "user_id")):
+        return False
+    first_message_at = row.get("first_message_at")
+    started_at = row.get("started_at")
+    if first_message_at is not None and started_at is not None:
+        try:
+            return float(first_message_at) < float(started_at)
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
+def _is_human_resume_session(row: dict) -> bool:
+    src = (row.get("source") or "").strip().lower()
+    return (
+        src not in _HUMAN_SESSION_DENY_SOURCES
+        and not _is_repaired_unknown_session(row)
+    )
+
+
+def _list_human_resume_sessions(db, *, limit: int) -> list[dict]:
+    target = max(0, int(limit or 0))
+    if target == 0:
+        return []
+
+    page_limit = max(target * 2, _HUMAN_SESSION_PAGE_SIZE)
+    scan_budget = max(page_limit, _HUMAN_SESSION_MAX_SCAN)
+    offset = 0
+    scanned = 0
+    rows: list[dict] = []
+    while len(rows) < target and scanned < scan_budget:
+        current_limit = min(page_limit, scan_budget - scanned)
+        kwargs = {
+            "source": None,
+            "limit": current_limit,
+            "order_by_last_active": True,
+        }
+        if offset:
+            kwargs["offset"] = offset
+        page = db.list_sessions_rich(**kwargs)
+        if not page:
+            break
+        scanned += len(page)
+        rows.extend(row for row in page if _is_human_resume_session(row))
+        if len(page) < current_limit:
+            break
+        offset += len(page)
+    return rows[:target]
+
+
 @method("session.list")
 def _(rid, params: dict) -> dict:
     db = _get_db()
@@ -5201,21 +5274,11 @@ def _(rid, params: dict) -> dict:
         # ones not enumerated here), ACP adapter clients, webhook sessions,
         # custom `HERMES_SESSION_SOURCE` values, and older installs with
         # different source labels. We deny-list only the noisy internal
-        # sources (``tool`` sub-agent runs) rather than allow-listing a
-        # fixed set of platform names that goes stale whenever a new
-        # platform is added or a user names their own source.
-        deny = frozenset({"tool"})
-
+        # sources (``tool`` sub-agent runs) and known repair-smell rows rather
+        # than allow-listing a fixed set of platform names that goes stale
+        # whenever a new platform is added or a user names their own source.
         limit = int(params.get("limit", 200) or 200)
-        # Over-fetch modestly so per-source filtering doesn't leave us
-        # short; the compression-tip projection in ``list_sessions_rich``
-        # can also merge rows.
-        fetch_limit = max(limit * 2, 200)
-        rows = [
-            s
-            for s in db.list_sessions_rich(source=None, limit=fetch_limit, order_by_last_active=True)
-            if (s.get("source") or "").strip().lower() not in deny
-        ][:limit]
+        rows = _list_human_resume_sessions(db, limit=limit)
         return _ok(
             rid,
             {
@@ -5241,7 +5304,7 @@ def _(rid, params: dict) -> dict:
     """Return the most recent human-facing session id, or ``None``.
 
     Mirrors ``session.list``'s deny-list behaviour (drops ``tool``
-    sub-agent rows).  Used by TUI auto-resume when
+    sub-agent rows and known repair-smell rows).  Used by TUI auto-resume when
     ``display.tui_auto_resume_recent`` is on; the field is also handy
     for any CLI tooling that wants "latest session" without paginating
     the full list.
@@ -5255,16 +5318,9 @@ def _(rid, params: dict) -> dict:
     if db is None:
         return _ok(rid, {"session_id": None})
     try:
-        deny = frozenset({"tool"})
-        # Over-fetch by a generous bounded amount so heavy sub-agent
-        # users (lots of recent ``tool`` rows) don't get a false
-        # "no eligible session" answer.  ``session.list`` uses a
-        # similar over-fetch strategy.
-        rows = db.list_sessions_rich(source=None, limit=200, order_by_last_active=True)
-        for row in rows:
-            src = (row.get("source") or "").strip().lower()
-            if src in deny:
-                continue
+        rows = _list_human_resume_sessions(db, limit=1)
+        if rows:
+            row = rows[0]
             return _ok(
                 rid,
                 {

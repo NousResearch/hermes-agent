@@ -6,6 +6,10 @@ graft locales
 # PluginManager scan (hermes_cli/plugins.py) finds zero plugins on installs
 # built from the sdist (e.g. Homebrew, downstream packagers). package-data
 # below covers the wheel; this covers the sdist. See #34034 / #28149.
-recursive-include plugins plugin.yaml plugin.yml README.md *.md
+recursive-include plugins plugin.yaml plugin.yml
+# Gateway assets include images plus YAML catalogs such as status_phrases.yaml.
+recursive-include gateway/assets *
 global-exclude __pycache__
 global-exclude *.py[cod]
+# Bundled plugin docs used by plugin-packaged skills/references.
+recursive-include plugins README.md *.md

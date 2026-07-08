@@ -17707,6 +17707,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception as _e:
                 logger.debug("event_callback hook error: %s", _e)
+            if event_type != "session:compress":
+                return
+            try:
+                from gateway.compression_handoff import maybe_write_compression_handoff
+
+                handoff = maybe_write_compression_handoff(
+                    event_type,
+                    context,
+                    self._read_user_config(),
+                )
+            except Exception as _handoff_err:
+                logger.debug("compression handoff generation failed: %s", _handoff_err)
+                return
+            if not handoff or not handoff.notify:
+                return
+            if not _status_adapter or not _run_still_current():
+                return
+            safe_schedule_threadsafe(
+                self._deliver_platform_notice(source, handoff.notice),
+                _loop_for_step,
+                logger=logger,
+                log_message="compression handoff notice scheduling error",
+            )
 
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self._adapter_for_source(source)

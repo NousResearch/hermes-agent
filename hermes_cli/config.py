@@ -1461,6 +1461,15 @@ DEFAULT_CONFIG = {
                                       # session_search and recoverable, not deleted.
                                       # Default False during rollout; will flip on
                                       # after live validation.
+        "handoff": {
+            "enabled": False,          # Default-disabled: write deterministic local
+                                       # Markdown handoff seeds at repeated
+                                       # successful compression boundaries.
+            "min_compression_count": 2,  # Avoid noisy first-compression artifacts.
+            "output_dir": "handoffs/compression",  # Relative to HERMES_HOME unless absolute.
+            "notify": True,            # Gateway surfaces get one compact notice
+                                       # with the artifact path when a handoff is written.
+        },
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).

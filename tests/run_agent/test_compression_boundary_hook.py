@@ -221,6 +221,8 @@ class TestSessionCompressEvent:
             _, ctx = compress_events[-1]
             assert ctx["session_id"] == agent.session_id
             assert ctx["old_session_id"] == original_sid
+            assert "platform" in ctx
+            assert ctx["in_place"] is False
             assert ctx["compression_count"] == 1
 
     def test_no_callback_is_safe(self):

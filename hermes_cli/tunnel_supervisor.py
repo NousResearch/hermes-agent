@@ -47,3 +47,114 @@ def should_close_now(state: dict) -> bool:
     if hold_until is not None and now < hold_until:
         return False
     return (now - last_activity) >= idle_timeout_seconds
+
+
+import os
+import subprocess
+import time
+import urllib.request
+import json
+
+
+def _default_counter(metrics_port: int) -> int:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{metrics_port}/metrics", timeout=2) as r:
+            for line in r.read().decode("utf-8", "replace").splitlines():
+                # cloudflared exposes counters; tolerate either name.
+                if line.startswith("cloudflared_request_count") or line.startswith("cloudflared_connection_count"):
+                    return int(float(line.split()[-1]))
+    except Exception:
+        return 0
+    return 0
+
+
+class TunnelSupervisor:
+    def __init__(self, config, approvals_path, *, hold_request_id=None,
+                 time_source=time.monotonic, metrics_counter=None,
+                 spawn_cloudflared=None, sleep=time.sleep):
+        self._cfg = config
+        self._approvals_path = approvals_path
+        self._hold_request_id = hold_request_id
+        self._time = time_source
+        self._sleep = sleep
+        self._idle = float(config.get("idle_timeout_seconds", 1800))
+        self._drain = float(config.get("drain_seconds", 15))
+        self._poll = float(config.get("poll_interval_seconds", 5))
+        self._metrics_port = int(config.get("metrics_port", 0))
+
+        self._last_counter = 0
+        self._last_activity = None
+        self._hold_until = None
+        self._closed = False
+        self._proc = None
+        self._config_path = None
+
+        if metrics_counter is None:
+            metrics_counter = lambda: _default_counter(self._metrics_port)
+        self._counter = metrics_counter
+        self._spawn = spawn_cloudflared or self._default_spawn
+
+    def _default_spawn(self, config_path, tunnel_name, metrics_port):
+        cmd = ["cloudflared", "tunnel", "--config", config_path,
+               "--metrics", f"127.0.0.1:{metrics_port}", "run", tunnel_name]
+        return subprocess.Popen(cmd)
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @property
+    def last_activity(self) -> float:
+        return self._last_activity
+
+    @property
+    def hold_until(self):
+        return self._hold_until
+
+    def _check_hold(self):
+        if not self._hold_request_id:
+            return
+        from hermes_cli import tunnel_approvals as ta
+        if ta.is_approved(self._approvals_path, self._hold_request_id):
+            self._hold_until = ta.approved_until(self._approvals_path, self._hold_request_id)
+
+    def _drain_and_kill(self):
+        if self._proc is not None:
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=max(1.0, self._drain))
+            except Exception:
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+        self._closed = True
+
+    def tick(self) -> bool:
+        """One poll iteration. Returns True while running, False once closed."""
+        if self._closed:
+            return False
+        if self._proc is None:
+            self._proc = self._spawn(self._config_path, self._cfg.get("tunnel_name", ""),
+                                     self._metrics_port)
+        now = self._time()
+        if self._last_activity is None:
+            self._last_activity = now
+        cur = int(self._counter())
+        if reset_idle_on(self._last_counter, cur):
+            self._last_activity = now
+        self._last_counter = cur
+        self._check_hold()
+        state = {"now": now, "last_activity": self._last_activity,
+                 "idle_timeout_seconds": self._idle, "hold_until": self._hold_until}
+        if should_close_now(state):
+            self._drain_and_kill()
+            return False
+        return True
+
+    def run(self, config_path: str):
+        """Blocking loop. ``config_path`` is the generated cloudflared config file."""
+        self._config_path = config_path
+        while self.tick():
+            self._sleep(self._poll)
+        return not self._closed

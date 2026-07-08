@@ -27,6 +27,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
 
+from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 from hermes_constants import (
     find_node_executable,
     get_hermes_dir,
@@ -648,8 +649,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 ],
                 stdout=bridge_log_fh,
                 stderr=bridge_log_fh,
-                start_new_session=True,
                 env=bridge_env,
+                **windows_detach_popen_kwargs(),
             )
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             

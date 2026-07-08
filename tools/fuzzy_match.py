@@ -40,11 +40,52 @@ UNICODE_MAP = {
     "\u2026": "...", "\u00a0": " ", # ellipsis and non-breaking space
 }
 
+_EXPENSIVE_FUZZY_STRATEGIES = frozenset({"block_anchor", "context_aware"})
+_EXPENSIVE_FUZZY_MAX_CONTENT_CHARS = 1_000_000
+_EXPENSIVE_FUZZY_MAX_CONTENT_LINES = 20_000
+_EXPENSIVE_FUZZY_MAX_PATTERN_CHARS = 100_000
+
+_SEQUENCE_MATCHER_MAX_CALLS = 20_000
+_SEQUENCE_MATCHER_MAX_PAIR_CHAR_PRODUCT = 2_000_000
+_SEQUENCE_MATCHER_MAX_TOTAL_CHAR_PRODUCT = 25_000_000
+
 def _unicode_normalize(text: str) -> str:
     """Normalizes Unicode characters to their standard ASCII equivalents."""
     for char, repl in UNICODE_MAP.items():
         text = text.replace(char, repl)
     return text
+
+
+class _SequenceMatcherBudget:
+    """Best-effort work budget for expensive fuzzy similarity checks."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.char_product = 0
+        self.exhausted = False
+
+    def ratio(self, a: str, b: str) -> Optional[float]:
+        pair_work = len(a) * len(b)
+        if (
+            self.calls >= _SEQUENCE_MATCHER_MAX_CALLS
+            or pair_work > _SEQUENCE_MATCHER_MAX_PAIR_CHAR_PRODUCT
+            or self.char_product + pair_work > _SEQUENCE_MATCHER_MAX_TOTAL_CHAR_PRODUCT
+        ):
+            self.exhausted = True
+            return None
+
+        self.calls += 1
+        self.char_product += pair_work
+        return SequenceMatcher(None, a, b).ratio()
+
+
+def _should_skip_expensive_fuzzy_matching(content: str, pattern: str) -> bool:
+    """Return True when deep fuzzy matching is too costly to try safely."""
+    if len(content) > _EXPENSIVE_FUZZY_MAX_CONTENT_CHARS:
+        return True
+    if len(pattern) > _EXPENSIVE_FUZZY_MAX_PATTERN_CHARS:
+        return True
+    return content.count("\n") + 1 > _EXPENSIVE_FUZZY_MAX_CONTENT_LINES
 
 
 def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
@@ -83,6 +124,16 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
     ]
 
     for strategy_name, strategy_fn in strategies:
+        # Keep the cheap deterministic strategies available for large files:
+        # exact, whitespace/indent/escape normalization, boundary trim, and
+        # unicode normalization are all tried before this guard. Only the deep
+        # fuzzy strategies below use SequenceMatcher in broad loops.
+        if (
+            strategy_name in _EXPENSIVE_FUZZY_STRATEGIES
+            and _should_skip_expensive_fuzzy_matching(content, old_string)
+        ):
+            break
+
         matches = strategy_fn(content, old_string)
 
         if matches:
@@ -673,6 +724,7 @@ def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
     # Previous values (0.10 / 0.30) were dangerously loose — a 10% middle-section
     # similarity could match completely unrelated blocks.
     threshold = 0.50 if candidate_count == 1 else 0.70
+    budget = _SequenceMatcherBudget()
 
     for i in potential_matches:
         if pattern_line_count <= 2:
@@ -681,7 +733,9 @@ def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
             # Compare normalized middle sections
             content_middle = '\n'.join(norm_content_lines[i+1:i+pattern_line_count-1])
             pattern_middle = '\n'.join(pattern_lines[1:-1])
-            similarity = SequenceMatcher(None, content_middle, pattern_middle).ratio()
+            similarity = budget.ratio(content_middle, pattern_middle)
+            if similarity is None:
+                return []
         
         if similarity >= threshold:
             # Calculate positions using ORIGINAL lines to ensure correct character offsets in the file
@@ -707,6 +761,7 @@ def _strategy_context_aware(content: str, pattern: str) -> List[Tuple[int, int]]
     
     matches = []
     pattern_line_count = len(pattern_lines)
+    budget = _SequenceMatcherBudget()
     
     for i in range(len(content_lines) - pattern_line_count + 1):
         block_lines = content_lines[i:i + pattern_line_count]
@@ -714,7 +769,9 @@ def _strategy_context_aware(content: str, pattern: str) -> List[Tuple[int, int]]
         # Calculate line-by-line similarity
         high_similarity_count = 0
         for p_line, c_line in zip(pattern_lines, block_lines):
-            sim = SequenceMatcher(None, p_line.strip(), c_line.strip()).ratio()
+            sim = budget.ratio(p_line.strip(), c_line.strip())
+            if sim is None:
+                return []
             if sim >= 0.80:
                 high_similarity_count += 1
         
@@ -881,6 +938,8 @@ def find_closest_lines(old_string: str, content: str, context_lines: int = 2, ma
 
     if not old_lines or not content_lines:
         return ""
+    if _should_skip_expensive_fuzzy_matching(content, old_string):
+        return ""
 
     # Use first line of old_string as anchor for search
     anchor = old_lines[0].strip()
@@ -893,11 +952,14 @@ def find_closest_lines(old_string: str, content: str, context_lines: int = 2, ma
 
     # Score each line in content by similarity to anchor
     scored = []
+    budget = _SequenceMatcherBudget()
     for i, line in enumerate(content_lines):
         stripped = line.strip()
         if not stripped:
             continue
-        ratio = SequenceMatcher(None, anchor, stripped).ratio()
+        ratio = budget.ratio(anchor, stripped)
+        if ratio is None:
+            return ""
         if ratio > 0.3:
             scored.append((ratio, i))
 

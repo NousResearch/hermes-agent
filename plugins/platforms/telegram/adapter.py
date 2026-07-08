@@ -3487,7 +3487,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _edit_text(self, chat_id: str, message_id: str, text: str, parse_mode: Any = None) -> None:
         """``editMessageText`` with normalized ids; ``parse_mode=None`` sends plain text."""
-        kwargs: Dict[str, Any] = {"chat_id": normalize_telegram_chat_id(chat_id), "message_id": int(message_id), "text": text}
+        kwargs: Dict[str, Any] = {
+            "chat_id": normalize_telegram_chat_id(chat_id), "message_id": int(message_id), "text": text, **self._link_preview_kwargs()}
         if parse_mode is not None:
             kwargs["parse_mode"] = parse_mode
         await self._bot.edit_message_text(**kwargs)

@@ -5863,12 +5863,27 @@ def _configure_qqbot_extra_settings() -> None:
     Writes to ``platforms.qqbot.extra`` under keys the QQBot adapter reads
     at startup (see ``gateway/platforms/qqbot/adapter.py``):
 
+    * ``streaming_enabled``     — C2C streaming via /stream_messages.
     * ``group_policy``          — open | allowlist | disabled (ACL gate).
     * ``group_allow_from``      — allow-list of group openids (list[str]).
     * ``group_require_mention`` — True: only respond when @-ed; False:
       respond to every group message (requires the "receive all group
       messages" permission on the QQ platform).
     """
+    # ── Streaming replies (C2C) ────────────────────────────────────────
+    print()
+    print_info(
+        "  Streaming replies use QQ's official /stream_messages endpoint"
+    )
+    print_info(
+        "  for C2C chats. Recommended for a smoother 'typing → reply' feel."
+    )
+    streaming_enabled = prompt_yes_no("  Enable streaming replies?", True)
+    _write_qqbot_extra("streaming_enabled", bool(streaming_enabled))
+    print_success(
+        f"  streaming_enabled = {'true' if streaming_enabled else 'false'}"
+    )
+
     # ── Group policy ───────────────────────────────────────────────────
     print()
     group_choices = [

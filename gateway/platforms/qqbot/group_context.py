@@ -125,16 +125,33 @@ class GroupContextBuffer:
             self._buffers.popitem(last=False)  # drop least-recently-used group
 
     @staticmethod
-    def format_context(entries: List[HistoryEntry], current_text: str) -> str:
-        """Wrap buffered entries + current message into a tagged context block."""
+    def format_context_block(entries: List[HistoryEntry]) -> str:
+        """Render buffered entries as a standalone CONTEXT-ONLY block.
+
+        Unlike :meth:`format_context`, the current/trigger message is **not**
+        appended and the ``HISTORY_CTX_END`` tag is omitted. The block is meant
+        for :attr:`MessageEvent.channel_context`, which run.py prepends to the
+        trigger message *after* slash-command detection and sender-prefix logic
+        have already operated on the trigger message alone. This keeps
+        ``/stop``-style commands matchable in mention/context modes where the
+        command must remain at the start of ``text``. The gateway supplies its
+        own ``[New message]`` boundary, so a trailing envelope tag here would be
+        redundant. Returns "" when there are no entries.
+        """
         if not entries:
-            return current_text
+            return ""
         lines: List[str] = [HISTORY_CTX_START]
         for entry in entries:
             # Collapse newlines so a buffered message cannot forge the
             # CONTEXT/CURRENT envelope tags on its own line (R5 hardening).
             body = " ".join(entry.text.splitlines()).strip()
             lines.append(f"{entry.sender}: {body}")
-        lines.append(HISTORY_CTX_END)
-        lines.append(current_text)
         return "\n".join(lines)
+
+    @staticmethod
+    def format_context(entries: List[HistoryEntry], current_text: str) -> str:
+        """Wrap buffered entries + current message into a tagged context block."""
+        if not entries:
+            return current_text
+        block = GroupContextBuffer.format_context_block(entries)
+        return f"{block}\n{HISTORY_CTX_END}\n{current_text}"

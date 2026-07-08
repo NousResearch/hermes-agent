@@ -91,12 +91,64 @@ platforms:
       group_history_limit: 20        # (mention mode) non-@ messages buffered per
                                      # group and injected as CONTEXT ONLY on the
                                      # next @-reply; <=0 disables buffering
+      # ── Streaming replies (C2C only) ──
+      streaming_enabled: true              # true (default) = use QQ's native
+                                           # stream_messages endpoint for C2C
+                                           # replies; false forces the legacy
+                                           # one-shot send path
+      streaming_session_ttl_seconds: 600   # in-memory session TTL; QQ's own
+                                           # passive-reply window is ~5 min, so
+                                           # the default gives modest headroom
       stt:
         provider: "zai"          # zai (GLM-ASR), openai (Whisper), etc.
         baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4"
         apiKey: "your-stt-key"
         model: "glm-asr"
 ```
+
+## Streaming Replies
+
+The adapter renders long-form model output as it's generated, matching the
+experience users get on Feishu / Telegram / Slack.
+
+- **Private (C2C) chats**: streamed **in place** through QQ's official
+  `POST /v2/users/{openid}/stream_messages` endpoint. A single message
+  bubble updates progressively as the model produces tokens, and
+  transitions out of the "generating…" state on the final chunk
+  (`input_state=10`).
+- **Group / guild chats**: **not supported by the QQ platform** — the
+  `stream_messages` endpoint is C2C-only. The adapter transparently
+  falls back to the standard send loop, so users see a small number of
+  appended messages during a long response instead of a single
+  updating bubble. No configuration is required.
+
+### Constraints
+
+- **Passive-reply window**: QQ requires every streamed chunk to carry
+  the inbound `msg_id` as its `event_id` / `msg_id`. That id is only
+  valid for ~5 minutes, so responses that take longer to generate may
+  see the last edits rejected — the adapter logs a warning and the
+  stream consumer will fall back to a fresh send.
+- **Content type is fixed to markdown** (`content_type=2`). Plain text
+  renders correctly under markdown, and rich formatting works
+  end-to-end.
+- **Content length**: each chunk is truncated to 4096 characters
+  (`stream_messages` accepts less than the regular `/messages`
+  endpoint).
+- **Ordering**: the stream consumer serialises edits, so out-of-order
+  updates should not occur in normal operation. As a defensive
+  measure, any edit whose sequence index is not strictly greater than
+  the last one sent is silently dropped.
+- **Restart-safety**: streaming sessions live in memory. After an
+  adapter restart, in-flight edits to a pre-restart message will fail
+  gracefully; the consumer sends the remainder as a new message.
+
+### Config knobs
+
+| Key | Default | Effect |
+|---|---|---|
+| `streaming_enabled` | `true` | Set to `false` to force the legacy send-only path for C2C (useful during incident triage). |
+| `streaming_session_ttl_seconds` | `600` | Upper bound on how long an in-flight streaming session is kept in memory. |
 
 ## Group Activation Mode
 

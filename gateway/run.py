@@ -16936,6 +16936,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if source.platform == Platform.MATRIX:
                         _effective_cursor = ""
                         _buffer_only = True
+                    # QQBot's stream_messages endpoint enforces a strict
+                    # "new full text MUST prefix previous full text"
+                    # invariant.  Any cursor glyph appended to intermediate
+                    # frames breaks that invariant the moment the next
+                    # (cursor-less, extended) frame arrives, so we suppress
+                    # cursor injection at the source instead of trying to
+                    # peel it back off inside the QQ adapter.
+                    if source.platform == Platform.QQBOT:
+                        _effective_cursor = ""
                     # Fresh-final applies to Telegram only — other
                     # platforms either edit in place cheaply (Discord,
                     # Slack) or don't have the timestamp-on-edit
@@ -18269,6 +18278,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if source.platform == Platform.MATRIX:
                             _effective_cursor = ""
                             _buffer_only = True
+                        # QQBot's stream_messages endpoint enforces a
+                        # strict prefix invariant on successive frames
+                        # (see the primary injection site above for
+                        # details).  Same treatment here.
+                        if source.platform == Platform.QQBOT:
+                            _effective_cursor = ""
                         # Fresh-final applies to Telegram only — other
                         # platforms either edit in place cheaply or don't
                         # have the edit-timestamp-stays-stale problem.

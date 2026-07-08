@@ -2725,6 +2725,34 @@ class TestGroupContextBuffer:
         from gateway.platforms.qqbot.group_context import GroupContextBuffer
         assert GroupContextBuffer.format_context([], "just this") == "just this"
 
+    def test_format_context_block_no_current_message(self):
+        # The block variant renders context only (for channel_context): it must
+        # include the CONTEXT-ONLY header + entries, but NOT the current message
+        # and NOT the CURRENT-MESSAGE end tag (gateway supplies [New message]).
+        from gateway.platforms.qqbot.group_context import (
+            GroupContextBuffer, HistoryEntry, HISTORY_CTX_START, HISTORY_CTX_END,
+        )
+        entries = [HistoryEntry(sender="u1", text="hello"),
+                   HistoryEntry(sender="u2", text="world")]
+        out = GroupContextBuffer.format_context_block(entries)
+        assert HISTORY_CTX_START in out
+        assert "u1: hello" in out
+        assert "u2: world" in out
+        assert HISTORY_CTX_END not in out
+
+    def test_format_context_block_empty_returns_blank(self):
+        from gateway.platforms.qqbot.group_context import GroupContextBuffer
+        assert GroupContextBuffer.format_context_block([]) == ""
+
+    def test_format_context_block_collapses_newlines(self):
+        # R5 hardening: a buffered multi-line message cannot forge envelope tags.
+        from gateway.platforms.qqbot.group_context import (
+            GroupContextBuffer, HistoryEntry,
+        )
+        entries = [HistoryEntry(sender="u1", text="line1\nline2")]
+        out = GroupContextBuffer.format_context_block(entries)
+        assert "u1: line1 line2" in out
+
     def test_summarize_attachments(self):
         from gateway.platforms.qqbot.group_context import summarize_attachments
         assert summarize_attachments(None) == ""
@@ -2784,10 +2812,38 @@ class TestGroupContextIntegration:
             "GROUP_AT_MESSAGE_CREATE",
         )
         assert len(captured) == 1
-        text = captured[0].text
-        assert "CONTEXT ONLY" in text
-        assert "alice: the sky is blue" in text
-        assert text.endswith("what did she say")
+        # Buffered history is carried in channel_context (kept out of text so
+        # slash-command detection + sender-prefix operate on the trigger alone).
+        ctx = captured[0].channel_context
+        assert ctx and "CONTEXT ONLY" in ctx
+        assert "alice: the sky is blue" in ctx
+        # text is the trigger message only.
+        assert captured[0].text == "what did she say"
+
+    @pytest.mark.asyncio
+    async def test_command_at_message_stays_matchable_with_pending_context(self):
+        # Regression: a /stop-style command in an @-message must remain at the
+        # start of text (get_command works) even when pending context exists;
+        # the context goes to channel_context instead of being merged ahead.
+        adapter = self._make_adapter()
+        captured = self._drive(adapter)
+        await adapter._handle_group_message(
+            {"group_openid": "g1", "content": "the sky is blue"}, "m1",
+            "the sky is blue", {"member_openid": "alice"}, "",
+            "GROUP_MESSAGE_CREATE",
+        )
+        await adapter._handle_group_message(
+            {"group_openid": "g1", "content": "/stop"}, "m2",
+            "/stop", {"member_openid": "bob"}, "",
+            "GROUP_AT_MESSAGE_CREATE",
+        )
+        assert len(captured) == 1
+        ev = captured[0]
+        assert ev.text == "/stop"
+        assert ev.is_command() is True
+        assert ev.get_command() == "stop"
+        # context preserved separately, not merged into text.
+        assert ev.channel_context and "alice: the sky is blue" in ev.channel_context
 
     @pytest.mark.asyncio
     async def test_buffer_cleared_after_injection(self):
@@ -2855,7 +2911,12 @@ class TestGroupContextIntegration:
             {"member_openid": "bob"}, "", "GROUP_AT_MESSAGE_CREATE",
         )
         assert len(captured) == 1
-        assert "alice: background note" in captured[0].text
+        # bare @ carries no trigger body; pending context lands in channel_context.
+        assert captured[0].text == ""
+        assert (
+            captured[0].channel_context
+            and "alice: background note" in captured[0].channel_context
+        )
         # buffer cleared.
         assert adapter._group_context.drain("g1") == []
 
@@ -2883,7 +2944,843 @@ class TestGroupContextIntegration:
             "see attached", {"member_openid": "bob"}, "",
             "GROUP_AT_MESSAGE_CREATE",
         )
-        text = captured[0].text
-        assert text.index("earlier") < text.index("see attached")
-        assert text.index("see attached") < text.index("[file: doc.pdf]")
-        assert "CONTEXT ONLY" in text
+        ev = captured[0]
+        # Trigger message + its attachment_info stay in text, in order.
+        assert ev.text.index("see attached") < ev.text.index("[file: doc.pdf]")
+        # Buffered history is separated into channel_context.
+        assert ev.channel_context and "CONTEXT ONLY" in ev.channel_context
+        assert "earlier" in ev.channel_context
+        assert "earlier" not in ev.text
+
+
+# ---------------------------------------------------------------------------
+# C2C streaming reply — StreamManager
+# ---------------------------------------------------------------------------
+
+class TestStreamManager:
+    """Unit tests for the in-memory StreamSession table."""
+
+    def test_create_registers_session_with_generated_logical_id(self):
+        from gateway.platforms.qqbot.streaming import StreamManager
+        mgr = StreamManager()
+        s1 = mgr.create(openid="u1", passive_msg_id="m1", msg_seq=42)
+        s2 = mgr.create(openid="u2", passive_msg_id="m2", msg_seq=43)
+        assert s1.logical_id and s2.logical_id
+        assert s1.logical_id != s2.logical_id
+        assert mgr.get(s1.logical_id) is s1
+        assert mgr.get(s2.logical_id) is s2
+
+    def test_get_returns_none_for_unknown_id(self):
+        from gateway.platforms.qqbot.streaming import StreamManager
+        mgr = StreamManager()
+        assert mgr.get("nonexistent") is None
+
+    def test_drop_is_idempotent(self):
+        from gateway.platforms.qqbot.streaming import StreamManager
+        mgr = StreamManager()
+        s = mgr.create(openid="u", passive_msg_id="m", msg_seq=1)
+        mgr.drop(s.logical_id)
+        mgr.drop(s.logical_id)  # second drop must not raise
+        assert mgr.get(s.logical_id) is None
+
+    def test_ttl_expiry_evicts_stale_session(self):
+        from gateway.platforms.qqbot.streaming import StreamManager
+        mgr = StreamManager(ttl_seconds=60.0)
+        s = mgr.create(openid="u", passive_msg_id="m", msg_seq=1)
+        # Backdate the session past the TTL horizon.
+        s.created_at -= 61.0
+        assert mgr.get(s.logical_id) is None
+        # After the failed lookup the entry should be gone.
+        assert len(mgr) == 0
+
+    def test_lru_eviction_when_full(self):
+        from gateway.platforms.qqbot.streaming import StreamManager
+        mgr = StreamManager(max_sessions=2)
+        a = mgr.create(openid="a", passive_msg_id="m1", msg_seq=1)
+        b = mgr.create(openid="b", passive_msg_id="m2", msg_seq=2)
+        # Touch A to promote it — B becomes LRU.
+        assert mgr.get(a.logical_id) is a
+        mgr.create(openid="c", passive_msg_id="m3", msg_seq=3)
+        assert mgr.get(b.logical_id) is None  # evicted
+        assert mgr.get(a.logical_id) is a  # still present
+
+
+# ---------------------------------------------------------------------------
+# C2C streaming reply — QQAdapter integration
+# ---------------------------------------------------------------------------
+
+class TestC2CStreamingReply:
+    """Streaming-path tests for ``send()`` + ``edit_message()`` on C2C chats."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        extra.setdefault("app_id", "a")
+        extra.setdefault("client_secret", "b")
+        adapter = QQAdapter(_make_config(**extra))
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._http_client = mock.MagicMock()
+        return adapter
+
+    def test_requires_edit_finalize_class_attr_is_true(self):
+        from gateway.platforms.qqbot import QQAdapter
+        assert QQAdapter.REQUIRES_EDIT_FINALIZE is True
+
+    def test_streaming_defaults_enabled(self):
+        adapter = self._make_adapter()
+        assert adapter._streaming_enabled is True
+
+    def test_streaming_can_be_disabled_via_config(self):
+        adapter = self._make_adapter(streaming_enabled=False)
+        assert adapter._streaming_enabled is False
+
+    @pytest.mark.asyncio
+    async def test_c2c_first_send_opens_stream_session(self):
+        adapter = self._make_adapter()
+        adapter._chat_type_map["user_a"] = "c2c"
+        calls = []
+
+        async def fake_api(method, path, body=None, **kw):
+            calls.append((method, path, body))
+            return {"id": "stream-xyz-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        result = await adapter.send(
+            "user_a", "hello",
+            reply_to="inbound_m1",
+            metadata={"expect_edits": True},
+        )
+        assert result.success
+        # message_id must be the adapter's logical_id (opaque uuid hex),
+        # NOT the QQ-assigned stream_msg_id — the consumer echoes this
+        # back on edit_message and we translate internally.
+        assert result.message_id is not None
+        assert result.message_id != "stream-xyz-1"
+        assert len(calls) == 1
+        method, path, body = calls[0]
+        assert method == "POST"
+        assert path == "/v2/users/user_a/stream_messages"
+        assert body["input_mode"] == "replace"
+        assert body["input_state"] == 1  # GENERATING
+        assert body["content_type"] == "markdown"  # MARKDOWN — fixed
+        assert body["content_raw"] == "hello"
+        assert body["event_id"] == "inbound_m1"
+        assert body["msg_id"] == "inbound_m1"
+        assert body["index"] == 0
+        assert "stream_msg_id" not in body  # first chunk omits it
+        # Session should be registered and reference the QQ id.
+        session = adapter._stream_manager.get(result.message_id)
+        assert session is not None
+        assert session.stream_msg_id == "stream-xyz-1"
+
+    @pytest.mark.asyncio
+    async def test_c2c_edit_reuses_stream_msg_id_and_increments_index(self):
+        adapter = self._make_adapter()
+        adapter._chat_type_map["user_a"] = "c2c"
+        calls = []
+
+        async def fake_api(method, path, body=None, **kw):
+            calls.append((method, path, body))
+            return {"id": "stream-xyz-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        first = await adapter.send(
+            "user_a", "hel",
+            reply_to="inbound_m1",
+            metadata={"expect_edits": True},
+        )
+        assert first.success
+        logical_id = first.message_id
+
+        second = await adapter.edit_message("user_a", logical_id, "hello")
+        third = await adapter.edit_message("user_a", logical_id, "hello wor")
+        assert second.success and third.success
+        # All three chunks share the same msg_seq and target the same
+        # stream endpoint.
+        assert len({body["msg_seq"] for _, _, body in calls}) == 1
+        assert [body["index"] for _, _, body in calls] == [0, 1, 2]
+        # Second/third chunks carry stream_msg_id from the first response.
+        assert calls[1][2]["stream_msg_id"] == "stream-xyz-1"
+        assert calls[2][2]["stream_msg_id"] == "stream-xyz-1"
+        # content_raw is REPLACE semantics — full accumulated text each time.
+        assert [body["content_raw"] for _, _, body in calls] == [
+            "hel", "hello", "hello wor",
+        ]
+        # Intermediate edits stay in GENERATING state.
+        assert calls[1][2]["input_state"] == 1
+        assert calls[2][2]["input_state"] == 1
+
+    @pytest.mark.asyncio
+    async def test_c2c_finalize_sends_done_and_drops_session(self):
+        adapter = self._make_adapter()
+        adapter._chat_type_map["user_a"] = "c2c"
+        calls = []
+
+        async def fake_api(method, path, body=None, **kw):
+            calls.append((method, path, body))
+            return {"id": "stream-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        first = await adapter.send(
+            "user_a", "partial",
+            reply_to="inbound_m1",
+            metadata={"expect_edits": True},
+        )
+        result = await adapter.edit_message(
+            "user_a", first.message_id, "final full answer",
+            finalize=True,
+        )
+        assert result.success
+        # Final chunk uses input_state=10 (DONE).
+        assert calls[-1][2]["input_state"] == 10
+        # Session should be cleaned up after finalize.
+        assert adapter._stream_manager.get(first.message_id) is None
+
+    @pytest.mark.asyncio
+    async def test_edit_after_finalize_is_noop_success(self):
+        adapter = self._make_adapter()
+        adapter._chat_type_map["user_a"] = "c2c"
+
+        async def fake_api(method, path, body=None, **kw):
+            return {"id": "stream-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        first = await adapter.send(
+            "user_a", "x",
+            reply_to="inbound_m1",
+            metadata={"expect_edits": True},
+        )
+        await adapter.edit_message(
+            "user_a", first.message_id, "final",
+            finalize=True,
+        )
+        # Second call after finalize: session already dropped, treated
+        # as "unknown session" → success=False so the consumer sends a
+        # fresh message rather than corrupting the finalized stream.
+        r = await adapter.edit_message(
+            "user_a", first.message_id, "oops",
+        )
+        assert r.success is False
+        assert "expired" in (r.error or "").lower() or "found" in (r.error or "").lower()
+
+    @pytest.mark.asyncio
+    async def test_edit_on_unknown_session_returns_failure(self):
+        adapter = self._make_adapter()
+        result = await adapter.edit_message("user_a", "nonexistent-logical-id", "hi")
+        assert result.success is False
+        assert result.error
+
+    @pytest.mark.asyncio
+    async def test_out_of_order_edit_is_dropped_silently(self):
+        """When ``next_index <= last_sent_index`` the edit is treated as a
+        no-op success without hitting the QQ API — matches the simplified
+        out-of-order policy agreed for this release.
+        """
+        adapter = self._make_adapter()
+        adapter._chat_type_map["user_a"] = "c2c"
+        calls = []
+
+        async def fake_api(method, path, body=None, **kw):
+            calls.append((method, path, body))
+            return {"id": "stream-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        first = await adapter.send(
+            "user_a", "hi",
+            reply_to="inbound_m1",
+            metadata={"expect_edits": True},
+        )
+        session = adapter._stream_manager.get(first.message_id)
+        # Simulate an out-of-order scenario by regressing next_index.
+        # (Consumer serialisation makes this impossible in practice, so
+        # we assert the defensive guard triggers when it happens.)
+        session.next_index = 0
+        session.last_sent_index = 0
+        api_calls_before = len(calls)
+
+        r = await adapter.edit_message("user_a", first.message_id, "hello")
+        assert r.success is True
+        assert len(calls) == api_calls_before  # no additional API call
+
+    @pytest.mark.asyncio
+    async def test_group_chat_streaming_first_send_defers_delivery(self):
+        """Group targets have no editable message id on QQ, so the
+        streaming first-send is buffered inside the adapter: no QQ API
+        call yet, but ``send()`` returns ``success=True`` with a
+        sentinel ``message_id`` so the stream consumer stays on its
+        edit path (avoiding the lossy prefix-based fallback).  The
+        complete reply is delivered later, on ``edit_message`` with
+        ``finalize=True``.
+        """
+        adapter = self._make_adapter()
+        adapter._chat_type_map["group_a"] = "group"
+        paths = []
+
+        async def fake_api(method, path, body=None, **kw):
+            paths.append(path)
+            return {"id": "regular-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        result = await adapter.send(
+            "group_a", "hello",
+            reply_to="inbound_m1",
+            metadata={"expect_edits": True},
+        )
+        assert result.success
+        assert result.message_id is not None
+        assert result.message_id.startswith("__qqbot_group_defer_")
+        # No QQ API call happened — the reply is deferred to finalize.
+        assert paths == []
+        # Session bookkeeping preserves the original reply_to for
+        # threaded delivery on finalize.
+        assert result.message_id in adapter._group_defer_sessions
+        session = adapter._group_defer_sessions[result.message_id]
+        assert session["chat_id"] == "group_a"
+        assert session["chat_type"] == "group"
+        assert session["reply_to"] == "inbound_m1"
+        # Fresh session — not yet finalized.
+        assert session["finalized"] is False
+        assert session["finalized_result"] is None
+
+    @pytest.mark.asyncio
+    async def test_guild_chat_streaming_first_send_defers_delivery(self):
+        """Same deferral as group chats — guild targets are also
+        non-editable, so ``expect_edits`` must not trigger a real send.
+        """
+        adapter = self._make_adapter()
+        adapter._chat_type_map["chan1"] = "guild"
+        paths = []
+
+        async def fake_api(method, path, body=None, **kw):
+            paths.append(path)
+            return {"id": "regular-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        result = await adapter.send(
+            "chan1", "hello",
+            reply_to="inbound_m1",
+            metadata={"expect_edits": True},
+        )
+        assert result.success
+        assert result.message_id is not None
+        assert result.message_id.startswith("__qqbot_group_defer_")
+        assert paths == []
+        session = adapter._group_defer_sessions[result.message_id]
+        assert session["chat_type"] == "guild"
+
+    @pytest.mark.asyncio
+    async def test_group_deferred_edit_intermediate_is_noop(self):
+        """Intermediate ``edit_message`` calls on a deferred group
+        session must NOT hit the QQ API — they are silent no-ops that
+        accumulate context until the finalize call arrives.
+        """
+        adapter = self._make_adapter()
+        adapter._chat_type_map["group_a"] = "group"
+        paths = []
+
+        async def fake_api(method, path, body=None, **kw):
+            paths.append(path)
+            return {"id": "regular-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        first = await adapter.send(
+            "group_a", "chunk1",
+            reply_to="inbound_m1",
+            metadata={"expect_edits": True},
+        )
+        sentinel = first.message_id
+        assert paths == []
+
+        for partial in ("chunk1 chunk2", "chunk1 chunk2 chunk3"):
+            r = await adapter.edit_message(
+                "group_a", sentinel, partial, finalize=False,
+            )
+            assert r.success
+            assert r.message_id == sentinel
+
+        # Still no QQ API traffic.
+        assert paths == []
+        # Session is still live.
+        assert sentinel in adapter._group_defer_sessions
+
+    @pytest.mark.asyncio
+    async def test_group_deferred_edit_finalize_delivers_full_content(self):
+        """The finalize ``edit_message`` is where the complete reply
+        actually reaches QQ.  It must:
+
+        * hit the regular group messages endpoint exactly once,
+        * carry the FULL accumulated content (not just the tail),
+        * preserve the original ``reply_to`` for threading, and
+        * clear the deferred session bookkeeping.
+        """
+        adapter = self._make_adapter()
+        adapter._chat_type_map["group_a"] = "group"
+        calls = []
+
+        async def fake_api(method, path, body=None, **kw):
+            calls.append((method, path, body))
+            return {"id": "regular-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        first = await adapter.send(
+            "group_a", "hello",
+            reply_to="inbound_m1",
+            metadata={"expect_edits": True},
+        )
+        sentinel = first.message_id
+        # A couple of intermediate edits — should not touch QQ.
+        await adapter.edit_message("group_a", sentinel, "hello world")
+        await adapter.edit_message(
+            "group_a", sentinel, "hello world, done",
+        )
+        assert calls == []
+
+        # Finalize with the full accumulated text.
+        final = await adapter.edit_message(
+            "group_a", sentinel,
+            "hello world, done: final answer",
+            finalize=True,
+        )
+        assert final.success
+        assert final.message_id == "regular-1"
+        # One and only one API call — the complete reply.
+        assert len(calls) == 1
+        method, path, body = calls[0]
+        assert method == "POST"
+        assert path == "/v2/groups/group_a/messages"
+        # Full accumulated text (may be under ``content`` or
+        # ``markdown.content`` depending on adapter markdown mode).
+        text = (
+            body.get("content")
+            or body.get("markdown", {}).get("content")
+            or ""
+        )
+        assert text.startswith("hello world, done: final answer")
+        # Threaded to the original inbound message.
+        assert body.get("msg_id") == "inbound_m1"
+        # Session bookkeeping: entry is preserved but flagged so
+        # subsequent finalize edits become idempotent no-ops (see
+        # ``test_group_deferred_edit_finalize_is_idempotent``).
+        assert sentinel in adapter._group_defer_sessions
+        remembered = adapter._group_defer_sessions[sentinel]
+        assert remembered["finalized"] is True
+        assert remembered["finalized_result"] is final
+
+    @pytest.mark.asyncio
+    async def test_group_deferred_edit_finalize_is_idempotent(self):
+        """A second ``finalize=True`` edit on the same sentinel must NOT
+        re-post the reply.
+
+        Regression guard: because the adapter declares
+        ``REQUIRES_EDIT_FINALIZE=True``, the stream consumer's
+        ``got_done`` branch can issue two ``_send_or_edit(...,
+        finalize=True)`` calls per turn — the mid-stream flush plus the
+        explicit final tick.  The first call already delivered the
+        reply via ``self.send(...)``; the second must be an idempotent
+        no-op or the user sees two identical messages in the group.
+        """
+        adapter = self._make_adapter()
+        adapter._chat_type_map["group_a"] = "group"
+        calls = []
+
+        async def fake_api(method, path, body=None, **kw):
+            calls.append((method, path, body))
+            return {"id": "regular-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        first = await adapter.send(
+            "group_a", "hello",
+            reply_to="inbound_m1",
+            metadata={"expect_edits": True},
+        )
+        sentinel = first.message_id
+
+        final_a = await adapter.edit_message(
+            "group_a", sentinel, "the full reply",
+            finalize=True,
+        )
+        final_b = await adapter.edit_message(
+            "group_a", sentinel, "the full reply",
+            finalize=True,
+        )
+
+        # First finalize delivered exactly once; the second is a
+        # memoised replay — same result object, no extra API call.
+        assert len(calls) == 1
+        assert final_a.success and final_b.success
+        assert final_a.message_id == "regular-1"
+        assert final_b.message_id == "regular-1"
+        assert final_b is final_a
+
+    @pytest.mark.asyncio
+    async def test_group_deferred_edit_after_finalize_non_final_is_noop(self):
+        """A stray non-final edit arriving after finalize must not
+        re-hit QQ (would happen on cancellation cleanup or an errant
+        mid-stream tick that raced with the final one).
+        """
+        adapter = self._make_adapter()
+        adapter._chat_type_map["group_a"] = "group"
+        calls = []
+
+        async def fake_api(method, path, body=None, **kw):
+            calls.append((method, path, body))
+            return {"id": "regular-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        first = await adapter.send(
+            "group_a", "hi",
+            reply_to="inbound_m1",
+            metadata={"expect_edits": True},
+        )
+        sentinel = first.message_id
+
+        await adapter.edit_message("group_a", sentinel, "final",
+                                    finalize=True)
+        # Simulate a late non-final tick after finalize.
+        stray = await adapter.edit_message(
+            "group_a", sentinel, "final plus more", finalize=False,
+        )
+        assert stray.success
+        # Still exactly one API call — the finalize one.
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_group_deferred_sessions_evict_finalized_over_cap(self):
+        """The finalized-session bookkeeping must not grow without
+        bound: once above the LRU cap, oldest finalized entries are
+        dropped.  Pending (non-finalized) entries are preserved.
+        """
+        adapter = self._make_adapter()
+        adapter._chat_type_map["group_a"] = "group"
+        adapter._group_defer_sessions_cap = 3
+
+        async def fake_api(method, path, body=None, **kw):
+            return {"id": "regular"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        # 3 finalized + 1 pending → over cap by 1.
+        finalized_ids = []
+        for _ in range(3):
+            r = await adapter.send(
+                "group_a", "hi",
+                metadata={"expect_edits": True},
+            )
+            await adapter.edit_message("group_a", r.message_id, "x",
+                                        finalize=True)
+            finalized_ids.append(r.message_id)
+
+        pending = await adapter.send(
+            "group_a", "hi",
+            metadata={"expect_edits": True},
+        )
+
+        # Cap enforcement runs on send() insertion — the oldest
+        # finalized entry should have been evicted, the pending one
+        # kept.
+        assert pending.message_id in adapter._group_defer_sessions
+        assert finalized_ids[0] not in adapter._group_defer_sessions
+        # Newer finalized entries remain until they too age out.
+        assert finalized_ids[-1] in adapter._group_defer_sessions
+
+    @pytest.mark.asyncio
+    async def test_group_deferred_edit_after_session_expiry_recovers(self):
+        """If the deferred session is gone (adapter restart, TTL, ...),
+        a finalize edit must still deliver the content via a fresh
+        legacy send instead of dropping the reply silently.
+        """
+        adapter = self._make_adapter()
+        adapter._chat_type_map["group_a"] = "group"
+        calls = []
+
+        async def fake_api(method, path, body=None, **kw):
+            calls.append((method, path, body))
+            return {"id": "regular-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        # Never called send() first: no session exists.
+        result = await adapter.edit_message(
+            "group_a", "__qqbot_group_defer_missing__",
+            "recovered content", finalize=True,
+        )
+        assert result.success
+        assert len(calls) == 1
+        assert calls[0][1] == "/v2/groups/group_a/messages"
+
+    @pytest.mark.asyncio
+    async def test_group_chat_without_expect_edits_sends_normally(self):
+        """Non-streaming group sends must still hit the regular group
+        messages endpoint and return a real id.
+        """
+        adapter = self._make_adapter()
+        adapter._chat_type_map["group_a"] = "group"
+        paths = []
+
+        async def fake_api(method, path, body=None, **kw):
+            paths.append(path)
+            return {"id": "regular-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        result = await adapter.send(
+            "group_a", "final answer",
+            reply_to="inbound_m1",
+            metadata={"final": True},
+        )
+        assert result.success
+        assert result.message_id == "regular-1"
+        assert paths == ["/v2/groups/group_a/messages"]
+
+    @pytest.mark.asyncio
+    async def test_group_edit_message_returns_failure(self):
+        """Groups have no stream session — edit_message must return
+        ``success=False`` so the consumer falls back to a fresh send.
+        """
+        adapter = self._make_adapter()
+        result = await adapter.edit_message("group_a", "any-id", "hi")
+        assert result.success is False
+
+    @pytest.mark.asyncio
+    async def test_streaming_disabled_falls_back_to_legacy_send(self):
+        adapter = self._make_adapter(streaming_enabled=False)
+        adapter._chat_type_map["user_a"] = "c2c"
+        paths = []
+
+        async def fake_api(method, path, body=None, **kw):
+            paths.append(path)
+            return {"id": "regular-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        result = await adapter.send(
+            "user_a", "hi",
+            reply_to="inbound_m1",
+            metadata={"expect_edits": True},
+        )
+        assert result.success
+        assert all("/stream_messages" not in p for p in paths)
+
+    @pytest.mark.asyncio
+    async def test_c2c_send_without_expect_edits_uses_legacy_path(self):
+        adapter = self._make_adapter()
+        adapter._chat_type_map["user_a"] = "c2c"
+        paths = []
+
+        async def fake_api(method, path, body=None, **kw):
+            paths.append(path)
+            return {"id": "regular-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        result = await adapter.send("user_a", "hi", reply_to="inbound_m1")
+        assert result.success
+        assert paths == ["/v2/users/user_a/messages"]
+
+    @pytest.mark.asyncio
+    async def test_streaming_start_failure_falls_back_to_legacy(self, caplog):
+        """First chunk failure must warn and degrade to a regular send in
+        the same ``send()`` call — user requirement (d).
+        """
+        adapter = self._make_adapter()
+        adapter._chat_type_map["user_a"] = "c2c"
+        calls = []
+
+        async def fake_api(method, path, body=None, **kw):
+            calls.append(path)
+            if "/stream_messages" in path:
+                raise RuntimeError("QQ Bot API error [500] boom")
+            return {"id": "legacy-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        import logging
+        with caplog.at_level(logging.WARNING):
+            result = await adapter.send(
+                "user_a", "hi",
+                reply_to="inbound_m1",
+                metadata={"expect_edits": True},
+            )
+        assert result.success
+        # Stream attempt happened, then fell back to the regular endpoint.
+        assert calls[0].endswith("/stream_messages")
+        assert calls[-1] == "/v2/users/user_a/messages"
+        assert any(
+            "Failed to start C2C streaming reply" in rec.message
+            for rec in caplog.records
+        )
+        # Abandoned session must not leak into the manager table.
+        assert len(adapter._stream_manager) == 0
+
+    @pytest.mark.asyncio
+    async def test_streaming_start_without_passive_msg_id_falls_back(self, caplog):
+        """No reply_to + no cached inbound id → skip streaming with a
+        warning; the endpoint requires a passive-reply msg_id.
+        """
+        adapter = self._make_adapter()
+        adapter._chat_type_map["user_a"] = "c2c"
+        # _last_msg_id intentionally empty.
+        calls = []
+
+        async def fake_api(method, path, body=None, **kw):
+            calls.append(path)
+            return {"id": "legacy-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        import logging
+        with caplog.at_level(logging.WARNING):
+            result = await adapter.send(
+                "user_a", "hi",
+                metadata={"expect_edits": True},
+            )
+        assert result.success
+        assert all("/stream_messages" not in p for p in calls)
+        assert any("no passive msg_id" in rec.message for rec in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_streaming_uses_cached_inbound_id_when_reply_to_missing(self):
+        """If ``reply_to`` is not supplied, the adapter must use the most
+        recent inbound msg_id it saw for that chat.
+        """
+        adapter = self._make_adapter()
+        adapter._chat_type_map["user_a"] = "c2c"
+        adapter._last_msg_id["user_a"] = "cached_inbound_99"
+        calls = []
+
+        async def fake_api(method, path, body=None, **kw):
+            calls.append(body)
+            return {"id": "stream-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        result = await adapter.send(
+            "user_a", "hi",
+            metadata={"expect_edits": True},
+        )
+        assert result.success
+        assert calls[0]["msg_id"] == "cached_inbound_99"
+        assert calls[0]["event_id"] == "cached_inbound_99"
+
+    @pytest.mark.asyncio
+    async def test_content_truncated_to_stream_content_limit(self):
+        from gateway.platforms.qqbot.streaming import MAX_STREAM_CONTENT_LEN
+        adapter = self._make_adapter()
+        adapter._chat_type_map["user_a"] = "c2c"
+        captured = []
+
+        async def fake_api(method, path, body=None, **kw):
+            captured.append(body)
+            return {"id": "stream-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        big = "x" * (MAX_STREAM_CONTENT_LEN + 200)
+        await adapter.send(
+            "user_a", big,
+            reply_to="inbound_m1",
+            metadata={"expect_edits": True},
+        )
+        assert len(captured[0]["content_raw"]) == MAX_STREAM_CONTENT_LEN
+
+    @pytest.mark.asyncio
+    async def test_stream_forwards_content_verbatim_when_gateway_suppresses_cursor(self):
+        """With QQBOT-specific cursor suppression in ``gateway/run.py``
+        (analogous to ``Platform.MATRIX``), no typewriter cursor ever
+        reaches the adapter — successive frames are forwarded verbatim
+        and the prefix invariant holds naturally.
+        """
+        adapter = self._make_adapter()
+        adapter._chat_type_map["user_a"] = "c2c"
+        calls = []
+
+        async def fake_api(method, path, body=None, **kw):
+            calls.append(body)
+            return {"id": "stream-nocursor-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        # All three frames arrive without any trailing cursor glyph,
+        # exactly what the gateway will emit for QQBOT.
+        first = await adapter.send(
+            "user_a", "Hello",
+            reply_to="inbound_m1",
+            metadata={"expect_edits": True},
+        )
+        assert first.success
+        logical_id = first.message_id
+
+        second = await adapter.edit_message(
+            "user_a", logical_id, "Hello world",
+        )
+        assert second.success
+
+        third = await adapter.edit_message(
+            "user_a", logical_id, "Hello world!", finalize=True,
+        )
+        assert third.success
+
+        seen = [body["content_raw"] for body in calls]
+        assert seen == ["Hello", "Hello world", "Hello world!"]
+        for i in range(len(seen) - 1):
+            assert seen[i + 1].startswith(seen[i]), (
+                f"prefix broken at {i}: {seen[i]!r} -> {seen[i + 1]!r}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_stream_prefix_divergence_replays_last_chunk(self):
+        """Divergent frames must degrade to a safe replay, not a 500.
+
+        If a subsequent edit's cleaned text does NOT start with the
+        previously-accepted text (e.g. upstream trimmed a segment,
+        replayed a shorter partial, or the model backtracked), we
+        MUST NOT forward it verbatim — that would break the prefix
+        invariant and kill the whole stream.  Instead the adapter
+        replays the last-accepted text so QQ sees a no-op-shaped
+        chunk and the session stays alive for the next real update.
+        """
+        adapter = self._make_adapter()
+        adapter._chat_type_map["user_a"] = "c2c"
+        calls = []
+
+        async def fake_api(method, path, body=None, **kw):
+            calls.append(body)
+            return {"id": "stream-div-1"}
+
+        adapter._api_request = fake_api  # type: ignore[assignment]
+
+        first = await adapter.send(
+            "user_a", "Hello world how are you",
+            reply_to="inbound_m1",
+            metadata={"expect_edits": True},
+        )
+        assert first.success
+        logical_id = first.message_id
+
+        # Divergent frame — shorter and NOT a prefix of the first.
+        result = await adapter.edit_message(
+            "user_a", logical_id, "Different content entirely",
+        )
+        # We report success (from QQ's POV nothing bad happened) but the
+        # payload we actually sent is the previously-accepted text,
+        # keeping the prefix invariant intact.
+        assert result.success
+        assert calls[1]["content_raw"] == "Hello world how are you"
+
+        # A subsequent, properly-extended frame flows through as normal.
+        third = await adapter.edit_message(
+            "user_a", logical_id, "Hello world how are you today",
+        )
+        assert third.success
+        assert calls[2]["content_raw"] == "Hello world how are you today"

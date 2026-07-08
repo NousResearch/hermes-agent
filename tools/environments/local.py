@@ -236,6 +236,10 @@ _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 # to a different Python version overwrites it and breaks the gateway). The
 # Hermes venv stays reachable via PATH (its bin dir is first), so stripping
 # these markers is safe and only prevents the cross-project clobber (#23473).
+#
+# PYTHONPATH is NOT included here — it's handled by
+# _strip_mismatched_site_packages() which surgically removes only site-packages
+# paths that don't match the current Python ABI, preserving user-set entries.
 _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX")
 
 
@@ -383,6 +387,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         sanitized.pop(_marker, None)
 
+    _strip_mismatched_site_packages(sanitized)
+
     _apply_windows_msys_bash_env_defaults(sanitized)
 
     return sanitized
@@ -494,6 +500,8 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     # Active-venv markers must not clobber another project's environment.
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         env.pop(_marker, None)
+
+    _strip_mismatched_site_packages(env)
 
     _apply_windows_msys_bash_env_defaults(env)
 
@@ -831,9 +839,70 @@ def _make_run_env(env: dict) -> dict:
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         run_env.pop(_marker, None)
 
+    _strip_mismatched_site_packages(run_env)
+
     _apply_windows_msys_bash_env_defaults(run_env)
 
     return run_env
+
+
+def _strip_mismatched_site_packages(env: dict) -> None:
+    """Remove Hermes venv site-packages paths from PYTHONPATH.
+
+    The Desktop Electron process injects the Hermes venv's site-packages path
+    (e.g. ``.../.hermes/hermes-agent/venv/lib/python3.11/site-packages``) into
+    PYTHONPATH so the Hermes Python 3.11 backend can import its own packages.
+    When this PYTHONPATH leaks into agent terminal subprocesses:
+
+    - A Python 3.13 child sees 3.11 C extensions (``_imaging`` etc.) on
+      ``sys.path`` ahead of the correct 3.13 versions and crashes.
+    - A Python 3.11 child doesn't need it either — the Hermes backend's
+      code discovery happens via ``sys.path``, not the inherited env var.
+
+    Rather than stripping PYTHONPATH entirely (which would discard user-set
+    entries like ``/home/user/my-lib``), this function surgically removes
+    only site-packages paths that live under the Hermes installation
+    (``~/.hermes/hermes-agent/venv/``). User paths and the Hermes source
+    root are preserved.
+
+    Also handles ``VIRTUAL_ENV``: if it points at a venv inside the Hermes
+    installation, that venv is already the one the gateway runs inside —
+    exposing it to subprocesses is redundant and clutters the env.
+    """
+    # Hermes installation root — site-packages under here are never useful
+    # for terminal subprocesses.
+    _hermes_home = os.environ.get("HERMES_HOME", "")
+    _hermes_venv = os.path.join(_hermes_home, "hermes-agent", "venv")
+
+    # --- PYTHONPATH: strip any site-packages under Hermes venv ---
+    pp = env.get("PYTHONPATH")
+    if pp:
+        kept = []
+        stripped = []
+        for entry in pp.split(os.pathsep):
+            entry = entry.strip()
+            if not entry:
+                continue
+            # Does this entry point at site-packages inside the Hermes venv?
+            if _hermes_venv and _hermes_venv in entry and "/site-packages" in entry:
+                stripped.append(entry)
+            else:
+                kept.append(entry)
+        if kept:
+            env["PYTHONPATH"] = os.pathsep.join(kept)
+        else:
+            env.pop("PYTHONPATH", None)
+        if stripped:
+            logger.debug(
+                "Stripped Hermes-venv site-packages from PYTHONPATH: %s",
+                stripped,
+            )
+
+    # --- VIRTUAL_ENV: remove if pointing at the Hermes venv ---
+    ve = env.get("VIRTUAL_ENV")
+    if ve and _hermes_venv:
+        if Path(ve).resolve() == Path(_hermes_venv).resolve():
+            env.pop("VIRTUAL_ENV", None)
 
 
 def _read_terminal_shell_init_config() -> tuple[list[str], bool]:

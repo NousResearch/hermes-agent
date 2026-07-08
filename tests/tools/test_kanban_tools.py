@@ -959,17 +959,24 @@ def test_comment_schema_omits_author_override():
 
 
 def test_create_happy_path(worker_env):
+    from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        upstream = kb.create_task(conn, title="upstream dep", assignee="setup")
+    finally:
+        conn.close()
+
     out = kt._handle_create({
         "title": "child task",
         "assignee": "peer",
-        "parents": [worker_env],
+        "parents": [upstream],
     })
     d = json.loads(out)
     assert d["ok"] is True
     assert d["task_id"]
     assert d["status"] == "todo"  # parent isn't done yet
-    from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
         child = kb.get_task(conn, d["task_id"])
@@ -1064,10 +1071,17 @@ def test_create_stamps_session_id_from_env(monkeypatch, worker_env):
     monkeypatch.setenv("HERMES_SESSION_ID", "acp-sess-abc")
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        upstream = kb.create_task(conn, title="upstream dep", assignee="setup")
+    finally:
+        conn.close()
+
     out = kt._handle_create({
         "title": "from chat",
         "assignee": "peer",
-        "parents": [worker_env],
+        "parents": [upstream],
     })
     d = json.loads(out)
     assert d["ok"] is True
@@ -1087,10 +1101,17 @@ def test_create_session_id_arg_overrides_env(monkeypatch, worker_env):
     monkeypatch.setenv("HERMES_SESSION_ID", "from-env")
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        upstream = kb.create_task(conn, title="upstream dep", assignee="setup")
+    finally:
+        conn.close()
+
     out = kt._handle_create({
         "title": "explicit override",
         "assignee": "peer",
-        "parents": [worker_env],
+        "parents": [upstream],
         "session_id": "explicit-arg",
     })
     d = json.loads(out)
@@ -1110,10 +1131,17 @@ def test_create_session_id_absent_when_env_unset(monkeypatch, worker_env):
     monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        upstream = kb.create_task(conn, title="upstream dep", assignee="setup")
+    finally:
+        conn.close()
+
     out = kt._handle_create({
         "title": "no session",
         "assignee": "peer",
-        "parents": [worker_env],
+        "parents": [upstream],
     })
     d = json.loads(out)
     assert d["ok"] is True
@@ -1190,11 +1218,30 @@ def test_create_rejects_bad_triage(worker_env):
 
 def test_create_accepts_string_parent(worker_env):
     """Convenience: a single parent id as string is coerced to [id]."""
+    from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        upstream = kb.create_task(conn, title="upstream dep", assignee="setup")
+    finally:
+        conn.close()
+
     out = kt._handle_create({
-        "title": "t", "assignee": "a", "parents": worker_env,
+        "title": "t", "assignee": "a", "parents": upstream,
     })
     assert json.loads(out)["ok"]
+
+
+def test_create_rejects_self_parent_reroute(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "t", "assignee": "a", "parents": [worker_env],
+    })
+    err = json.loads(out).get("error", "")
+    assert "cannot be listed in parents" in err
+    assert "deadlocks rerouted children" in err
 
 
 def test_create_accepts_skills_list(worker_env):
@@ -1328,10 +1375,17 @@ def test_worker_lifecycle_through_tools(worker_env):
     }))["ok"]
 
     # 4. spawn a child task for follow-up
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        upstream = kb.create_task(conn, title="upstream dep", assignee="setup")
+    finally:
+        conn.close()
+
     child_out = json.loads(kt._handle_create({
         "title": "write integration test",
         "assignee": "qa",
-        "parents": [worker_env],
+        "parents": [upstream],
     }))
     assert child_out["ok"]
 
@@ -1352,11 +1406,12 @@ def test_worker_lifecycle_through_tools(worker_env):
         run = kb.latest_run(conn, worker_env)
         assert run.outcome == "completed"
         assert run.metadata == {"child_task": child_out["task_id"]}
-        # Child is todo (parent just finished, but recompute_ready may
-        # have promoted it — complete_task runs recompute internally).
+        # Child still waits on the explicit upstream dependency; the worker's
+        # own task is no longer used as a synthetic parent after the reroute
+        # deadlock fix.
         child = kb.get_task(conn, child_out["task_id"])
-        assert child.status == "ready", (
-            f"child should be ready after parent done, got {child.status}"
+        assert child.status == "todo", (
+            f"child should still wait on its real upstream dep, got {child.status}"
         )
         # Comment is visible
         assert len(kb.list_comments(conn, worker_env)) == 1

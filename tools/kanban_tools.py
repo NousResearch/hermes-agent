@@ -891,6 +891,14 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(
             f"parents must be a list of task ids, got {type(parents).__name__}"
         )
+    self_tid = os.environ.get("HERMES_KANBAN_TASK")
+    if self_tid and self_tid in parents:
+        return tool_error(
+            "kanban_create: the current worker task cannot be listed in "
+            "parents; that self-parent edge deadlocks rerouted children. "
+            "Create the child without your own task id as a blocking parent, "
+            "then add any non-self dependencies explicitly."
+        )
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)

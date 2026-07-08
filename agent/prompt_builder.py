@@ -1274,7 +1274,12 @@ def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
 
 
 def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
-    """Build an mtime/size manifest of all SKILL.md and DESCRIPTION.md files."""
+    """Build an mtime/size manifest of all SKILL.md and DESCRIPTION.md files.
+
+    Walks the local ``skills_dir`` and every ``external_dir`` returned by
+    ``get_all_skills_dirs()``. External-dir fingerprints are keyed by their
+    absolute path so they don't collide with local-dir keys (#60258).
+    """
     manifest: dict[str, list[int]] = {}
     for filename in ("SKILL.md", "DESCRIPTION.md"):
         for path in iter_skill_index_files(skills_dir, filename):
@@ -1283,6 +1288,22 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
             except OSError:
                 continue
             manifest[str(path.relative_to(skills_dir))] = [st.st_mtime_ns, st.st_size]
+    # External skill dirs are read-only and live outside the local
+    # ``skills_dir``, so ``relative_to(skills_dir)`` would raise. Key
+    # them by their absolute path and keep the manifest in sync with
+    # build_skills_system_prompt's cache-key fingerprint so the LRU and
+    # disk-snapshot layers invalidate together when an external file
+    # is added/removed/changed.
+    for ext_dir in get_all_skills_dirs()[1:]:
+        if not ext_dir.exists():
+            continue
+        for filename in ("SKILL.md", "DESCRIPTION.md"):
+            for path in iter_skill_index_files(ext_dir, filename):
+                try:
+                    st = path.stat()
+                except OSError:
+                    continue
+                manifest[str(path)] = [st.st_mtime_ns, st.st_size]
     return manifest
 
 
@@ -1445,6 +1466,28 @@ def build_skills_system_prompt(
     if not skills_dir.exists() and not external_dirs:
         return ""
 
+    # ── External-dir fingerprint (mtime+size of all SKILL.md /
+    # DESCRIPTION.md files across every external dir). Layered before the
+    # cache_key so a new file added to an external dir produces a fresh
+    # key, invalidating both the in-process LRU and the disk snapshot.
+    # Without this, external-dir file additions are invisible until the
+    # process restarts (#60258). Mirrors _build_skills_manifest's local
+    # skill-dir traversal so the two layers stay in sync.
+    def _external_dir_fingerprint() -> tuple:
+        items: list[tuple[str, int, int]] = []
+        for ext_dir in external_dirs:
+            if not ext_dir.exists():
+                continue
+            for filename in ("SKILL.md", "DESCRIPTION.md"):
+                for path in iter_skill_index_files(ext_dir, filename):
+                    try:
+                        st = path.stat()
+                    except OSError:
+                        continue
+                    items.append((str(path), st.st_mtime_ns, st.st_size))
+        items.sort()
+        return tuple(items)
+
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
@@ -1458,6 +1501,7 @@ def build_skills_system_prompt(
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
+        _external_dir_fingerprint(),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,

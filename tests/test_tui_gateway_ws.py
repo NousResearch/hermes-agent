@@ -8,17 +8,21 @@ from tui_gateway import ws as ws_mod
 
 
 def test_ws_startup_starts_background_mcp_discovery(monkeypatch):
-    """The desktop app and dashboard chat reach the agent through this WS
+    """The desktop app (hermes serve) reaches the agent through this WS
     sidecar, not through tui_gateway.entry.main() (which spawns the discovery
-    thread for the stdio TUI). handle_ws must start discovery itself, otherwise
-    _make_agent's wait_for_mcp_discovery no-ops and the agent snapshots an
-    MCP-less tool list. Regression test for #38945."""
+    thread for the stdio TUI). handle_ws must start discovery itself when
+    HERMES_SERVE_HEADLESS=1, otherwise _make_agent's wait_for_mcp_discovery
+    no-ops and the agent snapshots an MCP-less tool list. Regression test for
+    #38945. The dashboard (hermes dashboard) skips discovery to avoid spawning
+    duplicate MCP server processes. Regression test for #60572."""
     calls = []
     monkeypatch.setattr(
         mcp_startup,
         "start_background_mcp_discovery",
         lambda **kw: calls.append(kw),
     )
+    # Simulate hermes serve (headless backend) mode
+    monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
 
     class FakeWS:
         async def accept(self):
@@ -40,6 +44,43 @@ def test_ws_startup_starts_background_mcp_discovery(monkeypatch):
         server._sessions.clear()
 
     assert calls == [{"logger": ws_mod._log, "thread_name": "tui-ws-mcp-discovery"}]
+
+
+def test_ws_dashboard_mode_skips_mcp_discovery(monkeypatch):
+    """The dashboard UI (hermes dashboard) loads profile configs for display
+    but does not run agents, so it does not need MCP servers. Skip discovery
+    when HERMES_SERVE_HEADLESS is unset (dashboard mode) to avoid spawning
+    duplicate MCP server processes when both gateway and dashboard are running
+    against the same profile. Regression test for #60572."""
+    calls = []
+    monkeypatch.setattr(
+        mcp_startup,
+        "start_background_mcp_discovery",
+        lambda **kw: calls.append(kw),
+    )
+    # Simulate hermes dashboard (no headless flag)
+    monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
+
+    class FakeWS:
+        async def accept(self):
+            pass
+
+        async def send_text(self, line):
+            pass
+
+        async def receive_text(self):
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self):
+            pass
+
+    server._sessions.clear()
+    try:
+        asyncio.run(ws_mod.handle_ws(FakeWS()))
+    finally:
+        server._sessions.clear()
+
+    assert calls == []
 
 
 def _run_disconnect(monkeypatch, seed):

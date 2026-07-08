@@ -300,21 +300,29 @@ async def handle_ws(ws: Any) -> None:
 
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
 
-        # The desktop app and dashboard chat reach the agent through this WS
-        # sidecar, NOT through tui_gateway.entry.main() (the stdio TUI path that
-        # spawns the background MCP discovery thread). Without starting it here,
-        # discovery never runs in this process: _make_agent only *waits* on the
-        # thread (wait_for_mcp_discovery), which no-ops when it was never
-        # created, so the agent snapshots an MCP-less tool list and the only way
-        # to surface MCP tools is a manual /reload-mcp. Start it once per
-        # process here (idempotent, config-gated) before gateway.ready so the
-        # first agent build can pick up already-spawning servers. (#38945)
-        from hermes_cli.mcp_startup import start_background_mcp_discovery
+        # The desktop app reaches the agent through this WS sidecar, NOT through
+        # tui_gateway.entry.main() (the stdio TUI path that spawns the
+        # background MCP discovery thread). Without starting it here, discovery
+        # never runs in this process: _make_agent only *waits* on the thread
+        # (wait_for_mcp_discovery), which no-ops when it was never created, so
+        # the agent snapshots an MCP-less tool list and the only way to surface
+        # MCP tools is a manual /reload-mcp. Start it once per process here
+        # (idempotent, config-gated) before gateway.ready so the first agent
+        # build can pick up already-spawning servers. (#38945)
+        #
+        # The dashboard UI (hermes dashboard, not hermes serve) is a pure viewing
+        # surface that loads profile configs for display but does not run agents,
+        # so it does not need MCP servers. Skip discovery when HERMES_SERVE_HEADLESS
+        # is unset (dashboard mode) to avoid spawning duplicate MCP server processes
+        # when both gateway and dashboard are running against the same profile. (#60572)
+        import os
+        if os.environ.get("HERMES_SERVE_HEADLESS") == "1":
+            from hermes_cli.mcp_startup import start_background_mcp_discovery
 
-        start_background_mcp_discovery(
-            logger=_log,
-            thread_name="tui-ws-mcp-discovery",
-        )
+            start_background_mcp_discovery(
+                logger=_log,
+                thread_name="tui-ws-mcp-discovery",
+            )
 
         ready_ok = await transport.write_async(
             {

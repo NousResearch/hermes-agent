@@ -508,7 +508,18 @@ class MemoryStore:
             bak = self._reload_target(target)
             if bak:
                 return _drift_error(self._path_for(target), bak)
-            return self._success_response(target, f"Compact directive received: {directive}. Manual intervention recommended.")
+            
+            entries = self._entries_for(target)
+            current = self._char_count(target)
+            limit = self._char_limit(target)
+            
+            return {
+                "success": True,
+                "message": f"Consolidation mode active for directive: '{directive}'.",
+                "instructions": "Please use 'memory(action=apply_batch, ...)' to perform the compaction.",
+                "current_entries": entries,
+                "usage": f"{current:,}/{limit:,} chars",
+            }
 
     def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Apply a sequence of add/replace/remove ops to one target atomically.
@@ -518,10 +529,6 @@ class MemoryStore:
         (remove/replace) and add new entries in a SINGLE tool call instead of
         the multi-turn consolidate-then-retry dance that re-sends the whole
         history multiple times.
-        """
-        Semantics: all-or-nothing. If any op is malformed, doesn't match, or
-        the net result would exceed the char limit, NOTHING is written and an
-        error is returned describing the first failure plus the live state.
         """
         if not operations:
             return {"success": False, "error": "operations list is empty."}
@@ -648,7 +655,7 @@ class MemoryStore:
         """Truncated one-line previews of entries for error feedback."""
         return [e[:width] + ("..." if len(e) > width else "") for e in entries]
 
-    def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
+    def _success_response(self, target: str, message: str = None, warning: str = None) -> Dict[str, Any]:
         # A successful write means the consolidation loop made progress, so the
         # per-turn failure budget resets (the cap counts consecutive failures,
         # not lifetime ones within a turn) (#42405).
@@ -668,12 +675,14 @@ class MemoryStore:
         resp = {
             "success": True,
             "done": True,
+            "message": message or "Success",
             "target": target,
             "usage": f"{pct}% — {current:,}/{limit:,} chars",
             "entry_count": len(entries),
         }
-        if message:
-            resp["message"] = message
+        if warning:
+            resp["warning"] = warning
+        
         resp["note"] = "Write saved. This update is complete — do not repeat it."
         return resp
 

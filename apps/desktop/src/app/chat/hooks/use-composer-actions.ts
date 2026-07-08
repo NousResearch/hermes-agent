@@ -3,6 +3,7 @@ import { useCallback } from 'react'
 import { requestComposerFocus, requestComposerInsert, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
+import type { HermesSelectPathsOptions } from '@/global'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import { readDesktopFileDataUrl, selectDesktopPaths } from '@/lib/desktop-fs'
@@ -17,12 +18,15 @@ import { notify, notifyError } from '@/store/notifications'
 
 import type { ImageDetachResponse } from '../../types'
 
-const IMAGE_EXTENSION_PATTERN = /\.(png|jpe?g|gif|webp|bmp|tiff?|svg|ico)$/i
+const IMAGE_EXTENSION_PATTERN = /\.(png|jpe?g|gif|webp|bmp|tiff?|svg|ico|avif|heic|heif)$/i
 
 const BLOB_MIME_EXTENSION: Record<string, string> = {
   'image/bmp': '.bmp',
   'image/gif': '.gif',
   'image/jpeg': '.jpg',
+  'image/avif': '.avif',
+  'image/heic': '.heic',
+  'image/heif': '.heif',
   'image/png': '.png',
   'image/svg+xml': '.svg',
   'image/tiff': '.tiff',
@@ -54,20 +58,82 @@ function blobToDataUrl(blob: Blob): Promise<string> {
   })
 }
 
-export async function createImageAttachmentFromBlob(blob: Blob): Promise<ComposerAttachment> {
+export async function createImageAttachmentFromBlob(blob: Blob, filename?: string): Promise<ComposerAttachment> {
   const extension = blobExtension(blob)
   const dataUrl = await blobToDataUrl(blob)
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
   const sequence = ++pastedImageCounter
-  const label = `pasted-image-${timestamp}-${sequence}${extension}`
+  const label = filename?.trim() || `pasted-image-${timestamp}-${sequence}${extension}`
 
   return {
-    detail: 'Pasted screenshot',
+    detail: filename ? 'Selected image' : 'Pasted screenshot',
     id: attachmentId('image', `clipboard:${label}:${blob.size}:${blob.type}`),
     kind: 'image',
     label,
     previewUrl: dataUrl
   }
+}
+
+export async function createFileAttachmentFromBlob(file: File): Promise<ComposerAttachment> {
+  const dataUrl = await blobToDataUrl(file)
+  const label = file.name || 'selected-file'
+
+  return {
+    dataUrl,
+    detail: file.type || 'Selected file',
+    id: attachmentId('file', `browser:${label}:${file.size}:${file.type}`),
+    kind: 'file',
+    label
+  }
+}
+
+export function normalFilePickerOptions(currentCwd: string | null | undefined): HermesSelectPathsOptions {
+  return {
+    defaultPath: currentCwd || undefined,
+    directories: false,
+    multiple: true,
+    title: 'Attach files'
+  }
+}
+
+function selectBrowserFiles(): Promise<File[]> {
+  if (typeof document === 'undefined') {
+    return Promise.resolve([])
+  }
+
+  return new Promise(resolve => {
+    const input = document.createElement('input')
+
+    input.type = 'file'
+    input.multiple = true
+    input.style.display = 'none'
+
+    const cleanup = () => {
+      input.remove()
+    }
+
+    input.addEventListener(
+      'change',
+      () => {
+        const files = Array.from(input.files || [])
+
+        cleanup()
+        resolve(files)
+      },
+      { once: true }
+    )
+    input.addEventListener(
+      'cancel',
+      () => {
+        cleanup()
+        resolve([])
+      },
+      { once: true }
+    )
+
+    document.body.append(input)
+    input.click()
+  })
 }
 
 export function isImagePath(filePath: string): boolean {
@@ -464,26 +530,35 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     [copy.imageAttachFailed]
   )
 
-  const pickImages = useCallback(async () => {
-    const paths = await selectDesktopPaths({
-      title: copy.attachImages,
-      defaultPath: currentCwd || undefined,
-      filters: [
-        {
-          name: t.composer.images,
-          extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff']
-        }
-      ]
-    })
+  const pickFiles = useCallback(async () => {
+    if (window.hermesDesktop) {
+      const paths = await selectDesktopPaths(normalFilePickerOptions(currentCwd))
 
-    if (!paths?.length) {
+      if (!paths?.length) {
+        return
+      }
+
+      for (const path of paths) {
+        if (isImagePath(path)) {
+          await attachImagePath(path)
+        } else {
+          attachContextFilePath(path)
+        }
+      }
+
       return
     }
 
-    for (const path of paths) {
-      await attachImagePath(path)
+    const files = await selectBrowserFiles()
+
+    for (const file of files) {
+      if (file.type.startsWith('image/') || isImagePath(file.name)) {
+        attachToMain(await createImageAttachmentFromBlob(file, file.name))
+      } else {
+        attachToMain(await createFileAttachmentFromBlob(file))
+      }
     }
-  }, [attachImagePath, copy.attachImages, currentCwd, t.composer.images])
+  }, [attachContextFilePath, attachImagePath, currentCwd])
 
   const pasteClipboardImage = useCallback(
     async ({ silent = false }: { silent?: boolean } = {}) => {
@@ -655,7 +730,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     insertContextPathInlineRef,
     pasteClipboardImage,
     pickContextPaths,
-    pickImages,
+    pickFiles,
     removeAttachment
   }
 }

@@ -4,10 +4,12 @@ import { $connection } from '@/store/session'
 
 import {
   attachmentPreviewDataUrl,
+  createFileAttachmentFromBlob,
   createImageAttachmentFromBlob,
   type DroppedFile,
   extractDroppedFiles,
   HERMES_PATHS_MIME,
+  normalFilePickerOptions,
   partitionDroppedFiles
 } from './use-composer-actions'
 
@@ -247,6 +249,30 @@ describe('attachmentPreviewDataUrl', () => {
 })
 
 
+
+describe('normal file picker attachments', () => {
+  it('uses an unrestricted multi-file OS picker by default', () => {
+    expect(normalFilePickerOptions('/workspace')).toEqual({
+      defaultPath: '/workspace',
+      directories: false,
+      multiple: true,
+      title: 'Attach files'
+    })
+    expect(normalFilePickerOptions('/workspace')).not.toHaveProperty('filters')
+  })
+
+  it('keeps browser/mobile selected non-image files in memory for file.attach upload', async () => {
+    const attachment = await createFileAttachmentFromBlob(
+      new File(['hello'], 'notes.weird-extension', { type: 'application/x-test' })
+    )
+
+    expect(attachment.kind).toBe('file')
+    expect(attachment.label).toBe('notes.weird-extension')
+    expect(attachment.path).toBeUndefined()
+    expect(attachment.dataUrl).toMatch(/^data:application\/x-test;base64,/)
+  })
+})
+
 describe('createImageAttachmentFromBlob', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -259,11 +285,11 @@ describe('createImageAttachmentFromBlob', () => {
 
     vi.stubGlobal('window', { hermesDesktop: { saveImageBuffer } })
 
-    const attachment = await createImageAttachmentFromBlob(new Blob(['hello'], { type: 'image/png' }))
+    const attachment = await createImageAttachmentFromBlob(new File(['hello'], 'screen.png', { type: 'image/png' }), 'screen.png')
 
     expect(saveImageBuffer).not.toHaveBeenCalled()
     expect(attachment.kind).toBe('image')
-    expect(attachment.label).toMatch(/pasted-image-.*\.png$/)
+    expect(attachment.label).toBe('screen.png')
     expect(attachment.path).toBeUndefined()
     expect(attachment.previewUrl).toMatch(/^data:image\/png;base64,/)
   })

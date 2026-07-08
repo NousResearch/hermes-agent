@@ -84,7 +84,6 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onPasteClipboardImage: (opts?: { silent?: boolean }) => Promise<boolean> | void
   onPickFiles: () => void
   onPickFolders: () => void
-  onPickImages: () => void
   onRemoveAttachment: (id: string) => void
   onSteer: (text: string) => Promise<boolean> | boolean
   onSubmit: (
@@ -276,7 +275,6 @@ export function ChatView({
   onPasteClipboardImage,
   onPickFiles,
   onPickFolders,
-  onPickImages,
   onRemoveAttachment,
   onSteer,
   onSubmit,
@@ -519,7 +517,6 @@ export function ChatView({
               onPasteClipboardImage={onPasteClipboardImage}
               onPickFiles={onPickFiles}
               onPickFolders={onPickFolders}
-              onPickImages={onPickImages}
               onRemoveAttachment={onRemoveAttachment}
               onSteer={onSteer}
               onSubmit={onSubmit}

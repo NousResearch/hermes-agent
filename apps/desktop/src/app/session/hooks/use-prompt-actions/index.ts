@@ -131,9 +131,9 @@ export async function uploadComposerAttachment(
   }
 
   // Non-image file.
-  let dataUrl: string | null = null
+  let dataUrl: string | null = attachment.dataUrl || null
 
-  if (remote) {
+  if (!dataUrl && remote) {
     try {
       dataUrl = await readFileDataUrlForAttach(path)
     } catch (err) {
@@ -143,6 +143,10 @@ export async function uploadComposerAttachment(
     if (!dataUrl) {
       throw new Error(`Could not read ${label}`)
     }
+  }
+
+  if (!path && !dataUrl) {
+    throw new Error(`Could not attach ${label}`)
   }
 
   const result = await requestGateway<FileAttachResponse>('file.attach', {
@@ -159,6 +163,7 @@ export async function uploadComposerAttachment(
   return {
     ...attachment,
     attachedSessionId: sessionId,
+    dataUrl: undefined,
     refText: result.ref_text,
     uploadState: undefined
   }
@@ -275,10 +280,12 @@ export function usePromptActions({
         const pathlessInlineImage =
           attachment.kind === 'image' && !attachment.path && Boolean(imagePayloadFromDataUrl(attachment.previewUrl, attachment.label))
 
+        const pathlessInlineFile = attachment.kind === 'file' && !attachment.path && Boolean(attachment.dataUrl)
+
         // Already-synced or pathless refs (terminal, url, etc.) pass through.
         // A drop-time eager upload may already have staged this one (matching
         // attachedSessionId) — don't re-upload it.
-        if ((!attachment.path && !pathlessInlineImage) || attachment.attachedSessionId === sessionId) {
+        if ((!attachment.path && !pathlessInlineImage && !pathlessInlineFile) || attachment.attachedSessionId === sessionId) {
           synced.push(attachment)
 
           continue

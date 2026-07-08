@@ -76,7 +76,6 @@ export function ChatBar({
   onPasteClipboardImage,
   onPickFiles,
   onPickFolders,
-  onPickImages,
   onRemoveAttachment,
   onSteer,
   onSubmit,
@@ -673,7 +672,6 @@ export function ChatBar({
       onPasteClipboardImage={onPasteClipboardImage}
       onPickFiles={onPickFiles}
       onPickFolders={onPickFolders}
-      onPickImages={onPickImages}
       state={state}
     />
   )

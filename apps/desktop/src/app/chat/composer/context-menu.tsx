@@ -15,7 +15,7 @@ import {
 import { Kbd } from '@/components/ui/kbd'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { Clipboard, FileText, FolderOpen, type IconComponent, ImageIcon, Link, MessageSquareText } from '@/lib/icons'
+import { Clipboard, FileText, FolderOpen, type IconComponent, Link, MessageSquareText } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { GHOST_ICON_BTN } from './controls'
@@ -29,8 +29,7 @@ export function ContextMenu({
   onOpenUrlDialog,
   onPasteClipboardImage,
   onPickFiles,
-  onPickFolders,
-  onPickImages
+  onPickFolders
 }: ContextMenuProps) {
   const { t } = useI18n()
   const c = t.composer
@@ -69,9 +68,6 @@ export function ContextMenu({
           </ContextMenuItem>
           <ContextMenuItem disabled={!onPickFolders} icon={FolderOpen} onSelect={onPickFolders}>
             {c.folder}
-          </ContextMenuItem>
-          <ContextMenuItem disabled={!onPickImages} icon={ImageIcon} onSelect={onPickImages}>
-            {c.images}
           </ContextMenuItem>
           <ContextMenuItem
             disabled={!onPasteClipboardImage}
@@ -174,7 +170,6 @@ interface ContextMenuProps {
   onPasteClipboardImage?: (opts?: { silent?: boolean }) => Promise<boolean> | void
   onPickFiles?: () => void
   onPickFolders?: () => void
-  onPickImages?: () => void
   state: ChatBarState
 }
 

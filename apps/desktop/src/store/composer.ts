@@ -9,6 +9,9 @@ export interface ComposerAttachment {
   detail?: string
   refText?: string
   previewUrl?: string
+  /** Browser/mobile file-picker fallback bytes for files that do not expose a
+   * local filesystem path. Kept memory-only and cleared after file.attach. */
+  dataUrl?: string
   path?: string
   attachedSessionId?: string
   /** Set while the file/image bytes are being staged into the session

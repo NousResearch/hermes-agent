@@ -1364,6 +1364,59 @@ describe('usePromptActions submit pasted screenshot attachments', () => {
   })
 })
 
+
+describe('usePromptActions submit browser file attachments', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    $connection.set(null)
+    $composerAttachments.set([])
+  })
+
+  it('uploads a pathless browser-picked file data URL before prompt.submit', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'file.attach') {
+        return {
+          attached: true,
+          ref_text: '@file:.hermes/desktop-attachments/notes.bin',
+          uploaded: true
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    const attachment: ComposerAttachment = {
+      dataUrl: 'data:application/octet-stream;base64,aGVsbG8=',
+      id: 'file:pathless',
+      kind: 'file',
+      label: 'notes.bin'
+    }
+
+    const ok = await handle!.submitText('read this', { attachments: [attachment] })
+
+    expect(ok).toBe(true)
+    expect(calls.map(c => c.method)).toEqual(['file.attach', 'prompt.submit'])
+    expect(calls[0]?.params).toEqual({
+      data_url: 'data:application/octet-stream;base64,aGVsbG8=',
+      name: 'notes.bin',
+      path: '',
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(calls[1]?.params).toEqual({
+      session_id: RUNTIME_SESSION_ID,
+      text: '@file:.hermes/desktop-attachments/notes.bin\n\nread this'
+    })
+  })
+})
+
 describe('usePromptActions eager attachment upload (drop-time)', () => {
   afterEach(() => {
     cleanup()
@@ -1469,6 +1522,41 @@ describe('uploadComposerAttachment remote read failures', () => {
     vi.restoreAllMocks()
   })
 
+
+
+  it('uploads an in-memory browser-picked file data URL without a disk path', async () => {
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'file.attach') {
+        return {
+          attached: true,
+          ref_text: '@file:.hermes/desktop-attachments/notes.bin',
+          uploaded: true
+        } as never
+      }
+
+      return {} as never
+    })
+
+    const uploaded = await uploadComposerAttachment(
+      {
+        dataUrl: 'data:application/octet-stream;base64,aGVsbG8=',
+        id: 'file:pathless',
+        kind: 'file',
+        label: 'notes.bin'
+      },
+      { remote: false, requestGateway, sessionId: RUNTIME_SESSION_ID }
+    )
+
+    expect(requestGateway).toHaveBeenCalledWith('file.attach', {
+      data_url: 'data:application/octet-stream;base64,aGVsbG8=',
+      name: 'notes.bin',
+      path: '',
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(uploaded.refText).toBe('@file:.hermes/desktop-attachments/notes.bin')
+    expect(uploaded.attachedSessionId).toBe(RUNTIME_SESSION_ID)
+    expect(uploaded.dataUrl).toBeUndefined()
+  })
 
   it('uploads an in-memory pasted screenshot data URL without reading a disk path', async () => {
     const requestGateway = vi.fn(async (method: string) => {

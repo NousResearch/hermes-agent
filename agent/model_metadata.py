@@ -305,6 +305,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     # OpenRouter live metadata reports 262144 (256 × 1024); align the
     # static fallback so cache and offline both agree (issue #22268).
     "hy3-preview": 262144,
+    # Tencent — Hy3 (GA successor to Hy3 Preview), same 256K window.
+    "hy3": 262144,
     # Nemotron — NVIDIA's open-weights series (128K context across all sizes)
     "nemotron": 131072,
     # Arcee

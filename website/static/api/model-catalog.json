@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-07-01T20:08:52Z",
+  "updated_at": "2026-07-08T13:38:17Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -105,7 +105,7 @@
           "description": ""
         },
         {
-          "id": "tencent/hy3-preview",
+          "id": "tencent/hy3",
           "description": ""
         },
         {
@@ -129,15 +129,11 @@
           "description": "free"
         },
         {
-          "id": "openrouter/owl-alpha",
-          "description": "free"
-        },
-        {
           "id": "poolside/laguna-m.1:free",
           "description": "free"
         },
         {
-          "id": "tencent/hy3-preview:free",
+          "id": "tencent/hy3:free",
           "description": "free"
         },
         {

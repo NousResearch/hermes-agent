@@ -88,6 +88,7 @@ import {
 } from './chat/right-rail'
 import { ChatSidebar } from './chat/sidebar'
 import { CommandPalette } from './command-palette'
+import { pickMostRecentSessionId } from './desktop-controller-utils'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
 import { useKeybinds } from './hooks/use-keybinds'
@@ -278,9 +279,11 @@ export function DesktopController() {
   }, [routedSessionId])
 
   // Restore that chat once, on cold start only (we're at the new-chat route and
-  // haven't navigated yet). A dead/deleted id self-clears via the exhausted latch
-  // below, so we never boot-loop into an error screen.
+  // haven't navigated yet). The restore is optimistic — the pinned id is not
+  // validated first, so the happy path costs no round trip and no new-chat
+  // flash. A dead/deleted id self-heals via the exhausted latch below.
   const restoredLastSessionRef = useRef(false)
+  const bootRestoredSessionIdRef = useRef<null | string>(null)
   useEffect(() => {
     if (restoredLastSessionRef.current) {
       return
@@ -290,15 +293,41 @@ export function DesktopController() {
     const last = getRememberedSessionId()
 
     if (last && location.pathname === NEW_CHAT_ROUTE) {
+      bootRestoredSessionIdRef.current = last
       navigate(sessionRoute(last), { replace: true })
     }
   }, [location.pathname, navigate])
 
+  // Once the user routes anywhere else, the boot restore is no longer ours to
+  // correct — coming back to that session later is a deliberate open and keeps
+  // the normal error + Retry UI if it turns out dead.
   useEffect(() => {
-    if (resumeExhaustedSessionId && getRememberedSessionId() === resumeExhaustedSessionId) {
+    if (bootRestoredSessionIdRef.current && routedSessionId && routedSessionId !== bootRestoredSessionIdRef.current) {
+      bootRestoredSessionIdRef.current = null
+    }
+  }, [routedSessionId])
+
+  useEffect(() => {
+    if (!resumeExhaustedSessionId) {
+      return
+    }
+
+    if (getRememberedSessionId() === resumeExhaustedSessionId) {
       setRememberedSessionId(null)
     }
-  }, [resumeExhaustedSessionId])
+
+    // The session this window cold-booted onto proved dead (the exhausted
+    // latch only arms with the gateway open, after the bounded resume retries
+    // gave up — so this is a stale pin, not a down backend). Fall back to the
+    // engine's most recent session instead of stranding the boot on an error
+    // screen the user never chose. Sessions the user opened deliberately keep
+    // the explicit error + Retry UI — this fires only for the boot restore.
+    if (bootRestoredSessionIdRef.current === resumeExhaustedSessionId && routedSessionId === resumeExhaustedSessionId) {
+      bootRestoredSessionIdRef.current = null
+      const fallback = pickMostRecentSessionId($sessions.get(), resumeExhaustedSessionId)
+      navigate(fallback ? sessionRoute(fallback) : NEW_CHAT_ROUTE, { replace: true })
+    }
+  }, [resumeExhaustedSessionId, routedSessionId, navigate])
 
   // Notification click: the main process already focused the window; jump to its
   // session. Notifications are tagged with the gateway *runtime* session id, but

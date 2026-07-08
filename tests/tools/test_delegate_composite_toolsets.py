@@ -17,6 +17,14 @@ class TestExpandParentToolsets(unittest.TestCase):
         # Original composite is preserved
         self.assertIn("hermes-cli", expanded)
 
+    def test_composite_includes_are_expanded(self):
+        """Composites that use includes (e.g. safe -> web) expand too."""
+        expanded = _expand_parent_toolsets({"safe"})
+        self.assertIn("web", expanded)
+        self.assertIn("vision", expanded)
+        self.assertIn("image_gen", expanded)
+        self.assertIn("safe", expanded)
+
     def test_individual_toolset_unchanged(self):
         """When parent already uses individual toolsets, expansion keeps them."""
         expanded = _expand_parent_toolsets({"web", "terminal"})

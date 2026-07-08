@@ -31,6 +31,7 @@ from tools.delegate_tool import (
     _build_child_progress_callback,
     _build_child_system_prompt,
     _extract_output_tail,
+    _strip_blocked_tool_definitions,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
@@ -199,6 +200,155 @@ class TestStripBlockedTools(unittest.TestCase):
                     f"Toolset {name!r} (tools={tools}) is fully blocked "
                     f"but was not stripped",
                 )
+
+
+def _fake_tool_schema(name):
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": f"{name} test schema",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+
+
+def _fake_child_with_tools(tool_names):
+    child = MagicMock()
+    child.tools = [_fake_tool_schema(name) for name in tool_names]
+    child.valid_tool_names = set(tool_names)
+    return child
+
+
+def _schema_names(child):
+    return {
+        tool["function"]["name"]
+        for tool in child.tools
+        if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+    }
+
+
+class TestChildToolSchemaNarrowing(unittest.TestCase):
+    def test_leaf_coding_parent_uses_default_child_toolsets(self):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["coding"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = _fake_child_with_tools(
+                ["terminal", "read_file", "web_search"]
+            )
+
+            _build_child_agent(
+                task_index=0,
+                goal="Narrow default",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        self.assertEqual(
+            MockAgent.call_args[1]["enabled_toolsets"],
+            ["terminal", "file", "web"],
+        )
+
+    def test_leaf_child_prunes_blocked_tools_from_explicit_composite_schema(self):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["coding"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            child = _fake_child_with_tools(
+                [
+                    "terminal",
+                    "read_file",
+                    "delegate_task",
+                    "execute_code",
+                    "memory",
+                    "clarify",
+                ]
+            )
+            MockAgent.return_value = child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Explicit composite",
+                context=None,
+                toolsets=["coding"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        names = _schema_names(child)
+        self.assertIn("terminal", names)
+        self.assertIn("read_file", names)
+        self.assertTrue(
+            names.isdisjoint(
+                {"delegate_task", "execute_code", "memory", "clarify"}
+            )
+        )
+        self.assertTrue(child.valid_tool_names.isdisjoint(DELEGATE_BLOCKED_TOOLS))
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_spawn_depth": 2})
+    def test_orchestrator_keeps_delegate_but_prunes_other_blocked_composite_tools(
+        self, mock_cfg
+    ):
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["coding"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            child = _fake_child_with_tools(
+                [
+                    "terminal",
+                    "read_file",
+                    "delegate_task",
+                    "execute_code",
+                    "memory",
+                    "clarify",
+                ]
+            )
+            MockAgent.return_value = child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Coordinate workers",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                role="orchestrator",
+            )
+
+        self.assertIn("delegation", MockAgent.call_args[1]["enabled_toolsets"])
+        names = _schema_names(child)
+        self.assertIn("delegate_task", names)
+        self.assertTrue(names.isdisjoint({"execute_code", "memory", "clarify"}))
+        self.assertEqual(child._delegate_role, "orchestrator")
+
+    def test_strip_blocked_tool_definitions_allows_delegate_only_for_orchestrator(self):
+        schemas = [
+            _fake_tool_schema(name)
+            for name in ["terminal", "delegate_task", "execute_code", "memory"]
+        ]
+
+        leaf_names = {
+            tool["function"]["name"]
+            for tool in _strip_blocked_tool_definitions(schemas, role="leaf")
+        }
+        orchestrator_names = {
+            tool["function"]["name"]
+            for tool in _strip_blocked_tool_definitions(
+                schemas, role="orchestrator"
+            )
+        }
+
+        self.assertEqual(leaf_names, {"terminal"})
+        self.assertEqual(orchestrator_names, {"terminal", "delegate_task"})
 
 
 class TestDelegateTask(unittest.TestCase):
@@ -1857,6 +2007,31 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
         self.assertEqual(
             MockAgent.call_args[1]["enabled_toolsets"],
             ["web", "browser", "mcp-MiniMax"],
+        )
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_default_leaf_child_preserves_mcp_toolsets_by_default(self, mock_cfg):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["terminal", "file", "web", "mcp-MiniMax"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Test default leaf toolsets",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        self.assertEqual(
+            MockAgent.call_args[1]["enabled_toolsets"],
+            ["terminal", "file", "web", "mcp-MiniMax"],
         )
 
     @patch(

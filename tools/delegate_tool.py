@@ -30,7 +30,7 @@ from concurrent.futures import (
 )
 from typing import Any, Dict, List, Optional
 
-from toolsets import TOOLSETS
+from toolsets import TOOLSETS, resolve_toolset
 
 # Sentinel value used by the runtime provider system for providers that are
 # not natively known (named custom providers, third-party aggregators, etc.).
@@ -555,9 +555,12 @@ def _expand_parent_toolsets(parent_toolsets: set) -> set:
     """
     parent_tool_names: set = set()
     for ts_name in parent_toolsets:
-        ts_def = TOOLSETS.get(ts_name)
-        if ts_def:
-            parent_tool_names.update(ts_def.get("tools", []))
+        try:
+            parent_tool_names.update(resolve_toolset(ts_name))
+        except Exception:
+            ts_def = TOOLSETS.get(ts_name)
+            if ts_def:
+                parent_tool_names.update(ts_def.get("tools", []))
 
     if not parent_tool_names:
         return set(parent_toolsets)
@@ -581,6 +584,21 @@ def _preserve_parent_mcp_toolsets(
         if _is_mcp_toolset_name(toolset_name) and toolset_name not in preserved:
             preserved.append(toolset_name)
     return preserved
+
+
+def _default_leaf_child_toolsets(parent_toolsets: set[str]) -> List[str]:
+    """Return the narrow default toolsets a leaf child should receive.
+
+    Leaf subagents are usually delegated focused repo/research work, so they
+    should not inherit broad parent postures such as ``coding`` or
+    ``hermes-cli`` by default.  Intersect the small child default with the
+    parent's expanded capability set so a parent that disabled web/terminal/etc.
+    does not accidentally grant it back to the child.
+    """
+    if not parent_toolsets:
+        return list(DEFAULT_TOOLSETS)
+    expanded_parent = _expand_parent_toolsets(parent_toolsets)
+    return [name for name in DEFAULT_TOOLSETS if name in expanded_parent]
 
 
 DEFAULT_MAX_ITERATIONS = 50
@@ -781,6 +799,79 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
         or all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
+
+
+def _blocked_tool_names_for_child_role(role: str) -> set[str]:
+    """Return individual tool names a child role may not see or call."""
+    blocked = set(DELEGATE_BLOCKED_TOOLS)
+    if role == "orchestrator":
+        # Orchestrators are the only children allowed to call delegate_task.
+        # They still cannot use memory, clarify, execute_code, send_message,
+        # cronjob, or any other explicitly blocked tool.
+        blocked.discard("delegate_task")
+    return blocked
+
+
+def _tool_schema_name(tool_def: Any) -> Optional[str]:
+    """Extract a function/tool name from OpenAI-format or raw schema dicts."""
+    if not isinstance(tool_def, dict):
+        return None
+    function = tool_def.get("function")
+    if isinstance(function, dict):
+        name = function.get("name")
+        return str(name) if name else None
+    name = tool_def.get("name")
+    return str(name) if name else None
+
+
+def _strip_blocked_tool_definitions(
+    tool_defs: Any,
+    *,
+    role: str = "leaf",
+) -> Any:
+    """Remove blocked individual tool schemas from a child's tool list.
+
+    Toolset-name stripping is not enough for composite toolsets like
+    ``coding`` or ``hermes-cli`` because they embed individual blocked tools.
+    This schema-level pass is the child security backstop.
+    """
+    if not isinstance(tool_defs, list):
+        return tool_defs
+    blocked = _blocked_tool_names_for_child_role(role)
+    return [
+        tool_def
+        for tool_def in tool_defs
+        if _tool_schema_name(tool_def) not in blocked
+    ]
+
+
+def _apply_child_tool_schema_restrictions(child: Any, *, role: str) -> None:
+    """Synchronize a constructed child's schemas and executable tool names."""
+    blocked = _blocked_tool_names_for_child_role(role)
+
+    tools = getattr(child, "tools", None)
+    if isinstance(tools, list):
+        filtered_tools = _strip_blocked_tool_definitions(tools, role=role)
+        child.tools = filtered_tools
+        filtered_names = [
+            name
+            for tool_def in filtered_tools
+            if (name := _tool_schema_name(tool_def))
+        ]
+        child.valid_tool_names = set(filtered_names)
+        try:
+            import model_tools
+
+            model_tools._last_resolved_tool_names = list(filtered_names)
+        except Exception:
+            pass
+        return
+
+    valid_tool_names = getattr(child, "valid_tool_names", None)
+    if isinstance(valid_tool_names, set):
+        child.valid_tool_names = valid_tool_names - blocked
+    elif isinstance(valid_tool_names, (list, tuple)):
+        child.valid_tool_names = set(valid_tool_names) - blocked
 
 
 def _emit_parent_console(parent_agent, line: str) -> None:
@@ -1127,6 +1218,13 @@ def _build_child_agent(
                 child_toolsets, parent_toolsets
             )
         child_toolsets = _strip_blocked_tools(child_toolsets)
+    elif effective_role == "leaf":
+        child_toolsets = _default_leaf_child_toolsets(parent_toolsets)
+        if _get_inherit_mcp_toolsets():
+            child_toolsets = _preserve_parent_mcp_toolsets(
+                child_toolsets, parent_toolsets
+            )
+        child_toolsets = _strip_blocked_tools(child_toolsets)
     elif parent_agent and parent_enabled is not None:
         child_toolsets = _strip_blocked_tools(parent_enabled)
     elif parent_toolsets:
@@ -1330,6 +1428,7 @@ def _build_child_agent(
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
     )
+    _apply_child_tool_schema_restrictions(child, role=effective_role)
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Now the child exists, its session id can ride on every relayed event
     # (including the spawn_requested below — first emit happens after this).
@@ -2489,8 +2588,9 @@ def delegate_task(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                # Subagents always inherit the parent's toolsets; the model
-                # cannot choose or narrow them (no model-facing toolsets arg).
+                # The model cannot choose or narrow child toolsets (no
+                # model-facing toolsets arg). _build_child_agent applies the
+                # role-specific default, intersected with parent capabilities.
                 toolsets=None,
                 model=creds["model"],
                 max_iterations=effective_max_iter,

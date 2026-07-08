@@ -1,0 +1,5 @@
+name: tokenlab-provider
+kind: model-provider
+version: 1.0.0
+description: TokenLab multi-model gateway
+author: TokenLab

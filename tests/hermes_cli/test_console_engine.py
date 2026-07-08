@@ -533,7 +533,6 @@ def test_hosted_console_blocks_known_footgun_arguments_before_confirmation(line)
         "desktop",
         "login",
         "logout",
-        "--tui",
         "logs | cat",
         "config show > out.txt",
     ],

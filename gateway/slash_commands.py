@@ -2476,7 +2476,7 @@ class GatewaySlashCommandsMixin:
             )
         elif args in {"channel", "join"}:
             return await self._handle_voice_channel_join(event)
-        elif args == "leave":
+        elif tokens and tokens[0] in {"leave", "disconnect"}:
             return await self._handle_voice_channel_leave(event)
         elif args == "status":
             mode = self._voice_mode.get(voice_key, "off")

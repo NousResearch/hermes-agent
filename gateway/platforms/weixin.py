@@ -1072,7 +1072,7 @@ async def qr_login(
             status = str(status_resp.get("status") or "wait")
             if status == "wait":
                 print(".", end="", flush=True)
-            elif status == "scanned":
+            elif status == "scaned":  # codespell:ignore scaned  (upstream WeChat API literal)
                 print("\n已扫码，请在微信里确认...")
             elif status == "scaned_but_redirect":
                 redirect_host = str(status_resp.get("redirect_host") or "")

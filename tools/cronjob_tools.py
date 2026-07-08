@@ -9,6 +9,7 @@ import json
 import logging
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -31,6 +32,7 @@ from cron.jobs import (
     remove_job,
     resolve_job_ref,
     resume_job,
+    trigger_job,
     update_job,
 )
 
@@ -601,49 +603,76 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute a cron job immediately, outside the scheduler tick.
+def _is_gateway_active() -> bool:
+    """Check if the gateway scheduler ticker is currently running.
 
-    Atomically claims the job first via ``claim_job_for_fire`` — the same
-    at-most-once CAS the scheduler/external-provider fire path uses — so a
-    concurrently-running gateway ticker cannot also fire it (the claim both
-    blocks a duplicate fire and advances ``next_run_at`` for recurring jobs).
-    If the claim is lost (another fire is in flight), this is a no-op.
+    When the gateway is alive, its ticker fires due jobs asynchronously via
+    ``ThreadPoolExecutor.submit(run_one_job)`` every ~60 s. When it is not
+    alive (CLI / oneshot mode), there is no ticker to pick up armed jobs.
+    """
+    try:
+        from gateway.status import is_gateway_running
+        return is_gateway_running()
+    except Exception:
+        return False
 
-    The actual firing is delegated to ``run_one_job`` — the single shared
-    execute→save→deliver→mark body the ticker and external providers use — so
-    failure delivery, ``[SILENT]`` handling, and live-adapter delivery stay
-    identical across paths and can't drift.
 
-    Returns {"claimed": bool, "success": bool, "error": str|None}.
+def _run_job_in_background(job: Dict[str, Any]):
+    """Daemon-thread worker: execute a cron job to completion.
+
+    Called from a background thread so the calling agent is never blocked.
+    ``run_one_job`` handles ``mark_job_run`` (which clears the fire claim and
+    records ``last_status``) on success. On exception we mark the job failed
+    so the claim does not wedge and the user sees the error.
     """
     job_id = job["id"]
     try:
         from cron.scheduler import run_one_job
-
-        # At-most-once claim: bail without running if a tick/other fire owns it.
-        if not claim_job_for_fire(job_id):
-            return {"claimed": False, "success": False,
-                    "error": "Job is already being fired by the scheduler; not run again."}
-
-        # run_one_job records last_run_at/last_status via mark_job_run (which
-        # also clears the fire claim) and returns True iff it processed the job.
-        processed = run_one_job(job)
-        refreshed = get_job(job_id) or {}
-        ok = refreshed.get("last_status") == "ok"
-        return {
-            "claimed": True,
-            "success": bool(processed and ok),
-            "error": refreshed.get("last_error"),
-        }
-
+        run_one_job(job)
     except Exception as e:
-        logger.error("Failed to execute cron job %s immediately: %s", job_id, e)
+        logger.error("Background cron job %s failed: %s", job_id, e)
         try:
             mark_job_run(job_id, False, str(e))
         except Exception:
             pass
-        return {"claimed": True, "success": False, "error": str(e)}
+
+
+def _trigger_job_nonblocking(job: Dict[str, Any], job_id: str) -> Dict[str, Any]:
+    """Trigger a cron job immediately without blocking the calling agent (#52705).
+
+    Two paths based on gateway liveness:
+
+    1. **Gateway alive** — arm the job via ``trigger_job`` (sets
+       ``next_run_at = now``) and let the scheduler ticker fire it
+       asynchronously on its next cycle. At-most-once is handled by the
+       ticker's own ``claim_job_for_fire`` on its fire path.
+
+    2. **Gateway not alive** — claim via ``claim_job_for_fire`` (at-most-once,
+       advances ``next_run_at`` for recurring jobs) and spawn a daemon thread
+       that calls ``run_one_job`` directly. The thread runs the job to
+       completion in the calling process while the tool returns immediately.
+
+    Either way the tool never blocks. ``last_status`` is not available in the
+    immediate response (the job hasn't finished); check via
+    ``cronjob(action='list')``.
+
+    Returns ``{"mode": "scheduled"|"background", "claimed": bool,
+    "error": str|None}``.
+    """
+    if _is_gateway_active():
+        # Path 1: fire-and-forget — the ticker will fire it within ~60 s.
+        trigger_job(job_id)
+        return {"mode": "scheduled", "claimed": True, "error": None}
+
+    # Path 2: no ticker — claim + daemon thread.
+    if not claim_job_for_fire(job_id):
+        return {"mode": "background", "claimed": False,
+                "error": "Job is already being fired; not run again."}
+
+    threading.Thread(
+        target=_run_job_in_background, args=(job,), daemon=True
+    ).start()
+    return {"mode": "background", "claimed": True, "error": None}
 
 
 def cronjob(
@@ -826,22 +855,20 @@ def cronjob(
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized in {"run", "run_now", "trigger"}:
-            # Execute the job immediately rather than only scheduling it for the
-            # next scheduler tick — a manual `run` should actually run, even when
-            # no gateway/ticker is active (the #41037 case). The claim inside
-            # _execute_job_now advances next_run_at and blocks a concurrent tick
-            # from double-firing.
-            exec_result = _execute_job_now(job)
-            # Re-read so the response reflects the post-run last_run_at/last_status.
+            # Trigger the job without blocking the calling agent (#52705).
+            # When the gateway ticker is alive, the job is armed via
+            # trigger_job and the scheduler fires it asynchronously. When no
+            # ticker is running (CLI/oneshot), a daemon thread runs the job
+            # directly. Either way the tool returns immediately.
+            trigger_result = _trigger_job_nonblocking(job, job_id)
             result = _format_job(get_job(job_id) or {"id": job_id})
-            result["executed"] = exec_result.get("claimed", False)
-            result["execution_success"] = exec_result.get("success", False)
-            if not exec_result.get("claimed", False):
-                result["execution_skipped"] = (
-                    "Already being fired by the scheduler; not run again."
+            result["triggered"] = True
+            result["trigger_mode"] = trigger_result["mode"]
+            result["executed"] = trigger_result.get("claimed", False)
+            if not trigger_result.get("claimed", False):
+                result["execution_skipped"] = trigger_result.get(
+                    "error", "Already being fired."
                 )
-            elif exec_result.get("error"):
-                result["execution_error"] = exec_result["error"]
             return json.dumps({"success": True, "job": result}, indent=2)
 
         if normalized == "update":

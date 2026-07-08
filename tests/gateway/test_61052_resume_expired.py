@@ -88,3 +88,4 @@ def test_resume_pending_expired_triggers_when_enabled(temp_sessions):
     assert recovered.session_id != "test_session"
     assert recovered.resume_pending is False
 
+

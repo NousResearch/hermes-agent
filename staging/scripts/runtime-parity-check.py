@@ -512,7 +512,7 @@ def run() -> int:
 
 def main() -> int:
     STATE.parent.mkdir(parents=True, exist_ok=True)
-    lockf = open(LOCK, "w")
+    lockf = open(LOCK, "w", encoding="utf-8")
     try:
         fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:

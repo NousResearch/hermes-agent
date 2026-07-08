@@ -292,6 +292,7 @@ from hermes_cli.subcommands.version import build_version_parser
 from hermes_cli.subcommands.update import build_update_parser
 from hermes_cli.subcommands.uninstall import build_uninstall_parser
 from hermes_cli.subcommands.dashboard import build_dashboard_parser
+from hermes_cli.subcommands.tunnel import build_tunnel_parser
 from hermes_cli.subcommands.gui import build_gui_parser
 from hermes_cli.subcommands.logs import build_logs_parser
 from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
@@ -4200,6 +4201,12 @@ def cmd_status(args):
     from hermes_cli.status import show_status
 
     show_status(args)
+
+
+def cmd_tunnel(args):
+    """Expose a local service to the internet via a Cloudflare Tunnel."""
+    from hermes_cli.tunnel_commands import tunnel_command
+    return tunnel_command(args)
 
 
 def cmd_cron(args):
@@ -14042,6 +14049,11 @@ def main():
     # prompt-size command  (parser built in hermes_cli/subcommands/prompt_size.py)
     # =========================================================================
     build_prompt_size_parser(subparsers, cmd_prompt_size=cmd_prompt_size)
+
+    # =========================================================================
+    # tunnel command  (parser built in hermes_cli/subcommands/tunnel.py)
+    # =========================================================================
+    build_tunnel_parser(subparsers, cmd_tunnel=cmd_tunnel)
 
     # =========================================================================
     # Parse and execute

@@ -34,6 +34,7 @@ def ingest_recording(
     store: TeamsContextStore,
     transcript_path: str | None = None,
     artifact_cache: str | Path | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not meeting_label.strip():
         raise RecordingIngestError("--meeting-label is required")
@@ -50,12 +51,13 @@ def ingest_recording(
         source_type = "recording"
     source_id = stable_source_id(meeting_label, recording_path)
     chunks = chunk_text(transcript_text)
-    metadata = {
+    chunk_metadata = {
         "meeting_label": meeting_label,
         "recording_path": str(recording_path),
         "transcript_path": str(Path(transcript_path).expanduser()) if transcript_path else None,
         "transcript_source": transcript_source,
     }
+    chunk_metadata.update(metadata or {})
     for index, chunk in enumerate(chunks):
         store.upsert_kb_chunk(
             source_id=source_id,
@@ -65,7 +67,7 @@ def ingest_recording(
             chunk_index=index,
             text=chunk,
             meeting_id=source_id,
-            metadata=metadata,
+            metadata=chunk_metadata,
         )
     return {
         "meeting_label": meeting_label,

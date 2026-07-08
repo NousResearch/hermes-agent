@@ -6,6 +6,19 @@ from types import SimpleNamespace
 import pytest
 
 from plugins.teams_context.models import TeamsChatMessage, parse_chat_resource, strip_html
+from plugins.teams_context.meeting_download import (
+    DownloadedMeetingFiles,
+    MeetingDownloadError,
+    classify_sharepoint_stream_url,
+    download_meeting,
+    download_meetings,
+    existing_meeting_files,
+    pair_downloaded_files,
+    parse_url_file,
+    safe_filename,
+    sanitize_url_for_metadata,
+    write_download_report,
+)
 from plugins.teams_context.recording import (
     RecordingIngestError,
     download_recording_url,
@@ -275,3 +288,187 @@ def test_dashboard_payload_has_placeholder_labels_only(tmp_path: Path):
 
     assert payload["sources"][0]["label"] == "Example transcript"
     assert payload["items"][0]["source_type"] == "transcript"
+
+
+def test_teams_context_cli_exposes_download_commands(tmp_path: Path):
+    import argparse
+
+    from plugins.teams_context.cli import register_cli
+
+    parser = argparse.ArgumentParser()
+    subs = parser.add_subparsers(dest="command")
+    teams = subs.add_parser("teams-context")
+    register_cli(teams)
+
+    one = parser.parse_args([
+        "teams-context",
+        "download-meeting",
+        "https://tenant.sharepoint.com/sites/team/recording.mp4",
+        "--output-dir",
+        str(tmp_path),
+    ])
+    batch = parser.parse_args([
+        "teams-context",
+        "download-meetings",
+        "--url-file",
+        str(tmp_path / "urls.txt"),
+        "--output-dir",
+        str(tmp_path),
+        "--no-ingest",
+    ])
+
+    assert one.teams_context_action == "download-meeting"
+    assert batch.teams_context_action == "download-meetings"
+    assert batch.no_ingest is True
+
+
+def test_meeting_download_safe_filename_and_url_sanitization():
+    assert safe_filename("  Exec: JCorp / Teams? Meeting  ") == "Exec-JCorp-Teams-Meeting"
+    sanitized = sanitize_url_for_metadata(
+        "https://user:pass@tenant.sharepoint.com/sites/x/Recording.mp4?e=secret&download=1#token"
+    )
+
+    assert sanitized == "https://tenant.sharepoint.com/sites/x/Recording.mp4"
+    assert "secret" not in sanitized
+    assert "user:pass" not in sanitized
+    assert classify_sharepoint_stream_url(sanitized) == "sharepoint"
+
+
+def test_meeting_download_existing_file_skip_and_force(tmp_path: Path):
+    existing = tmp_path / "Example-Meeting.mp4"
+    existing.write_bytes(b"recording")
+    url = "https://tenant.sharepoint.com/sites/team/Example%20Meeting.mp4?access_token=secret"
+    calls = {"count": 0}
+
+    def fake_downloader(**_kwargs):
+        calls["count"] += 1
+        return DownloadedMeetingFiles(recording_path=existing)
+
+    skipped = download_meeting(
+        url,
+        output_dir=tmp_path,
+        ingest=False,
+        browser_downloader=fake_downloader,
+    )
+    forced = download_meeting(
+        url,
+        output_dir=tmp_path,
+        force=True,
+        ingest=False,
+        browser_downloader=fake_downloader,
+    )
+
+    assert existing_meeting_files(tmp_path, "Example-Meeting").skipped is True
+    assert skipped.status == "skipped"
+    assert calls["count"] == 1
+    assert forced.status == "downloaded"
+
+
+def test_meeting_download_url_file_batch_parsing(tmp_path: Path):
+    url_file = tmp_path / "urls.txt"
+    url_file.write_text(
+        "\n# comment\nhttps://tenant.sharepoint.com/sites/team/a.mp4\n  https://stream.microsoft.com/video/b  \n",
+        encoding="utf-8",
+    )
+
+    assert parse_url_file(url_file) == [
+        "https://tenant.sharepoint.com/sites/team/a.mp4",
+        "https://stream.microsoft.com/video/b",
+    ]
+
+
+def test_meeting_download_report_excludes_sensitive_query_strings(tmp_path: Path):
+    result = download_meeting(
+        "https://tenant.sharepoint.com/sites/team/meeting.mp4?access_token=secret-token",
+        output_dir=tmp_path,
+        ingest=False,
+        browser_downloader=lambda **_kwargs: DownloadedMeetingFiles(recording_path=tmp_path / "meeting.mp4"),
+    )
+    Path(result.recording_path).write_bytes(b"recording")
+
+    report = write_download_report(tmp_path, [result])
+    payload = report.read_text(encoding="utf-8")
+
+    assert "secret-token" not in payload
+    assert "access_token" not in payload
+    assert "https://tenant.sharepoint.com/sites/team/meeting.mp4" in payload
+
+
+def test_meeting_download_pairs_recording_with_transcript(tmp_path: Path):
+    recording = tmp_path / "JCorp-Weekly.mp4"
+    transcript = tmp_path / "JCorp-Weekly.vtt"
+    other = tmp_path / "Other.vtt"
+    for path in (recording, transcript, other):
+        path.write_bytes(b"x")
+
+    paired = pair_downloaded_files([other, recording, transcript])
+
+    assert paired.recording_path == recording
+    assert paired.transcript_path == transcript
+
+
+def test_meeting_download_ingests_with_transcript_when_present(monkeypatch, tmp_path: Path):
+    recording = tmp_path / "Meeting.mp4"
+    transcript = tmp_path / "Meeting.vtt"
+    recording.write_bytes(b"recording")
+    transcript.write_text("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nhello\n", encoding="utf-8")
+    captured = {}
+
+    def fake_ingest(path_or_url, **kwargs):
+        captured["path_or_url"] = path_or_url
+        captured.update(kwargs)
+        return {"chunks": 1, "transcript_source": "transcript"}
+
+    monkeypatch.setattr("plugins.teams_context.meeting_download.ingest_recording", fake_ingest)
+
+    result = download_meeting(
+        "https://tenant.sharepoint.com/sites/team/Meeting.mp4?e=secret",
+        output_dir=tmp_path,
+        store=TeamsContextStore(tmp_path / "teams.sqlite"),
+        browser_downloader=lambda **_kwargs: DownloadedMeetingFiles(recording_path=recording, transcript_path=transcript),
+    )
+
+    assert result.status == "ingested"
+    assert captured["transcript_path"] == str(transcript)
+    assert captured["metadata"]["source_url"] == "https://tenant.sharepoint.com/sites/team/Meeting.mp4"
+    assert "e=secret" not in captured["metadata"]["source_url"]
+
+
+def test_meeting_download_ingests_without_transcript_for_stt_fallback(monkeypatch, tmp_path: Path):
+    recording = tmp_path / "Meeting.mp4"
+    recording.write_bytes(b"recording")
+    captured = {}
+
+    def fake_ingest(path_or_url, **kwargs):
+        captured["path_or_url"] = path_or_url
+        captured.update(kwargs)
+        return {"chunks": 1, "transcript_source": "stt"}
+
+    monkeypatch.setattr("plugins.teams_context.meeting_download.ingest_recording", fake_ingest)
+
+    result = download_meeting(
+        "https://tenant.sharepoint.com/sites/team/Meeting.mp4",
+        output_dir=tmp_path,
+        store=TeamsContextStore(tmp_path / "teams.sqlite"),
+        browser_downloader=lambda **_kwargs: DownloadedMeetingFiles(recording_path=recording),
+    )
+
+    assert result.status == "ingested"
+    assert captured["transcript_path"] is None
+    assert result.ingested["transcript_source"] == "stt"
+
+
+def test_meeting_download_missing_browser_action_is_retryable(tmp_path: Path):
+    def fake_downloader(**_kwargs):
+        raise MeetingDownloadError("No recording or transcript download action was visible.", retryable=True)
+
+    payload = download_meetings(
+        ["https://tenant.sharepoint.com/sites/team/Meeting.mp4"],
+        output_dir=tmp_path,
+        ingest=False,
+        browser_downloader=fake_downloader,
+    )
+
+    assert payload["failed"] == 1
+    assert payload["results"][0]["retryable"] is True
+    assert "download action" in payload["results"][0]["error"]

@@ -58,6 +58,14 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     ingest.add_argument("--store-path", default="")
     ingest.add_argument("--artifact-cache", default="")
 
+    download = subs.add_parser("download-meeting", help="Download and ingest one Teams meeting recording")
+    download.add_argument("url")
+    _add_download_options(download)
+
+    downloads = subs.add_parser("download-meetings", help="Download and ingest Teams meeting recordings from a URL file")
+    downloads.add_argument("--url-file", required=True)
+    _add_download_options(downloads)
+
     subparser.set_defaults(func=teams_context_command)
 
 
@@ -66,7 +74,7 @@ def teams_context_command(args: argparse.Namespace) -> int:
     if not action:
         print(
             "Usage: hermes teams-context "
-            "{backfill|subscribe|subscriptions|maintain-subscriptions|validate|scrape-ui|ingest-recording}"
+            "{backfill|subscribe|subscriptions|maintain-subscriptions|validate|scrape-ui|ingest-recording|download-meeting|download-meetings}"
         )
         return 2
     if action == "backfill":
@@ -133,10 +141,51 @@ def teams_context_command(args: argparse.Namespace) -> int:
         except RecordingIngestError as exc:
             print(f"Recording ingest failed: {exc}")
             return 1
+    elif action == "download-meeting":
+        from plugins.teams_context.meeting_download import download_meetings
+
+        payload = download_meetings(
+            [getattr(args, "url")],
+            output_dir=getattr(args, "output_dir"),
+            cdp_url=getattr(args, "cdp_url", "http://127.0.0.1:9222"),
+            store=TeamsContextStore(getattr(args, "store_path", "") or None),
+            artifact_cache=getattr(args, "artifact_cache", "") or None,
+            force=bool(getattr(args, "force", False)),
+            ingest=not bool(getattr(args, "no_ingest", False)),
+        )
+        _print(payload)
+        return 1 if payload.get("failed") else 0
+    elif action == "download-meetings":
+        from plugins.teams_context.meeting_download import download_meetings, parse_url_file
+
+        payload = download_meetings(
+            parse_url_file(getattr(args, "url_file")),
+            output_dir=getattr(args, "output_dir"),
+            cdp_url=getattr(args, "cdp_url", "http://127.0.0.1:9222"),
+            store=TeamsContextStore(getattr(args, "store_path", "") or None),
+            artifact_cache=getattr(args, "artifact_cache", "") or None,
+            force=bool(getattr(args, "force", False)),
+            ingest=not bool(getattr(args, "no_ingest", False)),
+        )
+        _print(payload)
+        return 1 if payload.get("failed") else 0
     else:
         print(f"Unknown teams-context action: {action}")
         return 2
     return 0
+
+
+def _add_download_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--output-dir",
+        required=True,
+        help="Directory where meeting recordings, transcripts, and the local report are written",
+    )
+    parser.add_argument("--cdp-url", default="http://127.0.0.1:9222")
+    parser.add_argument("--store-path", default="")
+    parser.add_argument("--artifact-cache", default="")
+    parser.add_argument("--force", action="store_true", help="Overwrite or redownload existing files")
+    parser.add_argument("--no-ingest", action="store_true", help="Download only; do not update TeamContext KB")
 
 
 def _build_runtime(args: argparse.Namespace) -> TeamsContextGraph:

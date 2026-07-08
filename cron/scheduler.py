@@ -305,6 +305,87 @@ def cron_jobs_in_flight() -> int:
         return len(_running_job_ids)
 
 
+# Job IDs the gateway shutdown path force-killed the tool subprocess of
+# while still in ``_running_job_ids`` (see ``mark_running_jobs_interrupted``
+# below). ``run_one_job``'s own completion path checks this set before
+# writing its own ``last_status`` so a cron agent thread that keeps running
+# in-process after its tool was killed out from under it — and produces a
+# plausible-looking final response from truncated output — can never
+# overwrite the interrupted status with a false "ok" (#60432).
+_interrupted_job_ids: set = set()
+
+
+def get_running_job_ids() -> "frozenset[str]":
+    """Thread-safe snapshot of cron job IDs currently executing.
+
+    A job ID is a member from the moment ``_submit_with_guard`` dispatches
+    it onto the parallel/sequential pool until ``_process_job`` returns —
+    i.e. for the job's *entire* run, tool calls included, not just the
+    ticker's dispatch instant.
+
+    The gateway shutdown path (``gateway/run.py::GatewayRunner.
+    _drain_active_agents``) reads this to treat in-flight cron work as
+    active the same way it already treats in-flight chat sessions via
+    ``_running_agents`` — cron jobs run through their own thread pool here,
+    entirely outside that dict, so without this the drain is structurally
+    blind to them (#60432).
+    """
+    with _running_lock:
+        return frozenset(_running_job_ids)
+
+
+def mark_running_jobs_interrupted(reason: str) -> list:
+    """Best-effort: mark every currently in-flight cron job interrupted.
+
+    Called by the gateway shutdown path immediately after it force-kills
+    tool subprocesses (``process_registry.kill_all()``). A job whose tool
+    subprocess was just killed out from under it must never be allowed to
+    report success — even though its agent thread is still alive in this
+    same process and may go on to produce a plausible-looking final
+    response from the now-truncated tool output.
+
+    Records the job IDs in ``_interrupted_job_ids`` BEFORE writing
+    ``last_status`` so ``run_one_job``'s own eventual completion for the
+    same job (racing in its own thread) sees the flag and skips its normal
+    write instead of clobbering this one — see the check near the end of
+    ``run_one_job``. This does not attempt to correlate the killed
+    subprocess PID to a specific job ID (the process registry tracks PIDs,
+    not cron job IDs); any job still dispatched at the moment of a forced
+    kill is treated as interrupted, matching the coarser precedent already
+    set by ``GatewayRunner._interrupt_running_agents``, which interrupts
+    every entry in ``_running_agents`` on a drain timeout without
+    per-agent correlation either.
+
+    Returns the list of job IDs marked, for the caller to log.
+    """
+    with _running_lock:
+        job_ids = list(_running_job_ids)
+        _interrupted_job_ids.update(job_ids)
+    marked = []
+    for job_id in job_ids:
+        try:
+            mark_job_run(job_id, False, reason)
+            marked.append(job_id)
+        except Exception as e:
+            logger.warning("Failed to mark job %s interrupted: %s", job_id, e)
+    return marked
+
+
+def _consume_interrupted_flag(job_id: str) -> bool:
+    """Return True and clear the flag if the shutdown path already marked
+    ``job_id`` interrupted (see ``mark_running_jobs_interrupted``).
+
+    Called by ``run_one_job`` right before it would otherwise write its own
+    ``last_status``. Consuming (discarding) rather than just checking keeps
+    the flag from leaking across a later, unrelated run of the same job ID
+    (recurring jobs reuse their ID every fire)."""
+    with _running_lock:
+        if job_id in _interrupted_job_ids:
+            _interrupted_job_ids.discard(job_id)
+            return True
+        return False
+
+
 # Sequential (env-mutating) cron jobs — workdir jobs that touch
 # process-global runtime state — must run one at a time, but must NOT block the
 # ticker thread.  A persistent single-thread executor preserves ordering across
@@ -3377,12 +3458,14 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             success = False
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-        mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+        if not _consume_interrupted_flag(job["id"]):
+            mark_job_run(job["id"], success, error, delivery_error=delivery_error)
         return True
 
     except Exception as e:
         logger.error("Error processing job %s: %s", job['id'], e)
-        mark_job_run(job["id"], False, str(e))
+        if not _consume_interrupted_flag(job["id"]):
+            mark_job_run(job["id"], False, str(e))
         return False
 
 

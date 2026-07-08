@@ -96,6 +96,25 @@ class TestParseSchedule:
         assert result["kind"] == "cron"
         assert result["expr"] == "0 9 * * *"
 
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "0 9 * * MON-FRI",   # named weekday range
+            "0 9 * * mon",       # named weekday, lowercase
+            "0 0 1 JAN *",       # named month
+            "0 0 L * *",         # last-day-of-month
+            "0 0 * * 5#3",       # third Friday
+            "0 0 15 * ? ",       # '?' (no-specific) with trailing space
+        ],
+    )
+    def test_cron_named_and_special_fields(self, expr):
+        """Named months/weekdays and cron special chars (L, #, ?) are valid
+        cron and must not be rejected before croniter validates them."""
+        pytest.importorskip("croniter")
+        result = parse_schedule(expr)
+        assert result["kind"] == "cron"
+        assert result["expr"] == expr.strip()
+
     def test_iso_timestamp(self):
         result = parse_schedule("2030-01-15T14:00:00")
         assert result["kind"] == "once"

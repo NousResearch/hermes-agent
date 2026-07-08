@@ -347,9 +347,16 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     
     # Check for cron expression (5 or 6 space-separated fields)
     # Cron fields: minute hour day month weekday [year]
+    #
+    # Allow the full cron field charset — named months/weekdays
+    # (JAN-DEC, SUN-SAT), step/range/list syntax, and the special chars
+    # ``L`` ``W`` ``#`` ``?`` — and let ``croniter`` below be the
+    # authoritative validator. A digits-only gate here wrongly rejected
+    # valid expressions like ``0 9 * * MON-FRI`` or ``0 0 * * 5#3``,
+    # raising "Invalid schedule" before croniter ever saw them.
     parts = schedule.split()
     if len(parts) >= 5 and all(
-        re.match(r'^[\d\*\-,/]+$', p) for p in parts[:5]
+        re.match(r'^[A-Za-z0-9*,/?#\-]+$', p) for p in parts[:5]
     ):
         if not HAS_CRONITER:
             raise ValueError("Cron expressions require 'croniter' package. Install with: pip install croniter")

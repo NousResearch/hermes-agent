@@ -1,0 +1,64 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: motion-previs-studio
+description: Drive Motion Previs Studio — turn reference footage into AI-generator control packs (camera path, depth passes, OpenPose skeletons) and send layers to Blockout.
+source: https://github.com/wassermanproductions/motion-previs-mcp
+
+# Motion Previs Studio (https://github.com/wassermanproductions/motion-previs-studio,
+# Apache-2.0) is a desktop app that analyzes real footage and extracts the
+# camera move and actor performance for AI video generation workflows
+# (Seedance, Kling, ComfyUI, Blender). On launch the app starts a
+# localhost-only control server on a random port and writes a discovery file
+# to ~/.config/motion-previs/control.json (per-launch random bearer token,
+# mode 0600, removed on quit). This bridge is a single zero-dependency Node
+# script that reads the discovery file and forwards MCP tool calls to the
+# running app — nothing listens on a public port, nothing to configure.
+transport:
+  type: stdio
+  command: "node"
+  args:
+    - "${INSTALL_DIR}/motion-previs-mcp.mjs"
+
+# The bridge is zero-dependency (Node >= 18) — clone is the whole install,
+# so no bootstrap commands.
+install:
+  type: git
+  url: https://github.com/wassermanproductions/motion-previs-mcp.git
+  # Pin to a commit/tag. Required — manifests do not float HEAD.
+  ref: v1.0.0
+
+# The app's control server binds to 127.0.0.1 only and authenticates with a
+# per-launch random token the bridge auto-discovers from the local discovery
+# file. Nothing to prompt for.
+auth:
+  type: none
+
+# Tool selection at install time:
+# 11 tools covering the whole pipeline (import_file/import_url, set_range,
+# set_mode, set_settings, run_analysis, get_state progress polling,
+# export_pack, list_bundle, send_to_blockout, screenshot). Everything acts
+# only on the user's local analysis session inside the app — no external
+# side effects — so nothing is pruned. Leave default_enabled unset; the
+# install-time checklist shows the full surface.
+
+post_install: |
+  This bridge talks to the Motion Previs Studio desktop app (v4.1+), which
+  must be RUNNING before Hermes connects:
+
+    1. Get the app from
+       https://github.com/wassermanproductions/motion-previs-studio
+       (build from source, or use a release DMG on macOS).
+    2. Launch it. It writes its control endpoint + token to
+       ~/.config/motion-previs/control.json automatically.
+    3. Start a new Hermes session to load the tools.
+
+  If the app is not running, tool calls return a friendly "launch the app
+  first" error rather than hanging.
+
+  Agent workflow: import_file or import_url → set_range + set_mode
+  (camera_only | actor_motion | object_motion | full_scene) → run_analysis →
+  poll get_state until analysis.status is "done" (long shots take minutes) →
+  export_pack → optionally send_to_blockout to hand a layer to the Blockout
+  previs app.

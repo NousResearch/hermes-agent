@@ -62,9 +62,9 @@ describe('usePreviewRouting', () => {
     $currentCwd.set('/work')
     $messages.set([])
     $previewTarget.set(null)
-    window.localStorage.clear()
     clearSessionPreviewRegistry()
     handleEvent = () => undefined
+    window.localStorage.clear()
 
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
@@ -78,9 +78,9 @@ describe('usePreviewRouting', () => {
     cleanup()
     $messages.set([])
     $previewTarget.set(null)
-    window.localStorage.clear()
-    clearSessionPreviewRegistry()
     vi.restoreAllMocks()
+    clearSessionPreviewRegistry()
+    window.localStorage.clear()
   })
 
   it('opens the active session preview from the registry', async () => {

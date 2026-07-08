@@ -2505,6 +2505,7 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in rooms
         "free_response_rooms": "",     # Comma-separated room IDs where bot responds without mention
         "allowed_rooms": "",           # If set, bot ONLY responds in these room IDs (whitelist)
+        "device_refresh_seconds": 300, # Min seconds between proactive peer device-list refreshes before encrypted sends (0 disables)
     },
 
     # Approval mode for dangerous commands:

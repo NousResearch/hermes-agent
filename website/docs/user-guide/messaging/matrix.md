@@ -404,6 +404,7 @@ When E2EE is enabled, Hermes:
 - Uploads device keys on first connection
 - Decrypts incoming messages and encrypts outgoing messages automatically
 - Auto-joins encrypted rooms when invited
+- Re-queries room members' device lists before encrypted sends (at most once per room per `matrix.device_refresh_seconds` in `config.yaml`, default 300; set `0` to disable), so a peer that rotated its device while the gateway was offline, or on a homeserver that fails to announce the rotation, can still decrypt the bot's messages
 
 ### Matrix Tools and Controls
 

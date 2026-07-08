@@ -46,6 +46,10 @@ Environment variables:
                               when requester metadata is available (default: true)
     MATRIX_APPROVAL_TIMEOUT_SECONDS
                               Reaction approval/model-picker timeout (default: 300)
+    MATRIX_DEVICE_REFRESH_SECONDS
+                              Min seconds between proactive peer device-list
+                              refreshes before encrypted sends (default: 300,
+                              0 disables; alias of matrix.device_refresh_seconds)
 """
 
 from __future__ import annotations
@@ -827,6 +831,18 @@ class MatrixAdapter(BasePlatformAdapter):
         self._clock_skew_warned: bool = False
         self._last_sync_ts: float = 0.0
 
+        # Throttle state for proactive per-room device-list refresh before
+        # encrypted sends — see _refresh_encrypted_room_devices().
+        # config.yaml: matrix.device_refresh_seconds (0 disables).
+        self._device_refresh_ts: Dict[str, float] = {}
+        device_refresh_raw = config.extra.get("device_refresh_seconds")
+        if device_refresh_raw is None:
+            device_refresh_raw = os.getenv("MATRIX_DEVICE_REFRESH_SECONDS", "300")
+        try:
+            self._device_refresh_interval = float(device_refresh_raw)
+        except (TypeError, ValueError):
+            self._device_refresh_interval = 300.0
+
         # Cache: room_id → bool (is DM)
         self._dm_rooms: Dict[str, bool] = {}
         self._room_identities: Dict[str, MatrixRoomIdentity] = {}
@@ -1575,6 +1591,103 @@ class MatrixAdapter(BasePlatformAdapter):
 
         logger.info("Matrix: disconnected")
 
+    async def _refresh_encrypted_room_devices(self, room_id: str) -> None:
+        """Proactively re-fetch device lists for members of an encrypted room.
+
+        mautrix only invalidates its cached device list for another user when
+        the homeserver reports that user in ``device_lists.changed`` in a /sync
+        response (OlmMachine.handle_device_lists) — there is no catch-up
+        (``/keys/changes``) or manual invalidation path. When that signal is
+        missed (gateway downtime during a peer's device rotation, crypto-store
+        recreation, or homeservers that fail to emit it — the Conduit family:
+        legacy Conduit, unmaintained conduwuit, Tuwunel < 1.6.1), the cache is
+        stale forever: outbound megolm sessions are shared only to the peer's
+        dead device and the peer can never decrypt ("No one-time keys nor
+        device keys got when trying to share keys" on their side). Own-device
+        recovery (_verify_device_keys_on_server) doesn't cover this — the
+        failing direction is encrypting TO a rotated peer.
+
+        This forces a throttled ``/keys/query`` (crypto._fetch_keys) for the
+        room's members before an encrypted send. If any device changed,
+        mautrix's _process_fetched_keys → on_devices_changed drops the
+        outbound group session, so the next send re-shares to the current
+        device set. Same class of fix as matrix-rust-sdk's
+        mark_all_tracked_users_as_dirty (matrix-rust-sdk#3965). Failures here
+        must never block the actual send.
+        """
+        if not self._encryption or self._device_refresh_interval <= 0:
+            return
+        client = self._client
+        crypto = getattr(client, "crypto", None) if client else None
+        if crypto is None or not hasattr(crypto, "_fetch_keys"):
+            return
+        # Throttle: at most one refresh per room per interval.
+        now = time.monotonic()
+        last = self._device_refresh_ts.get(room_id, 0.0)
+        if now - last < self._device_refresh_interval:
+            return
+        try:
+            state_store = getattr(client, "state_store", None)
+            if state_store is not None and hasattr(state_store, "is_encrypted"):
+                if not await state_store.is_encrypted(RoomID(room_id)):
+                    self._device_refresh_ts[room_id] = now
+                    return
+            # Resolve member user IDs (state store first, API fallback).
+            members: list = []
+            if state_store is not None:
+                try:
+                    members = list(await state_store.get_members(RoomID(room_id)) or [])
+                except Exception:
+                    members = []
+            if not members and hasattr(client, "get_joined_members"):
+                try:
+                    members = list((await client.get_joined_members(RoomID(room_id))).keys())
+                except Exception:
+                    members = []
+            # Only refresh *other* users; our own device changes are handled
+            # by _verify_device_keys_on_server and the self-share path.
+            members = [m for m in members if m and m != self._user_id]
+            if not members:
+                self._device_refresh_ts[room_id] = now
+                return
+            # Hold the OlmMachine's fetch-keys lock (the same guard its own
+            # handle_device_lists uses) so this out-of-band query cannot race
+            # a sync-driven one — the spec allows one in-flight /keys/query
+            # per user. Degrade gracefully if a future mautrix renames it.
+            lock = getattr(crypto, "_fetch_keys_lock", None)
+            if lock is not None:
+                async with lock:
+                    await crypto._fetch_keys(members, include_untracked=True)
+            else:
+                await crypto._fetch_keys(members, include_untracked=True)
+            self._device_refresh_ts[room_id] = now
+            logger.debug(
+                "Matrix: refreshed device lists for %d member(s) of %s before encrypted send",
+                len(members),
+                room_id,
+            )
+        except Exception as exc:
+            # Never let a device-list refresh failure block sending.
+            logger.debug("Matrix: device-list refresh for %s failed: %s", room_id, exc)
+
+    async def _send_room_event(
+        self, room_id: str, event_type: Any, content: Any
+    ) -> Any:
+        """Send a room event through the shared encrypted-send chokepoint.
+
+        Every outbound event that mautrix may encrypt (text, media, edits,
+        reactions, emotes/notices) is routed through here so stale peer
+        device lists are refreshed — throttled, best-effort — before the
+        megolm session is (re-)shared. Returns the event ID like
+        ``Client.send_message_event``.
+        """
+        await self._refresh_encrypted_room_devices(str(room_id))
+        return await self._client.send_message_event(
+            RoomID(room_id),
+            event_type,
+            content,
+        )
+
     async def send(
         self,
         chat_id: str,
@@ -1598,8 +1711,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
             try:
                 event_id = await asyncio.wait_for(
-                    self._client.send_message_event(
-                        RoomID(chat_id),
+                    self._send_room_event(
+                        chat_id,
                         EventType.ROOM_MESSAGE,
                         msg_content,
                     ),
@@ -1613,8 +1726,8 @@ class MatrixAdapter(BasePlatformAdapter):
                     try:
                         await self._client.crypto.share_keys()
                         event_id = await asyncio.wait_for(
-                            self._client.send_message_event(
-                                RoomID(chat_id),
+                            self._send_room_event(
+                                chat_id,
                                 EventType.ROOM_MESSAGE,
                                 msg_content,
                             ),
@@ -1738,8 +1851,8 @@ class MatrixAdapter(BasePlatformAdapter):
         }
 
         try:
-            event_id = await self._client.send_message_event(
-                RoomID(chat_id),
+            event_id = await self._send_room_event(
+                chat_id,
                 EventType.ROOM_MESSAGE,
                 msg_content,
             )
@@ -2208,8 +2321,8 @@ class MatrixAdapter(BasePlatformAdapter):
         self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
 
         try:
-            event_id = await self._client.send_message_event(
-                RoomID(room_id),
+            event_id = await self._send_room_event(
+                room_id,
                 EventType.ROOM_MESSAGE,
                 msg_content,
             )
@@ -3121,8 +3234,8 @@ class MatrixAdapter(BasePlatformAdapter):
             }
         }
         try:
-            resp_event_id = await self._client.send_message_event(
-                RoomID(room_id),
+            resp_event_id = await self._send_room_event(
+                room_id,
                 EventType.REACTION,
                 content,
             )
@@ -3722,8 +3835,8 @@ class MatrixAdapter(BasePlatformAdapter):
         msg_content = self._build_text_message_content(text, msgtype=msgtype)
 
         try:
-            event_id = await self._client.send_message_event(
-                RoomID(chat_id),
+            event_id = await self._send_room_event(
+                chat_id,
                 EventType.ROOM_MESSAGE,
                 msg_content,
             )
@@ -4562,6 +4675,8 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
         os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
     if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
         os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
+    if "device_refresh_seconds" in matrix_cfg and not os.getenv("MATRIX_DEVICE_REFRESH_SECONDS"):
+        os.environ["MATRIX_DEVICE_REFRESH_SECONDS"] = str(matrix_cfg["device_refresh_seconds"])
     return None
 
 

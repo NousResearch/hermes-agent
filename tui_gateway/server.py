@@ -11339,6 +11339,7 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "moa",
         "undo",
         "learn",
+        "compress",
     }
 )
 
@@ -11923,6 +11924,49 @@ def _(rid, params: dict) -> dict:
                     ),
                 },
             )
+
+    if name == "compress":
+        if not session:
+            return _err(rid, 4001, "no active session to compress")
+        agent = session.get("agent")
+        if agent is None:
+            return _err(rid, 4001, "no agent built for session — send a message first")
+        try:
+            from agent.conversation_compression import compress_context
+            history = list(session.get("history", []))
+            if not history or len(history) < 4:
+                return _ok(
+                    rid,
+                    {"type": "exec", "output": "Not enough conversation history to compress (need at least 4 messages)."},
+                )
+            sys_msg = session.get("system_message", "")
+            with session.get("history_lock"):
+                compressed, new_sys = compress_context(
+                    agent, history, sys_msg, force=True, focus_topic=arg.strip() or None,
+                )
+            if len(compressed) == len(history):
+                return _ok(
+                    rid,
+                    {"type": "exec", "output": "Compression aborted — the auxiliary model could not produce a summary. Try again later."},
+                )
+            with session["history_lock"]:
+                session["history"] = list(compressed)
+                session["history_version"] = int(session.get("history_version", 0)) + 1
+            if new_sys:
+                session["system_message"] = new_sys
+            compressed_count = len(history) - len(compressed)
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": (
+                        f"Compressed context: removed {compressed_count} message(s), "
+                        f"kept {len(compressed)} message(s)."
+                    ),
+                },
+            )
+        except Exception as e:
+            return _err(rid, 5030, f"compress failed: {e}")
 
     return _err(rid, 4018, f"not a quick/plugin/skill command: {name}")
 

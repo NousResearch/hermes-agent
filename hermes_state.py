@@ -715,6 +715,16 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                # Detect pre-existing FTS5 virtual tables read-only (no DDL,
+                # no write lock) so cross-profile session_search — which opens
+                # these handles via _resolve_profile_db() — can actually query
+                # them instead of silently returning 0 results.  The tables
+                # were created by the owning profile's read-write SessionDB;
+                # here we only need to see them.
+                self._fts_enabled = self._fts_table_exists("messages_fts")
+                self._trigram_available = self._fts_table_exists(
+                    "messages_fts_trigram"
+                )
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)

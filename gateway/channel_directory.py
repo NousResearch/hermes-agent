@@ -210,21 +210,34 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
     # Platforms that don't support direct channel enumeration get session-based
-    # discovery automatically.  Skip infrastructure entries that aren't messaging
-    # platforms — everything else falls through to _build_from_sessions().
+    # discovery automatically, but only for platforms connected in THIS gateway
+    # process. Historical session origins for disabled/decommissioned platforms
+    # must not be resurrected into the active send-target directory (stale
+    # targets make send_message route to platforms that can no longer deliver).
     _SKIP_SESSION_DISCOVERY = frozenset({"local", "api_server", "webhook"})
+    adapter_platform_names = {getattr(p, "value", str(p)) for p in adapters}
     for plat in Platform:
         plat_name = plat.value
-        if plat_name in _SKIP_SESSION_DISCOVERY or plat_name in platforms:
+        if (
+            plat_name in _SKIP_SESSION_DISCOVERY
+            or plat_name in platforms
+            or plat_name not in adapter_platform_names
+        ):
             continue
         platforms[plat_name] = _build_from_sessions(plat_name)
 
     # Include plugin-registered platforms (dynamic enum members aren't in
-    # Platform.__members__, so the loop above misses them).
+    # Platform.__members__, so the loop above misses them). Same
+    # connected-only rule: don't expose stale session targets for plugins
+    # that are not loaded.
     try:
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
-            if entry.name not in _SKIP_SESSION_DISCOVERY and entry.name not in platforms:
+            if (
+                entry.name not in _SKIP_SESSION_DISCOVERY
+                and entry.name not in platforms
+                and entry.name in adapter_platform_names
+            ):
                 platforms[entry.name] = _build_from_sessions(entry.name)
     except Exception:
         pass

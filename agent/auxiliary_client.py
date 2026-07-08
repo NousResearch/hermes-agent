@@ -4454,7 +4454,15 @@ def resolve_provider_client(
     # return the actual current runtime model when the caller did not explicitly
     # request one. (# compression-current-model)
     if not model and provider != "auto":
-        model = _get_aux_model_for_provider(provider) or _read_main_model() or model
+        aux_model = _get_aux_model_for_provider(provider)
+        if aux_model:
+            model = aux_model
+        elif not is_vision:
+            # For non-vision tasks only: fall back to the main runtime model.
+            # Vision tasks must NOT inherit the text-only main model — doing so
+            # injects a text-only model into the vision provider's client, causing
+            # a 400 "Unexpected item type in content" on the first call (#57948).
+            model = _read_main_model() or model
 
     def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:
         """Decide if a plain OpenAI client should be wrapped for Responses API.

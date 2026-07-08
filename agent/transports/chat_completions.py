@@ -536,6 +536,31 @@ class ChatCompletionsTransport(ProviderTransport):
         )
         api_kwargs.update(top_level_from_profile)
 
+        # FPT Cloud MKP API quirks (mkp-api.fptcloud.jp)
+        # - glm-5.1: only stable model, must use reasoning_effort: 'none'
+        # - Qwen3.6-27B: forces reasoning ON, needs max_tokens >= 500
+        _fpt_base_url = params.get("base_url")
+        if _fpt_base_url and "mkp-api.fptcloud.jp" in str(_fpt_base_url):
+            _fpt_model = (model or "").strip().lower()
+            if "glm-5.1" in _fpt_model:
+                api_kwargs["reasoning_effort"] = "none"
+            if "qwen3.6-27b" in _fpt_model or "qwen3.6_27b" in _fpt_model:
+                _cur_max = api_kwargs.get("max_tokens")
+                if _cur_max is None or _cur_max < 500:
+                    api_kwargs["max_tokens"] = 500
+
+        # b.ai aggregator quirks (api.b.ai)
+        # - glm-5.2: forced reasoning, need higher max_tokens to get actual content
+        # - Reasoning models eat max_tokens for thinking, leaving nothing for output
+        _bai_base_url = params.get("base_url")
+        if _bai_base_url and "api.b.ai" in str(_bai_base_url):
+            _bai_model = (model or "").strip().lower()
+            if _bai_model in ("glm-5.2", "glm-5.1"):
+                # Ensure enough tokens for both reasoning + content
+                _cur_max = api_kwargs.get("max_tokens")
+                if _cur_max is None or _cur_max < 2000:
+                    api_kwargs["max_tokens"] = 2000
+
         # extra_body assembly
         extra_body: dict[str, Any] = {}
 

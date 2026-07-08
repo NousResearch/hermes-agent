@@ -1231,6 +1231,130 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             return None
 
+    async def _apply_model_override(
+        self, session_key: str, model_value: Any
+    ) -> Optional["web.Response"]:
+        """Apply or clear a per-session model override (PATCH helper).
+
+        Returns an error response on validation failure, or ``None`` on success.
+        """
+        from gateway.run import _gateway_runner_ref, _load_gateway_config
+
+        if model_value is None:
+            # Clear override
+            try:
+                runner = _gateway_runner_ref()
+                if runner is not None:
+                    runner._session_model_overrides.pop(session_key, None)
+                    try:
+                        runner.session_store.set_model_override(session_key, None)
+                    except Exception:
+                        pass
+                    if hasattr(runner, "_evict_cached_agent"):
+                        runner._evict_cached_agent(session_key)
+            except Exception:
+                pass
+            return None
+
+        if not isinstance(model_value, str) or not model_value.strip():
+            return web.json_response(
+                _openai_error("model must be a non-empty string or null", code="invalid_model"),
+                status=400,
+            )
+
+        # Resolve the model through the same switch_model pipeline as /model.
+        from hermes_cli.model_switch import switch_model as _switch_model
+
+        current_model = ""
+        current_provider = "openrouter"
+        current_base_url = ""
+        current_api_key = ""
+        user_provs = None
+        custom_provs = None
+        try:
+            cfg = _load_gateway_config()
+            if cfg:
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    current_model = model_cfg.get("default", "")
+                    current_provider = model_cfg.get("provider", current_provider)
+                    current_base_url = model_cfg.get("base_url", "")
+                user_provs = cfg.get("providers")
+                try:
+                    from hermes_cli.config import get_compatible_custom_providers
+                    custom_provs = get_compatible_custom_providers(cfg)
+                except Exception:
+                    custom_provs = cfg.get("custom_providers")
+        except Exception:
+            pass
+
+        # Honour existing override as current state (same as /model does).
+        existing = self._session_model_override_for(session_key)
+        if existing:
+            current_model = existing.get("model", current_model)
+            current_provider = existing.get("provider", current_provider)
+            current_base_url = existing.get("base_url", current_base_url)
+            current_api_key = existing.get("api_key", current_api_key)
+
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: _switch_model(
+                raw_input=model_value.strip(),
+                current_provider=current_provider,
+                current_model=current_model,
+                current_base_url=current_base_url,
+                current_api_key=current_api_key,
+                is_global=False,
+                explicit_provider="",
+                user_providers=user_provs,
+                custom_providers=custom_provs,
+            ),
+        )
+
+        if not result.success:
+            return web.json_response(
+                _openai_error(result.error_message, code="invalid_model"),
+                status=400,
+            )
+
+        override = {
+            "model": result.new_model,
+            "provider": result.target_provider,
+            "api_key": result.api_key,
+            "base_url": result.base_url,
+            "api_mode": result.api_mode,
+        }
+
+        try:
+            runner = _gateway_runner_ref()
+            if runner is not None:
+                runner._session_model_overrides[session_key] = override
+                try:
+                    runner.session_store.set_model_override(session_key, override)
+                except Exception:
+                    logger.debug("Failed to persist session model override", exc_info=True)
+                if hasattr(runner, "_evict_cached_agent"):
+                    runner._evict_cached_agent(session_key)
+        except Exception:
+            logger.debug("Failed to set session model override on runner", exc_info=True)
+
+        return None
+
+    def _session_runtime_fields(self, session_key: str) -> Dict[str, Any]:
+        """Return transient per-session runtime state for API responses.
+
+        Includes model_override (slug only, never credentials) and yolo status.
+        """
+        from tools.approval import is_session_yolo_enabled
+
+        override = self._session_model_override_for(session_key)
+        model_slug = override.get("model") if override else None
+        return {
+            "model_override": model_slug,
+            "yolo": is_session_yolo_enabled(session_key),
+        }
+
     def _create_agent(
         self,
         ephemeral_system_prompt: Optional[str] = None,
@@ -1762,16 +1886,26 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
-        session, err = self._get_existing_session_or_404(request.match_info["session_id"])
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
+        session_id = request.match_info["session_id"]
+        session, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
-        return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
+        session_key = gateway_session_key or session_id
+        resp = self._session_response(session)
+        resp.update(self._session_runtime_fields(session_key))
+        return web.json_response({"object": "hermes.session", "session": resp})
 
     async def _handle_patch_session(self, request: "web.Request") -> "web.Response":
         """PATCH /api/sessions/{session_id} — update client-safe session metadata."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
         session_id = request.match_info["session_id"]
         session, err = self._get_existing_session_or_404(session_id)
         if err:
@@ -1779,10 +1913,12 @@ class APIServerAdapter(BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
-        allowed = {"title", "end_reason"}
+        allowed = {"title", "end_reason", "model", "yolo"}
         unknown = sorted(set(body) - allowed)
         if unknown:
             return web.json_response(_openai_error(f"Unsupported session fields: {', '.join(unknown)}", code="unsupported_session_field"), status=400)
+
+        session_key = gateway_session_key or session_id
 
         db = self._ensure_session_db()
         if "title" in body:
@@ -1792,8 +1928,26 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response(_openai_error(str(exc), code="invalid_title"), status=400)
         if body.get("end_reason"):
             db.end_session(session_id, str(body["end_reason"]))
+
+        # --- model override ------------------------------------------------
+        if "model" in body:
+            model_err = await self._apply_model_override(session_key, body["model"])
+            if model_err is not None:
+                return model_err
+
+        # --- yolo (auto-approve) -------------------------------------------
+        if "yolo" in body:
+            from tools.approval import enable_session_yolo, disable_session_yolo
+
+            if body["yolo"]:
+                enable_session_yolo(session_key)
+            else:
+                disable_session_yolo(session_key)
+
         session = db.get_session(session_id) or session
-        return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
+        resp = self._session_response(session)
+        resp.update(self._session_runtime_fields(session_key))
+        return web.json_response({"object": "hermes.session", "session": resp})
 
     async def _handle_delete_session(self, request: "web.Request") -> "web.Response":
         """DELETE /api/sessions/{session_id}."""

@@ -1,5 +1,6 @@
 """Tests for the /voice command and auto voice reply in the gateway."""
 
+import asyncio
 import importlib.util
 import json
 import os
@@ -724,6 +725,47 @@ class TestVoiceReceiver:
         receiver._last_packet_time[100] = time.monotonic() - 3.0
         completed = receiver.check_silence()
         assert len(completed) == 0
+
+    def test_ffmpeg_resolver_finds_winget_install_when_not_on_path(self, monkeypatch, tmp_path):
+        """Windows winget installs ffmpeg outside PATH; Discord voice should still find it."""
+        from plugins.platforms.discord import ffmpeg_utils
+
+        ffmpeg = (
+            tmp_path
+            / "Microsoft"
+            / "WinGet"
+            / "Packages"
+            / "Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe"
+            / "ffmpeg-7.1-full_build"
+            / "bin"
+            / "ffmpeg.exe"
+        )
+        ffmpeg.parent.mkdir(parents=True)
+        ffmpeg.write_text("", encoding="utf-8")
+
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setattr(ffmpeg_utils.shutil, "which", lambda _cmd: None)
+
+        assert ffmpeg_utils.resolve_ffmpeg_executable() == str(ffmpeg)
+
+    def test_pcm_to_wav_uses_resolved_ffmpeg_executable(self, monkeypatch, tmp_path):
+        """Receiver conversion should use the same resolved executable as playback."""
+        from plugins.platforms.discord import adapter as discord_adapter
+        from plugins.platforms.discord.adapter import VoiceReceiver
+
+        calls = []
+        monkeypatch.setattr(discord_adapter, "resolve_ffmpeg_executable", lambda: r"C:\tools\ffmpeg.exe")
+
+        def fake_run(args, **kwargs):
+            calls.append((args, kwargs))
+
+        monkeypatch.setattr(discord_adapter.subprocess, "run", fake_run)
+
+        VoiceReceiver.pcm_to_wav(b"\x00\x00" * 100, str(tmp_path / "out.wav"))
+
+        assert calls
+        assert calls[0][0][0] == r"C:\tools\ffmpeg.exe"
 
     def test_stale_buffer_discarded(self):
         receiver = self._make_receiver()
@@ -2070,6 +2112,28 @@ class TestPlaybackTimeout:
         from plugins.platforms.discord.adapter import DiscordAdapter
         assert hasattr(DiscordAdapter, "PLAYBACK_TIMEOUT")
         assert DiscordAdapter.PLAYBACK_TIMEOUT > 0
+
+    def test_voice_playback_passes_resolved_ffmpeg_executable(self, monkeypatch):
+        """discord.py playback should receive the resolved ffmpeg path via executable=."""
+        from plugins.platforms.discord import adapter as discord_adapter
+
+        adapter = self._make_discord_adapter()
+
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.is_playing.return_value = False
+        mock_vc.play.side_effect = lambda _source, after=None: after and after(None)
+        adapter._voice_clients[111] = mock_vc
+        adapter._voice_timeout_tasks[111] = MagicMock()
+
+        monkeypatch.setattr(discord_adapter, "resolve_ffmpeg_executable", lambda: r"C:\tools\ffmpeg.exe")
+
+        with patch("discord.FFmpegPCMAudio") as ffmpeg_audio, \
+             patch("discord.PCMVolumeTransformer", side_effect=lambda source, **_kw: source):
+            result = asyncio.run(adapter.play_in_voice_channel(111, "/tmp/test.mp3"))
+
+        assert result is True
+        ffmpeg_audio.assert_called_once_with("/tmp/test.mp3", executable=r"C:\tools\ffmpeg.exe")
 
     @pytest.mark.asyncio
     async def test_playback_timeout_fires(self):

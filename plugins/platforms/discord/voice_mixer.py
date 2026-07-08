@@ -46,6 +46,11 @@ import logging
 import threading
 from typing import TYPE_CHECKING, List, Optional
 
+try:
+    from .ffmpeg_utils import resolve_ffmpeg_executable
+except ImportError:
+    from ffmpeg_utils import resolve_ffmpeg_executable
+
 if TYPE_CHECKING:  # numpy is an optional ("voice" extra) dep — never import at runtime top-level
     import numpy as np
 
@@ -311,7 +316,7 @@ def decode_to_pcm(path: str, *, timeout: float = 30.0) -> Optional[bytes]:
     try:
         proc = subprocess.run(
             [
-                "ffmpeg", "-y", "-loglevel", "error",
+                resolve_ffmpeg_executable(), "-y", "-loglevel", "error",
                 "-i", path,
                 "-f", "s16le",
                 "-ar", str(SAMPLE_RATE),

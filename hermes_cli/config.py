@@ -1729,6 +1729,13 @@ DEFAULT_CONFIG = {
     
     "display": {
         "compact": False,
+        # Max transcript messages kept in the TUI's in-memory history before
+        # the oldest are dropped (issue #55594, root cause #3). The renderer is
+        # virtualized (only ~MAX_MOUNTED items mount at once), so raising this
+        # grows the height-cache/estimate working set, not the DOM. Exposed as
+        # display.max_history so long sessions don't silently lose context.
+        # 2000 ~= 2.5x the historical 800 default.
+        "max_history": 2000,
         "personality": "",
         "resume_display": "full",
         # Recap tuning for /resume and startup resume. The defaults match the

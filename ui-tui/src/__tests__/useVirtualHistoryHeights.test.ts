@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { ensureVirtualItemHeight } from '../hooks/useVirtualHistory.js'
+import { ensureVirtualItemHeight, STICKY_SCROLL_COOLDOWN_MS } from '../hooks/useVirtualHistory.js'
 
 describe('ensureVirtualItemHeight', () => {
   it('reuses cached heights without invoking the estimator', () => {
@@ -35,5 +35,12 @@ describe('ensureVirtualItemHeight', () => {
 
     expect(ensureVirtualItemHeight(heights, 'd', 0, 0, estimateHeight)).toBe(1)
     expect(heights.get('d')).toBe(1)
+  })
+})
+
+describe('STICKY_SCROLL_COOLDOWN_MS', () => {
+  it('suppresses sticky scroll for the issue-recommended 2-3s window', () => {
+    expect(STICKY_SCROLL_COOLDOWN_MS).toBeGreaterThanOrEqual(2000)
+    expect(STICKY_SCROLL_COOLDOWN_MS).toBeLessThanOrEqual(3000)
   })
 })

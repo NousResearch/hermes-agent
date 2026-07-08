@@ -1983,7 +1983,16 @@ def detect_provider_for_model(
         return None
 
     # --- Step 2: check OpenRouter catalog ---
-    # First try exact match (handles provider/model format)
+    # Guard against custom endpoints — never auto-switch away from custom:* based on
+    # the live OpenRouter catalog. The user explicitly configured their own endpoint
+    # and the same model name may be served there (#48305).
+    is_custom_current = (
+        current_provider == "custom"
+        or current_provider.startswith("custom:")
+    )
+    if is_custom_current:
+        return None
+
     or_slug = _find_openrouter_slug(name)
     if or_slug:
         if current_provider != "openrouter":

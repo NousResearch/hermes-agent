@@ -340,14 +340,29 @@ def _sanitize_node(node: Any, path: str) -> Any:
     if out.get("type") == "object" and not isinstance(out.get("properties"), dict):
         out["properties"] = {}
 
+    # Guard against ``required: null`` — some strict OpenAI-compatible
+    # backends (e.g., Copilot proxying to Gemini, AWS Bedrock) reject
+    # ``null`` in place of an array with HTTP 400:
+    #   "null is not of type \"array\""
+    # JSON Schema treats absent ``required`` as ``[]``, so remove it.
+    if out.get("type") == "object" and "required" in out:
+        if not isinstance(out["required"], list):
+            out.pop("required", None)
+
     # Prune ``required`` entries that don't exist in properties (defense
     # against malformed MCP schemas; also caught upstream for MCP tools, but
     # built-in tools or plugin tools may not have been through that path).
+    # Preserve an empty ``required: []`` — some strict OpenAI-compatible
+    # backends reject a missing/absent ``required`` field as ``null is not of
+    # type 'array'``. (issue #59386)
     if out.get("type") == "object" and isinstance(out.get("required"), list):
         props = out.get("properties") or {}
         valid = [r for r in out["required"] if isinstance(r, str) and r in props]
         if not valid:
-            out.pop("required", None)
+            # Only pop if required was non-empty (malformed entries).
+            # An empty required list is valid and must be preserved.
+            if out["required"]:
+                out.pop("required", None)
         elif len(valid) != len(out["required"]):
             out["required"] = valid
 

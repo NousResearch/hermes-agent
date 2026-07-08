@@ -3335,6 +3335,7 @@ DELEGATE_TASK_SCHEMA = {
     ),
     "parameters": {
         "type": "object",
+        "additionalProperties": False,
         "properties": {
             "goal": {
                 "type": "string",
@@ -3356,6 +3357,7 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "array",
                 "items": {
                     "type": "object",
+                    "additionalProperties": False,
                     "properties": {
                         "goal": {"type": "string", "description": "Task goal"},
                         "context": {

@@ -4,6 +4,7 @@ Runs asynchronously after the first response is delivered so it never
 adds latency to the user-facing reply.
 """
 
+import contextlib
 import logging
 import threading
 from typing import Callable, Optional
@@ -125,61 +126,93 @@ def auto_title_session(
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
+    db_path: Optional[str] = None,
 ) -> None:
     """Generate and set a session title if one doesn't already exist.
 
     Called in a background thread after the first exchange completes.
     Silently skips if:
-    - session_db is None
+    - no database is available (neither ``session_db`` nor ``db_path``)
     - session already has a title (user-set or previously auto-generated)
     - title generation fails
+
+    When ``db_path`` is given, persist to *that* profile's ``state.db`` — the
+    session may live in a profile other than the backend's launch profile, and
+    a shared/global handle would ``set_session_title`` against the wrong DB,
+    updating 0 rows and silently dropping the title. This runs on a background
+    thread, so it opens (and owns) its own handle rather than borrowing a
+    caller handle that may have been closed by the time this executes.
     """
-    if not session_db or not session_id:
+    if not session_id:
         return
 
-    # Check if title already exists (user may have set one via /title before first response)
+    own_db = None
     try:
-        existing = session_db.get_session_title(session_id)
-        if existing:
-            return
-    except Exception:
-        return
+        if db_path is not None:
+            from pathlib import Path
 
-    # This runs on a bare daemon thread spawned AFTER the turn's ambient
-    # conversation context was reset, so publish it here from the session id
-    # we already hold — the title-generation LLM call then carries the same
-    # ``conversation=`` Portal tag as the turn it titles. Root-of-lineage for
-    # consistency with the agent loop (a no-op on first exchange, where
-    # titling happens, but correct if this ever runs on a continuation).
-    from agent.aux_accounting import set_accounting_context
-    from agent.portal_tags import set_conversation_context
+            from hermes_state import SessionDB
 
-    conversation_id = session_id
-    try:
-        conversation_id = session_db.get_conversation_root(session_id) or session_id
-    except Exception:
-        pass
-    set_conversation_context(conversation_id)
-    # Same for the accounting context, so the title call's token usage is
-    # recorded against this session (task='title_generation', #23270).
-    set_accounting_context(session_db, session_id)
-
-    title = generate_title(
-        user_message, assistant_response, failure_callback=failure_callback, main_runtime=main_runtime
-    )
-    if not title:
-        return
-
-    try:
-        session_db.set_session_title(session_id, title)
-        logger.debug("Auto-generated session title: %s", title)
-        if title_callback is not None:
             try:
-                title_callback(title)
+                own_db = SessionDB(db_path=Path(db_path))
             except Exception:
-                logger.debug("Auto-title callback failed", exc_info=True)
-    except Exception as e:
-        logger.debug("Failed to set auto-generated title: %s", e)
+                logger.debug("Auto-title: could not open profile db %s", db_path, exc_info=True)
+                return
+            db = own_db
+        else:
+            db = session_db
+        if not db:
+            return
+
+        # Check if title already exists (user may have set one via /title before first response)
+        try:
+            existing = db.get_session_title(session_id)
+            if existing:
+                return
+        except Exception:
+            return
+
+        # This runs on a bare daemon thread spawned AFTER the turn's ambient
+        # conversation context was reset, so publish it here from the session id
+        # we already hold — the title-generation LLM call then carries the same
+        # ``conversation=`` Portal tag as the turn it titles. Root-of-lineage for
+        # consistency with the agent loop (a no-op on first exchange, where
+        # titling happens, but correct if this ever runs on a continuation).
+        # Use the resolved ``db`` handle: when ``db_path`` routed us to the
+        # session's own profile DB, ``session_db`` is None here.
+        from agent.aux_accounting import set_accounting_context
+        from agent.portal_tags import set_conversation_context
+
+        conversation_id = session_id
+        try:
+            conversation_id = db.get_conversation_root(session_id) or session_id
+        except Exception:
+            pass
+        set_conversation_context(conversation_id)
+        # Same for the accounting context, so the title call's token usage is
+        # recorded against this session (task='title_generation', #23270).
+        set_accounting_context(db, session_id)
+
+        title = generate_title(
+            user_message, assistant_response, failure_callback=failure_callback, main_runtime=main_runtime
+        )
+        if not title:
+            return
+
+        try:
+            db.set_session_title(session_id, title)
+            logger.debug("Auto-generated session title: %s", title)
+            if title_callback is not None:
+                try:
+                    title_callback(title)
+                except Exception:
+                    logger.debug("Auto-title callback failed", exc_info=True)
+        except Exception as e:
+            logger.debug("Failed to set auto-generated title: %s", e)
+    finally:
+        if own_db is not None:
+            with contextlib.suppress(Exception):
+                own_db.close()
 
 
 def maybe_auto_title(
@@ -191,14 +224,19 @@ def maybe_auto_title(
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
+    db_path: Optional[str] = None,
 ) -> None:
     """Fire-and-forget title generation after the first exchange.
 
     Only generates a title when:
     - This appears to be the first user→assistant exchange
     - No title is already set
+
+    Pass ``db_path`` to persist into the session's own profile ``state.db``
+    instead of a shared/global handle (see :func:`auto_title_session`); either
+    ``session_db`` or ``db_path`` must resolve to a database.
     """
-    if not session_db or not session_id or not user_message or not assistant_response:
+    if not (session_db or db_path) or not session_id or not user_message or not assistant_response:
         return
 
     # Count user messages in history to detect first exchange.
@@ -216,6 +254,7 @@ def maybe_auto_title(
             "failure_callback": failure_callback,
             "main_runtime": main_runtime,
             "title_callback": title_callback,
+            "db_path": db_path,
         },
         daemon=True,
         name="auto-title",

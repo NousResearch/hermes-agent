@@ -1,5 +1,6 @@
 """Tests for agent.title_generator — auto-generated session titles."""
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 
@@ -256,6 +257,52 @@ class TestAutoTitleSession:
             auto_title_session(db, "sess-1", "hi", "hello")
             db.set_session_title.assert_not_called()
 
+    def test_db_path_persists_to_profile_db_and_closes_it(self):
+        """With db_path, open + own a handle to THAT profile db and title there, not session_db.
+
+        Regression: titling through a shared/launch-profile handle UPDATEs 0 rows for a session in
+        a different profile, silently dropping the title. The worker runs on a background thread, so
+        it must open its own handle (session_db may be None / a wrong-profile handle).
+        """
+        profile_db = MagicMock()
+        profile_db.get_session_title.return_value = None
+
+        with (
+            patch("hermes_state.SessionDB", return_value=profile_db) as ctor,
+            patch("agent.title_generator.generate_title", return_value="Profile Title"),
+        ):
+            auto_title_session(None, "sess-1", "hi", "hello", db_path="/x/profiles/b/state.db")
+
+        # SessionDB requires a Path (it does db_path.parent.mkdir), so a str db_path must be
+        # coerced — opening SessionDB with the raw str raises AttributeError and drops the title.
+        ctor.assert_called_once_with(db_path=Path("/x/profiles/b/state.db"))
+        profile_db.set_session_title.assert_called_once_with("sess-1", "Profile Title")
+        profile_db.close.assert_called_once()
+
+    def test_db_path_persists_to_a_real_session_db(self, tmp_path):
+        """End-to-end against a real SessionDB: a str db_path must actually persist the title.
+
+        The mocked test above can't catch a str-vs-Path mismatch inside SessionDB(...); this one
+        opens a real profile DB, so a regression where the title silently fails to persist is
+        caught here.
+        """
+        from hermes_state import SessionDB
+
+        db_path = tmp_path / "profiles" / "clientB" / "state.db"
+        db_path.parent.mkdir(parents=True)
+        setup = SessionDB(db_path=db_path)
+        setup.create_session("sess-real", "tui")  # messaged session, no title yet
+        setup.close()
+
+        with patch("agent.title_generator.generate_title", return_value="Real Persisted Title"):
+            auto_title_session(None, "sess-real", "hi", "hello", db_path=str(db_path))
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened.get_session_title("sess-real") == "Real Persisted Title"
+        finally:
+            reopened.close()
+
 
 class TestMaybeAutoTitle:
     """Tests for maybe_auto_title() — the fire-and-forget entry point."""
@@ -301,6 +348,7 @@ class TestMaybeAutoTitle:
                 failure_callback=None,
                 main_runtime=None,
                 title_callback=None,
+                db_path=None,
             )
 
     def test_forwards_failure_callback_to_worker(self):
@@ -327,6 +375,7 @@ class TestMaybeAutoTitle:
                 failure_callback=_cb,
                 main_runtime=None,
                 title_callback=None,
+                db_path=None,
             )
 
     def test_skips_if_no_response(self):
@@ -335,3 +384,26 @@ class TestMaybeAutoTitle:
 
     def test_skips_if_no_session_db(self):
         maybe_auto_title(None, "sess-1", "hello", "response", [])  # no db
+
+    def test_forwards_db_path_and_fires_without_session_db(self):
+        """db_path must reach the worker, and a None session_db must still fire when db_path is set."""
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(
+                None, "sess-1", "hello", "hi there", history, db_path="/x/profiles/b/state.db"
+            )
+            import time
+            time.sleep(0.3)
+            mock_auto.assert_called_once_with(
+                None,
+                "sess-1",
+                "hello",
+                "hi there",
+                failure_callback=None,
+                main_runtime=None,
+                title_callback=None,
+                db_path="/x/profiles/b/state.db",
+            )

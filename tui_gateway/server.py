@@ -9368,12 +9368,21 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     from agent.title_generator import maybe_auto_title
 
                     _title_key = session.get("session_key") or sid
+                    # Persist the title into the session's OWN profile DB. This turn may be running
+                    # on a backend whose _get_db() is a DIFFERENT profile, so titling through it would
+                    # UPDATE 0 rows and drop the title. Pass the profile's state.db path so the async
+                    # titler opens its own handle to the right DB (None → the shared launch DB).
+                    _title_profile_home = session.get("profile_home")
+                    _title_db_path = (
+                        str(Path(_title_profile_home) / "state.db") if _title_profile_home else None
+                    )
                     maybe_auto_title(
-                        _get_db(),
+                        _get_db() if _title_db_path is None else None,
                         _title_key,
                         text,
                         raw,
                         session.get("history", []),
+                        db_path=_title_db_path,
                         # Push the generated title live so the sidebar renames
                         # without waiting for the next list refresh (the titler
                         # runs async, after this turn's refresh already fired).

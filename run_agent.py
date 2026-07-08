@@ -1552,6 +1552,7 @@ class AIAgent:
         _MEMORY_REVIEW_PROMPT,
         _SKILL_REVIEW_PROMPT,
         _COMBINED_REVIEW_PROMPT,
+        _MEMORY_DISABLED_REVIEW_PROMPT,
     )
 
     @staticmethod

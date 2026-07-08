@@ -15,6 +15,7 @@ snapshot the full prompt text (change-detector).
 """
 
 from run_agent import AIAgent
+from agent.background_review import spawn_background_review_thread
 
 
 # ---------------------------------------------------------------------------
@@ -233,3 +234,54 @@ def test_memory_review_prompt_still_focused_on_user_facts():
     assert "skills_list" not in prompt
     assert "SURVEY" not in prompt
     assert "memory tool" in prompt
+
+
+def test_memory_disabled_combined_review_uses_skill_prompt_only():
+    """Do not instruct a memory-disabled review fork to call a hidden memory tool."""
+    agent = AIAgent.__new__(AIAgent)
+    agent._memory_enabled = False
+    agent._user_profile_enabled = False
+
+    _target, prompt = spawn_background_review_thread(
+        agent,
+        messages_snapshot=[],
+        review_memory=True,
+        review_skills=True,
+    )
+
+    assert prompt == AIAgent._SKILL_REVIEW_PROMPT
+    assert "**Memory**" not in prompt
+
+
+def test_memory_disabled_memory_only_review_gets_noop_prompt():
+    """A memory-only trigger with memory disabled should not ask for a tool call."""
+    agent = AIAgent.__new__(AIAgent)
+    agent._memory_enabled = False
+    agent._user_profile_enabled = False
+
+    _target, prompt = spawn_background_review_thread(
+        agent,
+        messages_snapshot=[],
+        review_memory=True,
+        review_skills=False,
+    )
+
+    assert "memory is disabled" in prompt
+    assert "no memory write tool is available" in prompt
+    assert "Nothing to save." in prompt
+
+
+def test_user_profile_enabled_keeps_memory_review_prompt_available():
+    """USER.md/profile memory still uses the memory prompt even if memory_enabled is false."""
+    agent = AIAgent.__new__(AIAgent)
+    agent._memory_enabled = False
+    agent._user_profile_enabled = True
+
+    _target, prompt = spawn_background_review_thread(
+        agent,
+        messages_snapshot=[],
+        review_memory=True,
+        review_skills=False,
+    )
+
+    assert prompt == AIAgent._MEMORY_REVIEW_PROMPT

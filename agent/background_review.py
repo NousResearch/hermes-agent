@@ -358,6 +358,42 @@ _COMBINED_REVIEW_PROMPT = (
     "and stop — but don't reach for that conclusion as a default."
 )
 
+_MEMORY_DISABLED_REVIEW_PROMPT = (
+    "Review the conversation above for durable memory-worthy facts, but built-in "
+    "memory is disabled for this profile and no memory write tool is available. "
+    "Do not try to save memory. Just say 'Nothing to save.' and stop."
+)
+
+
+def _memory_review_available(agent: Any) -> bool:
+    return bool(
+        getattr(agent, "_memory_enabled", False)
+        or getattr(agent, "_user_profile_enabled", False)
+    )
+
+
+def _select_review_prompt(
+    agent: Any,
+    *,
+    review_memory: bool,
+    review_skills: bool,
+) -> str:
+    memory_available = _memory_review_available(agent)
+    effective_review_memory = review_memory and memory_available
+
+    if effective_review_memory and review_skills:
+        return getattr(agent, "_COMBINED_REVIEW_PROMPT", _COMBINED_REVIEW_PROMPT)
+    if effective_review_memory:
+        return getattr(agent, "_MEMORY_REVIEW_PROMPT", _MEMORY_REVIEW_PROMPT)
+    if review_skills:
+        return getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
+    if review_memory:
+        return getattr(
+            agent,
+            "_MEMORY_DISABLED_REVIEW_PROMPT",
+            _MEMORY_DISABLED_REVIEW_PROMPT,
+        )
+    return getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
 
 
 def summarize_background_review_actions(
@@ -934,15 +970,14 @@ def spawn_background_review_thread(
     owns the actual ``threading.Thread`` construction so test-level patches
     of ``run_agent.threading.Thread`` keep working.
     """
-    # Pick the right prompt based on which triggers fired.  Allow per-agent
-    # override (the prompts moved to module-level constants but old code paths
-    # that set agent._MEMORY_REVIEW_PROMPT etc. directly keep working).
-    if review_memory and review_skills:
-        prompt = getattr(agent, "_COMBINED_REVIEW_PROMPT", _COMBINED_REVIEW_PROMPT)
-    elif review_memory:
-        prompt = getattr(agent, "_MEMORY_REVIEW_PROMPT", _MEMORY_REVIEW_PROMPT)
-    else:
-        prompt = getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
+    # Pick the right prompt based on which triggers fired and which tools are
+    # actually available to the fork. Per-agent prompt overrides are preserved
+    # for back-compat with older code paths that set prompt attributes directly.
+    prompt = _select_review_prompt(
+        agent,
+        review_memory=review_memory,
+        review_skills=review_skills,
+    )
 
     def _target() -> None:
         _run_review_in_thread(agent, messages_snapshot, prompt)
@@ -954,6 +989,7 @@ __all__ = [
     "_MEMORY_REVIEW_PROMPT",
     "_SKILL_REVIEW_PROMPT",
     "_COMBINED_REVIEW_PROMPT",
+    "_MEMORY_DISABLED_REVIEW_PROMPT",
     "spawn_background_review_thread",
     "summarize_background_review_actions",
     "build_memory_write_metadata",

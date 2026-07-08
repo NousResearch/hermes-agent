@@ -1202,7 +1202,15 @@ async def handle_drive_comment_event(
     comment_task = asyncio.ensure_future(
         batch_query_comment(client, file_token, file_type, comment_id)
     )
-    doc_meta, comment_detail = await asyncio.gather(meta_task, comment_task)
+    doc_results = await asyncio.gather(
+        meta_task, comment_task, return_exceptions=True,
+    )
+    doc_meta = {} if isinstance(doc_results[0], BaseException) else doc_results[0]
+    comment_detail = {} if isinstance(doc_results[1], BaseException) else doc_results[1]
+    if isinstance(doc_results[0], BaseException):
+        logger.warning("[Feishu-Comment] Failed to fetch doc meta: %s", doc_results[0])
+    if isinstance(doc_results[1], BaseException):
+        logger.warning("[Feishu-Comment] Failed to fetch comment detail: %s", doc_results[1])
 
     doc_title = doc_meta.get("title", "Untitled")
     doc_url = doc_meta.get("url", "")

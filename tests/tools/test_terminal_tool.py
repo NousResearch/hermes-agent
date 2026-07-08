@@ -3,12 +3,22 @@
 import tools.terminal_tool as terminal_tool
 
 
-def setup_function():
+def _reset_test_state():
     terminal_tool._reset_cached_sudo_passwords()
+    try:
+        from gateway.session_context import reset_session_vars
+
+        reset_session_vars()
+    except Exception:
+        pass
+
+
+def setup_function():
+    _reset_test_state()
 
 
 def teardown_function():
-    terminal_tool._reset_cached_sudo_passwords()
+    _reset_test_state()
 
 
 def test_searching_for_sudo_does_not_trigger_rewrite(monkeypatch):

@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
 
+import pytest
+
 import tools.approval as approval_module
 from hermes_constants import get_hermes_home
 from tools.approval import (
@@ -1533,11 +1535,12 @@ class TestGitDestructiveOps:
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
 
-    def test_safe_git_push_not_flagged(self):
-        """Normal push without --force must not be flagged."""
+    def test_git_push_requires_approval(self):
+        """Normal push mutates remote repository state and must be approved."""
         cmd = "git push origin main"
-        dangerous, _, _ = detect_dangerous_command(cmd)
-        assert dangerous is False
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "remote repository" in desc.lower()
 
     def test_git_branch_lowercase_d_also_flagged(self):
         """git branch -d triggers approval too — IGNORECASE is global.
@@ -1576,6 +1579,79 @@ class TestGitDestructiveOps:
         cmd = "git branch --delete feature-branch"
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
+
+
+class TestRemoteMutationApproval:
+    @pytest.mark.parametrize(
+        ("command", "needle"),
+        [
+            ("gh pr merge 60 --squash --delete-branch", "pr merge"),
+            ("gh api -X DELETE repos/o/r/git/refs/heads/main", "api mutating"),
+            ("gh api --method PATCH repos/o/r/issues/1 -f title=x", "api mutating"),
+            (
+                "gh api graphql -f query='mutation { resolveReviewThread(input:{threadId:\"x\"}) { clientMutationId } }'",
+                "graphql mutation",
+            ),
+            ("gh release create v1.2.3 dist/app.zip", "release mutation"),
+            ("gh repo delete owner/repo --yes", "repository mutation"),
+            ("git push origin main", "remote repository"),
+            ("git push --force-with-lease origin main", "force"),
+            ("git push origin --delete feature", "delete remote ref"),
+            ("git push origin :feature", "delete remote ref"),
+        ],
+    )
+    def test_remote_mutation_commands_require_approval(self, command, needle):
+        dangerous, key, desc = detect_dangerous_command(command)
+        assert dangerous is True
+        assert key is not None
+        assert needle in desc.lower()
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr view 60 --json title",
+            "gh api repos/o/r",
+            "gh api -X GET repos/o/r",
+            "git status",
+            "git fetch origin main",
+            "git push --dry-run origin main",
+        ],
+    )
+    def test_read_only_or_dry_run_repository_commands_stay_safe(self, command):
+        dangerous, key, desc = detect_dangerous_command(command)
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_git_push_comment_dry_run_does_not_bypass_detection(self):
+        dangerous, _, desc = detect_dangerous_command(
+            "git push origin main # --dry-run appears only in a comment"
+        )
+        assert dangerous is True
+        assert "remote repository" in desc.lower()
+
+    def test_remote_mutation_fails_closed_without_approval_surface(self, monkeypatch):
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+
+        session_key = "remote-mutation-no-surface-test"
+        token = approval_module.set_current_session_key(session_key)
+        try:
+            approval_module.disable_session_yolo(session_key)
+            result = approval_module.check_all_command_guards(
+                "gh pr merge 60 --squash --delete-branch",
+                "local",
+            )
+        finally:
+            approval_module.reset_current_session_key(token)
+
+        assert result["approved"] is False
+        assert result["outcome"] == "blocked"
+        assert result["user_consent"] is False
+        assert "Remote repository mutation" in result["message"]
 
 
 class TestChmodExecuteCombo:

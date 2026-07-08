@@ -584,6 +584,17 @@ DANGEROUS_PATTERNS = [
     (r'\bkillall\s+(-[^\s]*\s+)*-s\s+(KILL|SIGKILL|9)\b', "force kill processes (killall -s KILL)"),
     (r'\bkillall\s+(-[^\s]*\s+)*-r\b', "kill processes by regex (killall -r)"),
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
+    # Remote repository mutations: these change shared GitHub/git state outside
+    # the local workspace, so an autonomous agent must obtain human approval
+    # before running them. Keep these before the generic shell/script execution
+    # patterns so embedded `bash -c 'gh pr merge ...'` reports the remote action.
+    (r'\bgh\s+pr\s+merge\b', "GitHub PR merge (remote repository mutation)"),
+    (r'\bgh\s+repo\s+(?:delete|archive|transfer|rename|edit)\b', "GitHub repository mutation"),
+    (r'\bgh\s+release\s+(?:create|delete|upload|edit)\b', "GitHub release mutation"),
+    (r'\bgh\s+api\b[^;|&\n#]*?(?:-X|--method)(?:=|\s+)?(?:POST|PUT|PATCH|DELETE)\b',
+     "GitHub API mutating request"),
+    (r'\bgh\s+api\b[^;|&\n#]*?\bgraphql\b[^;|&\n#]*?\bmutation\b',
+     "GitHub API GraphQL mutation"),
     # Any shell invocation via -c or combined flags like -lc, -ic, etc.
     (r'\b(bash|sh|zsh|ksh)\s+-[^\s]*c(\s+|$)', "shell command via -c/-lc flag"),
     (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
@@ -713,6 +724,10 @@ DANGEROUS_PATTERNS = [
     (r'\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
     (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
     (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    (r'\bgit\s+push\b(?![^;|&\n#]*--dry-run\b)[^;|&\n]*(?:--delete\b|\s:[^\s;|&\n]+)',
+     "git push delete remote ref"),
+    (r'\bgit\s+push\b(?![^;|&\n#]*--dry-run\b)',
+     "git push (remote repository mutation)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
     # `-D` is shorthand for `-d --force`; the long-flag spellings
@@ -756,6 +771,33 @@ DANGEROUS_PATTERNS = [
     (r'\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b',
      "sudo with combined-flag privilege escalation"),
 ]
+
+
+REMOTE_REPOSITORY_MUTATION_PATTERN_KEYS = frozenset({
+    "GitHub PR merge (remote repository mutation)",
+    "GitHub repository mutation",
+    "GitHub release mutation",
+    "GitHub API mutating request",
+    "GitHub API GraphQL mutation",
+    "git push (remote repository mutation)",
+    "git push delete remote ref",
+    "git force push (rewrites remote history)",
+    "git force push short flag (rewrites remote history)",
+})
+
+
+def _requires_human_for_remote_repository_mutation(pattern_key: str | None) -> bool:
+    """Return True for command patterns that mutate shared repository state."""
+    return bool(pattern_key in REMOTE_REPOSITORY_MUTATION_PATTERN_KEYS)
+
+
+def _remote_repository_mutation_no_human_message(description: str | None) -> str:
+    return (
+        f"BLOCKED: Remote repository mutation requires human approval ({description}) "
+        "but no interactive user or gateway is present to approve it. "
+        "Do not merge pull requests, push refs, mutate releases, or call mutating "
+        "GitHub APIs from an unattended session."
+    )
 
 
 # Pre-compiled variant (same rationale as HARDLINE_PATTERNS_COMPILED above).
@@ -2280,6 +2322,7 @@ def check_dangerous_command(command: str, env_type: str,
     if not is_dangerous:
         return {"approved": True, "message": None}
 
+    requires_human = _requires_human_for_remote_repository_mutation(pattern_key)
     return _run_approval_gate(
         pattern_key=pattern_key,
         description=description,
@@ -2294,6 +2337,11 @@ def check_dangerous_command(command: str, env_type: str,
         ),
         autoapprove_log_prefix=(
             "AUTO-APPROVED dangerous command in non-interactive non-gateway context"
+        ),
+        fail_closed_when_no_human=requires_human,
+        no_human_block_message=(
+            _remote_repository_mutation_no_human_message(description)
+            if requires_human else ""
         ),
     )
 
@@ -2594,15 +2642,16 @@ def check_all_command_guards(command: str, env_type: str,
     is_cli = _is_interactive_cli()
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
+    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    requires_human = _requires_human_for_remote_repository_mutation(pattern_key)
 
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
-    # flows, we do not block on approvals and we skip external guard work.
+    # flows, we do not block on approvals and we skip external guard work,
+    # except for remote repository mutations where silence cannot be consent.
     if not is_cli and not is_gateway and not is_ask:
         # Cron sessions: respect cron_mode config
         if env_var_enabled("HERMES_CRON_SESSION"):
             if _get_cron_approval_mode() == "deny":
-                # Run detection to get a description for the block message
-                is_dangerous, _pk, description = detect_dangerous_command(command)
                 if is_dangerous:
                     return {
                         "approved": False,
@@ -2661,6 +2710,20 @@ def check_all_command_guards(command: str, env_type: str,
                             ),
                         }
                     # else: tirith_fail_open is True — allow as before
+        elif requires_human:
+            logger.warning(
+                "BLOCKED remote repository mutation in non-interactive "
+                "non-gateway context (pattern: %s): %s",
+                pattern_key, command[:200],
+            )
+            return {
+                "approved": False,
+                "message": _remote_repository_mutation_no_human_message(description),
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "blocked",
+                "user_consent": False,
+            }
         return {"approved": True, "message": None}
 
     # --- Phase 1: Gather findings from both checks ---
@@ -2707,9 +2770,6 @@ def check_all_command_guards(command: str, env_type: str,
             }
         # else: tirith_fail_open is True — allow as before (tirith_result stays "allow")
 
-    # Dangerous command check (detection only, no approval)
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
-
     # --- Phase 2: Decide ---
 
     # Collect warnings that need approval
@@ -2741,7 +2801,11 @@ def check_all_command_guards(command: str, env_type: str,
     # When approvals.mode=smart, ask the aux LLM before prompting the user.
     # Inspired by OpenAI Codex's Smart Approvals guardian subagent
     # (openai/codex#13860).
-    if approval_mode == "smart":
+    requires_explicit_human = any(
+        _requires_human_for_remote_repository_mutation(key)
+        for key, _, _ in warnings
+    )
+    if approval_mode == "smart" and not requires_explicit_human:
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
         verdict = _smart_approve(command, combined_desc_for_llm)
         if verdict == "approve":
@@ -2962,19 +3026,32 @@ def check_execute_code_guard(code: str, env_type: str,
     contract as ``check_all_command_guards``.
 
     Scope (documented limitation, #30882): in a purely local non-interactive
-    non-gateway session (no TTY, not gateway, not cron-deny) this returns
-    approved — matching the existing terminal auto-approve contract. The
-    hardline floor still blocks catastrophic ``terminal()`` commands the script
-    issues; running arbitrary code headlessly without any approval surface is
-    trusted-by-config (set a gateway/ask surface or ``approvals.cron_mode`` to
-    require approval).
+    non-gateway session (no TTY, not gateway, not cron-deny) benign scripts
+    return approved — matching the existing terminal auto-approve contract.
+    Remote repository mutations are the exception: they fail closed without a
+    human approval surface because they alter shared state outside the local
+    workspace. The hardline floor still blocks catastrophic ``terminal()``
+    commands the script issues; running arbitrary code headlessly without any
+    approval surface is otherwise trusted-by-config (set a gateway/ask surface
+    or ``approvals.cron_mode`` to require approval).
     """
-    pattern_key = "execute_code"
-    description = (
+    execute_code_pattern_key = "execute_code"
+    execute_code_description = (
         "execute_code script execution. The script can spawn subprocesses or "
         "mutate files without passing through terminal command approval; "
         "approval is one-shot for this run."
     )
+    _script_is_dangerous, script_pattern_key, script_description = detect_dangerous_command(code)
+    script_requires_human = _requires_human_for_remote_repository_mutation(script_pattern_key)
+    if script_requires_human:
+        pattern_key = script_pattern_key
+        description = (
+            f"{script_description} embedded in execute_code script. "
+            f"{execute_code_description}"
+        )
+    else:
+        pattern_key = execute_code_pattern_key
+        description = execute_code_description
 
     # Isolated backends already sandbox the child — matches the container skip
     # in check_all_command_guards / check_dangerous_command. Docker stops
@@ -3019,6 +3096,15 @@ def check_execute_code_guard(code: str, env_type: str,
     #     prompt would fire on every execute_code call.
     #   * Local non-interactive non-gateway: documented limitation above.
     if not is_gateway and not is_ask:
+        if script_requires_human:
+            return {
+                "approved": False,
+                "message": _remote_repository_mutation_no_human_message(description),
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "blocked",
+                "user_consent": False,
+            }
         return {"approved": True, "message": None}
 
     session_key = get_current_session_key()
@@ -3046,7 +3132,7 @@ def check_execute_code_guard(code: str, env_type: str,
     # Smart mode: ask the aux LLM about the whole script. An APPROVE here only
     # suppresses the redundant whole-script prompt; the per-call terminal()
     # guards (restored by context propagation) still run independently.
-    if approval_mode == "smart":
+    if approval_mode == "smart" and not script_requires_human:
         verdict = _smart_approve(command, description)
         if verdict == "approve":
             logger.debug("Smart approval: auto-approved execute_code for session %s",

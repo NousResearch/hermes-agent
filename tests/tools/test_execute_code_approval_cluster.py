@@ -157,6 +157,44 @@ def test_guard_headless_local_approved(monkeypatch):
     assert A.check_execute_code_guard("import os", "local")["approved"] is True
 
 
+def test_guard_headless_local_blocks_embedded_remote_mutation(monkeypatch):
+    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+    monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+    monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
+
+    res = A.check_execute_code_guard(
+        'from hermes_tools import terminal\n'
+        'terminal("gh pr merge 60 --squash --delete-branch")',
+        "local",
+    )
+
+    assert res["approved"] is False
+    assert res["outcome"] == "blocked"
+    assert res["user_consent"] is False
+    assert "Remote repository mutation" in res["message"]
+
+
+def test_guard_execute_code_session_approval_does_not_cover_remote_mutation(gw_session):
+    A.approve_session(gw_session, "execute_code")
+    try:
+        _register_resolver(gw_session, "deny")
+        res = A.check_execute_code_guard(
+            'import subprocess\n'
+            'subprocess.run("gh pr merge 60 --squash --delete-branch", shell=True)',
+            "local",
+        )
+    finally:
+        with A._lock:
+            A._session_approved.get(gw_session, set()).discard("execute_code")
+
+    assert res["approved"] is False
+    assert res["outcome"] == "denied"
+    assert res["user_consent"] is False
+    assert "remote repository mutation" in res["description"].lower()
+
+
 def test_guard_cron_deny_blocks(monkeypatch):
     monkeypatch.setenv("HERMES_CRON_SESSION", "1")
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)

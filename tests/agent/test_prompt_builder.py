@@ -569,6 +569,28 @@ class TestBuildSkillsSystemPrompt:
         second = build_skills_system_prompt()
         assert "cached-skill" not in second
 
+    def test_rebuilds_prompt_when_skill_files_change(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        first_skill = tmp_path / "skills" / "tools" / "first-skill"
+        first_skill.mkdir(parents=True)
+        (first_skill / "SKILL.md").write_text(
+            "---\nname: first-skill\ndescription: First skill\n---\n"
+        )
+
+        first = build_skills_system_prompt()
+        assert "first-skill" in first
+        assert "second-skill" not in first
+
+        second_skill = tmp_path / "skills" / "tools" / "second-skill"
+        second_skill.mkdir(parents=True)
+        (second_skill / "SKILL.md").write_text(
+            "---\nname: second-skill\ndescription: Second skill\n---\n"
+        )
+
+        second = build_skills_system_prompt()
+        assert "first-skill" in second
+        assert "second-skill" in second
+
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("MISSING_API_KEY_XYZ", raising=False)

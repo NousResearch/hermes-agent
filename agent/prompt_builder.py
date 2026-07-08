@@ -5,6 +5,7 @@ assemble pieces, then combines them with memory and ephemeral prompts.
 """
 
 import json
+import hashlib
 import logging
 import os
 import threading
@@ -1286,6 +1287,22 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
     return manifest
 
 
+def _skills_manifest_digest(skills_dir: Path) -> str:
+    """Return a stable digest of one skills directory's manifest."""
+    manifest = _build_skills_manifest(skills_dir)
+    payload = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _skills_cache_state(skills_dir: Path, external_dirs: list[Path]) -> tuple[tuple[str, str], ...]:
+    """Return cache state tokens for local + external skill directories."""
+    dirs = [skills_dir, *external_dirs]
+    return tuple(
+        (str(directory.resolve()), _skills_manifest_digest(directory))
+        for directory in dirs
+    )
+
+
 def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
     """Load the disk snapshot if it exists and its manifest still matches."""
     snapshot_path = _skills_prompt_snapshot_path()
@@ -1457,7 +1474,7 @@ def build_skills_system_prompt(
     disabled = get_disabled_skill_names(_platform_hint or None)
     cache_key = (
         str(skills_dir.resolve()),
-        tuple(str(d) for d in external_dirs),
+        _skills_cache_state(skills_dir, external_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,

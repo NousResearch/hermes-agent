@@ -115,6 +115,19 @@ export function imageFilenameFromPath(filePath: string): string {
   return filePath.split(/[\\/]/).filter(Boolean).pop() || 'image.png'
 }
 
+export function imagePayloadFromDataUrl(
+  dataUrl: string | null | undefined,
+  filename = 'image.png'
+): { contentBase64: string; filename: string } | null {
+  if (!dataUrl || !/^data:image\/[\w.+-]+;base64,/i.test(dataUrl)) {
+    return null
+  }
+
+  const contentBase64 = base64FromDataUrl(dataUrl)
+
+  return contentBase64 ? { contentBase64, filename } : null
+}
+
 // Remote gateway: the local composer-image file lives on THIS machine's disk,
 // not the gateway's, so read the bytes here and upload them via
 // image.attach_bytes. Returns null when the file can't be read.

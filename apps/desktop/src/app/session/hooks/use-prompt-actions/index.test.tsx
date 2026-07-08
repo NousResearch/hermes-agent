@@ -1316,6 +1316,54 @@ describe('usePromptActions sleep/wake session recovery', () => {
   })
 })
 
+
+describe('usePromptActions submit pasted screenshot attachments', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    $connection.set(null)
+    $composerAttachments.set([])
+  })
+
+  it('uploads a pathless pasted screenshot data URL before prompt.submit', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'image.attach_bytes') {
+        return {
+          attached: true,
+          path: '/tmp/hermes/images/upload_20260708_120000_1.png'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    const attachment: ComposerAttachment = {
+      id: 'image:pasted',
+      kind: 'image',
+      label: 'pasted-screenshot.png',
+      previewUrl: 'data:image/png;base64,aGVsbG8='
+    }
+
+    const ok = await handle!.submitText('describe this', { attachments: [attachment] })
+
+    expect(ok).toBe(true)
+    expect(calls.map(c => c.method)).toEqual(['image.attach_bytes', 'prompt.submit'])
+    expect(calls[0]?.params).toEqual({
+      session_id: RUNTIME_SESSION_ID,
+      content_base64: 'aGVsbG8=',
+      filename: 'pasted-screenshot.png'
+    })
+    expect(calls[1]?.params).toEqual({ session_id: RUNTIME_SESSION_ID, text: 'describe this' })
+  })
+})
+
 describe('usePromptActions eager attachment upload (drop-time)', () => {
   afterEach(() => {
     cleanup()
@@ -1419,6 +1467,45 @@ describe('usePromptActions eager attachment upload (drop-time)', () => {
 describe('uploadComposerAttachment remote read failures', () => {
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+
+  it('uploads an in-memory pasted screenshot data URL without reading a disk path', async () => {
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach_bytes') {
+        return { attached: true, path: '/tmp/hermes/images/upload_1.png' } as never
+      }
+
+      return {} as never
+    })
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        readFileDataUrl: vi.fn(async () => {
+          throw new Error('should not read disk for pathless pasted screenshots')
+        })
+      }
+    })
+
+    const uploaded = await uploadComposerAttachment(
+      {
+        id: 'image:pasted',
+        kind: 'image',
+        label: 'pasted-screenshot.png',
+        previewUrl: 'data:image/png;base64,aGVsbG8='
+      },
+      { remote: false, requestGateway, sessionId: RUNTIME_SESSION_ID }
+    )
+
+    expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', {
+      session_id: RUNTIME_SESSION_ID,
+      content_base64: 'aGVsbG8=',
+      filename: 'pasted-screenshot.png'
+    })
+    expect(window.hermesDesktop.readFileDataUrl).not.toHaveBeenCalled()
+    expect(uploaded.path).toBe('/tmp/hermes/images/upload_1.png')
+    expect(uploaded.attachedSessionId).toBe(RUNTIME_SESSION_ID)
   })
 
   it('turns the raw 16MB IPC cap error into a friendly remote-gateway message', async () => {

@@ -4,6 +4,7 @@ import { $connection } from '@/store/session'
 
 import {
   attachmentPreviewDataUrl,
+  createImageAttachmentFromBlob,
   type DroppedFile,
   extractDroppedFiles,
   HERMES_PATHS_MIME,
@@ -242,5 +243,28 @@ describe('attachmentPreviewDataUrl', () => {
     $connection.set({ mode: 'remote' } as never)
 
     await expect(attachmentPreviewDataUrl('/home/gateway/shot.png')).resolves.toBe(REMOTE_PREVIEW)
+  })
+})
+
+
+describe('createImageAttachmentFromBlob', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps pasted screenshots in memory instead of requiring saveImageBuffer disk staging', async () => {
+    const saveImageBuffer = vi.fn(async () => {
+      throw new Error('disk write unavailable')
+    })
+
+    vi.stubGlobal('window', { hermesDesktop: { saveImageBuffer } })
+
+    const attachment = await createImageAttachmentFromBlob(new Blob(['hello'], { type: 'image/png' }))
+
+    expect(saveImageBuffer).not.toHaveBeenCalled()
+    expect(attachment.kind).toBe('image')
+    expect(attachment.label).toMatch(/pasted-image-.*\.png$/)
+    expect(attachment.path).toBeUndefined()
+    expect(attachment.previewUrl).toMatch(/^data:image\/png;base64,/)
   })
 })

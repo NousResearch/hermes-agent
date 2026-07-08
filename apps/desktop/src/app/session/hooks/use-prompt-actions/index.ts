@@ -43,6 +43,7 @@ import {
   delay,
   friendlyRemoteAttachError,
   type GatewayRequest,
+  imagePayloadFromDataUrl,
   inlineErrorMessage,
   isSessionBusyError,
   isSessionNotFoundError,
@@ -77,8 +78,15 @@ export async function uploadComposerAttachment(
 
   if (attachment.kind === 'image') {
     let result: ImageAttachResponse
+    const inlinePayload = imagePayloadFromDataUrl(attachment.previewUrl, label)
 
-    if (remote) {
+    if (inlinePayload) {
+      result = await requestGateway<ImageAttachResponse>('image.attach_bytes', {
+        session_id: sessionId,
+        content_base64: inlinePayload.contentBase64,
+        filename: inlinePayload.filename
+      })
+    } else if (remote) {
       let payload: Awaited<ReturnType<typeof readImageForRemoteAttach>>
 
       try {
@@ -97,6 +105,10 @@ export async function uploadComposerAttachment(
         filename: payload.filename
       })
     } else {
+      if (!path) {
+        throw new Error(`Could not attach ${label}`)
+      }
+
       result = await requestGateway<ImageAttachResponse>('image.attach', {
         path,
         session_id: sessionId
@@ -260,10 +272,13 @@ export function usePromptActions({
           attachment = $composerAttachments.get().find(item => item.id === attachment.id) ?? attachment
         }
 
+        const pathlessInlineImage =
+          attachment.kind === 'image' && !attachment.path && Boolean(imagePayloadFromDataUrl(attachment.previewUrl, attachment.label))
+
         // Already-synced or pathless refs (terminal, url, etc.) pass through.
         // A drop-time eager upload may already have staged this one (matching
         // attachedSessionId) — don't re-upload it.
-        if (!attachment.path || attachment.attachedSessionId === sessionId) {
+        if ((!attachment.path && !pathlessInlineImage) || attachment.attachedSessionId === sessionId) {
           synced.push(attachment)
 
           continue

@@ -30,10 +30,44 @@ const BLOB_MIME_EXTENSION: Record<string, string> = {
   'image/x-icon': '.ico'
 }
 
+let pastedImageCounter = 0
+
 function blobExtension(blob: Blob): string {
   const mime = normalize(blob.type.split(';')[0])
 
   return BLOB_MIME_EXTENSION[mime] || '.png'
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+
+    reader.addEventListener('load', () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result)
+      } else {
+        reject(new Error('Could not read pasted image'))
+      }
+    })
+    reader.addEventListener('error', () => reject(reader.error || new Error('Could not read pasted image')))
+    reader.readAsDataURL(blob)
+  })
+}
+
+export async function createImageAttachmentFromBlob(blob: Blob): Promise<ComposerAttachment> {
+  const extension = blobExtension(blob)
+  const dataUrl = await blobToDataUrl(blob)
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const sequence = ++pastedImageCounter
+  const label = `pasted-image-${timestamp}-${sequence}${extension}`
+
+  return {
+    detail: 'Pasted screenshot',
+    id: attachmentId('image', `clipboard:${label}:${blob.size}:${blob.type}`),
+    kind: 'image',
+    label,
+    previewUrl: dataUrl
+  }
 }
 
 export function isImagePath(filePath: string): boolean {
@@ -418,24 +452,16 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
       }
 
       try {
-        const buffer = await blob.arrayBuffer()
-        const data = new Uint8Array(buffer)
-        const savedPath = await window.hermesDesktop?.saveImageBuffer(data, blobExtension(blob))
+        attachToMain(await createImageAttachmentFromBlob(blob))
 
-        if (!savedPath) {
-          notify({ kind: 'error', title: copy.imageAttach, message: copy.imageWriteFailed })
-
-          return false
-        }
-
-        return attachImagePath(savedPath)
+        return true
       } catch (err) {
         notifyError(err, copy.imageAttachFailed)
 
         return false
       }
     },
-    [attachImagePath, copy.imageAttach, copy.imageAttachFailed, copy.imageWriteFailed]
+    [copy.imageAttachFailed]
   )
 
   const pickImages = useCallback(async () => {

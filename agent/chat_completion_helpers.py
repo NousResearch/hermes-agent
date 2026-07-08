@@ -820,12 +820,13 @@ def _pool_lane_src(agent, aux_task=None) -> str:
     return f"platform={platform};delegate_depth={dd};aux_task={task}"
 
 
-# The api-proxy pool by ANY of its names: canonical `claude-apr` (2026-07-08
-# rename) + retained alias `claude-app` (legacy-pinned sessions still resolve
-# through it). Rename-proof gate for _pool_affinity_headers — a stale single
-# literal here silently killed affinity/lane stamping when the provider was
-# renamed (caught 2026-07-08).
-_POOL_AFFINITY_PROVIDERS = frozenset({"claude-apr", "claude-app"})
+# The api-proxy pool, canonical name `claude-apr` (the api-proxy multi-sub relay,
+# api_mode `anthropic_messages`). A frozenset (not a bare `==`) so the gate is
+# rename-proof — a stale single literal here silently killed affinity/lane
+# stamping when the pool was renamed claude-app→claude-apr (caught 2026-07-08,
+# #241). The legacy `claude-app` alias was fully retired 2026-07-08 (no live
+# config/session/cron references remain), so it is no longer accepted here.
+_POOL_AFFINITY_PROVIDERS = frozenset({"claude-apr"})
 
 
 def _pool_affinity_headers(agent, aux_task=None) -> dict:

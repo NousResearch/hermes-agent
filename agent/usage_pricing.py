@@ -42,23 +42,32 @@ CostSource = Literal[
 # plugins/model-providers/* across the fleet.
 #
 # This is the set of EXACT BASE names. The numbered failover family
-# (claude-api-proxy-fN / claude-bridge-fN, any integer N) is matched by PATTERN
-# in is_notional_anthropic_provider() below — so a NEW failover lane (-f6, -f7,
-# …) can never again silently price as $0 the way -f2/-f3/-f4/-f5 did. Use the
-# predicate, not bare `in` membership, at every call site.
+# (claude-apx-N / claude-bpx-N, any integer N) is matched by PATTERN
+# in is_notional_anthropic_provider() below — so a NEW failover lane (-apx-11,
+# -bpx-12, …) can never again silently price as $0 the way the un-renamed lanes
+# did. Use the predicate, not bare `in` membership, at every call site.
+#
+# 2026-07-08 rename: the api-proxy pool `claude-pool`/`claude-app` → `claude-apr`
+# and its failover lanes `claude-api-proxy-fN` → `claude-apx-N`; the bridge pool
+# → `claude-bpr` and `claude-bridge-fN` → `claude-bpx-N`. The old names are gone
+# fleet-wide (no config/session/cron references) so they are dropped here — they
+# were pricing correctly ONLY because the live traffic still carried them, which
+# it no longer does. Leaving them would have kept the LIVE pools (`claude-apr`/
+# `claude-bpr`) + their apx/bpx lanes silently UNPRICED (billing_mode=unknown).
 NOTIONAL_ANTHROPIC_PROVIDERS = frozenset({
     "claude-api-proxy",
     "claude-bridge",
-    "claude-pool",
-    "claude-app",
+    "claude-apr",
+    "claude-bpr",
     "yunwu",
 })
 
-# claude-api-proxy-f1, claude-bridge-f2, … -f<any integer>. Anchored +
-# integer-only so it matches ONLY the disciplined failover naming and never an
-# unrelated "claude-bridge-frobnicate". claude-pool has no -fN family (failover
-# happens inside the relay), so it stays an exact base member above.
-_NOTIONAL_ANTHROPIC_FN_RE = re.compile(r"^claude-(?:api-proxy|bridge)-f\d+$")
+# claude-apx-1, claude-bpx-2, … -<any integer>. Anchored + integer-only so it
+# matches ONLY the disciplined failover naming and never an unrelated
+# "claude-bridge-frobnicate". The pools themselves (claude-apr / claude-bpr) have
+# no numbered family (failover happens inside the relay), so they stay exact base
+# members above.
+_NOTIONAL_ANTHROPIC_FN_RE = re.compile(r"^claude-(?:apx|bpx)-\d+$")
 
 
 def is_notional_anthropic_provider(provider_name: Optional[str]) -> bool:
@@ -260,7 +269,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     # ── Anthropic Claude Fable 5 ─────────────────────────────────────────
     # Premium 1M-context model priced at the opus-4-8-fast tier ($10/$50,
     # cache read 0.1x input, cache write 1.25x input). Subscription relays
-    # (claude-app/-api-proxy/-bridge/-pool) price NOTIONAL via
+    # (claude-apr/-bpr/-api-proxy/-bridge) price NOTIONAL via
     # is_notional_anthropic_provider(); this entry supplies the rate.
     # Source: https://openrouter.ai/anthropic/claude-fable-5
     (
@@ -331,7 +340,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     # Claude Sonnet 5 (released 2026-06-30). List price $3/$15; cache read $0.30 (0.1x input).
     # Intro pricing $2/$10 in/out runs through 2026-08-31 — the cost-book uses the
     # standing LIST rate (as the rest of this table does), so it does not under-count
-    # once intro ends. Subscription relays (claude-app/-api-proxy/-bridge/-bpp) price
+    # once intro ends. Subscription relays (claude-apr/-bpr/-api-proxy/-bridge) price
     # NOTIONAL via is_notional_anthropic_provider(); this entry only prices the bare
     # "anthropic" provider (direct key / Bedrock / Vertex).
     (

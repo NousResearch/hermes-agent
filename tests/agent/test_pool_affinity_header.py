@@ -1,7 +1,7 @@
 """x-hermes-session + x-hermes-lane pool routing headers (reset-weighted router +
 lanes, 2026-07-05).
 
-Proves the stamps are (a) present ONLY for the api-proxy pool — canonical claude-apr + legacy alias claude-app (never egress to a direct/
+Proves the stamps are (a) present ONLY for the api-proxy pool — canonical claude-apr (never egress to a direct/
 third-party endpoint), (b) read per-request off the live agent (session id rotates
 with compaction; lane reflects the live delegate_depth/platform), (c) the lane
 classifier splits interactive/background correctly incl. the critical-aux (B1) case.
@@ -15,7 +15,7 @@ from agent.chat_completion_helpers import (
 )
 
 
-def _agent(provider="claude-app", session_id="20260705_120000_abc123",
+def _agent(provider="claude-apr", session_id="20260705_120000_abc123",
            delegate_depth=0, platform="discord"):
     return SimpleNamespace(provider=provider, session_id=session_id,
                            _delegate_depth=delegate_depth, platform=platform)
@@ -33,12 +33,11 @@ def test_headers_present_for_claude_apr():
     assert "delegate_depth=0" in h["x-hermes-lane-src"]
 
 
-def test_headers_present_for_claude_app_legacy_alias():
-    # retained alias: legacy claude-app-pinned sessions still get affinity/lanes
-    h = _pool_affinity_headers(_agent("claude-app"))
-    assert h["x-hermes-session"] == "20260705_120000_abc123"
-    assert h["x-hermes-lane"] == "interactive"
-    assert "delegate_depth=0" in h["x-hermes-lane-src"]
+def test_headers_absent_for_retired_claude_app_alias():
+    # 2026-07-08: the legacy `claude-app` alias was fully RETIRED (killed at the
+    # root, not just hidden). It is no longer a resolvable provider, so the gate
+    # must NOT fire for it — nothing live pins claude-app anymore.
+    assert _pool_affinity_headers(_agent("claude-app")) == {}
 
 
 def test_headers_absent_for_claude_bpp_out_of_scope():
@@ -66,13 +65,13 @@ def test_case_insensitive_provider():
 
 def test_session_absent_but_lane_still_stamped():
     # no session id -> no session header, but the lane still classifies (pool-scoped)
-    h = _pool_affinity_headers(_agent("claude-app", session_id=None))
+    h = _pool_affinity_headers(_agent("claude-apr", session_id=None))
     assert "x-hermes-session" not in h
     assert h["x-hermes-lane"] == "interactive"
 
 
 def test_session_reads_live_id_per_call():
-    a = _agent("claude-app", session_id="parent_sid")
+    a = _agent("claude-apr", session_id="parent_sid")
     assert _pool_affinity_headers(a)["x-hermes-session"] == "parent_sid"
     a.session_id = "child_sid_after_compaction"   # compaction rotated it
     assert _pool_affinity_headers(a)["x-hermes-session"] == "child_sid_after_compaction"

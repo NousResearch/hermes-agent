@@ -14,21 +14,24 @@ from agent.usage_pricing import (
 
 
 # Representative notional-Anthropic provider keys: the exact base members PLUS a
-# spread of the -fN failover family (matched by pattern, not membership). Tests
+# spread of the failover family (matched by pattern, not membership). Tests
 # that assert "every notional provider prices correctly" iterate THIS, not the
 # frozenset — because the frozenset deliberately holds only the base names now.
+# 2026-07-08 rename: pools claude-app/claude-pool → claude-apr, claude-bpp →
+# claude-bpr; failover lanes claude-api-proxy-fN → claude-apx-N, claude-bridge-fN
+# → claude-bpx-N. The old names are retired.
 _REPRESENTATIVE_NOTIONAL = [
     "claude-api-proxy",
     "claude-bridge",
-    "claude-pool",
-    "claude-app",
+    "claude-apr",
+    "claude-bpr",
     "yunwu",
-    "claude-api-proxy-f1",
-    "claude-api-proxy-f2",
-    "claude-api-proxy-f5",
-    "claude-bridge-f1",
-    "claude-bridge-f3",
-    "claude-bridge-f5",
+    "claude-apx-1",
+    "claude-apx-2",
+    "claude-apx-5",
+    "claude-bpx-1",
+    "claude-bpx-3",
+    "claude-bpx-5",
 ]
 
 
@@ -177,18 +180,21 @@ def test_estimate_usage_cost_marks_true_subscription_routes_included(monkeypatch
     assert result.amount_usd is not None and float(result.amount_usd) == 0.0  # type: ignore[arg-type]
 
 
-def test_notional_anthropic_includes_fn_failover_family_by_pattern():
-    """Regression (the recurring f-lane alias gap): every -fN failover lane —
-    claude-api-proxy-fN / claude-bridge-fN for ANY integer N — must price as
+def test_notional_anthropic_includes_failover_family_by_pattern():
+    """Regression (the recurring lane alias gap): every failover lane —
+    claude-apx-N / claude-bpx-N for ANY integer N — must price as
     notional-Anthropic, matched by PATTERN (not frozenset membership) so a new
     lane never needs a code edit. Missing aliases caused -f2 (audit 2026-06-13,
     ~25% of Opus spend) and then claude-pool/-f3/-f4/-f5 (audit 2026-06-17,
-    ~$872 over 2 days) to price 'unknown'/$0, blinding /cost."""
+    ~$872 over 2 days) to price 'unknown'/$0, blinding /cost. The 2026-07-08
+    rename (claude-api-proxy-fN → claude-apx-N, claude-bridge-fN → claude-bpx-N,
+    pools → claude-apr/claude-bpr) reintroduced the SAME blind spot until the
+    pattern + base set were updated to the new names."""
     for provider in (
-        "claude-api-proxy-f1", "claude-api-proxy-f2", "claude-api-proxy-f3",
-        "claude-api-proxy-f4", "claude-api-proxy-f5",
-        "claude-bridge-f1", "claude-bridge-f2", "claude-bridge-f3",
-        "claude-bridge-f4", "claude-bridge-f5", "claude-pool",
+        "claude-apx-0", "claude-apx-1", "claude-apx-2",
+        "claude-apx-3", "claude-apx-5", "claude-apx-10",
+        "claude-bpx-0", "claude-bpx-1", "claude-bpx-2",
+        "claude-bpx-3", "claude-bpx-5", "claude-apr", "claude-bpr",
     ):
         assert is_notional_anthropic_provider(provider), provider
         result = estimate_usage_cost(
@@ -202,11 +208,11 @@ def test_notional_anthropic_includes_fn_failover_family_by_pattern():
 
 
 def test_notional_anthropic_pattern_is_open_ended_on_n():
-    """The -fN pattern must accept ANY integer N (today -f1..-f5, tomorrow -f6+),
+    """The -N pattern must accept ANY integer N (today -0..-10, tomorrow -11+),
     proving a future failover lane is covered with zero code change."""
     for provider in (
-        "claude-bridge-f6", "claude-bridge-f9", "claude-bridge-f12",
-        "claude-api-proxy-f7", "claude-api-proxy-f10", "claude-api-proxy-f99",
+        "claude-bpx-6", "claude-bpx-9", "claude-bpx-12",
+        "claude-apx-7", "claude-apx-11", "claude-apx-99",
     ):
         assert is_notional_anthropic_provider(provider), provider
         route = resolve_billing_route("claude-opus-4-8", provider=provider)
@@ -216,11 +222,16 @@ def test_notional_anthropic_pattern_is_open_ended_on_n():
 def test_notional_anthropic_pattern_rejects_non_failover():
     """The pattern must be ANCHORED + integer-only — it must NOT match a lookalike
     that isn't a real failover lane (else we'd misprice an unrelated provider as
-    Anthropic). Guards against a greedy/unanchored regex."""
+    Anthropic). Guards against a greedy/unanchored regex. Includes the RETIRED
+    old-scheme names (claude-app, claude-pool, claude-api-proxy-fN,
+    claude-bridge-fN) which must now be REJECTED — they no longer exist."""
     for provider in (
-        "claude-bridge-frobnicate", "claude-api-proxy-foo", "claude-bridge-f",
-        "claude-bridgef3", "xclaude-bridge-f3", "claude-bridge-f3x",
-        "claude-bridge-f3-extra", "claude-pool-f3", "claude-poolx",
+        "claude-apx-frobnicate", "claude-bpx-foo", "claude-apx-",
+        "claude-aprx3", "xclaude-apx-3", "claude-apx-3x",
+        "claude-apx-3-extra", "claude-apr-3", "claude-aprx",
+        # retired old-scheme names — must NOT match anymore:
+        "claude-app", "claude-pool", "claude-bpp",
+        "claude-api-proxy-f1", "claude-bridge-f3",
         "openai-codex", "anthropic", "openrouter", "", "   ",
     ):
         assert not is_notional_anthropic_provider(provider), repr(provider)

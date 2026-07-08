@@ -1931,6 +1931,58 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
+EXIT_CODE_CONTRACTS_PATH = Path(
+    "/home/lfdm/sassy-factory/navigator/data/exit_code_contracts.json"
+)
+
+
+def _parse_exit_code_from_output(output: str) -> int:
+    """Extract the exit code from a _run_job_script error output string.
+
+    The output format on non-zero exit is:
+        "Script exited with code 2\\n..."
+    Returns -1 if the exit code can't be parsed.
+    """
+    m = re.match(r"Script exited with code (\d+)", output)
+    if m:
+        return int(m.group(1))
+    return -1
+
+
+def _load_exit_code_contracts() -> dict:
+    """Load the exit_code_contracts.json registry.
+
+    Returns {job_id: {"name": ..., "exit_0": ..., "exit_N": ..., "all_are": "ok"}}
+    or an empty dict if the file is missing or unparseable.
+    """
+    try:
+        if EXIT_CODE_CONTRACTS_PATH.exists():
+            data = json.loads(EXIT_CODE_CONTRACTS_PATH.read_text())
+            return data.get("contracts", {})
+    except Exception:
+        pass
+    return {}
+
+
+def _check_exit_code_contract(job_id: str, exit_code: int) -> tuple:
+    """Check if a non-zero exit code is covered by an exit-code contract.
+
+    Returns (is_ok, note). When is_ok is True, the exit code represents a
+    designed business signal — not a crash — and should be treated as success.
+    """
+    contracts = _load_exit_code_contracts()
+    contract = contracts.get(job_id)
+    if not contract:
+        return False, ""
+    if contract.get("all_are") != "ok":
+        return False, ""
+    exit_key = f"exit_{exit_code}"
+    meaning = contract.get(exit_key)
+    if meaning:
+        return True, meaning
+    return False, ""
+
+
 def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
@@ -2309,6 +2361,30 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
 
         if not ok:
+            # Script crashed / timed out / exited non-zero.
+            # Before treating this as failure, consult the exit-code contract
+            # registry. Some crons use non-zero exits as business signals
+            # (e.g. exit 1 = "data produced", exit 2 = "work found").
+            _exit_code = _parse_exit_code_from_output(output)
+            _contract_ok, _contract_note = _check_exit_code_contract(
+                job_id, _exit_code
+            )
+            if _contract_ok:
+                logger.info(
+                    "Job '%s' (no_agent): exit %d covered by contract (%s) — "
+                    "treating as success",
+                    job_id, _exit_code, _contract_note,
+                )
+                doc = (
+                    f"# Cron Job: {job_name}\n\n"
+                    f"**Job ID:** {job_id}\n"
+                    f"**Run Time:** {now_iso}\n"
+                    f"**Mode:** no_agent (script)\n"
+                    f"**Status:** ok (exit {_exit_code} = {_contract_note})\n\n"
+                    f"{output}\n"
+                )
+                return True, doc, output, None
+
             # Script crashed / timed out / exited non-zero.  Deliver the
             # error so the user knows the watchdog itself broke — silent
             # failure for an alerting job is the worst-case outcome.

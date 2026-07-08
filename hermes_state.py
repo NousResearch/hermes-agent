@@ -27,7 +27,7 @@ from pathlib import Path
 
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -3227,16 +3227,30 @@ class SessionDB:
         # as the live conversation. Keep the root's started_at to preserve
         # chronological ordering by original conversation start.
         if project_compression_tips and not include_children:
-            projected = []
+            # get_compression_tip() walks each root's chain individually (it's
+            # a per-session graph walk, not batchable in one query), but the
+            # tip *row* fetch afterward was previously one _get_session_rich_row()
+            # call per compression root — a separate single-row query per row
+            # on every list_sessions_rich() call. Batch that half instead: resolve
+            # every tip id first, then fetch all tip rows in a single query.
+            tip_ids_by_root: Dict[str, str] = {}
             for s in sessions:
                 if s.get("end_reason") != "compression":
-                    projected.append(s)
                     continue
                 tip_id = self.get_compression_tip(s["id"])
-                if tip_id == s["id"]:
-                    projected.append(s)
-                    continue
-                tip_row = self._get_session_rich_row(tip_id)
+                if tip_id != s["id"]:
+                    tip_ids_by_root[s["id"]] = tip_id
+
+            tip_rows = (
+                self._get_session_rich_rows_batch(set(tip_ids_by_root.values()))
+                if tip_ids_by_root
+                else {}
+            )
+
+            projected = []
+            for s in sessions:
+                tip_id = tip_ids_by_root.get(s["id"])
+                tip_row = tip_rows.get(tip_id) if tip_id else None
                 if not tip_row:
                     projected.append(s)
                     continue
@@ -3326,8 +3340,29 @@ class SessionDB:
         """Fetch a single session with the same enriched columns as
         ``list_sessions_rich`` (preview + last_active). Returns None if the
         session doesn't exist.
+
+        Thin wrapper over ``_get_session_rich_rows_batch`` so the enriched
+        SELECT lives in exactly one place.
         """
-        query = """
+        return self._get_session_rich_rows_batch([session_id]).get(session_id)
+
+    def _get_session_rich_rows_batch(
+        self, session_ids: Iterable[str]
+    ) -> Dict[str, Dict[str, Any]]:
+        """Fetch multiple sessions with the same enriched columns as
+        ``_get_session_rich_row``, in a single query.
+
+        Used by ``list_sessions_rich``'s compression-tip projection to resolve
+        every tip row for a page in one round trip instead of one query per
+        compression-root row. Returns a dict keyed by session id; ids that
+        don't exist are simply absent from the result (same as
+        ``_get_session_rich_row`` returning ``None`` for them).
+        """
+        ids = [sid for sid in session_ids if sid]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        query = f"""
             SELECT s.*,
                 COALESCE(
                     (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
@@ -3341,21 +3376,22 @@ class SessionDB:
                     s.started_at
                 ) AS last_active
             FROM sessions s
-            WHERE s.id = ?
+            WHERE s.id IN ({placeholders})
         """
         with self._lock:
-            cursor = self._conn.execute(query, (session_id,))
-            row = cursor.fetchone()
-        if not row:
-            return None
-        s = dict(row)
-        raw = s.pop("_preview_raw", "").strip()
-        if raw:
-            text = raw[:60]
-            s["preview"] = text + ("..." if len(raw) > 60 else "")
-        else:
-            s["preview"] = ""
-        return s
+            cursor = self._conn.execute(query, ids)
+            rows = cursor.fetchall()
+        result: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            s = dict(row)
+            raw = s.pop("_preview_raw", "").strip()
+            if raw:
+                text = raw[:60]
+                s["preview"] = text + ("..." if len(raw) > 60 else "")
+            else:
+                s["preview"] = ""
+            result[s["id"]] = s
+        return result
 
     # =========================================================================
     # Message storage

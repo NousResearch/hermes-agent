@@ -3900,6 +3900,88 @@ class TestCompressionChainProjection:
         assert root_row["end_reason"] == "compression"
         assert "_lineage_root_id" not in root_row
 
+    def test_list_projects_multiple_independent_chains_in_one_call(self, db):
+        """Two unrelated compression chains in the same page must each
+        resolve to their own tip, not get cross-mixed by the batched tip-row
+        fetch (regression test for the single-query batch in
+        _get_session_rich_rows_batch — a wrong id->row mapping there would
+        silently swap one chain's data onto the other)."""
+        import time as _time
+
+        t0 = _time.time() - 7200
+        self._build_compression_chain(db, t0)
+
+        # Second, independent chain — same shape, different ids/content.
+        db.create_session("root2", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 100, "root2"))
+        db.append_message("root2", "user", "second conversation start")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t0 + 200, "compression", "root2"),
+        )
+        db.create_session("tip2", "cli", parent_session_id="root2")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 201, "tip2"))
+        db.append_message("tip2", "user", "second conversation continuation")
+        db.update_session_cwd("tip2", "/tmp/workspaces/second")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        ids = [s["id"] for s in sessions]
+        assert "root1" not in ids and "root2" not in ids
+        assert "tip1" in ids and "tip2" in ids
+
+        tip1_row = next(s for s in sessions if s["id"] == "tip1")
+        tip2_row = next(s for s in sessions if s["id"] == "tip2")
+        assert tip1_row["_lineage_root_id"] == "root1"
+        assert tip1_row["preview"].startswith("latest message")
+        assert tip2_row["_lineage_root_id"] == "root2"
+        assert tip2_row["preview"].startswith("second conversation continuation")
+        assert tip2_row["cwd"] == "/tmp/workspaces/second"
+
+    def test_list_batches_tip_row_fetch_into_one_query(self, db, monkeypatch):
+        """Projection must resolve tip rows for a whole page in one batched
+        query, not one _get_session_rich_row() call per compression root."""
+        import time as _time
+
+        t0 = _time.time() - 7200
+        self._build_compression_chain(db, t0)
+        db.create_session("root2", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 100, "root2"))
+        db.append_message("root2", "user", "second conversation start")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t0 + 200, "compression", "root2"),
+        )
+        db.create_session("tip2", "cli", parent_session_id="root2")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 201, "tip2"))
+        db.append_message("tip2", "user", "second continuation")
+        db._conn.commit()
+
+        batch_calls = []
+        single_calls = []
+        original_batch = db._get_session_rich_rows_batch
+        original_single = db._get_session_rich_row
+
+        def counting_batch(session_ids):
+            batch_calls.append(list(session_ids))
+            return original_batch(session_ids)
+
+        def counting_single(session_id):
+            single_calls.append(session_id)
+            return original_single(session_id)
+
+        monkeypatch.setattr(db, "_get_session_rich_rows_batch", counting_batch)
+        monkeypatch.setattr(db, "_get_session_rich_row", counting_single)
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        assert len(sessions) >= 2  # sanity: both chains actually surfaced
+
+        # Two compression roots resolved with exactly one batched call, and
+        # zero single-row calls — not one single-row call per root.
+        assert len(batch_calls) == 1
+        assert set(batch_calls[0]) == {"tip1", "tip2"}
+        assert single_calls == []
+
     def test_list_preserves_sort_by_started_at(self, db):
         """Chronological ordering uses the ROOT's started_at (conversation
         start), not the tip's. This keeps lineage entries stable in the list

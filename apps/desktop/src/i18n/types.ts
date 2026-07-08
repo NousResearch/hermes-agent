@@ -205,9 +205,11 @@ export interface Translations {
       turnDoneBody: string
       turnErrorTitle: string
       backgroundDoneTitle: string
-      backgroundFailedTitle: string
-    }
-  }
+            backgroundFailedTitle: string
+            quotaExhaustedTitle: string
+            quotaExhaustedBody: string
+          }
+        }
 
   remoteDisplayBanner: {
     message: (reason: string) => string
@@ -280,9 +282,9 @@ export interface Translations {
       enableAllDesc: string
       focusedHint: string
       kinds: Record<
-        'approval' | 'backgroundDone' | 'input' | 'turnDone' | 'turnError',
-        { label: string; description: string }
-      >
+              'approval' | 'backgroundDone' | 'input' | 'turnDone' | 'turnError' | 'quotaExhausted',
+              { label: string; description: string }
+            >
       test: string
       testTitle: string
       testBody: string
@@ -1713,8 +1715,9 @@ export interface Translations {
       }
       openContextUsage: string
       session: string
-      runtimeSessionElapsed: string
-      yoloOn: string
+            runtimeSessionElapsed: string
+            sessionCost: string
+            yoloOn: string
       yoloOff: string
       modelNone: string
       noModel: string

@@ -153,17 +153,19 @@ export const en: Translations = {
       unavailable: 'Voice unavailable'
     },
     native: {
-      approvalTitle: 'Approval needed',
-      approveAction: 'Approve',
-      rejectAction: 'Reject',
-      inputTitle: 'Input needed',
-      inputBody: 'Hermes is waiting for your response.',
-      turnDoneTitle: 'Hermes finished',
-      turnDoneBody: 'The response is ready.',
-      turnErrorTitle: 'Turn failed',
-      backgroundDoneTitle: 'Background task finished',
-      backgroundFailedTitle: 'Background task failed'
-    }
+          approvalTitle: 'Approval needed',
+          approveAction: 'Approve',
+          rejectAction: 'Reject',
+          inputTitle: 'Input needed',
+          inputBody: 'Hermes is waiting for your response.',
+          turnDoneTitle: 'Hermes finished',
+          turnDoneBody: 'The response is ready.',
+          turnErrorTitle: 'Turn failed',
+          backgroundDoneTitle: 'Background task finished',
+          backgroundFailedTitle: 'Background task failed',
+          quotaExhaustedTitle: 'Quota exhausted: {provider}',
+          quotaExhaustedBody: 'Provider quota exhausted. Check your provider dashboard. {quotaReset?}'
+        }
   },
 
   remoteDisplayBanner: {
@@ -337,10 +339,14 @@ export const en: Translations = {
           description: 'A turn ended with an error.'
         },
         backgroundDone: {
-          label: 'Background task finished',
-          description: 'A backgrounded terminal command completed.'
-        }
-      },
+                  label: 'Background task finished',
+                  description: 'A backgrounded terminal command completed.'
+                },
+                quotaExhausted: {
+                          label: 'Quota exhausted: {provider}',
+                          description: 'Provider quota exhausted. Check your provider dashboard. {quotaReset?}'
+                        }
+                      },
       test: 'Send test notification',
       testTitle: 'Hermes',
       testBody: 'Notifications are working.',
@@ -2073,8 +2079,9 @@ export const en: Translations = {
       },
       openContextUsage: 'Open context usage breakdown',
       session: 'Session',
-      runtimeSessionElapsed: 'Runtime session elapsed',
-      yoloOn: 'YOLO on — auto-approving dangerous commands. Click to turn off. Shift+click toggles it globally.',
+            runtimeSessionElapsed: 'Runtime session elapsed',
+            sessionCost: 'Session cost',
+            yoloOn: 'YOLO on — auto-approving dangerous commands. Click to turn off. Shift+click toggles it globally.',
       yoloOff: 'YOLO off — click to auto-approve dangerous commands. Shift+click toggles it globally.',
       modelNone: 'none',
       noModel: 'no model',

@@ -418,6 +418,9 @@ export interface UsageStats {
   context_percent?: number
   context_used?: number
   cost_usd?: number
+  quota_pct?: number
+  quota_reset?: string
+  quota_rl_text?: string
   input: number
   output: number
   total: number

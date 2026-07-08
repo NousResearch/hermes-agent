@@ -1,5 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
-import { type MutableRefObject, useCallback } from 'react'
+import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
@@ -15,7 +15,7 @@ import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
-import { dispatchNativeNotification } from '@/store/native-notifications'
+import { dispatchNativeNotification, dispatchQuotaExhaustedNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
@@ -91,23 +91,22 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     upsertToolCall
   } = deps
 
+  // Track previous quota percentage per session to detect exhaustion transitions
+  const prevQuotaPctRef = useRef<Map<string, number>>(new Map())
+
   return useCallback(
-    (event: RpcEvent) => {
-      const payload = event.payload as GatewayEventPayload | undefined
-      const explicitSid = event.session_id || ''
+      (event: RpcEvent) => {
+        const payload = event.payload as GatewayEventPayload | undefined
+        const explicitSid = event.session_id || ''
 
-      if (!explicitSid && gatewayEventRequiresSessionId(event.type)) {
-        return
-      }
+        if (!explicitSid && gatewayEventRequiresSessionId(event.type)) {
+          return
+        }
 
-      const sessionId = explicitSid || activeSessionIdRef.current
-      const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
+        const sessionId = explicitSid || activeSessionIdRef.current
+        const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
-      if (event.type === 'gateway.ready') {
-        return
-      } else if (event.type === 'session.info') {
-        // Apply session-scoped fields when the event targets the active
-        // session, OR when it's a global broadcast and we have no session.
+        if (event.type === 'gateway.ready') {
         const apply = explicitSid ? isActiveEvent : !activeSessionIdRef.current
         const statePatch = sessionInfoStatePatch(payload)
         const hasStatePatch = hasSessionInfoStatePatch(statePatch)
@@ -341,9 +340,26 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         if (payload?.usage) {
-          setCurrentUsage(current => ({ ...current, ...payload.usage }))
-        }
-      } else if (event.type === 'session.title') {
+                  const usage = payload.usage
+                  setCurrentUsage(current => {
+                    const newUsage = { ...current, ...usage }
+
+                    // Detect quota exhaustion transition: prev < 95% and new >= 100%
+                    if (sessionId && usage.quota_pct !== undefined) {
+                      const prevPct = prevQuotaPctRef.current.get(sessionId)
+                      const newPct = usage.quota_pct
+                      if (prevPct !== undefined && prevPct < 95 && newPct >= 100) {
+                        const provider = payload.provider || 'unknown'
+                        const quotaReset = usage.quota_reset
+                        dispatchQuotaExhaustedNotification(sessionId, provider, quotaReset)
+                      }
+                      prevQuotaPctRef.current.set(sessionId, newPct)
+                    }
+
+                    return newUsage
+                  })
+                }
+              } else if (event.type === 'session.title') {
         // Live auto-title push (titler runs async, after the turn's refresh).
         const storedId = typeof payload?.session_id === 'string' ? payload.session_id : ''
         const nextTitle = typeof payload?.title === 'string' ? payload.title.trim() : ''

@@ -117,12 +117,11 @@ def _apply_yaml_config(yaml_cfg: dict, platform_cfg: dict) -> Optional[dict]:
 class _TurnWindow:
     """Mutable state for one utterance's reply window."""
 
-    __slots__ = ("chunks", "satellite_id", "acked")
+    __slots__ = ("chunks", "satellite_id")
 
     def __init__(self, satellite_id: Optional[str]):
         self.chunks: list = []
         self.satellite_id = satellite_id
-        self.acked = False
 
 
 class HAConversationAdapter(BasePlatformAdapter):
@@ -185,10 +184,12 @@ class HAConversationAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._running = False
-        if self._server is not None:
-            await self._server.stop()
+        try:
+            if self._server is not None:
+                await self._server.stop()
+        finally:
             self._server = None
-        self._mark_disconnected()
+            self._mark_disconnected()
 
     @staticmethod
     def _ha_credentials_present() -> bool:
@@ -217,14 +218,24 @@ class HAConversationAdapter(BasePlatformAdapter):
             return
 
         satellite_id = context.get("satellite_id") or context.get("device_id")
+        window = _TurnWindow(str(satellite_id) if satellite_id else None)
         self._waiting += 1
+        # Start the ack timer NOW, before the turn lock is acquired: it must
+        # measure total wait from arrival (queue time behind another room's
+        # turn plus processing time), not just processing time. Creating it
+        # only after the lock meant a second utterance queued behind a long
+        # turn sat silent past HA's pipeline timeout until it ALSO got the
+        # lock, since the timer never even started while it waited.
+        ack_task = asyncio.create_task(self._ack_after_delay(window, respond))
         try:
             async with self._turn_lock:
-                window = _TurnWindow(str(satellite_id) if satellite_id else None)
-                if window.satellite_id:
-                    self._last_active_satellite = window.satellite_id
+                # Real satellite ids only: a bare device_id fallback (see
+                # window.satellite_id above) is not an assist_satellite
+                # entity and would fail an announce call.
+                self._last_active_satellite = (
+                    context.get("satellite_id") or self._last_active_satellite
+                )
                 self._active_window = window
-                ack_task = asyncio.create_task(self._ack_after_delay(window, respond))
                 failed = False
                 try:
                     source = self.build_source(
@@ -259,6 +270,12 @@ class HAConversationAdapter(BasePlatformAdapter):
                     # same late-delivery path either way.
                     await self._deliver_late(reply, window)
         finally:
+            # Safety net for any exit path above the inner finally (e.g. this
+            # task getting cancelled while still waiting on the turn lock).
+            # cancel()/gather() are idempotent on an already-settled task, so
+            # this is a harmless no-op in the common case handled above.
+            ack_task.cancel()
+            await asyncio.gather(ack_task, return_exceptions=True)
             self._waiting -= 1
 
     async def _run_turn_and_wait(self, event: MessageEvent) -> None:
@@ -290,7 +307,6 @@ class HAConversationAdapter(BasePlatformAdapter):
             await asyncio.sleep(self._ack_after)
         except asyncio.CancelledError:
             return
-        window.acked = True
         await respond(self._ack_text())
 
     def _ack_text(self) -> str:
@@ -372,7 +388,9 @@ def register(ctx) -> None:
         is_connected=validate_config,
         validate_config=validate_config,
         apply_yaml_config_fn=_apply_yaml_config,
-        install_hint="pip install 'hermes-agent[satellite]'",
+        # TODO: switch to `pip install 'hermes-agent[satellite]'` once the
+        # voice-satellite branch (which introduces that extra) is merged.
+        install_hint="pip install wyoming==1.10.0",
         emoji="🏠",
         pii_safe=True,
         platform_hint=(

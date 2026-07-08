@@ -343,3 +343,67 @@ async def test_announce_failure_is_logged_not_raised(announce_rig, monkeypatch):
     monkeypatch.setattr(ha_tool, "async_call_service", exploding)
     result = await adapter._announce("hello", entity=None)
     assert result.success is False  # reported, not raised
+
+
+@pytest.mark.asyncio
+async def test_queued_utterance_acked_while_waiting_for_lock(
+    announce_rig, monkeypatch
+):
+    """Important-1 regression: the ack timer must start BEFORE the turn
+    lock is acquired, so a second room's utterance that is still queued
+    behind a long first turn gets acked within ack_after_seconds of its
+    own arrival — not only after it also acquires the lock. Before the
+    fix, the ack task was created inside `async with self._turn_lock`, so
+    a queued utterance's timer never even started until the first turn
+    released the lock, and it could sit silent past HA's pipeline timeout.
+    """
+    adapter, calls = announce_rig("last_active")
+    adapter._ack_after = 0.15
+
+    async def slow(a, event):
+        # "first" holds the turn lock well past the ack deadline; "second"'s
+        # own processing, once it finally gets the lock, is fast — well
+        # UNDER the ack deadline. This is the discriminating case: if the
+        # ack timer only starts once the lock is acquired (the bug), a
+        # queued "second" would finish and answer directly before its
+        # (late-started) ack timer ever fires. Only starting the timer at
+        # arrival makes "second" get acked while still queued.
+        if event.text == "first":
+            await asyncio.sleep(0.6)
+        else:
+            await asyncio.sleep(0.03)
+        await a.send("home", f"answer: {event.text}")
+
+    monkeypatch.setattr(adapter, "handle_message", lambda e: slow(adapter, e))
+    assert await adapter.connect() is True
+    try:
+        first_task = asyncio.create_task(
+            _ask(adapter, "first",
+                 context={"satellite_id": "assist_satellite.a"}, timeout=5)
+        )
+        await asyncio.sleep(0.01)  # let "first" grab the turn lock first
+        second_event = await _ask(
+            adapter, "second",
+            context={"satellite_id": "assist_satellite.b"}, timeout=5,
+        )
+        assert Handled.is_type(second_event.type)
+        second_text = (Handled.from_event(second_event).text or "").lower()
+        # Still queued (first hasn't released the lock yet) but already
+        # acked: proves the timer started at arrival, not at lock-acquire.
+        assert "announce" in second_text
+
+        await first_task  # drain the first connection too
+
+        target = (
+            "assist_satellite", "announce", "assist_satellite.b",
+            {"message": "answer: second"},
+        )
+        deadline = asyncio.get_event_loop().time() + 3.0
+        while target not in calls and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.02)
+        # The real answer, once "second" finally runs, must route to
+        # _deliver_late/announce targeting the ORIGINATING satellite (the
+        # room that actually asked "second"), never satellite "a".
+        assert target in calls
+    finally:
+        await adapter.disconnect()

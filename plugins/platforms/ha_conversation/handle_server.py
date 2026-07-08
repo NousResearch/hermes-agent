@@ -25,6 +25,8 @@ _ATTRIBUTION = Attribution(
 RespondFn = Callable[[Optional[str]], Awaitable[bool]]
 TranscriptCallback = Callable[[str, Dict[str, Any], RespondFn], Awaitable[None]]
 
+_SHUTDOWN_TEXT = "Hermes is restarting — ask me again in a moment."
+
 
 def build_info(*, supports_home_control: bool) -> Info:
     """Info advertised on Describe. Empty model languages => HA MATCH_ALL."""
@@ -52,11 +54,34 @@ def build_info(*, supports_home_control: bool) -> Info:
     )
 
 
+class _ConnectionState:
+    """Tracks one live TCP connection so ``stop()`` can drain it without
+    waiting for its (possibly permanently stuck) ``on_transcript`` callback
+    to return — ``respond`` is only set while a Transcript is awaiting an
+    answer, so ``stop()`` knows exactly which connections still owe HA a
+    reply."""
+
+    __slots__ = ("writer", "respond")
+
+    def __init__(self, writer):
+        self.writer = writer
+        self.respond: Optional[RespondFn] = None
+
+
 class _Handler(AsyncEventHandler):
-    def __init__(self, reader, writer, *, info: Info, on_transcript: TranscriptCallback):
+    def __init__(
+        self,
+        reader,
+        writer,
+        *,
+        info: Info,
+        on_transcript: TranscriptCallback,
+        conn_state: "_ConnectionState",
+    ):
         super().__init__(reader, writer)
         self._info = info
         self._on_transcript = on_transcript
+        self._conn_state = conn_state
 
     async def handle_event(self, event: Event) -> bool:
         if Describe.is_type(event.type):
@@ -79,6 +104,7 @@ class _Handler(AsyncEventHandler):
                     return False
                 return True
 
+            self._conn_state.respond = respond
             try:
                 await self._on_transcript(
                     transcript.text or "", transcript.context or {}, respond
@@ -87,6 +113,7 @@ class _Handler(AsyncEventHandler):
                 if not responded:
                     # The callback must always answer; never leave HA hanging.
                     await respond(None)
+                self._conn_state.respond = None
             return False  # one utterance per connection; HA reconnects per turn
         # Unsupported event types (ping, audio, …): ignore, keep the connection.
         return True
@@ -108,14 +135,18 @@ class HandleServer:
         self._info = build_info(supports_home_control=supports_home_control)
         self._on_transcript = on_transcript
         self._server: Optional[asyncio.AbstractServer] = None
+        self._connections: set = set()
         self.port: int = self._requested_port
 
     async def start(self) -> None:
         """Bind and serve. Raises OSError if the port cannot be bound."""
 
         async def _client_connected(reader, writer):
+            conn_state = _ConnectionState(writer)
+            self._connections.add(conn_state)
             handler = _Handler(
-                reader, writer, info=self._info, on_transcript=self._on_transcript
+                reader, writer, info=self._info, on_transcript=self._on_transcript,
+                conn_state=conn_state,
             )
             try:
                 await handler.run()
@@ -124,6 +155,7 @@ class HandleServer:
             except Exception:
                 logger.exception("[ha_conversation] connection handler failed")
             finally:
+                self._connections.discard(conn_state)
                 writer.close()
 
         self._server = await asyncio.start_server(
@@ -132,7 +164,34 @@ class HandleServer:
         self.port = self._server.sockets[0].getsockname()[1]
 
     async def stop(self) -> None:
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
+        """Drain in-flight connections, then close the listener.
+
+        ``wait_closed()`` alone (py3.12) blocks until every accepted
+        connection's handler coroutine returns — including one stuck
+        forever awaiting a hung ``on_transcript`` callback. Instead: answer
+        every connection that still owes HA a reply with a short shutdown
+        Handled (satisfying the single-use ``respond`` contract so the
+        turn's own eventual respond call is a harmless no-op), close all
+        tracked transports so the server's connection count drops to zero,
+        then close the listener — ``wait_closed()`` now returns promptly.
+        """
+        if self._server is None:
+            return
+        connections = list(self._connections)
+        for conn in connections:
+            if conn.respond is not None:
+                try:
+                    await conn.respond(_SHUTDOWN_TEXT)
+                except Exception:
+                    logger.exception(
+                        "[ha_conversation] shutdown respond failed"
+                    )
+        for conn in connections:
+            try:
+                conn.writer.close()
+            except Exception:
+                pass
+        self._connections.clear()
+        self._server.close()
+        await self._server.wait_closed()
+        self._server = None

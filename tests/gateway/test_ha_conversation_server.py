@@ -141,3 +141,38 @@ async def test_start_raises_when_port_taken():
             await second.start()
     finally:
         await first.stop()
+
+
+@pytest.mark.asyncio
+async def test_stop_drains_blocked_connection_and_releases_port():
+    """Important-3 regression: stop() must not block on wait_closed() until
+    every connection's on_transcript callback returns — a hung callback
+    (agent turn that never finishes) would otherwise wedge shutdown for as
+    long as py3.12's wait_closed() waits for open connections. stop() must
+    instead answer any in-flight connection with a shutdown Handled, close
+    the transports itself, and only then close the listener.
+    """
+    never_set = asyncio.Event()
+
+    async def blocks_forever(text, context, respond):
+        await never_set.wait()
+        await respond("unreachable")  # never actually reached
+
+    server = make_server(blocks_forever)
+    await server.start()
+    port = server.port
+    async with AsyncTcpClient("127.0.0.1", port) as client:
+        await client.write_event(Transcript("hang please").event())
+        await asyncio.sleep(0.05)  # let the server start handling the transcript
+        await asyncio.wait_for(server.stop(), timeout=2)
+        event = await asyncio.wait_for(client.read_event(), 5)
+    assert Handled.is_type(event.type)
+    assert Handled.from_event(event).text  # non-empty shutdown text
+
+    # Port released: a fresh server can bind the exact same port.
+    second = hs.HandleServer("127.0.0.1", port, on_transcript=_echo)
+    await second.start()
+    try:
+        assert second.port == port
+    finally:
+        await second.stop()

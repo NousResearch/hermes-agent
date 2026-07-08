@@ -255,23 +255,36 @@ def sanitize_tool_call_arguments(
 
     repaired = 0
     marker = _ra().AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
+    from agent.message_sanitization import (
+        _TOOL_ARGUMENT_ERROR_KEY,
+        _repair_tool_call_arguments,
+    )
 
-    def _prepend_marker(tool_msg: dict) -> None:
+    def _recovery_content(repaired_args: str) -> str:
+        try:
+            parsed = json.loads(repaired_args)
+        except Exception:
+            return marker
+        if isinstance(parsed, dict) and parsed.get(_TOOL_ARGUMENT_ERROR_KEY):
+            return repaired_args
+        return marker
+
+    def _prepend_marker(tool_msg: dict, content: str) -> None:
         existing = tool_msg.get("content")
         if isinstance(existing, str):
             if not existing:
-                tool_msg["content"] = marker
-            elif not existing.startswith(marker):
-                tool_msg["content"] = f"{marker}\n{existing}"
+                tool_msg["content"] = content
+            elif not existing.startswith(content):
+                tool_msg["content"] = f"{content}\n{existing}"
             return
         if existing is None:
-            tool_msg["content"] = marker
+            tool_msg["content"] = content
             return
         try:
             existing_text = json.dumps(existing)
         except TypeError:
             existing_text = str(existing)
-        tool_msg["content"] = f"{marker}\n{existing_text}"
+        tool_msg["content"] = f"{content}\n{existing_text}"
 
     message_index = 0
     while message_index < len(messages):
@@ -293,6 +306,7 @@ def sanitize_tool_call_arguments(
             if not isinstance(function, dict):
                 continue
 
+            function_name = function.get("name", "?")
             arguments = function.get("arguments")
             if arguments is None or arguments == "":
                 function["arguments"] = "{}"
@@ -313,7 +327,6 @@ def sanitize_tool_call_arguments(
                 # (Codex Responses format) and insert a duplicate stub that
                 # itself becomes an orphan (#58168).
                 tool_call_id = _ra().AIAgent._get_tool_call_id_static(tool_call) or None
-                function_name = function.get("name", "?")
                 preview = arguments[:80]
                 log.warning(
                     "Corrupted tool_call arguments repaired before request "
@@ -324,7 +337,9 @@ def sanitize_tool_call_arguments(
                     function_name,
                     preview,
                 )
-                function["arguments"] = "{}"
+                repaired_arguments = _repair_tool_call_arguments(arguments, function_name)
+                function["arguments"] = repaired_arguments
+                recovery_content = _recovery_content(repaired_arguments)
 
                 existing_tool_msg = None
                 scan_index = message_index + 1
@@ -342,13 +357,13 @@ def sanitize_tool_call_arguments(
                         insert_at,
                         make_tool_result_message(
                             function_name if function_name != "?" else "",
-                            marker,
+                            recovery_content,
                             tool_call_id,
                         ),
                     )
                     insert_at += 1
                 else:
-                    _prepend_marker(existing_tool_msg)
+                    _prepend_marker(existing_tool_msg, recovery_content)
 
                 repaired += 1
 

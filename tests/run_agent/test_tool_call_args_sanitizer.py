@@ -1,6 +1,7 @@
 """Tests for AIAgent._sanitize_tool_call_arguments."""
 
 import copy
+import json
 import logging
 
 from run_agent import AIAgent
@@ -91,6 +92,28 @@ def test_marker_message_inserted_when_missing():
     pass
 
 
+def test_write_file_truncated_arguments_insert_retry_payload():
+    messages = [
+        _assistant_message(
+            _tool_call(
+                name="write_file",
+                arguments='{"path": "/tmp/out.py", "content": "print(',
+            )
+        ),
+    ]
+
+    repaired = AIAgent._sanitize_tool_call_arguments(messages)
+
+    assert repaired == 1
+    repaired_args = json.loads(messages[0]["tool_calls"][0]["function"]["arguments"])
+    assert repaired_args["tool"] == "write_file"
+    assert repaired_args["retryable"] is True
+    assert repaired_args["required"] == ["path", "content"]
+    tool_result = json.loads(messages[1]["content"])
+    assert tool_result["tool"] == "write_file"
+    assert "Re-emit write_file" in tool_result["instruction"]
+
+
 def _disabled_test_marker_message_inserted_when_missing():
     marker = AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
     messages = [
@@ -125,7 +148,7 @@ def test_multiple_corrupted_tool_calls_in_one_message():
     assert repaired == 2
     assert messages[0]["tool_calls"][0]["function"]["arguments"] == "{}"
     assert messages[0]["tool_calls"][1]["function"]["arguments"] == '{"path":"/tmp/bar"}'
-    assert messages[0]["tool_calls"][2]["function"]["arguments"] == "{}"
+    assert messages[0]["tool_calls"][2]["function"]["arguments"] == '{"mode":"tail"}'
     assert messages[1]["tool_call_id"] == "call_1"
     assert messages[1]["content"] == marker
     assert messages[2]["tool_call_id"] == "call_3"

@@ -21,6 +21,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_TOOL_ARGUMENT_ERROR_KEY = "__hermes_tool_argument_error__"
+_RETRYABLE_TOOL_ARGUMENTS: dict[str, tuple[str, ...]] = {
+    "write_file": ("path", "content"),
+    "patch": ("patch",),
+}
+
 # Lone surrogate code points are invalid in UTF-8 and crash json.dumps
 # inside the OpenAI SDK.  Used by every surrogate-sanitization helper
 # below as well as by run_agent and the CLI for paste-from-clipboard
@@ -182,6 +188,32 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
     return "".join(out)
 
 
+def _tool_argument_retry_payload(tool_name: str, raw_args: str) -> str | None:
+    required = _RETRYABLE_TOOL_ARGUMENTS.get(tool_name)
+    if not required:
+        return None
+    return json.dumps(
+        {
+            _TOOL_ARGUMENT_ERROR_KEY: "truncated_or_malformed",
+            "success": False,
+            "retryable": True,
+            "tool": tool_name,
+            "required": list(required),
+            "error": (
+                f"The {tool_name} tool call arguments were truncated or malformed "
+                "before Hermes could execute the tool."
+            ),
+            "instruction": (
+                f"Re-emit {tool_name} with complete JSON arguments, including "
+                f"{', '.join(required)}. Do not assume the tool ran."
+            ),
+            "arguments_preview": raw_args[:200],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Attempt to repair malformed tool_call argument JSON.
 
@@ -268,6 +300,15 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
             return escaped
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
+
+    retry_payload = _tool_argument_retry_payload(tool_name, raw_stripped)
+    if retry_payload is not None:
+        logger.warning(
+            "Unrepairable tool_call arguments for %s — "
+            "replaced with retryable argument-error payload (was: %s)",
+            tool_name, raw_stripped[:80],
+        )
+        return retry_payload
 
     # Last resort: replace with empty object so the API request doesn't
     # crash the entire session.
@@ -469,6 +510,7 @@ __all__ = [
     "_sanitize_messages_surrogates",
     "_escape_invalid_chars_in_json_strings",
     "_repair_tool_call_arguments",
+    "_TOOL_ARGUMENT_ERROR_KEY",
     "_strip_non_ascii",
     "_sanitize_messages_non_ascii",
     "_sanitize_tools_non_ascii",

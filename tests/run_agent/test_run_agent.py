@@ -24,6 +24,7 @@ import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
 from agent.memory_manager import MemoryManager
+from agent.message_sanitization import _repair_tool_call_arguments
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 
@@ -2885,6 +2886,26 @@ class TestConcurrentToolExecution:
 
         assert starts == [("c1", "web_search", {"query": "hello"})]
         assert completes == [("c1", "web_search", {"query": "hello"}, '{"success": true}')]
+
+    def test_sequential_argument_error_payload_blocks_real_tool(self, agent):
+        agent.valid_tool_names.add("write_file")
+        payload = _repair_tool_call_arguments(
+            '{"path": "/tmp/out.py", "content": "print(',
+            "write_file",
+        )
+        tool_call = _mock_tool_call(name="write_file", arguments=payload, call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert len(messages) == 1
+        result = json.loads(messages[0]["content"])
+        assert result["success"] is False
+        assert result["retryable"] is True
+        assert result["tool"] == "write_file"
+        assert "Re-emit write_file" in result["instruction"]
 
     def test_sequential_browser_type_callbacks_redact_api_key(self, agent):
         secret = "sk-proj-ABCD1234567890EFGH"

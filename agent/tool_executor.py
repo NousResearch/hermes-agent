@@ -31,6 +31,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.tool_guardrails import ToolGuardrailDecision
+from agent.message_sanitization import _TOOL_ARGUMENT_ERROR_KEY
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -72,6 +73,25 @@ _MAX_TOOL_WORKERS = 8
 # Keep this above the stock auxiliary.web_extract timeout (360s) so the batch
 # guard does not preempt a slow-but-valid summarization attempt.
 _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
+
+
+def _tool_argument_error_result(function_name: str, function_args: dict) -> str | None:
+    if not isinstance(function_args, dict):
+        return None
+    if not function_args.get(_TOOL_ARGUMENT_ERROR_KEY):
+        return None
+    payload = dict(function_args)
+    payload.setdefault("success", False)
+    payload.setdefault("retryable", True)
+    payload.setdefault("tool", function_name)
+    payload.setdefault(
+        "error",
+        (
+            f"The {function_name} tool call arguments were truncated or malformed "
+            "before Hermes could execute the tool."
+        ),
+    )
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _resolve_concurrent_tool_timeout() -> float | None:
@@ -349,6 +369,25 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             function_args = {}
         if not isinstance(function_args, dict):
             function_args = {}
+
+        argument_error_result = _tool_argument_error_result(function_name, function_args)
+        if argument_error_result is not None:
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=argument_error_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                status="blocked",
+                error_type="invalid_tool_arguments",
+                error_message=function_args.get("error") or "Tool call arguments were invalid",
+                middleware_trace=[],
+            )
+            parsed_calls.append(
+                (tool_call, function_name, function_args, [], argument_error_result, False)
+            )
+            continue
 
         # ── Tool Search unwrap ────────────────────────────────────────
         # When the model invokes the tool_call bridge, peel it open so
@@ -997,6 +1036,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             function_args = {}
         if not isinstance(function_args, dict):
             function_args = {}
+        argument_error_result = _tool_argument_error_result(function_name, function_args)
 
         # Tool Search unwrap — see execute_tool_calls_concurrent for full
         # rationale, including the scope gate (the unwrap dispatches the
@@ -1049,12 +1089,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 pass
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
-        if _block_msg is None:
+        if argument_error_result is None and _block_msg is None:
             guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
             if not guardrail_decision.allows_execution:
                 _guardrail_block_decision = guardrail_decision
 
-        _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
+        _execution_blocked = (
+            argument_error_result is not None
+            or _block_msg is not None
+            or _guardrail_block_decision is not None
+        )
 
         if _execution_blocked:
             # Tool blocked by plugin or guardrail policy — skip counters,
@@ -1131,7 +1175,22 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         tool_start_time = time.time()
 
-        if _block_msg is not None:
+        if argument_error_result is not None:
+            function_result = argument_error_result
+            tool_duration = 0.0
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=function_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                status="blocked",
+                error_type="invalid_tool_arguments",
+                error_message=function_args.get("error") or "Tool call arguments were invalid",
+                middleware_trace=list(middleware_trace),
+            )
+        elif _block_msg is not None:
             # Tool blocked by plugin policy — return error without executing.
             function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
             tool_duration = 0.0

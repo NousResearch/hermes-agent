@@ -106,6 +106,16 @@ class TestStreamingAssemblyRepair:
         parsed = json.loads(result)
         assert parsed == {}
 
+    def test_unrepairable_write_file_returns_retry_payload(self):
+        raw = '{"path": "/tmp/out.py", "content": "print('
+        result = _repair_tool_call_arguments(raw, "write_file")
+        parsed = json.loads(result)
+        assert parsed["success"] is False
+        assert parsed["retryable"] is True
+        assert parsed["tool"] == "write_file"
+        assert parsed["required"] == ["path", "content"]
+        assert "Re-emit write_file" in parsed["instruction"]
+
     def test_glm_truncation_repairable(self):
         """GLM-5.1 truncation pattern that IS repairable."""
         raw = '{"command": "ls -la /tmp", "timeout": 30'

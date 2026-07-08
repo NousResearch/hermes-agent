@@ -6406,6 +6406,42 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
             if kind == "clean_exit":
+                # Check if the task already has a completed run in task_runs
+                # history. If it does, the task was genuinely completed in a
+                # prior run and the worker exiting cleanly without calling
+                # kanban_complete is expected — e.g. after a dispatcher
+                # restart, the new worker session found the work already done
+                # and the model omitted the implicit closing call (#60802).
+                prior_completed = conn.execute(
+                    "SELECT 1 FROM task_runs "
+                    "WHERE task_id = ? AND outcome = 'completed' LIMIT 1",
+                    (row["id"],),
+                ).fetchone()
+                if prior_completed:
+                    # Task was already completed in an earlier run —
+                    # transition to done instead of crashing and blocking
+                    # the task permanently.
+                    now = int(time.time())
+                    conn.execute(
+                        "UPDATE tasks SET status = 'done', completed_at = ?, "
+                        "claim_lock = NULL, claim_expires = NULL, "
+                        "worker_pid = NULL, block_kind = NULL, "
+                        "block_recurrences = 0 "
+                        "WHERE id = ? AND status = 'running'",
+                        (now, row["id"]),
+                    )
+                    _end_run(
+                        conn, row["id"],
+                        outcome="completed", status="done",
+                        summary="Recovered — prior completed run found",
+                    )
+                    _append_event(
+                        conn, row["id"], "complete",
+                        {"note": "recovered — prior completed run exists",
+                         "pid": pid, "claimer": row["claim_lock"]},
+                    )
+                    continue  # skip crash handling
+
                 # Worker subprocess returned 0 but its task is still
                 # ``running`` in the DB — it exited without calling
                 # ``kanban_complete`` / ``kanban_block``. Retrying won't

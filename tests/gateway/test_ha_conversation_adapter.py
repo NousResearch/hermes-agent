@@ -333,6 +333,30 @@ async def test_idle_announce_modes(announce_rig):
 
 
 @pytest.mark.asyncio
+async def test_device_id_fallback_never_targets_announce(announce_rig, monkeypatch):
+    """A bare device_id (an HA registry hex id, not an assist_satellite
+    entity) must never become the late-reply announce target — the announce
+    would fail against an invalid entity and drop the reply. Routing falls
+    back to announce_mode instead (last_active here)."""
+    adapter, calls = announce_rig("last_active")
+    adapter._last_active_satellite = "assist_satellite.kitchen"
+    monkeypatch.setattr(adapter, "handle_message",
+                        lambda e: _slow_turn(adapter, e))
+    assert await adapter.connect() is True
+    try:
+        event = await _ask(adapter, "slow question",
+                           context={"device_id": "abc123def456"})
+        assert "announce" in (Handled.from_event(event).text or "").lower()
+        await asyncio.sleep(0.5)
+        assert calls == [(
+            "assist_satellite", "announce", "assist_satellite.kitchen",
+            {"message": "the real answer"},
+        )]
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_announce_failure_is_logged_not_raised(announce_rig, monkeypatch):
     adapter, calls = announce_rig("broadcast")
 

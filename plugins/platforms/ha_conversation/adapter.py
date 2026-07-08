@@ -217,8 +217,19 @@ class HAConversationAdapter(BasePlatformAdapter):
             await respond("I'm handling several requests right now — try again in a moment.")
             return
 
-        satellite_id = context.get("satellite_id") or context.get("device_id")
-        window = _TurnWindow(str(satellite_id) if satellite_id else None)
+        # Per-room announce targets must be real assist_satellite entities.
+        # HA's context may carry only a device_id (a registry hex id) — using
+        # that as an announce target would fail against an invalid entity and
+        # drop the late reply; leave it None so _deliver_late falls back to
+        # announce_mode routing instead.
+        raw_satellite = context.get("satellite_id") or context.get("device_id")
+        announce_target = (
+            str(raw_satellite)
+            if isinstance(raw_satellite, str)
+            and raw_satellite.startswith("assist_satellite.")
+            else None
+        )
+        window = _TurnWindow(announce_target)
         self._waiting += 1
         # Start the ack timer NOW, before the turn lock is acquired: it must
         # measure total wait from arrival (queue time behind another room's
@@ -229,11 +240,9 @@ class HAConversationAdapter(BasePlatformAdapter):
         ack_task = asyncio.create_task(self._ack_after_delay(window, respond))
         try:
             async with self._turn_lock:
-                # Real satellite ids only: a bare device_id fallback (see
-                # window.satellite_id above) is not an assist_satellite
-                # entity and would fail an announce call.
+                # Same entity-only rule as the per-window target above.
                 self._last_active_satellite = (
-                    context.get("satellite_id") or self._last_active_satellite
+                    announce_target or self._last_active_satellite
                 )
                 self._active_window = window
                 failed = False

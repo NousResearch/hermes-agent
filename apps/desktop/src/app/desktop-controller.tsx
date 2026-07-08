@@ -103,7 +103,7 @@ import { $terminalTakeover } from './right-sidebar/store'
 import { TerminalPaneChrome } from './right-sidebar/terminal/chrome'
 import { PersistentTerminal } from './right-sidebar/terminal/persistent'
 import { closeActiveTerminal } from './right-sidebar/terminal/terminals'
-import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
+import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, routeSessionProfile, sessionRoute, SETTINGS_ROUTE } from './routes'
 import { SessionPickerOverlay } from './session-picker-overlay'
 import { SessionSwitcher } from './session-switcher'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
@@ -208,6 +208,7 @@ export function DesktopController() {
   const narrowViewport = useMediaQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)
 
   const routedSessionId = routeSessionId(location.pathname)
+  const routedSessionProfile = routeSessionProfile(location.search)
   const routeToken = `${location.pathname}:${location.search}:${location.hash}`
   const routeTokenRef = useRef(routeToken)
   routeTokenRef.current = routeToken
@@ -986,10 +987,12 @@ export function DesktopController() {
     freshDraftReady,
     gatewayState,
     locationPathname: location.pathname,
+    locationSearch: location.search,
     resumeSession,
     resumeFailedSessionId,
     resumeExhaustedSessionId,
     routedSessionId,
+    routedSessionProfile,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef,
@@ -1098,7 +1101,7 @@ export function DesktopController() {
             onClose={closeOverlayToPreviousRoute}
             onDeleteSession={removeSession}
             onNavigateRoute={path => navigate(path)}
-            onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
+            onOpenSession={(sessionId, profile) => navigate(sessionRoute(sessionId, profile))}
           />
         </Suspense>
       )}

@@ -1027,9 +1027,10 @@ export const ja = defineLocale({
     settingsFields: '設定フィールド',
     mcpServers: 'MCP サーバー',
     archivedChats: 'アーカイブ済みチャット',
-    sections: { sessions: 'セッション', system: 'システム', usage: '使用状況' },
+    sections: { sessions: 'セッション', 'work-packets': 'ワークパケット', system: 'システム', usage: '使用状況' },
     sectionDescriptions: {
       sessions: 'セッションの検索と管理',
+      'work-packets': '自律 Kanban ワークパケットと引き継ぎ',
       system: 'ステータス、ログ、システムアクション',
       usage: 'トークン、コスト、スキルの活動履歴'
     },
@@ -1042,6 +1043,7 @@ export const ja = defineLocale({
     },
     sectionEntries: {
       sessions: { title: 'セッションパネル', detail: 'セッションの検索、ピン留め、管理' },
+      'work-packets': { title: 'ワークパケットパネル', detail: 'Kanban キュー、ブロッカー、引き継ぎ' },
       system: { title: 'システムパネル', detail: 'ゲートウェイのステータス、ログ、再起動/更新' },
       usage: { title: '使用状況パネル', detail: 'トークン、コスト、スキルの活動' }
     },
@@ -1050,6 +1052,8 @@ export const ja = defineLocale({
     refresh: '更新',
     refreshing: '更新中...',
     noResults: '一致する結果が見つかりません。',
+    createWorkPacket: 'ワークパケットを作成',
+    creatingWorkPacket: 'ワークパケットを作成中...',
     pinSession: 'セッションをピン留め',
     unpinSession: 'セッションのピン留めを解除',
     exportSession: 'セッションをエクスポート',
@@ -1068,6 +1072,33 @@ export const ja = defineLocale({
     loadingStatus: 'ステータスを読み込み中...',
     recentLogs: '最近のログ',
     noLogs: 'ログはまだ読み込まれていません。',
+    loadingWorkPackets: 'ワークパケットを読み込み中...',
+    noWorkPackets: 'アクティブな Kanban ボードにワークパケットはまだありません。',
+    recentWorkPackets: '最近のワークパケット',
+    workPacketDetails: 'ワークパケット詳細',
+    loadingWorkPacketDetails: 'ワークパケット詳細を読み込み中...',
+    workPacketDetailsFailed: 'ワークパケット詳細を読み込めませんでした。',
+    openLinkedSession: 'リンク済みセッションを開く',
+    workPacketSummary: '要約',
+    workPacketStats: {
+      open: '未完了',
+      ready: '準備完了',
+      running: '実行中',
+      blocked: 'ブロック中',
+      review: 'レビュー',
+      done: '完了'
+    },
+    workPacketColumns: {
+      triage: 'トリアージ',
+      todo: 'Todo',
+      scheduled: '予定済み',
+      ready: '準備完了',
+      running: '実行中',
+      blocked: 'ブロック中',
+      review: 'レビュー',
+      done: '完了'
+    },
+    latestKanbanEvent: id => `最新イベント #${id}`,
     days: count => `${count}日`,
     statSessions: 'セッション',
     statApiCalls: 'API コール',

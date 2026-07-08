@@ -999,9 +999,10 @@ export const zhHant = defineLocale({
     settingsFields: '設定欄位',
     mcpServers: 'MCP 伺服器',
     archivedChats: '已封存聊天',
-    sections: { sessions: '工作階段', system: '系統', usage: '使用量' },
+    sections: { sessions: '工作階段', 'work-packets': '工作包', system: '系統', usage: '使用量' },
     sectionDescriptions: {
       sessions: '搜尋和管理工作階段',
+      'work-packets': '自主 Kanban 工作包與交接',
       system: '狀態、記錄和系統動作',
       usage: '一段時間內的詞元、費用和技能活動'
     },
@@ -1014,6 +1015,7 @@ export const zhHant = defineLocale({
     },
     sectionEntries: {
       sessions: { title: '工作階段面板', detail: '搜尋、釘選和管理工作階段' },
+      'work-packets': { title: '工作包面板', detail: 'Kanban 佇列、阻塞項與交接' },
       system: { title: '系統面板', detail: '閘道狀態、記錄、重新啟動/更新' },
       usage: { title: '使用量面板', detail: '詞元、費用和技能活動' }
     },
@@ -1022,6 +1024,8 @@ export const zhHant = defineLocale({
     refresh: '重新整理',
     refreshing: '重新整理中…',
     noResults: '找不到相符的結果。',
+    createWorkPacket: '建立工作包',
+    creatingWorkPacket: '正在建立工作包…',
     pinSession: '釘選工作階段',
     unpinSession: '取消釘選',
     exportSession: '匯出工作階段',
@@ -1040,6 +1044,33 @@ export const zhHant = defineLocale({
     loadingStatus: '正在載入狀態…',
     recentLogs: '最近記錄',
     noLogs: '尚未載入記錄。',
+    loadingWorkPackets: '正在載入工作包…',
+    noWorkPackets: '目前 Kanban 看板暫無工作包。',
+    recentWorkPackets: '最近工作包',
+    workPacketDetails: '工作包詳細資料',
+    loadingWorkPacketDetails: '正在載入工作包詳細資料…',
+    workPacketDetailsFailed: '無法載入工作包詳細資料。',
+    openLinkedSession: '開啟關聯工作階段',
+    workPacketSummary: '摘要',
+    workPacketStats: {
+      open: '未完成',
+      ready: '就緒',
+      running: '執行中',
+      blocked: '阻塞',
+      review: '審閱',
+      done: '完成'
+    },
+    workPacketColumns: {
+      triage: '分診',
+      todo: '待辦',
+      scheduled: '已排程',
+      ready: '就緒',
+      running: '執行中',
+      blocked: '阻塞',
+      review: '審閱',
+      done: '完成'
+    },
+    latestKanbanEvent: id => `最新事件 #${id}`,
     days: count => `${count} 天`,
     statSessions: '工作階段',
     statApiCalls: 'API 呼叫',

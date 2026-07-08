@@ -10,6 +10,17 @@ import pytest
 import yaml
 
 
+def _assert_no_keys(value, forbidden):
+    if isinstance(value, dict):
+        overlap = forbidden.intersection(value)
+        assert not overlap, f"forbidden key(s) present: {sorted(overlap)}"
+        for child in value.values():
+            _assert_no_keys(child, forbidden)
+    elif isinstance(value, list):
+        for child in value:
+            _assert_no_keys(child, forbidden)
+
+
 @pytest.fixture
 def isolated_profiles(tmp_path, monkeypatch, _isolate_hermes_home):
     """Isolated default home + one named profile, each with config + .env."""
@@ -48,6 +59,348 @@ def client(monkeypatch, isolated_profiles):
 
 def _cfg(home):
     return yaml.safe_load((home / "config.yaml").read_text()) or {}
+
+
+class TestProfileScopedSessionWorkPackets:
+    def test_profiles_sessions_include_read_only_work_packet_summary(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """Session rows should expose safe linked work-packet summaries.
+
+        Kanban owns ``tasks.session_id``. The dashboard session list should join
+        that fact at read time so Desktop can show a small FounderOS badge next
+        to chats without creating or mutating routing state.
+        """
+        from hermes_cli import kanban_db as kb
+        from hermes_state import SessionDB
+
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(isolated_profiles["default"]))
+        kb.init_db()
+
+        session_id = "sess_work_packet_1"
+        db = SessionDB(db_path=isolated_profiles["default"] / "state.db")
+        try:
+            db.create_session(session_id, "desktop")
+            db.set_session_title(session_id, "FounderOS planning")
+        finally:
+            db.close()
+
+        conn = kb.connect()
+        try:
+            task_id = kb.create_task(
+                conn,
+                title="Wire session badge",
+                assignee="desktop",
+                priority=4,
+                initial_status="running",
+                idempotency_key=f"session-work-packet:default:{session_id}",
+                session_id=session_id,
+            )
+        finally:
+            conn.close()
+
+        expected = {
+            "count": 1,
+            "open_count": 1,
+            "latest": {
+                "id": task_id,
+                "title": "Wire session badge",
+                "status": "ready",
+                "assignee": "desktop",
+                "priority": 4,
+            },
+        }
+
+        resp = client.get("/api/profiles/sessions", params={"profile": "default", "limit": 10})
+        assert resp.status_code == 200, resp.text
+        row = next(s for s in resp.json()["sessions"] if s["id"] == session_id)
+        assert row["work_packets"] == expected
+
+        resp = client.get("/api/sessions", params={"limit": 10})
+        assert resp.status_code == 200, resp.text
+        row = next(s for s in resp.json()["sessions"] if s["id"] == session_id)
+        assert row["work_packets"] == expected
+
+    def test_session_can_be_promoted_to_one_work_packet(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """A Desktop session can be turned into exactly one Kanban work packet.
+
+        This is the first mutation in the session/work-packet bridge: session
+        metadata seeds a task, ``tasks.session_id`` remains the durable link,
+        and repeated clicks return the existing non-archived packet instead of
+        creating duplicates.
+        """
+        from hermes_cli import kanban_db as kb
+        from hermes_state import SessionDB
+
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(isolated_profiles["default"]))
+        kb.init_db()
+
+        session_id = "sess_promote_packet_1"
+        db = SessionDB(db_path=isolated_profiles["default"] / "state.db")
+        try:
+            db.create_session(session_id, "desktop", cwd="C:/work/paralloff")
+            db.set_session_title(session_id, "Turn this chat into work")
+        finally:
+            db.close()
+
+        resp = client.post(
+            f"/api/sessions/{session_id}/work-packets",
+            json={"assignee": "desktop", "priority": 3},
+        )
+        assert resp.status_code == 200, resp.text
+        payload = resp.json()
+        assert payload["created"] is True
+        assert payload["task"]["title"] == "Turn this chat into work"
+        assert payload["task"]["session_id"] == session_id
+        assert payload["task"]["assignee"] == "desktop"
+        assert payload["task"]["priority"] == 3
+        assert "created_by" not in payload["task"]
+        assert payload["work_packets"] == {
+            "count": 1,
+            "open_count": 1,
+            "latest": {
+                "id": payload["task"]["id"],
+                "title": "Turn this chat into work",
+                "status": "ready",
+                "assignee": "desktop",
+                "priority": 3,
+            },
+        }
+
+        resp = client.post(f"/api/sessions/{session_id}/work-packets", json={})
+        assert resp.status_code == 200, resp.text
+        second = resp.json()
+        assert second["created"] is False
+        assert second["task"]["id"] == payload["task"]["id"]
+
+        conn = kb.connect()
+        try:
+            tasks = kb.list_tasks(conn, session_id=session_id)
+        finally:
+            conn.close()
+        assert [task.id for task in tasks] == [payload["task"]["id"]]
+
+    def test_command_center_work_packet_endpoints_are_sanitized(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """Desktop must never receive raw Kanban detail payloads.
+
+        The Command Center bridge can render safe card fields and the latest
+        worker summary, but raw task body/result, workspace paths, comments,
+        events, attachments, and runs must remain server-side.
+        """
+        from hermes_cli import kanban_db as kb
+        from hermes_state import SessionDB
+
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(isolated_profiles["default"]))
+        kb.init_db()
+
+        session_id = "sess_safe_packet_1"
+        db = SessionDB(db_path=isolated_profiles["default"] / "state.db")
+        try:
+            db.create_session(session_id, "desktop", cwd="C:/private/worktree")
+            db.set_session_title(session_id, "Safe endpoint source session")
+        finally:
+            db.close()
+
+        conn = kb.connect()
+        try:
+            task_id = kb.create_task(
+                conn,
+                title="Safe renderer card",
+                body="RAW BODY DO NOT SEND",
+                assignee="desktop",
+                created_by="desktop-session",
+                tenant="RAW TENANT DO NOT SEND",
+                workspace_kind="dir",
+                workspace_path="C:/private/worktree",
+                priority=5,
+                idempotency_key=f"session-work-packet:default:{session_id}",
+                session_id=session_id,
+            )
+            kb.add_comment(conn, task_id, "reviewer", "RAW COMMENT DO NOT SEND")
+            assert kb.complete_task(
+                conn,
+                task_id,
+                result="RAW RESULT DO NOT SEND",
+                summary="Safe human handoff summary",
+                metadata={"artifacts": ["C:/private/artifact.txt"]},
+            )
+        finally:
+            conn.close()
+
+        forbidden_keys = {
+            "attachments",
+            "body",
+            "comments",
+            "created_by",
+            "events",
+            "links",
+            "result",
+            "runs",
+            "tenant",
+            "tenants",
+            "workspace_kind",
+            "workspace_path",
+        }
+
+        board_resp = client.get("/api/command-center/work-packets/board")
+        assert board_resp.status_code == 200, board_resp.text
+        board_payload = board_resp.json()
+        _assert_no_keys(board_payload, forbidden_keys)
+        board_text = board_resp.text
+        assert "RAW BODY DO NOT SEND" not in board_text
+        assert "RAW COMMENT DO NOT SEND" not in board_text
+        assert "RAW RESULT DO NOT SEND" not in board_text
+        assert "RAW TENANT DO NOT SEND" not in board_text
+        assert "C:/private" not in board_text
+        assert "tenants" not in board_payload
+
+        cards = [task for col in board_payload["columns"] for task in col["tasks"]]
+        card = next(task for task in cards if task["id"] == task_id)
+        assert card["latest_summary"] == "Safe human handoff summary"
+        assert card["session_bridge"] == {
+            "profile": "default",
+            "session_id": session_id,
+            "session_exists": True,
+            "source": "desktop",
+            "title": "Safe endpoint source session",
+            "started_at": card["session_bridge"]["started_at"],
+            "last_active": card["session_bridge"]["last_active"],
+        }
+
+        detail_resp = client.get(f"/api/command-center/work-packets/tasks/{task_id}")
+        assert detail_resp.status_code == 200, detail_resp.text
+        detail_payload = detail_resp.json()
+        _assert_no_keys(detail_payload, forbidden_keys)
+        detail_text = detail_resp.text
+        assert "RAW BODY DO NOT SEND" not in detail_text
+        assert "RAW COMMENT DO NOT SEND" not in detail_text
+        assert "RAW RESULT DO NOT SEND" not in detail_text
+        assert "RAW TENANT DO NOT SEND" not in detail_text
+        assert "C:/private" not in detail_text
+        assert detail_payload["task"]["latest_summary"] == "Safe human handoff summary"
+
+    def test_command_center_does_not_bridge_unqualified_session_ids(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """A bare tasks.session_id is profile-local and must not become navigation."""
+        from hermes_cli import kanban_db as kb
+        from hermes_state import SessionDB
+
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(isolated_profiles["default"]))
+        kb.init_db()
+
+        session_id = "sess_unqualified_bridge"
+        db = SessionDB(db_path=isolated_profiles["default"] / "state.db")
+        try:
+            db.create_session(session_id, "desktop")
+            db.set_session_title(session_id, "Should not be linked by bare id")
+        finally:
+            db.close()
+
+        conn = kb.connect()
+        try:
+            bare_task_id = kb.create_task(
+                conn,
+                title="Legacy bare session task",
+                assignee="desktop",
+                priority=2,
+                session_id=session_id,
+            )
+            blank_profile_task_id = kb.create_task(
+                conn,
+                title="Malformed blank-profile session task",
+                assignee="desktop",
+                priority=2,
+                idempotency_key=f"session-work-packet:   :{session_id}",
+                session_id=session_id,
+            )
+        finally:
+            conn.close()
+
+        board_resp = client.get("/api/command-center/work-packets/board")
+        assert board_resp.status_code == 200, board_resp.text
+        cards = [task for col in board_resp.json()["columns"] for task in col["tasks"]]
+        cards_by_id = {task["id"]: task for task in cards}
+        assert "session_bridge" not in cards_by_id[bare_task_id]
+        assert "session_bridge" not in cards_by_id[blank_profile_task_id]
+
+        for task_id in (bare_task_id, blank_profile_task_id):
+            detail_resp = client.get(f"/api/command-center/work-packets/tasks/{task_id}")
+            assert detail_resp.status_code == 200, detail_resp.text
+            assert "session_bridge" not in detail_resp.json()["task"]
+
+    def test_work_packet_bridge_is_profile_qualified_for_duplicate_session_ids(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """Same local session id in two profiles must not share a badge/task."""
+        from hermes_cli import kanban_db as kb
+        from hermes_state import SessionDB
+
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(isolated_profiles["default"]))
+        kb.init_db()
+
+        session_id = "sess_duplicate_across_profiles"
+        for profile_name, title in (
+            ("default", "Default profile session"),
+            ("worker_beta", "Worker profile session"),
+        ):
+            db = SessionDB(db_path=isolated_profiles[profile_name] / "state.db")
+            try:
+                db.create_session(session_id, "desktop")
+                db.set_session_title(session_id, title)
+            finally:
+                db.close()
+
+        conn = kb.connect()
+        try:
+            task_id = kb.create_task(
+                conn,
+                title="Worker-only packet",
+                assignee="desktop",
+                priority=2,
+                idempotency_key=f"session-work-packet:worker_beta:{session_id}",
+                session_id=session_id,
+            )
+        finally:
+            conn.close()
+
+        default_resp = client.get("/api/profiles/sessions", params={"profile": "default", "limit": 10})
+        assert default_resp.status_code == 200, default_resp.text
+        default_row = next(s for s in default_resp.json()["sessions"] if s["id"] == session_id)
+        assert "work_packets" not in default_row
+
+        worker_resp = client.get("/api/profiles/sessions", params={"profile": "worker_beta", "limit": 10})
+        assert worker_resp.status_code == 200, worker_resp.text
+        worker_row = next(s for s in worker_resp.json()["sessions"] if s["id"] == session_id)
+        assert worker_row["work_packets"] == {
+            "count": 1,
+            "open_count": 1,
+            "latest": {
+                "id": task_id,
+                "title": "Worker-only packet",
+                "status": "ready",
+                "assignee": "desktop",
+                "priority": 2,
+            },
+        }
+
+        create_default = client.post(f"/api/sessions/{session_id}/work-packets", json={})
+        assert create_default.status_code == 200, create_default.text
+        assert create_default.json()["created"] is True
+        assert create_default.json()["task"]["id"] != task_id
+
+        create_worker = client.post(
+            f"/api/sessions/{session_id}/work-packets",
+            params={"profile": "worker_beta"},
+            json={},
+        )
+        assert create_worker.status_code == 200, create_worker.text
+        assert create_worker.json()["created"] is False
+        assert create_worker.json()["task"]["id"] == task_id
 
 
 class TestProfileScopedConfig:

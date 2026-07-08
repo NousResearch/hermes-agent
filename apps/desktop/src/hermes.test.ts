@@ -6,6 +6,8 @@ import {
   getGlobalModelOptions,
   getHermesConfig,
   getHermesConfigDefaults,
+  getKanbanBoard,
+  getKanbanTask,
   getProfiles,
   getSessionMessages,
   getStatus,
@@ -151,6 +153,30 @@ describe('Hermes REST session helpers', () => {
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({
         path: '/api/model/options?refresh=1&include_unconfigured=1'
+      })
+    )
+  })
+
+  it('uses the sanitized Command Center work-packet board endpoint', async () => {
+    api.mockResolvedValue({ assignees: [], columns: [], latest_event_id: 0, now: 0 })
+
+    await getKanbanBoard()
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/command-center/work-packets/board'
+      })
+    )
+  })
+
+  it('uses the sanitized Command Center work-packet detail endpoint', async () => {
+    api.mockResolvedValue({ task: { id: 'task-1', status: 'ready', title: 'Task' } })
+
+    await getKanbanTask('task/one')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/command-center/work-packets/tasks/task%2Fone'
       })
     )
   })

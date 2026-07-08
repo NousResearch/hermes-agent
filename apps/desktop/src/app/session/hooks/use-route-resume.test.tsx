@@ -14,18 +14,32 @@ interface HarnessProps {
   freshDraftReady: boolean
   gatewayState: string
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
+  locationSearch?: string
+  resumeSession: (sessionId: string, focus: boolean, profile?: null | string) => Promise<unknown>
   resumeFailedSessionId?: null | string
   resumeExhaustedSessionId?: null | string
   routedSessionId: null | string
+  routedSessionProfile?: null | string
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: null | string
   selectedStoredSessionIdRef: MutableRefObject<null | string>
   startFreshSessionDraft: (focus: boolean) => unknown
 }
 
-function RouteResumeHarness({ resumeFailedSessionId = null, resumeExhaustedSessionId = null, ...props }: HarnessProps) {
-  useRouteResume({ ...props, resumeExhaustedSessionId, resumeFailedSessionId })
+function RouteResumeHarness({
+  locationSearch = '',
+  resumeFailedSessionId = null,
+  resumeExhaustedSessionId = null,
+  routedSessionProfile = null,
+  ...props
+}: HarnessProps) {
+  useRouteResume({
+    ...props,
+    locationSearch,
+    resumeExhaustedSessionId,
+    resumeFailedSessionId,
+    routedSessionProfile
+  })
 
   return null
 }
@@ -190,6 +204,58 @@ describe('useRouteResume', () => {
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
     expect(resumeSession).toHaveBeenCalledWith('session-2', true)
+  })
+
+  it('resumes with the routed profile when only the profile query changes', () => {
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-1' }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['session-1', 'runtime-1']]) }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-1' }
+
+    const { rerender } = render(
+      <RouteResumeHarness
+        activeSessionId="runtime-1"
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/session-1"
+        resumeSession={resumeSession}
+        routedSessionId="session-1"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId="session-1"
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).not.toHaveBeenCalled()
+
+    rerender(
+      <RouteResumeHarness
+        activeSessionId="runtime-1"
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/session-1"
+        locationSearch="?profile=other"
+        resumeSession={resumeSession}
+        routedSessionId="session-1"
+        routedSessionProfile="other"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId="session-1"
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).toHaveBeenCalledTimes(1)
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true, 'other')
   })
 
   it('resumes the selected route again when the gateway reconnects', () => {

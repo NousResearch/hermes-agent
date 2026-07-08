@@ -7,8 +7,25 @@ import { Button } from '@/components/ui/button'
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
-import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateHermes } from '@/hermes'
-import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
+import {
+  createWorkPacketFromSession,
+  getActionStatus,
+  getKanbanBoard,
+  getKanbanTask,
+  getLogs,
+  getStatus,
+  getUsageAnalytics,
+  restartGateway,
+  updateHermes
+} from '@/hermes'
+import type {
+  ActionStatusResponse,
+  AnalyticsResponse,
+  KanbanBoardResponse,
+  KanbanTaskDetailResponse,
+  SessionInfo,
+  StatusResponse
+} from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { compactNumber } from '@/lib/format'
@@ -18,8 +35,10 @@ import {
   BarChart3,
   Bookmark,
   BookmarkFilled,
+  Clipboard,
   Download,
   MessageCircle,
+  Plus,
   Trash2,
   Wrench
 } from '@/lib/icons'
@@ -28,7 +47,7 @@ import { fmtDateTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
-import { $sessions, sessionPinId } from '@/store/session'
+import { $sessions, sessionPinId, setSessions } from '@/store/session'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -37,15 +56,23 @@ import { OverlayView } from '../overlays/overlay-view'
 
 import { MaintenancePanel } from './maintenance'
 
-export type CommandCenterSection = 'maintenance' | 'sessions' | 'system' | 'usage'
+export type CommandCenterSection = 'maintenance' | 'sessions' | 'work-packets' | 'system' | 'usage'
 
-const SECTIONS = ['sessions', 'system', 'usage', 'maintenance'] as const satisfies readonly CommandCenterSection[]
+const SECTIONS = ['sessions', 'work-packets', 'system', 'usage', 'maintenance'] as const satisfies readonly CommandCenterSection[]
 
 const LOG_FILES = ['agent', 'errors', 'gateway', 'desktop'] as const
 const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
 
 const USAGE_PERIODS = [7, 30, 90] as const
+const WORK_PACKET_STATUSES = ['triage', 'todo', 'scheduled', 'ready', 'running', 'blocked', 'review', 'done'] as const
+type WorkPacketStatus = (typeof WORK_PACKET_STATUSES)[number]
+type WorkPacketTask = KanbanBoardResponse['columns'][number]['tasks'][number]
+const OPEN_WORK_PACKET_STATUSES = new Set<string>(['triage', 'todo', 'scheduled', 'ready', 'running', 'blocked', 'review'])
 type UsagePeriod = (typeof USAGE_PERIODS)[number]
+
+function workPacketSessionKey(session: SessionInfo): string {
+  return `${session.profile?.trim() || 'default'}:${session.id}`
+}
 
 interface CommandCenterViewProps {
   initialSection?: CommandCenterSection
@@ -53,7 +80,7 @@ interface CommandCenterViewProps {
   onDeleteSession: (sessionId: string) => Promise<void>
   // Accepted for call-site parity; navigation lives in the global Cmd+K palette.
   onNavigateRoute?: (path: string) => void
-  onOpenSession: (sessionId: string) => void
+  onOpenSession: (sessionId: string, profile?: null | string) => void
 }
 
 function formatTimestamp(value?: number | null): string {
@@ -85,11 +112,13 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
 function RowIconButton({
   children,
   className,
+  disabled,
   onClick,
   title
 }: {
   children: ReactNode
   className?: string
+  disabled?: boolean
   onClick: (event: MouseEvent<HTMLButtonElement>) => void
   title: string
 }) {
@@ -97,6 +126,7 @@ function RowIconButton({
     <Button
       aria-label={title}
       className={cn('text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground', className)}
+      disabled={disabled}
       onClick={onClick}
       size="icon-xs"
       title={title}
@@ -146,6 +176,12 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState('')
   const usageRequestRef = useRef(0)
+  const [workPackets, setWorkPackets] = useState<KanbanBoardResponse | null>(null)
+  const [workPacketsLoading, setWorkPacketsLoading] = useState(false)
+  const [workPacketsError, setWorkPacketsError] = useState('')
+  const [creatingWorkPacketSessionIds, setCreatingWorkPacketSessionIds] = useState<Set<string>>(() => new Set())
+  const [focusedWorkPacketTaskId, setFocusedWorkPacketTaskId] = useState<null | string>(null)
+  const workPacketsRequestRef = useRef(0)
 
   const debouncedQuery = useDebouncedValue(query.trim(), 180)
 
@@ -216,6 +252,29 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
     }
   }, [])
 
+  const refreshWorkPackets = useCallback(async () => {
+    const requestId = workPacketsRequestRef.current + 1
+    workPacketsRequestRef.current = requestId
+    setWorkPacketsLoading(true)
+    setWorkPacketsError('')
+
+    try {
+      const response = await getKanbanBoard()
+
+      if (workPacketsRequestRef.current === requestId) {
+        setWorkPackets(response)
+      }
+    } catch (error) {
+      if (workPacketsRequestRef.current === requestId) {
+        setWorkPacketsError(error instanceof Error ? error.message : String(error))
+      }
+    } finally {
+      if (workPacketsRequestRef.current === requestId) {
+        setWorkPacketsLoading(false)
+      }
+    }
+  }, [])
+
   useEffect(() => {
     // Refetch when the panel opens and whenever the log file/level filters
     // change (refreshSystem's identity tracks them).
@@ -230,9 +289,17 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
     }
   }, [refreshUsage, section, usagePeriod])
 
+  useEffect(() => {
+    if (section === 'work-packets' && !workPackets && !workPacketsLoading) {
+      void refreshWorkPackets()
+    }
+  }, [refreshWorkPackets, section, workPackets, workPacketsLoading])
+
   useRefreshHotkey(() => {
     if (section === 'system') {
       void refreshSystem()
+    } else if (section === 'work-packets') {
+      void refreshWorkPackets()
     } else if (section === 'usage') {
       void refreshUsage(usagePeriod)
     }
@@ -251,6 +318,47 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
     return logs.filter(line => line.toLowerCase().includes(needle))
   }, [logQuery, logs])
 
+  const createSessionWorkPacket = useCallback(
+    async (session: SessionInfo) => {
+      const sessionKey = workPacketSessionKey(session)
+
+      setWorkPacketsError('')
+      setCreatingWorkPacketSessionIds(previous => new Set(previous).add(sessionKey))
+
+      try {
+        const response = await createWorkPacketFromSession(session.id, session.profile)
+        const profile = session.profile ?? null
+
+        setSessions(previous =>
+          previous.map(row =>
+            row.id === session.id && (row.profile ?? null) === profile
+              ? { ...row, work_packets: response.work_packets }
+              : row
+          )
+        )
+
+        void refreshWorkPackets()
+      } catch (error) {
+        setWorkPacketsError(error instanceof Error ? error.message : String(error))
+      } finally {
+        setCreatingWorkPacketSessionIds(previous => {
+          const next = new Set(previous)
+          next.delete(sessionKey)
+
+          return next
+        })
+      }
+    },
+    [refreshWorkPackets]
+  )
+
+  const openSessionWorkPacketDetails = useCallback(
+    (taskId: string) => {
+      setFocusedWorkPacketTaskId(taskId)
+      setSection('work-packets')
+    },
+    [setSection]
+  )
   const runSystemAction = useCallback(
     async (kind: 'restart' | 'update') => {
       setSystemError('')
@@ -301,11 +409,13 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
             icon:
               value === 'sessions'
                 ? MessageCircle
-                : value === 'system'
-                  ? Activity
-                  : value === 'maintenance'
-                    ? Wrench
-                    : BarChart3,
+                : value === 'work-packets'
+                  ? Clipboard
+                  : value === 'system'
+                    ? Activity
+                    : value === 'maintenance'
+                      ? Wrench
+                      : BarChart3,
             id: value,
             label: cc.sections[value],
             onSelect: () => setSection(value)
@@ -332,6 +442,11 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                   value={query}
                 />
               )}
+              {section === 'work-packets' && (
+                <Button disabled={workPacketsLoading} onClick={() => void refreshWorkPackets()} size="xs" variant="text">
+                  {workPacketsLoading ? cc.refreshing : cc.refresh}
+                </Button>
+              )}
               {section === 'usage' && (
                 <SegmentedControl
                   onChange={id => setUsagePeriod(Number(id) as UsagePeriod)}
@@ -351,12 +466,25 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                   {filteredSessions.map(session => {
                     const pinId = sessionPinId(session)
                     const pinned = pinnedSessionIds.includes(pinId)
+                    const workPacketSessionId = workPacketSessionKey(session)
+                    const workPacketSummary = session.work_packets
+                    const latestWorkPacket = workPacketSummary?.latest ?? null
+                    const workPacketStatus = latestWorkPacket?.status
+                    const creatingWorkPacket = creatingWorkPacketSessionIds.has(workPacketSessionId)
+
+                    const workPacketStatusLabel = workPacketStatus
+                      ? ((cc.workPacketColumns as Record<string, string>)[workPacketStatus] ?? workPacketStatus)
+                      : ''
+
+                    const workPacketTitle = latestWorkPacket
+                      ? `${cc.sections['work-packets']}: ${latestWorkPacket.title}${workPacketStatusLabel ? ` · ${workPacketStatusLabel}` : ''}`
+                      : cc.sections['work-packets']
 
                     return (
-                      <li className="group flex items-center gap-2 py-2" key={session.id}>
+                      <li className="group flex items-center gap-2 py-2" key={pinId}>
                         <button
                           className="min-w-0 flex-1 text-left"
-                          onClick={() => onOpenSession(session.id)}
+                          onClick={() => onOpenSession(session.id, session.profile)}
                           type="button"
                         >
                           <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
@@ -366,7 +494,38 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                             {formatTimestamp(session.last_active || session.started_at)}
                           </div>
                         </button>
+                        {workPacketSummary &&
+                          (latestWorkPacket ? (
+                            <button
+                              aria-label={`${cc.workPacketDetails}: ${latestWorkPacket.title}`}
+                              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-(--chrome-action-hover) px-1.5 py-0.5 text-[0.65rem] leading-none text-(--ui-text-secondary) transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                              onClick={() => openSessionWorkPacketDetails(latestWorkPacket.id)}
+                              title={workPacketTitle}
+                              type="button"
+                            >
+                              <Clipboard className="size-3" />
+                              {formatInteger(workPacketSummary.open_count)}/{formatInteger(workPacketSummary.count)}
+                            </button>
+                          ) : (
+                            <span
+                              aria-label={workPacketTitle}
+                              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-(--chrome-action-hover) px-1.5 py-0.5 text-[0.65rem] leading-none text-(--ui-text-secondary)"
+                              title={workPacketTitle}
+                            >
+                              <Clipboard className="size-3" />
+                              {formatInteger(workPacketSummary.open_count)}/{formatInteger(workPacketSummary.count)}
+                            </span>
+                          ))}
                         <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                          {!workPacketSummary && (
+                            <RowIconButton
+                              disabled={creatingWorkPacket}
+                              onClick={() => void createSessionWorkPacket(session)}
+                              title={creatingWorkPacket ? cc.creatingWorkPacket : cc.createWorkPacket}
+                            >
+                              <Plus className="size-3.5" />
+                            </RowIconButton>
+                          )}
                           <RowIconButton
                             onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
                             title={pinned ? cc.unpinSession : cc.pinSession}
@@ -393,6 +552,16 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                 </ul>
               )}
             </div>
+          ) : section === 'work-packets' ? (
+            <WorkPacketsPanel
+              board={workPackets}
+              error={workPacketsError}
+              focusedTaskId={focusedWorkPacketTaskId}
+              loading={workPacketsLoading}
+              onFocusedTaskHandled={() => setFocusedWorkPacketTaskId(null)}
+              onOpenSession={onOpenSession}
+              onRefresh={() => void refreshWorkPackets()}
+            />
           ) : section === 'usage' ? (
             <UsagePanel
               error={usageError}
@@ -499,6 +668,427 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   )
 }
 
+
+function workPacketTimestamp(task: WorkPacketTask): number {
+  return task.completed_at || task.last_heartbeat_at || task.started_at || task.created_at || 0
+}
+
+interface WorkPacketsPanelProps {
+  board: KanbanBoardResponse | null
+  error: string
+  focusedTaskId: null | string
+  loading: boolean
+  onFocusedTaskHandled: () => void
+  onOpenSession: (sessionId: string, profile?: null | string) => void
+  onRefresh: () => void
+}
+
+function WorkPacketsPanel({
+  board,
+  error,
+  focusedTaskId,
+  loading,
+  onFocusedTaskHandled,
+  onOpenSession,
+  onRefresh
+}: WorkPacketsPanelProps) {
+  const { t } = useI18n()
+  const cc = t.commandCenter
+  const statusLabels = cc.workPacketColumns as Record<string, string>
+  const [selectedTaskId, setSelectedTaskId] = useState<null | string>(null)
+  const [taskDetail, setTaskDetail] = useState<KanbanTaskDetailResponse | null>(null)
+  const [taskDetailError, setTaskDetailError] = useState('')
+  const [taskDetailLoading, setTaskDetailLoading] = useState(false)
+  const taskDetailRequestRef = useRef(0)
+
+  const tasks = useMemo(
+    () =>
+      (board?.columns ?? []).flatMap(column =>
+        column.tasks.map(task => ({
+          ...task,
+          status: task.status || column.name
+        }))
+      ),
+    [board]
+  )
+
+  const countsByStatus = useMemo(() => {
+    const counts = Object.fromEntries(WORK_PACKET_STATUSES.map(status => [status, 0])) as Record<WorkPacketStatus, number>
+
+    for (const task of tasks) {
+      if (WORK_PACKET_STATUSES.includes(task.status as WorkPacketStatus)) {
+        counts[task.status as WorkPacketStatus] += 1
+      }
+    }
+
+    return counts
+  }, [tasks])
+
+  const openCount = useMemo(() => tasks.filter(task => OPEN_WORK_PACKET_STATUSES.has(task.status)).length, [tasks])
+
+  const recent = useMemo(
+    () => [...tasks].sort((a, b) => workPacketTimestamp(b) - workPacketTimestamp(a)).slice(0, 6),
+    [tasks]
+  )
+
+  const selectedTask = useMemo(
+    () => tasks.find(task => task.id === selectedTaskId) ?? null,
+    [selectedTaskId, tasks]
+  )
+
+  const selectedTaskSummary = taskDetail?.task ?? selectedTask
+
+  const detailLinkedSessionId = selectedTaskSummary?.session_bridge?.session_exists
+    ? selectedTaskSummary.session_bridge.session_id
+    : null
+
+  const detailLinkedSessionProfile = selectedTaskSummary?.session_bridge?.session_exists
+    ? selectedTaskSummary.session_bridge.profile
+    : null
+
+  const detailStatus = selectedTaskSummary ? (statusLabels[selectedTaskSummary.status] ?? selectedTaskSummary.status) : ''
+
+  const detailWhen = selectedTaskSummary ? formatTimestamp(workPacketTimestamp(selectedTaskSummary)) : ''
+
+  const detailMeta = selectedTaskSummary
+    ? [detailStatus, selectedTaskSummary.assignee, detailWhen].filter(Boolean).join(' · ')
+    : ''
+
+  const detailSummary = selectedTaskSummary?.latest_summary?.trim() || ''
+
+  const openWorkPacketDetails = useCallback(async (task: WorkPacketTask) => {
+    const requestId = taskDetailRequestRef.current + 1
+    taskDetailRequestRef.current = requestId
+    setSelectedTaskId(task.id)
+    setTaskDetail(null)
+    setTaskDetailError('')
+    setTaskDetailLoading(true)
+
+    try {
+      const response = await getKanbanTask(task.id)
+
+      if (taskDetailRequestRef.current === requestId) {
+        setTaskDetail(response)
+      }
+    } catch (error) {
+      if (taskDetailRequestRef.current === requestId) {
+        setTaskDetailError(error instanceof Error ? error.message : String(error))
+      }
+    } finally {
+      if (taskDetailRequestRef.current === requestId) {
+        setTaskDetailLoading(false)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!focusedTaskId) {
+      return
+    }
+
+    const task = tasks.find(candidate => candidate.id === focusedTaskId)
+
+    if (!task) {
+      return
+    }
+
+    onFocusedTaskHandled()
+    void openWorkPacketDetails(task)
+  }, [focusedTaskId, onFocusedTaskHandled, openWorkPacketDetails, tasks])
+
+  if (!board) {
+    return (
+      <div className="min-h-0 flex-1">
+        {loading ? (
+          <PageLoader className="min-h-48" label={cc.loadingWorkPackets} />
+        ) : (
+          <EmptyPanel
+            action={
+              <Button onClick={onRefresh} size="xs" variant="text">
+                {cc.retry}
+              </Button>
+            }
+            description={error || cc.noWorkPackets}
+          />
+        )}
+      </div>
+    )
+  }
+
+  const stats = [
+    { label: cc.workPacketStats.open, value: openCount },
+    { label: cc.workPacketStats.ready, value: countsByStatus.ready },
+    { label: cc.workPacketStats.running, value: countsByStatus.running },
+    { label: cc.workPacketStats.blocked, value: countsByStatus.blocked },
+    { label: cc.workPacketStats.review, value: countsByStatus.review },
+    { label: cc.workPacketStats.done, value: countsByStatus.done }
+  ]
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto pb-2">
+      {error && (
+        <span className="inline-flex items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-destructive">
+          <AlertCircle className="size-3.5" />
+          {error}
+        </span>
+      )}
+
+      {tasks.length === 0 ? (
+        <EmptyPanel
+          action={
+            <Button onClick={onRefresh} size="xs" variant="text">
+              {cc.refresh}
+            </Button>
+          }
+          description={cc.noWorkPackets}
+        />
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-4 py-2 sm:grid-cols-3">
+            {stats.map(stat => (
+              <UsageStat key={stat.label} label={stat.label} value={formatInteger(stat.value)} />
+            ))}
+          </div>
+
+          <section>
+            <div className="mb-2 flex items-baseline justify-between gap-3">
+              <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
+                {cc.sections['work-packets']}
+              </span>
+              {board.latest_event_id > 0 && (
+                <span className="text-[0.65rem] text-(--ui-text-tertiary)">
+                  {cc.latestKanbanEvent(String(board.latest_event_id))}
+                </span>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {WORK_PACKET_STATUSES.map(status => (
+                <div
+                  className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-2"
+                  key={status}
+                >
+                  <div className="truncate text-[0.65rem] uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
+                    {statusLabels[status] ?? status}
+                  </div>
+                  <div className="mt-1 text-[length:var(--conversation-text-font-size)] font-semibold text-foreground">
+                    {formatInteger(countsByStatus[status])}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section>
+            <div className="mb-2 flex items-baseline justify-between">
+              <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
+                {cc.recentWorkPackets}
+              </span>
+            </div>
+            {recent.length === 0 ? (
+              <div className="grid h-24 place-items-center text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                {cc.noWorkPackets}
+              </div>
+            ) : (
+              <ul className="divide-y divide-(--ui-stroke-tertiary) rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary)">
+                {recent.map(task => {
+                  const timestamp = workPacketTimestamp(task)
+                  const when = formatTimestamp(timestamp)
+                  const status = statusLabels[task.status] ?? task.status
+                  const meta = [status, task.assignee, when].filter(Boolean).join(' · ')
+                  const linkedSessionId = task.session_bridge?.session_exists ? task.session_bridge.session_id : null
+                  const linkedSessionProfile = task.session_bridge?.session_exists ? task.session_bridge.profile : null
+
+                  return (
+                    <li className="px-3 py-2" key={task.id}>
+                      <div className="flex items-start justify-between gap-3">
+                        <button
+                          aria-label={`${cc.workPacketDetails}: ${task.title}`}
+                          className="min-w-0 flex-1 text-left"
+                          onClick={() => void openWorkPacketDetails(task)}
+                          type="button"
+                        >
+                          <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+                            {task.title}
+                          </div>
+                          <div className="mt-0.5 truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                            {meta || task.id}
+                          </div>
+                          {task.latest_summary && (
+                            <div className="mt-1 line-clamp-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                              {task.latest_summary}
+                            </div>
+                          )}
+                        </button>
+                        <div className="mt-0.5 flex shrink-0 items-center gap-2">
+                          {linkedSessionId && (
+                            <Button
+                              aria-label={`${cc.providerNavigate}: ${task.title}`}
+                              onClick={() => onOpenSession(linkedSessionId, linkedSessionProfile)}
+                              size="xs"
+                              variant="text"
+                            >
+                              <MessageCircle className="size-3" />
+                              {cc.providerNavigate}
+                            </Button>
+                          )}
+                          <span
+                            className={cn(
+                              'shrink-0 rounded-full px-2 py-0.5 text-[0.65rem]',
+                              task.status === 'blocked'
+                                ? 'bg-destructive/10 text-destructive'
+                                : task.status === 'running'
+                                  ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                                  : 'bg-(--chrome-action-hover) text-(--ui-text-secondary)'
+                            )}
+                          >
+                            {status}
+                          </span>
+                        </div>
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </section>
+
+          {tasks.length > recent.length && (
+            <section>
+              <div className="mb-2 flex items-baseline justify-between gap-3">
+                <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
+                  {cc.sections['work-packets']}
+                </span>
+                <span className="text-[0.65rem] text-(--ui-text-tertiary)">
+                  {formatInteger(tasks.length)}
+                </span>
+              </div>
+              <div className="grid gap-3 lg:grid-cols-2">
+                {board.columns
+                  .filter(column => column.tasks.length > 0)
+                  .map(column => {
+                    const columnTasks = column.tasks
+                      .map(task => ({
+                        ...task,
+                        status: task.status || column.name
+                      }))
+                      .sort((a, b) => workPacketTimestamp(b) - workPacketTimestamp(a))
+
+                    const columnLabel = statusLabels[column.name] ?? column.name
+
+                    return (
+                      <div
+                        className="min-w-0 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary)"
+                        key={column.name}
+                      >
+                        <div className="flex items-center justify-between gap-2 border-b border-(--ui-stroke-tertiary) px-3 py-2">
+                          <span className="truncate text-[0.65rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
+                            {columnLabel}
+                          </span>
+                          <span className="rounded-full bg-(--chrome-action-hover) px-2 py-0.5 text-[0.65rem] text-(--ui-text-secondary)">
+                            {formatInteger(columnTasks.length)}
+                          </span>
+                        </div>
+                        <ul className="divide-y divide-(--ui-stroke-tertiary)">
+                          {columnTasks.map(task => {
+                            const timestamp = workPacketTimestamp(task)
+                            const when = formatTimestamp(timestamp)
+                            const status = statusLabels[task.status] ?? task.status
+                            const meta = [status, task.assignee, when].filter(Boolean).join(' · ')
+
+                            return (
+                              <li className="px-3 py-2" key={task.id}>
+                                <button
+                                  aria-label={`${cc.workPacketDetails}: ${task.title}`}
+                                  className="w-full min-w-0 text-left"
+                                  onClick={() => void openWorkPacketDetails(task)}
+                                  type="button"
+                                >
+                                  <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+                                    {task.title}
+                                  </div>
+                                  <div className="mt-0.5 truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                                    {meta || task.id}
+                                  </div>
+                                  {task.latest_summary && (
+                                    <div className="mt-1 line-clamp-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                                      {task.latest_summary}
+                                    </div>
+                                  )}
+                                </button>
+                              </li>
+                            )
+                          })}
+                        </ul>
+                      </div>
+                    )
+                  })}
+              </div>
+            </section>
+          )}
+
+          {selectedTaskSummary && (
+            <section className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
+                  {cc.workPacketDetails}
+                </span>
+                {detailLinkedSessionId && (
+                  <Button
+                    aria-label={cc.openLinkedSession}
+                    onClick={() => onOpenSession(detailLinkedSessionId, detailLinkedSessionProfile)}
+                    size="xs"
+                    variant="textStrong"
+                  >
+                    <MessageCircle className="size-3" />
+                    {cc.openLinkedSession}
+                  </Button>
+                )}
+              </div>
+
+              {taskDetailLoading ? (
+                <PageLoader className="min-h-24" label={cc.loadingWorkPacketDetails} />
+              ) : (
+                <div>
+                  <div className="min-w-0">
+                    <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+                      {selectedTaskSummary.title}
+                    </div>
+                    <div className="mt-0.5 truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                      {detailMeta || selectedTaskSummary.id}
+                    </div>
+                  </div>
+
+                  {taskDetailError && (
+                    <div className="mt-2 inline-flex items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-destructive">
+                      <AlertCircle className="size-3.5" />
+                      {taskDetailError || cc.workPacketDetailsFailed}
+                    </div>
+                  )}
+
+                  {detailSummary && (
+                    <div className="mt-3">
+                      <div className="mb-1 text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
+                        {cc.workPacketSummary}
+                      </div>
+                      <div className="whitespace-pre-wrap text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-secondary)">
+                        {detailSummary}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+
+function formatInteger(value: null | number | undefined): string {
+  return Number(value ?? 0).toLocaleString()
+}
 interface UsagePanelProps {
   error: string
   loading: boolean

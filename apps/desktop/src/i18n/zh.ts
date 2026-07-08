@@ -1191,10 +1191,11 @@ export const zh: Translations = {
     settingsFields: '设置字段',
     mcpServers: 'MCP 服务器',
     archivedChats: '已归档对话',
-    sections: { maintenance: '维护', sessions: '会话', system: '系统', usage: '用量' },
+    sections: { maintenance: '维护', sessions: '会话', 'work-packets': '工作包', system: '系统', usage: '用量' },
     sectionDescriptions: {
       maintenance: '诊断、备份、维护器与记忆数据',
       sessions: '搜索与管理会话',
+      'work-packets': '自主 Kanban 工作包与交接',
       system: '状态、日志与系统操作',
       usage: '一段时间内的词元、成本与技能活动'
     },
@@ -1207,6 +1208,7 @@ export const zh: Translations = {
     },
     sectionEntries: {
       sessions: { title: '会话面板', detail: '搜索、置顶与管理会话' },
+      'work-packets': { title: '工作包面板', detail: 'Kanban 队列、阻塞项与交接' },
       system: { title: '系统面板', detail: '网关状态、日志、重启/更新' },
       usage: { title: '用量面板', detail: '词元、成本与技能活动' }
     },
@@ -1215,6 +1217,8 @@ export const zh: Translations = {
     refresh: '刷新',
     refreshing: '刷新中…',
     noResults: '未找到匹配结果。',
+    createWorkPacket: '创建工作包',
+    creatingWorkPacket: '正在创建工作包…',
     pinSession: '置顶会话',
     unpinSession: '取消置顶',
     exportSession: '导出会话',
@@ -1233,6 +1237,33 @@ export const zh: Translations = {
     loadingStatus: '正在加载状态…',
     recentLogs: '最近日志',
     noLogs: '尚未加载日志。',
+    loadingWorkPackets: '正在加载工作包…',
+    noWorkPackets: '当前 Kanban 看板暂无工作包。',
+    recentWorkPackets: '最近工作包',
+    workPacketDetails: '工作包详情',
+    loadingWorkPacketDetails: '正在加载工作包详情…',
+    workPacketDetailsFailed: '无法加载工作包详情。',
+    openLinkedSession: '打开关联会话',
+    workPacketSummary: '摘要',
+    workPacketStats: {
+      open: '未完成',
+      ready: '就绪',
+      running: '运行中',
+      blocked: '阻塞',
+      review: '复核',
+      done: '完成'
+    },
+    workPacketColumns: {
+      triage: '分诊',
+      todo: '待办',
+      scheduled: '已排期',
+      ready: '就绪',
+      running: '运行中',
+      blocked: '阻塞',
+      review: '复核',
+      done: '完成'
+    },
+    latestKanbanEvent: id => `最新事件 #${id}`,
     days: count => `${count} 天`,
     statSessions: '会话',
     statApiCalls: 'API 调用',

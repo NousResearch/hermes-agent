@@ -11,7 +11,8 @@ interface RouteResumeOptions {
   freshDraftReady: boolean
   gatewayState: string | undefined
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
+  locationSearch: string
+  resumeSession: (sessionId: string, focus: boolean, profile?: null | string) => Promise<unknown>
   // Stored-session id whose most recent resume failed terminally (set by
   // useSessionActions, mirrored from $resumeFailedSessionId). While this equals
   // routedSessionId the window would otherwise latch on the loader forever, so
@@ -24,6 +25,7 @@ interface RouteResumeOptions {
   // signal the effect below uses to reset the attempt counter.
   resumeExhaustedSessionId: string | null
   routedSessionId: string | null
+  routedSessionProfile: string | null
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: string | null
   selectedStoredSessionIdRef: MutableRefObject<string | null>
@@ -73,16 +75,18 @@ export function useRouteResume({
   freshDraftReady,
   gatewayState,
   locationPathname,
+  locationSearch,
   resumeSession,
   resumeFailedSessionId,
   resumeExhaustedSessionId,
   routedSessionId,
+  routedSessionProfile,
   runtimeIdByStoredSessionIdRef,
   selectedStoredSessionId,
   selectedStoredSessionIdRef,
   startFreshSessionDraft
 }: RouteResumeOptions) {
-  const lastPathnameRef = useRef<string | null>(null)
+  const lastRouteLocationRef = useRef<string | null>(null)
   const seenGatewayStateRef = useRef(false)
   const wasGatewayOpenRef = useRef(false)
   // Per-session retry bookkeeping for the bounded auto-retry effect below. Keyed
@@ -98,13 +102,16 @@ export function useRouteResume({
 
   useEffect(() => {
     const gatewayOpen = gatewayState === 'open'
-    const pathnameChanged = lastPathnameRef.current !== locationPathname
+    const routeLocation = `${locationPathname}:${locationSearch}`
+    const previousRouteLocation = lastRouteLocationRef.current
+    const routeLocationChanged = previousRouteLocation !== routeLocation
+    const profileRouteChanged = previousRouteLocation !== null && routeLocationChanged && Boolean(routedSessionProfile)
     // Fire only on a genuine closed->open transition (a reconnect). seenGatewayStateRef
     // stays false until the first effect run, so a session that mounts with the gateway
     // already open is not mistaken for "became open" and does not double-resume with the
     // pathname-driven initial resume below.
     const gatewayBecameOpen = seenGatewayStateRef.current && !wasGatewayOpenRef.current && gatewayOpen
-    lastPathnameRef.current = locationPathname
+    lastRouteLocationRef.current = routeLocation
     seenGatewayStateRef.current = true
     wasGatewayOpenRef.current = gatewayOpen
 
@@ -140,14 +147,16 @@ export function useRouteResume({
       // we're stranded on a routed session that never loaded. The first two
       // guard against a transient /:sid re-resume during "new chat" state clears
       // before the pathname updates from /:sid -> /.
-      const shouldResume = pathnameChanged || gatewayBecameOpen || stuckOnRoutedSession
+      const shouldResume = routeLocationChanged || gatewayBecameOpen || stuckOnRoutedSession
 
       // On a reconnect (gatewayBecameOpen) re-resume even when the route looks
       // `alreadyActive`: the cached runtime id can be stale once the gateway
       // rebinds/reaps the session on its side, and trusting it strands Desktop on
       // a dead id ("session not found"). Otherwise keep skipping when already active.
-      if ((gatewayBecameOpen || !alreadyActive) && shouldResume && !creatingSessionRef.current) {
-        void resumeSession(routedSessionId, true)
+      if ((gatewayBecameOpen || !alreadyActive || profileRouteChanged) && shouldResume && !creatingSessionRef.current) {
+        void (routedSessionProfile
+          ? resumeSession(routedSessionId, true, routedSessionProfile)
+          : resumeSession(routedSessionId, true))
       }
 
       return
@@ -169,8 +178,10 @@ export function useRouteResume({
     freshDraftReady,
     gatewayState,
     locationPathname,
+    locationSearch,
     resumeSession,
     routedSessionId,
+    routedSessionProfile,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef,
@@ -267,7 +278,7 @@ export function useRouteResume({
       // having fired. A flapping backend could then hit MAX in a couple of
       // re-renders with far fewer than MAX real attempts. (Point 3)
       retryAttemptRef.current += 1
-      void resumeSession(sessionId, true)
+      void (routedSessionProfile ? resumeSession(sessionId, true, routedSessionProfile) : resumeSession(sessionId, true))
     }, resumeRetryDelayMs(attempt))
 
     return () => clearTimeout(timer)
@@ -280,6 +291,7 @@ export function useRouteResume({
     resumeFailedSessionId,
     resumeExhaustedSessionId,
     routedSessionId,
+    routedSessionProfile,
     selectedStoredSessionIdRef
   ])
 }

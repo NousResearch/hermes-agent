@@ -3849,6 +3849,414 @@ def _strip_session_list_rows(sessions: List[Dict[str, Any]]) -> List[Dict[str, A
         for key in _SESSION_LIST_HEAVY_FIELDS:
             s.pop(key, None)
     return sessions
+_WORK_PACKET_CARD_SUMMARY_PREVIEW_CHARS = 200
+_COMMAND_CENTER_WORK_PACKET_COLUMNS = [
+    "triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done",
+]
+
+
+def _session_work_packet_profile_name(profile: Optional[str]) -> str:
+    """Return the profile name used in session-work-packet idempotency keys."""
+    if profile:
+        name, _home = _cron_profile_home(profile)
+        return name
+    return "default"
+
+
+def _session_work_packet_profile_for_row(session: Dict[str, Any]) -> str:
+    raw = str(session.get("profile") or "default").strip()
+    return raw or "default"
+
+
+def _session_work_packet_idempotency_key(profile_name: str, session_id: str) -> str:
+    return f"session-work-packet:{profile_name}:{session_id}"
+
+
+def _session_work_packet_key_from_idempotency(value: Optional[str]) -> Optional[Tuple[str, str]]:
+    if not value:
+        return None
+    prefix = "session-work-packet:"
+    if not value.startswith(prefix):
+        return None
+    rest = value[len(prefix):]
+    if ":" not in rest:
+        return None
+    profile_name, session_id = rest.split(":", 1)
+    profile_name = profile_name.strip()
+    session_id = session_id.strip()
+    if not profile_name or not session_id:
+        return None
+    return profile_name, session_id
+
+
+def _session_work_packet_summaries(sessions: List[Dict[str, Any]]) -> Dict[Tuple[str, str], Dict[str, Any]]:
+    """Return safe Kanban work-packet summaries keyed by (profile, session id).
+
+    Kanban is a shared board across profiles, while session lists are served out
+    of one or more profile ``state.db`` files.  This read-only join lets Desktop
+    show a small FounderOS badge beside linked chats without creating a second
+    task store or mutating gateway/Kanban routing state.  The payload is
+    deliberately tiny and excludes workspace paths, bodies, results, comments,
+    chat ids, user ids, and session keys.
+
+    The join is intentionally profile-qualified through the Desktop promotion
+    idempotency key.  ``tasks.session_id`` alone is not globally unique across
+    Hermes profiles, so raw session-id matches would let one profile inherit
+    another profile's badge when both have the same local session id.
+    """
+    targets: Dict[str, Tuple[str, str]] = {}
+    for session in sessions:
+        sid = str(session.get("id") or "").strip()
+        if not sid:
+            continue
+        profile_name = _session_work_packet_profile_for_row(session)
+        targets[_session_work_packet_idempotency_key(profile_name, sid)] = (profile_name, sid)
+    if not targets:
+        return {}
+
+    try:
+        from hermes_cli import kanban_db as kb
+
+        db_path = kb.kanban_db_path()
+    except Exception as exc:
+        _log.debug("session work-packet summary path lookup failed: %s", exc)
+        return {}
+
+    if not db_path.exists():
+        return {}
+
+    try:
+        import sqlite3
+
+        conn = sqlite3.connect(
+            db_path.resolve().as_uri() + "?mode=ro",
+            uri=True,
+            timeout=0.25,
+            isolation_level=None,
+        )
+        conn.row_factory = sqlite3.Row
+    except Exception as exc:
+        _log.debug("session work-packet summary DB open failed: %s", exc)
+        return {}
+
+    try:
+        keys = sorted(targets)
+        placeholders = ",".join("?" for _ in keys)
+        rows = conn.execute(
+            f"""
+            SELECT id, session_id, idempotency_key, title, status, assignee, priority
+            FROM tasks
+            WHERE idempotency_key IN ({placeholders})
+              AND status != 'archived'
+            ORDER BY COALESCE(completed_at, last_heartbeat_at, started_at, created_at) DESC,
+                     created_at DESC,
+                     id DESC
+            """,
+            keys,
+        ).fetchall()
+    except Exception as exc:
+        _log.debug("session work-packet summary query failed: %s", exc)
+        return {}
+    finally:
+        conn.close()
+
+    summaries: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for row in rows:
+        key = targets.get(row["idempotency_key"])
+        if key is None:
+            continue
+        summary = summaries.setdefault(
+            key,
+            {"count": 0, "open_count": 0, "latest": None},
+        )
+        summary["count"] += 1
+        if row["status"] not in ("done", "archived"):
+            summary["open_count"] += 1
+        if summary["latest"] is None:
+            summary["latest"] = {
+                "id": row["id"],
+                "title": row["title"],
+                "status": row["status"],
+                "assignee": row["assignee"],
+                "priority": row["priority"],
+            }
+    return summaries
+
+
+def _attach_work_packet_summaries(sessions: List[Dict[str, Any]]) -> None:
+    summaries = _session_work_packet_summaries(sessions)
+    if not summaries:
+        return
+    for session in sessions:
+        sid = str(session.get("id") or "").strip()
+        if not sid:
+            continue
+        summary = summaries.get((_session_work_packet_profile_for_row(session), sid))
+        if summary:
+            session["work_packets"] = summary
+
+
+def _session_work_packet_task_payload(task: Any) -> Dict[str, Any]:
+    """Return the safe task fields needed after promoting a session.
+
+    Work-packet detail APIs already own the full Kanban shape.  The session
+    mutation endpoint only needs enough data for Desktop to update the row badge
+    and avoid a board refresh; keep workspace paths, bodies, results, comments,
+    and gateway routing internals out of this response.
+    """
+    return {
+        "id": task.id,
+        "title": task.title,
+        "status": task.status,
+        "assignee": task.assignee,
+        "priority": task.priority,
+        "session_id": task.session_id,
+        "created_at": task.created_at,
+        "started_at": task.started_at,
+        "completed_at": task.completed_at,
+    }
+
+
+def _fallback_session_work_packet_summary(task: Any) -> Dict[str, Any]:
+    return {
+        "count": 1,
+        "open_count": 0 if task.status in ("done", "archived") else 1,
+        "latest": {
+            "id": task.id,
+            "title": task.title,
+            "status": task.status,
+            "assignee": task.assignee,
+            "priority": task.priority,
+        },
+    }
+
+
+def _profile_name_for_work_packet_task(task: Any) -> Optional[str]:
+    parsed = _session_work_packet_key_from_idempotency(getattr(task, "idempotency_key", None))
+    task_session_id = str(getattr(task, "session_id", None) or "").strip()
+    if parsed and task_session_id and parsed[1] == task_session_id:
+        return parsed[0]
+    return None
+
+
+def _empty_command_center_session_bridge(profile_name: str, session_id: str) -> Dict[str, Any]:
+    return {
+        "profile": profile_name,
+        "session_id": session_id,
+        "session_exists": False,
+        "source": None,
+        "title": None,
+        "started_at": None,
+        "last_active": None,
+    }
+
+
+def _command_center_session_bridges_for(tasks: List[Any]) -> Dict[Tuple[str, str], Dict[str, Any]]:
+    """Return safe profile-qualified session navigation hints for work packets.
+
+    This intentionally reads only ``sessions`` plus message timestamps from
+    ``state.db``. It never exposes gateway chat ids, user ids, session keys,
+    workspace paths, task bodies, task results, comments, events, attachments,
+    or run metadata to the Desktop renderer.
+    """
+    targets: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for task in tasks:
+        sid = str(getattr(task, "session_id", None) or "").strip()
+        if not sid:
+            continue
+        profile_name = _profile_name_for_work_packet_task(task)
+        if not profile_name:
+            continue
+        key = (profile_name, sid)
+        targets.setdefault(key, _empty_command_center_session_bridge(profile_name, sid))
+    if not targets:
+        return {}
+
+    import sqlite3
+
+    by_profile: Dict[str, List[str]] = {}
+    for profile_name, sid in targets:
+        by_profile.setdefault(profile_name, []).append(sid)
+
+    for profile_name, ids in by_profile.items():
+        try:
+            state_path = (
+                get_hermes_home() / "state.db"
+                if profile_name == "default"
+                else _cron_profile_home(profile_name)[1] / "state.db"
+            )
+        except Exception as exc:
+            _log.debug("work-packet session bridge profile lookup failed for %s: %s", profile_name, exc)
+            continue
+        if not state_path.exists():
+            continue
+
+        conn = None
+        try:
+            conn = sqlite3.connect(
+                state_path.resolve().as_uri() + "?mode=ro",
+                uri=True,
+                timeout=0.25,
+                isolation_level=None,
+            )
+            conn.row_factory = sqlite3.Row
+            placeholders = ",".join("?" for _ in ids)
+            rows = conn.execute(
+                f"""
+                SELECT
+                    s.id,
+                    s.source,
+                    s.title,
+                    s.started_at,
+                    COALESCE(
+                        (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id),
+                        s.started_at
+                    ) AS last_active
+                FROM sessions s
+                WHERE s.id IN ({placeholders})
+                """,
+                ids,
+            ).fetchall()
+        except Exception as exc:
+            _log.debug("work-packet session bridge DB lookup failed for %s: %s", profile_name, exc)
+            continue
+        finally:
+            if conn is not None:
+                conn.close()
+
+        for row in rows:
+            sid = str(row["id"])
+            bridge = targets.get((profile_name, sid))
+            if bridge is None:
+                continue
+            bridge.update(
+                {
+                    "session_exists": True,
+                    "source": row["source"],
+                    "title": row["title"],
+                    "started_at": row["started_at"],
+                    "last_active": row["last_active"],
+                }
+            )
+
+    return targets
+
+
+def _command_center_work_packet_task_payload(
+    task: Any,
+    *,
+    latest_summary: Optional[str] = None,
+    session_bridge: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    payload = {
+        "id": task.id,
+        "title": task.title,
+        "status": task.status,
+        "assignee": task.assignee,
+        "priority": task.priority,
+        "created_at": task.created_at,
+        "started_at": task.started_at,
+        "completed_at": task.completed_at,
+        "last_heartbeat_at": task.last_heartbeat_at,
+        "block_kind": getattr(task, "block_kind", None),
+        "current_step_key": getattr(task, "current_step_key", None),
+        "latest_summary": latest_summary,
+    }
+    if session_bridge is not None:
+        payload["session_bridge"] = session_bridge
+    return payload
+
+
+def _open_kanban_for_command_center():
+    try:
+        from hermes_cli import kanban_db as kb
+
+        kb.init_db()
+        return kb, kb.connect()
+    except Exception as exc:
+        _log.warning("kanban DB open failed for command center work packets: %s", exc)
+        raise HTTPException(status_code=503, detail="Kanban board unavailable")
+
+
+@app.get("/api/command-center/work-packets/board")
+async def get_command_center_work_packets_board(include_archived: bool = False):
+    """Return a Desktop-safe Kanban board summary for Command Center.
+
+    This endpoint is separate from the raw Kanban dashboard plugin API. The
+    Desktop renderer receives only card-safe fields plus optional latest worker
+    summaries; raw task body/result, workspace paths, comments, attachments,
+    events, run metadata, and gateway routing identifiers stay server-side.
+    """
+    kb, conn = _open_kanban_for_command_center()
+    try:
+        tasks = kb.list_tasks(conn, include_archived=include_archived)
+        summary_map = kb.latest_summaries(conn, [task.id for task in tasks])
+        bridge_map = _command_center_session_bridges_for(tasks)
+        latest_event_id = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS m FROM task_events"
+        ).fetchone()["m"]
+        columns: Dict[str, List[Dict[str, Any]]] = {name: [] for name in _COMMAND_CENTER_WORK_PACKET_COLUMNS}
+        if include_archived:
+            columns["archived"] = []
+
+        for task in tasks:
+            full = summary_map.get(task.id)
+            preview = full[:_WORK_PACKET_CARD_SUMMARY_PREVIEW_CHARS] if full else None
+            sid = str(task.session_id or "").strip()
+            profile_name = _profile_name_for_work_packet_task(task) if sid else None
+            bridge = bridge_map.get((profile_name, sid)) if profile_name and sid else None
+            payload = _command_center_work_packet_task_payload(
+                task,
+                latest_summary=preview,
+                session_bridge=bridge,
+            )
+            column = task.status if task.status in columns else "todo"
+            columns[column].append(payload)
+
+        assignees = [
+            row["assignee"]
+            for row in conn.execute(
+                "SELECT DISTINCT assignee FROM tasks WHERE assignee IS NOT NULL "
+                "AND status != 'archived' ORDER BY assignee"
+            ).fetchall()
+        ]
+
+        return {
+            "columns": [{"name": name, "tasks": columns[name]} for name in columns.keys()],
+            "assignees": assignees,
+            "latest_event_id": int(latest_event_id),
+            "now": int(time.time()),
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/command-center/work-packets/tasks/{task_id}")
+async def get_command_center_work_packet_task(task_id: str):
+    """Return Desktop-safe detail for one work packet.
+
+    Detail may include the full latest worker summary because that is the
+    human handoff surface. It still excludes raw task body/result, comments,
+    attachments, events, workspace paths, and run metadata.
+    """
+    kb, conn = _open_kanban_for_command_center()
+    try:
+        task = kb.get_task(conn, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        sid = str(task.session_id or "").strip()
+        bridge_map = _command_center_session_bridges_for([task]) if sid else {}
+        profile_name = _profile_name_for_work_packet_task(task) if sid else None
+        bridge = bridge_map.get((profile_name, sid)) if profile_name and sid else None
+        return {
+            "task": _command_center_work_packet_task_payload(
+                task,
+                latest_summary=kb.latest_summary(conn, task_id),
+                session_bridge=bridge,
+            )
+        }
+    finally:
+        conn.close()
 
 
 @app.get("/api/sessions")
@@ -3940,6 +4348,7 @@ def get_sessions(
                 s["archived"] = bool(s.get("archived"))
             if not full:
                 _strip_session_list_rows(sessions)
+            _attach_work_packet_summaries(sessions)
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()
@@ -4067,6 +4476,7 @@ def get_profiles_sessions(
     window = merged[offset:offset + limit]
     if not full:
         _strip_session_list_rows(window)
+    _attach_work_packet_summaries(window)
     return {
         "sessions": window,
         "total": total,
@@ -9644,6 +10054,15 @@ class SessionRename(BaseModel):
     profile: Optional[str] = None
 
 
+class SessionWorkPacketCreate(BaseModel):
+    title: Optional[str] = None
+    assignee: Optional[str] = None
+    priority: Optional[int] = None
+    # Explicit body profile beats the query param injected by the Desktop
+    # profile switcher, matching the other scoped write endpoints.
+    profile: Optional[str] = None
+
+
 @app.patch("/api/sessions/{session_id}")
 async def rename_session_endpoint(session_id: str, body: SessionRename):
     """Update a session: rename (or clear its title) and/or archive it.
@@ -9676,6 +10095,94 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         return result
     finally:
         db.close()
+
+
+@app.post("/api/sessions/{session_id}/work-packets")
+async def create_session_work_packet_endpoint(
+    session_id: str,
+    body: Optional[SessionWorkPacketCreate] = None,
+    profile: Optional[str] = None,
+):
+    """Promote a Hermes session into a Kanban work packet.
+
+    ``tasks.session_id`` remains the durable bridge.  Repeated calls return the
+    existing non-archived packet instead of creating duplicates, so Desktop can
+    safely expose this as a one-click "Create packet" action.
+    """
+    body = body or SessionWorkPacketCreate()
+    target_profile = body.profile if body.profile is not None else profile
+    profile_name = _session_work_packet_profile_name(target_profile)
+
+    db = _open_session_db_for_profile(target_profile)
+    try:
+        sid = db.resolve_session_id(session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+        session = db.get_session(sid)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+    finally:
+        db.close()
+
+    try:
+        from hermes_cli import kanban_db as kb
+
+        kb.init_db()
+        conn = kb.connect()
+    except Exception as exc:
+        _log.warning("kanban DB open failed for session work-packet create: %s", exc)
+        raise HTTPException(status_code=503, detail="Kanban board unavailable")
+
+    try:
+        idempotency_key = _session_work_packet_idempotency_key(profile_name, sid)
+        existing_row = conn.execute(
+            """
+            SELECT id FROM tasks
+            WHERE idempotency_key = ?
+              AND status != 'archived'
+            ORDER BY COALESCE(completed_at, last_heartbeat_at, started_at, created_at) DESC,
+                     created_at DESC,
+                     id DESC
+            LIMIT 1
+            """,
+            (idempotency_key,),
+        ).fetchone()
+        created = False
+        if existing_row:
+            task = kb.get_task(conn, existing_row["id"])
+        else:
+            raw_title = body.title if body.title is not None else session.get("title")
+            title = (raw_title or "").strip() or f"Session {sid[:8]}"
+            assignee = (body.assignee or "").strip() or None
+            priority = int(body.priority) if body.priority is not None else 0
+            cwd = str(session.get("cwd") or "").strip()
+            task_id = kb.create_task(
+                conn,
+                title=title,
+                body=f"Promoted from Hermes session {sid}.",
+                assignee=assignee,
+                created_by="desktop-session",
+                workspace_kind="dir" if cwd else "scratch",
+                workspace_path=cwd or None,
+                priority=priority,
+                idempotency_key=idempotency_key,
+                session_id=sid,
+            )
+            task = kb.get_task(conn, task_id)
+            created = True
+        if task is None:
+            raise HTTPException(status_code=500, detail="Work packet creation failed")
+        session_row = {"id": sid, "profile": profile_name}
+        summary = _session_work_packet_summaries([session_row]).get((profile_name, sid))
+        return {
+            "created": created,
+            "task": _session_work_packet_task_payload(task),
+            "work_packets": summary or _fallback_session_work_packet_summary(task),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        conn.close()
 
 
 @app.get("/api/sessions/{session_id}/export")

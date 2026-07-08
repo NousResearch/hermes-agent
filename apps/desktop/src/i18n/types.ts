@@ -894,15 +894,17 @@ export interface Translations {
     settingsFields: string
     mcpServers: string
     archivedChats: string
-    sections: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
-    sectionDescriptions: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
+    sections: Record<'maintenance' | 'sessions' | 'work-packets' | 'system' | 'usage', string>
+    sectionDescriptions: Record<'maintenance' | 'sessions' | 'work-packets' | 'system' | 'usage', string>
     nav: Record<'newChat' | 'settings' | 'skills' | 'messaging' | 'artifacts', { title: string; detail: string }>
-    sectionEntries: Record<'sessions' | 'system' | 'usage', { title: string; detail: string }>
+    sectionEntries: Record<'sessions' | 'work-packets' | 'system' | 'usage', { title: string; detail: string }>
     providerNavigate: string
     providerSessions: string
     refresh: string
     refreshing: string
     noResults: string
+    createWorkPacket: string
+    creatingWorkPacket: string
     pinSession: string
     unpinSession: string
     exportSession: string
@@ -921,6 +923,17 @@ export interface Translations {
     loadingStatus: string
     recentLogs: string
     noLogs: string
+    loadingWorkPackets: string
+    noWorkPackets: string
+    recentWorkPackets: string
+    workPacketDetails: string
+    loadingWorkPacketDetails: string
+    workPacketDetailsFailed: string
+    openLinkedSession: string
+    workPacketSummary: string
+    workPacketStats: Record<'open' | 'ready' | 'running' | 'blocked' | 'review' | 'done', string>
+    workPacketColumns: Record<'triage' | 'todo' | 'scheduled' | 'ready' | 'running' | 'blocked' | 'review' | 'done', string>
+    latestKanbanEvent: (id: string) => string
     days: (count: number) => string
     statSessions: string
     statApiCalls: string

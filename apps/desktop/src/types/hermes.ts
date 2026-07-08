@@ -315,6 +315,44 @@ export interface SessionCreateResponse {
   stored_session_id?: string
 }
 
+export interface SessionWorkPacketLatest {
+  assignee?: null | string
+  id: string
+  priority?: null | number
+  status: string
+  title: string
+}
+
+export interface SessionWorkPacketSummary {
+  count: number
+  latest?: null | SessionWorkPacketLatest
+  open_count: number
+}
+
+export interface SessionWorkPacketTask {
+  assignee?: null | string
+  completed_at?: null | number
+  created_at?: null | number
+  id: string
+  priority?: null | number
+  session_id: string
+  started_at?: null | number
+  status: string
+  title: string
+}
+
+export interface SessionWorkPacketCreatePayload {
+  assignee?: null | string
+  priority?: null | number
+  title?: null | string
+}
+
+export interface SessionWorkPacketCreateResponse {
+  created: boolean
+  task: SessionWorkPacketTask
+  work_packets: SessionWorkPacketSummary
+}
+
 export interface SessionInfo {
   archived?: boolean
   cwd?: null | string
@@ -347,6 +385,9 @@ export interface SessionInfo {
   started_at: number
   title: null | string
   tool_call_count: number
+  /** Small read-only summary of Kanban work packets linked through tasks.session_id.
+   *  Present only on session-list responses when matching tasks exist. */
+  work_packets?: null | SessionWorkPacketSummary
   /** Origin platform when this session was handed off from a messaging
    *  platform (e.g. a Telegram thread continued in the desktop app). The live
    *  {@link source} becomes local (tui/desktop) after a handoff, so the origin
@@ -521,6 +562,49 @@ export interface AnalyticsToolEntry {
   tool: string
 }
 
+export interface KanbanSessionBridge {
+  last_active?: null | number
+  profile: string
+  session_exists: boolean
+  session_id: string
+  source?: null | string
+  started_at?: null | number
+  title?: null | string
+}
+
+export interface KanbanTask {
+  assignee?: null | string
+  block_kind?: null | string
+  completed_at?: null | number
+  created_at?: null | number
+  current_step_key?: null | string
+  id: string
+  last_heartbeat_at?: null | number
+  latest_summary?: null | string
+  priority?: null | number
+  session_bridge?: KanbanSessionBridge | null
+  started_at?: null | number
+  status: string
+  title: string
+}
+
+export type KanbanTaskDetail = KanbanTask
+
+export interface KanbanTaskDetailResponse {
+  task: KanbanTaskDetail
+}
+
+export interface KanbanBoardColumn {
+  name: string
+  tasks: KanbanTask[]
+}
+
+export interface KanbanBoardResponse {
+  assignees: string[]
+  columns: KanbanBoardColumn[]
+  latest_event_id: number
+  now: number
+}
 export interface AnalyticsSkillEntry {
   last_used_at: null | number
   manage_count: number

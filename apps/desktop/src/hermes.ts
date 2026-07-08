@@ -19,6 +19,8 @@ import type {
   EnvVarInfo,
   HermesConfig,
   HermesConfigRecord,
+  KanbanBoardResponse,
+  KanbanTaskDetailResponse,
   LogsResponse,
   McpCatalogResponse,
   McpServerSummary,
@@ -45,6 +47,8 @@ import type {
   SessionInfo,
   SessionMessagesResponse,
   SessionSearchResponse,
+  SessionWorkPacketCreatePayload,
+  SessionWorkPacketCreateResponse,
   SkillHubPreview,
   SkillHubScanResult,
   SkillHubSearchResponse,
@@ -111,6 +115,11 @@ export type {
   GatewayReadyPayload,
   HermesConfig,
   HermesConfigRecord,
+  KanbanBoardColumn,
+  KanbanBoardResponse,
+  KanbanTask,
+  KanbanTaskDetail,
+  KanbanTaskDetailResponse,
   LogsResponse,
   McpCatalogEntry,
   McpCatalogResponse,
@@ -150,6 +159,10 @@ export type {
   SessionRuntimeInfo,
   SessionSearchResponse,
   SessionSearchResult,
+  SessionWorkPacketCreatePayload,
+  SessionWorkPacketCreateResponse,
+  SessionWorkPacketLatest,
+  SessionWorkPacketSummary,
   SkillHubInstalledEntry,
   SkillHubPreview,
   SkillHubResult,
@@ -285,6 +298,21 @@ export function getSession(id: string, profile?: string | null): Promise<Session
   return window.hermesDesktop.api<SessionInfo>({
     ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}${suffix}`
+  })
+}
+
+export function createWorkPacketFromSession(
+  id: string,
+  profile?: string | null,
+  payload: SessionWorkPacketCreatePayload = {}
+): Promise<SessionWorkPacketCreateResponse> {
+  const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+
+  return window.hermesDesktop.api<SessionWorkPacketCreateResponse>({
+    ...(profile ? { profile } : {}),
+    path: `/api/sessions/${encodeURIComponent(id)}/work-packets${suffix}`,
+    method: 'POST',
+    body: { ...payload, ...(profile ? { profile } : {}) }
   })
 }
 
@@ -869,6 +897,20 @@ export function getUsageAnalytics(days = 30): Promise<AnalyticsResponse> {
   })
 }
 
+export function getKanbanBoard(): Promise<KanbanBoardResponse> {
+  return window.hermesDesktop.api<KanbanBoardResponse>({
+    ...profileScoped(),
+    path: '/api/command-center/work-packets/board'
+  })
+}
+
+export function getKanbanTask(id: string): Promise<KanbanTaskDetailResponse> {
+  return window.hermesDesktop.api<KanbanTaskDetailResponse>({
+    ...profileScoped(),
+    path: `/api/command-center/work-packets/tasks/${encodeURIComponent(id)}`
+  })
+}
+
 export function getGlobalModelOptions(opts?: {
   refresh?: boolean
   includeUnconfigured?: boolean
@@ -887,7 +929,6 @@ export function getGlobalModelOptions(opts?: {
   if (opts?.explicitOnly !== false) {
     params.set('explicit_only', '1')
   }
-
   return window.hermesDesktop.api<ModelOptionsResponse>({
     ...profileScoped(),
     path: params.size > 0 ? `/api/model/options?${params.toString()}` : '/api/model/options',

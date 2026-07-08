@@ -182,31 +182,46 @@ export function patchSessionWorkspace(sessionId: string, cwd: string | undefined
   setSessions(prev => prev.map(session => (session.id === sessionId ? { ...session, cwd } : session)))
 }
 
-export function sessionMatchesStoredId(session: SessionInfo, storedSessionId: string): boolean {
-  return session.id === storedSessionId || session._lineage_root_id === storedSessionId
+export function sessionMatchesStoredId(session: SessionInfo, storedSessionId: string, profile?: null | string): boolean {
+  const idMatches = session.id === storedSessionId || session._lineage_root_id === storedSessionId
+
+  if (!idMatches) {
+    return false
+  }
+
+  return !profile || normalizeProfileKey(session.profile) === normalizeProfileKey(profile)
+}
+
+function sameSessionProfile(a?: null | string, b?: null | string): boolean {
+  return normalizeProfileKey(a) === normalizeProfileKey(b)
 }
 
 export function sessionShouldHaveTranscript(session: SessionInfo | undefined): boolean {
   return (session?.message_count ?? 0) > 0
 }
 
-function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
+function upsertResolvedSession(session: SessionInfo, storedSessionId: string, profile?: null | string) {
   const lineage = session._lineage_root_id ?? session.id
+  const sessionProfile = profile ?? session.profile
 
   setSessions(prev => [
     session,
     ...prev.filter(existing => {
-      if (sessionMatchesStoredId(existing, storedSessionId)) {
+      if (sessionMatchesStoredId(existing, storedSessionId, sessionProfile)) {
         return false
       }
 
-      return (existing._lineage_root_id ?? existing.id) !== lineage
+      return (existing._lineage_root_id ?? existing.id) !== lineage || !sameSessionProfile(existing.profile, sessionProfile)
     })
   ])
 }
 
-export async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
-  const cached = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+export async function resolveStoredSession(
+  storedSessionId: string,
+  requestedProfile?: null | string
+): Promise<SessionInfo | undefined> {
+  const requestedProfileKey = requestedProfile?.trim() || null
+  const cached = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId, requestedProfileKey))
 
   if (cached) {
     return cached
@@ -216,13 +231,17 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
   // single-profile users and any id on the active profile (e.g. an old session
   // past the sidebar's recent window). 404 just means it's not on this profile.
   try {
-    const session = await getSession(storedSessionId)
+    const session = await getSession(storedSessionId, requestedProfileKey)
 
-    upsertResolvedSession(session, storedSessionId)
+    upsertResolvedSession(session, storedSessionId, requestedProfileKey)
 
     return session
   } catch {
     // Not on the active profile — fall through to the cross-profile probe.
+  }
+
+  if (requestedProfileKey) {
+    return undefined
   }
 
   // Multi-profile only: probe each other profile by id (still one cheap lookup
@@ -239,7 +258,7 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
     try {
       const session = await getSession(storedSessionId, profile)
 
-      upsertResolvedSession(session, storedSessionId)
+      upsertResolvedSession(session, storedSessionId, profile)
 
       return session
     } catch {

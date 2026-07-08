@@ -278,7 +278,8 @@ export function useSessionActions({
   }, [navigate, selectedStoredSessionId])
 
   const resumeSession = useCallback(
-    async (storedSessionId: string, replaceRoute = false) => {
+    async (storedSessionId: string, replaceRoute = false, requestedProfile?: null | string) => {
+      const requestedProfileKey = requestedProfile?.trim() || null
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
 
@@ -344,8 +345,8 @@ export function useSessionActions({
       // gateway call (no-op when it's already on that profile / single-profile).
       // resolveStoredSession finds the row by id (cheap), so an uncached pasted
       // id loads as fast as a sidebar click instead of hanging on a list scan.
-      const storedForProfile = await resolveStoredSession(storedSessionId)
-      const sessionProfile = storedForProfile?.profile
+      const storedForProfile = await resolveStoredSession(storedSessionId, requestedProfileKey)
+      const sessionProfile = requestedProfileKey ?? storedForProfile?.profile
 
       if (resumeRequestRef.current !== requestId) {
         return
@@ -363,7 +364,8 @@ export function useSessionActions({
         const cachedState = warmHit.state
 
         const stored =
-          $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+          $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId, sessionProfile)) ??
+          storedForProfile
 
         const cachedViewState =
           !cachedState.model && stored?.model != null
@@ -432,7 +434,7 @@ export function useSessionActions({
       setSessionStartedAt(Date.now())
 
       const stored =
-        $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+        $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId, sessionProfile)) ?? storedForProfile
 
       applyStoredSessionPreviewRuntimeInfo(stored)
 

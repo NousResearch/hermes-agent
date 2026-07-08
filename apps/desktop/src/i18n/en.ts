@@ -1010,10 +1010,11 @@ export const en: Translations = {
     settingsFields: 'Settings fields',
     mcpServers: 'MCP servers',
     archivedChats: 'Archived chats',
-    sections: { maintenance: 'Maintenance', sessions: 'Sessions', system: 'System', usage: 'Usage' },
+    sections: { maintenance: 'Maintenance', sessions: 'Sessions', 'work-packets': 'Work Packets', system: 'System', usage: 'Usage' },
     sectionDescriptions: {
       maintenance: 'Diagnostics, backups, curator, and memory data',
       sessions: 'Search and manage sessions',
+      'work-packets': 'Autonomous Kanban work packets and handoffs',
       system: 'Status, logs, and system actions',
       usage: 'Token, cost, and skill activity over time'
     },
@@ -1026,6 +1027,7 @@ export const en: Translations = {
     },
     sectionEntries: {
       sessions: { title: 'Sessions panel', detail: 'Search, pin, and manage sessions' },
+      'work-packets': { title: 'Work packets panel', detail: 'Kanban queue, blockers, and handoffs' },
       system: { title: 'System panel', detail: 'Gateway status, logs, restart/update' },
       usage: { title: 'Usage panel', detail: 'Token, cost, and skill activity' }
     },
@@ -1034,6 +1036,8 @@ export const en: Translations = {
     refresh: 'Refresh',
     refreshing: 'Refreshing...',
     noResults: 'No matching results found.',
+    createWorkPacket: 'Create work packet',
+    creatingWorkPacket: 'Creating work packet...',
     pinSession: 'Pin session',
     unpinSession: 'Unpin session',
     exportSession: 'Export session',
@@ -1052,6 +1056,33 @@ export const en: Translations = {
     loadingStatus: 'Loading status...',
     recentLogs: 'Recent logs',
     noLogs: 'No logs loaded yet.',
+    loadingWorkPackets: 'Loading work packets...',
+    noWorkPackets: 'No work packets on the active Kanban board yet.',
+    recentWorkPackets: 'Recent work packets',
+    workPacketDetails: 'Work packet details',
+    loadingWorkPacketDetails: 'Loading work packet details...',
+    workPacketDetailsFailed: 'Could not load work packet details.',
+    openLinkedSession: 'Open linked session',
+    workPacketSummary: 'Summary',
+    workPacketStats: {
+      open: 'Open',
+      ready: 'Ready',
+      running: 'Running',
+      blocked: 'Blocked',
+      review: 'Review',
+      done: 'Done'
+    },
+    workPacketColumns: {
+      triage: 'Triage',
+      todo: 'Todo',
+      scheduled: 'Scheduled',
+      ready: 'Ready',
+      running: 'Running',
+      blocked: 'Blocked',
+      review: 'Review',
+      done: 'Done'
+    },
+    latestKanbanEvent: id => `latest event #${id}`,
     days: count => `${count}d`,
     statSessions: 'Sessions',
     statApiCalls: 'API calls',

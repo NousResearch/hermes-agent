@@ -12499,6 +12499,7 @@ def _try_termux_fast_cli_launch() -> bool:
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
                 usage_file=getattr(args, "usage_file", None),
+                max_turns=getattr(args, "max_turns", None),
             )
         )
 
@@ -14596,6 +14597,7 @@ def main():
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
                 usage_file=getattr(args, "usage_file", None),
+                max_turns=getattr(args, "max_turns", None),
             )
         )
 

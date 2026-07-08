@@ -166,6 +166,7 @@ def run_oneshot(
     provider: Optional[str] = None,
     toolsets: object = None,
     usage_file: Optional[str] = None,
+    max_turns: Optional[int] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -180,6 +181,14 @@ def run_oneshot(
             cost, token counts, model, api_calls) is written there after the
             run — even when the run fails — so pipelines can account for
             spend per invocation.
+        max_turns: Optional per-turn tool-iteration cap (the ``--max-turns``
+            flag). When None, resolves from ``agent.max_turns`` in config,
+            then ``HERMES_MAX_ITERATIONS`` env, then the built-in default —
+            the same precedence an interactive CLI turn uses. Without this,
+            oneshot silently pinned every run to the built-in default and
+            ignored the profile's configured budget, which decapitated
+            long-running ``hermes -z`` workers (e.g. MeshBoard dispatches)
+            mid-task.
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
@@ -232,6 +241,7 @@ def run_oneshot(
                     provider=provider,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
+                    max_turns=max_turns,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -294,12 +304,46 @@ def _create_session_db_for_oneshot():
         return None
 
 
+def _resolve_max_iterations(cfg: dict, cli_max_turns: Optional[int]) -> int:
+    """Resolve the per-turn tool-iteration cap for a oneshot run.
+
+    Mirrors the interactive CLI precedence (see ``HermesCLI.__init__``):
+    explicit ``--max-turns`` > ``agent.max_turns`` in config > legacy
+    root-level ``max_turns`` > ``HERMES_MAX_ITERATIONS`` env > 90.
+
+    Historically oneshot skipped this entirely and let ``AIAgent`` fall
+    back to its own default, so ``hermes -z`` ignored the profile's
+    configured budget — the root cause of budget-decapitated workers.
+    """
+    if cli_max_turns is not None:
+        return int(cli_max_turns)
+    agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else None
+    if isinstance(agent_cfg, dict) and agent_cfg.get("max_turns"):
+        try:
+            return int(agent_cfg["max_turns"])
+        except (TypeError, ValueError):
+            pass
+    if isinstance(cfg, dict) and cfg.get("max_turns"):  # legacy root-level
+        try:
+            return int(cfg["max_turns"])
+        except (TypeError, ValueError):
+            pass
+    env_iters = os.getenv("HERMES_MAX_ITERATIONS", "").strip()
+    if env_iters:
+        try:
+            return int(env_iters)
+        except (TypeError, ValueError):
+            pass
+    return 90
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    max_turns: Optional[int] = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -384,12 +428,19 @@ def _run_agent(
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
 
+    # Resolve the per-turn iteration budget from --max-turns / config / env,
+    # matching the interactive CLI. Passing it explicitly stops AIAgent from
+    # falling back to its built-in default and silently ignoring the profile's
+    # agent.max_turns (the budget-decapitation root cause).
+    effective_max_iterations = _resolve_max_iterations(cfg, max_turns)
+
     agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
         provider=runtime.get("provider"),
         api_mode=runtime.get("api_mode"),
         model=effective_model,
+        max_iterations=effective_max_iterations,
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
         platform="cli",

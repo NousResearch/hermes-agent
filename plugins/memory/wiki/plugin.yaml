@@ -1,0 +1,8 @@
+name: wiki
+version: 1.0.0
+summary: LLM-Wiki memory provider for Hermes Agent
+description: LLM-Wiki memory provider for Hermes Agent
+provider_type: memory
+hooks:
+  - on_session_end
+  - on_pre_compress

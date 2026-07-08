@@ -191,6 +191,12 @@ honcho = ["honcho-ai==2.0.1"]
 # can't break fresh installs.
 supermemory = ["supermemory==3.50.0"]
 mem0 = ["mem0ai==2.0.10"]
+# LLM-Wiki memory provider (memory.wiki). Vendored under `llmwiki_hermes/`.
+# Core runtime needs `typer` (its provider CLI imports it at module load);
+# `pydantic` and `pyyaml` are already core dependencies. `markitdown` is only
+# needed to ingest non-markdown source files (pdf/docx/…) and stays optional.
+wiki = ["typer>=0.12,<1.0"]
+wiki-markitdown = ["markitdown[pdf,docx,pptx,xlsx]>=0.1.0,<0.2.0"]
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
 # (see the main `dependencies` list) since the byte/pixel shrink paths are on
 # the default vision-embed path and the mid-session lazy install deadlocked the
@@ -354,7 +360,7 @@ plugins = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*", "llmwiki_hermes", "llmwiki_hermes.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

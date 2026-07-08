@@ -6,7 +6,7 @@ import { ErrorIcon } from '@/components/ui/error-state'
 import { LogView } from '@/components/ui/log-view'
 import type { DesktopConnectionConfig } from '@/global'
 import { useI18n } from '@/i18n'
-import { FileText, Loader2, LogIn, RefreshCw, Wrench } from '@/lib/icons'
+import { FileText, Loader2, LogIn, RefreshCw, Settings, Wrench } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -164,6 +164,7 @@ export function BootFailureOverlay() {
   }
 
   const openLogs = () => void window.hermesDesktop?.revealLogs().catch(() => undefined)
+  const openSettings = () => void window.hermesDesktop?.openSettings?.().catch(() => undefined)
   const copy = t.boot.failure
 
   const label = signInLabel(remoteReauth, {
@@ -218,6 +219,10 @@ export function BootFailureOverlay() {
               <Button onClick={openLogs} variant="ghost">
                 <FileText />
                 {copy.openLogs}
+              </Button>
+              <Button onClick={openSettings} variant="ghost">
+                <Settings />
+                {copy.openSettings}
               </Button>
             </div>
             <p className="text-xs text-muted-foreground">{remoteReauth ? copy.remoteSignInHint : copy.repairHint}</p>

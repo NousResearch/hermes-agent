@@ -92,6 +92,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   revealLogs: () => ipcRenderer.invoke('hermes:logs:reveal'),
   getRecentLogs: () => ipcRenderer.invoke('hermes:logs:recent'),
+  openSettings: () => ipcRenderer.invoke('hermes:settings:open'),
   readDir: dirPath => ipcRenderer.invoke('hermes:fs:readDir', dirPath),
   gitRoot: startPath => ipcRenderer.invoke('hermes:fs:gitRoot', startPath),
   revealPath: targetPath => ipcRenderer.invoke('hermes:fs:reveal', targetPath),
@@ -150,6 +151,11 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     const listener = () => callback()
     ipcRenderer.on('hermes:open-updates', listener)
     return () => ipcRenderer.removeListener('hermes:open-updates', listener)
+  },
+  onOpenSettingsRequested: callback => {
+    const listener = () => callback()
+    ipcRenderer.on('hermes:open-settings', listener)
+    return () => ipcRenderer.removeListener('hermes:open-settings', listener)
   },
   onDeepLink: callback => {
     const listener = (_event, payload) => callback(payload)

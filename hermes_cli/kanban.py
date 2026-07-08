@@ -422,6 +422,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         metavar="KEY",
         help="Restrict to tasks with this current_step_key",
     )
+    p_list.add_argument(
+        "--all", action="store_true",
+        help="Query across all boards instead of the current board",
+    )
 
     # --- show ---
     p_show = sub.add_parser("show", help="Show a task with comments + events")
@@ -1403,6 +1407,56 @@ def _cmd_list(args: argparse.Namespace) -> int:
     assignee = args.assignee
     if args.mine and not assignee:
         assignee = _profile_author()
+
+    query_all_boards = getattr(args, "all", False)
+    json_output = getattr(args, "json", False)
+
+    if query_all_boards:
+        try:
+            boards = kb.list_boards(include_archived=args.archived)
+        except Exception:
+            boards = [{"slug": None}]  # fall back to default board
+        all_tasks: list[dict] = []
+        board_labels: dict[str, str] = {}
+        for b in boards:
+            slug = b.get("slug")
+            with kb.connect_closing(board=slug if slug else None) as conn:
+                kb.recompute_ready(conn)
+                tasks = kb.list_tasks(
+                    conn,
+                    assignee=assignee,
+                    status=args.status,
+                    tenant=args.tenant,
+                    session_id=args.session,
+                    include_archived=args.archived,
+                    order_by=getattr(args, "sort", None),
+                    workflow_template_id=args.workflow_template_id,
+                    current_step_key=args.current_step_key,
+                )
+                for t in tasks:
+                    t_id = t.get("id") if isinstance(t, dict) else getattr(t, "id", "")
+                    board_labels[str(t_id)] = slug or "default"
+                all_tasks.extend(tasks)
+
+        if json_output:
+            payload = []
+            for t in all_tasks:
+                d = _task_to_dict(t)
+                d["board"] = board_labels.get(str(t.get("id") if isinstance(t, dict) else getattr(t, "id", "")), "")
+                payload.append(d)
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return 0
+
+        if not all_tasks:
+            print("(no matching tasks across boards)")
+            return 0
+
+        for t in all_tasks:
+            t_id = t.get("id") if isinstance(t, dict) else getattr(t, "id", "")
+            board = board_labels.get(str(t_id), "")
+            print(f"[{board}] " + _fmt_task_line(t))
+        return 0
+
     with kb.connect_closing() as conn:
         # Cheap "mini-dispatch": recompute ready so list output reflects
         # dependencies that may have cleared since the last dispatcher tick.

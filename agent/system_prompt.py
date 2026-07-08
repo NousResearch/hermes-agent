@@ -27,9 +27,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
-    DEFAULT_AGENT_IDENTITY,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
-    HERMES_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
@@ -41,6 +39,8 @@ from agent.prompt_builder import (
     TASK_COMPLETION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    _build_agent_identity,
+    _build_help_guidance,
     drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
@@ -157,12 +157,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             stable_parts.append(_soul_content)
             _soul_loaded = True
 
+    _attribution = getattr(agent, "_attribution", "Nous Research")
     if not _soul_loaded:
-        # Fallback to hardcoded identity
-        stable_parts.append(DEFAULT_AGENT_IDENTITY)
+        # Fallback to configurable identity
+        stable_parts.append(_build_agent_identity(_attribution))
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+    _help = _build_help_guidance(_attribution)
+    if _help:
+        stable_parts.append(_help)
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes

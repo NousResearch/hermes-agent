@@ -91,6 +91,7 @@ export const en: Translations = {
       repairInstall: 'Repair install',
       useLocalGateway: 'Use local gateway',
       openLogs: 'Open logs',
+      openSettings: 'Open Settings',
       repairHint: 'Repair re-runs the installer and can take a few minutes on a fresh machine.',
       remoteSignInHint: 'Opens the gateway login window. Use local gateway to switch to the bundled backend instead.',
       hideRecentLogs: 'Hide recent logs',

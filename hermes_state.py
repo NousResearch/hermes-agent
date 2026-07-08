@@ -163,7 +163,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 _EFFECTIVE_LAST_ACTIVE_BACKFILL_META_KEY = "effective_last_active_backfill_version"
 _EFFECTIVE_LAST_ACTIVE_BACKFILL_VERSION = "5"
 
@@ -782,12 +782,31 @@ CREATE TABLE IF NOT EXISTS compression_locks (
     expires_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS desktop_resume_markers (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL,
+    reason_priority INTEGER NOT NULL DEFAULT 0,
+    prompt TEXT,
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS desktop_resume_breakers (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    window_started_at REAL NOT NULL,
+    replay_count INTEGER NOT NULL DEFAULT 0,
+    updated_at REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+CREATE INDEX IF NOT EXISTS idx_desktop_resume_markers_expires ON desktop_resume_markers(expires_at);
+CREATE INDEX IF NOT EXISTS idx_desktop_resume_breakers_updated ON desktop_resume_breakers(updated_at);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -2739,6 +2758,274 @@ class SessionDB:
             )
             row = cursor.fetchone()
         return dict(row) if row else None
+
+    def upsert_desktop_resume_marker(
+        self,
+        session_id: str,
+        *,
+        reason: str,
+        prompt: str = "",
+        created_at: float = None,
+        ttl_seconds: float = 48 * 3600,
+        reason_priority: int = 0,
+    ) -> Optional[Dict[str, Any]]:
+        """Persist a desktop/TUI restart-resume marker.
+
+        Repeated writers are monotonic toward non-continuation: callers pass a
+        larger ``reason_priority`` for self/consumed reasons than for external
+        auto-continue reasons.  A lower-priority later write cannot downgrade a
+        consumed marker back into an auto-continuing marker.
+        """
+        if not session_id or not reason:
+            return None
+        now = float(created_at if created_at is not None else time.time())
+        try:
+            ttl = float(ttl_seconds)
+        except (TypeError, ValueError):
+            ttl = 48 * 3600
+        ttl = max(1.0, ttl)
+        priority = int(reason_priority or 0)
+
+        def _do(conn):
+            conn.execute(
+                """
+                INSERT INTO desktop_resume_markers (
+                    session_id, reason, reason_priority, prompt,
+                    created_at, expires_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    reason = CASE
+                        WHEN excluded.reason_priority >= desktop_resume_markers.reason_priority
+                        THEN excluded.reason
+                        ELSE desktop_resume_markers.reason
+                    END,
+                    reason_priority = MAX(
+                        desktop_resume_markers.reason_priority,
+                        excluded.reason_priority
+                    ),
+                    prompt = CASE
+                        WHEN excluded.reason_priority >= desktop_resume_markers.reason_priority
+                        THEN excluded.prompt
+                        ELSE desktop_resume_markers.prompt
+                    END,
+                    created_at = CASE
+                        WHEN excluded.reason_priority >= desktop_resume_markers.reason_priority
+                        THEN excluded.created_at
+                        ELSE desktop_resume_markers.created_at
+                    END,
+                    expires_at = CASE
+                        WHEN excluded.reason_priority >= desktop_resume_markers.reason_priority
+                        THEN excluded.expires_at
+                        ELSE desktop_resume_markers.expires_at
+                    END,
+                    updated_at = excluded.updated_at
+                """,
+                (session_id, reason, priority, prompt or "", now, now + ttl, now),
+            )
+            row = conn.execute(
+                "SELECT * FROM desktop_resume_markers WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+        return self._execute_write(_do)
+
+    def get_desktop_resume_marker(self, session_id: str) -> Optional[Dict[str, Any]]:
+        if not session_id:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM desktop_resume_markers WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def clear_desktop_resume_marker(
+        self,
+        session_id: str,
+        *,
+        marker_created_at: float = None,
+    ) -> bool:
+        if not session_id:
+            return False
+
+        def _do(conn):
+            if marker_created_at is None:
+                cur = conn.execute(
+                    "DELETE FROM desktop_resume_markers WHERE session_id = ?",
+                    (session_id,),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    DELETE FROM desktop_resume_markers
+                    WHERE session_id = ? AND created_at = ?
+                    """,
+                    (session_id, float(marker_created_at)),
+                )
+            return cur.rowcount > 0
+
+        return bool(self._execute_write(_do))
+
+    def claim_desktop_auto_resume(
+        self,
+        session_id: str,
+        *,
+        marker_created_at: float,
+        now: float = None,
+        freshness_window_seconds: float = 3600,
+        replay_window_seconds: float = 300,
+        replay_threshold: int = 3,
+    ) -> Dict[str, Any]:
+        """Atomically consume an eligible marker and record its replay mark.
+
+        The durable breaker is checked before incrementing: threshold=3 allows
+        three auto-continues inside the window and suspends the fourth.  The
+        suspended marker is consumed so a reconnect loop cannot repeatedly try
+        the same unsafe continuation.
+        """
+        if not session_id:
+            return {"claimed": False, "reason": "missing_session"}
+        timestamp = float(now if now is not None else time.time())
+        try:
+            freshness = float(freshness_window_seconds)
+        except (TypeError, ValueError):
+            freshness = 3600.0
+        try:
+            window = float(replay_window_seconds)
+        except (TypeError, ValueError):
+            window = 300.0
+        window = max(1.0, window)
+        try:
+            threshold = int(replay_threshold)
+        except (TypeError, ValueError):
+            threshold = 3
+        threshold = max(1, threshold)
+
+        def _do(conn):
+            marker = conn.execute(
+                "SELECT * FROM desktop_resume_markers WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if marker is None:
+                return {"claimed": False, "reason": "missing_marker"}
+            marker_dict = dict(marker)
+            if float(marker_dict.get("created_at") or 0.0) != float(marker_created_at):
+                return {"claimed": False, "reason": "marker_changed", "marker": marker_dict}
+            created = float(marker_dict.get("created_at") or 0.0)
+            expires = float(marker_dict.get("expires_at") or 0.0)
+            reason = str(marker_dict.get("reason") or "")
+            if "consumed" in reason or "excluded" in reason:
+                return {"claimed": False, "reason": reason, "marker": marker_dict}
+            if (freshness > 0 and (timestamp - created) > freshness) or expires <= timestamp:
+                return {"claimed": False, "reason": "stale", "stale": True, "marker": marker_dict}
+
+            breaker = conn.execute(
+                "SELECT * FROM desktop_resume_breakers WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if breaker is None:
+                window_started = timestamp
+                replay_count = 0
+            else:
+                b = dict(breaker)
+                window_started = float(b.get("window_started_at") or timestamp)
+                replay_count = int(b.get("replay_count") or 0)
+                if (timestamp - window_started) > window:
+                    window_started = timestamp
+                    replay_count = 0
+
+            if replay_count >= threshold:
+                conn.execute(
+                    "DELETE FROM desktop_resume_markers WHERE session_id = ? AND created_at = ?",
+                    (session_id, float(marker_created_at)),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO desktop_resume_breakers (
+                        session_id, window_started_at, replay_count, updated_at
+                    ) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(session_id) DO UPDATE SET
+                        window_started_at = excluded.window_started_at,
+                        replay_count = excluded.replay_count,
+                        updated_at = excluded.updated_at
+                    """,
+                    (session_id, window_started, replay_count, timestamp),
+                )
+                return {
+                    "claimed": False,
+                    "reason": "breaker_suspended",
+                    "suspended": True,
+                    "replay_count": replay_count,
+                    "marker": marker_dict,
+                }
+
+            cur = conn.execute(
+                "DELETE FROM desktop_resume_markers WHERE session_id = ? AND created_at = ?",
+                (session_id, float(marker_created_at)),
+            )
+            if cur.rowcount <= 0:
+                return {"claimed": False, "reason": "marker_changed", "marker": marker_dict}
+            replay_count += 1
+            conn.execute(
+                """
+                INSERT INTO desktop_resume_breakers (
+                    session_id, window_started_at, replay_count, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    window_started_at = excluded.window_started_at,
+                    replay_count = excluded.replay_count,
+                    updated_at = excluded.updated_at
+                """,
+                (session_id, window_started, replay_count, timestamp),
+            )
+            return {
+                "claimed": True,
+                "reason": "claimed",
+                "replay_count": replay_count,
+                "marker": marker_dict,
+            }
+
+        return self._execute_write(_do)
+
+    def clear_desktop_auto_resume_breaker(self, session_id: str) -> bool:
+        if not session_id:
+            return False
+
+        def _do(conn):
+            cur = conn.execute(
+                "DELETE FROM desktop_resume_breakers WHERE session_id = ?",
+                (session_id,),
+            )
+            return cur.rowcount > 0
+
+        return bool(self._execute_write(_do))
+
+    def sweep_desktop_auto_resume_state(
+        self,
+        *,
+        ttl_seconds: float = 48 * 3600,
+        now: float = None,
+    ) -> int:
+        timestamp = float(now if now is not None else time.time())
+        try:
+            ttl = float(ttl_seconds)
+        except (TypeError, ValueError):
+            ttl = 48 * 3600
+        cutoff = timestamp - max(1.0, ttl)
+
+        def _do(conn):
+            marker_cur = conn.execute(
+                "DELETE FROM desktop_resume_markers WHERE expires_at <= ?",
+                (timestamp,),
+            )
+            breaker_cur = conn.execute(
+                "DELETE FROM desktop_resume_breakers WHERE updated_at <= ?",
+                (cutoff,),
+            )
+            return int(marker_cur.rowcount or 0) + int(breaker_cur.rowcount or 0)
+
+        return int(self._execute_write(_do) or 0)
 
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.

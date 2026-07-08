@@ -9,6 +9,8 @@ import logging
 import os
 import queue
 import re
+import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -261,6 +263,37 @@ _stdio_transport = StdioTransport(lambda: _real_stdout, _stdout_lock)
 # the gateway in-process and captures stdout into logs, so stale JSON-RPC frames
 # must not fall through there while the session waits for resume or reap.
 _detached_ws_transport = _DropTransport()
+
+
+DESKTOP_REASON_RESTART_CONSUMED = "desktop_restart_consumed"
+DESKTOP_REASON_RESTART_CONSUMED_INTERRUPTED = "desktop_restart_consumed_interrupted"
+DESKTOP_REASON_EXTERNAL_RESTART_INTERRUPTED = "external_restart_interrupted"
+DESKTOP_AUTO_RESUME_EXCLUDED_REASONS = frozenset(
+    {
+        DESKTOP_REASON_RESTART_CONSUMED,
+        DESKTOP_REASON_RESTART_CONSUMED_INTERRUPTED,
+    }
+)
+DESKTOP_REASON_PRIORITIES = {
+    DESKTOP_REASON_EXTERNAL_RESTART_INTERRUPTED: 1,
+    DESKTOP_REASON_RESTART_CONSUMED: 2,
+    DESKTOP_REASON_RESTART_CONSUMED_INTERRUPTED: 2,
+}
+
+_DESKTOP_AUTO_RESUME_DEFAULT = False
+_DESKTOP_AUTO_RESUME_FRESHNESS_SECS_DEFAULT = 60 * 60
+_DESKTOP_AUTO_RESUME_MARKER_TTL_SECS = 48 * 3600
+_DESKTOP_AUTO_RESUME_REPLAY_WINDOW_SECS = 300.0
+_DESKTOP_AUTO_RESUME_REPLAY_THRESHOLD = 3
+
+_desktop_session_initiated_restart: set[str] = set()
+_desktop_session_initiated_restart_lock = threading.Lock()
+_compute_host_inflight_turns: dict[str, dict] = {}
+_compute_host_inflight_turns_lock = threading.Lock()
+_desktop_auto_resume_signal_handlers_installed = False
+_desktop_auto_resume_signal_handlers: dict[int, object] = {}
+_desktop_auto_resume_signal_handler_lock = threading.Lock()
+
 
 
 class _SlashWorker:
@@ -721,10 +754,44 @@ def _close_sessions_for_transport(
 
 
 def _shutdown_sessions() -> None:
+    _write_desktop_resume_markers_for_shutdown("tui_shutdown")
     with _sessions_lock:
         sids = list(_sessions)
     for sid in sids:
         _close_session_by_id(sid, end_reason="tui_shutdown")
+
+
+def _install_desktop_auto_resume_signal_handlers() -> None:
+    """Best-effort POSIX signal drain for desktop auto-resume markers."""
+    global _desktop_auto_resume_signal_handlers_installed
+    with _desktop_auto_resume_signal_handler_lock:
+        if _desktop_auto_resume_signal_handlers_installed:
+            return
+        for signum in (getattr(signal, "SIGTERM", None),):
+            if signum is None:
+                continue
+            previous = signal.getsignal(signum)
+            _desktop_auto_resume_signal_handlers[int(signum)] = previous
+
+            def _handler(received, frame, *, _previous=previous):
+                try:
+                    _write_desktop_resume_markers_for_shutdown("sigterm")
+                finally:
+                    if callable(_previous):
+                        _previous(received, frame)
+                    elif _previous == signal.SIG_IGN:
+                        return
+                    else:
+                        raise SystemExit(128 + int(received))
+
+            try:
+                signal.signal(signum, _handler)
+            except ValueError:
+                # Imported off the main thread (tests/embedded hosts). Atexit
+                # still drains graceful shutdown; POSIX signal capture is
+                # unavailable in this interpreter context.
+                continue
+        _desktop_auto_resume_signal_handlers_installed = True
 
 
 # Last-resort net for any disconnect path that slips past the WS finally. TTL is
@@ -853,6 +920,7 @@ def _start_idle_reaper() -> None:
     threading.Thread(target=_loop, daemon=True).start()
 
 
+_install_desktop_auto_resume_signal_handlers()
 atexit.register(_shutdown_sessions)
 _start_idle_reaper()
 
@@ -875,6 +943,16 @@ def _get_db():
                 exc,
             )
             return None
+        # AC-10 (RC-5): TTL-sweep the desktop auto-resume markers/breakers once on
+        # first DB open (the same boot maintenance window the recency backfill uses),
+        # so markers that reach the stale path or are never resumed, and aged-out
+        # breaker rows, cannot accrete in state.db indefinitely. Gated on the feature
+        # flag and best-effort — a sweep failure must never break db availability.
+        if _desktop_auto_resume_enabled():
+            try:
+                _db.sweep_desktop_auto_resume_state()
+            except Exception as exc:  # noqa: BLE001 - maintenance is best-effort
+                logger.debug("desktop auto-resume boot sweep skipped: %s", exc)
     return _db
 
 
@@ -1098,6 +1176,8 @@ def _apply_compute_host_metadata_mirror(session: dict, frame: dict | None) -> No
 
 def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -> None:
     is_error = frame.get("type") == "turn.error"
+    with _compute_host_inflight_turns_lock:
+        _compute_host_inflight_turns.pop(sid, None)
     with session["history_lock"]:
         if frame.get("session_key"):
             session["session_key"] = str(frame.get("session_key"))
@@ -1128,6 +1208,8 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
 def _submit_prompt_to_compute_host(rid: str, sid: str, session: dict, text: Any) -> dict:
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(rid, sid, session, text)
+    with _compute_host_inflight_turns_lock:
+        _compute_host_inflight_turns[sid] = dict(frame)
 
     def _complete(done: dict) -> None:
         _on_compute_host_turn_done(rid, sid, session, done)
@@ -1135,6 +1217,8 @@ def _submit_prompt_to_compute_host(rid: str, sid: str, session: dict, text: Any)
     try:
         _get_compute_host_supervisor(cfg).submit_turn(frame, on_complete=_complete)
     except Exception as exc:
+        with _compute_host_inflight_turns_lock:
+            _compute_host_inflight_turns.pop(sid, None)
         with session["history_lock"]:
             session["running"] = False
             _clear_inflight_turn(session)
@@ -1862,6 +1946,253 @@ def _session_db(session: dict):
                 db.close()
 
 
+_SAFE_RESTART_INSPECTION_VERBS = {
+    "bat",
+    "cat",
+    "grep",
+    "head",
+    "less",
+    "more",
+    "rg",
+    "sed",
+    "tail",
+    "vim",
+    "vi",
+}
+
+
+def _command_invokes_safe_restart(command: str) -> bool:
+    """Return True when a terminal command actually runs safe-restart.py."""
+    text = str(command or "")
+    if "safe-restart.py" not in text:
+        return False
+    for segment in re.split(r"&&|\|\||;|\n", text):
+        if "safe-restart.py" not in segment:
+            continue
+        try:
+            tokens = shlex.split(segment)
+        except ValueError:
+            tokens = segment.split()
+        if not tokens:
+            continue
+        first = os.path.basename(tokens[0]).lower()
+        if first in _SAFE_RESTART_INSPECTION_VERBS:
+            continue
+        return True
+    return False
+
+
+def _tool_args_command(args: dict | None) -> str:
+    if not isinstance(args, dict):
+        return ""
+    for key in ("command", "cmd", "script"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _mark_desktop_session_initiated_restart(sid: str) -> None:
+    if not sid:
+        return
+    with _desktop_session_initiated_restart_lock:
+        _desktop_session_initiated_restart.add(sid)
+
+
+def _desktop_session_marked_restart(sid: str) -> bool:
+    with _desktop_session_initiated_restart_lock:
+        return sid in _desktop_session_initiated_restart
+
+
+def _clear_desktop_session_restart_mark(sid: str) -> None:
+    with _desktop_session_initiated_restart_lock:
+        _desktop_session_initiated_restart.discard(sid)
+
+
+def _desktop_session_has_live_transport(session: dict) -> bool:
+    transport = session.get("transport")
+    return (
+        transport is not _detached_ws_transport
+        and getattr(transport, "_closed", False) is not True
+    )
+
+
+def _desktop_auto_resume_prompt(session: dict, interrupted_text: str = "") -> str:
+    text = str(interrupted_text or "").strip()
+    base = (
+        "The desktop/TUI backend restarted while this turn was in progress. "
+        "Continue from the existing conversation. Do NOT blindly re-execute "
+        "old tool calls; first account for what was interrupted, then continue "
+        "only work that is still safe, or ask the user if continuing would be destructive."
+    )
+    if text:
+        return f"{base}\n\nInterrupted user message:\n{text}"
+    return base
+
+
+def _desktop_marker_status(marker: dict, *, status: str) -> dict[str, Any]:
+    return {
+        "status": status,
+        "reason": str(marker.get("reason") or ""),
+        "created_at": float(marker.get("created_at") or 0.0),
+        "expires_at": float(marker.get("expires_at") or 0.0),
+    }
+
+
+def _desktop_session_inflight_text(session: dict, sid: str) -> str:
+    with _compute_host_inflight_turns_lock:
+        frame = dict(_compute_host_inflight_turns.get(sid) or {})
+    if frame.get("text"):
+        return _inflight_text(frame.get("text"))
+    inflight = session.get("inflight_turn")
+    if isinstance(inflight, dict):
+        user = inflight.get("user")
+        if user:
+            return _inflight_text(user)
+    history = session.get("history") or []
+    for msg in reversed(history):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            return _inflight_text(msg.get("content"))
+    return ""
+
+
+def _desktop_session_needs_shutdown_marker(sid: str, session: dict) -> bool:
+    if session.get("_finalized"):
+        return False
+    if not _desktop_session_has_live_transport(session):
+        return False
+    if bool(session.get("running")):
+        return True
+    with _compute_host_inflight_turns_lock:
+        return sid in _compute_host_inflight_turns
+
+
+def _write_desktop_resume_markers_for_shutdown(end_reason: str = "tui_shutdown") -> int:
+    """Persist restart-interrupted markers before the backend exits.
+
+    Store failures fail closed: no in-memory fallback marker is created.
+    """
+    cfg = _load_desktop_auto_resume_config()
+    if not cfg.get("enabled"):
+        return 0
+    with _sessions_lock:
+        snapshot = list(_sessions.items())
+    written = 0
+    for sid, session in snapshot:
+        if not _desktop_session_needs_shutdown_marker(sid, session):
+            continue
+        key = str(session.get("session_key") or "")
+        if not key:
+            continue
+        self_restart = _desktop_session_marked_restart(sid)
+        reason = (
+            DESKTOP_REASON_RESTART_CONSUMED_INTERRUPTED
+            if self_restart
+            else DESKTOP_REASON_EXTERNAL_RESTART_INTERRUPTED
+        )
+        prompt = _desktop_auto_resume_prompt(
+            session, _desktop_session_inflight_text(session, sid)
+        )
+        try:
+            with _session_db(session) as db:
+                if db is None:
+                    continue
+                db.upsert_desktop_resume_marker(
+                    key,
+                    reason=reason,
+                    prompt=prompt,
+                    created_at=_desktop_auto_resume_now(),
+                    ttl_seconds=cfg.get("marker_ttl_seconds"),
+                    reason_priority=DESKTOP_REASON_PRIORITIES.get(reason, 0),
+                )
+                written += 1
+        except Exception:
+            logger.debug(
+                "failed to persist desktop auto-resume marker for %s (%s)",
+                key,
+                end_reason,
+                exc_info=True,
+            )
+    return written
+
+
+def _start_desktop_auto_resume_turn(rid: str, sid: str, session: dict, prompt: str) -> bool:
+    if session.get("running"):
+        return False
+    result = _methods["prompt.submit"](
+        rid,
+        {"session_id": sid, "text": prompt},
+    )
+    return "error" not in result
+
+
+def _maybe_trigger_desktop_auto_resume_after_resume(
+    rid: str,
+    session_key: str,
+    sid: str,
+    session: dict,
+    payload: dict,
+    db,
+) -> dict:
+    cfg = _load_desktop_auto_resume_config()
+    if not cfg.get("enabled") or db is None or not session_key:
+        return payload
+    try:
+        marker = db.get_desktop_resume_marker(session_key)
+    except Exception:
+        logger.debug("desktop auto-resume marker lookup failed", exc_info=True)
+        return payload
+    if not marker:
+        return payload
+    reason = str(marker.get("reason") or "")
+    now = _desktop_auto_resume_now()
+    created = float(marker.get("created_at") or 0.0)
+    freshness = float(cfg.get("freshness_window_seconds") or 0.0)
+    if freshness > 0 and (now - created) > freshness:
+        payload["desktop_auto_resume"] = _desktop_marker_status(
+            marker, status="stale_marker_present"
+        )
+        return payload
+    if reason in DESKTOP_AUTO_RESUME_EXCLUDED_REASONS or reason not in DESKTOP_REASON_PRIORITIES:
+        with contextlib.suppress(Exception):
+            db.clear_desktop_resume_marker(
+                session_key, marker_created_at=marker.get("created_at")
+            )
+        payload["desktop_auto_resume"] = _desktop_marker_status(marker, status="excluded")
+        return payload
+    if session.get("running"):
+        payload["desktop_auto_resume"] = _desktop_marker_status(marker, status="session_busy")
+        return payload
+    try:
+        claim = db.claim_desktop_auto_resume(
+            session_key,
+            marker_created_at=marker.get("created_at"),
+            now=now,
+            freshness_window_seconds=cfg.get("freshness_window_seconds"),
+            replay_window_seconds=cfg.get("replay_window_seconds"),
+            replay_threshold=cfg.get("replay_threshold"),
+        )
+    except Exception:
+        logger.debug("desktop auto-resume marker claim failed", exc_info=True)
+        return payload
+    if not claim.get("claimed"):
+        status = (
+            "breaker_suspended"
+            if claim.get("suspended")
+            else str(claim.get("reason") or "not_claimed")
+        )
+        payload["desktop_auto_resume"] = _desktop_marker_status(marker, status=status)
+        return payload
+    prompt = str(marker.get("prompt") or "").strip() or _desktop_auto_resume_prompt(session)
+    if _start_desktop_auto_resume_turn(rid, sid, session, prompt):
+        payload["running"] = True
+        payload["status"] = "streaming"
+        payload["desktop_auto_resume"] = _desktop_marker_status(marker, status="started")
+    else:
+        payload["desktop_auto_resume"] = _desktop_marker_status(marker, status="start_failed")
+    return payload
+
+
 def _persist_session_git_meta(session: dict, cwd: str) -> None:
     """Resolve + persist a session's git branch / repo root WITHOUT blocking.
 
@@ -1945,6 +2276,21 @@ def _coerce_int_config_value(value: Any, default: int, *, min_value: int) -> int
     return coerced if coerced >= min_value else default
 
 
+def _coerce_float_config_value(
+    value: Any,
+    default: float,
+    *,
+    min_value: float | None = None,
+) -> float:
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError):
+        return default
+    if min_value is not None and coerced < min_value:
+        return default
+    return coerced
+
+
 def _load_dashboard_process_isolation_config(cfg: dict | None = None) -> dict[str, Any]:
     """Return dashboard process-isolation config with read-site defaults.
 
@@ -1973,6 +2319,47 @@ def _load_dashboard_process_isolation_config(cfg: dict | None = None) -> dict[st
             min_value=0,
         ),
     }
+
+
+def _load_desktop_auto_resume_config(cfg: dict | None = None) -> dict[str, Any]:
+    """Return desktop auto-resume config with a config.yaml-only gate."""
+    root = _load_cfg() if cfg is None else cfg
+    dashboard = root.get("dashboard") if isinstance(root, dict) else {}
+    if not isinstance(dashboard, dict):
+        dashboard = {}
+    agent_cfg = root.get("agent") if isinstance(root, dict) else {}
+    if not isinstance(agent_cfg, dict):
+        agent_cfg = {}
+    return {
+        "enabled": is_truthy_value(
+            dashboard.get("desktop_auto_resume"),
+            default=_DESKTOP_AUTO_RESUME_DEFAULT,
+        ),
+        "freshness_window_seconds": _coerce_float_config_value(
+            agent_cfg.get("gateway_auto_continue_freshness"),
+            float(_DESKTOP_AUTO_RESUME_FRESHNESS_SECS_DEFAULT),
+            min_value=0.0,
+        ),
+        "marker_ttl_seconds": float(_DESKTOP_AUTO_RESUME_MARKER_TTL_SECS),
+        "replay_window_seconds": _coerce_float_config_value(
+            agent_cfg.get("restart_loop_window_secs"),
+            float(_DESKTOP_AUTO_RESUME_REPLAY_WINDOW_SECS),
+            min_value=1.0,
+        ),
+        "replay_threshold": _coerce_int_config_value(
+            agent_cfg.get("restart_loop_threshold"),
+            _DESKTOP_AUTO_RESUME_REPLAY_THRESHOLD,
+            min_value=1,
+        ),
+    }
+
+
+def _desktop_auto_resume_enabled(cfg: dict | None = None) -> bool:
+    return bool(_load_desktop_auto_resume_config(cfg).get("enabled"))
+
+
+def _desktop_auto_resume_now() -> float:
+    return time.time()
 
 
 def _load_cfg() -> dict:
@@ -3615,6 +4002,8 @@ def _tool_summary(name: str, result: str, duration_s: float | None) -> str | Non
 def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
     session = _sessions.get(sid)
     if session is not None:
+        if _command_invokes_safe_restart(_tool_args_command(args)):
+            _mark_desktop_session_initiated_restart(sid)
         try:
             from agent.display import capture_local_edit_snapshot
 
@@ -5655,6 +6044,15 @@ def _(rid, params: dict) -> dict:
         if session.get("agent") is None and _child_run_active(target):
             payload["running"] = True
             payload["status"] = "streaming"
+        if not session.get("lazy"):
+            payload = _maybe_trigger_desktop_auto_resume_after_resume(
+                rid,
+                target,
+                sid,
+                session,
+                payload,
+                db,
+            )
         return payload
 
     # Fast path: if the session is already live, reuse it under the lock.
@@ -5778,24 +6176,27 @@ def _(rid, params: dict) -> dict:
         _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
 
         messages = _history_to_messages(display_history)
+        payload = {
+            "session_id": sid,
+            "resumed": target,
+            "message_count": len(messages),
+            "messages": messages,
+            "info": _lazy_resume_info(
+                cwd,
+                model=model_override.get("model") or "",
+                provider=overrides.get("provider_override") or "",
+            ),
+            "inflight": None,
+            "running": False,
+            "session_key": target,
+            "started_at": record["created_at"],
+            "status": "idle",
+        }
         return _ok(
             rid,
-            {
-                "session_id": sid,
-                "resumed": target,
-                "message_count": len(messages),
-                "messages": messages,
-                "info": _lazy_resume_info(
-                    cwd,
-                    model=model_override.get("model") or "",
-                    provider=overrides.get("provider_override") or "",
-                ),
-                "inflight": None,
-                "running": False,
-                "session_key": target,
-                "started_at": record["created_at"],
-                "status": "idle",
-            },
+            _maybe_trigger_desktop_auto_resume_after_resume(
+                rid, target, sid, record, payload, db
+            ),
         )
 
     # Build the agent OUTSIDE the lock — _make_agent can block for seconds
@@ -5881,6 +6282,14 @@ def _(rid, params: dict) -> dict:
                 transport=current_transport() or _stdio_transport,
             )
             payload["resumed"] = target
+            payload = _maybe_trigger_desktop_auto_resume_after_resume(
+                rid,
+                target,
+                other_sid,
+                other_session,
+                payload,
+                db,
+            )
             return _ok(rid, payload)
         try:
             init_home_token = (
@@ -5921,20 +6330,23 @@ def _(rid, params: dict) -> dict:
                 lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
         session = _sessions.get(sid) or {}
+    payload = {
+        "session_id": sid,
+        "resumed": target,
+        "message_count": len(messages),
+        "messages": messages,
+        "info": _session_info(agent, session),
+        "inflight": None,
+        "running": False,
+        "session_key": target,
+        "started_at": float(session.get("created_at") or time.time()),
+        "status": "idle",
+    }
     return _ok(
         rid,
-        {
-            "session_id": sid,
-            "resumed": target,
-            "message_count": len(messages),
-            "messages": messages,
-            "info": _session_info(agent, session),
-            "inflight": None,
-            "running": False,
-            "session_key": target,
-            "started_at": float(session.get("created_at") or time.time()),
-            "status": "idle",
-        },
+        _maybe_trigger_desktop_auto_resume_after_resume(
+            rid, target, sid, session, payload, db
+        ),
     )
 
 
@@ -9400,6 +9812,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 session["last_active"] = time.time()
                 _clear_inflight_turn(session)
             _emit("session.info", sid, _session_info(agent, session))
+            _clear_desktop_session_restart_mark(sid)
 
         # A user prompt that arrived mid-turn (interrupt + queue) wins over
         # every auto follow-up below — drain it first and skip them this cycle;

@@ -1854,6 +1854,10 @@ DEFAULT_CONFIG = {
         # path. Config.yaml only: no env override, so production stays on the
         # legacy CTE until an operator deliberately flips this key.
         "session_list_denorm": False,
+        # Dormant/default-off desktop/TUI backend restart continuation gate.
+        # Config.yaml only: no env override, so the reconnect path remains inert
+        # until an operator deliberately flips this key.
+        "desktop_auto_resume": False,
         # Hide the token/cost analytics surfaces (Analytics page, token bars and
         # cost figures on the Models page) by default.  The numbers shown there
         # are a local debug estimate: they only count successful main-agent

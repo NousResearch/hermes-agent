@@ -300,11 +300,34 @@ def check_telegram_requirements() -> bool:
 # Matches every character that MarkdownV2 requires to be backslash-escaped
 # when it appears outside a code span or fenced code block.
 _MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
+_CLARIFY_FENCE_RE = re.compile(r"```[^\n`]*\n(?P<code>.*?)```", re.DOTALL)
 
 
 def _escape_mdv2(text: str) -> str:
     """Escape Telegram MarkdownV2 special characters with a preceding backslash."""
     return _MDV2_ESCAPE_RE.sub(r'\\\1', text)
+
+
+def _format_clarify_question_html(question: str) -> str:
+    """Escape clarify text for Telegram HTML while preserving fenced code blocks."""
+    parts: list[str] = []
+    start = 0
+    for match in _CLARIFY_FENCE_RE.finditer(question):
+        parts.append(_html.escape(question[start:match.start()]))
+        code = match.group("code")
+        if code.endswith("\n"):
+            code = code[:-1]
+        parts.append(f"<pre>{_html.escape(code)}</pre>")
+        start = match.end()
+    parts.append(_html.escape(question[start:]))
+    return "".join(parts)
+
+
+def _clarify_choices_are_numeric_buttons(choices: Optional[list]) -> bool:
+    if not choices:
+        return False
+    normalized = [str(choice).strip() for choice in choices]
+    return normalized == [str(index) for index in range(1, len(normalized) + 1)]
 
 
 def _strip_mdv2(text: str) -> str:
@@ -4683,10 +4706,11 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            text = f"❓ {_html.escape(question)}"
+            text = f"❓ {_format_clarify_question_html(question)}"
             thread_id = self._metadata_thread_id(metadata)
+            numeric_button_choices = _clarify_choices_are_numeric_buttons(choices)
 
-            if choices:
+            if choices and not numeric_button_choices:
                 # Render full option text in the message body so mobile
                 # users can read long choices that would be truncated in
                 # inline button labels.  Buttons keep short numeric labels
@@ -4708,13 +4732,22 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
                 # short.
                 rows = []
-                for idx in range(len(choices)):
+                if numeric_button_choices:
                     rows.append([
                         InlineKeyboardButton(
                             str(idx + 1),
                             callback_data=f"cl:{clarify_id}:{idx}",
                         )
+                        for idx in range(len(choices))
                     ])
+                else:
+                    for idx in range(len(choices)):
+                        rows.append([
+                            InlineKeyboardButton(
+                                str(idx + 1),
+                                callback_data=f"cl:{clarify_id}:{idx}",
+                            )
+                        ])
                 rows.append([
                     InlineKeyboardButton(
                         "✏️ Other (type answer)",

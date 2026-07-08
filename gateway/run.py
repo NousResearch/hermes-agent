@@ -15383,6 +15383,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if team_id:
                 metadata = dict(metadata or {})
                 metadata["slack_team_id"] = str(team_id)
+        # Secretary Mode: propagate business_connection_id so the Telegram
+        # adapter's send() routes the reply as the business owner.
+        biz_conn_id = getattr(source, "business_connection_id", None)
+        if biz_conn_id:
+            if metadata is None:
+                metadata = {}
+            metadata["business_connection_id"] = biz_conn_id
         return metadata
 
     def _thread_metadata_for_target(

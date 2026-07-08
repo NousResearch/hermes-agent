@@ -13101,6 +13101,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         media_urls: Optional[List[str]] = None,
         media_types: Optional[List[str]] = None,
     ) -> None:
+        """Profile-scoping wrapper around the background agent task.
+
+        When multiplexing is active, resolve the inbound source's profile and
+        run the whole task inside ``_profile_runtime_scope`` so credentials
+        resolve from that profile's secret scope. Mirrors the pattern in
+        ``_run_agent``.
+        """
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return await self._run_background_task_inner(
+                prompt, source, task_id, event_message_id, media_urls, media_types,
+            )
+
+        profile_home = self._resolve_profile_home_for_source(source)
+        with _profile_runtime_scope(profile_home):
+            return await self._run_background_task_inner(
+                prompt, source, task_id, event_message_id, media_urls, media_types,
+            )
+
+    async def _run_background_task_inner(
+        self,
+        prompt: str,
+        source: "SessionSource",
+        task_id: str,
+        event_message_id: Optional[str] = None,
+        media_urls: Optional[List[str]] = None,
+        media_types: Optional[List[str]] = None,
+    ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
         from run_agent import AIAgent
 

@@ -4,10 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
-import { cachedScriptPath,
-  installedAgentInstallScript,
-  resolveInstallScript,
-  runBootstrap } from './bootstrap-runner'
+import { cachedScriptPath, installedAgentInstallScript, resolveInstallScript, runBootstrap } from './bootstrap-runner'
 
 const SCRIPT_NAME = process.platform === 'win32' ? 'install.ps1' : 'install.sh'
 

@@ -115,8 +115,10 @@ function createSessionWindowRegistry() {
   }
 }
 
-export { buildSessionWindowUrl,
+export {
+  buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
   SESSION_WINDOW_MIN_HEIGHT,
-  SESSION_WINDOW_MIN_WIDTH }
+  SESSION_WINDOW_MIN_WIDTH
+}

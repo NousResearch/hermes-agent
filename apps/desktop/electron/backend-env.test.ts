@@ -2,12 +2,14 @@ import assert from 'node:assert/strict'
 import path from 'node:path'
 import test from 'node:test'
 
-import { appendUniquePathEntries,
+import {
+  appendUniquePathEntries,
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
   normalizeHermesHomeRoot,
   pathEnvKey,
-  POSIX_SANE_PATH_ENTRIES } from './backend-env'
+  POSIX_SANE_PATH_ENTRIES
+} from './backend-env'
 
 test('desktop backend PATH adds Hermes-managed bins and missing POSIX sane entries', () => {
   const result = buildDesktopBackendPath({

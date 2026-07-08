@@ -18,7 +18,13 @@ import test from 'node:test'
 import os from 'os'
 import path from 'path'
 
-import { isPidAlive, markerPath, readLiveUpdateMarker, UPDATE_MARKER_MAX_AGE_MS, writeUpdateMarker } from './update-marker'
+import {
+  isPidAlive,
+  markerPath,
+  readLiveUpdateMarker,
+  UPDATE_MARKER_MAX_AGE_MS,
+  writeUpdateMarker
+} from './update-marker'
 
 function tmpHome(tag) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-marker-${tag}-`))
@@ -32,9 +38,9 @@ function writeMarker(home, pid, startedAtSec) {
 
 const ALIVE: typeof process.kill = () => true // injected kill that "succeeds" => pid alive
 
-const DEAD : typeof process.kill= () => {
-  const err = new Error('no such process');
-  (err as any).code = 'ESRCH'
+const DEAD: typeof process.kill = () => {
+  const err = new Error('no such process')
+  ;(err as any).code = 'ESRCH'
   throw err
 }
 
@@ -86,8 +92,8 @@ test('isPidAlive: own pid is alive, impossible pid is dead', () => {
 
 test('isPidAlive: EPERM counts as alive (process owned by another user)', () => {
   const eperm = () => {
-    const err = new Error('operation not permitted');
-    (err as any).code = 'EPERM'
+    const err = new Error('operation not permitted')
+    ;(err as any).code = 'EPERM'
     throw err
   }
 

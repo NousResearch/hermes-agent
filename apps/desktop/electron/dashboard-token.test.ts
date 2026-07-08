@@ -8,12 +8,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { adoptServedDashboardToken,
+import {
+  adoptServedDashboardToken,
   dashboardIndexUrl,
   extractInjectedDashboardToken,
   fetchPublicText,
   isForeignBackendToken,
-  resolveServedDashboardToken } from './dashboard-token'
+  resolveServedDashboardToken
+} from './dashboard-token'
 
 test('extractInjectedDashboardToken reads the JSON-encoded dashboard token', () => {
   const html = '<script>window.__HERMES_SESSION_TOKEN__="served-token";window.__HERMES_BASE_PATH__=""</script>'

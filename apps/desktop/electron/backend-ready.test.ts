@@ -18,13 +18,15 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
-import { DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS,
+import {
+  DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS,
   MIN_PORT_ANNOUNCE_TIMEOUT_MS,
   readDashboardReadyFile,
   resolvePortAnnounceTimeoutMs,
   waitForDashboardPort,
   waitForDashboardPortAnnouncement,
-  waitForDashboardReadyFile } from './backend-ready'
+  waitForDashboardReadyFile
+} from './backend-ready'
 
 type FakeChildProcess = EventEmitter & {
   stdout: EventEmitter

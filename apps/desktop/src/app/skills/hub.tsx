@@ -323,7 +323,9 @@ export function SkillsHub({ query }: SkillsHubProps) {
         <div className="flex shrink-0 items-center justify-between gap-3 px-4 pb-1.5 text-[0.68rem] text-(--ui-text-tertiary)">
           <span className="min-w-0 truncate">
             {term.length > 0 ? h.resultCount(results.length, null) : h.featured}
-            {anyFetching && results.length > 0 && <span className="ml-2 text-(--ui-text-quaternary)">{h.searching}</span>}
+            {anyFetching && results.length > 0 && (
+              <span className="ml-2 text-(--ui-text-quaternary)">{h.searching}</span>
+            )}
           </span>
 
           {hasInstalled && (

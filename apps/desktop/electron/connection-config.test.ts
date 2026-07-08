@@ -13,7 +13,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { AT_COOKIE_VARIANTS,
+import {
+  AT_COOKIE_VARIANTS,
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
@@ -27,7 +28,8 @@ import { AT_COOKIE_VARIANTS,
   resolveAuthMode,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
-  tokenPreview } from './connection-config'
+  tokenPreview
+} from './connection-config'
 
 // --- connectionScopeKey / normAuthMode ---
 

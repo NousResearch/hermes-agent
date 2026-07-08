@@ -21,26 +21,29 @@ const MIN_VISIBLE = 48
 const finite = v => typeof v === 'number' && Number.isFinite(v)
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi))
 
-interface SanitizedWindowState{
-  width: number, height: number, isMaximized: boolean, x?: number,y?: number
+interface SanitizedWindowState {
+  width: number
+  height: number
+  isMaximized: boolean
+  x?: number
+  y?: number
 }
 
 // Parse raw JSON → clean state, or null if garbage. width/height are required
 // and floored; x/y survive only as a finite pair; isMaximized is strict.
-function sanitizeWindowState(raw?: any): SanitizedWindowState | null
-
-
- {
-  if (!raw || typeof raw !== 'object' || !finite(raw.width) || !finite(raw.height)) {return null}
+function sanitizeWindowState(raw?: any): SanitizedWindowState | null {
+  if (!raw || typeof raw !== 'object' || !finite(raw.width) || !finite(raw.height)) {
+    return null
+  }
 
   const state: SanitizedWindowState = {
     width: Math.max(MIN_WIDTH, Math.round(raw.width)),
     height: Math.max(MIN_HEIGHT, Math.round(raw.height)),
-    isMaximized: raw.isMaximized === true,
+    isMaximized: raw.isMaximized === true
   }
 
   if (finite(raw.x) && finite(raw.y)) {
-    state.x = Math.round(raw.x);
+    state.x = Math.round(raw.x)
     state.y = Math.round(raw.y)
   }
 
@@ -50,10 +53,14 @@ function sanitizeWindowState(raw?: any): SanitizedWindowState | null
 // True when `bounds` overlaps some display's work area by ≥ MIN_VISIBLE on both
 // axes. `displays` is Electron's screen.getAllDisplays() shape.
 function onScreen(bounds, displays) {
-  if (!Array.isArray(displays)) {return false}
+  if (!Array.isArray(displays)) {
+    return false
+  }
 
   return displays.some(({ workArea: a } = {}) => {
-    if (!a) {return false}
+    if (!a) {
+      return false
+    }
     const x = Math.min(bounds.x + bounds.width, a.x + a.width) - Math.max(bounds.x, a.x)
     const y = Math.min(bounds.y + bounds.height, a.y + a.height) - Math.max(bounds.y, a.y)
 
@@ -97,7 +104,7 @@ function computeWindowOptions(state, displays): WindowOptions {
     finite(state.y) &&
     onScreen({ x: state.x, y: state.y, width: opts.width, height: opts.height }, displays)
   ) {
-    opts.x = state.x;
+    opts.x = state.x
     opts.y = state.y
   }
 
@@ -127,7 +134,8 @@ function debounce(fn, delayMs) {
   return debounced
 }
 
-export { computeWindowOptions,
+export {
+  computeWindowOptions,
   debounce,
   DEFAULT_HEIGHT,
   DEFAULT_WIDTH,
@@ -135,4 +143,5 @@ export { computeWindowOptions,
   MIN_VISIBLE,
   MIN_WIDTH,
   onScreen,
-  sanitizeWindowState }
+  sanitizeWindowState
+}

@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { MACOS_TAHOE_DARWIN_MAJOR, macTitleBarOverlayHeight, nativeOverlayWidth, OVERLAY_FALLBACK_WIDTH } from './titlebar-overlay-width'
+import {
+  MACOS_TAHOE_DARWIN_MAJOR,
+  macTitleBarOverlayHeight,
+  nativeOverlayWidth,
+  OVERLAY_FALLBACK_WIDTH
+} from './titlebar-overlay-width'
 
 // This static reservation is only the pre-layout FALLBACK. Once laid out the
 // renderer reads the exact width from navigator.windowControlsOverlay

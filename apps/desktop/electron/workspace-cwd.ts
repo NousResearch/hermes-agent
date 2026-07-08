@@ -1,7 +1,7 @@
 import path from 'node:path'
 
 /** True when `dir` lives inside a packaged app bundle / install tree. */
-function isPackagedInstallPath(dir, { installRoots, isPackaged }: { installRoots: string[], isPackaged:boolean }) {
+function isPackagedInstallPath(dir, { installRoots, isPackaged }: { installRoots: string[]; isPackaged: boolean }) {
   if (!isPackaged || !dir) {
     return false
   }

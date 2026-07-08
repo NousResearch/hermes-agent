@@ -337,11 +337,13 @@ async function switchBranch(repoPath, branch, gitBin) {
   return { branch: target }
 }
 
-export { addWorktree,
+export {
+  addWorktree,
   ensureGitRepo,
   listBranches,
   listWorktrees,
   parseWorktrees,
   removeWorktree,
   sanitizeBranch,
-  switchBranch }
+  switchBranch
+}

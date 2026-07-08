@@ -9,7 +9,6 @@ const ELECTRON_DIR = path.dirname(fileURLToPath(import.meta.url))
 // TODO FIXME these tests all grep source code for specific things. This is an antipattern.
 // Tests should NEVER read src, only assert behavior.
 
-
 function readElectronFile(name) {
   return fs.readFileSync(path.join(ELECTRON_DIR, name), 'utf8').replace(/\r\n/g, '\n')
 }

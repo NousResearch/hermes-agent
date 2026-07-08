@@ -7,14 +7,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { computeWindowOptions,
+import {
+  computeWindowOptions,
   debounce,
   DEFAULT_HEIGHT,
   DEFAULT_WIDTH,
   MIN_HEIGHT,
   MIN_WIDTH,
   onScreen,
-  sanitizeWindowState } from './window-state'
+  sanitizeWindowState
+} from './window-state'
 
 // A single 1920×1080 monitor (work area trimmed for the taskbar).
 const PRIMARY = [{ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }]

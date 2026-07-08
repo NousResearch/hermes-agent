@@ -28,7 +28,9 @@ async function fetchPublicText(url, options: any = {}) {
 
   const text = await res.text()
 
-  if (!res.ok) {throw new Error(`${res.status}: ${text || res.statusText}`)}
+  if (!res.ok) {
+    throw new Error(`${res.status}: ${text || res.statusText}`)
+  }
 
   return text
 }
@@ -36,7 +38,9 @@ async function fetchPublicText(url, options: any = {}) {
 function extractInjectedDashboardToken(html) {
   const match = /window\.__HERMES_SESSION_TOKEN__\s*=\s*("(?:\\.|[^"\\])*")/.exec(String(html || ''))
 
-  if (!match) {return null}
+  if (!match) {
+    return null
+  }
 
   try {
     return JSON.parse(match[1])
@@ -97,10 +101,12 @@ async function adoptServedDashboardToken(baseUrl, spawnToken, { childAlive, labe
   return servedToken
 }
 
-export { adoptServedDashboardToken,
+export {
+  adoptServedDashboardToken,
   dashboardIndexUrl,
   DEFAULT_TOKEN_FETCH_TIMEOUT_MS,
   extractInjectedDashboardToken,
   fetchPublicText,
   isForeignBackendToken,
-  resolveServedDashboardToken }
+  resolveServedDashboardToken
+}

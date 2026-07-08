@@ -8590,7 +8590,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         else:
                             # Session not created yet — defer the title
                             # Check uniqueness proactively with the sanitized title
-                            existing = self._session_db.get_session_by_title(new_title)
+                            existing = self._session_db.get_session_by_title(
+                                new_title,
+                                source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                            )
                             if existing:
                                 _cprint(f"  Title '{new_title}' is already in use by session {existing['id']}")
                             else:

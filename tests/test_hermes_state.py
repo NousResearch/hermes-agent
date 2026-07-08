@@ -3762,6 +3762,20 @@ class TestTitleUniqueness:
         with pytest.raises(ValueError, match="already in use"):
             db.set_session_title("s2", "my project")
 
+    def test_duplicate_title_allowed_across_sources(self, db):
+        """Different platforms have independent title namespaces."""
+        db.create_session("cli-session", "cli")
+        db.create_session("telegram-session", "telegram")
+
+        assert db.set_session_title("cli-session", "shared project") is True
+        assert db.set_session_title("telegram-session", "shared project") is True
+
+        assert db.get_session_by_title("shared project", source="cli")["id"] == "cli-session"
+        assert (
+            db.get_session_by_title("shared project", source="telegram")["id"]
+            == "telegram-session"
+        )
+
     def test_same_session_can_keep_title(self, db):
         """A session can re-set its own title without error."""
         db.create_session("s1", "cli")
@@ -3819,6 +3833,22 @@ class TestTitleLineage:
         # Resolving "my project" should return s3 (latest numbered variant)
         assert db.resolve_session_by_title("my project") == "s3"
 
+    def test_resolve_title_scoped_to_source(self, db):
+        """A numbered title in another source must not win this source's resume."""
+        import time
+
+        db.create_session("cli-root", "cli")
+        db.set_session_title("cli-root", "my project")
+        time.sleep(0.01)
+        db.create_session("telegram-child", "telegram")
+        db.set_session_title("telegram-child", "my project #2")
+
+        assert db.resolve_session_by_title("my project", source="cli") == "cli-root"
+        assert (
+            db.resolve_session_by_title("my project", source="telegram")
+            == "telegram-child"
+        )
+
     def test_resolve_exact_numbered(self, db):
         """Resolving an exact numbered title returns that specific session."""
         db.create_session("s1", "cli")
@@ -3859,6 +3889,22 @@ class TestTitleLineage:
         db.set_session_title("s2", "my project #2")
         # Even when called with "my project #2", it should return #3
         assert db.get_next_title_in_lineage("my project #2") == "my project #3"
+
+    def test_next_title_lineage_scoped_to_source(self, db):
+        """Branch/compression title numbering is independent per source."""
+        db.create_session("cli-root", "cli")
+        db.set_session_title("cli-root", "my project")
+        db.create_session("telegram-child", "telegram")
+        db.set_session_title("telegram-child", "my project #2")
+
+        assert (
+            db.get_next_title_in_lineage("my project", source="cli")
+            == "my project #2"
+        )
+        assert (
+            db.get_next_title_in_lineage("my project", source="telegram")
+            == "my project #3"
+        )
 
 
 class TestTitleSqlWildcards:

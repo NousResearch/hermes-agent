@@ -18,7 +18,7 @@ Every conversation — whether from the CLI, Telegram, Discord, Slack, WhatsApp,
 
 The SQLite database stores:
 - Session ID, source platform, user ID
-- **Session title** (unique, human-readable name)
+- **Session title** (human-readable name, unique within its source/platform)
 - Model name and configuration
 - System prompt snapshot
 - Full message history (role, content, tool calls, tool results)
@@ -678,7 +678,7 @@ exists in state.db.
 
 Key tables in `state.db`:
 
-- **sessions** — session metadata (id, source, user_id, model, title, timestamps, token counts). Titles have a unique index (NULL titles allowed, only non-NULL must be unique).
+- **sessions** — session metadata (id, source, user_id, model, title, timestamps, token counts). Non-NULL titles are unique within each source/platform.
 - **messages** — full message history (role, content, tool_calls, tool_name, token_count)
 - **messages_fts** — FTS5 virtual table for full-text search across message content
 

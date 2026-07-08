@@ -882,6 +882,7 @@ class CLICommandsMixin:
         timestamp_str = now.strftime("%Y%m%d_%H%M%S")
         short_uuid = uuid.uuid4().hex[:6]
         new_session_id = f"{timestamp_str}_{short_uuid}"
+        session_source = os.environ.get("HERMES_SESSION_SOURCE", "cli")
 
         # Determine branch title
         if branch_name:
@@ -892,7 +893,9 @@ class CLICommandsMixin:
             if self._session_db:
                 current_title = self._session_db.get_session_title(self.session_id)
             base = current_title or "branch"
-            branch_title = self._session_db.get_next_title_in_lineage(base)
+            branch_title = self._session_db.get_next_title_in_lineage(
+                base, source=session_source
+            )
 
         # Save the current session's state before branching
         parent_session_id = self.session_id
@@ -920,7 +923,7 @@ class CLICommandsMixin:
         try:
             self._session_db.create_session(
                 session_id=new_session_id,
-                source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                source=session_source,
                 model=self.model,
                 model_config={
                     "max_iterations": self.max_turns,

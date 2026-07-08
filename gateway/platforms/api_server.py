@@ -2030,7 +2030,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if title is None:
             base = source.get("title") or "fork"
             try:
-                title = db.get_next_title_in_lineage(base)
+                title = db.get_next_title_in_lineage(base, source="api_server")
             except Exception:
                 title = f"{base} fork"
         try:

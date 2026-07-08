@@ -5603,7 +5603,10 @@ def _(rid, params: dict) -> dict:
 
     found = db.get_session(target)
     if not found:
-        found = db.get_session_by_title(target)
+        source = _resolve_session_source(
+            str(params.get("source") or "").strip() or None
+        )
+        found = db.get_session_by_title(target, source=source)
         if found:
             target = found["id"]
         elif is_truthy_value(params.get("lazy", False)) and _child_run_active(target):
@@ -8091,7 +8094,7 @@ def _(rid, params: dict) -> dict:
         else:
             current = db.get_session_title(old_key) or "branch"
             title = (
-                db.get_next_title_in_lineage(current)
+                db.get_next_title_in_lineage(current, source=source)
                 if hasattr(db, "get_next_title_in_lineage")
                 else f"{current} (branch)"
             )

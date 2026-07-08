@@ -1308,7 +1308,10 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
             resolved_id = session["id"]
         else:
             # Try as title (with auto-latest for lineage)
-            resolved_id = db.resolve_session_by_title(name_or_id)
+            resolved_id = db.resolve_session_by_title(
+                name_or_id,
+                source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+            )
 
         if resolved_id:
             # Project forward through compression chain so resumes land on

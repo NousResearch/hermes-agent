@@ -3616,7 +3616,10 @@ class GatewaySlashCommandsMixin:
             if session:
                 target_id = session["id"]
             else:
-                target_id = await self._session_db.resolve_session_by_title(name)
+                target_id = await self._session_db.resolve_session_by_title(
+                    name,
+                    source=source.platform.value if source.platform else None,
+                )
         if not target_id:
             return t("gateway.resume.not_found", name=name)
         # Compression creates child continuations that hold the live transcript.
@@ -3811,7 +3814,10 @@ class GatewaySlashCommandsMixin:
         else:
             current_title = await self._session_db.get_session_title(current_entry.session_id)
             base = current_title or "branch"
-            branch_title = await self._session_db.get_next_title_in_lineage(base)
+            branch_title = await self._session_db.get_next_title_in_lineage(
+                base,
+                source=source.platform.value if source.platform else None,
+            )
 
         parent_session_id = current_entry.session_id
 

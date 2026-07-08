@@ -1710,11 +1710,13 @@ class SessionDB:
                     (SCHEMA_VERSION,),
                 )
 
-        # Unique title index — always ensure it exists
+        # Unique title index — title names are user-facing handles inside a
+        # source namespace (cli, telegram, api_server, ...), not globally.
         try:
+            cursor.execute("DROP INDEX IF EXISTS idx_sessions_title_unique")
             cursor.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
-                "ON sessions(title) WHERE title IS NOT NULL"
+                "ON sessions(source, title) WHERE title IS NOT NULL"
             )
         except sqlite3.OperationalError:
             pass  # Index already exists
@@ -3059,11 +3061,17 @@ class SessionDB:
         """
         title = self.sanitize_title(title)
         def _do(conn):
+            session_row = conn.execute(
+                "SELECT source FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if not session_row:
+                return 0
+            source = session_row["source"]
             if title:
                 # Check uniqueness (allow the same session to keep its own title)
                 cursor = conn.execute(
-                    "SELECT id FROM sessions WHERE title = ? AND id != ?",
-                    (title, session_id),
+                    "SELECT id FROM sessions WHERE source = ? AND title = ? AND id != ?",
+                    (source, title, session_id),
                 )
                 conflict = cursor.fetchone()
                 if conflict:
@@ -3157,16 +3165,23 @@ class SessionDB:
         rowcount = self._execute_write(_do)
         return rowcount > 0
 
-    def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
+    def get_session_by_title(
+        self, title: str, *, source: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
+        query = "SELECT * FROM sessions WHERE title = ?"
+        params: list[Any] = [title]
+        if source is not None:
+            query += " AND source = ?"
+            params.append(source)
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT * FROM sessions WHERE title = ?", (title,)
-            )
+            cursor = self._conn.execute(query, params)
             row = cursor.fetchone()
         return dict(row) if row else None
 
-    def resolve_session_by_title(self, title: str) -> Optional[str]:
+    def resolve_session_by_title(
+        self, title: str, *, source: Optional[str] = None
+    ) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest in a lineage.
 
         If the exact title exists, returns that session's ID.
@@ -3175,17 +3190,22 @@ class SessionDB:
         latest numbered variant (the most recent continuation).
         """
         # First try exact match
-        exact = self.get_session_by_title(title)
+        exact = self.get_session_by_title(title, source=source)
 
         # Also search for numbered variants: "title #2", "title #3", etc.
         # Escape SQL LIKE wildcards (%, _) in the title to prevent false matches
         escaped = title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = (
+            "SELECT id, title, started_at FROM sessions "
+            "WHERE title LIKE ? ESCAPE '\\'"
+        )
+        params: list[Any] = [f"{escaped} #%"]
+        if source is not None:
+            query += " AND source = ?"
+            params.append(source)
+        query += " ORDER BY started_at DESC"
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT id, title, started_at FROM sessions "
-                "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
-                (f"{escaped} #%",),
-            )
+            cursor = self._conn.execute(query, params)
             numbered = cursor.fetchall()
 
         if numbered:
@@ -3195,7 +3215,9 @@ class SessionDB:
             return exact["id"]
         return None
 
-    def get_next_title_in_lineage(self, base_title: str) -> str:
+    def get_next_title_in_lineage(
+        self, base_title: str, *, source: Optional[str] = None
+    ) -> str:
         """Generate the next title in a lineage (e.g., "my session" → "my session #2").
 
         Strips any existing " #N" suffix to find the base name, then finds
@@ -3211,11 +3233,13 @@ class SessionDB:
         # Find all existing numbered variants
         # Escape SQL LIKE wildcards (%, _) in the base to prevent false matches
         escaped = base.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = "SELECT title FROM sessions WHERE (title = ? OR title LIKE ? ESCAPE '\\')"
+        params: list[Any] = [base, f"{escaped} #%"]
+        if source is not None:
+            query += " AND source = ?"
+            params.append(source)
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'",
-                (base, f"{escaped} #%"),
-            )
+            cursor = self._conn.execute(query, params)
             existing = [row["title"] for row in cursor.fetchall()]
 
         if not existing:

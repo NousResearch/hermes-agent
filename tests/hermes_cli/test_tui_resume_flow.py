@@ -118,6 +118,34 @@ def test_cmd_chat_tui_resume_resolves_title_before_launch(monkeypatch, main_mod)
     assert captured["resume"] == "20260409_000000_aa11bb"
 
 
+def test_title_resolution_uses_configured_session_source(monkeypatch, main_mod):
+    calls = []
+
+    class _DB:
+        def get_session(self, _value):
+            return None
+
+        def resolve_session_by_title(self, title, *, source=None):
+            calls.append((title, source))
+            return "custom-session"
+
+        def get_compression_tip(self, session_id):
+            return session_id
+
+        def close(self):
+            return None
+
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "third-party-tool")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_state",
+        types.SimpleNamespace(SessionDB=lambda: _DB()),
+    )
+
+    assert main_mod._resolve_session_by_name_or_id("Shared Project") == "custom-session"
+    assert calls == [("Shared Project", "third-party-tool")]
+
+
 def test_cmd_chat_tui_passes_model_and_provider(monkeypatch, main_mod):
     captured = {}
 

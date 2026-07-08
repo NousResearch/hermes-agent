@@ -123,6 +123,22 @@ class TestBranchCommandCLI:
         title = session_db.get_session_title(cli_instance.session_id)
         assert title == "My Coding Session #2"
 
+    def test_branch_auto_title_uses_configured_source(
+        self, cli_instance, session_db, monkeypatch
+    ):
+        """Custom CLI sources must number titles inside their own namespace."""
+        custom_source = "third-party-tool"
+        monkeypatch.setenv("HERMES_SESSION_SOURCE", custom_source)
+        session_db.create_session("custom-existing", custom_source)
+        session_db.set_session_title("custom-existing", "My Coding Session #2")
+
+        HermesCLI = __import__("cli").HermesCLI
+        HermesCLI._handle_branch_command(cli_instance, "/branch")
+
+        created = session_db.get_session(cli_instance.session_id)
+        assert created["source"] == custom_source
+        assert created["title"] == "My Coding Session #3"
+
     def test_branch_empty_conversation(self, cli_instance, session_db):
         """Branching with no history should show an error."""
         from cli import HermesCLI

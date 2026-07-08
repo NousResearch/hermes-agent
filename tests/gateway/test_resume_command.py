@@ -178,6 +178,32 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_by_name_scoped_to_platform_source(self, tmp_path):
+        """Title resume should not cross platform source namespaces."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("telegram_session", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("telegram_session", "Shared Project")
+        db.create_session("discord_session", "discord", user_id="12345", chat_id="67890")
+        db.set_session_title("discord_session", "Shared Project")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
+
+        event = _make_event(text="/resume Shared Project", platform=Platform.TELEGRAM)
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed" in result
+        runner.session_store.switch_session.assert_called_once()
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "telegram_session"
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_resume_clears_session_model_overrides(self, tmp_path):
         """Resume must not carry a previous session's /model override into the
         restored conversation, while leaving other chats' overrides intact (#10702)."""

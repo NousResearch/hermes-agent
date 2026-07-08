@@ -951,7 +951,10 @@ def compress_context(
                     # Auto-number the title for the continuation session
                     if old_title:
                         try:
-                            new_title = agent._session_db.get_next_title_in_lineage(old_title)
+                            new_title = agent._session_db.get_next_title_in_lineage(
+                                old_title,
+                                source=getattr(agent, "platform", None) or "cli",
+                            )
                             agent._session_db.set_session_title(agent.session_id, new_title)
                         except (ValueError, Exception) as e:
                             logger.debug("Could not propagate title on compression: %s", e)

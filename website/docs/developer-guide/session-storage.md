@@ -67,7 +67,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique
-    ON sessions(title) WHERE title IS NOT NULL;
+ON sessions(source, title) WHERE title IS NOT NULL;
 ```
 
 ### Messages Table
@@ -142,7 +142,7 @@ The `schema_version` table stores a single integer. Simple column additions are 
 | 1 | Initial schema (sessions, messages, FTS5) |
 | 2 | Add `finish_reason` column to messages |
 | 3 | Add `title` column to sessions |
-| 4 | Add unique index on `title` (NULLs allowed, non-NULL must be unique) |
+| 4 | Add unique index on `(source, title)` (NULL titles allowed) |
 | 5 | Add billing columns: `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `billing_provider`, `billing_base_url`, `billing_mode`, `estimated_cost_usd`, `actual_cost_usd`, `cost_status`, `cost_source`, `pricing_version` |
 | 6 | Add reasoning columns to messages: `reasoning`, `reasoning_details`, `codex_reasoning_items` |
 | 7 | Add `reasoning_content` column to messages |
@@ -233,7 +233,7 @@ conversation = db.get_messages_as_conversation("sess_abc123")
 ### Session Titles
 
 ```python
-# Set a title (must be unique among non-NULL titles)
+# Set a title (must be unique among non-NULL titles in the same source)
 db.set_session_title("sess_abc123", "Fix Docker Build")
 
 # Resolve by title (returns most recent in lineage)

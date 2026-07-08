@@ -335,12 +335,38 @@ def test_sess_found(server):
 # ── session.resume payload ────────────────────────────────────────────
 
 
+def test_session_resume_title_lookup_uses_surface_source(server, monkeypatch):
+    calls = []
+
+    class _DB:
+        def get_session(self, _sid):
+            return None
+
+        def get_session_by_title(self, title, *, source=None):
+            calls.append((title, source))
+            return None
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_resolve_session_source", lambda _source: "desktop")
+
+    resp = server.handle_request(
+        {
+            "id": "r-title",
+            "method": "session.resume",
+            "params": {"session_id": "Shared Project"},
+        }
+    )
+
+    assert resp["error"]["code"] == 4007
+    assert calls == [("Shared Project", "desktop")]
+
+
 def test_session_resume_returns_hydrated_messages(server, monkeypatch):
     class _DB:
         def get_session(self, _sid):
             return {"id": "20260409_010101_abc123"}
 
-        def get_session_by_title(self, _title):
+        def get_session_by_title(self, _title, *, source=None):
             return None
 
         def reopen_session(self, _sid):
@@ -397,7 +423,7 @@ def test_session_resume_defaults_to_deferred_build(server, monkeypatch):
                 "model_config": {"provider": "vendor"},
             }
 
-        def get_session_by_title(self, _title):
+        def get_session_by_title(self, _title, *, source=None):
             return None
 
         def resolve_resume_session_id(self, sid):
@@ -541,7 +567,7 @@ def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
         def get_session(self, _sid):
             return {"id": "20260502_000000_listcontent"}
 
-        def get_session_by_title(self, _title):
+        def get_session_by_title(self, _title, *, source=None):
             return None
 
         def reopen_session(self, _sid):
@@ -591,7 +617,7 @@ def test_session_resume_lazy_registers_watch_session_without_agent(server, monke
         def get_session(self, _sid):
             return {"id": target}
 
-        def get_session_by_title(self, _title):
+        def get_session_by_title(self, _title, *, source=None):
             return None
 
         def reopen_session(self, _sid):
@@ -664,7 +690,7 @@ def test_session_resume_lazy_reports_running_for_inflight_child(server, monkeypa
         def get_session(self, _sid):
             return {"id": target}
 
-        def get_session_by_title(self, _title):
+        def get_session_by_title(self, _title, *, source=None):
             return None
 
         def reopen_session(self, _sid):
@@ -715,7 +741,7 @@ def test_session_resume_lazy_tolerates_missing_row_for_active_child(server, monk
             # Row not flushed yet — the whole point of the race.
             return None
 
-        def get_session_by_title(self, _title):
+        def get_session_by_title(self, _title, *, source=None):
             return None
 
         def reopen_session(self, _sid):
@@ -770,7 +796,7 @@ def test_session_resume_missing_row_non_lazy_still_errors(server, monkeypatch):
         def get_session(self, _sid):
             return None
 
-        def get_session_by_title(self, _title):
+        def get_session_by_title(self, _title, *, source=None):
             return None
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
@@ -812,7 +838,7 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
         def get_session(self, _sid):
             return {"id": target}
 
-        def get_session_by_title(self, _title):
+        def get_session_by_title(self, _title, *, source=None):
             return None
 
         def reopen_session(self, _sid):
@@ -943,7 +969,7 @@ def test_session_resume_reuses_live_agent_after_compression_rotation(server, mon
         def get_session(self, _sid):
             return {"id": target}
 
-        def get_session_by_title(self, _title):
+        def get_session_by_title(self, _title, *, source=None):
             return None
 
         def resolve_resume_session_id(self, _target):
@@ -1029,7 +1055,7 @@ def test_session_resume_live_payload_uses_current_history_with_ancestors(server,
         def get_session(self, _sid):
             return {"id": target}
 
-        def get_session_by_title(self, _title):
+        def get_session_by_title(self, _title, *, source=None):
             return None
 
         def reopen_session(self, _sid):
@@ -1162,12 +1188,14 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
     thing that keeps a TUI branch visible.
     """
     create_calls = []
+    lineage_calls = []
 
     class _DB:
         def get_session_title(self, _key):
             return "parent-title"
 
-        def get_next_title_in_lineage(self, base):
+        def get_next_title_in_lineage(self, base, *, source=None):
+            lineage_calls.append((base, source))
             return f"{base} 2"
 
         def create_session(self, new_key, **kwargs):
@@ -1199,6 +1227,7 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
     parent_key = "20260101_000000_parent"
     server._sessions[parent_sid] = {
         "session_key": parent_key,
+        "source": "desktop",
         "history": [{"role": "user", "content": "hello"}],
         "history_lock": threading.Lock(),
         "cols": 80,
@@ -1213,6 +1242,8 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
     new_key, kwargs = create_calls[0]
     assert new_key == "20260101_000001_child0"
     assert kwargs["parent_session_id"] == parent_key
+    assert kwargs["source"] == "desktop"
+    assert lineage_calls == [("parent-title", "desktop")]
     # The marker — without it the branch is invisible in /resume and /sessions.
     assert kwargs["model_config"] == {"_branched_from": parent_key}
 

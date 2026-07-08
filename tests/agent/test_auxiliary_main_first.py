@@ -337,6 +337,157 @@ class TestResolveAutoMainFirst:
         assert mock_resolve.call_args.kwargs["api_mode"] == "chat_completions"
 
 
+class TestResolveAutoCustomProviderNoRuntime:
+    """Bare `model.provider: custom` + `model.base_url` with no live agent
+    runtime and no set_runtime_main() override (e.g. _resolve_auto() called
+    from a standalone script/tool context — background review, an approval
+    classifier, a CLI utility, ...) must still resolve Step 1 from config.
+
+    Regression: main_provider/main_model already fell back to
+    _read_main_provider()/_read_main_model() here, but runtime_base_url/
+    runtime_api_key had no equivalent config.yaml fallback — only an explicit
+    main_runtime dict or a process-local _RUNTIME_MAIN_* override populated
+    them. A bare-custom main (a local llama.cpp/vLLM/Ollama/LM Studio server
+    configured directly in model.base_url, not via a named custom_providers
+    entry) resolved main_provider="custom" correctly but left
+    explicit_base_url=None, so resolve_provider_client("custom", ...,
+    explicit_base_url=None) could never produce a client — Step 1 silently
+    failed and fell through to the Step 3 chain (OpenRouter -> Nous ->
+    local/custom -> api-key), which has no way to discover a bare-custom
+    endpoint either, so every auxiliary task (compression, session_search,
+    smart/Auto Mode approval, ...) failed with "no provider available" on
+    this class of setup. Mirrors TestResolveVisionCustomProvider's
+    test_custom_main_no_runtime_falls_back_to_configured_endpoint, which
+    already worked correctly for vision via _resolve_custom_runtime().
+    """
+
+    def test_bare_custom_main_no_runtime_resolves_from_config(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_BASE_URL", "")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_KEY", "")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_MODE", "")
+
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="custom",
+        ), patch(
+            "agent.auxiliary_client._read_main_model",
+            return_value="Qwen3.5-4B-UD-Q4_K_XL.gguf",
+        ), patch(
+            "agent.auxiliary_client._read_main_base_url",
+            return_value="http://127.0.0.1:8090/v1",
+        ), patch(
+            "agent.auxiliary_client._read_main_api_key", return_value="",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve:
+            mock_client = MagicMock()
+            mock_resolve.return_value = (mock_client, "Qwen3.5-4B-UD-Q4_K_XL.gguf")
+
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto()
+
+        assert client is mock_client
+        assert model == "Qwen3.5-4B-UD-Q4_K_XL.gguf"
+        assert mock_resolve.call_args.args[0] == "custom"
+        assert mock_resolve.call_args.kwargs.get("explicit_base_url") == "http://127.0.0.1:8090/v1"
+
+    def test_custom_prefixed_main_no_runtime_also_resolves_from_config(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_BASE_URL", "")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_KEY", "")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_MODE", "")
+
+        with patch(
+            "agent.auxiliary_client._read_main_provider",
+            return_value="custom:my-local-server",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="local-model",
+        ), patch(
+            "agent.auxiliary_client._read_main_base_url",
+            return_value="http://127.0.0.1:9000/v1",
+        ), patch(
+            "agent.auxiliary_client._read_main_api_key", return_value="",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve:
+            mock_client = MagicMock()
+            mock_resolve.return_value = (mock_client, "local-model")
+
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto()
+
+        assert client is mock_client
+        assert mock_resolve.call_args.kwargs.get("explicit_base_url") == "http://127.0.0.1:9000/v1"
+
+    def test_live_runtime_base_url_still_wins_over_config(self, monkeypatch):
+        """An explicit main_runtime dict must NOT be overridden by the new
+        config fallback — the live runtime is always more authoritative."""
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_BASE_URL", "")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_KEY", "")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_MODE", "")
+
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="custom",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="config-model",
+        ), patch(
+            "agent.auxiliary_client._read_main_base_url",
+            return_value="http://127.0.0.1:9999/v1",
+        ) as mock_read_base_url, patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve:
+            mock_client = MagicMock()
+            mock_resolve.return_value = (mock_client, "live-model")
+
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto(main_runtime={
+                "provider": "custom",
+                "model": "live-model",
+                "base_url": "https://live.example/v1",
+                "api_key": "sk-live",
+            })
+
+        assert mock_resolve.call_args.kwargs.get("explicit_base_url") == "https://live.example/v1"
+        mock_read_base_url.assert_not_called()
+
+    def test_non_custom_provider_unaffected(self, monkeypatch):
+        """The new fallback must only engage for provider == custom(:*) — a
+        non-custom main with no runtime must behave exactly as before."""
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_BASE_URL", "")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_KEY", "")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_MODE", "")
+
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="openrouter",
+        ), patch(
+            "agent.auxiliary_client._read_main_model",
+            return_value="anthropic/claude-opus-4.8",
+        ), patch(
+            "agent.auxiliary_client._read_main_base_url",
+        ) as mock_read_base_url, patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve:
+            mock_client = MagicMock()
+            mock_resolve.return_value = (mock_client, "anthropic/claude-opus-4.8")
+
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto()
+
+        assert client is mock_client
+        assert mock_resolve.call_args.kwargs.get("explicit_base_url") is None
+        mock_read_base_url.assert_not_called()
+
+
 # ── Vision — resolve_vision_provider_client ─────────────────────────────────
 
 

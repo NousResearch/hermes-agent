@@ -2167,17 +2167,35 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
     endpoints where the base URL lives in config.yaml instead of the live
     environment.
     """
+    # When the main model itself is a bare `model.provider: custom` +
+    # `model.base_url` (a local llama.cpp/vLLM/Ollama/LM Studio server, not a
+    # named `custom_providers:` entry), pass that base_url through explicitly
+    # so resolve_runtime_provider's direct-alias branch picks it up. Without
+    # this, a bare-custom main model is invisible to every auxiliary task
+    # that falls back to "auto" (compression, session_search, smart/Auto Mode
+    # approval, ...) — resolve_runtime_provider(requested="custom") with no
+    # explicit_base_url only ever checks OPENAI_BASE_URL or a named
+    # custom_providers entry, neither of which this setup uses.
+    _main_base_url = None
+    if _read_main_provider() == "custom":
+        _main_base_url = _read_main_base_url() or None
+
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
-        runtime = resolve_runtime_provider(requested="custom")
+        runtime = resolve_runtime_provider(
+            requested="custom", explicit_base_url=_main_base_url,
+        )
     except Exception as exc:
         logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
         runtime = None
 
     if not isinstance(runtime, dict):
-        openai_base = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
-        openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+        openai_base = (
+            os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
+            or (_main_base_url or "")
+        )
+        openai_key = os.getenv("OPENAI_API_KEY", "").strip() or _read_main_api_key()
         if not openai_base:
             return None, None, None
         runtime = {
@@ -4075,6 +4093,21 @@ def _resolve_auto(
     # config.yaml (auxiliary.<task>.provider) still win over this.
     main_provider = str(runtime_provider or _read_main_provider() or "")
     main_model = str(runtime_model or _read_main_model() or "")
+
+    # Config.yaml fallback for base_url/api_key, mirroring the provider/model
+    # fallback above. Without this, a bare `model.provider: custom` +
+    # `model.base_url` setup (a local llama.cpp/vLLM/Ollama/LM Studio server
+    # configured directly rather than via a live agent runtime or
+    # set_runtime_main() override — e.g. this function called from a
+    # standalone script/tool context) resolves main_provider="custom"
+    # correctly here but leaves runtime_base_url empty, so Step 1 below calls
+    # resolve_provider_client("custom", ..., explicit_base_url=None) — which
+    # can never produce a working client for "custom" — and silently falls
+    # through to the Step 3 fallback chain instead.
+    if not runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
+        runtime_base_url = _read_main_base_url()
+        if not runtime_api_key:
+            runtime_api_key = _read_main_api_key()
 
     # MoA virtual provider: the "model" is a preset name (e.g. "opus-gpt") and
     # there is no real "moa" HTTP endpoint, so resolving an aux client against

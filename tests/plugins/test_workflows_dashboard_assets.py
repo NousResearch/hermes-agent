@@ -80,7 +80,7 @@ def test_workflow_dashboard_exposes_ui_only_builder_controls() -> None:
 def test_workflow_dashboard_uses_palette_instead_of_form_toolbar_clutter() -> None:
     text = BUNDLE.read_text(encoding="utf-8")
     assert "Nodes library" in text
-    assert "Drag from here mentally: click a node type to add it, then configure it in the inspector." in text
+    assert "Click a node type to add it, then configure it in the inspector." in text
     assert "hermes-workflows-node-palette" in text
     assert "Choose a node from the palette, select it on the canvas, then configure it in Properties." in text
     for removed_marker in [

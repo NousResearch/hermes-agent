@@ -56,6 +56,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
+| `hermes workflow` | Workflow graph definitions, validation, deployment, and executions. |
 | `hermes project` | Manage named, multi-folder workspaces (projects). Anchors desktop session grouping and, when bound to a kanban board, gives tasks a deterministic worktree + branch convention. State is per-profile. |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |
@@ -617,6 +618,41 @@ Board resolution order (highest precedence first): `--board <slug>` flag → `HE
 All actions are also available as a slash command in the gateway (`/kanban …`), with the same argument surface — including `boards` subcommands and the `--board` flag.
 
 For the full design — comparison with Cline Kanban / Paperclip / NanoClaw / Gemini Enterprise, eight collaboration patterns, four user stories, concurrency correctness proof — see `docs/hermes-kanban-v1-spec.pdf` in the repository or the [Kanban user guide](/user-guide/features/kanban).
+
+## `hermes workflow`
+
+```bash
+hermes workflow <action> [options]
+```
+
+Named, versioned workflow graphs with branching, waits, fan-out, and Kanban-backed `agent_task` steps. Definitions are stored in `~/.hermes/workflows.db` after deploy. The command is singular today (`workflow`, not `workflows`).
+
+| Action | Purpose |
+|--------|---------|
+| `init` | Create `workflows.db` if missing. Idempotent. |
+| `validate <file.yaml>` | Validate a workflow YAML/JSON file without deploying. |
+| `deploy <file.yaml>` | Validate and deploy a workflow definition. `--json` for machine output. |
+| `list` | List deployed workflow definitions. `--json` for machine output. |
+| `show <workflow_id>` | Show the latest deployed definition for a workflow id. `--json` includes the full spec. |
+| `run <workflow_id>` | Start a manual execution. `--input <input.json>` supplies a JSON object (defaults to `{}`). `--json` prints the new execution id and status. |
+| `executions list` | List workflow executions. `--workflow <workflow_id>` filters to one definition. `--json` for machine output. |
+| `executions show <execution_id>` | Show one execution's status, input, and context. `--json` for machine output. |
+| `executions cancel <execution_id>` | Cancel a non-terminal execution and block any linked Kanban agent tasks. |
+| `tick` | Advance queued workflow executions locally. `--limit N` (default `10`). `--json` prints `{"processed": N}`. |
+
+Examples:
+
+```bash
+hermes workflow validate examples/workflows/research-triage.yaml
+hermes workflow deploy examples/workflows/research-triage.yaml
+hermes workflow run research-triage --input ./input.json --json
+hermes workflow tick --limit 10
+hermes workflow executions show wfexec_abc123 --json
+```
+
+**Dispatcher note:** `workflow.dispatch_in_gateway` defaults to `false`. Until you opt in (`hermes config set workflow.dispatch_in_gateway true` and restart the gateway), scheduled triggers, waits, and completed `agent_task` nodes only advance when something calls `hermes workflow tick` (the dashboard run button triggers one tick best-effort).
+
+For the schema, condition DSL, template rules, dashboard builder, and Kanban integration details, see the [Workflows user guide](/user-guide/features/workflows).
 
 ## `hermes project`
 

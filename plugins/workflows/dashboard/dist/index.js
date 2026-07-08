@@ -2654,7 +2654,7 @@
         h("div", { className: "hermes-workflows-palette-header" },
           h("div", null,
             h("strong", null, "Nodes library"),
-            h("p", { className: "hermes-workflows-muted" }, "Drag from here mentally: click a node type to add it, then configure it in the inspector.")
+            h("p", { className: "hermes-workflows-muted" }, "Click a node type to add it, then configure it in the inspector.")
           ),
           h("div", { className: "hermes-workflows-palette-help" }, "Connect cells by dragging between node handles on the canvas.")
         ),

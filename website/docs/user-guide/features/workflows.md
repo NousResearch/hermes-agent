@@ -350,7 +350,7 @@ Supported `agent_task` fields:
 | `model` | Optional model override for this cell. Passed to the Kanban worker as `-m`; omit to use the selected profile's default model. Legacy `model_override` is still accepted on input. |
 | `prompt` | String/list/object rendered with safe templates, then used as the Kanban task body. Required. |
 | `result_contract` | Optional mapping of required output keys to flat types (`string`, `number`, `boolean`, `array`, `object`) or enum strings like `approved|rejected`. Dispatcher blocks the cell if the completed Kanban result does not match. |
-| `title` | Kanban task title. Defaults to `<workflow name>: <node id>`. |
+| `title` | Kanban task title. String titles support `${ ... }` template placeholders like prompts. Defaults to `<workflow name>: <node id>`. |
 | `workspace_kind` | Passed to Kanban, e.g. `scratch` or `worktree`. Defaults to `scratch` when omitted. |
 | `workspace_path` | Optional Kanban workspace path. This field is not templated. |
 | `skills` | Skills to load for the worker. |
@@ -507,7 +507,7 @@ When a workflow reaches an `agent_task` node, the dispatcher creates or reuses a
 
 | Kanban field | Source |
 |---|---|
-| `title` | node `title`, or `<workflow name>: <node id>` |
+| `title` | rendered node `title` (templates supported), or `<workflow name>: <node id>` |
 | `body` | rendered node `prompt` |
 | `assignee` | node `profile` |
 | `workspace_kind`, `workspace_path` | node fields |

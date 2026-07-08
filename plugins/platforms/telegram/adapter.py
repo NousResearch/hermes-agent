@@ -525,8 +525,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # can leave Bot API 10.1 rich draft frames visually overlaid until the
         # chat is redrawn, while final rich messages remain useful.
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
+        # Current Telegram Desktop/macOS rich rendering can garble CJK text.
+        # Keep the upstream safety default, but allow an explicit local opt-in
+        # when the operator knows their own clients are unaffected.
+        self._allow_cjk_rich_messages: bool = self._coerce_bool_extra("allow_cjk_rich_messages", False)
         # Latched off after a capability failure on sendRichMessage /
-        # sendRichMessageDraft (e.g. older python-telegram-bot without the
+
         # endpoint) so later sends skip the doomed rich attempt entirely.
         self._rich_send_disabled: bool = False
         self._rich_draft_disabled: bool = False
@@ -1362,13 +1366,15 @@ class TelegramAdapter(BasePlatformAdapter):
         return False
 
     def _has_telegram_desktop_cjk_rich_garble_shape(self, content: str) -> bool:
-        """Return True for CJK content that current TDesktop rich drafts garble.
+        """Return True when the upstream CJK rich-rendering safety guard applies.
 
-        Telegram Mac/Desktop Bot API 10.1 rich-message rendering currently
-        leaves overlapping draft/overlay glyph artifacts for CJK text (#47653).
-        The legacy MarkdownV2 path renders the same text cleanly, so skip rich
-        delivery up front until affected clients age out.
+        Upstream defaults to skipping CJK rich delivery because Telegram
+        Desktop/macOS can render overlapping glyph artifacts. Operators who do
+        not use those clients can opt back in with
+        ``telegram.extra.allow_cjk_rich_messages: true``.
         """
+        if getattr(self, "_allow_cjk_rich_messages", False):
+            return False
         return bool(content and self._RICH_CJK_RE.search(content))
 
     def _needs_rich_rendering(self, content: str) -> bool:

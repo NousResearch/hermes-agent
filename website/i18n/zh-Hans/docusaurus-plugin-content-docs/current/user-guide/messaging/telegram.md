@@ -896,7 +896,20 @@ gateway:
         rich_messages: true
 ```
 
-这个设置用于客户端渲染/复制兼容性；当 Telegram 拒绝富消息 API 调用时，Hermes 已经会自动回退。如果你只是想在保持富消息启用的同时恢复旧版「始终使用代码块」表格行为，可在 `config.yaml` 中设置 `telegram.pretty_tables: false` 禁用表格规范化（默认：`true`）。
+这个设置用于客户端渲染/复制兼容性；当 Telegram 拒绝富消息 API 调用时，Hermes 已经会自动回退。
+
+即使 `rich_messages: true` 已开启，CJK 富消息（中文 / 日文 / 韩文）默认仍会**单独保持关闭**，因为 Telegram Desktop/macOS 可能会把 CJK 富消息渲染成重叠字形。如果你确定自己使用的 Telegram 客户端不受影响，可以显式重新开启：
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        rich_messages: true
+        allow_cjk_rich_messages: true
+```
+
+如果你只是想在保持富消息启用的同时恢复旧版「始终使用代码块」表格行为，可在 `config.yaml` 中设置 `telegram.pretty_tables: false` 禁用表格规范化（默认：`true`）。
 
 **链接预览。** Telegram 会为机器人消息中的 URL 自动生成链接预览。如果你希望抑制这些预览（长 `/tools` 输出、提及十个链接的 Agent 回复等）：
 

@@ -3070,26 +3070,40 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation config from the active Hermes config.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    Prefer the shared persistent loader because it follows the active
+    HERMES_HOME/profile. ``cli.CLI_CONFIG`` is a legacy fallback for entry
+    points that cannot import the shared loader; importing it first can return
+    an old default ``delegation`` block and hide user-set keys such as
+    ``max_concurrent_children``.
+
+    Uses ``load_config_readonly()``: every consumer of this dict is read-only
+    (``.get()`` lookups), and this runs on each ``get_definitions()`` schema
+    rebuild via ``_get_max_concurrent_children``, so skipping the defensive
+    deepcopy matters. Do NOT mutate the returned dict.
+
+    ``HERMES_IGNORE_USER_CONFIG=1`` (``hermes chat --ignore-user-config``) is
+    only honored by the legacy ``cli`` loader, not the shared one, so when the
+    flag is set we keep ``cli.CLI_CONFIG`` authoritative to preserve the
+    flag's contract of suppressing user config.yaml settings.
     """
+    prefer_legacy = os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1"
+    if not prefer_legacy:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            full = load_config_readonly()
+            cfg = full.get("delegation") or {}
+            if isinstance(cfg, dict):
+                return cfg
+        except Exception:
+            pass
     try:
         from cli import CLI_CONFIG
 
         cfg = CLI_CONFIG.get("delegation") or {}
-        if cfg:
-            return cfg
-    except Exception:
-        pass
-    try:
-        from hermes_cli.config import load_config
-
-        full = load_config()
-        return full.get("delegation") or {}
+        return cfg if isinstance(cfg, dict) else {}
     except Exception:
         return {}
 

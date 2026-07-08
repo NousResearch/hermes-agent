@@ -13,6 +13,7 @@ import json
 import os
 import threading
 import time
+import types
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +22,7 @@ from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     DelegateEvent,
     _get_max_concurrent_children,
+    _load_config,
     _LEGACY_EVENT_MAP,
     MAX_DEPTH,
     check_delegate_requirements,
@@ -2446,6 +2448,71 @@ class TestDelegateEventEnum(unittest.TestCase):
 
 class TestConcurrencyDefaults(unittest.TestCase):
     """Tests for the concurrency default and no hard ceiling."""
+
+    def test_load_config_prefers_active_persistent_config_over_cli_defaults(self):
+        stale_cli = types.ModuleType("cli")
+        stale_cli.CLI_CONFIG = {
+            "delegation": {
+                "max_iterations": 45,
+                "model": "",
+                "provider": "",
+                "base_url": "",
+                "api_key": "",
+            }
+        }
+        active_config = {
+            "delegation": {
+                "max_iterations": 50,
+                "max_concurrent_children": 50,
+                "max_spawn_depth": 10,
+            }
+        }
+
+        with patch.dict("sys.modules", {"cli": stale_cli}):
+            with patch(
+                "hermes_cli.config.load_config_readonly", return_value=active_config
+            ):
+                self.assertEqual(_load_config()["max_concurrent_children"], 50)
+                self.assertEqual(_get_max_concurrent_children(), 50)
+
+    def test_load_config_falls_back_to_cli_config_when_persistent_load_fails(self):
+        fallback_cli = types.ModuleType("cli")
+        fallback_cli.CLI_CONFIG = {
+            "delegation": {
+                "max_iterations": 45,
+                "max_concurrent_children": 8,
+            }
+        }
+
+        with patch.dict("sys.modules", {"cli": fallback_cli}):
+            with patch(
+                "hermes_cli.config.load_config_readonly",
+                side_effect=RuntimeError("boom"),
+            ):
+                self.assertEqual(_load_config()["max_concurrent_children"], 8)
+
+    def test_load_config_prefers_cli_config_when_user_config_ignored(self):
+        # `hermes chat --ignore-user-config` sets HERMES_IGNORE_USER_CONFIG=1,
+        # which only load_cli_config() honors. The delegation loader must keep
+        # CLI_CONFIG authoritative under the flag so user config.yaml
+        # delegation keys stay suppressed.
+        ignoring_cli = types.ModuleType("cli")
+        ignoring_cli.CLI_CONFIG = {
+            "delegation": {
+                "max_iterations": 45,
+                "max_concurrent_children": 4,
+            }
+        }
+        user_config = {"delegation": {"max_concurrent_children": 50}}
+
+        with patch.dict("sys.modules", {"cli": ignoring_cli}):
+            with patch.dict(os.environ, {"HERMES_IGNORE_USER_CONFIG": "1"}):
+                with patch(
+                    "hermes_cli.config.load_config_readonly",
+                    return_value=user_config,
+                ) as mock_loader:
+                    self.assertEqual(_load_config()["max_concurrent_children"], 4)
+                    mock_loader.assert_not_called()
 
     @patch("tools.delegate_tool._load_config", return_value={})
     def test_default_is_three(self, mock_cfg):

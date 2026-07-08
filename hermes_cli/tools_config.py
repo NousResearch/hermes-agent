@@ -1592,6 +1592,28 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
     }
 
 
+def _exempt_explicit_platform_native(
+    default_off: Set[str], platform: str, *, explicitly_configured: bool
+) -> None:
+    """Let platform-native default-off toolsets through on explicit config.
+
+    Toolsets that are both in ``_DEFAULT_OFF_TOOLSETS`` and restricted to
+    ``platform`` via ``_TOOLSET_PLATFORM_RESTRICTIONS`` (currently
+    ``discord``/``discord_admin`` on the discord platform) are the platform's
+    own native tools. They are kept off for *unconfigured* platforms (security
+    opt-in), but once a user explicitly saves a toolset list for the platform
+    the composite they chose (e.g. ``hermes-discord``, which contains those
+    tools) is an opt-in — stripping them silently defeats the explicit
+    configuration (#35527). Mutates ``default_off`` in place.
+    """
+    if not explicitly_configured:
+        return
+    for ts in list(default_off):
+        allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts)
+        if allowed is not None and platform in allowed:
+            default_off.discard(ts)
+
+
 def _get_platform_tools(
     config: dict,
     platform: str,
@@ -1603,6 +1625,11 @@ def _get_platform_tools(
 
     platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
+    # Track whether the user explicitly saved a toolset list for this platform
+    # (vs. falling back to the platform default). An explicit composite (e.g.
+    # ``hermes-discord``) is an opt-in to the platform's native default-off
+    # toolsets — see _exempt_explicit_platform_native (#35527).
+    explicitly_configured = isinstance(toolset_names, list)
 
     if toolset_names is None or not isinstance(toolset_names, list):
         plat_info = PLATFORMS.get(platform)
@@ -1666,6 +1693,9 @@ def _get_platform_tools(
                 default_off.remove(platform)
             if "homeassistant" in default_off and os.getenv("HASS_TOKEN"):
                 default_off.remove("homeassistant")
+            _exempt_explicit_platform_native(
+                default_off, platform, explicitly_configured=explicitly_configured
+            )
             expanded -= default_off
 
             enabled_toolsets |= expanded
@@ -1728,6 +1758,9 @@ def _get_platform_tools(
         # strip the entry we just added.
         if x_search_auto_enabled and "x_search" in default_off:
             default_off.remove("x_search")
+        _exempt_explicit_platform_native(
+            default_off, platform, explicitly_configured=explicitly_configured
+        )
         enabled_toolsets -= default_off
 
     # Recover non-configurable platform toolsets (e.g. discord, feishu_doc,

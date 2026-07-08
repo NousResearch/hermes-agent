@@ -1776,7 +1776,15 @@ class MCPServerTask:
 
             # 1. Fetch current tool list from server
             async with self._rpc_lock:
-                tools_result = await self.session.list_tools()
+                connect_timeout = float(
+                    self._config.get(
+                        "connect_timeout", _DEFAULT_CONNECT_TIMEOUT
+                    )
+                )
+                tools_result = await asyncio.wait_for(
+                    self.session.list_tools(),
+                    timeout=connect_timeout,
+                )
             new_mcp_tools = tools_result.tools if hasattr(tools_result, "tools") else []
 
             # 2. Re-register with fresh tool list. Avoid nuke-and-repave for
@@ -2579,7 +2587,15 @@ class MCPServerTask:
             self._register_discovered_tools_if_needed()
             return
         async with self._rpc_lock:
-            tools_result = await self.session.list_tools()
+            connect_timeout = float(
+                self._config.get(
+                    "connect_timeout", _DEFAULT_CONNECT_TIMEOUT
+                )
+            )
+            tools_result = await asyncio.wait_for(
+                self.session.list_tools(),
+                timeout=connect_timeout,
+            )
         self._tools = (
             tools_result.tools
             if hasattr(tools_result, "tools")

@@ -393,8 +393,9 @@ async def test_matrix_resume_does_not_cross_rooms_by_default():
 
     result = await runner._handle_resume_command(_event("/resume Project A Plan", source_b))
 
-    assert "blocked" in result
-    assert PROJECT_A_NAME in result
+    assert "No session found" in result
+    assert "Project A Plan" in result
+    assert PROJECT_A_ROOM_ID not in result
     runner.session_store.switch_session.assert_not_called()
 
 
@@ -447,7 +448,8 @@ async def test_matrix_resume_quoted_title_cross_room_blocked():
         _event('/resume "Project A Plan"', source_b)
     )
 
-    assert "blocked" in result
+    assert "No session found" in result
+    assert PROJECT_A_ROOM_ID not in result
     runner.session_store.switch_session.assert_not_called()
 
 

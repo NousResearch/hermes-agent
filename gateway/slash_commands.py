@@ -181,7 +181,7 @@ class GatewaySlashCommandsMixin:
 
         # Clear any session-scoped model/reasoning overrides so the next agent
         # picks up configured defaults instead of previous session switches.
-        self._session_model_overrides.pop(session_key, None)
+        self._set_session_model_override(session_key, None)
         self._set_session_reasoning_override(session_key, None)
         if hasattr(self, "_pending_model_notes"):
             self._pending_model_notes.pop(session_key, None)
@@ -1324,13 +1324,21 @@ class GatewaySlashCommandsMixin:
                             f"via {result.provider_label or result.target_provider}. "
                             f"Adjust your self-identification accordingly.]"
                         )
-                        _self._session_model_overrides[_session_key] = {
+                        _self._set_session_model_override(_session_key, {
                             "model": result.new_model,
                             "provider": result.target_provider,
                             "api_key": result.api_key,
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
-                        }
+                        })
+
+                        # Announce the deliberate switch to the conversation (P2).
+                        await _self._announce_switch(
+                            event.source,
+                            "Model",
+                            f"{_cur_provider}/{_cur_model}",
+                            f"{result.target_provider}/{result.new_model}",
+                        )
 
                         # Evict cached agent so the next turn creates a fresh
                         # agent from the override rather than relying on the
@@ -1566,13 +1574,24 @@ class GatewaySlashCommandsMixin:
             )
 
             # Store session override so next agent creation uses the new model
-            self._session_model_overrides[session_key] = {
+            # (single door — also persists the config-backed identity, RC-2/P3b).
+            self._set_session_model_override(session_key, {
                 "model": result.new_model,
                 "provider": result.target_provider,
                 "api_key": result.api_key,
                 "base_url": result.base_url,
                 "api_mode": result.api_mode,
-            }
+            })
+
+            # Announce the deliberate switch to the conversation (P2). Compares the
+            # (provider, model, api_mode) route so a same-slug/different-endpoint
+            # switch still announces; silent on a true no-op. Best-effort.
+            await self._announce_switch(
+                event.source,
+                "Model",
+                f"{current_provider}/{current_model}",
+                f"{result.target_provider}/{result.new_model}",
+            )
 
             # Evict cached agent so the next turn creates a fresh agent from the
             # override rather than relying on cache signature mismatch detection.
@@ -2468,12 +2487,22 @@ class GatewaySlashCommandsMixin:
 
         # Effort level change
         effort = args.strip()
+        # Capture the resolved effective effort BEFORE applying so the announce
+        # compares old vs new correctly (P2). Uses the config-fallback-inclusive
+        # label, not the footer's "" sentinel.
+        _old_effort = self._resolved_effort_label(
+            source=event.source, session_key=session_key,
+        )
         if effort == "reset":
             if persist_global:
                 return t("gateway.reasoning.reset_global_unsupported")
             self._set_session_reasoning_override(session_key, None)
             self._reasoning_config = self._load_reasoning_config()
             self._evict_cached_agent(session_key)
+            _new_effort = self._resolved_effort_label(
+                source=event.source, session_key=session_key,
+            )
+            await self._announce_switch(event.source, "Reasoning", _old_effort, _new_effort)
             return t("gateway.reasoning.reset_done")
         if effort == "none":
             parsed = {"enabled": False}
@@ -2490,13 +2519,25 @@ class GatewaySlashCommandsMixin:
             if _save_config_key("agent.reasoning_effort", effort):
                 self._set_session_reasoning_override(session_key, None)
                 self._evict_cached_agent(session_key)
+                _new_effort = self._resolved_effort_label(
+                    source=event.source, session_key=session_key,
+                )
+                await self._announce_switch(event.source, "Reasoning", _old_effort, _new_effort)
                 return t("gateway.reasoning.set_global", effort=effort)
             self._set_session_reasoning_override(session_key, parsed)
             self._evict_cached_agent(session_key)
+            _new_effort = self._resolved_effort_label(
+                source=event.source, session_key=session_key,
+            )
+            await self._announce_switch(event.source, "Reasoning", _old_effort, _new_effort)
             return t("gateway.reasoning.set_global_save_failed", effort=effort)
 
         self._set_session_reasoning_override(session_key, parsed)
         self._evict_cached_agent(session_key)
+        _new_effort = self._resolved_effort_label(
+            source=event.source, session_key=session_key,
+        )
+        await self._announce_switch(event.source, "Reasoning", _old_effort, _new_effort)
         return t("gateway.reasoning.set_session", effort=effort)
 
     async def _handle_memory_command(self, event: MessageEvent) -> str:
@@ -3667,6 +3708,103 @@ class GatewaySlashCommandsMixin:
             title="Sessions" if include_unnamed else "Named Sessions",
         )
 
+    async def _try_discord_branch_thread(
+        self,
+        source: "SessionSource",
+        branch_title: str,
+        new_session_id: str,
+        msg_count: int,
+    ) -> Optional[str]:
+        """Discord path for /branch: spawn a thread bound to the branch session.
+
+        On Discord, /branch spawns a NEW thread under the parent text channel
+        and binds the copied (branch) session to that thread's session key —
+        leaving the parent channel on its own session (the parent conversation
+        continues in place). Inside a thread already, spawns a SIBLING thread
+        under the same parent channel (Discord can't nest threads).
+
+        Returns the new thread id on success. Returns ``None`` to signal the
+        caller to fall back to the classic in-place branch (non-Discord, DMs,
+        a thread with no resolvable parent, or thread creation failed).
+        """
+        if source.platform != Platform.DISCORD:
+            return None
+        adapter = self.adapters.get(Platform.DISCORD) if getattr(self, "adapters", None) else None
+        if adapter is None:
+            return None
+        # Threads only exist in server channels, not DMs.
+        if source.chat_type == "dm":
+            return None
+
+        # Resolve the parent text channel to host the new thread. In a thread
+        # already → sibling under the same parent; in a channel → this channel.
+        if source.chat_type == "thread":
+            parent_channel_id = source.parent_chat_id
+            if not parent_channel_id:
+                # No resolvable parent — fall back to classic in-place branch.
+                return None
+        else:
+            parent_channel_id = source.chat_id
+        if not parent_channel_id:
+            return None
+
+        try:
+            new_thread_id = await adapter.create_handoff_thread(
+                str(parent_channel_id), branch_title,
+            )
+        except Exception as exc:
+            logger.debug("branch: create_handoff_thread raised: %s", exc, exc_info=True)
+            new_thread_id = None
+        if not new_thread_id:
+            # Thread creation not permitted / failed — classic in-place branch.
+            return None
+
+        # Build the thread's session source. For a Discord thread the adapter
+        # keys chat_id to the thread id itself (effective_channel), thread_id to
+        # the thread id, and parent_chat_id to the hosting channel — mirror that
+        # so the session key we bind here matches the one a real user message in
+        # the thread will produce (thread sessions are user-shared by default).
+        dest_source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id=str(new_thread_id),
+            chat_type="thread",
+            user_id="system:branch",
+            user_name="Branch",
+            thread_id=str(new_thread_id),
+            parent_chat_id=str(parent_channel_id),
+        )
+        thread_session_key = self._session_key_for_source(dest_source)
+
+        # Make sure a session_store entry exists for the thread key, then
+        # re-point it at the copied branch session (mirrors _process_handoff).
+        self.session_store.get_or_create_session(dest_source)
+        switched = self.session_store.switch_session(thread_session_key, new_session_id)
+        if switched is None:
+            logger.warning(
+                "branch: could not bind thread key %s -> %s",
+                thread_session_key, new_session_id,
+            )
+            return None
+        self._clear_session_boundary_security_state(thread_session_key)
+        self._evict_cached_agent(thread_session_key)
+        try:
+            self._release_running_agent_state(thread_session_key)
+        except Exception:
+            pass
+
+        # Post an intro into the new thread so the branch has a visible anchor.
+        try:
+            intro = t(
+                "gateway.branch.thread_intro",
+                title=branch_title,
+                count=msg_count,
+            )
+            await adapter.send(str(new_thread_id), intro)
+        except Exception as exc:
+            logger.debug("branch: thread intro send failed: %s", exc)
+
+        return str(new_thread_id)
+
     async def _handle_branch_command(self, event: MessageEvent) -> str:
         """Handle /branch [name] — fork the current session into a new independent copy.
 
@@ -3708,6 +3846,12 @@ class GatewaySlashCommandsMixin:
 
         parent_session_id = current_entry.session_id
 
+        # Branch-point: how many messages the branch inherits from the parent.
+        # Everything AFTER this index in the branch transcript is NEW exploration
+        # that happened only in the branch — that's the DELTA /merge folds back,
+        # so it doesn't re-summarize history the parent already has.
+        branch_point_len = len(history)
+
         # Create the new session with parent link.
         # Persist a stable ``_branched_from`` marker in model_config so
         # list_sessions_rich() keeps the branch visible in /resume and
@@ -3718,7 +3862,7 @@ class GatewaySlashCommandsMixin:
                 session_id=new_session_id,
                 source=source.platform.value if source.platform else "gateway",
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
-                model_config={"_branched_from": parent_session_id},
+                model_config={"_branched_from": parent_session_id, "_branch_point_len": branch_point_len},
                 parent_session_id=parent_session_id,
             )
         except Exception as e:
@@ -3751,7 +3895,31 @@ class GatewaySlashCommandsMixin:
         except Exception:
             pass
 
-        # Switch the session store entry to the new session
+        msg_count = len([m for m in history if m.get("role") == "user"])
+
+        # Discord: spawn a NEW thread bound to the branch session and leave the
+        # parent channel on its own session (the parent conversation continues
+        # in place). Every other platform keeps the classic in-place switch.
+        new_thread_id = await self._try_discord_branch_thread(
+            source, branch_title, new_session_id, msg_count,
+        )
+        if new_thread_id:
+            thread_mention = f"<#{new_thread_id}>"
+            key = (
+                "gateway.branch.thread_branched_one"
+                if msg_count == 1
+                else "gateway.branch.thread_branched_many"
+            )
+            return t(
+                key,
+                title=branch_title,
+                count=msg_count,
+                thread=thread_mention,
+                parent=parent_session_id,
+                new=new_session_id,
+            )
+
+        # Classic in-place branch: switch the current session key to the copy.
         new_entry = self.session_store.switch_session(session_key, new_session_id)
         if not new_entry:
             return t("gateway.branch.switch_failed")
@@ -3760,9 +3928,512 @@ class GatewaySlashCommandsMixin:
         # Evict any cached agent for this session
         self._evict_cached_agent(session_key)
 
-        msg_count = len([m for m in history if m.get("role") == "user"])
         key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
         return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
+
+    def _build_merge_summarizer(self):
+        """Construct a minimal ContextCompressor for /merge's summary call.
+
+        Reuses the auxiliary ``task="compression"`` path (cheap model resolved
+        from config) — ``main_runtime`` is only a fallback. Returns None if the
+        runtime provider can't be resolved (surfaced as a no-summary merge).
+        """
+        try:
+            from agent.context_compressor import ContextCompressor
+            from hermes_cli.runtime_provider import (
+                resolve_runtime_provider,
+                _get_model_config,
+            )
+            runtime = resolve_runtime_provider()
+            model_cfg = _get_model_config() or {}
+            model = (
+                (model_cfg.get("default") if isinstance(model_cfg, dict) else None)
+                or runtime.get("model")
+                or "gpt-4o-mini"
+            )
+            return ContextCompressor(
+                model=model,
+                quiet_mode=True,
+                base_url=runtime.get("base_url", "") or "",
+                api_key=runtime.get("api_key", "") or "",
+                provider=runtime.get("provider", "") or "",
+                api_mode=runtime.get("api_mode", "") or "",
+            )
+        except Exception as exc:
+            logger.warning("merge: could not build summarizer: %s", exc)
+            return None
+
+    def _purge_old_merge_records(self, merges_dir, max_age_days: int = 30) -> None:
+        """Delete merge-record .md files older than ``max_age_days``.
+
+        Merge records are ephemeral operational artifacts (the summary's content
+        also lives permanently in the target session's transcript). Self-purge on
+        every write so the dir never accumulates — no separate cron needed.
+        """
+        import time
+        try:
+            cutoff = time.time() - max_age_days * 86400
+            for p in merges_dir.glob("*.md"):
+                try:
+                    if p.stat().st_mtime < cutoff:
+                        p.unlink()
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.debug("merge: purge sweep skipped: %s", exc)
+
+    def _write_merge_record(self, source_title, source_id, target_title,
+                            target_id, summary, platform):
+        """Write a durable merge-record .md and return its path (or None).
+
+        Location: ``<HERMES_HOME>/merges/<ts>-<source-slug>.md``. Self-purges
+        records older than 30 days first. Best-effort — never raises.
+        """
+        import re as _re
+        from datetime import datetime as _dt
+        try:
+            from hermes_constants import get_hermes_home
+            base = get_hermes_home()
+        except Exception:
+            base = os.path.expanduser("~/.hermes")
+        try:
+            merges_dir = Path(base) / "merges"
+            merges_dir.mkdir(parents=True, exist_ok=True)
+            self._purge_old_merge_records(merges_dir)
+            ts = _dt.now().strftime("%Y%m%d-%H%M%S")
+            slug = _re.sub(r"[^a-z0-9]+", "-", (source_title or "session").lower()).strip("-")[:40] or "session"
+            path = merges_dir / f"{ts}-{slug}.md"
+            body = (
+                f"# Merge record — {source_title}\n\n"
+                f"- When: {_dt.now().isoformat(timespec='seconds')}\n"
+                f"- Platform: {platform}\n"
+                f"- Source session: {source_title} (`{source_id}`)\n"
+                f"- Target session: {target_title} (`{target_id}`)\n\n"
+                f"## Summary folded into the target\n\n{summary}\n"
+            )
+            path.write_text(body, encoding="utf-8")
+            return path
+        except Exception as exc:
+            logger.debug("merge: could not write merge record: %s", exc)
+            return None
+
+    async def _list_mergeable_sessions(self, source) -> str:
+        """Return the numbered list of the caller's titled sessions (merge targets).
+
+        Mirrors /resume's no-arg listing so /merge with no arg (and not in a
+        branched thread) surfaces what names are mergeable instead of a dead no-op.
+        """
+        try:
+            user_source = source.platform.value if source.platform else None
+            sessions = await self._session_db.list_sessions_rich(source=user_source, limit=10)
+            titled = [s for s in sessions if s.get("title")][:10]
+            titled = [
+                s for s in titled
+                if await self._resume_row_visible(source, s, False)
+            ]
+            # Don't offer the caller's OWN current session as a merge target.
+            try:
+                cur = self.session_store.get_or_create_session(source)
+                titled = [s for s in titled if s.get("id") != cur.session_id]
+            except Exception:
+                pass
+            if not titled:
+                return t("gateway.merge.no_named_sessions")
+            lines = [t("gateway.merge.list_header")]
+            for idx, s in enumerate(titled[:10], start=1):
+                title = s["title"]
+                preview = s.get("preview", "")[:40]
+                preview_part = t("gateway.resume.list_preview_suffix", preview=preview) if preview else ""
+                lines.append(t("gateway.resume.list_item_numbered", index=idx, title=title, preview_part=preview_part))
+            lines.append(t("gateway.merge.list_footer"))
+            return "\n".join(lines)
+        except Exception as e:
+            logger.debug("merge: failed to list titled sessions: %s", e)
+            return t("gateway.resume.list_failed", error=e)
+
+    async def _resolve_merge_target(self, source, name):
+        """Resolve a /merge <name> arg to a target session id + title.
+
+        Mirrors /resume: numeric → index into the caller's titled list; else a
+        direct session-id lookup, then a title lookup. Returns (target_id, title)
+        or (None, error_string).
+        """
+        if name.isdigit():
+            try:
+                user_source = source.platform.value if source.platform else None
+                sessions = await self._session_db.list_sessions_rich(source=user_source, limit=10)
+                titled = [s for s in sessions if s.get("title")][:10]
+                titled = [
+                    s for s in titled
+                    if await self._resume_row_visible(source, s, False)
+                ]
+                try:
+                    cur = self.session_store.get_or_create_session(source)
+                    titled = [s for s in titled if s.get("id") != cur.session_id]
+                except Exception:
+                    pass
+            except Exception as e:
+                return None, t("gateway.resume.list_failed", error=e)
+            index = int(name)
+            if index < 1 or index > len(titled):
+                return None, t("gateway.resume.out_of_range", index=index)
+            target = titled[index - 1]
+            return target.get("id"), (target.get("title") or name)
+
+        # Non-numeric: direct id lookup first, then title.
+        session = await self._session_db.get_session(name)
+        if session:
+            return session["id"], (session.get("title") or name)
+        target_id = await self._session_db.resolve_session_by_title(name)
+        if not target_id:
+            return None, t("gateway.merge.not_found", name=name)
+        title = await self._session_db.get_session_title(target_id) or name
+        return target_id, title
+
+    async def _merged_targets_for(self, source_session_id):
+        """Return the set of target session ids this source has already merged into.
+
+        Recorded in the source session's ``model_config._merged_into`` list.
+        Best-effort — returns an empty set on any read error.
+        """
+        try:
+            row = await self._session_db.get_session(source_session_id)
+        except Exception:
+            return set()
+        if not row:
+            return set()
+        mc = row.get("model_config")
+        if isinstance(mc, str) and mc:
+            try:
+                import json as _json
+                mc = _json.loads(mc)
+            except Exception:
+                return set()
+        if not isinstance(mc, dict):
+            return set()
+        merged = mc.get("_merged_into")
+        if isinstance(merged, list):
+            return {str(x) for x in merged}
+        return set()
+
+    async def _merge_already_done(self, source_session_id, target_id) -> bool:
+        """Whether this (source → target) merge has already been recorded."""
+        return str(target_id) in await self._merged_targets_for(source_session_id)
+
+    def _merge_claim_lock(self, source_session_id, target_id):
+        """Return a process-local asyncio.Lock for this (source → target) claim.
+
+        Serializes the re-check → record → append critical section so two
+        overlapping /merge calls for the same pair can't both append. Lazily
+        created and cached; the gateway runs one event loop so a plain dict of
+        locks is sufficient (no cross-process concurrency on a single session).
+        """
+        import asyncio as _asyncio
+        locks = getattr(self, "_merge_claim_locks", None)
+        if locks is None:
+            locks = {}
+            self._merge_claim_locks = locks
+        key = f"{source_session_id}->{target_id}"
+        lock = locks.get(key)
+        if lock is None:
+            lock = _asyncio.Lock()
+            locks[key] = lock
+        return lock
+
+    async def _record_merge_done(self, source_session_id, target_id) -> bool:
+        """Append ``target_id`` to the source's ``model_config._merged_into`` list.
+
+        Idempotency ledger for /merge — read-modify-write of the source session's
+        model_config. Returns ``True`` only when the marker is CONFIRMED durably
+        recorded (re-read after write); ``False`` on any failure. The caller must
+        NOT append the fold when this returns False, otherwise a marker-less fold
+        could be duplicated by a later retry (Greptile P1).
+        """
+        try:
+            row = await self._session_db.get_session(source_session_id)
+            mc = (row or {}).get("model_config")
+            if isinstance(mc, str) and mc:
+                import json as _json
+                try:
+                    mc = _json.loads(mc)
+                except Exception:
+                    mc = {}
+            if not isinstance(mc, dict):
+                mc = {}
+            merged = mc.get("_merged_into")
+            if not isinstance(merged, list):
+                merged = []
+            if str(target_id) not in {str(x) for x in merged}:
+                merged.append(str(target_id))
+            mc["_merged_into"] = merged
+            import json as _json
+            await self._session_db.update_session_meta(source_session_id, _json.dumps(mc))
+        except Exception as exc:
+            logger.warning("merge: could not record merge ledger: %s", exc)
+            return False
+        # Confirm the marker actually persisted before we trust it — a silently
+        # failed/locked write must NOT let the fold proceed marker-less.
+        try:
+            return str(target_id) in await self._merged_targets_for(source_session_id)
+        except Exception:
+            return False
+
+    async def _unrecord_merge_done(self, source_session_id, target_id) -> None:
+        """Remove ``target_id`` from the source's ledger (rollback on failed fold)."""
+        try:
+            row = await self._session_db.get_session(source_session_id)
+            mc = (row or {}).get("model_config")
+            if isinstance(mc, str) and mc:
+                import json as _json
+                try:
+                    mc = _json.loads(mc)
+                except Exception:
+                    return
+            if not isinstance(mc, dict):
+                return
+            merged = mc.get("_merged_into")
+            if not isinstance(merged, list):
+                return
+            new = [x for x in merged if str(x) != str(target_id)]
+            if new != merged:
+                mc["_merged_into"] = new
+                import json as _json
+                await self._session_db.update_session_meta(source_session_id, _json.dumps(mc))
+        except Exception as exc:
+            logger.debug("merge: could not roll back merge ledger: %s", exc)
+
+    async def _handle_merge_command(self, event: MessageEvent) -> str:
+        """Handle /merge [name] — fold a summary of THIS session into a target.
+
+        - ``/merge <name>`` (any platform): summarize the current session and fold
+          the summary into the session titled/ided ``<name>``. Owner-guarded
+          exactly like /resume — you can only merge into sessions you own.
+        - ``/merge`` (no arg) inside a branched Discord thread: target = the
+          thread's parent session, then archive+lock the thread.
+        - ``/merge`` (no arg) elsewhere: list the caller's recent titled sessions
+          (mergeable targets), do nothing.
+
+        The current session is READ-ONLY here — it is summarized, never ended or
+        switched; the user keeps talking in it.
+        """
+        if not self._session_db:
+            from hermes_state import format_session_db_unavailable
+            return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
+
+        source = event.source
+        name = event.get_command_args().strip()
+        # Strip surrounding quotes/brackets like /resume does.
+        if len(name) >= 2 and (
+            (name[0] == "[" and name[-1] == "]")
+            or (name[0] == '"' and name[-1] == '"')
+            or (name[0] == "'" and name[-1] == "'")
+        ):
+            name = name[1:-1].strip()
+
+        current_entry = self.session_store.get_or_create_session(source)
+        source_session_id = current_entry.session_id
+
+        # --- Resolve the TARGET session and whether this is the thread form. ---
+        is_thread_form = False
+        thread_adapter = None
+        target_id = None
+        target_title = None
+        branch_point_len = None  # thread form: index into source_history where new exploration begins
+
+        if not name:
+            # No arg. In a branched Discord thread → target = parent, archive after.
+            branch_parent = None
+            if source.platform == Platform.DISCORD and source.chat_type == "thread" and source.thread_id:
+                try:
+                    row = await self._session_db.get_session(source_session_id)
+                except Exception:
+                    row = None
+                if row:
+                    branch_parent = row.get("parent_session_id")
+                    mc = row.get("model_config")
+                    if isinstance(mc, str) and mc:
+                        try:
+                            import json as _json
+                            mc = _json.loads(mc)
+                        except Exception:
+                            mc = {}
+                    if isinstance(mc, dict):
+                        if not branch_parent:
+                            branch_parent = mc.get("_branched_from")
+                        # Delta boundary: only summarize turns AFTER the branch
+                        # point so we don't re-fold history the parent already has.
+                        _bpl = mc.get("_branch_point_len")
+                        if isinstance(_bpl, int) and _bpl >= 0:
+                            branch_point_len = _bpl
+            if branch_parent:
+                is_thread_form = True
+                thread_adapter = self.adapters.get(Platform.DISCORD) if getattr(self, "adapters", None) else None
+                target_id = branch_parent
+                target_title = await self._session_db.get_session_title(target_id) or "parent"
+            else:
+                # Not a branched thread → list mergeable sessions.
+                return await self._list_mergeable_sessions(source)
+        else:
+            target_id, resolved = await self._resolve_merge_target(source, name)
+            if not target_id:
+                return resolved  # error/not-found string
+            target_title = resolved
+
+        # Don't merge a session into itself.
+        if target_id == source_session_id:
+            return t("gateway.merge.same_session")
+
+        # --- Owner guard: a merge WRITES into the target (bigger than /resume's
+        # read), so refuse cross-owner targets fail-closed, same as /resume. ---
+        if not is_thread_form:
+            try:
+                allowed = await self._resume_target_allowed(source, target_id)
+            except Exception:
+                allowed = False
+            if not allowed:
+                return t("gateway.merge.blocked_not_owner", name=target_title)
+
+        # --- Idempotency guard (Greptile P1): refuse a duplicate fold of the
+        # SAME source into the SAME target. A retry, double-submit, or a
+        # reopened/re-invoked thread would otherwise append the branch summary
+        # to the parent twice and skew later agent behavior. We record each
+        # completed (source → target) merge in the source's model_config
+        # `_merged_into` list; a repeat (source, target) is a no-op. Merging the
+        # same source into a DIFFERENT target later is still allowed. ---
+        already = await self._merge_already_done(source_session_id, target_id)
+        if already:
+            return t("gateway.merge.already_merged", title=target_title)
+
+        # --- Summarize the CURRENT session (read-only). ---
+        source_history = self.session_store.load_transcript(source_session_id)
+        if not source_history:
+            return t("gateway.merge.no_conversation")
+        source_title = await self._session_db.get_session_title(source_session_id) or "session"
+
+        # Thread form: only summarize the DELTA — the turns that happened in the
+        # branch AFTER the branch point. A branched thread is a full copy of the
+        # parent up to the branch, plus the new exploration; folding the whole
+        # copy back re-summarizes context the parent already has. The named form
+        # has no shared prefix, so it summarizes the whole source session.
+        summarize_history = source_history
+        if is_thread_form and isinstance(branch_point_len, int) and branch_point_len >= 0:
+            # The delta is authoritative once we have a valid branch point: even
+            # branch_point_len == len(source_history) (zero new turns) must yield
+            # an EMPTY delta → no_new_turns, NOT a re-summary of the whole copy.
+            summarize_history = source_history[branch_point_len:]
+            if not summarize_history:
+                return t("gateway.merge.no_new_turns")
+        if not summarize_history:
+            return t("gateway.merge.no_new_turns")
+
+        summarizer = self._build_merge_summarizer()
+        summary = None
+        if summarizer is not None:
+            try:
+                summary = await asyncio.to_thread(
+                    summarizer._generate_summary,
+                    summarize_history,
+                    f"merging session '{source_title}' into '{target_title}'",
+                )
+            except Exception as exc:
+                logger.warning("merge: summary generation failed: %s", exc)
+                summary = None
+        if summary:
+            summary = summary.strip()
+        if not summary:
+            return t("gateway.merge.no_summary")
+
+        # --- Layer 1: fold ONE labeled user-role message into the TARGET. ---
+        # Make the claim ATOMIC (Greptile P1): hold a per-(source→target)
+        # asyncio lock across re-check → record → append so two overlapping
+        # /merge calls can't both pass the duplicate check and both append. The
+        # gateway is single-event-loop, so this lock fully serializes the claim.
+        lock = self._merge_claim_lock(source_session_id, target_id)
+        async with lock:
+            # Authoritative re-check INSIDE the lock — the earlier pre-summary
+            # check is only a cheap fast-path; this is the one that gates the write.
+            if await self._merge_already_done(source_session_id, target_id):
+                return t("gateway.merge.already_merged", title=target_title)
+            recorded = await self._record_merge_done(source_session_id, target_id)
+            if not recorded:
+                return t("gateway.merge.ledger_failed")
+            fold_key = "gateway.merge.fold_body_thread" if is_thread_form else "gateway.merge.fold_body"
+            fold_text = t(fold_key, title=source_title, summary=summary)
+            try:
+                await self._session_db.append_message(
+                    session_id=target_id,
+                    role="user",
+                    content=fold_text,
+                )
+            except Exception as exc:
+                logger.error("merge: failed to append fold to target %s: %s", target_id, exc)
+                # Roll back the ledger entry — the fold never landed, so a retry
+                # must be allowed to try again rather than being wrongly refused.
+                await self._unrecord_merge_done(source_session_id, target_id)
+                return t("gateway.merge.fold_failed", error=exc)
+
+        # --- Layer 2: durable .md record (self-purging). ---
+        record_path = self._write_merge_record(
+            source_title, source_session_id, target_title, target_id,
+            summary, source.platform.value if source.platform else "gateway",
+        )
+
+        # Evict the target's cached agent so the fold is live on its next turn.
+        target_entry = self.session_store.lookup_by_session_id(target_id)
+        if target_entry is not None:
+            try:
+                self._evict_cached_agent(target_entry.session_key)
+            except Exception as exc:
+                logger.debug("merge: target agent eviction skipped: %s", exc)
+
+        # --- Layer 3: visible note posted where the fold LANDED — the TARGET
+        # session's own origin channel/thread — for BOTH forms. (Previously the
+        # thread form posted to source.parent_chat_id, the Discord *hosting
+        # channel*, which for a thread-branched-from-a-thread is NOT where the
+        # parent SESSION lives — so the note showed up in the wrong place.) We
+        # resolve the target's real origin and post there so the "merged in" note
+        # always lands in the conversation that just received the summary. ---
+        note_short = summary if len(summary) <= 600 else summary[:597] + "..."
+        path_str = str(record_path) if record_path else ""
+        try:
+            target_origin = self._gateway_session_origin_for_id(target_id)
+        except Exception:
+            target_origin = None
+        posted_note = False
+        if isinstance(target_origin, SessionSource) and target_origin.platform:
+            dest_adapter = self.adapters.get(target_origin.platform) if getattr(self, "adapters", None) else None
+            dest_chat = target_origin.thread_id or target_origin.chat_id
+            if dest_adapter is not None and dest_chat:
+                try:
+                    note = t("gateway.merge.target_note", source=source_title, summary=note_short)
+                    await dest_adapter.send(str(dest_chat), note)
+                    posted_note = True
+                except Exception as exc:
+                    logger.debug("merge: target-origin note send failed: %s", exc)
+        # Fallback (thread form only): if the target's origin couldn't be resolved
+        # (e.g. the parent session isn't live in the store), post to the thread's
+        # hosting channel so the merge is still visible somewhere sensible.
+        if not posted_note and is_thread_form and thread_adapter is not None and source.parent_chat_id:
+            try:
+                note = t("gateway.merge.parent_note", title=source_title, summary=note_short)
+                await thread_adapter.send(str(source.parent_chat_id), note)
+            except Exception as exc:
+                logger.debug("merge: parent-channel fallback note send failed: %s", exc)
+
+        # --- Archive the thread (thread form only). ---
+        archived = False
+        if is_thread_form and thread_adapter is not None:
+            try:
+                archived = await thread_adapter.archive_thread(str(source.thread_id), lock=True)
+            except Exception as exc:
+                logger.debug("merge: archive_thread failed: %s", exc)
+
+        # --- Confirm to the caller. ---
+        md_part = t("gateway.merge.md_suffix", path=path_str) if path_str else ""
+        if is_thread_form:
+            confirm_key = "gateway.merge.merged_thread" if archived else "gateway.merge.merged_thread_no_archive"
+            return t(confirm_key, title=target_title, md=md_part)
+        return t("gateway.merge.merged_named", title=target_title, md=md_part)
 
     async def _handle_credits_command(self, event: MessageEvent) -> str:
         """Handle /credits -- show Nous credit balance and the top-up handoff.

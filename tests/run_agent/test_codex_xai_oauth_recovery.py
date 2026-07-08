@@ -34,6 +34,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from run_agent import SwapOutcome as _SwapOutcome
 
 
 # ---------------------------------------------------------------------------
@@ -677,7 +678,7 @@ def test_recover_with_credential_pool_still_refreshes_genuine_auth_failure():
 
     agent._credential_pool = _FakePool()
     # _swap_credential is called by the recovery path — stub it out
-    agent._swap_credential = MagicMock()
+    agent._swap_credential = MagicMock(return_value=_SwapOutcome.SWAPPED)
 
     error_context = {
         "reason": "authentication_error",
@@ -856,7 +857,7 @@ def test_recover_with_credential_pool_refreshes_on_xai_bad_credentials_403():
             return False
 
     agent._credential_pool = _FakePool()
-    agent._swap_credential = MagicMock()
+    agent._swap_credential = MagicMock(return_value=_SwapOutcome.SWAPPED)
 
     # Normalised shape that ``_extract_api_error_context`` would
     # produce for the reporter's wire-level body.

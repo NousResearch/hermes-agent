@@ -625,6 +625,22 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # Session-scoped /reasoning override persisted so it survives a gateway
+    # restart (the harness event the user didn't cause) — the in-memory
+    # GatewayRunner._session_reasoning_overrides dict is otherwise lost on
+    # restart, silently reverting /reasoning high back to the config default.
+    # Still CLEARED by /new, /reset, auto-reset, and finalization (durability,
+    # not scope). Shape: {"enabled": bool, "effort": str} or None.
+    reasoning_override: Optional[Dict[str, Any]] = None
+
+    # Session-scoped /model override IDENTITY (never the secret): only
+    # {model, provider, api_mode}. The api_key/base_url are NEVER persisted to
+    # the plaintext sessions.json — they are re-resolved from provider config on
+    # rehydrate. Only persisted for provider-config-resolvable overrides; an
+    # ad-hoc/inline-credential override is not persisted (it can't be safely
+    # reconstructed and would silently re-route to the config endpoint).
+    model_override_identity: Optional[Dict[str, Any]] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -656,6 +672,8 @@ class SessionEntry:
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
+            "reasoning_override": self.reasoning_override,
+            "model_override_identity": self.model_override_identity,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -719,6 +737,16 @@ class SessionEntry:
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
+            reasoning_override=(
+                data.get("reasoning_override")
+                if isinstance(data.get("reasoning_override"), dict)
+                else None
+            ),
+            model_override_identity=(
+                data.get("model_override_identity")
+                if isinstance(data.get("model_override_identity"), dict)
+                else None
+            ),
         )
 
 
@@ -973,6 +1001,19 @@ class SessionStore:
 
         if stale_keys:
             self._save()
+
+    def entries(self):
+        """Public read accessor over the session entries (avoids reaching into
+        the private ``_entries`` dict from the gateway boot-rehydrate loop)."""
+        return list(self._entries.values())
+
+    def entry_for(self, session_key: str) -> Optional["SessionEntry"]:
+        """Public read accessor for a single entry by session key."""
+        return self._entries.get(session_key)
+
+    def persist(self) -> None:
+        """Public trigger for a durable save of the session index."""
+        self._save()
 
     def _save(self) -> None:
         """Save sessions index to disk (kept for session key -> ID mapping)."""

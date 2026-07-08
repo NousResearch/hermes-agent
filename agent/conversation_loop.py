@@ -59,7 +59,7 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff
+from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff, resolve_retry_after
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
@@ -73,6 +73,31 @@ logger = logging.getLogger(__name__)
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
+
+
+def _is_auth_resolution_error(api_error: Exception) -> bool:
+    """True for the Anthropic SDK's keyless-client ``TypeError``.
+
+    The Anthropic SDK raises ``TypeError("Could not resolve authentication
+    method. Expected either api_key or auth_token to be set…")`` at REQUEST time
+    when a client was constructed with no key. This happens when a credential
+    pool is exhausted under a cap (a single-key relay pool marks its one key
+    exhausted on a 429, then a rebuild resolves an empty ``runtime_api_key``).
+
+    It is a *client-construction* error (WE built the client with no key), NOT a
+    local programming bug and NOT an upstream auth rejection (a real 401 arrives
+    in a provider response body, classified via status code). Excluding it from
+    ``is_local_validation_error`` routes it through the normal error classifier
+    to the defined ``auth`` terminal instead of a turn-killing "local bug" abort.
+    The primary fix (``AIAgent._swap_credential`` never building a keyless client)
+    means this is normally never reached; this is the backstop for any rebuild
+    site that still surfaces the shape. Mirrors the ``NoneType is not iterable``
+    carve-out below.
+    """
+    return (
+        isinstance(api_error, TypeError)
+        and "could not resolve authentication method" in str(api_error).lower()
+    )
 
 
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
@@ -1655,7 +1680,9 @@ def run_conversation(
                         agent._buffer_status(
                             "⚠️ Model declined to respond (safety refusal) — trying fallback..."
                         )
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(
+                        reason=FailoverReason.content_policy_blocked
+                    ):
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
                         retry_count = 0
@@ -3617,6 +3644,16 @@ def run_conversation(
                         and "nonetype" in str(api_error).lower()
                         and "not iterable" in str(api_error).lower()
                     )
+                    # The Anthropic SDK's keyless-client TypeError ("Could not
+                    # resolve authentication method…") is a *client-construction*
+                    # error surfaced when a credential pool is exhausted under a
+                    # cap and a rebuild resolves an empty key — NOT a local
+                    # programming bug. The primary fix (``_swap_credential`` never
+                    # building a keyless client) means this is normally never hit;
+                    # this backstop routes any stray occurrence through the normal
+                    # classifier to the defined ``auth`` terminal instead of a
+                    # turn-killing abort. See ``_is_auth_resolution_error``.
+                    and not _is_auth_resolution_error(api_error)
                 )
                 # ``FailoverReason.billing`` (HTTP 402) is NOT in this
                 # exclusion set.  By the time we reach this block:
@@ -4017,22 +4054,38 @@ def run_conversation(
                         "failure_reason": classified.reason.value,
                     }
 
-                # For rate limits, respect the Retry-After header if present
-                _retry_after = None
-                if is_rate_limited:
-                    _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
-                    if _resp_headers and hasattr(_resp_headers, "get"):
-                        _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
-                        if _ra_raw:
-                            try:
-                                # Cap at 10 minutes. Anthropic Tier 1 input-token
-                                # buckets reset in ~171s, so a 120s cap caused us to
-                                # retry before the actual reset window and re-trip the
-                                # limit. 600s covers all realistic provider reset
-                                # windows while still rejecting pathological values. (#26293)
-                                _retry_after = min(float(_ra_raw), 600)
-                            except (TypeError, ValueError):
-                                pass
+                # Respect the Retry-After header on a rate-limit AND on a
+                # provider OVERLOAD (503/529). A pool-at-capacity 503 from the
+                # local relay is a self-describing transient — it emits a bounded
+                # Retry-After telling us exactly how long until a slot frees — so
+                # honoring it beats blind jitter. The honor-policy (which reasons,
+                # the final-pre-fallback-retry carve-out, the per-class cap, and
+                # HTTP-date/garbage → jitter) lives in the pure, unit-tested
+                # ``resolve_retry_after`` helper. Crucially this is SEPARATE from
+                # ``is_rate_limited``: the rate-limit-specific side-effects below
+                # (adaptive backoff, status text) keep their own unchanged
+                # ``is_rate_limited`` guard, so an overload never triggers a
+                # cap-mark or credential rotation.
+                _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
+                _ra_raw = None
+                if _resp_headers and hasattr(_resp_headers, "get"):
+                    _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
+                _retry_after = resolve_retry_after(
+                    raw_value=_ra_raw,
+                    is_rate_limit=is_rate_limited,
+                    is_overload=(classified.reason == FailoverReason.overloaded),
+                    retry_count=retry_count,
+                    max_retries=max_retries,
+                )
+                if _retry_after:
+                    # RC-3: make the honored-vs-jitter decision visible so triage
+                    # can tell a relay-informed wait from a jitter coincidence at
+                    # the same duration.
+                    logger.info(
+                        "Honoring server Retry-After=%ss (reason=%s, attempt=%s/%s)",
+                        _retry_after, classified.reason.value,
+                        retry_count + 1, max_retries,
+                    )
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 _backoff_policy = None
                 if is_rate_limited and not _retry_after:

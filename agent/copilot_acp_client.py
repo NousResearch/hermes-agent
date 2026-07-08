@@ -59,6 +59,25 @@ def _is_gh_copilot_deprecation_message(stderr_text: str) -> bool:
     return any(marker in lower for marker in _DEPRECATION_MARKERS)
 
 
+_ACP_REFUSAL_MARKER = (
+    "\u26a0\ufe0f [ACP stopReason=refusal] the delegated agent DECLINED to respond "
+    "on content policy (safety refusal — deterministic; rephrase or route to a "
+    "different model).\n\n"
+)
+
+
+def _apply_acp_refusal_marker(text: str, stop_reason: str) -> str:
+    """Prepend an unmistakable refusal marker to a delegated ACP agent's output when
+    its session/prompt result stopped with ``refusal`` (a content-policy safety
+    refusal). Without this the refusal text comes back looking like an ordinary
+    (often empty) answer and the delegating agent can't tell it apart from a real
+    reply. Any other stopReason (end_turn / max_tokens / cancelled) passes through
+    untouched."""
+    if (stop_reason or "").strip().lower() == "refusal":
+        return _ACP_REFUSAL_MARKER + text
+    return text
+
+
 def _resolve_command() -> str:
     return (
         os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
@@ -643,7 +662,7 @@ class CopilotACPClient:
 
             text_parts: list[str] = []
             reasoning_parts: list[str] = []
-            _request(
+            _prompt_result = _request(
                 "session/prompt",
                 {
                     "sessionId": session_id,
@@ -657,7 +676,18 @@ class CopilotACPClient:
                 text_parts=text_parts,
                 reasoning_parts=reasoning_parts,
             )
-            return "".join(text_parts), "".join(reasoning_parts)
+            # The ACP session/prompt result carries a stopReason. "refusal" means the
+            # external agent (e.g. Claude Code on a fable model) DECLINED on content
+            # policy — a deterministic safety refusal. Previously this was discarded,
+            # so a delegated ACP refusal came back looking like an ordinary (often
+            # empty) answer with no signal to the parent. Prepend an unmistakable
+            # marker so the delegating agent surfaces it instead of silently treating
+            # the refusal text as the result.
+            _stop = ""
+            if isinstance(_prompt_result, dict):
+                _stop = str(_prompt_result.get("stopReason") or "").strip()
+            _text = _apply_acp_refusal_marker("".join(text_parts), _stop)
+            return _text, "".join(reasoning_parts)
         finally:
             self.close()
 

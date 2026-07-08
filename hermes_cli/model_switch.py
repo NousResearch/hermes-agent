@@ -318,6 +318,16 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
 
     Returns ``(model_input, explicit_provider, is_global, force_refresh, is_session)``.
 
+    INV-PROV (SPEC 2026-07-07 reasoning-model-switch-visibility, C7): this parser
+    accepts NO inline credential material (no --api-key / --base-url). That is load-
+    bearing for session-model-override PERSISTENCE (P3b): because /model can't supply
+    inline creds, config-resolvability is a faithful proxy for credential provenance,
+    so a persisted override can be safely re-resolved from provider config on restart.
+    If a future edit adds a --api-key/--base-url flag here, the persistence provenance
+    discriminator must be revisited (else a persisted inline-cred override silently
+    re-routes to the config endpoint on restart). Guarded by
+    tests/gateway/test_model_override_persistence.py::test_model_command_has_no_inline_credential_flag.
+
     ``is_global`` and ``is_session`` are independent flag presences; the
     *effective* persistence decision is resolved by
     :func:`resolve_persist_behavior` so the config-gated default
@@ -753,6 +763,8 @@ def _parse_inline_provider_model(
     aggregator.
     """
     raw = (raw_input or "").strip()
+    # INV-PROV (C7): reject any raw input carrying a URL scheme — an inline
+    # base_url must never enter the switch here (see parse_model_flags docstring).
     if not raw or "://" in raw:
         return None
     if _user_provider_lists_model(raw, current_provider, user_providers):

@@ -90,6 +90,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<platform>", cli_only=True),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
+    CommandDef("merge", "Merge a summary of this session into another session (branched thread, or a named session)", "Session",
+               gateway_only=True, args_hint="[name]"),
     CommandDef("boomerang", "Run a task autonomously in an isolated subagent that inherits this "
                "session's context; a summary returns here when it finishes", "Session",
                args_hint="<task>"),
@@ -1177,7 +1179,10 @@ _SLACK_PRIORITY_CANONICALS = ("debug",)
 #     boomerang on Slack so it doesn't displace an existing native slash at
 #     the 50-command cap (same rationale as moa).
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "version", "billing", "moa", "boomerang", "debug"})
+#   - merge: niche session-management command (fold this session's summary into
+#     another); reached via /hermes merge on Slack so it doesn't displace a
+#     higher-frequency native slash at the 50-command cap. Native everywhere else.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "version", "billing", "moa", "boomerang", "debug", "merge"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

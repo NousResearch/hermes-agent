@@ -239,6 +239,7 @@ Make sure your configured port (`TEAMS_PORT`, default `3978`) is reachable from 
 | Bot responds with auth errors | Verify `TEAMS_CLIENT_ID`, `TEAMS_CLIENT_SECRET`, and `TEAMS_TENANT_ID` are all set correctly |
 | `No inference provider configured` | Check that `ANTHROPIC_API_KEY` (or another provider key) is set in `~/.hermes/.env` |
 | Bot receives messages but ignores them | Your AAD object ID may not be in `TEAMS_ALLOWED_USERS`. Run `teams status --verbose` to find it |
+| Image attachments do not reach the agent and logs show `[teams] Failed to cache image attachment` | Update Hermes to a version with authenticated Teams image fetches. Teams image `contentUrl` values can require the bot's Bot Framework token, so also verify `TEAMS_CLIENT_ID`, `TEAMS_CLIENT_SECRET`, and `TEAMS_TENANT_ID` are correct |
 | Tunnel URL changes on restart | devtunnel URLs are persistent if you use a named tunnel (`devtunnel create hermes-bot`). ngrok and cloudflared generate a new URL each run unless you have a paid plan — update the bot endpoint with `teams app update` when it changes |
 | Teams shows "This bot is not responding" | The webhook returned an error. Check `docker logs hermes` for tracebacks |
 | `[teams] Failed to connect` in logs | The SDK failed to authenticate. Double-check your credentials and that the tenant ID matches the account you used in `teams login` |

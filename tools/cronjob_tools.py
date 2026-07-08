@@ -748,10 +748,18 @@ def cronjob(
             if context_from:
                 from cron.jobs import get_job as _get_job
                 refs = [context_from] if isinstance(context_from, str) else context_from
+                _create_owner = _caller_owner_id()
                 for ref_id in refs:
-                    if not _get_job(ref_id):
+                    ref_job = _get_job(ref_id)
+                    if not ref_job:
                         return tool_error(
                             f"context_from job '{ref_id}' not found. "
+                            "Use cronjob(action='list') to see available jobs.",
+                            success=False,
+                        )
+                    if _create_owner is not None and not _owner_matches(ref_job, _create_owner):
+                        return tool_error(
+                            f"context_from job '{ref_id}' not found or access denied. "
                             "Use cronjob(action='list') to see available jobs.",
                             success=False,
                         )
@@ -948,9 +956,16 @@ def cronjob(
                 if refs:
                     from cron.jobs import get_job as _get_job
                     for ref_id in refs:
-                        if not _get_job(ref_id):
+                        ref_job = _get_job(ref_id)
+                        if not ref_job:
                             return tool_error(
                                 f"context_from job '{ref_id}' not found. "
+                                "Use cronjob(action='list') to see available jobs.",
+                                success=False,
+                            )
+                        if caller_owner is not None and not _owner_matches(ref_job, caller_owner):
+                            return tool_error(
+                                f"context_from job '{ref_id}' not found or access denied. "
                                 "Use cronjob(action='list') to see available jobs.",
                                 success=False,
                             )

@@ -2213,11 +2213,14 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     # Inject output from referenced cron jobs as context.
     context_from = job.get("context_from")
     if context_from:
-        from cron.jobs import OUTPUT_DIR
+        from cron.jobs import OUTPUT_DIR, get_job as _get_job_ctx
         if isinstance(context_from, str):
             context_from = [context_from]
+        job_owner_id = (job.get("origin") or {}).get("user_id")
         for source_job_id in context_from:
-            # Guard against path traversal — valid job IDs are 12-char hex strings
+            # Guard against path traversal — valid job IDs are 12-char hex
+            # strings. Must run before ownership check because an invalid job_id
+            # is neither a valid store key nor a safe filesystem path.
             if not source_job_id or not all(c in "0123456789abcdef" for c in source_job_id):
                 logger.warning(
                     "context_from: skipping invalid job_id %r for job_id=%r name=%r%s",
@@ -2227,6 +2230,25 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                     _cron_job_origin_log_suffix(job),
                 )
                 continue
+            # Ownership check: in multi-user mode only read output from jobs
+            # owned by the same user to prevent cross-user data leak (#61016).
+            if job_owner_id is not None:
+                source_job = _get_job_ctx(source_job_id)
+                if source_job:
+                    source_owner = (source_job.get("origin") or {}).get("user_id")
+                    if source_owner != job_owner_id:
+                        logger.warning(
+                            "context_from: skipping job %r owned by different user "
+                            "for job_id=%r name=%r%s",
+                            source_job_id,
+                            job.get("id"),
+                            job.get("name"),
+                            _cron_job_origin_log_suffix(job),
+                        )
+                        continue
+                else:
+                    # Source job was deleted — skip silently.
+                    continue
             try:
                 job_output_dir = OUTPUT_DIR / source_job_id
                 if not job_output_dir.exists():

@@ -522,16 +522,31 @@ def test_notify_sub_crud(kanban_home):
         kb.add_notify_sub(
             conn, task_id=tid, platform="telegram", chat_id="123", user_id="u1",
             notifier_profile="default",
+            delivery_metadata={
+                "chat_type": "dm",
+                "telegram_reply_to_message_id": "42",
+            },
         )
         subs = kb.list_notify_subs(conn, tid)
         assert len(subs) == 1
         assert subs[0]["platform"] == "telegram"
         assert subs[0]["notifier_profile"] == "default"
+        assert subs[0]["delivery_metadata"] == {
+            "chat_type": "dm",
+            "telegram_reply_to_message_id": "42",
+        }
         # Duplicate add is a no-op.
         kb.add_notify_sub(
             conn, task_id=tid, platform="telegram", chat_id="123",
+            delivery_metadata={
+                "chat_type": "dm",
+                "telegram_reply_to_message_id": "43",
+            },
         )
         assert len(kb.list_notify_subs(conn, tid)) == 1
+        assert kb.list_notify_subs(conn, tid)[0]["delivery_metadata"][
+            "telegram_reply_to_message_id"
+        ] == "43"
         # Distinct thread is a new row.
         kb.add_notify_sub(
             conn, task_id=tid, platform="telegram", chat_id="123",

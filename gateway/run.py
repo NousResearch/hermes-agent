@@ -17450,6 +17450,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 str(context.source.chat_type) if context.source.chat_type else ""
             ),
             chat_name=context.source.chat_name or "",
+            chat_type=context.source.chat_type or "",
             thread_id=str(context.source.thread_id) if context.source.thread_id else "",
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",

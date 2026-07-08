@@ -8,10 +8,6 @@ from agent.executive.flag import resolve_v2_enabled
 from agent.executive.objective_engine import ObjectiveEngine, PermissionError_
 
 
-@pytest.mark.xfail(
-    reason="depends on 4d8b9d309 HOLD_TANDA_5_5",
-    strict=False,
-)
 def test_cli_handler_dryrun_method_exists():
     """The /objective CLI handler method must exist in cli_commands_mixin."""
     from hermes_cli.cli_commands_mixin import CLICommandsMixin

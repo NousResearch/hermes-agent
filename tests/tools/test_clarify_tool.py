@@ -229,6 +229,182 @@ class TestClarifyDictChoices:
         assert all("{" not in c for c in result["choices_offered"])
 
 
+class TestClarifyMultiSelect:
+    """Multi-select is an additive extension of clarify, not a new tool."""
+
+    def test_multi_select_metadata_reaches_callback_and_result(self):
+        seen = {}
+
+        def cb(question, choices, **kwargs):
+            seen["question"] = question
+            seen["choices"] = choices
+            seen.update(kwargs)
+            return "Alpha, Gamma"
+
+        result = json.loads(clarify_tool(
+            "Pick all that apply",
+            choices=["Alpha", "Beta", "Gamma"],
+            callback=cb,
+            multi_select=True,
+            min_selections=1,
+            max_selections=3,
+            allow_other=False,
+        ))
+
+        assert seen == {
+            "question": "Pick all that apply",
+            "choices": ["Alpha", "Beta", "Gamma"],
+            "multi_select": True,
+            "min_selections": 1,
+            "max_selections": 3,
+            "allow_other": False,
+        }
+        assert result["selection_mode"] == "multi"
+        assert result["user_response"] == "Alpha, Gamma"
+        assert result["selected_choices"] == ["Alpha", "Gamma"]
+
+    def test_single_select_result_keeps_backcompat_string(self):
+        result = json.loads(clarify_tool(
+            "Pick one",
+            choices=["Alpha", "Beta"],
+            callback=lambda q, c, **kw: "Beta",
+        ))
+
+        assert result["selection_mode"] == "single"
+        assert result["user_response"] == "Beta"
+        assert result["selected_choices"] == ["Beta"]
+
+    def test_single_select_rejects_empty_when_other_disallowed(self):
+        result = json.loads(clarify_tool(
+            "Pick one",
+            choices=["Alpha", "Beta"],
+            callback=lambda q, c, **kw: "",
+            allow_other=False,
+        ))
+
+        assert "error" in result
+        assert "Reply with one of the listed choices" in result["error"]
+
+    def test_single_select_rejects_mixed_custom_when_other_disallowed(self):
+        result = json.loads(clarify_tool(
+            "Pick one",
+            choices=["Alpha", "Beta"],
+            callback=lambda q, c, **kw: "Alpha, custom",
+            allow_other=False,
+        ))
+
+        assert "error" in result
+        assert "Reply with one of the listed choices" in result["error"]
+
+    def test_single_select_rejects_multiple_choices_when_other_disallowed(self):
+        result = json.loads(clarify_tool(
+            "Pick one",
+            choices=["Alpha", "Beta"],
+            callback=lambda q, c, **kw: "Alpha, Beta",
+            allow_other=False,
+        ))
+
+        assert "error" in result
+        assert "Reply with exactly one listed choice" in result["error"]
+
+    def test_invalid_multi_select_bounds_return_error(self):
+        result = json.loads(clarify_tool(
+            "Pick",
+            choices=["A"],
+            callback=lambda q, c, **kw: "A",
+            multi_select=True,
+            min_selections=2,
+            max_selections=1,
+        ))
+
+        assert "error" in result
+        assert "min_selections" in result["error"]
+
+    def test_multi_select_min_cannot_exceed_available_choices(self):
+        result = json.loads(clarify_tool(
+            "Pick",
+            choices=["A"],
+            callback=lambda q, c, **kw: "A",
+            multi_select=True,
+            min_selections=2,
+        ))
+
+        assert "error" in result
+        assert "available choices" in result["error"]
+
+    def test_multi_select_max_cannot_exceed_available_choices(self):
+        result = json.loads(clarify_tool(
+            "Pick",
+            choices=["A", "B"],
+            callback=lambda q, c, **kw: "A",
+            multi_select=True,
+            max_selections=3,
+        ))
+
+        assert "error" in result
+        assert "available choices" in result["error"]
+
+    def test_selected_choices_exact_label_beats_letter_shortcut(self):
+        result = json.loads(clarify_tool(
+            "Pick",
+            choices=["Alpha", "A", "Gamma"],
+            callback=lambda q, c, **kw: "A",
+            multi_select=True,
+        ))
+
+        assert result["selected_choices"] == ["A"]
+
+    def test_multi_select_result_enforces_min_after_callback(self):
+        result = json.loads(clarify_tool(
+            "Pick at least two",
+            choices=["Alpha", "Beta", "Gamma"],
+            callback=lambda q, c, **kw: "Alpha",
+            multi_select=True,
+            min_selections=2,
+            allow_other=False,
+        ))
+
+        assert "error" in result
+        assert "Select at least 2 choices" in result["error"]
+
+    def test_multi_select_result_rejects_empty_when_min_required(self):
+        result = json.loads(clarify_tool(
+            "Pick at least two",
+            choices=["Alpha", "Beta", "Gamma"],
+            callback=lambda q, c, **kw: "",
+            multi_select=True,
+            min_selections=2,
+            allow_other=False,
+        ))
+
+        assert "error" in result
+        assert "Select at least 2 choices" in result["error"]
+
+    def test_multi_select_result_rejects_custom_text_when_other_disallowed(self):
+        result = json.loads(clarify_tool(
+            "Pick listed choices",
+            choices=["Alpha", "Beta", "Gamma"],
+            callback=lambda q, c, **kw: "not listed",
+            multi_select=True,
+            allow_other=False,
+        ))
+
+        assert "error" in result
+        assert "Reply with one or more listed choices" in result["error"]
+
+    def test_multi_select_result_rejects_mixed_custom_when_other_disallowed(self):
+        result = json.loads(clarify_tool(
+            "Pick listed choices",
+            choices=["Alpha", "Beta", "Gamma"],
+            callback=lambda q, c, **kw: "Alpha, custom",
+            multi_select=True,
+            allow_other=False,
+        ))
+
+        assert "error" in result
+        assert "Reply with one or more listed choices" in result["error"]
+
+
 class TestClarifySchema:
     """Tests for the OpenAI function-calling schema."""
 
@@ -253,6 +429,27 @@ class TestClarifySchema:
         """Schema should specify max items for choices."""
         choices_spec = CLARIFY_SCHEMA["parameters"]["properties"]["choices"]
         assert choices_spec.get("maxItems") == MAX_CHOICES
+
+    def test_schema_exposes_multi_select_fields(self):
+        properties = CLARIFY_SCHEMA["parameters"]["properties"]
+        assert properties["multi_select"]["type"] == "boolean"
+        assert properties["min_selections"]["type"] == "integer"
+        assert properties["max_selections"]["type"] == ["integer", "null"]
+        assert properties["allow_other"]["type"] == "boolean"
+
+    def test_schema_warns_against_dead_select_blocks_for_next_actions(self):
+        description = CLARIFY_SCHEMA["description"]
+        assert "next-action section" in description
+        assert "Markdown lists" in description
+        assert "```select" in description
+        assert "multi_select=true" in description
+
+    def test_schema_covers_task_reports_and_scope_choices(self):
+        description = CLARIFY_SCHEMA["description"]
+        assert "task report" in description
+        assert "scope" in description
+        assert "defer" in description
+        assert "forbid" in description
 
     def test_max_choices_is_four(self):
         """MAX_CHOICES constant should be 4."""

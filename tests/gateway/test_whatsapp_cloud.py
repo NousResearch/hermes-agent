@@ -1659,6 +1659,78 @@ class TestSendClarifyButtons:
         assert "Other" in rows[4]["title"]
 
     @pytest.mark.asyncio
+    async def test_list_mode_honors_allow_other_false(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(200, {"messages": [{"id": "wamid.q2b"}]})
+        )
+
+        result = await adapter.send_clarify(
+            chat_id="15551234567",
+            question="Pick one",
+            choices=["A", "B", "C", "D"],
+            clarify_id="q2b",
+            session_key="sess-2b",
+            allow_other=False,
+        )
+
+        assert result.success
+        payload = adapter._http_client.post.call_args.kwargs["json"]
+        rows = payload["interactive"]["action"]["sections"][0]["rows"]
+        assert len(rows) == 4
+        assert all(row["id"] != "cl:q2b:other" for row in rows)
+        assert all("Other" not in row["title"] for row in rows)
+
+    @pytest.mark.asyncio
+    async def test_multi_select_uses_text_fallback_not_single_select_interactive(self):
+        from tools import clarify_gateway as cm
+
+        with cm._lock:
+            cm._entries.clear()
+            cm._session_index.clear()
+        cm.register(
+            "qms",
+            "sess-ms",
+            "Pick many",
+            ["Alpha", "Bravo", "Charlie"],
+            multi_select=True,
+            min_selections=1,
+            max_selections=2,
+            allow_other=False,
+        )
+
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(200, {"messages": [{"id": "wamid.qms"}]})
+        )
+
+        result = await adapter.send_clarify(
+            chat_id="15551234567",
+            question="Pick many",
+            choices=["Alpha", "Bravo", "Charlie"],
+            clarify_id="qms",
+            session_key="sess-ms",
+            multi_select=True,
+            min_selections=1,
+            max_selections=2,
+            allow_other=False,
+        )
+
+        assert result.success
+        payload = adapter._http_client.post.call_args.kwargs["json"]
+        assert payload["type"] == "text"
+        body = payload["text"]["body"]
+        assert "Multiple selections allowed" in body
+        assert "1/A. Alpha" in body
+        assert "own answer" not in body
+        with cm._lock:
+            entry = cm._entries.get("qms")
+        assert entry is not None
+        assert entry.awaiting_text is True
+
+    @pytest.mark.asyncio
     async def test_open_ended_falls_back_to_plain_text(self):
         """No choices → plain text send, no interactive payload."""
         adapter = _make_adapter()

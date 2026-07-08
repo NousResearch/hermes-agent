@@ -87,11 +87,16 @@ export const en: Translations = {
       remoteTitle: 'Remote gateway sign-in required',
       remoteDescription:
         'Your remote gateway session has expired. Sign in again to reconnect. Nothing here deletes your chats or settings.',
+      connectionLostTitle: 'Hermes connection was interrupted',
+      connectionLostDescription:
+        'Hermes started, but the desktop lost its live connection to the gateway. Retry reconnects without reinstalling; your chats and settings stay safe.',
       retry: 'Retry',
       repairInstall: 'Repair install',
       useLocalGateway: 'Use local gateway',
       openLogs: 'Open logs',
       repairHint: 'Repair re-runs the installer and can take a few minutes on a fresh machine.',
+      connectionLostHint:
+        'Retry reconnects to the running gateway. Repair install is hidden because this is a connection interruption, not an install failure.',
       remoteSignInHint: 'Opens the gateway login window. Use local gateway to switch to the bundled backend instead.',
       hideRecentLogs: 'Hide recent logs',
       showRecentLogs: 'Show recent logs',
@@ -2272,11 +2277,20 @@ export const en: Translations = {
       notReady: 'Clarify request is not ready yet',
       gatewayDisconnected: 'Hermes gateway is not connected',
       sendFailed: 'Could not send clarify response',
+      responsePendingTitle: 'Clarify response may still be processing',
+      responsePendingMessage:
+        'Hermes did not confirm the choice in time. The backend may still receive it, so wait a moment before trying again to avoid duplicate responses.',
+      responseExpiredTitle: 'Clarify request expired',
+      responseExpiredMessage: 'That choice request is no longer pending. Wait for Hermes to ask again, then answer the fresh prompt.',
       loadingQuestion: 'Loading question…',
       other: 'Other (type your answer)',
       placeholder: 'Type your answer…',
       skip: 'Skip',
-      continueLabel: 'Continue'
+      continueLabel: 'Continue',
+      selected: 'Selected',
+      selectedCount: count => `${count} selected`,
+      multiSelectHint: 'Multi-select: use the circle on the right to stage choices, then press Select selected.',
+      selectSelected: 'Select selected'
     },
     tool: {
       code: 'Code',
@@ -2382,6 +2396,8 @@ export const en: Translations = {
     sessionUnavailable: 'Session unavailable',
     createSessionFailed: 'Could not create a new session',
     promptFailed: 'Prompt failed',
+    promptSubmitTimedOut:
+      'Hermes did not confirm this message in time. The backend may still process it, so wait a moment before retrying to avoid sending it twice.',
     providerCredentialRequired: 'Add a provider credential before sending your first message.',
     emptySlashCommand: 'empty slash command',
     desktopCommands: 'Desktop commands',

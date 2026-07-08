@@ -374,9 +374,13 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           }
 
           // A pending clarify blocks the turn, so the first tool.complete after
-          // one is the clarify resolving — drop the "needs input" flag here so
-          // the sidebar indicator clears as soon as it's answered, not only at
-          // message.complete.
+          // one is the clarify resolving — drop both the request itself and the
+          // "needs input" flag here so stale transcript panels cannot send a
+          // second clarify.respond after the backend has already unblocked.
+          if (payload?.name === 'clarify') {
+            clearClarifyRequest(undefined, sessionId)
+          }
+
           updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
 
           // terminal/process tool calls are the only things that spawn or reap
@@ -423,13 +427,18 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // over; the inline ClarifyTool reads the active session's entry.
         const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
         const question = typeof payload?.question === 'string' ? payload.question : ''
+        const clarifyPayload = payload as Record<string, unknown> | undefined
 
         if (requestId && question) {
           setClarifyRequest({
             requestId,
             question,
-            choices: Array.isArray(payload?.choices) ? payload!.choices!.filter(c => typeof c === 'string') : null,
-            sessionId: sessionId ?? null
+            choices: Array.isArray(payload?.choices) ? payload!.choices!.filter((c): c is string => typeof c === 'string') : null,
+            sessionId: sessionId ?? null,
+            multiSelect: clarifyPayload?.multi_select === true || clarifyPayload?.multiSelect === true,
+            minSelections: typeof clarifyPayload?.min_selections === 'number' ? clarifyPayload.min_selections : null,
+            maxSelections: typeof clarifyPayload?.max_selections === 'number' ? clarifyPayload.max_selections : null,
+            allowOther: clarifyPayload?.allow_other !== false
           })
 
           // The transcript only renders the active session, so a background

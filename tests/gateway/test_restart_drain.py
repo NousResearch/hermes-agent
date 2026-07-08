@@ -177,10 +177,12 @@ def test_load_restart_drain_timeout_prefers_env_then_config_then_default(
 
 
 @pytest.mark.asyncio
-async def test_request_restart_is_idempotent():
+async def test_request_restart_is_idempotent(monkeypatch):
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
     runner._launch_detached_restart_command = AsyncMock()
+    sleep = AsyncMock()
+    monkeypatch.setattr(gateway_run.asyncio, "sleep", sleep)
 
     # _run_restart is held on self._restart_task and is intentionally NOT in
     # _background_tasks, so _stop_impl's cancel loop can't abort it mid-await
@@ -193,6 +195,7 @@ async def test_request_restart_is_idempotent():
     await runner._restart_task
 
     runner._launch_detached_restart_command.assert_awaited_once_with()
+    sleep.assert_awaited_once_with(1.5)
     runner.stop.assert_awaited_once_with(
         restart=True, detached_restart=True, service_restart=False
     )
@@ -323,6 +326,7 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
 
     monkeypatch.setattr(gateway_run.sys, "platform", "win32")
     monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
     monkeypatch.setenv("_HERMES_GATEWAY", "1")
     monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
@@ -346,6 +350,7 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
     assert len(popen_calls) == 1
     cmd, kwargs = popen_calls[0]
     assert cmd[-3:] == ["hermes", "gateway", "restart"]
+    assert "--fallback--" in cmd
     assert kwargs["env"].get("_HERMES_GATEWAY") is None
     assert kwargs["env"]["VIRTUAL_ENV"] == str(venv_dir)
     assert str(site_packages) in kwargs["env"]["PYTHONPATH"].split(gateway_run.os.pathsep)
@@ -392,8 +397,54 @@ async def test_windows_detached_restart_uses_pythonw_for_watcher(monkeypatch, tm
     assert len(popen_calls) == 1
     cmd, kwargs = popen_calls[0]
     assert cmd[0] == r"C:\Python311\pythonw.exe"
-    assert cmd[-3:] == ["hermes", "gateway", "restart"]
+    fallback_at = cmd.index("--fallback--")
+    assert cmd[fallback_at + 1 : fallback_at + 4] == ["hermes", "gateway", "restart"]
     assert kwargs["creationflags"] == 0x08000008
+
+
+@pytest.mark.asyncio
+async def test_windows_detached_restart_prefers_hq_admin_helper(monkeypatch, tmp_path):
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+    admin_invoker = scripts_dir / "invoke_hermes_admin_helper.ps1"
+    admin_invoker.write_text("# test helper", encoding="utf-8")
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+
+    import hermes_cli._subprocess_compat as subprocess_compat
+
+    monkeypatch.setattr(
+        subprocess_compat,
+        "windows_detach_popen_kwargs",
+        lambda: {},
+    )
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    cmd, kwargs = popen_calls[0]
+    assert cmd[5] == "1"
+    assert "powershell.exe" in cmd
+    assert str(admin_invoker) in cmd
+    assert cmd[cmd.index("-Action") + 1] == "gateway_restart"
+    assert cmd[cmd.index("-TimeoutSeconds") + 1] == "120"
+    fallback_at = cmd.index("--fallback--")
+    assert cmd[fallback_at + 1 : fallback_at + 4] == ["hermes", "gateway", "restart"]
+    assert kwargs["env"].get("_HERMES_GATEWAY") is None
+    assert kwargs["stdout"] is subprocess.DEVNULL
+    assert kwargs["stderr"] is subprocess.DEVNULL
 
 
 # ── Shutdown notification tests ──────────────────────────────────────

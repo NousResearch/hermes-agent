@@ -6068,21 +6068,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # On Windows there's no bash/setsid chain — spawn a tiny Python
         # watcher directly via sys.executable instead.  The watcher polls
-        # current_pid, waits for our exit, then runs `hermes gateway
-        # restart` with detach flags so the respawn survives the CLI
-        # that triggered the /restart command closing its console.
+        # current_pid, waits for our exit, then runs the HQ Admin Helper
+        # gateway_restart action when available.  That path cooperates with
+        # the durable Windows Scheduled Task owner and avoids the generic
+        # `hermes gateway restart` race.  Non-HQ installs fall back to the
+        # stock CLI restart command.
         if sys.platform == "win32":
             import textwrap
             from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 
-            cmd_argv = [*hermes_cmd, "gateway", "restart"]
+            admin_invoker = _hermes_home / "scripts" / "invoke_hermes_admin_helper.ps1"
+            use_admin_helper = admin_invoker.exists()
+            if use_admin_helper:
+                cmd_argv = [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(admin_invoker),
+                    "-Action",
+                    "gateway_restart",
+                    "-TimeoutSeconds",
+                    "120",
+                ]
+            else:
+                cmd_argv = [*hermes_cmd, "gateway", "restart"]
+            fallback_argv = [*hermes_cmd, "gateway", "restart"]
             watcher = textwrap.dedent(
                 """
                 import os, subprocess, sys, time
                 from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
                 pid = int(sys.argv[1])
                 restart_after_s = float(sys.argv[2])
-                cmd = sys.argv[3:]
+                use_admin_helper = sys.argv[3] == '1'
+                raw_args = sys.argv[4:]
+                try:
+                    split_at = raw_args.index('--fallback--')
+                    cmd = raw_args[:split_at]
+                    fallback_cmd = raw_args[split_at + 1:]
+                except ValueError:
+                    cmd = raw_args
+                    fallback_cmd = []
                 deadline = time.monotonic() + restart_after_s
 
                 def _alive(p):
@@ -6116,12 +6143,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if not _alive(pid):
                         break
                     time.sleep(0.2)
-                subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=windows_detach_flags_without_breakaway(),
-                )
+                flags = windows_detach_flags_without_breakaway()
+
+                def _launch(command):
+                    subprocess.Popen(
+                        command,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=flags,
+                    )
+
+                if use_admin_helper:
+                    try:
+                        completed = subprocess.run(
+                            cmd,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            creationflags=flags,
+                            timeout=150,
+                        )
+                        if completed.returncode == 0:
+                            sys.exit(0)
+                    except Exception:
+                        pass
+                    if fallback_cmd:
+                        _launch(fallback_cmd)
+                else:
+                    _launch(cmd)
                 """
             ).strip()
             watcher_env = os.environ.copy()
@@ -6152,7 +6200,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pythonpath.append(watcher_env["PYTHONPATH"])
                 watcher_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
             subprocess.Popen(
-                [watcher_python, "-c", watcher, str(current_pid), str(restart_after_s), *cmd_argv],
+                [
+                    watcher_python,
+                    "-c",
+                    watcher,
+                    str(current_pid),
+                    str(restart_after_s),
+                    "1" if use_admin_helper else "0",
+                    *cmd_argv,
+                    "--fallback--",
+                    *fallback_argv,
+                ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 env=watcher_env,
@@ -6300,7 +6358,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await self._launch_detached_restart_command()
                 except Exception as e:
                     logger.error("Failed to launch detached gateway restart helper: %s", e)
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(1.5)
             await self.stop(restart=True, detached_restart=detached, service_restart=via_service)
 
         # _run_restart is a short-lived self-terminating task (calls stop()
@@ -8954,6 +9012,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # the agent's response don't double-post.  The agent
                     # itself will produce the next user-facing message.
                     return ""
+                logger.info(
+                    "Gateway rejected invalid clarify text response (session=%s, id=%s)",
+                    _quick_key, _pending_clarify.clarify_id,
+                )
+                return _clarify_mod.format_invalid_text_response_message(_pending_clarify)
 
         # Intercept messages that are responses to a pending /reload-mcp
         # (or future) slash-confirm prompt.  Recognized confirm replies are
@@ -18129,7 +18192,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # explaining that no response arrived (so the agent can adapt
             # rather than hang forever).
             # ------------------------------------------------------------------
-            def _clarify_callback_sync(question: str, choices) -> str:
+            def _clarify_callback_sync(
+                question: str,
+                choices,
+                *,
+                multi_select: bool = False,
+                min_selections: int = 0,
+                max_selections = None,
+                allow_other: bool = True,
+            ) -> str:
                 from tools import clarify_gateway as _clarify_mod
                 import uuid as _uuid
 
@@ -18142,6 +18213,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_key=session_key or "",
                     question=question,
                     choices=list(choices) if choices else None,
+                    multi_select=multi_select,
+                    min_selections=min_selections,
+                    max_selections=max_selections,
+                    allow_other=allow_other,
                 )
 
                 # Pause typing — like approval, we don't want a "thinking..."
@@ -18162,6 +18237,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         clarify_id=clarify_id,
                         session_key=session_key or "",
                         metadata=_status_thread_metadata,
+                        multi_select=multi_select,
+                        min_selections=min_selections,
+                        max_selections=max_selections,
+                        allow_other=allow_other,
                     ),
                     _loop_for_step,
                     logger=logger,

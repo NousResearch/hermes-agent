@@ -131,7 +131,7 @@ class TestFindStaleDashboardPids:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="\n".join([
-                    _ps_line(30001, "/usr/bin/python3 -m hermes_cli.main --profile lonelylofi dashboard --no-open"),
+                    _ps_line(30001, "/usr/bin/python3 -m hermes_cli.main --profile exampleprofile dashboard --no-open"),
                     _ps_line(30002, "hermes -p vc-athena serve"),
                     _ps_line(30003, "hermes --profile=coder dashboard --port 9200"),
                     _ps_line(30004, "/opt/hermes/venv/bin/hermes --profile ops serve --host 127.0.0.1"),

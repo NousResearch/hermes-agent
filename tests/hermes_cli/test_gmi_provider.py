@@ -290,7 +290,7 @@ class TestGmiAuxiliary:
         assert profile is not None
         ua = profile.default_headers.get("User-Agent", "")
         assert ua.startswith("HTAIAgent/"), (
-            f"expected GMI profile User-Agent to start with 'HermesAgent/', got {ua!r}"
+            f"expected GMI profile User-Agent to start with 'HTAIAgent/', got {ua!r}"
         )
 
     def test_resolve_provider_client_accepts_gmi_alias(self, monkeypatch):

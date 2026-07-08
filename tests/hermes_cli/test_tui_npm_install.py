@@ -349,7 +349,7 @@ def test_make_tui_argv_exits_with_recovery_hint_when_workspace_unrecoverable(
     err = capsys.readouterr().err
     assert "TUI workspace is missing" in err
     assert "git restore -- ui-tui" in err
-    assert "hermes update --force" in err
+    assert "ht update --force" in err
 
 
 def test_make_tui_argv_restores_missing_workspace_from_git(

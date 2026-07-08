@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import inspect
 import json
 import logging
 import os
@@ -804,7 +805,38 @@ class TeamsAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[teams] Disconnected")
 
-    async def _fetch_attachment_bytes(self, url: str, timeout: float = 30.0) -> bytes:
+    async def _get_bot_bearer_token(self) -> Optional[str]:
+        """Return the current Bot Framework bearer token, if the SDK exposes one."""
+        app = self._app
+        if app is None:
+            return None
+
+        # Avoid MagicMock's dynamic attribute creation in tests while still
+        # supporting the SDK's class method and explicit test doubles.
+        class_getter = getattr(type(app), "_get_bot_token", None)
+        instance_getter_defined = "_get_bot_token" in getattr(app, "__dict__", {})
+        if class_getter is None and not instance_getter_defined:
+            return None
+
+        token_getter = getattr(app, "_get_bot_token", None)
+        if not callable(token_getter):
+            return None
+
+        token = token_getter()
+        if inspect.isawaitable(token):
+            token = await token
+        if not token:
+            return None
+        value = str(token).strip()
+        return value or None
+
+    async def _fetch_attachment_bytes(
+        self,
+        url: str,
+        timeout: float = 30.0,
+        *,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> bytes:
         """Download attachment bytes with SSRF protection.
 
         Teams file attachments carry pre-authenticated SharePoint download
@@ -825,12 +857,59 @@ class TeamsAdapter(BasePlatformAdapter):
             follow_redirects=True,
             event_hooks={"response": [_ssrf_redirect_guard]},
         ) as client:
-            response = await client.get(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"},
-            )
+            request_headers = {
+                "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"
+            }
+            if headers:
+                request_headers.update({k: v for k, v in headers.items() if v})
+            response = await client.get(url, headers=request_headers)
             response.raise_for_status()
             return response.content
+
+    async def _cache_image_attachment(
+        self,
+        url: str,
+        content_type: str,
+        filename: str = "",
+    ) -> Optional[tuple[str, str, str]]:
+        """Cache a Teams image attachment and return path, MIME type, and kind.
+
+        Inline Teams image ``contentUrl`` values can require the bot's bearer
+        token. Public image URLs are still supported through the generic fallback.
+        """
+        token = await self._get_bot_bearer_token()
+        if token:
+            try:
+                data = await self._fetch_attachment_bytes(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "image/*,*/*;q=0.8",
+                    },
+                )
+            except Exception as exc:
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                if status_code not in (401, 403):
+                    raise
+                logger.debug(
+                    "[teams] Authenticated image fetch returned %s; trying public fetch",
+                    status_code,
+                )
+            else:
+                cached = cache_media_bytes(
+                    data,
+                    filename=filename,
+                    mime_type=content_type,
+                    default_kind="image",
+                )
+                if not cached:
+                    raise ValueError("Downloaded Teams image attachment was not a supported image")
+                return cached.path, cached.media_type, cached.kind
+
+        cached_path = await cache_image_from_url(url)
+        if not cached_path:
+            return None
+        return cached_path, content_type, "image"
 
     async def _on_message(self, ctx: ActivityContext[MessageActivity]) -> None:
         """Process an incoming Teams message and dispatch to the gateway."""
@@ -932,11 +1011,16 @@ class TeamsAdapter(BasePlatformAdapter):
 
             if content_url and content_type.startswith("image/"):
                 try:
-                    cached = await cache_image_from_url(content_url)
+                    cached = await self._cache_image_attachment(
+                        content_url,
+                        content_type,
+                        att_name,
+                    )
                     if cached:
-                        media_urls.append(cached)
-                        media_types.append(content_type)
-                        media_kinds.append("image")
+                        path, media_type, kind = cached
+                        media_urls.append(path)
+                        media_types.append(media_type)
+                        media_kinds.append(kind)
                 except Exception as e:
                     logger.warning("[teams] Failed to cache image attachment: %s", e)
                 continue

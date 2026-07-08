@@ -882,6 +882,46 @@ class TestTeamsAttachmentClassification:
         assert event.media_urls == ["/tmp/img.png"]
 
     @pytest.mark.anyio
+    async def test_image_content_url_uses_bot_token(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._make_adapter()
+        adapter._app = SimpleNamespace(id="bot-id")
+        adapter._app._get_bot_token = AsyncMock(return_value="bot-token")
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"\x89PNG\r\n\x1a\nfake")
+        cached_media = SimpleNamespace(
+            path="/tmp/img.png",
+            media_type="image/png",
+            kind="image",
+        )
+
+        with pytest.MonkeyPatch.context() as mp:
+            cache_media = MagicMock(return_value=cached_media)
+            cache_public = AsyncMock(side_effect=AssertionError("public fallback should not run"))
+            mp.setattr(_teams_mod, "cache_media_bytes", cache_media)
+            mp.setattr(_teams_mod, "cache_image_from_url", cache_public)
+
+            activity = self._make_activity([self._image_attachment()])
+            await adapter._on_message(self._make_ctx(activity))
+
+        adapter._fetch_attachment_bytes.assert_awaited_once()
+        fetch_kwargs = adapter._fetch_attachment_bytes.await_args.kwargs
+        assert fetch_kwargs["headers"]["Authorization"] == "Bearer bot-token"
+        assert fetch_kwargs["headers"]["Accept"] == "image/*,*/*;q=0.8"
+        cache_media.assert_called_once_with(
+            b"\x89PNG\r\n\x1a\nfake",
+            filename="img.png",
+            mime_type="image/png",
+            default_kind="image",
+        )
+        cache_public.assert_not_awaited()
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/img.png"]
+        assert event.media_types == ["image/png"]
+
+    @pytest.mark.anyio
     async def test_download_failure_degrades_to_text(self):
         from gateway.platforms.base import MessageType
 

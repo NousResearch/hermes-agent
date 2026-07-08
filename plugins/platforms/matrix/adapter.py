@@ -1428,6 +1428,47 @@ class MatrixAdapter(BasePlatformAdapter):
                                         exc,
                                     )
 
+                    # Sign our own device with the self-signing key so other
+                    # clients (Element, etc.) recognise it as cross-signed and
+                    # share megolm room keys to it.  Without this, the bot's
+                    # device is unsigned and Element withholds room keys
+                    # regardless of the user's "never send to unverified"
+                    # setting, because the device is not signed by its own
+                    # account's self-signing key.
+                    if client.device_id and self._user_id:
+                        try:
+                            priv = getattr(
+                                olm, "_cross_signing_private_keys", None
+                            )
+                            need_bootstrap = priv is None or getattr(
+                                priv, "self_signing_key", None
+                            ) is None
+                            if need_bootstrap:
+                                logger.info(
+                                    "Matrix: cross-signing private keys missing "
+                                    "— bootstrapping"
+                                )
+                                rk = await olm.generate_recovery_key()
+                                _handle_generated_matrix_recovery_key(
+                                    str(client.mxid), rk
+                                )
+                            own_dev = await olm.get_or_fetch_device(
+                                UserID(self._user_id), client.device_id
+                            )
+                            if own_dev is not None:
+                                await olm.sign_own_device(own_dev)
+                                logger.info(
+                                    "Matrix: signed own device %s with "
+                                    "self-signing key",
+                                    client.device_id,
+                                )
+                        except Exception as exc:
+                            logger.warning(
+                                "Matrix: failed to sign own device: %s",
+                                exc,
+                                exc_info=True,
+                            )
+
                     client.crypto = olm
                     logger.info(
                         "Matrix: E2EE enabled (store: %s%s)",

@@ -194,11 +194,7 @@ async def auth_login(request: Request, provider: str, next: str = ""):
         )
 
     try:
-        # 🐛 patch(#55985): guard start_login() — BasicAuthProvider has no OAuth flow
-        if hasattr(p, "start_login") and callable(p.start_login):
-            ls = p.start_login(redirect_uri=_redirect_uri(request))
-        else:
-            ls = None
+        ls = p.start_login(redirect_uri=_redirect_uri(request))
     except ProviderError as e:
         audit_log(
             AuditEvent.LOGIN_FAILURE,
@@ -210,12 +206,19 @@ async def auth_login(request: Request, provider: str, next: str = ""):
             status_code=503,
             detail=f"Provider unreachable: {e}",
         )
+    except NotImplementedError:
+        ls = None
 
     audit_log(
         AuditEvent.LOGIN_START,
         provider=provider,
         ip=_client_ip(request),
     )
+
+    # 🐛 fix(#55985): BasicAuthProvider has no OAuth redirect flow.
+    # password-only providers fall through to password login page.
+    if ls is None:
+        return RedirectResponse(url=request.url_for("login_page"), status_code=302)
 
     resp = RedirectResponse(url=ls.redirect_url, status_code=302)
     # Pack the provider name into the PKCE cookie so the callback can

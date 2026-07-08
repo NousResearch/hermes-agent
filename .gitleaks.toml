@@ -38,6 +38,7 @@ paths = [
   # --- Tests: mocked clients / redaction & auth fixtures ---
   '''tests/agent/test_redact\.py''',
   '''tests/agent/test_copilot_acp_client\.py''',
+  '''tests/run_agent/test_primary_runtime_restore\.py''',  # `test-key-12345678` AIAgent constructor stub — surfaced when the auto_recovery PR re-touched the whole file
   '''tests/cli/test_quick_commands\.py''',
   '''tests/gateway/relay/test_auth\.py''',
   '''tests/gateway/test_agent_cache\.py''',

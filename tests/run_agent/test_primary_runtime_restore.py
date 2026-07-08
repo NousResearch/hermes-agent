@@ -646,3 +646,134 @@ class TestFallbackReasoningEffort:
 
         # "none" → reasoning explicitly disabled for this tier.
         assert agent.reasoning_config == {"enabled": False}
+
+
+# ── model.auto_recovery toggle + safety-refusal primary cooldown ─────────────
+# (SPEC 2026-07-08: opt into sticky fallback; a repeating content_policy refusal
+# arms the SAME primary cooldown a 429 does, via _primary_cooldown_seconds, so
+# the session stays on the warm fallback instead of cold-rebuilding it each turn.)
+
+import time as _time
+
+from unittest.mock import patch as _patch, MagicMock as _MagicMock
+
+from agent.error_classifier import FailoverReason as _FR
+
+
+def _activate_fallback(agent, reason=None):
+    mc = _mock_resolve()
+    with _patch("agent.auxiliary_client.resolve_provider_client", return_value=(mc, None)):
+        return agent._try_activate_fallback(reason=reason) if reason is not None \
+            else agent._try_activate_fallback()
+
+
+class TestAutoRecoveryToggle:
+    def test_default_true_restores_primary(self):
+        # No auto_recovery key set → default True → restore happens (today's behavior).
+        agent = _make_agent(fallback_model={"provider": "openrouter", "model": "m-a"})
+        _activate_fallback(agent)
+        assert agent._fallback_activated is True
+        with _patch("hermes_cli.config.read_raw_config", return_value={"model": {}}), \
+             _patch("run_agent.OpenAI", return_value=_MagicMock()):
+            assert agent._restore_primary_runtime() is True
+        assert agent._fallback_activated is False
+
+    def test_false_stays_sticky_on_fallback(self):
+        agent = _make_agent(fallback_model={"provider": "openrouter", "model": "m-a"})
+        _activate_fallback(agent)
+        assert agent._fallback_activated is True
+        fb_model = agent.model
+        with _patch("hermes_cli.config.read_raw_config",
+                    return_value={"model": {"auto_recovery": False}}):
+            assert agent._restore_primary_runtime() is False   # sticky: no restore
+        assert agent._fallback_activated is True               # still on fallback
+        assert agent.model == fb_model
+
+    def test_false_still_resets_index_on_no_fallback_turn(self):
+        # INV-2 / #20465: even with auto_recovery off, a turn with NO active
+        # fallback must still reset _fallback_index (the no-fallback block runs
+        # FIRST, unconditional). Otherwise a stranded index blocks future fallbacks.
+        agent = _make_agent(fallback_model=[{"provider": "openrouter", "model": "m-a"},
+                                            {"provider": "anthropic", "model": "m-b"}])
+        agent._fallback_activated = False
+        agent._fallback_index = 2  # stranded
+        with _patch("hermes_cli.config.read_raw_config",
+                    return_value={"model": {"auto_recovery": False}}):
+            assert agent._restore_primary_runtime() is False
+        assert agent._fallback_index == 0  # reset regardless of the toggle
+
+    def test_config_read_failure_defaults_to_restore(self):
+        # Fail toward current behavior (default True) if config can't be read.
+        agent = _make_agent(fallback_model={"provider": "openrouter", "model": "m-a"})
+        _activate_fallback(agent)
+        with _patch("hermes_cli.config.read_raw_config", side_effect=RuntimeError("boom")), \
+             _patch("run_agent.OpenAI", return_value=_MagicMock()):
+            assert agent._restore_primary_runtime() is True  # restored despite the error
+        assert agent._fallback_activated is False
+
+
+class TestSafetyRefusalCooldown:
+    def test_refusal_leaving_primary_arms_cooldown(self):
+        # RC1: a content_policy_blocked fallback that LEAVES the primary arms
+        # _rate_limited_until, keeping the session sticky on the fallback.
+        agent = _make_agent(fallback_model={"provider": "openrouter", "model": "m-a"})
+        agent._rate_limited_until = 0
+        before = _time.monotonic()
+        assert _activate_fallback(agent, reason=_FR.content_policy_blocked) is True
+        cd = getattr(agent, "_rate_limited_until", 0)
+        # armed for the 429 default window (60s), single-source via _primary_cooldown_seconds
+        assert cd >= before + 59, f"refusal cooldown not armed to ~60s: {cd - before}"
+        assert cd <= before + 6 * 60 * 60 + 1  # within the [60s,6h] clamp
+
+    def test_refusal_cooldown_uses_primary_cooldown_default_not_a_literal(self):
+        # RC1 mutation-intent: the armed window must equal _primary_cooldown_seconds(None),
+        # proving it routes through the shared param (no private constant).
+        from agent.chat_completion_helpers import _primary_cooldown_seconds
+        agent = _make_agent(fallback_model={"provider": "openrouter", "model": "m-a"})
+        agent._rate_limited_until = 0
+        before = _time.monotonic()
+        _activate_fallback(agent, reason=_FR.content_policy_blocked)
+        cd = getattr(agent, "_rate_limited_until", 0)
+        expected = _primary_cooldown_seconds(None)  # 60.0
+        # cd ≈ before + expected (allow scheduling slack)
+        assert abs((cd - before) - expected) < 2, (cd - before, expected)
+
+    def test_refusal_cooldown_gates_restore_then_lapses(self):
+        # RC1: within the window, restore stays on fallback; after it lapses, restores.
+        agent = _make_agent(fallback_model={"provider": "openrouter", "model": "m-a"})
+        _activate_fallback(agent, reason=_FR.content_policy_blocked)
+        with _patch("hermes_cli.config.read_raw_config", return_value={"model": {}}):
+            # cooldown active → sticky
+            assert agent._restore_primary_runtime() is False
+            # simulate the window lapsing
+            agent._rate_limited_until = 0
+            with _patch("run_agent.OpenAI", return_value=_MagicMock()):
+                assert agent._restore_primary_runtime() is True
+
+    def test_refusal_while_already_on_fallback_does_not_rearm(self):
+        # SPEC Test 5: a refusal while ALREADY on a fallback (chain-switch) must
+        # not re-arm/extend the primary cooldown (the "only when leaving primary" guard).
+        agent = _make_agent(fallback_model=[{"provider": "openrouter", "model": "m-a"},
+                                            {"provider": "anthropic", "model": "m-b"}])
+        agent._rate_limited_until = 0
+        # first refusal leaves the primary → arms
+        _activate_fallback(agent, reason=_FR.content_policy_blocked)
+        armed = getattr(agent, "_rate_limited_until", 0)
+        assert armed > 0
+        # now already on a fallback; a chain-switch refusal must NOT push it later
+        _activate_fallback(agent, reason=_FR.content_policy_blocked)
+        assert getattr(agent, "_rate_limited_until", 0) == armed  # unchanged
+
+    def test_refusal_exhausting_chain_keeps_60s_not_shrunk_to_5s(self):
+        # RC2: a refusal that also exhausts the chain — the leaving-primary arm
+        # sets 60s, the exhaustion block does max(60s, now+5s) → 60s wins.
+        from agent.chat_completion_helpers import _FALLBACK_EXHAUSTED_COOLDOWN_S
+        assert _FALLBACK_EXHAUSTED_COOLDOWN_S <= 60  # precondition for "60s wins"
+        agent = _make_agent(fallback_model=[{"provider": "openrouter", "model": "m-a"}])
+        agent._rate_limited_until = 0
+        before = _time.monotonic()
+        _activate_fallback(agent, reason=_FR.content_policy_blocked)   # -> entry 0, arms 60s
+        # next call exhausts (index past the single entry)
+        _activate_fallback(agent, reason=_FR.content_policy_blocked)   # -> exhausted
+        cd = getattr(agent, "_rate_limited_until", 0)
+        assert cd >= before + 59, f"exhaustion shrank the refusal cooldown: {cd - before}"

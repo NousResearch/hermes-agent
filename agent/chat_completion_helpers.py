@@ -1682,10 +1682,20 @@ def try_activate_fallback(
     auth resolution and client construction — no duplicated provider→key
     mappings.
     """
-    if reason in {FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit}:
+    # A safety refusal (content_policy_blocked) is deterministic for the
+    # unchanged prompt, exactly like a rate-limit is deterministic for its
+    # window: restoring the primary next turn just reproduces the refusal and
+    # rebuilds the fallback's prefix cache COLD every turn. So arm the SAME
+    # primary cooldown a 429 arms — a refusal carries no reset_at, so
+    # _primary_cooldown_seconds() returns its 60s default (single source of
+    # truth; no separate constant). Keeps the session sticky on the warm
+    # fallback for the window, then re-probes the primary. Same "only when
+    # leaving the primary" guard so a chain-switch mid-fallback doesn't re-arm.
+    if reason in {FailoverReason.rate_limit, FailoverReason.billing,
+                  FailoverReason.upstream_rate_limit, FailoverReason.content_policy_blocked}:
         # Only start cooldown when leaving the primary provider.  If we're
         # already on a fallback and chain-switching, the primary wasn't the
-        # source of the 429 so the cooldown should not be reset/extended.
+        # source of the 429/refusal so the cooldown should not be reset/extended.
         fallback_already_active = bool(getattr(agent, "_fallback_activated", False))
         current_provider = (getattr(agent, "provider", "") or "").strip().lower()
         primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()

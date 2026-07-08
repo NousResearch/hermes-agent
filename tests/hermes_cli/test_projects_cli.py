@@ -82,3 +82,25 @@ def test_use_clear(tmp_path):
 def test_unknown_project_returns_error(capsys, tmp_path):
     assert _run(["show", "nope"]) == 1
     assert "no such project" in capsys.readouterr().err
+
+
+def test_create_with_board_syncs_board_default_workdir(tmp_path):
+    # `project create --board <b>` must sync the board's default_workdir to the
+    # primary repo, exactly as `bind-board` does — otherwise the binding is
+    # inert and cards on the board land in scratch dirs instead of worktrees.
+    from hermes_cli import kanban_db as kb
+
+    kb.create_board("appboard")
+    repo = str(tmp_path / "repo")
+    assert _run(["create", "My App", repo, "--primary", repo, "--board", "appboard"]) == 0
+
+    assert kb.read_board_metadata("appboard").get("default_workdir") == repo
+
+
+def test_create_without_board_does_not_touch_board_metadata(tmp_path):
+    from hermes_cli import kanban_db as kb
+
+    kb.create_board("plainboard")
+    repo = str(tmp_path / "repo")
+    assert _run(["create", "P", repo, "--primary", repo]) == 0
+    assert kb.read_board_metadata("plainboard").get("default_workdir") is None

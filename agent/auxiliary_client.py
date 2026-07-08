@@ -6211,38 +6211,22 @@ def _build_call_kwargs(
         kwargs["temperature"] = temperature
 
     if max_tokens is not None:
-        # We do NOT cap output by default. Most chat-completions providers treat
-        # an omitted max_tokens as "use the model's max output", which is what we
-        # want for auxiliary tasks (compression summaries, titles, vision, etc.) —
-        # an explicit cap only risks truncating a summary or 400-ing on providers
-        # that reject the parameter outright (e.g. GitHub Copilot / newer OpenAI
-        # GPT-5 models require max_completion_tokens, not max_tokens; ZAI vision
-        # models reject it entirely with error 1210). Omitting it sidesteps all of
-        # those wire-format quirks at once.
-        #
-        # The one exception is the Anthropic Messages wire (MiniMax and any
-        # ``/anthropic`` endpoint reached through the OpenAI SDK wrapper), where
-        # max_tokens is a MANDATORY field — omitting it is a hard 400. Keep it only
-        # there.
-        #
-        # NVIDIA NIM (integrate.api.nvidia.com and local NIM endpoints) is a
-        # second exception: some models—notably minimaxai/minimax-m3—return HTTP
-        # 200 with an empty choices[] payload when max_tokens is omitted. The main
-        # NVIDIA chat path already sends an output cap via the provider profile;
-        # preserve it on the auxiliary path too.
-        _effective_base = base_url or (
-            _current_custom_base_url() if provider == "custom" else ""
-        )
+        # Most chat-completions providers accept max_tokens as an output cap.
+        # The comment below documents the historical rationale for omitting it
+        # by default — but when a caller explicitly provides max_tokens (e.g.
+        # MoA reference_max_tokens, title generation), we forward it so the
+        # cap is actually respected.  Provider-specific edge cases (Copilot's
+        # max_completion_tokens, ZAI vision 1210) are handled by their own
+        # adapters / the _skip_zai_max_tokens flag.
+        kwargs["max_tokens"] = max_tokens
+
+        # Also set max_completion_tokens for providers that require it
+        # (GitHub Copilot, newer OpenAI models, etc.) — the higher-level
+        # call_llm path already sets both in the initial kwargs, so this
+        # ensures they survive through _build_call_kwargs as well.
         _provider_norm = str(provider or "").strip().lower()
-        _is_nvidia_nim = (
-            _provider_norm in {"nvidia", "nvidia-nim", "nim", "build-nvidia", "nemotron"}
-            or base_url_host_matches(_effective_base, "integrate.api.nvidia.com")
-        )
-        if (
-            _is_anthropic_compat_endpoint(provider, _effective_base)
-            or _is_nvidia_nim
-        ):
-            kwargs["max_tokens"] = max_tokens
+        if _provider_norm in {"copilot", "github-copilot", "openai"}:
+            kwargs.setdefault("max_completion_tokens", max_tokens)
 
     if tools:
         # Defensive dedup: providers like Google Vertex, Azure, and Bedrock

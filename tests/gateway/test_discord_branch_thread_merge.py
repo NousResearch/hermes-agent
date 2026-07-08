@@ -523,6 +523,34 @@ class TestMergeCommand:
 
 
     @pytest.mark.asyncio
+    async def test_merge_concurrent_calls_fold_once(self, session_db):
+        """Two overlapping /merge calls for the same pair append exactly one fold."""
+        import asyncio
+        runner = self._runner_with_summary(session_db, adapter=None)
+        _seed_session(session_db, "target_sess", title="Target")
+        _seed_session(session_db, "current_sess", title="Here")
+        source = SessionSource(platform=Platform.TELEGRAM, user_id="u", chat_id="c",
+                               user_name="t", chat_type="dm")
+        current = _entry(build_session_key(source), "current_sess", source)
+        runner.session_store.get_or_create_session.return_value = current
+        runner.session_store.load_transcript.return_value = [{"role": "user", "content": "x"}]
+        runner.session_store.lookup_by_session_id.return_value = None
+
+        # Fire both concurrently; the per-pair lock must serialize them so only
+        # one records+appends and the other sees the marker and no-ops.
+        r1, r2 = await asyncio.gather(
+            runner._handle_merge_command(_event("/merge Target", source)),
+            runner._handle_merge_command(_event("/merge Target", source)),
+        )
+        outcomes = sorted([r1.lower(), r2.lower()])
+        # Exactly one "merged into" and one "already".
+        assert any("merged into" in o for o in outcomes)
+        assert any("already" in o for o in outcomes)
+        folds = [m for m in session_db.get_messages_as_conversation("target_sess")
+                 if "MERGED SESSION" in str(m.get("content", ""))]
+        assert len(folds) == 1
+
+    @pytest.mark.asyncio
     async def test_merge_refuses_when_ledger_cannot_record(self, session_db):
         """If the idempotency marker can't be durably recorded, no fold is written."""
         runner = self._runner_with_summary(session_db, adapter=None)

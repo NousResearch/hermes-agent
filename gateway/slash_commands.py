@@ -3837,8 +3837,10 @@ class GatewaySlashCommandsMixin:
 
         # Make sure a session_store entry exists for the thread key, then
         # re-point it at the copied branch session (mirrors _process_handoff).
-        self.session_store.get_or_create_session(dest_source)
-        switched = self.session_store.switch_session(thread_session_key, new_session_id)
+        await self.async_session_store.get_or_create_session(dest_source)
+        switched = await self.async_session_store.switch_session(
+            thread_session_key, new_session_id
+        )
         if switched is None:
             logger.warning(
                 "branch: could not bind thread key %s -> %s",
@@ -4087,7 +4089,7 @@ class GatewaySlashCommandsMixin:
             ]
             # Don't offer the caller's OWN current session as a merge target.
             try:
-                cur = self.session_store.get_or_create_session(source)
+                cur = await self.async_session_store.get_or_create_session(source)
                 titled = [s for s in titled if s.get("id") != cur.session_id]
             except Exception:
                 pass
@@ -4122,7 +4124,7 @@ class GatewaySlashCommandsMixin:
                     if await self._resume_row_visible(source, s, False)
                 ]
                 try:
-                    cur = self.session_store.get_or_create_session(source)
+                    cur = await self.async_session_store.get_or_create_session(source)
                     titled = [s for s in titled if s.get("id") != cur.session_id]
                 except Exception:
                     pass
@@ -4173,6 +4175,26 @@ class GatewaySlashCommandsMixin:
     async def _merge_already_done(self, source_session_id, target_id) -> bool:
         """Whether this (source → target) merge has already been recorded."""
         return str(target_id) in await self._merged_targets_for(source_session_id)
+
+    def _merge_claim_lock(self, source_session_id, target_id):
+        """Return a process-local asyncio.Lock for this (source → target) claim.
+
+        Serializes the re-check → record → append critical section so two
+        overlapping /merge calls for the same pair can't both append. Lazily
+        created and cached; the gateway runs one event loop so a plain dict of
+        locks is sufficient (no cross-process concurrency on a single session).
+        """
+        import asyncio as _asyncio
+        locks = getattr(self, "_merge_claim_locks", None)
+        if locks is None:
+            locks = {}
+            self._merge_claim_locks = locks
+        key = f"{source_session_id}->{target_id}"
+        lock = locks.get(key)
+        if lock is None:
+            lock = _asyncio.Lock()
+            locks[key] = lock
+        return lock
 
     async def _record_merge_done(self, source_session_id, target_id) -> bool:
         """Append ``target_id`` to the source's ``model_config._merged_into`` list.
@@ -4264,7 +4286,7 @@ class GatewaySlashCommandsMixin:
         ):
             name = name[1:-1].strip()
 
-        current_entry = self.session_store.get_or_create_session(source)
+        current_entry = await self.async_session_store.get_or_create_session(source)
         source_session_id = current_entry.session_id
 
         # --- Resolve the TARGET session and whether this is the thread form. ---
@@ -4333,7 +4355,7 @@ class GatewaySlashCommandsMixin:
             return t("gateway.merge.already_merged", title=target_title)
 
         # --- Summarize the CURRENT session (read-only). ---
-        source_history = self.session_store.load_transcript(source_session_id)
+        source_history = await self.async_session_store.load_transcript(source_session_id)
         if not source_history:
             return t("gateway.merge.no_conversation")
         source_title = await self._session_db.get_session_title(source_session_id) or "session"
@@ -4356,28 +4378,33 @@ class GatewaySlashCommandsMixin:
             return t("gateway.merge.no_summary")
 
         # --- Layer 1: fold ONE labeled user-role message into the TARGET. ---
-        # Record the (source → target) merge in the durable ledger BEFORE the
-        # append (Greptile P1): this closes the check-then-act window so an
-        # overlapping/retried call can't both pass _merge_already_done and both
-        # append. If the marker CANNOT be durably recorded, refuse the fold
-        # rather than append a marker-less summary a later retry could duplicate.
-        recorded = await self._record_merge_done(source_session_id, target_id)
-        if not recorded:
-            return t("gateway.merge.ledger_failed")
-        fold_key = "gateway.merge.fold_body_thread" if is_thread_form else "gateway.merge.fold_body"
-        fold_text = t(fold_key, title=source_title, summary=summary)
-        try:
-            await self._session_db.append_message(
-                session_id=target_id,
-                role="user",
-                content=fold_text,
-            )
-        except Exception as exc:
-            logger.error("merge: failed to append fold to target %s: %s", target_id, exc)
-            # Roll back the ledger entry — the fold never landed, so a retry must
-            # be allowed to try again rather than being wrongly refused.
-            await self._unrecord_merge_done(source_session_id, target_id)
-            return t("gateway.merge.fold_failed", error=exc)
+        # Make the claim ATOMIC (Greptile P1): hold a per-(source→target)
+        # asyncio lock across re-check → record → append so two overlapping
+        # /merge calls can't both pass the duplicate check and both append. The
+        # gateway is single-event-loop, so this lock fully serializes the claim.
+        lock = self._merge_claim_lock(source_session_id, target_id)
+        async with lock:
+            # Authoritative re-check INSIDE the lock — the earlier pre-summary
+            # check is only a cheap fast-path; this is the one that gates the write.
+            if await self._merge_already_done(source_session_id, target_id):
+                return t("gateway.merge.already_merged", title=target_title)
+            recorded = await self._record_merge_done(source_session_id, target_id)
+            if not recorded:
+                return t("gateway.merge.ledger_failed")
+            fold_key = "gateway.merge.fold_body_thread" if is_thread_form else "gateway.merge.fold_body"
+            fold_text = t(fold_key, title=source_title, summary=summary)
+            try:
+                await self._session_db.append_message(
+                    session_id=target_id,
+                    role="user",
+                    content=fold_text,
+                )
+            except Exception as exc:
+                logger.error("merge: failed to append fold to target %s: %s", target_id, exc)
+                # Roll back the ledger entry — the fold never landed, so a retry
+                # must be allowed to try again rather than being wrongly refused.
+                await self._unrecord_merge_done(source_session_id, target_id)
+                return t("gateway.merge.fold_failed", error=exc)
 
         # --- Layer 2: durable .md record (self-purging). ---
         record_path = self._write_merge_record(
@@ -4386,7 +4413,7 @@ class GatewaySlashCommandsMixin:
         )
 
         # Evict the target's cached agent so the fold is live on its next turn.
-        target_entry = self.session_store.lookup_by_session_id(target_id)
+        target_entry = await self.async_session_store.lookup_by_session_id(target_id)
         if target_entry is not None:
             try:
                 self._evict_cached_agent(target_entry.session_key)

@@ -95,6 +95,70 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+PGA_ORDER_NORMAL_HEADER_KEYS = frozenset({
+    "accept",
+    "acceptencoding",
+    "authorization",
+    "connection",
+    "contentlength",
+    "contenttype",
+    "host",
+    "idempotencykey",
+    "origin",
+    "referer",
+    "useragent",
+})
+PGA_ORDER_FORBIDDEN_EXACT_KEYS = frozenset({
+    "approvedasin",
+    "catalog",
+    "checkout",
+    "createdby",
+    "dispatch",
+    "mcprequest",
+    "mcpserver",
+    "mcptool",
+    "outputledger",
+    "outputstatus",
+    "payment",
+    "profile",
+    "profileid",
+    "route",
+    "routes",
+    "source",
+    "vendorcode",
+    "vendorgroup",
+    "vendorgroups",
+    "vendorid",
+})
+PGA_ORDER_FORBIDDEN_KEY_TOKENS = (
+    "address",
+    "apikey",
+    "asin",
+    "checkout",
+    "credential",
+    "dispatch",
+    "email",
+    "endpoint",
+    "ledger",
+    "mcp",
+    "output",
+    "password",
+    "payment",
+    "phone",
+    "profile",
+    "provider",
+    "purchase",
+    "recipient",
+    "route",
+    "secret",
+    "shipping",
+    "token",
+    "url",
+    "vendor",
+)
+PGA_ORDER_SUBMISSION_ROOT_KEYS = frozenset({"locationCode", "items", "lines"})
+PGA_ORDER_SUBMISSION_LINE_KEYS = frozenset({"itemId", "quantity"})
+PGA_ORDER_CART_ROOT_KEYS = frozenset({"confirm_cart_mutation"})
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -1465,6 +1529,8 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        pga_order_intake_available = self._pga_order_intake_profile_ok()
+
         return web.json_response({
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
@@ -1504,6 +1570,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "memory_write_api": False,
                 "skills_api": True,
                 "audio_api": False,
+                "pga_order_intake": pga_order_intake_available,
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
@@ -1531,8 +1598,258 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+                "pga_order_catalog": {"method": "GET", "path": "/v1/pga/order/catalog"},
+                "pga_order_submissions": {"method": "POST", "path": "/v1/pga/order/submissions"},
+                "pga_order_submission": {"method": "GET", "path": "/v1/pga/order/submissions/{submission_id}"},
+                "pga_order_amazon_cart": {"method": "POST", "path": "/v1/pga/order/submissions/{submission_id}/amazon-cart"},
             },
         })
+
+    def _pga_order_intake_profile_ok(self) -> bool:
+        """Return true only for the isolated PGA profile runtime."""
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+
+            profile_name = get_active_profile_name()
+            if profile_name:
+                return profile_name == "pga"
+        except Exception:
+            pass
+
+        try:
+            from hermes_constants import get_hermes_home
+
+            hermes_home = Path(get_hermes_home()).expanduser().resolve()
+        except Exception:
+            hermes_home = Path(os.environ.get("HERMES_HOME", "")).expanduser().resolve()
+
+        return hermes_home.name == "pga" and hermes_home.parent.name == "profiles"
+
+    def _pga_order_intake_module(self) -> tuple[Optional[Any], Optional["web.Response"]]:
+        """Load the profile-owned PGA order intake module without widening core tools."""
+        if not self._pga_order_intake_profile_ok():
+            return None, web.json_response(
+                {"ok": False, "error": "pga_order_intake_unavailable", "message": "PGA order intake is unavailable."},
+                status=404,
+            )
+
+        try:
+            from hermes_constants import get_hermes_home
+
+            hermes_home = Path(get_hermes_home()).expanduser().resolve()
+        except Exception:
+            hermes_home = Path(os.environ.get("HERMES_HOME", "")).expanduser().resolve()
+
+        plugin_dir = hermes_home / "plugins" / "restaurant-output"
+        package_file = plugin_dir / "__init__.py"
+        intake_file = plugin_dir / "intake.py"
+        if not package_file.exists() or not intake_file.exists():
+            return None, web.json_response(
+                {"ok": False, "error": "pga_order_intake_unavailable", "message": "PGA order intake is unavailable."},
+                status=503,
+            )
+
+        try:
+            import importlib
+            import importlib.util
+            import sys
+
+            digest = hashlib.sha1(str(plugin_dir).encode("utf-8")).hexdigest()[:16]
+            package_name = f"_pga_restaurant_output_{digest}"
+            if package_name not in sys.modules:
+                spec = importlib.util.spec_from_file_location(
+                    package_name,
+                    package_file,
+                    submodule_search_locations=[str(plugin_dir)],
+                )
+                if spec is None or spec.loader is None:
+                    raise RuntimeError("restaurant-output plugin is not importable")
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[package_name] = module
+                spec.loader.exec_module(module)
+            return importlib.import_module(f"{package_name}.intake"), None
+        except Exception:
+            logger.exception("[api_server] failed to load PGA order intake module")
+            return None, web.json_response(
+                {"ok": False, "error": "pga_order_intake_unavailable", "message": "PGA order intake is unavailable."},
+                status=503,
+            )
+
+    def _pga_order_intake_exception_response(self, exc: Exception) -> "web.Response":
+        code = getattr(exc, "code", "pga_order_intake_failed")
+        message = getattr(exc, "public_message", None) or "PGA order intake failed."
+        status = 400 if code not in {"pga_order_intake_failed", "catalog_invalid"} else 500
+        return web.json_response({"ok": False, "error": code, "message": message}, status=status)
+
+    @staticmethod
+    def _pga_order_normalize_key(value: Any) -> str:
+        return str(value or "").strip().lower().replace("-", "").replace("_", "")
+
+    def _pga_order_is_forbidden_client_key(self, key: Any) -> bool:
+        normalized = self._pga_order_normalize_key(key)
+        stripped = normalized[1:] if normalized.startswith("x") else normalized
+        return (
+            normalized in PGA_ORDER_FORBIDDEN_EXACT_KEYS
+            or stripped in PGA_ORDER_FORBIDDEN_EXACT_KEYS
+            or any(token in normalized or token in stripped for token in PGA_ORDER_FORBIDDEN_KEY_TOKENS)
+        )
+
+    def _pga_order_forbidden_request_metadata(
+        self,
+        request: "web.Request",
+        body: Optional[dict[str, Any]] = None,
+    ) -> list[str]:
+        found: list[str] = []
+        for key in request.query.keys():
+            if self._pga_order_is_forbidden_client_key(key):
+                found.append(key)
+        for key in request.headers.keys():
+            normalized = self._pga_order_normalize_key(key)
+            if normalized in PGA_ORDER_NORMAL_HEADER_KEYS:
+                continue
+            if self._pga_order_is_forbidden_client_key(key):
+                found.append(key)
+        if body is not None:
+            self._pga_order_collect_forbidden_body_keys(body, found)
+        return found
+
+    def _pga_order_collect_forbidden_body_keys(self, value: Any, found: list[str]) -> None:
+        if isinstance(value, list):
+            for item in value:
+                self._pga_order_collect_forbidden_body_keys(item, found)
+            return
+        if not isinstance(value, dict):
+            return
+        for key, item in value.items():
+            if self._pga_order_is_forbidden_client_key(key):
+                found.append(str(key))
+            self._pga_order_collect_forbidden_body_keys(item, found)
+
+    def _pga_order_unsupported_metadata_response(self) -> "web.Response":
+        return web.json_response(
+            {
+                "ok": False,
+                "error": "unsupported_order_metadata",
+                "message": "PGA order requests may only include locationCode and itemId/quantity lines.",
+            },
+            status=400,
+        )
+
+    def _pga_order_submission_payload(self, body: dict[str, Any]) -> tuple[Optional[dict[str, Any]], Optional["web.Response"]]:
+        if any(key not in PGA_ORDER_SUBMISSION_ROOT_KEYS for key in body.keys()):
+            return None, self._pga_order_unsupported_metadata_response()
+
+        raw_lines = body.get("items")
+        if raw_lines is None:
+            raw_lines = body.get("lines")
+
+        clean_lines: list[Any] = []
+        if isinstance(raw_lines, list):
+            for line in raw_lines:
+                if not isinstance(line, dict):
+                    clean_lines.append(line)
+                    continue
+                if any(key not in PGA_ORDER_SUBMISSION_LINE_KEYS for key in line.keys()):
+                    return None, self._pga_order_unsupported_metadata_response()
+                clean_lines.append(
+                    {
+                        "itemId": line.get("itemId"),
+                        "quantity": line.get("quantity"),
+                    }
+                )
+
+        return {
+            "locationCode": body.get("locationCode"),
+            "items": clean_lines,
+        }, None
+
+    def _pga_order_cart_payload(self, body: dict[str, Any]) -> tuple[Optional[dict[str, Any]], Optional["web.Response"]]:
+        if any(key not in PGA_ORDER_CART_ROOT_KEYS for key in body.keys()):
+            return None, self._pga_order_unsupported_metadata_response()
+        if body.get("confirm_cart_mutation") is not True:
+            return None, web.json_response(
+                {
+                    "ok": False,
+                    "error": "confirm_cart_mutation_true_required",
+                    "message": "confirm_cart_mutation must be true.",
+                },
+                status=400,
+            )
+        return {"confirm_cart_mutation": True}, None
+
+    async def _handle_pga_order_catalog(self, request: "web.Request") -> "web.Response":
+        """GET /v1/pga/order/catalog — profile-owned order catalog projection."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        intake, err = self._pga_order_intake_module()
+        if err is not None:
+            return err
+        try:
+            return web.json_response(intake.catalog_projection())
+        except Exception as exc:
+            return self._pga_order_intake_exception_response(exc)
+
+    async def _handle_pga_order_submission(self, request: "web.Request") -> "web.Response":
+        """POST /v1/pga/order/submissions — create and dry-run-dispatch a PGA order."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        intake, err = self._pga_order_intake_module()
+        if err is not None:
+            return err
+        body, body_err = await self._read_json_body(request)
+        if body_err is not None:
+            return body_err
+        if self._pga_order_forbidden_request_metadata(request, body):
+            return self._pga_order_unsupported_metadata_response()
+        payload, payload_err = self._pga_order_submission_payload(body)
+        if payload_err is not None:
+            return payload_err
+        try:
+            result = intake.submit_order_payload(
+                payload,
+                actor="watch",
+                idempotency_key=request.headers.get("Idempotency-Key"),
+            )
+            return web.json_response(result, status=202 if result.get("ok") is True else 400)
+        except Exception as exc:
+            return self._pga_order_intake_exception_response(exc)
+
+    async def _handle_pga_order_submission_status(self, request: "web.Request") -> "web.Response":
+        """GET /v1/pga/order/submissions/{submission_id} — sanitized PGA order status."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        intake, err = self._pga_order_intake_module()
+        if err is not None:
+            return err
+        try:
+            return web.json_response(intake.get_submission_status(request.match_info["submission_id"]))
+        except Exception as exc:
+            return self._pga_order_intake_exception_response(exc)
+
+    async def _handle_pga_order_amazon_cart(self, request: "web.Request") -> "web.Response":
+        """POST /v1/pga/order/submissions/{submission_id}/amazon-cart — gated cart preparation."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        intake, err = self._pga_order_intake_module()
+        if err is not None:
+            return err
+        body, body_err = await self._read_json_body(request)
+        if body_err is not None:
+            return body_err
+        if self._pga_order_forbidden_request_metadata(request, body):
+            return self._pga_order_unsupported_metadata_response()
+        payload, payload_err = self._pga_order_cart_payload(body)
+        if payload_err is not None:
+            return payload_err
+        try:
+            result = intake.prepare_amazon_cart_from_submission(request.match_info["submission_id"], payload)
+            return web.json_response(result, status=202 if result.get("ok") is True else 400)
+        except Exception as exc:
+            return self._pga_order_intake_exception_response(exc)
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
         """GET /v1/skills — list installed skills visible to the API-server agent.
@@ -4771,6 +5088,13 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
+            self._app.router.add_get("/v1/pga/order/catalog", self._handle_pga_order_catalog)
+            self._app.router.add_post("/v1/pga/order/submissions", self._handle_pga_order_submission)
+            self._app.router.add_get("/v1/pga/order/submissions/{submission_id}", self._handle_pga_order_submission_status)
+            self._app.router.add_post(
+                "/v1/pga/order/submissions/{submission_id}/amazon-cart",
+                self._handle_pga_order_amazon_cart,
+            )
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)

@@ -1,19 +1,37 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, type ComponentType } from "react";
 import { HashRouter, Route, Routes } from "react-router-dom";
 import { GatewayProvider } from "./gateway/GatewayContext";
 import { AppShell } from "./app/AppShell";
 import ChatPage from "./pages/ChatPage";
 
-// Management pages are lazy-loaded so the chat bundle stays lean; they pull in
-// the REST client and their own widgets only when first navigated to.
-const SessionsPage = lazy(() => import("./pages/SessionsPage"));
-const ModelsPage = lazy(() => import("./pages/ModelsPage"));
-const ConfigPage = lazy(() => import("./pages/ConfigPage"));
-const LogsPage = lazy(() => import("./pages/LogsPage"));
-const SystemPage = lazy(() => import("./pages/SystemPage"));
+// Management pages are lazy-loaded so the chat bundle stays lean; each pulls in
+// the REST client and its own widgets only when first navigated to. Keyed by
+// route path — mirror src/app/nav.ts so nav and routes stay in lockstep.
+const MANAGEMENT_ROUTES: Record<string, ComponentType> = {
+  sessions: lazy(() => import("./pages/SessionsPage")),
+  models: lazy(() => import("./pages/ModelsPage")),
+  skills: lazy(() => import("./pages/SkillsPage")),
+  plugins: lazy(() => import("./pages/PluginsPage")),
+  mcp: lazy(() => import("./pages/McpPage")),
+  cron: lazy(() => import("./pages/CronPage")),
+  channels: lazy(() => import("./pages/ChannelsPage")),
+  webhooks: lazy(() => import("./pages/WebhooksPage")),
+  pairing: lazy(() => import("./pages/PairingPage")),
+  profiles: lazy(() => import("./pages/ProfilesPage")),
+  files: lazy(() => import("./pages/FilesPage")),
+  config: lazy(() => import("./pages/ConfigPage")),
+  env: lazy(() => import("./pages/EnvPage")),
+  analytics: lazy(() => import("./pages/AnalyticsPage")),
+  logs: lazy(() => import("./pages/LogsPage")),
+  system: lazy(() => import("./pages/SystemPage")),
+};
 
 function Loading() {
-  return <p className="ht-muted" style={{ padding: 24 }}>Loading…</p>;
+  return (
+    <p className="ht-muted" style={{ padding: 24 }}>
+      Loading…
+    </p>
+  );
 }
 
 export default function App() {
@@ -26,46 +44,17 @@ export default function App() {
         <Routes>
           <Route element={<AppShell />}>
             <Route index element={<ChatPage />} />
-            <Route
-              path="sessions"
-              element={
-                <Suspense fallback={<Loading />}>
-                  <SessionsPage />
-                </Suspense>
-              }
-            />
-            <Route
-              path="models"
-              element={
-                <Suspense fallback={<Loading />}>
-                  <ModelsPage />
-                </Suspense>
-              }
-            />
-            <Route
-              path="config"
-              element={
-                <Suspense fallback={<Loading />}>
-                  <ConfigPage />
-                </Suspense>
-              }
-            />
-            <Route
-              path="logs"
-              element={
-                <Suspense fallback={<Loading />}>
-                  <LogsPage />
-                </Suspense>
-              }
-            />
-            <Route
-              path="system"
-              element={
-                <Suspense fallback={<Loading />}>
-                  <SystemPage />
-                </Suspense>
-              }
-            />
+            {Object.entries(MANAGEMENT_ROUTES).map(([path, Page]) => (
+              <Route
+                key={path}
+                path={path}
+                element={
+                  <Suspense fallback={<Loading />}>
+                    <Page />
+                  </Suspense>
+                }
+              />
+            ))}
           </Route>
         </Routes>
       </HashRouter>

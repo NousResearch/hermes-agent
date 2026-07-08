@@ -124,5 +124,72 @@ export const apiPost = <T>(path: string, body?: unknown, options?: RequestOption
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
-export const apiDelete = <T>(path: string, options?: RequestOptions) =>
-  apiFetch<T>(path, { ...options, method: "DELETE" });
+export const apiPut = <T>(path: string, body?: unknown, options?: RequestOptions) =>
+  apiFetch<T>(path, {
+    ...options,
+    method: "PUT",
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+export const apiDelete = <T>(path: string, body?: unknown, options?: RequestOptions) =>
+  apiFetch<T>(path, {
+    ...options,
+    method: "DELETE",
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+/**
+ * Raw authed fetch for blobs / FormData (backup download, file upload). Attaches
+ * the session header and credentials but does NOT throw on non-2xx and does NOT
+ * run the 401 redirect — the caller inspects the Response directly. Mirrors
+ * web/src/lib/api.ts `authedFetch`.
+ */
+export async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  const token = sessionToken();
+  if (token && !headers.has(SESSION_HEADER)) {
+    headers.set(SESSION_HEADER, token);
+  }
+  return fetch(`${BASE_PATH}${path}`, {
+    ...init,
+    headers,
+    credentials: init.credentials ?? "include",
+  });
+}
+
+// ── Long-running action polling ─────────────────────────────────────
+// Async ops (backup, import, update, hub installs) return {pid} from the POST
+// and stream progress via GET /api/actions/<name>/status until running=false.
+export interface ActionStatus {
+  exit_code: number | null;
+  lines: string[];
+  name: string;
+  pid: number | null;
+  running: boolean;
+}
+
+export const getActionStatus = (name: string, lines = 200) =>
+  apiGet<ActionStatus>(`/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`);
+
+/**
+ * Poll an action to completion. Calls onProgress with each status snapshot.
+ * Resolves with the terminal status (running=false) or rejects on timeout.
+ */
+export async function pollAction(
+  name: string,
+  opts: { intervalMs?: number; timeoutMs?: number; onProgress?: (s: ActionStatus) => void } = {},
+): Promise<ActionStatus> {
+  const intervalMs = opts.intervalMs ?? 1000;
+  const timeoutMs = opts.timeoutMs ?? 10 * 60_000;
+  const deadline = Date.now() + timeoutMs;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const status = await getActionStatus(name);
+    opts.onProgress?.(status);
+    if (!status.running) return status;
+    if (Date.now() > deadline) {
+      throw new ApiError(`action '${name}' timed out`, 0);
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}

@@ -58,18 +58,35 @@ activity feed, approval/clarify dialogs, and session list/resume/new.
 
 ## Management pages (Phase 4)
 
-The app is now a shell: a left nav rail routes between **Chat** and REST-backed
-management pages. The gateway WebSocket connection lives in `GatewayContext`
-above the router, so chat state survives navigating away and back.
+The app is a shell: a left nav rail routes between **Chat** and the REST-backed
+management pages below. The gateway WebSocket connection lives in
+`GatewayContext` above the router, so chat state survives navigating away and
+back. All 19 dashboard pages are ported except the embedded PTY terminal
+(ht-web has its own native chat) and DocsPage (a static iframe).
 
 | Path | Page | Endpoints |
 |---|---|---|
 | `/` | Chat | `/api/ws` (gateway) |
 | `/sessions` | Sessions — list, rename, delete | `/api/sessions*` |
 | `/models` | Models — current model + provider/model picker | `/api/model/{info,options,set}` |
+| `/skills` | Skills + Toolsets — toggles, hub search/install | `/api/skills*`, `/api/tools/toolsets` |
+| `/plugins` | Plugins — dashboard + agent-plugin hub | `/api/dashboard/plugins*` |
+| `/mcp` | MCP — servers, test, catalog install | `/api/mcp/*` |
+| `/cron` | Cron — jobs, pause/resume/trigger, create | `/api/cron/*` |
+| `/channels` | Channels — messaging platform config + test | `/api/messaging/platforms*` |
+| `/webhooks` | Webhooks — routes CRUD, enable | `/api/webhooks*` |
+| `/pairing` | Pairing — approve/revoke devices | `/api/pairing*` |
+| `/profiles` | Profiles — CRUD + SOUL.md editor | `/api/profiles*` |
+| `/files` | Files — managed-file browser (upload/mkdir/delete) | `/api/files*` |
 | `/config` | Config — raw `config.yaml` editor | `/api/config/raw` |
+| `/env` | Env & Keys — CRUD + reveal | `/api/env*` |
+| `/analytics` | Analytics — token/cost usage + per-model | `/api/analytics/*` |
 | `/logs` | Logs — level/line filters | `/api/logs` |
 | `/system` | System — gateway + host status | `/api/status`, `/api/system/stats` |
+
+Deferred within ported pages: Telegram/WhatsApp guided onboarding wizards on
+Channels (multi-step polling flows) and the profile-builder wizard — the core
+CRUD for each is present.
 
 ### REST layer
 
@@ -87,11 +104,10 @@ above the router, so chat state survives navigating away and back.
 3. Register it in `src/app/nav.ts` (one `NavItem`) and add the lazy `<Route>`
    in `src/App.tsx`.
 
-Still to port from `web/`: Env/Keys, Cron, Skills, Plugins, MCP, Channels,
-Webhooks, Profiles, Files, Pairing, Analytics. All are plain REST (no WS/PTY);
-async-action pages (backup/import/update/hub installs) additionally need an
-`getActionStatus` polling helper and an `authedFetch`-style blob/FormData path
-added to the client.
+The client provides the shared building blocks pages reuse: `apiGet/Post/Put/
+Delete`, `apiFetch`, `authedFetch` (raw response for blobs/FormData —
+Files upload), and `getActionStatus`/`pollAction` for async ops (skills/plugin
+hub installs stream progress through it).
 
 ## Out of scope
 

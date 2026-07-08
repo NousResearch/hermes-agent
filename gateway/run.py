@@ -5016,8 +5016,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         configured (or changed) after ``hermes gateway`` was running never
         reached messaging sessions even though the same process's cron jobs
         fell back correctly. Fixes #60955.
+
+        A TRANSIENT read/parse failure (user mid-edit of config.yaml with a
+        non-atomic write) keeps the last known-good chain instead of wiping a
+        cached agent's working fallback for that turn.  Only a successful read
+        that genuinely lacks the key clears the chain.
         """
-        self._fallback_model = self._load_fallback_model()
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if not cfg_path.exists():
+                self._fallback_model = None
+                return self._fallback_model
+            with open(cfg_path, encoding="utf-8") as _f:
+                cfg = _y.safe_load(_f) or {}
+        except Exception:
+            # Transient failure — keep last known-good chain.
+            logger.debug(
+                "fallback_providers refresh: config.yaml read failed; "
+                "keeping last known-good chain", exc_info=True,
+            )
+            return self._fallback_model
+        self._fallback_model = get_fallback_chain(cfg) or None
         return self._fallback_model
 
     @staticmethod
@@ -5039,10 +5059,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             and rate_limited_until > time.monotonic()
         ):
             return
+        old_chain = list(getattr(agent, "_fallback_chain", []) or [])
         agent._fallback_chain = new_chain
         agent._fallback_model = new_chain[0] if new_chain else None
         if not getattr(agent, "_fallback_activated", False):
             agent._fallback_index = 0
+        # A config edit signals the user changed something — drop the
+        # session-scoped unavailability memo so re-configured entries
+        # (e.g. credentials added mid-uptime for a previously-failing
+        # provider) get retried instead of staying suppressed for the
+        # cached agent's lifetime.  Only on actual content change, so
+        # the per-message no-op refresh keeps the memo's rate-limiting
+        # benefit (#60955).
+        if new_chain != old_chain:
+            unavailable = getattr(agent, "_unavailable_fallback_keys", None)
+            if unavailable:
+                unavailable.clear()
 
     def _snapshot_running_agents(self) -> Dict[str, Any]:
         return {
@@ -18099,14 +18131,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # Refresh agent max_iterations from current config
                             # (cached agent may have been created with old config)
                             agent.max_iterations = max_iterations
-                            # Refresh fallback chain the same way — a chain
-                            # configured after this agent was cached (or after
-                            # gateway start) must reach the next turn (#60955).
-                            self._apply_fallback_chain_to_agent(
-                                agent, self._refresh_fallback_model(),
-                            )
                             logger.debug("Reusing cached agent for session %s", session_key)
                             reused_cached_agent = True
+
+            # Lock released — refresh the fallback chain from disk for the
+            # reused agent OUTSIDE the cache lock (config.yaml read is disk
+            # I/O; the idle-sweep watcher contends on this lock and stalls
+            # Discord heartbeats — same reasoning as #52197).  A chain
+            # configured after this agent was cached (or after gateway start)
+            # must reach the next turn (#60955).  Per-session turn
+            # serialization (_running_agents) keeps this safe post-lock.
+            if reused_cached_agent and agent is not None:
+                self._apply_fallback_chain_to_agent(
+                    agent, self._refresh_fallback_model(),
+                )
 
             # Lock released — now schedule cleanup of any cross-process-evicted
             # agent on a daemon thread so memory-provider shutdown / socket

@@ -288,6 +288,119 @@ describe('viMode', () => {
     })
   })
 
+  describe('processViKey - find character (f/F/t/T) and replace (r)', () => {
+    const normalState: ViState = {
+      mode: 'normal',
+      operator: null,
+      count: 0,
+      visualAnchor: null,
+      lastFindChar: null,
+      register: ''
+    }
+
+    const pending = (op: string): ViState => ({ ...normalState, operator: op, mode: 'operator-pending' })
+
+    it('f<char> jumps onto the character', () => {
+      const { action, newState } = processViKey(pending('f'), 'hello world', 0, mkEvent('o'))
+      expect(action.type).toBe('cursor')
+      expect(action.cursor).toBe(4)
+      expect(newState.mode).toBe('normal')
+      expect(newState.lastFindChar).toEqual({ char: 'o', forward: true, till: false })
+    })
+
+    it('t<char> stops before the character', () => {
+      const { action } = processViKey(pending('t'), 'hello world', 0, mkEvent('w'))
+      expect(action.cursor).toBe(5)
+    })
+
+    it('F<char> searches backward', () => {
+      const { action } = processViKey(pending('F'), 'hello world', 10, mkEvent('o'))
+      expect(action.cursor).toBe(7)
+    })
+
+    it('f<char> with no match is a no-op that clears the pending state', () => {
+      const { action, newState } = processViKey(pending('f'), 'hello', 0, mkEvent('z'))
+      expect(action.type).toBe('none')
+      expect(newState.operator).toBeNull()
+      expect(newState.mode).toBe('normal')
+    })
+
+    it('fh consumes h as the target char, not as a motion', () => {
+      const { action } = processViKey(pending('f'), 'ahb', 0, mkEvent('h'))
+      expect(action.type).toBe('cursor')
+      expect(action.cursor).toBe(1)
+    })
+
+    it('f3 consumes 3 as the target char, not as a count', () => {
+      const { action, newState } = processViKey(pending('f'), 'a3b', 0, mkEvent('3'))
+      expect(action.type).toBe('cursor')
+      expect(action.cursor).toBe(1)
+      expect(newState.count).toBe(0)
+    })
+
+    it('r<char> replaces the character under the cursor', () => {
+      const { action, newState } = processViKey(pending('r'), 'hello', 1, mkEvent('a'))
+      expect(action.type).toBe('replace')
+      expect(action.deleteRange).toEqual({ start: 1, end: 2 })
+      expect(action.text).toBe('a')
+      expect(newState.mode).toBe('normal')
+    })
+
+    it('r at end of buffer is a no-op', () => {
+      const { action } = processViKey(pending('r'), 'hello', 5, mkEvent('a'))
+      expect(action.type).toBe('none')
+    })
+
+    it('; repeats the last find', () => {
+      const withFind: ViState = { ...normalState, lastFindChar: { char: 'o', forward: true, till: false } }
+      const { action } = processViKey(withFind, 'hello world', 4, mkEvent(';'))
+      expect(action.type).toBe('cursor')
+      expect(action.cursor).toBe(7)
+    })
+  })
+
+  describe('processViKey - escape resets pending state', () => {
+    it('escape cancels a pending operator', () => {
+      const pendingD: ViState = {
+        mode: 'operator-pending',
+        operator: 'd',
+        count: 0,
+        visualAnchor: null,
+        lastFindChar: null,
+        register: ''
+      }
+      const { newState } = processViKey(pendingD, 'hello', 2, mkEvent('', { escape: true }))
+      expect(newState.mode).toBe('normal')
+      expect(newState.operator).toBeNull()
+    })
+
+    it('escape clears a pending count', () => {
+      const withCount: ViState = {
+        mode: 'normal',
+        operator: null,
+        count: 42,
+        visualAnchor: null,
+        lastFindChar: null,
+        register: ''
+      }
+      const { newState } = processViKey(withCount, 'hello', 2, mkEvent('', { escape: true }))
+      expect(newState.count).toBe(0)
+    })
+
+    it('escape in normal mode does not move the cursor', () => {
+      const normal: ViState = {
+        mode: 'normal',
+        operator: null,
+        count: 0,
+        visualAnchor: null,
+        lastFindChar: null,
+        register: ''
+      }
+      const { action } = processViKey(normal, 'hello', 3, mkEvent('', { escape: true }))
+      expect(action.cursor).toBe(3)
+    })
+  })
+
   describe('processViKey - submit', () => {
     const normalState: ViState = {
       mode: 'normal',

@@ -234,6 +234,34 @@ export function processViKey(
 
   // Normal mode key handling
   if (state.mode === 'normal' || state.mode === 'operator-pending') {
+    // Pending char-argument operators (f/F/t/T/r) consume the NEXT key as a
+    // literal character — this must run before count parsing and the motion
+    // switch, otherwise `fh` runs the h-motion and `f3` is eaten as a count.
+    if (state.operator && 'fFtTr'.includes(state.operator) && input.length === 1 && !key.ctrl && !key.meta) {
+      const op = state.operator
+      newState.operator = null
+      newState.mode = 'normal'
+      newState.count = 0
+
+      if (op === 'r') {
+        if (cursor < value.length) {
+          return {
+            action: { type: 'replace', deleteRange: { start: cursor, end: cursor + 1 }, text: input, cursor },
+            newState
+          }
+        }
+
+        return { action: { type: 'none' }, newState }
+      }
+
+      const forward = op === 'f' || op === 't'
+      const till = op === 't' || op === 'T'
+      newState.lastFindChar = { char: input, forward, till }
+      const found = forward ? findCharForward(value, cursor, input, till) : findCharBackward(value, cursor, input, till)
+
+      return { action: found === null ? { type: 'none' } : { type: 'cursor', cursor: found }, newState }
+    }
+
     // Numeric prefix (count)
     if (/^[1-9]$/.test(input) || (state.count > 0 && input === '0')) {
       newState.count = state.count * 10 + parseInt(input, 10)
@@ -247,7 +275,6 @@ export function processViKey(
 
     // Motion keys
     let targetPos: number | null = null
-    let isLineWise = false
 
     switch (input) {
       // Basic movement
@@ -591,37 +618,9 @@ export function processViKey(
         break
 
       default:
-        // Handle pending operator with character argument (f, F, t, T, r)
-        if (state.mode === 'operator-pending' && state.operator && input.length === 1) {
-          const op = state.operator
-          resetCount()
-          newState.operator = null
-          newState.mode = 'normal'
-
-          if (op === 'f' || op === 'F' || op === 't' || op === 'T') {
-            const forward = op === 'f' || op === 't'
-            const till = op === 't' || op === 'T'
-            newState.lastFindChar = { char: input, forward, till }
-            targetPos = forward ? findCharForward(value, cursor, input, till) : findCharBackward(value, cursor, input, till)
-            if (targetPos === null) {
-              return { action: { type: 'none' }, newState }
-            }
-          } else if (op === 'r') {
-            // Replace character
-            if (cursor < value.length) {
-              return {
-                action: {
-                  type: 'replace',
-                  deleteRange: { start: cursor, end: cursor + 1 },
-                  text: input,
-                  cursor
-                },
-                newState
-              }
-            }
-            return { action: { type: 'none' }, newState }
-          }
-        }
+        // Unhandled key in normal mode — fall through to the no-op return.
+        // (f/F/t/T/r char arguments are consumed by the pending-operator
+        // guard at the top of normal-mode handling, before count parsing.)
         break
     }
 

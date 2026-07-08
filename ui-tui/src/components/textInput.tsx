@@ -949,16 +949,33 @@ export function TextInput({
     (inp: string, k: Key, event: InputEvent) => {
       const eventRaw = event.keypress.raw
 
+      // Vim: Escape is a mode switch, not a global key — consume it before
+      // the global pass-through (which would swallow it and leave the user
+      // stuck in insert mode forever).
+      if (viModeEnabled && k.escape) {
+        flushKeyBurst()
+
+        const { action, newState } = processViKey(viStateRef.current, vRef.current, curRef.current, {
+          input: inp,
+          key: { escape: true }
+        })
+        setViState(newState)
+
+        if (action.type === 'cursor' && action.cursor !== undefined) {
+          clearSel()
+          setCur(action.cursor)
+          curRef.current = action.cursor
+        }
+
+        return
+      }
+
       // Configured voice shortcut wins over composer-level defaults like
       // paste/copy so users who bind voice to ctrl+v / alt+v / cmd+v
       // actually get voice toggled instead of a paste (Copilot round-7
       // follow-up on #19835). The pass-through predicate is a no-op for
       // ordinary typing and plain paste when voice is unbound to 'v'.
       if (shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey)) {
-        // In vim normal mode, Escape should NOT pass through - it's just a no-op
-        if (viModeEnabled && k.escape && viStateRef.current.mode === 'normal') {
-          return
-        }
         flushKeyBurst()
 
         return

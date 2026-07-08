@@ -837,6 +837,126 @@ async def test_session_hygiene_informs_user_when_aux_model_fails_but_recovers(mo
 
 
 @pytest.mark.asyncio
+async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
+    monkeypatch, tmp_path
+):
+    """Regression for #60947: gateway hygiene should not rely on
+    helper-agent session rotation to shrink a live gateway transcript.
+
+    The hygiene pass runs before the user turn and already owns the gateway
+    session binding, so it should force in-place compaction and bind the
+    compressor to the gateway SessionDB. Otherwise a helper can return a
+    summary without rotating/compacting, the guard preserves the original
+    transcript, and the same oversized session is reloaded on every turn.
+    """
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_db = object()
+
+    class FakeInPlaceCompressAgent:
+        last_instance = None
+
+        def __init__(self, **kwargs):
+            self.model = kwargs.get("model")
+            self.session_id = kwargs.get("session_id", "fake-session")
+            self._session_db = kwargs.get("session_db")
+            self.compression_in_place = False
+            self._last_compaction_in_place = False
+            self.context_compressor = SimpleNamespace(
+                bind_session_state=MagicMock(),
+                _last_compress_aborted=False,
+                _last_aux_model_failure_model=None,
+            )
+            self._print_fn = None
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+            type(self).last_instance = self
+
+        def _compress_context(self, messages, *_args, **_kwargs):
+            assert self.compression_in_place is True
+            assert self._session_db is fake_db
+            self._last_compaction_in_place = True
+            return ([{"role": "assistant", "content": "compressed in place"}], None)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeInPlaceCompressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    GatewayRunner = gateway_run.GatewayRunner
+
+    adapter = HygieneCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:private:12345",
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="private",
+    )
+    runner.session_store.load_transcript.return_value = _make_history(12, content_size=400)
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = SimpleNamespace(_db=fake_db)
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100,
+    )
+
+    event = MessageEvent(
+        text="hello",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="private",
+            user_id="12345",
+        ),
+        message_id="1",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result == "ok"
+    agent = FakeInPlaceCompressAgent.last_instance
+    assert agent is not None
+    agent.context_compressor.bind_session_state.assert_called_once_with(fake_db, "sess-1")
+    runner.session_store.rewrite_transcript.assert_called_once_with(
+        "sess-1", [{"role": "assistant", "content": "compressed in place"}]
+    )
+    runner._run_agent.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_session_hygiene_honors_configurable_hard_message_limit(
     monkeypatch, tmp_path
 ):

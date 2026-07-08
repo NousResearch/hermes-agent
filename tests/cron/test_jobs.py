@@ -1414,3 +1414,44 @@ class TestClaimDispatch:
         due = get_due_jobs()
         assert due == []
         assert load_jobs() == []  # cleaned up
+
+
+def test_malformed_job_does_not_abort_due_scan(tmp_cron_dir, monkeypatch, caplog):
+    """Per-job isolation: one malformed job must not abort the whole due-scan.
+
+    Regression guard for the 0.18 cutover incident where a hand-authored job
+    missing bookkeeping fields raised inside the tick's recovery branch and took
+    down ALL cron (every job stopped firing), not just the offending record.
+    """
+    import json
+    import logging
+    import cron.jobs as cj
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+    past = (now - timedelta(minutes=1)).isoformat()
+
+    healthy1 = {"id": "good1", "name": "good1", "enabled": True, "next_run_at": past,
+                "schedule": {"kind": "cron", "expr": "* * * * *"}}
+    # Forces an in-loop exception: datetime.fromisoformat() on a non-ISO string.
+    malformed = {"id": "bad", "name": "bad", "enabled": True, "next_run_at": "NOT-A-DATE",
+                 "schedule": {"kind": "cron", "expr": "* * * * *"}}
+    healthy2 = {"id": "good2", "name": "good2", "enabled": True, "next_run_at": past,
+                "schedule": {"kind": "cron", "expr": "* * * * *"}}
+
+    cj.JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    cj.JOBS_FILE.write_text(
+        json.dumps({"jobs": [healthy1, malformed, healthy2]}), encoding="utf-8"
+    )
+
+    with caplog.at_level(logging.ERROR, logger="cron.jobs"):
+        due = cj.get_due_jobs()  # must NOT raise despite the malformed sibling
+
+    due_ids = {d.get("id") for d in due}
+    assert {"good1", "good2"} <= due_ids, (
+        f"healthy jobs must survive a malformed sibling; got {due_ids}"
+    )
+    assert "bad" not in due_ids, "malformed job must be skipped, not run"
+    assert any("skipping job" in r.getMessage() for r in caplog.records), (
+        "the skipped job must be logged, not silently swallowed"
+    )

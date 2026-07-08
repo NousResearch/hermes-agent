@@ -1507,154 +1507,168 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     needs_save = False
 
     for job in jobs:
-        if not job.get("enabled", True):
-            continue
-
-        next_run = job.get("next_run_at")
-        if not next_run:
-            schedule = job.get("schedule", {})
-            kind = schedule.get("kind")
-
-            # One-shot jobs use a small grace window via the dedicated helper.
-            recovered_next = _recoverable_oneshot_run_at(
-                schedule,
-                now,
-                last_run_at=job.get("last_run_at"),
-            )
-            recovery_kind = "one-shot" if recovered_next else None
-
-            # Recurring jobs reach here only when something — typically a
-            # direct jobs.json edit that bypassed add_job() — left
-            # next_run_at unset.  Without this branch, such jobs are
-            # silently skipped forever; recompute next_run_at from the
-            # schedule so they pick up at their next scheduled tick.
-            if not recovered_next and kind in {"cron", "interval"}:
-                recovered_next = compute_next_run(schedule, now.isoformat())
-                if recovered_next:
-                    recovery_kind = kind
-
-            if not recovered_next:
+        # Per-job isolation: one malformed or failing job must never abort the
+        # whole due-scan. A single bad record (e.g. a null/absent id, an
+        # unparseable schedule) used to raise here and take down ALL cron for
+        # every job. Wrap each job so errors are skipped-and-logged, not fatal.
+        try:
+            if not job.get("enabled", True):
                 continue
 
-            job["next_run_at"] = recovered_next
-            next_run = recovered_next
-            logger.info(
-                "Job '%s' had no next_run_at; recovering %s run at %s",
-                job.get("name", job["id"]),
-                recovery_kind,
-                recovered_next,
-            )
-            for rj in raw_jobs:
-                if rj["id"] == job["id"]:
-                    rj["next_run_at"] = recovered_next
-                    needs_save = True
-                    break
+            next_run = job.get("next_run_at")
+            if not next_run:
+                schedule = job.get("schedule", {})
+                kind = schedule.get("kind")
 
-        raw_next_run_dt = datetime.fromisoformat(next_run)
-        schedule = job.get("schedule", {})
-        kind = schedule.get("kind")
+                # One-shot jobs use a small grace window via the dedicated helper.
+                recovered_next = _recoverable_oneshot_run_at(
+                    schedule,
+                    now,
+                    last_run_at=job.get("last_run_at"),
+                )
+                recovery_kind = "one-shot" if recovered_next else None
 
-        next_run_dt = _ensure_aware(raw_next_run_dt)
-        # Migration repair: a cron job persists next_run_at as an absolute
-        # instant, but the cron expr describes local wall-clock intent. If the
-        # configured/system timezone changed after persistence, the stored
-        # instant's offset no longer matches now's, and its converted time can
-        # look due hours early (21:00+10 -> 13:00+02). When the stored *wall
-        # clock* is still in the future, recompute from the schedule so we fire
-        # at the intended local time instead of early-then-again.
-        #
-        # TRADE-OFF: this cannot distinguish a config/host TZ migration from a
-        # legitimate DST offset change. A DST boundary that satisfies all four
-        # conditions will recompute (and thus SKIP the pending occurrence, no
-        # catch-up) rather than fire it. Accepted: in the pure-migration case
-        # the recompute lands on the same wall-clock time later the same period,
-        # and DST-boundary collisions with a still-future stored wall clock are
-        # rare relative to the double-fire bug this prevents (#28934).
-        if (
-            kind == "cron"
-            and next_run_dt <= now
-            and _timezone_offset_mismatch(raw_next_run_dt, now)
-            and _stored_wall_clock_is_future(raw_next_run_dt, now)
-        ):
-            new_next = compute_next_run(schedule, now.isoformat())
-            if new_next:
+                # Recurring jobs reach here only when something — typically a
+                # direct jobs.json edit that bypassed add_job() — left
+                # next_run_at unset.  Without this branch, such jobs are
+                # silently skipped forever; recompute next_run_at from the
+                # schedule so they pick up at their next scheduled tick.
+                if not recovered_next and kind in {"cron", "interval"}:
+                    recovered_next = compute_next_run(schedule, now.isoformat())
+                    if recovered_next:
+                        recovery_kind = kind
+
+                if not recovered_next:
+                    continue
+
+                job["next_run_at"] = recovered_next
+                next_run = recovered_next
                 logger.info(
-                    "Job '%s' next_run_at offset changed (%s -> %s). "
-                    "Recomputing cron run to preserve local wall-clock intent: %s",
+                    "Job '%s' had no next_run_at; recovering %s run at %s",
                     job.get("name", job["id"]),
-                    raw_next_run_dt.utcoffset(),
-                    now.utcoffset(),
-                    new_next,
+                    recovery_kind,
+                    recovered_next,
                 )
                 for rj in raw_jobs:
                     if rj["id"] == job["id"]:
-                        rj["next_run_at"] = new_next
+                        rj["next_run_at"] = recovered_next
                         needs_save = True
                         break
-                continue
 
-        if next_run_dt <= now:
+            raw_next_run_dt = datetime.fromisoformat(next_run)
+            schedule = job.get("schedule", {})
+            kind = schedule.get("kind")
 
-            # For recurring jobs, check if the scheduled time is stale
-            # (gateway was down and missed the window). Fast-forward to
-            # the next future occurrence instead of firing a stale run.
-            grace = _compute_grace_seconds(schedule)
-            if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
-                # Job is past its catch-up grace window — skip accumulated
-                # missed runs but still execute once now to avoid deferring
-                # indefinitely (e.g. a long-running job just finished).
+            next_run_dt = _ensure_aware(raw_next_run_dt)
+            # Migration repair: a cron job persists next_run_at as an absolute
+            # instant, but the cron expr describes local wall-clock intent. If the
+            # configured/system timezone changed after persistence, the stored
+            # instant's offset no longer matches now's, and its converted time can
+            # look due hours early (21:00+10 -> 13:00+02). When the stored *wall
+            # clock* is still in the future, recompute from the schedule so we fire
+            # at the intended local time instead of early-then-again.
+            #
+            # TRADE-OFF: this cannot distinguish a config/host TZ migration from a
+            # legitimate DST offset change. A DST boundary that satisfies all four
+            # conditions will recompute (and thus SKIP the pending occurrence, no
+            # catch-up) rather than fire it. Accepted: in the pure-migration case
+            # the recompute lands on the same wall-clock time later the same period,
+            # and DST-boundary collisions with a still-future stored wall clock are
+            # rare relative to the double-fire bug this prevents (#28934).
+            if (
+                kind == "cron"
+                and next_run_dt <= now
+                and _timezone_offset_mismatch(raw_next_run_dt, now)
+                and _stored_wall_clock_is_future(raw_next_run_dt, now)
+            ):
                 new_next = compute_next_run(schedule, now.isoformat())
                 if new_next:
                     logger.info(
-                        "Job '%s' missed its scheduled time (%s, grace=%ds). "
-                        "Running now; next run provisionally set to: %s "
-                        "(re-anchored on completion)",
+                        "Job '%s' next_run_at offset changed (%s -> %s). "
+                        "Recomputing cron run to preserve local wall-clock intent: %s",
                         job.get("name", job["id"]),
-                        next_run,
-                        grace,
+                        raw_next_run_dt.utcoffset(),
+                        now.utcoffset(),
                         new_next,
                     )
-                    # Persist the fast-forward to storage now (skip accumulated
-                    # slots). In the built-in ticker path this is shortly
-                    # overwritten by advance_next_run + mark_job_run, but it is
-                    # NOT redundant: it (a) protects the crash window between
-                    # here and mark_job_run, and (b) covers the external
-                    # fire_due provider path, which does not call
-                    # advance_next_run. mark_job_run re-anchors next_run_at off
-                    # the actual completion time, so this value is provisional.
                     for rj in raw_jobs:
                         if rj["id"] == job["id"]:
                             rj["next_run_at"] = new_next
                             needs_save = True
                             break
-                    # Fall through to due.append(job) — execute once now
+                    continue
 
-            # One-shot dispatch-limit guard (issue #38758): a finite one-shot
-            # claimed via claim_dispatch() but whose tick died before
-            # mark_job_run could remove it will have completed >= times while
-            # still looking due (last_run_at was never written, so the
-            # recovery helper re-armed it). Remove it instead of re-firing.
-            if kind == "once":
-                repeat = job.get("repeat")
-                if repeat:
-                    times = repeat.get("times")
-                    completed = repeat.get("completed", 0)
-                    if times is not None and times > 0 and completed >= times:
+            if next_run_dt <= now:
+
+                # For recurring jobs, check if the scheduled time is stale
+                # (gateway was down and missed the window). Fast-forward to
+                # the next future occurrence instead of firing a stale run.
+                grace = _compute_grace_seconds(schedule)
+                if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
+                    # Job is past its catch-up grace window — skip accumulated
+                    # missed runs but still execute once now to avoid deferring
+                    # indefinitely (e.g. a long-running job just finished).
+                    new_next = compute_next_run(schedule, now.isoformat())
+                    if new_next:
                         logger.info(
-                            "Job '%s': one-shot dispatch limit reached (%d/%d) "
-                            "— removing stale due entry",
+                            "Job '%s' missed its scheduled time (%s, grace=%ds). "
+                            "Running now; next run provisionally set to: %s "
+                            "(re-anchored on completion)",
                             job.get("name", job["id"]),
-                            completed,
-                            times,
+                            next_run,
+                            grace,
+                            new_next,
                         )
+                        # Persist the fast-forward to storage now (skip accumulated
+                        # slots). In the built-in ticker path this is shortly
+                        # overwritten by advance_next_run + mark_job_run, but it is
+                        # NOT redundant: it (a) protects the crash window between
+                        # here and mark_job_run, and (b) covers the external
+                        # fire_due provider path, which does not call
+                        # advance_next_run. mark_job_run re-anchors next_run_at off
+                        # the actual completion time, so this value is provisional.
                         for rj in raw_jobs:
                             if rj["id"] == job["id"]:
-                                raw_jobs.remove(rj)
+                                rj["next_run_at"] = new_next
                                 needs_save = True
                                 break
-                        continue
+                        # Fall through to due.append(job) — execute once now
 
-            due.append(job)
+                # One-shot dispatch-limit guard (issue #38758): a finite one-shot
+                # claimed via claim_dispatch() but whose tick died before
+                # mark_job_run could remove it will have completed >= times while
+                # still looking due (last_run_at was never written, so the
+                # recovery helper re-armed it). Remove it instead of re-firing.
+                if kind == "once":
+                    repeat = job.get("repeat")
+                    if repeat:
+                        times = repeat.get("times")
+                        completed = repeat.get("completed", 0)
+                        if times is not None and times > 0 and completed >= times:
+                            logger.info(
+                                "Job '%s': one-shot dispatch limit reached (%d/%d) "
+                                "— removing stale due entry",
+                                job.get("name", job["id"]),
+                                completed,
+                                times,
+                            )
+                            for rj in raw_jobs:
+                                if rj["id"] == job["id"]:
+                                    raw_jobs.remove(rj)
+                                    needs_save = True
+                                    break
+                            continue
+
+                due.append(job)
+        except Exception as _due_exc:
+            logger.error(
+                "Cron due-scan: skipping job %r after an error so the batch "
+                "survives bad data (one job cannot abort all cron): %s",
+                (job.get("name") or job.get("id") or "<unknown>"),
+                _due_exc,
+                exc_info=True,
+            )
+            continue
 
     if needs_save:
         save_jobs(raw_jobs)

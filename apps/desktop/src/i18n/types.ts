@@ -313,6 +313,8 @@ export interface Translations {
       embedsAlways: string
       embedsOff: string
       embedsReset: (count: number) => string
+      resumeLastSessionTitle: string
+      resumeLastSessionDesc: string
       product: string
       productDesc: string
       technical: string

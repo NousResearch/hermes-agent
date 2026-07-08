@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { Switch } from '@/components/ui/switch'
 import type { DesktopMarketplaceSearchItem } from '@/global'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -21,6 +22,8 @@ import { getBaseColors, useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import type { DesktopTheme } from '@/themes/types'
 import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/user-themes'
+import { getHermesConfigRecord, saveHermesConfig } from '@/hermes'
+import { invalidateHermesConfig, useHermesConfigRecord } from '../hooks/use-config-record'
 
 import { MODE_OPTIONS } from './constants'
 import { PetSettings } from './pet-settings'
@@ -252,6 +255,28 @@ export function AppearanceSettings() {
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
   const a = t.settings.appearance
+
+  // display.resume_last_session lives in the backend config record (not a
+  // frontend store). Read it via the shared react-query cache so a save here
+  // invalidates every other surface that reads the same key.
+  const configQuery = useHermesConfigRecord()
+  const resumeLastSession = (() => {
+    const display = configQuery.data?.display as Record<string, unknown> | undefined
+    return display?.resume_last_session !== false // default true when absent
+  })()
+
+  const setResumeLastSession = async (value: boolean) => {
+    try {
+      const config = await getHermesConfigRecord()
+      const display = { ...((config.display as Record<string, unknown>) ?? {}) }
+      display.resume_last_session = value
+      await saveHermesConfig({ ...config, display })
+      invalidateHermesConfig()
+    } catch {
+      // saveHermesConfig already surfaces errors via the API layer; the
+      // toggle reverts on next render because the cache wasn't updated.
+    }
+  }
 
   const [query, setQuery] = useState('')
 
@@ -493,6 +518,20 @@ export function AppearanceSettings() {
             }
             description={a.embedsDesc}
             title={a.embedsTitle}
+          />
+
+          <ListRow
+            action={
+              <Switch
+                checked={resumeLastSession}
+                onCheckedChange={checked => {
+                  triggerHaptic('selection')
+                  void setResumeLastSession(checked)
+                }}
+              />
+            }
+            description={a.resumeLastSessionDesc}
+            title={a.resumeLastSessionTitle}
           />
         </div>
       </div>

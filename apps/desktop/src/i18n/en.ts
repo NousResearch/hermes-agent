@@ -394,6 +394,8 @@ export const en: Translations = {
       embedsAlways: 'Always',
       embedsOff: 'Off',
       embedsReset: (count: number) => `Reset ${count} allowed ${count === 1 ? 'service' : 'services'}`,
+      resumeLastSessionTitle: 'Reopen Last Chat on Launch',
+      resumeLastSessionDesc: 'When enabled, the app reopens your most recent chat on cold start. Turn off to always start with a fresh new chat.',
       product: 'Product',
       productDesc: 'Human-friendly tool activity with concise summaries.',
       technical: 'Technical',

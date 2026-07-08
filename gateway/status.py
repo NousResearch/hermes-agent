@@ -549,12 +549,28 @@ def _record_matches_live_gateway_pid(
     live command line cannot be read (Windows/permission), fall back to the
     persisted record so cross-platform behavior is preserved.
     """
+    recorded_home_matches: Optional[bool] = None
+    if expected_home is not None:
+        recorded_home = record.get("hermes_home")
+        if isinstance(recorded_home, str) and recorded_home.strip():
+            try:
+                recorded_home_matches = (
+                    Path(recorded_home).expanduser().resolve()
+                    == expected_home.expanduser().resolve()
+                )
+            except OSError:
+                recorded_home_matches = False
+            if not recorded_home_matches:
+                return False
+
     live_cmdline = _read_process_cmdline(pid)
     if live_cmdline:
         if not looks_like_gateway_runtime_command_line(live_cmdline):
             return False
-        if expected_home is not None and not _command_line_belongs_to_profile(
-            live_cmdline, expected_home
+        if (
+            expected_home is not None
+            and recorded_home_matches is None
+            and not _command_line_belongs_to_profile(live_cmdline, expected_home)
         ):
             return False
         return True
@@ -2015,10 +2031,11 @@ def get_running_pid(
     """
     resolved_pid_path = pid_path or _get_pid_path()
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
+    expected_home = resolved_pid_path.parent
     lock_active = is_gateway_runtime_lock_active(resolved_lock_path)
     if not lock_active:
         if pid_path is None:
-            runtime_pid = get_runtime_status_running_pid()
+            runtime_pid = get_runtime_status_running_pid(expected_home=expected_home)
             if runtime_pid is not None:
                 return runtime_pid
         _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
@@ -2026,6 +2043,7 @@ def get_running_pid(
 
     primary_record = _read_pid_record(resolved_pid_path)
     fallback_record = _read_gateway_lock_record(resolved_lock_path)
+    saw_live_gateway_for_other_profile = False
 
     for record in (primary_record, fallback_record):
         pid = _pid_from_record(record)
@@ -2040,12 +2058,18 @@ def get_running_pid(
         if recorded_start is not None and current_start is not None and current_start != recorded_start:
             continue
 
-        if _record_matches_live_gateway_pid(record, pid):
+        if _record_matches_live_gateway_pid(record, pid, expected_home=expected_home):
             return pid
+        if _record_matches_live_gateway_pid(record, pid):
+            saw_live_gateway_for_other_profile = True
 
+    if saw_live_gateway_for_other_profile:
+        # Another profile owns this live lock; leave its files intact so the
+        # runtime lock still blocks a duplicate startup for this home.
+        return None
     _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
     if pid_path is None:
-        runtime_pid = get_runtime_status_running_pid()
+        runtime_pid = get_runtime_status_running_pid(expected_home=expected_home)
         if runtime_pid is not None:
             return runtime_pid
     return None

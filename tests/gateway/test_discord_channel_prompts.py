@@ -156,6 +156,73 @@ class TestResolveChannelPrompts:
 
         assert event.channel_prompt == "Command prompt"
 
+    def test_build_slash_event_thread_passes_parent_chat_id(self):
+        """Native slash inside a THREAD must populate source.parent_chat_id.
+
+        Regression: /branch and /merge (thread form) resolve the hosting channel
+        from source.parent_chat_id. The regular-message path sets it, but the
+        native-slash path (_build_slash_event) dropped it, so /branch inside a
+        thread silently fell back to a classic in-place branch instead of
+        spawning a sibling thread under the parent channel.
+        """
+        import sys
+        discord_mod = sys.modules["discord"]
+
+        adapter = _make_adapter()
+        adapter.config.extra = {}
+        captured = {}
+
+        def _capture_build_source(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(**kwargs)
+
+        adapter.build_source = _capture_build_source
+        adapter._get_effective_topic = MagicMock(return_value=None)
+
+        # A thread channel: instance of the (mocked) discord.Thread with a parent_id.
+        thread_channel = discord_mod.Thread()
+        thread_channel.id = 999
+        thread_channel.name = "branch-thread"
+        thread_channel.guild = SimpleNamespace(name="Wetlands")
+        thread_channel.parent_id = 200  # the hosting channel
+
+        interaction = SimpleNamespace(
+            channel_id=999,
+            channel=thread_channel,
+            user=SimpleNamespace(id=1, display_name="Brenner"),
+        )
+
+        adapter._build_slash_event(interaction, "/branch")
+
+        assert captured.get("chat_type") == "thread"
+        assert captured.get("chat_id") == "999"
+        assert captured.get("parent_chat_id") == "200"
+
+    def test_build_slash_event_thread_prefers_resolved_parent_object(self):
+        """Uses the shared _get_parent_channel_id resolver: a resolved parent
+        object wins over a (possibly-absent) bare parent_id — matching the
+        regular-message path so the two can't drift (Greptile #230 P2)."""
+        import sys
+        discord_mod = sys.modules["discord"]
+        adapter = _make_adapter()
+        adapter.config.extra = {}
+        captured = {}
+        adapter.build_source = lambda **kw: (captured.update(kw) or SimpleNamespace(**kw))
+        adapter._get_effective_topic = MagicMock(return_value=None)
+
+        thread_channel = discord_mod.Thread()
+        thread_channel.id = 999
+        thread_channel.name = "t"
+        thread_channel.guild = SimpleNamespace(name="W")
+        thread_channel.parent = SimpleNamespace(id=200)  # resolved object
+        thread_channel.parent_id = None                  # bare id absent
+        interaction = SimpleNamespace(
+            channel_id=999, channel=thread_channel,
+            user=SimpleNamespace(id=1, display_name="B"),
+        )
+        adapter._build_slash_event(interaction, "/branch")
+        assert captured.get("parent_chat_id") == "200"
+
     @pytest.mark.asyncio
     async def test_dispatch_thread_session_inherits_parent_channel_prompt(self):
         adapter = _make_adapter()

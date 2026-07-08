@@ -4724,6 +4724,19 @@ class DiscordAdapter(BasePlatformAdapter):
         # For forum threads, inherit the parent forum's topic.
         chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
 
+        # Parent channel id — populated for threads so slash handlers that need
+        # to act on the hosting channel (e.g. /branch spawning a SIBLING thread,
+        # /merge posting to the parent channel) can resolve it. The regular
+        # message path sets this via build_source(parent_chat_id=…); the native
+        # slash path must mirror it or those handlers silently lose the parent
+        # (bug: /branch fell back to classic in-place branch inside a thread).
+        # Use the SAME resolver as the message path (_get_parent_channel_id:
+        # resolved channel.parent.id first, bare channel.parent_id fallback) so
+        # the two paths can't drift on a resolved-parent-without-parent_id case.
+        parent_chat_id = None
+        if is_thread:
+            parent_chat_id = self._get_parent_channel_id(interaction.channel)
+
         source = self.build_source(
             chat_id=str(interaction.channel_id),
             chat_name=chat_name,
@@ -4732,11 +4745,12 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            parent_chat_id=parent_chat_id,
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)
-        parent_id = str(getattr(getattr(interaction, "channel", None), "parent_id", "") or "")
+        parent_id = parent_chat_id or str(getattr(getattr(interaction, "channel", None), "parent_id", "") or "")
         return MessageEvent(
             text=text,
             message_type=msg_type,

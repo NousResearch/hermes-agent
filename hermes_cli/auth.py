@@ -713,7 +713,10 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
             auth_store = _load_auth_store()
             state_under_lock = _load_provider_state(auth_store, "zai") or {}
             state_under_lock["detected_endpoint"] = state["detected_endpoint"]
-            _save_provider_state(auth_store, "zai", state_under_lock)
+            # set_active=False: this runs from credential-pool env seeding
+            # (agent/credential_pool.py) for ANY user with a Z.AI key in env,
+            # and caching a probe result must not flip their active provider.
+            _store_provider_state(auth_store, "zai", state_under_lock, set_active=False)
             _save_auth_store(auth_store)
         logger.info("Z.AI: auto-detected endpoint %s (%s)", detected["label"], detected["base_url"])
         return detected["base_url"]

@@ -191,10 +191,13 @@ class TestUnifiedDashboardRouting:
             main_mod.cmd_dashboard(_args(open_profile="worker_x"))
         assert execs == []
 
-    def test_dashboard_starts_mcp_discovery_for_ws_backend(self, main_mod, monkeypatch):
-        """The dashboard process serves the /api/ws gateway but never runs
-        tui_gateway/entry.py, so it must kick off MCP discovery itself or
-        desktop sessions never see a profile's MCP tools."""
+    def test_dashboard_defers_mcp_discovery_until_ws_backend(self, main_mod, monkeypatch):
+        """An unvisited dashboard must not launch MCP servers at startup.
+
+        The /api/ws sidecar starts discovery on first chat connection, before
+        agent construction, so MCP tools are still available without keeping an
+        idle dashboard writing mcp-stderr.log.
+        """
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "default"
         )
@@ -226,9 +229,4 @@ class TestUnifiedDashboardRouting:
 
         main_mod.cmd_dashboard(_args())
 
-        assert calls == [
-            {
-                "logger": main_mod.logger,
-                "thread_name": "dashboard-mcp-discovery",
-            }
-        ]
+        assert calls == []

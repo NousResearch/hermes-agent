@@ -468,3 +468,123 @@ def test_non_failover_claude_providers_never_hidden(monkeypatch):
     assert result == [
         "claude-apr", "claude-bpr", "claude-app", "claude-apxtra",
     ]
+
+
+# --- model.picker preferences (hide + order) ---------------------------------
+
+def _picker_cfg(monkeypatch, hide=None, order=None):
+    """Mock hermes_cli.config.load_config to return a model.picker block."""
+    picker = {}
+    if hide is not None:
+        picker["hide"] = hide
+    if order is not None:
+        picker["order"] = order
+    monkeypatch.setattr("hermes_cli.config.load_config",
+                        lambda: {"model": {"picker": picker}})
+
+
+def _rows(*slugs):
+    return [{"slug": s, "name": s, "models": ["m"]} for s in slugs]
+
+
+def test_picker_hide_drops_listed_providers(monkeypatch):
+    """model.picker.hide drops the named providers from the dropdown."""
+    _picker_cfg(monkeypatch, hide=["openai-api", "anthropic"])
+    out = model_switch._apply_picker_preferences(
+        _rows("openrouter", "anthropic", "openai-api", "yunwu"))
+    assert [r["slug"] for r in out] == ["openrouter", "yunwu"]
+
+
+def test_picker_hide_never_hides_current_provider(monkeypatch):
+    """The currently-active provider is never hidden, even if listed."""
+    _picker_cfg(monkeypatch, hide=["anthropic"])
+    out = model_switch._apply_picker_preferences(
+        _rows("openrouter", "anthropic", "yunwu"),
+        current_provider="anthropic")
+    assert "anthropic" in [r["slug"] for r in out]
+
+
+def test_picker_order_front_anchors_listed_slugs(monkeypatch):
+    """model.picker.order moves listed slugs to the front in that order; the
+    rest keep their original relative order after them."""
+    _picker_cfg(monkeypatch,
+                order=["claude-apr", "claude-bpr", "yunwu"])
+    out = model_switch._apply_picker_preferences(
+        _rows("openrouter", "yunwu", "claude-bpr", "anthropic", "claude-apr"))
+    assert [r["slug"] for r in out] == [
+        "claude-apr", "claude-bpr", "yunwu",   # front, in order
+        "openrouter", "anthropic",             # rest, original order
+    ]
+
+
+def test_picker_hide_and_order_together(monkeypatch):
+    """The full requested shape: hide two, order the rest, unlisted trail."""
+    _picker_cfg(
+        monkeypatch,
+        hide=["openai-api", "anthropic"],
+        order=["claude-apr", "claude-bpr", "openai-codex",
+               "gemini-bridge", "openrouter", "yunwu"],
+    )
+    out = model_switch._apply_picker_preferences(_rows(
+        "openrouter", "gemini-bridge", "anthropic", "openai-api",
+        "openai-codex", "claude-apr", "claude-app", "claude-bpr", "yunwu",
+    ))
+    assert [r["slug"] for r in out] == [
+        "claude-apr", "claude-bpr", "openai-codex",
+        "gemini-bridge", "openrouter", "yunwu",
+        "claude-app",  # not listed in order/hide → trails, kept
+    ]
+
+
+def test_picker_prefs_noop_when_config_absent(monkeypatch):
+    """No model.picker config → rows returned unchanged."""
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {}})
+    rows = _rows("openrouter", "anthropic", "yunwu")
+    out = model_switch._apply_picker_preferences(rows)
+    assert [r["slug"] for r in out] == ["openrouter", "anthropic", "yunwu"]
+
+
+def test_picker_prefs_unknown_slugs_ignored(monkeypatch):
+    """Unknown slugs in hide/order are ignored (no empty rows, no crash)."""
+    _picker_cfg(monkeypatch, hide=["does-not-exist"],
+                order=["also-missing", "yunwu"])
+    out = model_switch._apply_picker_preferences(
+        _rows("openrouter", "yunwu"))
+    assert [r["slug"] for r in out] == ["yunwu", "openrouter"]
+
+
+def test_picker_order_with_blank_entries_still_front_anchors(monkeypatch):
+    """Blank/empty entries in order must not corrupt the fallback rank.
+
+    Regression for the len(rank)+1 collision (Greptile #240 P2): with
+    order=["a","","","c"], rank={a:0,c:3}; a naive len(rank)+1 == 3 fallback
+    would tie with c's rank and a stable sort could leave an unlisted row
+    ahead of c. Using len(order)+1 keeps every listed slug strictly ahead of
+    every unlisted one.
+    """
+    _picker_cfg(monkeypatch, order=["a", "", "", "c"])
+    out = model_switch._apply_picker_preferences(
+        _rows("unlisted", "c", "a"))
+    slugs = [r["slug"] for r in out]
+    assert slugs == ["a", "c", "unlisted"], slugs
+    # both listed slugs strictly precede the unlisted row
+    assert slugs.index("c") < slugs.index("unlisted")
+
+
+def test_picker_prefs_whitespace_slug_matches(monkeypatch):
+    """Row slugs with surrounding whitespace still hide/order correctly.
+
+    Regression for the strip asymmetry (Greptile #240 P2): keys were built with
+    .strip().lower() but lookups only .lower(); a padded slug slipped through.
+    """
+    _picker_cfg(monkeypatch, hide=["anthropic"], order=["yunwu"])
+    rows = [
+        {"slug": " anthropic ", "name": "A", "models": ["m"]},
+        {"slug": "  yunwu", "name": "Y", "models": ["m"]},
+        {"slug": "openrouter", "name": "O", "models": ["m"]},
+    ]
+    out = [r["slug"] for r in model_switch._apply_picker_preferences(rows)]
+    assert " anthropic " not in out            # hidden despite whitespace
+    assert out[0] == "  yunwu"                  # ordered first despite whitespace
+
+

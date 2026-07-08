@@ -99,3 +99,29 @@ class TestFailClosedSyntaxGate:
         res = ops.write_file(str(target), "[section\nk = 'v'")
         assert res.error is not None
         assert not target.exists()
+
+    def test_multi_document_yaml_is_valid_and_written(self, ops, tmp_path: Path):
+        """Multi-document streams (k8s manifests) are valid YAML *syntax* —
+        the gate must not refuse them just because safe_load() would raise
+        ComposerError on more than one document."""
+        target = tmp_path / "manifests.yaml"
+        content = "apiVersion: v1\nkind: Namespace\n---\napiVersion: v1\nkind: ConfigMap\n"
+        res = ops.write_file(str(target), content)
+        assert res.error is None, res.error
+        assert target.read_text() == content
+
+    def test_custom_tagged_yaml_is_valid_and_written(self, ops, tmp_path: Path):
+        """Application-defined tags (CloudFormation !Sub/!Ref, Ansible !vault)
+        are valid YAML syntax; only the *consumer* defines their constructors.
+        The gate is syntax-only and must let them through."""
+        target = tmp_path / "template.yaml"
+        content = (
+            "Resources:\n"
+            "  Bucket:\n"
+            "    Type: AWS::S3::Bucket\n"
+            "    Properties:\n"
+            "      BucketName: !Sub '${AWS::StackName}-bucket'\n"
+        )
+        res = ops.write_file(str(target), content)
+        assert res.error is None, res.error
+        assert target.read_text() == content

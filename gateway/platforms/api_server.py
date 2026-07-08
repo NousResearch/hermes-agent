@@ -1,5 +1,4 @@
-"""
-OpenAI-compatible API server platform adapter.
+"""OpenAI-compatible API server platform adapter.
 
 Exposes an HTTP server with endpoints:
 - POST /v1/chat/completions        — OpenAI Chat Completions format (stateless; opt-in session continuity via X-Hermes-Session-Id header; opt-in long-term memory scoping via X-Hermes-Session-Key header)
@@ -21,6 +20,7 @@ Exposes an HTTP server with endpoints:
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
+- POST /v1/deliver                 — deliver messages to connected platforms (proxy for external scripts)
 
 Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,
 AnythingLLM, NextChat, ChatBox, etc.) can connect to hermes-agent
@@ -900,6 +900,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # Number of in-flight runs on the non-streaming chat/responses paths
         # (the /v1/runs path tracks its own in-flight set via _run_streams).
         self._inflight_agent_runs: int = 0
+        # Security gate for custom bot_token override in /v1/deliver.
+        # Disabled by default; set allow_custom_bot_token in config.yaml to enable.
+        self._allow_custom_bot_token: bool = extra.get("allow_custom_bot_token", False)
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -1417,6 +1420,286 @@ class APIServerAdapter(BasePlatformAdapter):
             "updated_at": runtime.get("updated_at"),
             "pid": os.getpid(),
         })
+
+    async def _handle_deliver(self, request: "web.Request") -> "web.Response":
+        """POST /v1/deliver — deliver messages to a Discord forum thread.
+
+        Authenticated scripts can forward structured content to Discord forums
+        without direct access to DISCORD_BOT_TOKEN.  The API server runs inside
+        the gateway process and reads the token from the environment.
+
+        Payload:
+            forum_id (str, required*): Discord forum channel ID.  Required
+                when not using reply_to.
+            thread_name (str, required*): Name for the new forum thread.
+                Required when not using reply_to.
+            messages (list[str], required): Post bodies.  When creating a new
+                thread the first message creates it; subsequent messages are
+                posted as replies.  When replying to an existing thread all
+                messages are posted as replies.
+            reply_to (str, optional): Existing thread ID to reply to.  When
+                set, forum_id and thread_name are ignored and all messages are
+                posted as replies to this thread.
+            bot_token (str, optional): Override DISCORD_BOT_TOKEN.  Useful when
+                the external script has its own token and only needs the proxy
+                for thread-creation orchestration.
+
+        Returns:
+            {
+                "status": "ok",
+                "platform": "discord",
+                "thread_id": "123456789",
+                "message_ids": ["id1", "id2", ...],
+                "warnings": [...]   // optional, partial-failure details
+            }
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(
+                {"error": {"message": "Invalid JSON in request body", "type": "invalid_request_error", "code": "invalid_json"}},
+                status=400,
+            )
+
+        forum_id = (body.get("forum_id") or "").strip()
+        thread_name = (body.get("thread_name") or "").strip()
+        messages = body.get("messages", [])
+        reply_to = (body.get("reply_to") or "").strip()
+        override_token = (body.get("bot_token") or "").strip()
+
+        if not isinstance(messages, list) or not messages:
+            return web.json_response(
+                {"error": {"message": "Required: messages (non-empty list of strings)", "type": "invalid_request_error", "code": "missing_field"}},
+                status=400,
+            )
+        if not all(isinstance(m, str) for m in messages):
+            return web.json_response(
+                {"error": {"message": "All messages must be strings", "type": "invalid_request_error", "code": "invalid_type"}},
+                status=400,
+            )
+
+        if not reply_to and (not forum_id or not thread_name):
+            return web.json_response(
+                {"error": {"message": "Either provide 'reply_to' (existing thread) or 'forum_id' + 'thread_name' (new thread)", "type": "invalid_request_error", "code": "missing_field"}},
+                status=400,
+            )
+
+        if not reply_to and len(thread_name) > 100:
+            return web.json_response(
+                {"error": {"message": "thread_name must be at most 100 characters", "type": "invalid_request_error", "code": "invalid_value"}},
+                status=400,
+            )
+
+        # Security: bot_token override
+        if override_token and not self._allow_custom_bot_token:
+            return web.json_response(
+                {"error": {"message": "Custom bot_token is not allowed. Set allow_custom_bot_token in config.yaml to enable.", "type": "invalid_request_error", "code": "forbidden"}},
+                status=403,
+            )
+
+        token = override_token if (override_token and self._allow_custom_bot_token) else os.getenv("DISCORD_BOT_TOKEN", "").strip()
+        if not token:
+            return web.json_response(
+                {"error": {"message": "No Discord bot token available. Set DISCORD_BOT_TOKEN or configure the Discord gateway platform.", "type": "server_error", "code": "token_unavailable"}},
+                status=503,
+            )
+
+        # Audit log
+        logger.info(
+            "[api_server] /v1/deliver request: forum_id=%s reply_to=%s messages=%d",
+            forum_id or "(none)",
+            reply_to or "(none)",
+            len(messages),
+        )
+
+        # Resolve the Discord adapter from the gateway runner.
+        # The gateway runner is injected by run.py at init time (same
+        # pattern as WebhookAdapter).  We need it to use the adapter's
+        # discord.py client and rate-limit handling instead of raw HTTP.
+        gateway_runner = getattr(self, "gateway_runner", None)
+        discord_adapter = None
+        if gateway_runner:
+            from gateway.config import Platform
+            discord_adapter = gateway_runner.adapters.get(Platform.DISCORD)
+
+        thread_id: Optional[str] = None
+        result: Dict[str, Any] = {"message_ids": []}
+        warnings_list: List[str] = []
+
+        if discord_adapter and hasattr(discord_adapter, "_client") and discord_adapter._client:
+            # ── Path A: Use Discord adapter (discord.py client) ────────
+            if reply_to:
+                # Post all messages as replies to the existing thread
+                for idx, msg_content in enumerate(messages, start=1):
+                    send_result = await discord_adapter.send(
+                        chat_id=reply_to,
+                        content=msg_content,
+                        metadata={"thread_id": reply_to},
+                    )
+                    if send_result.success:
+                        if idx == 1:
+                            thread_id = reply_to
+                            result["thread_id"] = reply_to
+                        result["message_ids"].append(send_result.message_id or "")
+                    else:
+                        warning = f"Message {idx} failed: {send_result.error or 'Unknown error'}"
+                        logger.warning("[api_server] %s", warning)
+                        warnings_list.append(warning)
+            else:
+                # Create forum thread with first message via adapter
+                first_msg = messages[0]
+                send_result = await discord_adapter.send(
+                    chat_id=forum_id,
+                    content=first_msg,
+                )
+                if not send_result.success:
+                    warning = f"Forum thread creation failed: {send_result.error or 'Unknown error'}"
+                    logger.error("[api_server] %s", warning)
+                    warnings_list.append(warning)
+                else:
+                    raw = send_result.raw_response or {}
+                    thread_id = raw.get("thread_id", send_result.message_id or "")
+                    result["thread_id"] = thread_id
+                    result["message_ids"].append(send_result.message_id or "")
+
+                    # Post remaining messages as replies
+                    for idx, msg_content in enumerate(messages[1:], start=2):
+                        send_result = await discord_adapter.send(
+                            chat_id=thread_id,
+                            content=msg_content,
+                            metadata={"thread_id": thread_id},
+                        )
+                        if send_result.success:
+                            result["message_ids"].append(send_result.message_id or "")
+                        else:
+                            warning = f"Message {idx} failed: {send_result.error or 'Unknown error'}"
+                            logger.warning("[api_server] %s", warning)
+                            warnings_list.append(warning)
+        else:
+            # ── Path B: Fallback to Discord REST API ──────────────────
+            try:
+                import aiohttp
+            except ImportError:
+                return web.json_response(
+                    {"error": {"message": "aiohttp is not available on this gateway", "type": "server_error", "code": "dependency_missing"}},
+                    status=503,
+                )
+
+            # Resolve proxy
+            try:
+                from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+                _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+                _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+            except Exception:
+                _sess_kw, _req_kw = {}, {}
+
+            auth_header_value = f"Bot {token}"
+            json_headers = {
+                "Authorization": auth_header_value,
+                "Content-Type": "application/json",
+            }
+
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=60),
+                **_sess_kw,
+            ) as session:
+                if reply_to:
+                    thread_id = reply_to
+                    result["thread_id"] = thread_id
+                    msg_start = 1
+                    messages_to_post = messages
+                else:
+                    # Clean thread_name using upstream helper
+                    try:
+                        from tools.send_message_tool import _derive_forum_thread_name
+                        clean_thread_name = _derive_forum_thread_name(thread_name)
+                    except Exception:
+                        clean_thread_name = thread_name[:100] if thread_name else "New Post"
+
+                    first_msg = messages[0]
+                    if len(first_msg) > 2000:
+                        warning = "First message exceeds 2000 chars, truncated"
+                        logger.warning("[api_server] %s", warning)
+                        warnings_list.append(warning)
+                        first_msg = first_msg[:1997] + "..."
+
+                    thread_url = f"https://discord.com/api/v10/channels/{forum_id}/threads"
+                    try:
+                        async with session.post(
+                            thread_url,
+                            headers=json_headers,
+                            json={
+                                "name": clean_thread_name,
+                                "message": {"content": first_msg},
+                            },
+                            **_req_kw,
+                        ) as resp:
+                            if resp.status not in {200, 201}:
+                                body_text = await resp.text()
+                                warning = f"Thread creation failed: Discord API {resp.status}"
+                                logger.error("[api_server] %s: %s", warning, body_text[:300])
+                                warnings_list.append(warning)
+                                thread_id = ""
+                            else:
+                                data = await resp.json()
+                                thread_id = data.get("id", "")
+                                starter_msg = (data.get("message") or {}).get("id", thread_id)
+                                result["thread_id"] = thread_id
+                                result["message_ids"].append(starter_msg)
+                    except Exception as e:
+                        warning = f"Thread creation failed: {e}"
+                        logger.error("[api_server] %s", warning, exc_info=True)
+                        warnings_list.append(warning)
+                        thread_id = ""
+                    msg_start = 2
+                    messages_to_post = messages[1:]
+
+                if thread_id:
+                    for idx, msg_content in enumerate(messages_to_post, start=msg_start):
+                        if len(msg_content) > 2000:
+                            warning = f"Message {idx} exceeds 2000 chars, truncated"
+                            logger.warning("[api_server] %s", warning)
+                            warnings_list.append(warning)
+                            msg_content = msg_content[:1997] + "..."
+
+                        reply_url = f"https://discord.com/api/v10/channels/{thread_id}/messages"
+                        try:
+                            async with session.post(
+                                reply_url,
+                                headers=json_headers,
+                                json={"content": msg_content},
+                                **_req_kw,
+                            ) as resp:
+                                if resp.status in {200, 201}:
+                                    data = await resp.json()
+                                    result["message_ids"].append(data.get("id", ""))
+                                else:
+                                    body_text = await resp.text()
+                                    warning = f"Message {idx} failed: Discord API {resp.status}"
+                                    logger.warning("[api_server] %s: %s", warning, body_text[:200])
+                                    warnings_list.append(warning)
+                        except Exception as e:
+                            warning = f"Message {idx} failed: {e}"
+                            logger.warning("[api_server] %s", warning, exc_info=True)
+                            warnings_list.append(warning)
+
+        # Build response
+        if not result["message_ids"]:
+            # All messages failed
+            return web.json_response(
+                {"error": {"message": "All messages failed to deliver", "type": "delivery_error", "code": "delivery_failed", "details": warnings_list}},
+                status=502,
+            )
+
+        if warnings_list:
+            result["warnings"] = warnings_list
+        result["status"] = "ok"
+        result["platform"] = "discord"
+        return web.json_response(result)
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
         """GET /v1/models — list hermes-agent and any configured model_routes aliases."""
@@ -4807,6 +5090,11 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
+            # Structured delivery proxy — external scripts forward content to
+            # connected platforms without direct token access.  Authenticated
+            # by the standard API key mechanism so any script with the key can
+            # proxy a message.
+            self._app.router.add_post("/v1/deliver", self._handle_deliver)
             # Store the adapter after native routes are registered. Local Hermes-Relay
             # bootstrap shims use this key as a feature-detection hook; registering
             # native routes first lets those shims no-op instead of shadowing the

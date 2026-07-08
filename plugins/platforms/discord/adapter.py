@@ -47,6 +47,7 @@ _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+_DISCORD_ATTACHMENT_READ_TIMEOUT_SECONDS = 15.0
 # Discord enforces a hard cap of 100 global application (slash) commands per
 # app. Registering more makes the ENTIRE sync fail with error 30032
 # ("Maximum number of application commands reached"), which silently breaks
@@ -6035,7 +6036,17 @@ class DiscordAdapter(BasePlatformAdapter):
         if reader is None or not callable(reader):
             return None
         try:
-            raw_bytes = await reader()
+            raw_bytes = await asyncio.wait_for(
+                reader(),
+                timeout=_DISCORD_ATTACHMENT_READ_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[Discord] Authenticated attachment read timed out after %.1fs for %s",
+                _DISCORD_ATTACHMENT_READ_TIMEOUT_SECONDS,
+                getattr(att, "filename", None) or getattr(att, "url", "<unknown>"),
+            )
+            return None
         except Exception as e:
             logger.warning(
                 "[Discord] Authenticated attachment read failed for %s: %s",

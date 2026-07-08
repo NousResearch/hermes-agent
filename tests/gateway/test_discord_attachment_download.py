@@ -14,6 +14,7 @@ helpers. Verifies that:
   defense-in-depth. (issue #11345)
 """
 
+import asyncio
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -133,6 +134,33 @@ class TestReadAttachmentBytes:
 
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_returns_none_when_read_times_out(self, monkeypatch):
+        """Slow bot-session fetches should fall back before signed URLs expire."""
+        adapter = _make_adapter()
+        calls = 0
+
+        async def slow_read():
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(1)
+            return b"too late"
+
+        att = SimpleNamespace(
+            url="https://cdn.discordapp.com/attachments/fake/file.png",
+            filename="file.png",
+            read=slow_read,
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.discord.adapter._DISCORD_ATTACHMENT_READ_TIMEOUT_SECONDS",
+            0.01,
+        )
+
+        result = await adapter._read_attachment_bytes(att)
+
+        assert result is None
+        assert calls == 1
+
 
 # ---------------------------------------------------------------------------
 # _cache_discord_image
@@ -163,6 +191,39 @@ class TestCacheDiscordImage:
         """No .read() → URL path is used (existing SSRF-gated behavior)."""
         adapter = _make_adapter()
         att = _make_attachment_without_read()
+
+        with patch(
+            "plugins.platforms.discord.adapter.cache_image_from_bytes",
+        ) as mock_bytes, patch(
+            "plugins.platforms.discord.adapter.cache_image_from_url",
+            new_callable=AsyncMock,
+            return_value="/tmp/from_url.png",
+        ) as mock_url:
+            result = await adapter._cache_discord_image(att, ".png")
+
+        assert result == "/tmp/from_url.png"
+        mock_bytes.assert_not_called()
+        mock_url.assert_awaited_once_with(att.url, ext=".png")
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_url_when_read_times_out(self, monkeypatch):
+        """Slow authenticated reads should still reach the signed URL fallback."""
+        adapter = _make_adapter()
+
+        async def slow_read():
+            await asyncio.sleep(1)
+            return _PNG_BYTES
+
+        att = SimpleNamespace(
+            url="https://cdn.discordapp.com/attachments/fake/file.png",
+            filename="file.png",
+            size=1024,
+            read=slow_read,
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.discord.adapter._DISCORD_ATTACHMENT_READ_TIMEOUT_SECONDS",
+            0.01,
+        )
 
         with patch(
             "plugins.platforms.discord.adapter.cache_image_from_bytes",

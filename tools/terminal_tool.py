@@ -2097,6 +2097,27 @@ def terminal_tool(
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
 
+        # Hard-block: gateway lifecycle commands (systemctl/launchctl/hermes
+        # restart|stop targeting hermes-gateway) must never run inside the
+        # gateway process itself. Run this before generic approval/doctrine and
+        # before environment creation so the self-kill guard is explicit,
+        # non-bypassable, and cannot be hidden by softer approval packets.
+        if os.environ.get("_HERMES_GATEWAY") == "1":
+            from hermes_cli.cron import _contains_gateway_lifecycle_command
+            if _contains_gateway_lifecycle_command(command):
+                return json.dumps({
+                    "output": "",
+                    "exit_code": 1,
+                    "error": (
+                        "Blocked: cannot restart or stop the gateway from inside the "
+                        "gateway process. The gateway would kill this command before "
+                        "it could complete (SIGTERM propagates to child processes). "
+                        "Run `hermes gateway restart` from a separate shell outside "
+                        "the running gateway."
+                    ),
+                    "status": "error",
+                }, ensure_ascii=False)
+
         # Continue-until-fork doctrine: terminal commands that cross a finite
         # decision boundary stop before environment creation/execution and are
         # delivered as final-response packets by the agent loop.

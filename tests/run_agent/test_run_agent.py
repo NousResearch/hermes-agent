@@ -2902,13 +2902,26 @@ class TestConcurrentToolExecution:
         agent.tool_complete_callback = lambda tool_call_id, function_name, function_args, function_result: completes.append((tool_call_id, function_name, function_args, function_result))
         agent.tool_progress_callback = lambda event, name, preview, args, **kw: progress.append((event, name, preview, args))
 
-        with patch("run_agent.handle_function_call", return_value='{"success": true, "typed": "sk-pro...EFGH"}'):
+        with patch("run_agent.handle_function_call", side_effect=AssertionError("browser_type must stay Chad-gated")):
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
 
-        assert starts[0][2]["text"].startswith("sk-pro")
-        assert completes[0][2]["text"].startswith("sk-pro")
-        assert progress[0][2].startswith("sk-pro")
-        assert secret not in repr(starts + completes + progress)
+        assert starts == []
+        assert completes == []
+        assert progress == []
+        assert len(messages) == 1
+        content = messages[0]["content"]
+        assert content.startswith('<untrusted_tool_result source="browser_type">')
+        assert content.endswith("</untrusted_tool_result>")
+        assert "sk-pro" not in content
+        payload = json.loads(content[content.index("{"): content.rindex("}") + 1])
+        assert payload["status"] == "needs_chad"
+        assert payload["decision_packet"]["status"] == "NEEDS_CHAD"
+        assert "Browser interaction requires Chad approval" in payload["decision_packet"]["reason"]
+        proposed_action = payload["decision_packet"]["proposed_action"]
+        assert "browser_type" in proposed_action
+        assert "ref=@apikey" in proposed_action
+        assert "text=***" in proposed_action
+        assert secret not in proposed_action
 
     def test_concurrent_tool_callbacks_fire_for_each_tool(self, agent):
         tc1 = _mock_tool_call(name="web_search", arguments='{"query":"one"}', call_id="c1")
@@ -2947,13 +2960,26 @@ class TestConcurrentToolExecution:
         agent.tool_complete_callback = lambda tool_call_id, function_name, function_args, function_result: completes.append((tool_call_id, function_name, function_args, function_result))
         agent.tool_progress_callback = lambda event, name, preview, args, **kw: progress.append((event, name, preview, args))
 
-        with patch("run_agent.handle_function_call", return_value='{"success": true, "typed": "sk-pro...EFGH"}'):
+        with patch("run_agent.handle_function_call", side_effect=AssertionError("browser_type must stay Chad-gated")):
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
-        assert starts[0][2]["text"].startswith("sk-pro")
-        assert completes[0][2]["text"].startswith("sk-pro")
-        assert progress[0][2].startswith("sk-pro")
-        assert secret not in repr(starts + completes + progress)
+        assert starts == []
+        assert completes == []
+        assert progress == []
+        assert len(messages) == 1
+        content = messages[0]["content"]
+        assert content.startswith('<untrusted_tool_result source="browser_type">')
+        assert content.endswith("</untrusted_tool_result>")
+        assert "sk-pro" not in content
+        payload = json.loads(content[content.index("{"): content.rindex("}") + 1])
+        assert payload["status"] == "needs_chad"
+        assert payload["decision_packet"]["status"] == "NEEDS_CHAD"
+        assert "Browser interaction requires Chad approval" in payload["decision_packet"]["reason"]
+        proposed_action = payload["decision_packet"]["proposed_action"]
+        assert "browser_type" in proposed_action
+        assert "ref=@apikey" in proposed_action
+        assert "text=***" in proposed_action
+        assert secret not in proposed_action
 
     def test_invoke_tool_handles_agent_level_tools(self, agent):
         """_invoke_tool should handle todo tool directly."""

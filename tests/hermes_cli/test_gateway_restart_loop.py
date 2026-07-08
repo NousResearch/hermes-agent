@@ -9,6 +9,7 @@ Covers:
 import json
 import os
 from argparse import Namespace
+from types import SimpleNamespace
 
 import pytest
 
@@ -372,6 +373,12 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=False)
         monkeypatch.setattr(tt, "_check_all_guards", lambda cmd, env, **kwargs: {"approved": True})
+        import agent.decision_policy as dp
+        monkeypatch.setattr(
+            dp,
+            "evaluate_terminal_command",
+            lambda *args, **kwargs: SimpleNamespace(needs_chad=False),
+        )
 
         result = json.loads(tt.terminal_tool(command="systemctl restart hermes-gateway"))
 

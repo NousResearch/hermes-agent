@@ -289,7 +289,7 @@ def evaluate_tool_call(
     if name in BROWSER_INTERACTION_TOOL_NAMES:
         return _packet_result(
             reason="Browser interaction requires Chad approval.",
-            proposed_action=f"{name}({ _summarize_args(args) })",
+            proposed_action=f"{name}({ _summarize_browser_args(name, args) })",
             why=(
                 "Navigating, clicking, typing, submitting, or issuing raw devtools "
                 "commands in a live browser can submit forms or trigger external side "
@@ -888,6 +888,16 @@ def _summarize_args(args: Mapping[str, Any]) -> str:
             text = text[:77] + "..."
         pieces.append(f"{key}={_redact(text)}")
     return ", ".join(pieces)
+
+
+def _summarize_browser_args(tool_name: str, args: Mapping[str, Any]) -> str:
+    if tool_name != "browser_type":
+        return _summarize_args(args)
+
+    redacted_args = dict(args)
+    if "text" in redacted_args:
+        redacted_args["text"] = "***"
+    return _summarize_args(redacted_args)
 
 
 def _redact(text: str) -> str:

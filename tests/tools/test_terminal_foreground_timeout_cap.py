@@ -54,9 +54,7 @@ class TestForegroundTimeoutCap:
         with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
              patch("tools.terminal_tool._start_cleanup_thread"):
 
-            result = json.loads(terminal_tool(
-                command="nohup pnpm dev > /tmp/sg-server.log 2>&1 &",
-            ))
+            result = json.loads(terminal_tool(command="nohup sleep 60 &"))
 
         assert result["exit_code"] == -1
         assert "background=true" in result["error"]

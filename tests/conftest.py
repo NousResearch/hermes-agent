@@ -360,6 +360,26 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
 
+    # If tools.approval was imported during test collection, it may already
+    # have loaded permanent approvals or frozen YOLO mode from the developer's
+    # real environment before HERMES_HOME was redirected above. Scrub that
+    # pre-fixture state so the first test in a process is as hermetic as the
+    # rest. Tests that need approval state can still set it in their own body
+    # or setup fixture after this point.
+    approval_mod = sys.modules.get("tools.approval")
+    if approval_mod is not None:
+        try:
+            with approval_mod._lock:
+                approval_mod._pending.clear()
+                approval_mod._session_approved.clear()
+                approval_mod._session_yolo.clear()
+                approval_mod._permanent_approved.clear()
+                approval_mod._gateway_queues.clear()
+                approval_mod._gateway_notify_cbs.clear()
+            monkeypatch.setattr(approval_mod, "_YOLO_MODE_FROZEN", False)
+        except Exception:
+            pass
+
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.
     monkeypatch.setenv("TZ", "UTC")

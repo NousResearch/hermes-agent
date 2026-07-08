@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import posixpath
+import tempfile
 import threading
 from pathlib import Path, PurePosixPath
 
@@ -596,15 +597,11 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
-    for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
-            return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
-        return _err
     # Prevent agents from modifying the Hermes config file directly.
     # approvals.mode and other security settings live here; a malicious or
     # prompt-injected agent could silently disable exec approval by writing to
-    # this file.
+    # this file. Check this before the broader path guard so tests and profiles
+    # under a temporary HERMES_HOME still get the specific security error.
     hermes_config = _get_hermes_config_resolved()
     if hermes_config and (resolved == hermes_config or normalized == hermes_config):
         return (
@@ -612,6 +609,29 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead."
         )
+    # macOS places pytest/tmp files under /private/var/folders/... even though
+    # they are per-user temporary files. Keep /private/var protected generally,
+    # but do not classify the platform temp root as a system path. Restrict the
+    # exception to the macOS per-user temp tree so a manipulated TMPDIR such as
+    # /private/var does not disable the broader /private/var guard.
+    try:
+        temp_root = str(Path(tempfile.gettempdir()).resolve(strict=False)).rstrip(os.sep)
+        resolved_for_temp = str(Path(resolved).resolve(strict=False))
+        if (
+            temp_root.startswith("/private/var/folders/")
+            and (
+                resolved_for_temp == temp_root
+                or resolved_for_temp.startswith(temp_root + os.sep)
+            )
+        ):
+            return None
+    except Exception:
+        pass
+    for prefix in _SENSITIVE_PATH_PREFIXES:
+        if resolved.startswith(prefix) or normalized.startswith(prefix):
+            return _err
+    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
+        return _err
     return None
 
 

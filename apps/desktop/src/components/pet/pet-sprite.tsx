@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef } from 'react'
 
+import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
 import { $petState, type PetInfo, type PetState } from '@/store/pet'
 
 const DEFAULT_FRAME_W = 192
@@ -119,14 +120,17 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
   const stateRef = useRef<PetState>($petState.get())
   const overrideRef = useRef<PetState | undefined>(stateOverride)
   const rowOverrideRef = useRef<string | undefined>(rowOverride)
+  const kickAnimationRef = useRef<() => void>(() => undefined)
 
   // Keep the override current without re-running the RAF setup effect.
   useEffect(() => {
     overrideRef.current = stateOverride
+    kickAnimationRef.current()
   }, [stateOverride])
 
   useEffect(() => {
     rowOverrideRef.current = rowOverride
+    kickAnimationRef.current()
   }, [rowOverride])
 
   const frameW = info.frameW ?? DEFAULT_FRAME_W
@@ -170,17 +174,75 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
     // Track state via subscription, not a prop — no re-render on activity ticks.
     stateRef.current = $petState.get()
 
-    const unsubState = $petState.listen(next => {
-      stateRef.current = next
-    })
-
     let raf = 0
+    let wakeTimer = 0
+    let stopped = false
     let frame = 0
     let lastStep = performance.now()
     let drawnFrame = -1
     let drawnRow = -1
     let activeRow = -1
     let activeCount = -1
+    let pauseController: ReturnType<typeof createRendererLoopPauseController> | null = null
+
+    const rendererPaused = () => pauseController?.isPaused() ?? document.visibilityState === 'hidden'
+
+    const cancelWakeTimer = () => {
+      if (wakeTimer !== 0) {
+        window.clearTimeout(wakeTimer)
+        wakeTimer = 0
+      }
+    }
+
+    const cancelRaf = () => {
+      if (raf !== 0) {
+        window.cancelAnimationFrame(raf)
+        raf = 0
+      }
+    }
+
+    const clearScheduled = () => {
+      cancelWakeTimer()
+      cancelRaf()
+    }
+
+    const scheduleFrame = (delayMs = 0) => {
+      if (stopped || rendererPaused() || raf !== 0 || wakeTimer !== 0) {
+        return
+      }
+
+      if (delayMs > 16) {
+        wakeTimer = window.setTimeout(() => {
+          wakeTimer = 0
+          scheduleFrame()
+        }, delayMs)
+
+        return
+      }
+
+      raf = window.requestAnimationFrame(render)
+    }
+
+    const kickAnimation = () => {
+      if (stopped || rendererPaused()) {
+        return
+      }
+
+      cancelWakeTimer()
+      scheduleFrame()
+    }
+
+    const handleVisibilityChange = () => {
+      clearScheduled()
+
+      if (rendererPaused()) {
+        return
+      }
+
+      lastStep = performance.now()
+      drawnFrame = -1
+      kickAnimation()
+    }
 
     const rowIndexForState = (s: PetState): number => {
       for (const key of STATE_ALIASES[s] ?? [s]) {
@@ -220,6 +282,12 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
     }
 
     const render = (now: number) => {
+      raf = 0
+
+      if (stopped || rendererPaused()) {
+        return
+      }
+
       const forcedRow = rowOverrideRef.current
       const { row, count } = forcedRow ? resolveRow(forcedRow) : resolve(overrideRef.current ?? stateRef.current)
 
@@ -242,10 +310,13 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
 
       frame %= count
 
+      if (!image.complete || image.naturalWidth <= 0) {
+        return
+      }
+
       // Only touch the canvas when the visible cell actually changes. The RAF
-      // ticks at ~60Hz but the sprite only steps ~5Hz, so this skips ~90% of
-      // the clear+draw work and keeps the main thread free.
-      if ((frame !== drawnFrame || row !== drawnRow) && image.complete && image.naturalWidth > 0) {
+      // wakes when a sprite cell is due, so the idle path avoids a 60Hz loop.
+      if (frame !== drawnFrame || row !== drawnRow) {
         const sx = frame * frameW
         const sy = row * frameH
         ctx.clearRect(0, 0, canvas.width, canvas.height)
@@ -255,13 +326,26 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
         drawnRow = row
       }
 
-      raf = requestAnimationFrame(render)
+      scheduleFrame(Math.max(0, stepMs - (now - lastStep)))
     }
 
-    raf = requestAnimationFrame(render)
+    kickAnimationRef.current = kickAnimation
+
+    const unsubState = $petState.listen(next => {
+      stateRef.current = next
+      kickAnimation()
+    })
+
+    image.addEventListener('load', kickAnimation)
+    pauseController = createRendererLoopPauseController(handleVisibilityChange)
+    scheduleFrame()
 
     return () => {
-      cancelAnimationFrame(raf)
+      stopped = true
+      kickAnimationRef.current = () => undefined
+      clearScheduled()
+      image.removeEventListener('load', kickAnimation)
+      pauseController?.dispose()
       unsubState()
     }
   }, [image, frameW, frameH, frames, framesByState, framesByRow, loopMs, drawW, drawH, rows])

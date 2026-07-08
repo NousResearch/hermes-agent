@@ -4174,11 +4174,14 @@ class GatewaySlashCommandsMixin:
         """Whether this (source → target) merge has already been recorded."""
         return str(target_id) in await self._merged_targets_for(source_session_id)
 
-    async def _record_merge_done(self, source_session_id, target_id) -> None:
+    async def _record_merge_done(self, source_session_id, target_id) -> bool:
         """Append ``target_id`` to the source's ``model_config._merged_into`` list.
 
         Idempotency ledger for /merge — read-modify-write of the source session's
-        model_config. Best-effort; never raises into the merge flow.
+        model_config. Returns ``True`` only when the marker is CONFIRMED durably
+        recorded (re-read after write); ``False`` on any failure. The caller must
+        NOT append the fold when this returns False, otherwise a marker-less fold
+        could be duplicated by a later retry (Greptile P1).
         """
         try:
             row = await self._session_db.get_session(source_session_id)
@@ -4200,7 +4203,14 @@ class GatewaySlashCommandsMixin:
             import json as _json
             await self._session_db.update_session_meta(source_session_id, _json.dumps(mc))
         except Exception as exc:
-            logger.debug("merge: could not record merge ledger: %s", exc)
+            logger.warning("merge: could not record merge ledger: %s", exc)
+            return False
+        # Confirm the marker actually persisted before we trust it — a silently
+        # failed/locked write must NOT let the fold proceed marker-less.
+        try:
+            return str(target_id) in await self._merged_targets_for(source_session_id)
+        except Exception:
+            return False
 
     async def _unrecord_merge_done(self, source_session_id, target_id) -> None:
         """Remove ``target_id`` from the source's ledger (rollback on failed fold)."""
@@ -4347,11 +4357,13 @@ class GatewaySlashCommandsMixin:
 
         # --- Layer 1: fold ONE labeled user-role message into the TARGET. ---
         # Record the (source → target) merge in the durable ledger BEFORE the
-        # append (Greptile P1 follow-up): this closes the check-then-act window
-        # so an overlapping/retried call can't both pass _merge_already_done and
-        # both append. If the append then fails, roll the ledger entry back so a
-        # genuinely-failed merge stays retryable.
-        await self._record_merge_done(source_session_id, target_id)
+        # append (Greptile P1): this closes the check-then-act window so an
+        # overlapping/retried call can't both pass _merge_already_done and both
+        # append. If the marker CANNOT be durably recorded, refuse the fold
+        # rather than append a marker-less summary a later retry could duplicate.
+        recorded = await self._record_merge_done(source_session_id, target_id)
+        if not recorded:
+            return t("gateway.merge.ledger_failed")
         fold_key = "gateway.merge.fold_body_thread" if is_thread_form else "gateway.merge.fold_body"
         fold_text = t(fold_key, title=source_title, summary=summary)
         try:

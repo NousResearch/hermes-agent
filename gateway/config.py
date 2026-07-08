@@ -1433,6 +1433,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     getenv = _getenv_str
     getenv_int = _getenv_int
 
+    disabled_platforms = {
+        plat for plat, plat_cfg in config.platforms.items()
+        if not plat_cfg.enabled and (plat_cfg.extra or {}).get("_enabled_explicit")
+    }
+
     def _enable_from_env(platform: Platform) -> PlatformConfig:
         if platform not in config.platforms:
             config.platforms[platform] = PlatformConfig(enabled=True)
@@ -2272,6 +2277,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if relay_url_val:
         relay_config = _enable_from_env(Platform.RELAY)
         relay_config.extra["relay_url"] = relay_url_val.rstrip("/")
+
+    for plat in disabled_platforms:
+        if plat in config.platforms:
+            config.platforms[plat].enabled = False
 
     for platform_config in config.platforms.values():
         platform_config.extra.pop("_enabled_explicit", None)

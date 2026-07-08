@@ -847,6 +847,18 @@ class TestWebServerEndpoints:
         assert config["dashboard"]["theme"] == "ember"
         assert config["dashboard"]["font"] == "jetbrains-mono"
 
+    def test_get_dashboard_themes_includes_clarity(self):
+        """The high-contrast Clarity preset is advertised to the picker."""
+        resp = self.client.get("/api/dashboard/themes")
+        assert resp.status_code == 200
+        themes = {entry["name"]: entry for entry in resp.json()["themes"]}
+
+        assert themes["clarity"] == {
+            "name": "clarity",
+            "label": "Clarity",
+            "description": "High-contrast teal with hyperlegible UI typography",
+        }
+
     def test_get_sessions_uses_only_persisted_cwd(self, monkeypatch):
         """Session rows without persisted cwd must not inherit TERMINAL_CWD.
 
@@ -3242,6 +3254,13 @@ class TestBuildSchemaFromConfig:
             assert entry["type"] == "select"
             assert "options" in entry
             assert "local" in entry["options"]
+
+    def test_dashboard_theme_options_match_builtin_themes(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA, _BUILTIN_DASHBOARD_THEMES
+
+        assert CONFIG_SCHEMA["dashboard.theme"]["options"] == [
+            theme["name"] for theme in _BUILTIN_DASHBOARD_THEMES
+        ]
 
     def test_empty_prefix_produces_correct_keys(self):
         from hermes_cli.web_server import _build_schema_from_config

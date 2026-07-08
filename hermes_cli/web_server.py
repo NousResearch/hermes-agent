@@ -652,7 +652,10 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "dashboard.theme": {
         "type": "select",
         "description": "Web dashboard visual theme",
-        "options": ["default", "midnight", "ember", "mono", "cyberpunk", "rose"],
+        "options": [
+            "default", "default-large", "nous-blue", "midnight", "ember",
+            "mono", "clarity", "cyberpunk", "rose",
+        ],
     },
     "display.resume_display": {
         "type": "select",
@@ -15533,10 +15536,11 @@ _BUILTIN_DASHBOARD_THEMES = [
     {"name": "default-large", "label": "Hermes Teal (Large)", "description": "Hermes Teal with bigger fonts and roomier spacing"},
     {"name": "nous-blue",     "label": "Nous Blue",           "description": "Light mode — vivid Nous-blue accents on cream canvas"},
     {"name": "midnight",      "label": "Midnight",            "description": "Deep blue-violet with cool accents"},
-    {"name": "ember",     "label": "Ember",          "description": "Warm crimson and bronze — forge vibes"},
-    {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
-    {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
-    {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
+    {"name": "ember",         "label": "Ember",               "description": "Warm crimson and bronze — forge vibes"},
+    {"name": "mono",          "label": "Mono",                "description": "Clean grayscale — minimal and focused"},
+    {"name": "clarity",       "label": "Clarity",             "description": "High-contrast teal with hyperlegible UI typography"},
+    {"name": "cyberpunk",     "label": "Cyberpunk",           "description": "Neon green on black — matrix terminal"},
+    {"name": "rose",          "label": "Rosé",                "description": "Soft pink and warm ivory — easy on the eyes"},
 ]
 
 

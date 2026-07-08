@@ -10711,6 +10711,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        pinned_session_id = str(
+            (getattr(event, "metadata", None) or {}).get("gateway_session_id") or ""
+        ).strip()
+        if pinned_session_id and pinned_session_id != session_entry.session_id:
+            # Fail closed (#55578): the spawning session may have ENDED since
+            # dispatch (user /new-reset, compression rotation whose parent was
+            # closed). switch_session() re-opens ended sessions, so pinning
+            # blindly would RESURRECT a conversation the user explicitly
+            # ended and inject into it — the same illicit-revival class as
+            # the ws_orphan_reap loop (#60609). A completion whose spawning
+            # session is dead is dropped from injection; the subagent's
+            # output remains in the delegation records.
+            pinned_row = None
+            try:
+                if self._session_db is not None:
+                    # AsyncSessionDB already offloads to a thread.
+                    pinned_row = await self._session_db.get_session(pinned_session_id)
+            except Exception:
+                pinned_row = None
+            if pinned_row is None or pinned_row.get("ended_at"):
+                logger.warning(
+                    "Async-delegation completion pinned to session %s, which is "
+                    "%s — dropping injection instead of resurrecting it "
+                    "(#55578 fail-closed; result remains in the delegation "
+                    "records).",
+                    pinned_session_id,
+                    "unknown" if pinned_row is None else "ended",
+                )
+                return
+            prior_session_id = session_entry.session_id
+            switched = self.session_store.switch_session(session_key, pinned_session_id)
+            if switched is not None:
+                session_entry = switched
+                logger.info(
+                    "Pinned async-delegation completion to spawning session %s "
+                    "(was %s) for routing key %s (#57498)",
+                    pinned_session_id,
+                    prior_session_id,
+                    session_key,
+                )
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             try:
@@ -15516,6 +15556,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         chat_type = str(evt.get("chat_type") or derived_chat_type or "").strip().lower()
         chat_id = str(evt.get("chat_id") or derived_chat_id or "").strip()
         if not platform_name or not chat_type or not chat_id:
+            logger.warning(
+                "Synthetic event source unresolvable: "
+                "session_key=%r platform=%r chat_type=%r chat_id=%r "
+                "evt_type=%s",
+                session_key, platform_name, chat_type, chat_id,
+                evt.get("type", "?"),
+            )
             return None
 
         try:
@@ -15568,12 +15615,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not adapter:
             return
         try:
+            metadata = {}
+            parent_session_id = str(evt.get("parent_session_id") or "").strip()
+            if parent_session_id:
+                metadata["gateway_session_id"] = parent_session_id
             synth_event = MessageEvent(
                 text=synth_text,
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
                 message_id=str(evt.get("message_id") or "").strip() or None,
+                metadata=metadata,
             )
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",

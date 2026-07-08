@@ -48,6 +48,8 @@ AUTHOR_MAP = {
     "lomliev@gmail.com": "lomliev",
     "daniel.laforce@argobox.com": "KeyArgo",
     "ishengeqi@163.com": "isheng-eqi",  # PR #59428 salvage (cron: reject past one-shot timestamps in update_job fallback + resume_job; #59395)
+    "grace@weeb.onl": "evelynburger",  # PR #57544 salvage (gateway: webhook payload filters + route scripts; commit under unlinked identity)
+    "contato@siteup.com.br": "SiteupAgencia",  # PR #57435 salvage (tui_gateway: back off notification poller when session is busy; #55578)
     "164521089+rainbowgits@users.noreply.github.com": "rainbowgore",  # PR #59405 salvage (mcp: bound stdio initialize handshake to stop subprocess/FD leak; #59349)
     "sage@Sages-Mac-mini.local": "thestudionorth",  # PR #60015 salvage (mcp: parent-death watchdog for stdio children; commit under unlinked local identity)
     "4087127+vampyren@users.noreply.github.com": "vampyren",  # PR #59830 salvage (kanban: grab-to-pan board scrolling; original commit under unlinked local identity)
@@ -897,6 +899,7 @@ AUTHOR_MAP = {
     "kshitijk4poor@gmail.com": "kshitijk4poor",
     "1294707+Tosko4@users.noreply.github.com": "Tosko4",
     "keira.voss94@gmail.com": "keiravoss94",
+    "vadim.veroslavov@mail.ru": "veradim",  # PR #41201 salvage (Z.AI endpoint persist)
     "16443023+stablegenius49@users.noreply.github.com": "stablegenius49",
     "fqsy1416@gmail.com": "EKKOLearnAI",
     "octo-patch@github.com": "octo-patch",

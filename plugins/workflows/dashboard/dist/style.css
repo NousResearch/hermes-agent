@@ -347,6 +347,23 @@
   margin-bottom: 0.5rem;
 }
 
+.hermes-workflows .hermes-workflows-inspector-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.hermes-workflows .hermes-workflows-type-badge {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.1rem 0.35rem;
+  border-radius: 0.3rem;
+  background: color-mix(in srgb, var(--color-border) 20%, transparent);
+  color: var(--color-muted-foreground);
+}
+
 /* Bottom panel: collapsible tabs for checklist / timeline / dispatcher / draft review */
 .hermes-workflows .hermes-workflows-bottom-panel {
   flex-shrink: 0;

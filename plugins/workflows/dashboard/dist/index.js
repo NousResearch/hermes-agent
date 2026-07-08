@@ -2308,7 +2308,7 @@
       );
     }
 
-    function renderAgentCellEditor() {
+    function renderAgentTaskInspector() {
       const profiles = profileRows(agentRoutingOptions);
       const providers = providerRows(agentRoutingOptions);
       const selectedProvider = providers.find(function (provider) {
@@ -2316,17 +2316,6 @@
       });
       const models = asArray(selectedProvider && selectedProvider.models);
       return h("div", { className: "hermes-workflows-stack" },
-        h("h3", null, "Cell editor"),
-        h("div", { className: "hermes-workflows-meta" }, "Agent task " + safeString(selectedNode.id)),
-        h("label", null,
-          h("span", { className: "hermes-workflows-muted" }, "Cell id"),
-          h("input", { value: cellId, onChange: function (event) { setCellId(event.target.value); }, placeholder: "cell-id" })
-        ),
-        h("label", null,
-          h("span", { className: "hermes-workflows-muted" }, "Cell type"),
-          h("input", { value: cellType, onChange: function (event) { setCellType(event.target.value); }, placeholder: "agent_task", list: "workflow-cell-type-options" })
-        ),
-        cellType !== "agent_task" ? h("p", { className: "hermes-workflows-muted" }, "Changing away from agent_task removes agent-only routing and contract fields when you apply.") : null,
         h("label", null,
           h("span", { className: "hermes-workflows-muted" }, "Assigned profile"),
           profiles.length ? h("select", { value: agentProfile, onChange: function (event) { setAgentProfile(event.target.value); } },
@@ -2363,7 +2352,6 @@
             placeholder: agentProvider ? "Model name for selected provider" : "Use profile default model",
           })
         ),
-        h("p", { className: "hermes-workflows-muted" }, "Profile selects the worker identity. Provider/model are optional per-cell overrides; leave blank to use that profile's defaults."),
         h("label", null,
           h("span", { className: "hermes-workflows-muted" }, "Task title"),
           h("input", { value: agentTitle, onChange: function (event) { setAgentTitle(event.target.value); }, placeholder: "Review change" })
@@ -2373,81 +2361,115 @@
           h("textarea", { className: "hermes-workflows-prompt-editor", value: promptText, onChange: function (event) { setPromptText(event.target.value); }, placeholder: "Tell the assigned profile exactly what to do. Use ${ input.foo } or ${ node.previous.output.bar } for workflow context." })
         ),
         h("label", null,
-          h("span", { className: "hermes-workflows-muted" }, "Result contract JSON (optional)"),
+          h("span", { className: "hermes-workflows-muted" }, "Result contract JSON"),
           h("textarea", { className: "hermes-workflows-contract-editor", value: resultContractText, onChange: function (event) { setResultContractText(event.target.value); } })
         ),
-        h("div", { className: "hermes-workflows-row" },
-          h("button", { type: "button", onClick: applyAgentCellForm, className: "hermes-workflows-primary" }, "Apply cell prompt"),
-          h("button", { type: "button", onClick: function () { setPromptAssistantOpen(!promptAssistantOpen); } }, promptAssistantOpen ? "Hide Prompt assistant" : "Prompt assistant"),
-          h("button", { type: "button", onClick: function () { setAdvancedJsonOpen(!advancedJsonOpen); } }, advancedJsonOpen ? "Hide Advanced JSON" : "Advanced JSON")
-        ),
+        h("button", { type: "button", onClick: function () { setPromptAssistantOpen(!promptAssistantOpen); } }, promptAssistantOpen ? "Hide Prompt assistant" : "Prompt assistant"),
         renderPromptAssistant()
       );
     }
 
-    function renderBasicCellEditor() {
+    function renderTriggerInspector() {
       return h("div", { className: "hermes-workflows-stack" },
-        h("h3", null, "Cell editor"),
-        h("div", { className: "hermes-workflows-meta" }, "Edit common cell settings here. Advanced JSON is optional for uncommon fields."),
         h("label", null,
-          h("span", { className: "hermes-workflows-muted" }, "Cell id"),
-          h("input", { value: cellId, onChange: function (event) { setCellId(event.target.value); }, placeholder: "cell-id" })
+          h("span", { className: "hermes-workflows-muted" }, "Trigger type"),
+          h("input", { value: cellType, onChange: function (event) { setCellType(event.target.value); }, placeholder: "manual", list: "workflow-trigger-type-options" })
         ),
-        h("label", null,
-          h("span", { className: "hermes-workflows-muted" }, selectedNode && selectedNode.specKind === "trigger" ? "Trigger type" : "Cell type"),
-          h("input", { value: cellType, onChange: function (event) { setCellType(event.target.value); }, placeholder: selectedNode && selectedNode.specKind === "trigger" ? "manual" : "pass", list: selectedNode && selectedNode.specKind === "trigger" ? "workflow-trigger-type-options" : "workflow-cell-type-options" })
-        ),
-        h("label", null,
-          h("span", { className: "hermes-workflows-muted" }, "Title / description"),
-          h("input", { value: agentTitle, onChange: function (event) { setAgentTitle(event.target.value); }, placeholder: "What this cell does" })
-        ),
-        selectedNode && selectedNode.specKind === "trigger" && cellType === "schedule" ? h("label", null,
+        cellType === "schedule" ? h("label", null,
           h("span", { className: "hermes-workflows-muted" }, "Schedule / cron"),
           h("input", { value: triggerSchedule, onChange: function (event) { setTriggerSchedule(event.target.value); }, placeholder: "0 9 * * *" })
-        ) : null,
-        selectedNode && selectedNode.specKind !== "trigger" && cellType === "wait" ? h("label", null,
+        ) : null
+      );
+    }
+
+    function renderSwitchInspector() {
+      return h("div", { className: "hermes-workflows-stack" },
+        h("label", null,
+          h("span", { className: "hermes-workflows-muted" }, "Default target cell"),
+          h("input", { value: switchDefault, onChange: function (event) { setSwitchDefault(event.target.value); }, placeholder: "Optional target id; or connect from switch.default" })
+        ),
+        h("div", { className: "hermes-workflows-meta" }, "Switch cases: " + (switchCases.length ? switchCases.map(function (item) { return item && item.name; }).filter(Boolean).join(", ") : "none yet")),
+        h("div", { className: "hermes-workflows-row" },
+          h("input", { value: switchCaseName, onChange: function (event) { setSwitchCaseName(event.target.value); }, placeholder: "Case name, e.g. approved" }),
+          h("input", { value: switchCasePath, onChange: function (event) { setSwitchCasePath(event.target.value); }, placeholder: "$.input.status" }),
+          h("input", { value: switchCaseEquals, onChange: function (event) { setSwitchCaseEquals(event.target.value); }, placeholder: "Equals value" }),
+          h("button", { type: "button", onClick: addSwitchCaseFromUi }, "Add case")
+        )
+      );
+    }
+
+    function renderWaitInspector() {
+      return h("div", { className: "hermes-workflows-stack" },
+        h("label", null,
           h("span", { className: "hermes-workflows-muted" }, "Wait seconds"),
           h("input", { value: cellSeconds, onChange: function (event) { setCellSeconds(event.target.value); }, placeholder: "60" })
-        ) : null,
-        selectedNode && selectedNode.specKind !== "trigger" && (cellType === "pass" || cellType === "fail") ? h("label", null,
-          h("span", { className: "hermes-workflows-muted" }, cellType === "fail" ? "Failure message" : "Output text"),
-          h("textarea", { className: "hermes-workflows-prompt-editor", value: cellOutputText, onChange: function (event) { setCellOutputText(event.target.value); }, placeholder: cellType === "fail" ? "Why this workflow should fail." : "Optional output text for this cell." })
-        ) : null,
-        selectedNode && selectedNode.specKind !== "trigger" && cellType === "switch" ? h("div", { className: "hermes-workflows-stack" },
-          h("label", null,
-            h("span", { className: "hermes-workflows-muted" }, "Default target cell"),
-            h("input", { value: switchDefault, onChange: function (event) { setSwitchDefault(event.target.value); }, placeholder: "Optional target id; or connect from switch.default" })
-          ),
-          h("div", { className: "hermes-workflows-meta" }, "Switch cases: " + (switchCases.length ? switchCases.map(function (item) { return item && item.name; }).filter(Boolean).join(", ") : "none yet")),
-          h("div", { className: "hermes-workflows-row" },
-            h("input", { value: switchCaseName, onChange: function (event) { setSwitchCaseName(event.target.value); }, placeholder: "Case name / branch, e.g. approved" }),
-            h("input", { value: switchCasePath, onChange: function (event) { setSwitchCasePath(event.target.value); }, placeholder: "Input path, e.g. $.input.status" }),
-            h("input", { value: switchCaseEquals, onChange: function (event) { setSwitchCaseEquals(event.target.value); }, placeholder: "Equals value" }),
-            h("button", { type: "button", onClick: addSwitchCaseFromUi }, "Add switch case")
-          )
-        ) : null,
-        selectedNode && selectedNode.specKind !== "trigger" && cellType === "parallel" ? h("p", { className: "hermes-workflows-muted" }, "Parallel branch edges use Connect cells with sources like cell.branch_name.") : null,
-        selectedNode && selectedNode.specKind !== "trigger" && cellType === "join" ? h("p", { className: "hermes-workflows-muted" }, "Join waits for incoming branches and needs only incoming/outgoing connections.") : null,
-        selectedNode && selectedNode.specKind === "trigger" ? null : h("label", null,
-          h("span", { className: "hermes-workflows-muted" }, "Notes or prompt"),
-          h("textarea", { className: "hermes-workflows-prompt-editor", value: promptText, onChange: function (event) { setPromptText(event.target.value); }, placeholder: "Optional plain-language instructions for this cell." })
-        ),
-        h("div", { className: "hermes-workflows-row" },
-          h("button", { type: "button", onClick: applyBasicCellForm, className: "hermes-workflows-primary" }, "Apply cell changes"),
-          h("button", { type: "button", onClick: function () { setAdvancedJsonOpen(!advancedJsonOpen); } }, advancedJsonOpen ? "Hide Advanced JSON" : "Advanced JSON")
         )
+      );
+    }
+
+    function renderPassFailInspector(kind) {
+      return h("div", { className: "hermes-workflows-stack" },
+        h("label", null,
+          h("span", { className: "hermes-workflows-muted" }, kind === "fail" ? "Failure message" : "Output text"),
+          h("textarea", { className: "hermes-workflows-prompt-editor", value: cellOutputText, onChange: function (event) { setCellOutputText(event.target.value); }, placeholder: kind === "fail" ? "Why this workflow should fail." : "Optional output text for this cell." })
+        )
+      );
+    }
+
+    function renderMinimalInspector() {
+      return h("div", { className: "hermes-workflows-stack" },
+        h("p", { className: "hermes-workflows-muted" }, "Connect incoming and outgoing edges on the canvas."),
+        h("label", null,
+          h("span", { className: "hermes-workflows-muted" }, "Notes"),
+          h("textarea", { className: "hermes-workflows-prompt-editor", value: promptText, onChange: function (event) { setPromptText(event.target.value); }, placeholder: "Optional notes for this cell." })
+        )
+      );
+    }
+
+    function renderInspectorForType(spec) {
+      if (!selectedNode) return null;
+      var kind = selectedNode.specKind === "trigger" ? "trigger" : (cellType || selectedNode.type || "pass");
+      var header = h("div", { className: "hermes-workflows-inspector-header" },
+        h("strong", null, safeString(selectedNode.id)),
+        h("span", { className: "hermes-workflows-type-badge" }, kind)
+      );
+      var idField = h("label", null,
+        h("span", { className: "hermes-workflows-muted" }, "ID"),
+        h("input", { value: cellId, onChange: function (event) { setCellId(event.target.value); }, placeholder: "cell-id" })
+      );
+      var body;
+      if (kind === "agent_task") {
+        body = renderAgentTaskInspector();
+      } else if (kind === "trigger") {
+        body = renderTriggerInspector();
+      } else if (kind === "switch") {
+        body = renderSwitchInspector();
+      } else if (kind === "wait") {
+        body = renderWaitInspector();
+      } else if (kind === "pass" || kind === "fail") {
+        body = renderPassFailInspector(kind);
+      } else {
+        body = renderMinimalInspector();
+      }
+      var applyHandler = kind === "agent_task" ? applyAgentCellForm : applyBasicCellForm;
+      return h("div", { className: "hermes-workflows-stack" },
+        header,
+        idField,
+        body,
+        h("div", { className: "hermes-workflows-row" },
+          h("button", { type: "button", onClick: applyHandler, className: "hermes-workflows-primary" }, "Apply"),
+          h("button", { type: "button", onClick: deleteSelectedCell }, "Delete"),
+          h("button", { type: "button", onClick: function () { setAdvancedJsonOpen(!advancedJsonOpen); } }, advancedJsonOpen ? "Hide JSON" : "Advanced JSON")
+        ),
+        advancedJsonOpen ? renderAdvancedNodeJson(spec) : null,
+        nodeMessage ? h("p", { className: "hermes-workflows-muted" }, nodeMessage) : null
       );
     }
 
     function renderInspector(spec) {
       return h("aside", { className: "hermes-workflows-inspector" },
         h("h3", null, "Node inspector"),
-        selectedNode ? h("div", { className: "hermes-workflows-stack" },
-          selectedNode.type === "agent_task" && cellType === "agent_task" ? renderAgentCellEditor() : renderBasicCellEditor(),
-          h("button", { type: "button", onClick: deleteSelectedCell }, "Delete selected cell"),
-          advancedJsonOpen ? renderAdvancedNodeJson(spec) : null,
-          nodeMessage ? h("p", { className: "hermes-workflows-muted" }, nodeMessage) : null
-        ) : h("p", { className: "hermes-workflows-muted" }, "Choose a node from the palette, select it on the canvas, then configure it in Properties.")
+        selectedNode ? renderInspectorForType(spec) : h("p", { className: "hermes-workflows-muted" }, "Choose a node from the palette, select it on the canvas, then configure it in Properties.")
       );
     }
 

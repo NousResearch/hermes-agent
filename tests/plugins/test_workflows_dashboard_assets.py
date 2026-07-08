@@ -22,8 +22,8 @@ def test_workflow_dashboard_has_accessible_cell_editor_path() -> None:
     assert "Workflow cell list" in text
     assert "Edit cell" in text
     assert "aria-label" in text
-    assert "Edit common cell settings here" in text
-    assert "Apply cell changes" in text
+    assert "renderInspectorForType" in text
+    assert "Apply" in text
     assert "This node type does not have a prompt form yet" not in text
 
 
@@ -65,8 +65,8 @@ def test_workflow_dashboard_exposes_ui_only_builder_controls() -> None:
         "Start from blank workflow",
         "Add workflow cell",
         "Add trigger",
-        "Delete selected cell",
-        "Add switch case",
+        "Delete",
+        "Add case",
         "Validate draft",
         "Deploy draft",
         "workflow-cell-type-options",
@@ -115,6 +115,20 @@ def test_workflow_dashboard_blocks_trigger_edges_that_backend_rejects() -> None:
     assert "function isTriggerSource" in text
     assert "Triggers start workflows automatically; connect cells to other cells, not triggers." in text
     assert "if (isTriggerSource(spec, connection.source))" in text
+
+
+def test_workflow_dashboard_inspector_shows_only_relevant_fields() -> None:
+    text = BUNDLE.read_text(encoding="utf-8")
+    assert "renderInspectorForType" in text
+    assert "renderAgentTaskInspector" in text
+    assert "renderTriggerInspector" in text
+    assert "renderSwitchInspector" in text
+    assert "renderWaitInspector" in text
+    assert "renderPassFailInspector" in text
+    assert "renderMinimalInspector" in text
+    assert "\"Cell editor\"" not in text
+    assert "hermes-workflows-inspector-header" in text
+    assert "hermes-workflows-type-badge" in text
 
 
 def test_workflow_dashboard_persists_node_positions() -> None:

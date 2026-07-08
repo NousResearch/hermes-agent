@@ -1869,18 +1869,16 @@ def test_dashboard_bundle_contains_text_first_agent_cell_editor_markers():
     bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
 
     for marker in [
-        "Cell editor",
+        "renderAgentTaskInspector",
         "Agent cell prompt",
         "Prompt assistant",
         "Advanced JSON",
         "applyAgentCellForm",
-        "renderAgentCellEditor",
+        "renderInspectorForType",
         "promptText",
         "resultContractText",
         "/prompt-assistant/draft",
         "draftPromptWithAssistant",
-        "Available context placeholders",
-        "Expected output contract JSON",
     ]:
         assert marker in bundle
 

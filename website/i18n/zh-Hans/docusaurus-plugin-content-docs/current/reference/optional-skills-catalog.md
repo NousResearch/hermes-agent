@@ -73,12 +73,6 @@ hermes skills uninstall <skill-name>
 |-------|-------------|
 | [**adversarial-ux-test**](/user-guide/skills/optional/dogfood/dogfood-adversarial-ux-test) | 扮演产品中最难应对的技术抵触型用户。以该角色浏览应用，找出所有 UX 痛点，再通过实用主义过滤层区分真实问题与噪音，生成可执行的工单。 |
 
-## email
-
-| 技能 | 描述 |
-|-------|-------------|
-| [**agentmail**](/user-guide/skills/optional/email/email-agentmail) | 通过 AgentMail 为 agent 提供专属邮箱。使用 agent 专属邮件地址（如 hermes-agent@agentmail.to）自主发送、接收和管理邮件。 |
-
 ## finance
 
 | 技能 | 描述 |

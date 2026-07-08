@@ -207,6 +207,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-email',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/bundled/email/email-agentmail',
                     'user-guide/skills/bundled/email/email-himalaya',
                   ],
                 },
@@ -411,15 +412,6 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/dogfood/dogfood-adversarial-ux-test',
-                  ],
-                },
-                {
-                  type: 'category',
-                  label: 'email',
-                  key: 'skills-optional-email',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/optional/email/email-agentmail',
                   ],
                 },
                 {

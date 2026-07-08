@@ -74,6 +74,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| [`agentmail`](/docs/user-guide/skills/bundled/email/email-agentmail) | Use when an agent needs AgentMail CLI email inboxes. | `email/agentmail` |
 | [`himalaya`](/docs/user-guide/skills/bundled/email/email-himalaya) | Himalaya CLI: IMAP/SMTP email from terminal. | `email/himalaya` |
 
 ## github

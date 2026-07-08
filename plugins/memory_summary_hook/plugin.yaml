@@ -1,0 +1,5 @@
+name: memory_summary_hook
+description: "pre_llm_call hook — v2 新对话首轮用 DeepSeek V3 重新生成摘要，后续轮次复用。替代 cron 的每日一次更新。"
+version: "2.0"
+hooks:
+  - pre_llm_call

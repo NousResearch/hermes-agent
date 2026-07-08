@@ -1,0 +1,6 @@
+name: bg-progress-logger
+version: "1.0"
+description: "后台任务进度日志——拦截 terminal(background=true)，自动写入 progress.log。UUID标识 + 原子写入 + 启动验证。"
+hooks:
+  - pre_tool_call
+  - post_tool_call

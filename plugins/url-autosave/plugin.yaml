@@ -1,0 +1,7 @@
+name: url-autosave
+version: "1.0"
+description: "用户发链接时自动将 web_extract 结果落盘到 kaah/inbox/。去重、不存失败结果。"
+hooks:
+  - post_tool_call
+author: 常青
+created: 2026-07-06

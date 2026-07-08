@@ -1,0 +1,2 @@
+hooks:
+  - transform_llm_output

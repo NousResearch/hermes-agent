@@ -1,0 +1,5 @@
+name: clarify_guard
+description: "pre_llm_call hook — 每轮注入交互检查提醒，引导 Agent 在歧义时使用 clarify 工具反问"
+version: "1.0"
+hooks:
+  - pre_llm_call

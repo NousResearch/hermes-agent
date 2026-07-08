@@ -1,0 +1,5 @@
+name: mode-1a-scan
+description: "Mode 1A 自动扫描——每轮策略性回复末尾追加异质视角问题。同步Flash调用，~1s延迟。"
+version: "1.0"
+hooks:
+  - transform_llm_output

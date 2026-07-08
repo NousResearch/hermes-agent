@@ -1,0 +1,5 @@
+name: conclusion-anchor
+description: "结论锚点——异步输出侧事实验证。每轮Pro回复后Flash直读MEMORY.md全文做矛盾判断，发现矛盾时send_weixin_direct追加⚡消息。"
+version: "1.0"
+hooks:
+  - transform_llm_output

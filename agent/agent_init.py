@@ -2048,16 +2048,17 @@ def init_agent(
     # Gateway status_callback is not yet wired, so any warning is stored
     # in _compression_warning and replayed in the first run_conversation().
     agent._compression_warning = None
-    # Gateway parity for the Codex gpt-5.x autoraise notice: the startup print
-    # above only reaches the CLI, so stash the same text here to be replayed
-    # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
-    if _show_autoraise_notice:
+    # Keep the Codex autoraise lifecycle hint out of gateway replay. Compression
+    # feasibility warnings still use this slot, but an informational threshold
+    # banner would otherwise arrive as a Telegram/Discord status message during
+    # agent construction instead of when the user can act on it.
+    _platform = agent.platform or "cli"
+    if _show_autoraise_notice and _platform == "cli":
         agent._compression_warning = _build_codex_gpt5_autoraise_notice(_autoraise)
 
-    # Mark shown so repeated inits in this profile (e.g. every gateway message)
-    # stay silent. Recorded once, whether the notice went to the CLI print or
-    # the gateway replay slot.
-    if _show_autoraise_notice:
+    # Mark shown only when a surface actually received it. Gateway sessions stay
+    # silent and do not consume the CLI's one-time profile notice.
+    if _show_autoraise_notice and (_platform == "cli" or not agent.quiet_mode):
         _record_codex_gpt55_autoraise_notice(_autoraise)
     # Lazy feasibility check: deferred to the first turn that approaches the
     # compression threshold. Running it eagerly here costs ~400ms cold (network

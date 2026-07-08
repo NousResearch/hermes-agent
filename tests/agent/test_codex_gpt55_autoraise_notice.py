@@ -108,8 +108,7 @@ def test_codex_gpt55_autoraise_notice_can_be_suppressed_without_disabling_autora
 
 
 def test_codex_gpt55_autoraise_notice_deduped_across_agent_inits(monkeypatch, tmp_path):
-    # Gateway spam scenario (#54432): the gateway rebuilds the agent per
-    # inbound message. The first init shows the notice; the second stays
+    # CLI/local startup shows the notice once; subsequent agent inits stay
     # silent because the per-profile marker was recorded.
     agent1, stdout1 = _make_codex_agent(monkeypatch, tmp_path, show_notice=True)
     assert "auto-compaction was raised" in stdout1
@@ -119,6 +118,34 @@ def test_codex_gpt55_autoraise_notice_deduped_across_agent_inits(monkeypatch, tm
     assert _threshold_ratio(agent2) == 0.85  # autoraise still applies
     assert "auto-compaction was raised" not in stdout2
     assert getattr(agent2, "_compression_warning") is None
+
+
+def test_codex_gpt55_autoraise_notice_not_replayed_as_gateway_status(monkeypatch, tmp_path):
+    # Gateway spam scenario: lifecycle hints must not be stashed in
+    # _compression_warning, because run_conversation replays that slot through
+    # status_callback as a Telegram/Discord/etc. message.
+    from hermes_cli import config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: _config(show_notice=True))
+    db = SessionDB(db_path=tmp_path / "gateway-state.db")
+
+    agent = AIAgent(
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="test-key",
+        provider="openai-codex",
+        model="gpt-5.5",
+        enabled_toolsets=[],
+        disabled_toolsets=[],
+        quiet_mode=True,
+        platform="telegram",
+        skip_memory=True,
+        session_db=db,
+        session_id="codex-gateway-notice-test",
+    )
+
+    assert _threshold_ratio(agent) == 0.85
+    assert getattr(agent, "_compression_threshold_autoraised") == AUTORAISE
+    assert getattr(agent, "_compression_warning") is None
 
 
 # ── per-profile dedupe marker (#54432) ───────────────────────────────────────

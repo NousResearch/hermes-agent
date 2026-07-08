@@ -267,8 +267,15 @@ class TestWebServerEndpoints:
         assert "active_sessions" in data
         assert data["can_update_hermes"] is True
 
-    def test_status_active_session_count_uses_read_only_db(self, monkeypatch):
+    def test_status_active_session_count_uses_read_only_db(self, monkeypatch, tmp_path):
         import hermes_cli.web_server as web_server
+        import hermes_state
+
+        # Satisfy the fresh-install guard: read_only opens require the DB
+        # file to already exist.
+        fake_db_path = tmp_path / "state.db"
+        fake_db_path.touch()
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", fake_db_path)
 
         captured = {}
 
@@ -292,6 +299,20 @@ class TestWebServerEndpoints:
 
         assert web_server._count_status_active_sessions() == 1
         assert captured == {"read_only": True, "limit": 50, "closed": True}
+
+    def test_status_active_session_count_fresh_install_returns_zero(self, monkeypatch, tmp_path):
+        """No state.db yet (fresh install): return 0 without attempting a
+        read-only open, which would raise OperationalError on every poll."""
+        import hermes_cli.web_server as web_server
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "absent.db")
+
+        def _boom(*a, **k):
+            raise AssertionError("SessionDB must not be constructed when db file is absent")
+
+        monkeypatch.setattr("hermes_state.SessionDB", _boom)
+        assert web_server._count_status_active_sessions() == 0
 
     def test_get_status_degrades_when_active_session_count_fails(self, monkeypatch):
         import hermes_cli.web_server as web_server

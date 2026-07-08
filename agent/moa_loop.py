@@ -270,6 +270,59 @@ def _run_reference(
         # (their caching is automatic; markers are ignored harmlessly, but we
         # only decorate when the policy says the route honors them).
         messages = _maybe_apply_moa_cache_control(messages, runtime)
+        # Context window guard: estimate whether the advisory messages
+        # exceed the reference model's context limit.  A reference with a
+        # smaller window than the aggregator (e.g. kimi-k2.7-code at 262K
+        # vs glm-5.2 at 1M) would otherwise get a hard HTTP 400 when the
+        # conversation grows past its limit.  We trim the oldest user/
+        # assistant pairs until the estimate fits or we reach the latest
+        # user turn, keeping at least the most recent exchange so the
+        # reference can still judge the current state.
+        from agent.model_metadata import (
+            estimate_messages_tokens_rough,
+            get_model_context_length,
+        )
+        _ref_model = runtime.get("model") or slot.get("model", "")
+        _ref_provider = runtime.get("provider") or slot.get("provider", "")
+        _ref_base_url = runtime.get("base_url", "")
+        _ref_context = get_model_context_length(
+            _ref_model,
+            base_url=_ref_base_url,
+            provider=_ref_provider,
+        )
+        _SAFETY_MARGIN = 0.90  # keep 10% headroom from the hard limit
+        _ref_threshold = int(_ref_context * _SAFETY_MARGIN) if _ref_context else 0
+        if _ref_threshold > 0:
+            _est = estimate_messages_tokens_rough(messages)
+            _trim_attempts = 0
+            while _est > _ref_threshold and len(messages) > 2 and _trim_attempts < 5:
+                # Drop the oldest non-system pair (first user+assistant after
+                # the system message).  Keep the system prompt and at minimum
+                # the latest user turn.
+                for _i in range(1, len(messages) - 1):
+                    if messages[_i].get("role") == "user":
+                        # Remove this user turn and the corresponding
+                        # assistant turn that follows (if any).
+                        _drop_end = _i + 1
+                        if _drop_end < len(messages) and messages[_drop_end].get("role") == "assistant":
+                            messages = messages[:_i] + messages[_drop_end + 1:]
+                        else:
+                            messages = messages[:_i] + messages[_i + 1:]
+                        _trim_attempts += 1
+                        _est = estimate_messages_tokens_rough(messages)
+                        break
+                else:
+                    # No user turn found to trim — break loop
+                    break
+            if _trim_attempts > 0:
+                logger.info(
+                    "MoA reference %s: trimmed %d turn(s) to fit context window "
+                    "(~%d est. tokens of %d limit)",
+                    label,
+                    _trim_attempts,
+                    _est,
+                    _ref_context,
+                )
         response = call_llm(
             task="moa_reference",
             messages=messages,

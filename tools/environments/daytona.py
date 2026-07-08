@@ -235,8 +235,27 @@ class DaytonaEnvironment(BaseEnvironment):
         else:
             shell_cmd = f"bash -c {shlex.quote(cmd_string)}"
 
+        # Forward allowlisted env vars to the remote sandbox.  Only
+        # variables registered via terminal.env_passthrough or a skill's
+        # required_environment_variables are forwarded — Hermes-managed
+        # provider credentials (OPENAI_API_KEY, ANTHROPIC_TOKEN, etc.)
+        # are blocked by is_env_passthrough.
+        try:
+            from tools.env_passthrough import is_env_passthrough as _is_passthrough
+        except Exception:
+            _is_passthrough = lambda _: False  # noqa: E731
+
+        passthrough_env = {
+            k: v for k, v in os.environ.items()
+            if _is_passthrough(k)
+        }
+
         def exec_fn() -> tuple[str, int]:
-            response = sandbox.process.exec(shell_cmd, timeout=timeout)
+            response = sandbox.process.exec(
+                shell_cmd,
+                timeout=timeout,
+                env=passthrough_env if passthrough_env else None,
+            )
             return (response.result or "", response.exit_code)
 
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel)

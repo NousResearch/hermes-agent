@@ -56,6 +56,7 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
+from hermes_telemetry import error_fingerprint, safe_emit_event, stable_hash
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -140,6 +141,115 @@ _GATEWAY_AUTH_ERROR_RE = re.compile(
     r"(provider\s+authentication\s+failed|incorrect\s+api\s+key|invalid\s+api\s+key|\b401\b)",
     re.IGNORECASE,
 )
+
+
+def _result_response_chars(result: Any) -> int:
+    """Return final-response length without exposing response content."""
+    if isinstance(result, dict):
+        return len(str(result.get("final_response") or ""))
+    if isinstance(result, str):
+        return len(result)
+    return 0
+
+
+def _gateway_action_status(result: Any, error: BaseException | None = None) -> str:
+    """Classify a gateway action outcome for privacy-preserving telemetry."""
+    if error is not None:
+        return "error"
+    if isinstance(result, dict):
+        if result.get("interrupted"):
+            return "interrupted"
+        if result.get("failed") or result.get("error"):
+            return "error"
+        if result.get("partial"):
+            return "partial"
+    return "ok"
+
+
+def _build_gateway_action_telemetry_payload(
+    *,
+    source: Any,
+    event: Any,
+    session_key: str | None,
+    result: Any = None,
+    duration_ms: int = 0,
+    error: BaseException | None = None,
+) -> dict[str, Any]:
+    """Build a privacy-safe gateway action payload.
+
+    Raw message text, response text, user names, chat names, and platform IDs are
+    intentionally excluded.  IDs are represented only by stable hashes so local
+    summaries can group events without storing PII.
+    """
+    platform = getattr(source, "platform", None)
+    platform_name = getattr(platform, "value", platform) or "unknown"
+    message_type = getattr(event, "message_type", None)
+    message_type_name = getattr(message_type, "value", message_type) or "unknown"
+    command_name = None
+    try:
+        command_name = event.get_command()
+    except Exception:
+        command_name = None
+
+    payload: dict[str, Any] = {
+        "platform": str(platform_name),
+        "chat_type": str(getattr(source, "chat_type", "unknown") or "unknown"),
+        "message_type": str(message_type_name),
+        "is_internal": bool(getattr(event, "internal", False)),
+        "is_command": bool(command_name),
+        "command_hash": stable_hash(command_name),
+        "has_media": bool(getattr(event, "media_urls", None)),
+        "media_count": len(getattr(event, "media_urls", None) or []),
+        "session_key_hash": stable_hash(session_key),
+        "user_id_hash": stable_hash(getattr(source, "user_id", None)),
+        "chat_id_hash": stable_hash(getattr(source, "chat_id", None)),
+        "thread_id_hash": stable_hash(getattr(source, "thread_id", None)),
+        "response_chars": _result_response_chars(result),
+        "duration_ms": int(duration_ms),
+    }
+    if isinstance(result, dict):
+        payload.update(
+            {
+                "api_calls": int(result.get("api_calls") or 0),
+                "tools_count": len(result.get("tools") or []),
+                "model_hash": stable_hash(result.get("model")),
+                "input_tokens": int(result.get("input_tokens") or 0),
+                "output_tokens": int(result.get("output_tokens") or 0),
+            }
+        )
+        if result.get("error"):
+            payload["error_fingerprint"] = error_fingerprint(result.get("error"))
+    if error is not None:
+        payload["error_type"] = type(error).__name__
+        payload["error_fingerprint"] = error_fingerprint(error)
+    return payload
+
+
+def _emit_gateway_action_telemetry(
+    *,
+    source: Any,
+    event: Any,
+    session_key: str | None,
+    result: Any = None,
+    started_at: float,
+    error: BaseException | None = None,
+) -> None:
+    """Best-effort gateway telemetry; never break message handling."""
+    duration_ms = int((time.perf_counter() - started_at) * 1000)
+    status = _gateway_action_status(result, error)
+    safe_emit_event(
+        "gateway_action",
+        _build_gateway_action_telemetry_payload(
+            source=source,
+            event=event,
+            session_key=session_key,
+            result=result,
+            duration_ms=duration_ms,
+            error=error,
+        ),
+        status=status,
+        source="gateway",
+    )
 
 _GATEWAY_RATE_LIMIT_RE = re.compile(
     r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit)",
@@ -10376,8 +10486,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
 
+        _gateway_action_started_at = time.perf_counter()
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            _emit_gateway_action_telemetry(
+                source=source,
+                event=event,
+                session_key=_quick_key,
+                result=_agent_result,
+                started_at=_gateway_action_started_at,
+            )
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -10407,6 +10525,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _goal_exc:
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
             return _agent_result
+        except Exception as _gateway_action_exc:
+            _emit_gateway_action_telemetry(
+                source=source,
+                event=event,
+                session_key=_quick_key,
+                started_at=_gateway_action_started_at,
+                error=_gateway_action_exc,
+            )
+            raise
         finally:
             # MoA one-shot restore must run on EVERY exit path, not just
             # success. The restore data lives on the per-turn event object

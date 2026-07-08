@@ -159,6 +159,22 @@ def test_event_subscriber_replays_frames_published_during_refresh_gap(pty_client
             assert events.receive_text() == frame_2
 
 
+def test_event_replay_skips_oversized_frames(pty_client, monkeypatch):
+    """Refresh replay is bounded by bytes as well as frame count."""
+    ws, client, token = pty_client
+    monkeypatch.setattr(ws, "_EVENT_REPLAY_MAX_PAYLOAD_BYTES", 32)
+    channel = "event-replay-size-chan"
+    oversized = "x" * 128
+    small = "ok"
+
+    with client.websocket_connect(f"/api/pub?token={token}&channel={channel}") as pub:
+        pub.send_text(oversized)
+        pub.send_text(small)
+
+        with client.websocket_connect(f"/api/events?token={token}&channel={channel}") as events:
+            assert events.receive_text() == small
+
+
 def test_child_eof_closes_socket_and_bridge(pty_client, monkeypatch):
     """Child EOF must close the WS server-side and reap the PTY.
 

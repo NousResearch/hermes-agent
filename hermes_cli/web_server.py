@@ -126,7 +126,10 @@ _log = logging.getLogger(__name__)
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
 # the chat tab generates on mount; entries auto-evict when the last subscriber
-# drops AND the publisher has disconnected.
+# drops AND the publisher has disconnected.  Subscribers are per-socket queues,
+# not raw WebSocket objects: each /api/events handler is the only coroutine that
+# sends on its socket, so replayed refresh-gap frames cannot race with live
+# broadcasts and reorder/corrupt the ASGI send stream.
 #
 # State lives on app.state (not module-level globals) so that asyncio.Lock is
 # created on the running event loop during lifespan startup.  A module-level
@@ -135,6 +138,41 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _EVENT_REPLAY_CAP = 512
+_EVENT_REPLAY_MAX_PAYLOAD_BYTES = 256 * 1024
+_EVENT_SUBSCRIBER_QUEUE_CAP = _EVENT_REPLAY_CAP * 2
+
+
+def _payload_replayable(payload: str) -> bool:
+    """Return whether a sidecar frame is small enough to retain for replay."""
+    return len(payload.encode("utf-8", "replace")) <= _EVENT_REPLAY_MAX_PAYLOAD_BYTES
+
+
+def _queue_event_for_subscriber(queue: "asyncio.Queue[str]", payload: str) -> None:
+    """Enqueue a frame for one subscriber without letting a slow tab grow RAM.
+
+    The browser reconnect path should prefer the most recent tool/progress
+    frames over stale ones.  If a tab stops draining its queue, drop the oldest
+    queued frame before adding the new one; the PTY byte stream and bounded
+    replay buffer still provide the durable chat transcript recovery path.
+    """
+    try:
+        queue.put_nowait(payload)
+        return
+    except asyncio.QueueFull:
+        pass
+
+    try:
+        queue.get_nowait()
+    except asyncio.QueueEmpty:
+        pass
+
+    try:
+        queue.put_nowait(payload)
+    except asyncio.QueueFull:
+        # Another producer won the race after we made room. Drop this frame;
+        # this sidecar channel is best-effort and must never stall the agent.
+        pass
+
 
 def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60) -> None:
     """Tick the cron scheduler from inside the desktop dashboard backend.
@@ -14666,24 +14704,23 @@ async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
     structured sidecar channel would otherwise drop tool/progress/reasoning
     events emitted with no subscriber attached. Keep a small per-channel replay
     buffer so the reloaded sidebar catches up before receiving live frames.
+
+    Each subscriber owns its WebSocket sends via an asyncio.Queue.  This avoids
+    concurrent `send_text()` calls when a fresh subscriber is replaying buffered
+    frames while `/api/pub` receives a live frame.
     """
     event_channels, event_lock = _get_event_state(app)
     event_buffers = _get_event_buffers(app)
     async with event_lock:
-        buf = event_buffers.setdefault(
-            channel,
-            deque(maxlen=_EVENT_REPLAY_CAP),
-        )
-        buf.append(payload)
+        if _payload_replayable(payload):
+            buf = event_buffers.setdefault(
+                channel,
+                deque(maxlen=_EVENT_REPLAY_CAP),
+            )
+            buf.append(payload)
         subs = list(event_channels.get(channel, ()))
-
-    for sub in subs:
-        try:
-            await sub.send_text(payload)
-        except Exception:
-            # Subscriber went away mid-send; the /api/events finally clause
-            # will remove it from the registry on its next iteration.
-            _log.warning("broadcast send failed for subscriber on %s", channel, exc_info=True)
+        for sub in subs:
+            _queue_event_for_subscriber(sub, payload)
 
 
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
@@ -15590,17 +15627,21 @@ async def events_ws(ws: WebSocket) -> None:
 
     await ws.accept()
 
+    queue: "asyncio.Queue[str]" = asyncio.Queue(maxsize=_EVENT_SUBSCRIBER_QUEUE_CAP)
     event_channels, event_lock = _get_event_state(ws.app)
     event_buffers = _get_event_buffers(ws.app)
     event_publishers = _get_event_publishers(ws.app)
     async with event_lock:
-        event_channels.setdefault(channel, set()).add(ws)
-        replay = list(event_buffers.get(channel, ()))
+        for payload in event_buffers.get(channel, ()):
+            _queue_event_for_subscriber(queue, payload)
+        event_channels.setdefault(channel, set()).add(queue)
 
+    async def _send_loop() -> None:
+        while True:
+            await ws.send_text(await queue.get())
+
+    sender = asyncio.create_task(_send_loop())
     try:
-        for payload in replay:
-            await ws.send_text(payload)
-
         while True:
             # Subscribers don't speak — the receive() just blocks until
             # disconnect so the connection stays open as long as the
@@ -15609,11 +15650,21 @@ async def events_ws(ws: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        sender.cancel()
+        try:
+            await sender
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            # The receive side is already disconnecting; a concurrent send-side
+            # close is expected and should not mask cleanup.
+            _log.debug("/api/events sender stopped for %s", channel, exc_info=True)
+
         async with event_lock:
             subs = event_channels.get(channel)
 
             if subs is not None:
-                subs.discard(ws)
+                subs.discard(queue)
 
                 if not subs:
                     event_channels.pop(channel, None)

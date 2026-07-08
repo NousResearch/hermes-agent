@@ -8,7 +8,9 @@ import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { Bug } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { PREVIEW_PANE_ID } from '@/store/layout'
 import { notify, notifyError } from '@/store/notifications'
+import { setPaneWidthOverride } from '@/store/panes'
 import { $previewServerRestart, failPreviewServerRestart, type PreviewTarget } from '@/store/preview'
 
 import {
@@ -21,6 +23,7 @@ import {
 } from './preview-console'
 import { type ConsoleEntry, createPreviewConsoleState } from './preview-console-state'
 import { LocalFilePreview, PreviewEmptyState } from './preview-file'
+import { PREVIEW_RATIO_PRESETS, type PreviewRatioPreset, previewWidthForRatio } from './preview-sizing'
 
 type PreviewWebview = HTMLElement & {
   closeDevTools?: () => void
@@ -221,6 +224,12 @@ export function PreviewPane({
       webviewRef.current?.reload?.()
     }
   }, [isWebPreview])
+
+  const applyPreviewRatio = useCallback((preset: PreviewRatioPreset) => {
+    const height = previewContentRef.current?.getBoundingClientRect().height ?? 0
+
+    setPaneWidthOverride(PREVIEW_PANE_ID, previewWidthForRatio({ height, ratio: preset.ratio }))
+  }, [])
 
   const appendConsoleEntry = useCallback(
     (entry: Omit<ConsoleEntry, 'id'>) => {
@@ -672,7 +681,7 @@ export function PreviewPane({
   return (
     <aside className="relative flex h-full w-full min-w-0 flex-col overflow-hidden bg-transparent text-muted-foreground">
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {!embedded && (
+        {(!embedded || isWebPreview) && (
           <div className="pointer-events-none flex min-h-(--titlebar-height) items-center gap-1.5 border-b border-border/60 bg-background px-2 py-1">
             <div className="min-w-0 flex-1">
               <Tip label={copy.openTarget(currentUrl)}>
@@ -686,11 +695,28 @@ export function PreviewPane({
                 </a>
               </Tip>
             </div>
+            {isWebPreview && (
+              <div aria-label="Preview responsive sizes" className="pointer-events-auto flex shrink-0 items-center gap-1">
+                {PREVIEW_RATIO_PRESETS.map(preset => (
+                  <Tip key={preset.id} label={`Set preview to ${preset.label} ${preset.ratioLabel}`}>
+                    <button
+                      aria-label={`Set preview to ${preset.label} ${preset.ratioLabel}`}
+                      className="h-5 rounded-sm border border-(--ui-stroke-quaternary) px-1.5 text-[0.625rem] font-medium leading-none text-muted-foreground/85 transition-colors hover:border-(--ui-stroke-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+                      onClick={() => applyPreviewRatio(preset)}
+                      type="button"
+                    >
+                      {preset.ratioLabel}
+                    </button>
+                  </Tip>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
         <div
           className="pointer-events-auto relative min-h-0 flex-1 overflow-hidden bg-transparent"
+          data-preview-viewport=""
           ref={previewContentRef}
         >
           <div

@@ -14,8 +14,23 @@ import {
 
 const STORAGE_KEY = 'hermes.desktop.paneStates.v1'
 
+function installLocalStorageMock() {
+  const store = new Map<string, string>()
+
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      clear: () => store.clear(),
+      getItem: (key: string) => store.get(key) ?? null,
+      removeItem: (key: string) => store.delete(key),
+      setItem: (key: string, value: string) => store.set(key, String(value))
+    }
+  })
+}
+
 describe('panes store', () => {
   beforeEach(() => {
+    installLocalStorageMock()
     $paneStates.set({})
     window.localStorage.clear()
   })
@@ -97,14 +112,14 @@ describe('panes store', () => {
       expect(getPaneStateSnapshot('files')?.widthOverride).toBeUndefined()
     })
 
-    it('width override is in-memory only — not persisted across reloads', () => {
+    it('persists width overrides across reloads', () => {
       ensurePaneRegistered('files', { open: true })
       setPaneWidthOverride('files', 300)
 
       const persisted = window.localStorage.getItem(STORAGE_KEY)
 
       expect(persisted).not.toBeNull()
-      expect(JSON.parse(persisted ?? '{}')).toEqual({ files: { open: true } })
+      expect(JSON.parse(persisted ?? '{}')).toEqual({ files: { open: true, widthOverride: 300 } })
     })
 
     it('open flag is persisted across changes', () => {

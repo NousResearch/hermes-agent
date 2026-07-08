@@ -1,9 +1,12 @@
-import { act, cleanup, render } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $paneStates } from '@/store/panes'
 import { $connection } from '@/store/session'
 
 import { PreviewPane } from './preview-pane'
+
+const ORIGINAL_INNER_WIDTH = window.innerWidth
 
 describe('PreviewPane console state', () => {
   beforeEach(() => {
@@ -15,6 +18,8 @@ describe('PreviewPane console state', () => {
 
   afterEach(() => {
     cleanup()
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: ORIGINAL_INNER_WIDTH })
+    $paneStates.set({})
     $connection.set(null)
     vi.unstubAllGlobals()
   })
@@ -77,5 +82,56 @@ describe('PreviewPane console state', () => {
     })
 
     expect(setTitlebarToolGroup).toHaveBeenCalledTimes(initialCalls)
+  })
+
+  it('offers responsive preview width presets without replacing manual pane resizing', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1600 })
+
+    const rendered = render(
+      <PreviewPane
+        embedded
+        setTitlebarToolGroup={vi.fn()}
+        target={{
+          kind: 'url',
+          label: 'Preview',
+          source: 'http://localhost:5174',
+          url: 'http://localhost:5174'
+        }}
+      />
+    )
+
+    const viewport = rendered.container.querySelector('[data-preview-viewport]')
+
+    if (!(viewport instanceof HTMLElement)) {
+      throw new Error('missing preview viewport')
+    }
+
+    Object.defineProperty(viewport, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({
+        bottom: 720,
+        height: 720,
+        left: 0,
+        right: 400,
+        top: 0,
+        width: 400,
+        x: 0,
+        y: 0,
+        toJSON: () => ({})
+      })
+    })
+
+    expect(screen.getByRole('button', { name: 'Set preview to Fold 6:5' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Set preview to iPhone 9:16' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Set preview to Desktop 16:9' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Set preview to Ultrawide 21:9' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set preview to Desktop 16:9' }))
+
+    expect($paneStates.get().preview?.widthOverride).toBe(1280)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set preview to iPhone 9:16' }))
+
+    expect($paneStates.get().preview?.widthOverride).toBe(405)
   })
 })

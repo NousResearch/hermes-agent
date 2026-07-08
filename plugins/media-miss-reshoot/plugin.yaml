@@ -1,0 +1,6 @@
+name: media-miss-reshoot
+version: "1.2.0"
+description: "媒体漏发自动重投——Agent 漏写 MEDIA: 标签时自动补发文件。v1.2 修复 post_llm_call→transform_llm_output + 签名不匹配"
+hooks:
+  - post_tool_call
+  - transform_llm_output

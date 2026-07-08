@@ -3842,6 +3842,15 @@ def resolve_codex_runtime_credentials(
                 "last_refresh": None,
                 "auth_mode": "chatgpt",
             }
+        if (
+            read_error is not None
+            and getattr(read_error, "relogin_required", False)
+            and getattr(read_error, "code", None) == "codex_auth_missing"
+        ):
+            imported = _recover_codex_tokens_from_cli(str(getattr(read_error, "code", None) or "auth_error"))
+            if imported:
+                data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
+    if data is None:
         pool_rate_limit = _codex_pool_rate_limit_status()
         if pool_rate_limit:
             reset_at = pool_rate_limit.get("reset_at")

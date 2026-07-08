@@ -209,10 +209,54 @@ def test_resolve_codex_runtime_credentials_pool_fallback_no_usable_entry(tmp_pat
     }
     (hermes_home / "auth.json").write_text(json.dumps(auth_store))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex"))
 
     with pytest.raises(AuthError) as exc:
         resolve_codex_runtime_credentials()
     assert exc.value.code == "codex_auth_missing"
+
+
+def test_resolve_codex_runtime_credentials_missing_singleton_prefers_cli_before_exhausted_pool(tmp_path, monkeypatch):
+    """A stale exhausted pool entry must not block recovery from current Codex CLI auth."""
+    hermes_home = tmp_path / "hermes"
+    codex_home = tmp_path / "codex"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    codex_home.mkdir(parents=True, exist_ok=True)
+    future_reset = time.time() + 3600
+    auth_store = {
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "source": "device_code",
+                    "access_token": "exhausted-pool-token",
+                    "refresh_token": "exhausted-pool-refresh",
+                    "last_status": "exhausted",
+                    "last_error_code": 429,
+                    "last_error_reason": "usage_limit_reached",
+                    "last_error_reset_at": future_reset,
+                },
+            ],
+        },
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(auth_store))
+    (codex_home / "auth.json").write_text(json.dumps({
+        "tokens": {
+            "access_token": "fresh-cli-access",
+            "refresh_token": "fresh-cli-refresh",
+        },
+        "last_refresh": "2026-07-08T00:00:00Z",
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    resolved = resolve_codex_runtime_credentials()
+
+    assert resolved["api_key"] == "fresh-cli-access"
+    assert resolved["source"] == "hermes-auth-store"
+    stored = json.loads((hermes_home / "auth.json").read_text())
+    assert stored["providers"]["openai-codex"]["tokens"]["access_token"] == "fresh-cli-access"
 
 
 def test_resolve_provider_explicit_codex_does_not_fallback(monkeypatch):

@@ -625,13 +625,16 @@ class TestFalsePositiveReductions:
         findings = scan_file(f, "lib.py")
         assert not any(fi.pattern_id == "python_os_environ" for fi in findings)
 
-    def test_os_environ_get_secret_named_still_critical(self, tmp_path):
+    def test_os_environ_get_secret_named_is_medium(self, tmp_path):
+        """os.environ.get("SECRET_NAME") is medium (informational), not critical.
+        Reading an API key from env is normal behavior — the read itself
+        is not exfiltration."""
         f = tmp_path / "lib.py"
         f.write_text('token = os.environ.get("GITHUB_TOKEN")\n')
         findings = scan_file(f, "lib.py")
         sec = [fi for fi in findings if fi.pattern_id == "python_environ_get_secret"]
         assert sec
-        assert all(fi.severity == "critical" for fi in sec)
+        assert all(fi.severity == "medium" for fi in sec)
 
     def test_os_environ_bare_access_still_flagged(self, tmp_path):
         f = tmp_path / "lib.py"

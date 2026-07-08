@@ -149,22 +149,24 @@ THREAT_PATTERNS = [
     # `os.environ` bare access (dict dump / iteration) is suspicious, but the
     # common `os.environ.get("SOME_CONFIG")` form is just a config read and is
     # the OPPOSITE of exfiltration (it reads a local var, sends nothing). The
-    # lookahead exempts `os.environ.get("<name>")` only when <name> is NOT a
-    # secret-shaped identifier — `os.environ.get("OPENAI_API_KEY")` still trips
-    # via the dedicated secret pattern just below.
-    (r'os\.environ\b(?!\s*\.get\s*\(\s*["\'](?![^"\']*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)))',
+    # ^(?!\s*#) prevents matching inside comment lines (lines starting
+    # with '#' outside docstrings). os.environ in prose/docstrings is not
+    # an exfiltration signal.
+    (r'^(?!\s*#).*os\.environ\b(?!\s*\.get\s*\(\s*["\'](?![^"\']*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)))',
      "python_os_environ", "high", "exfiltration",
-     "accesses os.environ (potential env dump)"),
+     "accesses os.environ outside comments/docstrings (potential env dump)"),
     (r'os\.environ\s*\.get\s*\(\s*["\'][^"\']*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)',
-     "python_environ_get_secret", "critical", "exfiltration",
-     "reads secret via os.environ.get()"),
+     "python_environ_get_secret", "medium", "exfiltration",
+     "reads secret via os.environ.get() (normal API-key access; informational)"),
     (r'os\.getenv\s*\(\s*[^\)]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)',
      "python_getenv_secret", "critical", "exfiltration",
      "reads secret via os.getenv()"),
     (r'process\.env\[',
      "node_process_env", "high", "exfiltration",
      "accesses process.env (Node.js environment)"),
-    (r'ENV\[.*(?:KEY|TOKEN|SECRET|PASSWORD)',
+    # Case-sensitive ENV (Ruby constant) — the (?-i:) prevents matching
+    # Python lowercase `env[...]` dict accesses under IGNORECASE.
+    (r'(?-i:ENV)\[.*(?:KEY|TOKEN|SECRET|PASSWORD)',
      "ruby_env_secret", "critical", "exfiltration",
      "reads secret via Ruby ENV[]"),
 
@@ -191,8 +193,12 @@ THREAT_PATTERNS = [
     (r'you\s+are\s+(?:\w+\s+)*now\s+',
      "role_hijack", "high", "injection",
      "attempts to override the agent's role"),
-    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user',
-     "deception_hide", "critical", "injection",
+    # Only flag when the instruction is about concealing information, not
+    # ordinary UX guidance ("don't tell the user X unless Y confirms").
+    # The negative lookahead excludes patterns common in UX instructions
+    # like "unless", "except", "until", "confirm", "diagnose", "verify".
+    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user(?!.*\b(?:unless|except|until|confirm|diagnose|verify|check)\b)',
+     "deception_hide", "high", "injection",
      "instructs agent to hide information from user"),
     (r'system\s+(?:\w+\s+)*prompt\s+(?:\w+\s+)*override',
      "sys_prompt_override", "critical", "injection",
@@ -517,7 +523,7 @@ THREAT_PATTERNS = [
 
 # Structural limits for skill directories
 MAX_FILE_COUNT = 50       # skills shouldn't have 50+ files
-MAX_TOTAL_SIZE_KB = 1024  # 1MB total is suspicious for a skill
+MAX_TOTAL_SIZE_KB = 5120  # 5MB — large skills are informational only, not blocking
 MAX_SINGLE_FILE_KB = 256  # individual file > 256KB is suspicious
 
 # File extensions to scan (text files only — skip binary)
@@ -908,11 +914,12 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
             description=f"skill has {file_count} files (limit: {MAX_FILE_COUNT})",
         ))
 
-    # Total size limit
+    # Total size limit — informational only (low severity, non-verdict-gating).
+    # Large skills are legitimate for feature-rich capabilities.
     if total_size > MAX_TOTAL_SIZE_KB * 1024:
         findings.append(Finding(
             pattern_id="oversized_skill",
-            severity="high",
+            severity="low",
             category="structural",
             file="(directory)",
             line=0,

@@ -5922,6 +5922,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             self._show_tool_availability_warnings()
 
+        # Nudge to resume a prior turn that was cut off mid-flight (restart /
+        # reboot / terminal-close). The tool+API work is already persisted, so
+        # `hermes chat -c` recovers it without re-running anything. Only on a
+        # FRESH launch (never when already resuming), best-effort.
+        if not getattr(self, "_resumed", False):
+            self._maybe_nudge_resume_interrupted_session()
+
         # Warn about low context lengths (common with local servers). Keep
         # this tied to the runtime guard so guidance cannot drift again.
         from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
@@ -6192,6 +6199,41 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             prefix = "\n\n".join(enriched_parts)
             return f"{prefix}\n\n{user_text}" if user_text else prefix
         return user_text or "What do you see in this image?"
+
+    def _maybe_nudge_resume_interrupted_session(self):
+        """Print a one-line hint at fresh-launch when a prior CLI turn was cut
+        off mid-flight (restart / reboot / terminal-close).
+
+        The completed tool + API work of an interrupted turn is already persisted
+        (incremental flush + the interrupt-close re-persist), so `hermes chat -c`
+        resumes it without re-running anything. We only surface the affordance —
+        auto-resuming a terminal session would be wrong (a fresh terminal is
+        usually opened to start something new). Best-effort and fully silent on
+        any error so a banner hiccup never blocks startup.
+        """
+        try:
+            db = getattr(self, "_session_db", None) or (
+                getattr(self.agent, "_session_db", None) if self.agent else None
+            )
+            if db is None:
+                from hermes_state import SessionDB
+                db = SessionDB()
+            if not hasattr(db, "most_recent_interrupt_close_session"):
+                return
+            # Bound to a day so a long-stale interrupt doesn't nag forever.
+            hit = db.most_recent_interrupt_close_session(
+                source="cli", within_seconds=24 * 3600
+            )
+            if not hit:
+                return
+            title = (hit.get("title") or "").strip()
+            label = f" ({title})" if title else ""
+            self._console_print(
+                f"[yellow]⏸  Your last session{label} was interrupted mid-turn — "
+                f"its tool/API work is saved. Resume with [bold]hermes chat -c[/].[/]"
+            )
+        except Exception:
+            pass  # never let the nudge break startup
 
     def _show_tool_availability_warnings(self):
         """Show warnings about disabled tools due to missing API keys."""

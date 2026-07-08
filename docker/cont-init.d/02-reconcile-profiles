@@ -28,6 +28,18 @@ set -e
 # starts root-owned by s6-overlay.
 chown hermes:hermes /run/service 2>/dev/null || true
 
+# Sweep leftover registration staging dirs from an interrupted previous
+# run while we are still root. /run/service is tmpfs and survives
+# `docker restart` (not `docker rm`), so a run interrupted mid-
+# registration leaves a root-owned 0700 `.gateway-<profile>.tmp` that
+# the post-drop reconciler can neither stat, list, nor delete, wedging
+# boot (#60774). Dot-prefixed entries are never supervised by s6-svscan
+# and the atomic publish renames to the dotless live name, so any
+# surviving `.tmp` (or `.tmp.stale-*` set aside by the reconciler) is
+# always garbage. Deliberately NOT a recursive chown of /run/service:
+# the .s6-svscan internals and live supervise/ dirs must stay root-owned.
+find /run/service -maxdepth 1 -name '.gateway-*.tmp*' -exec rm -rf {} + 2>/dev/null || true
+
 # Make the svscan control FIFO hermes-writable so s6-svscanctl -a
 # / -an work for the hermes user. The FIFO is created by s6-svscan
 # at PID-1 startup, so by the time this cont-init.d script runs it

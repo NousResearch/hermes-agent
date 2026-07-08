@@ -415,6 +415,7 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
 
     from hermes_cli.service_manager import (
         S6ServiceManager,
+        _reset_staging_dir,
         _seed_supervise_skeleton,
         validate_profile_name,
     )
@@ -432,10 +433,9 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
     # name, so the published slot is unchanged.
     tmp_dir = service_dir.with_name("." + service_dir.name + ".tmp")
 
-    # Wipe any leftover tmp from a previous interrupted run.
-    if tmp_dir.exists():
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-    tmp_dir.mkdir(parents=True)
+    # Wipe any leftover tmp from a previous interrupted run. Robust against
+    # a root-owned leftover this (post-drop) user cannot delete (#60774).
+    _reset_staging_dir(tmp_dir)
 
     try:
         (tmp_dir / "type").write_text("longrun\n")

@@ -1136,3 +1136,82 @@ def test_s6_log_run_chowns_gateways_parent(s6_scandir, fake_subprocess_run) -> N
     # The parent path must be a runtime env expansion, never a baked-in
     # absolute path (same contract as the log_dir itself).
     assert '/opt/data/logs/gateways"' not in log_text
+
+
+# ---------------------------------------------------------------------------
+# _reset_staging_dir (#60774)
+# ---------------------------------------------------------------------------
+
+
+def test_reset_staging_dir_wipes_normal_leftover(tmp_path) -> None:
+    from hermes_cli.service_manager import _reset_staging_dir
+
+    staging = tmp_path / ".gateway-default.tmp"
+    staging.mkdir()
+    (staging / "run").write_text("#!/bin/sh\n")
+
+    _reset_staging_dir(staging)
+
+    assert staging.is_dir()
+    assert list(staging.iterdir()) == []
+
+
+def test_reset_staging_dir_creates_missing_dir(tmp_path) -> None:
+    from hermes_cli.service_manager import _reset_staging_dir
+
+    staging = tmp_path / ".gateway-default.tmp"
+    _reset_staging_dir(staging)
+    assert staging.is_dir()
+
+
+def test_reset_staging_dir_renames_undeletable_leftover_aside(tmp_path, monkeypatch) -> None:
+    """A leftover owned by another user (root-owned 0700 from a run
+    interrupted before the cont-init privilege drop) can't be listed or
+    removed by this process — rmtree(ignore_errors=True) silently does
+    nothing. The helper must move it aside and still produce a fresh dir."""
+    import shutil as shutil_mod
+
+    from hermes_cli.service_manager import _reset_staging_dir
+
+    staging = tmp_path / ".gateway-default.tmp"
+    staging.mkdir()
+    (staging / "marker").write_text("stale")
+
+    # Simulate the undeletable-foreign-dir case: rmtree silently no-ops
+    # (exactly what ignore_errors=True does on EACCES).
+    monkeypatch.setattr(shutil_mod, "rmtree", lambda *a, **k: None)
+
+    _reset_staging_dir(staging)
+
+    assert staging.is_dir()
+    assert list(staging.iterdir()) == []
+    stale = [p for p in tmp_path.iterdir() if ".tmp.stale-" in p.name]
+    assert len(stale) == 1
+    assert (stale[0] / "marker").read_text() == "stale"
+
+
+def test_reset_staging_dir_survives_permissionerror_on_exists(tmp_path, monkeypatch) -> None:
+    """Path.exists() raises PermissionError when stat is denied (EACCES is
+    not in pathlib's ignored-errno set) — the helper must not crash."""
+    import shutil as shutil_mod
+    from pathlib import Path
+
+    from hermes_cli.service_manager import _reset_staging_dir
+
+    staging = tmp_path / ".gateway-default.tmp"
+    staging.mkdir()
+
+    real_exists = Path.exists
+
+    def fake_exists(self, **kwargs):
+        if self == staging:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_exists(self, **kwargs)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+    monkeypatch.setattr(shutil_mod, "rmtree", lambda *a, **k: None)
+
+    _reset_staging_dir(staging)
+
+    assert real_exists(staging)
+    assert list(staging.iterdir()) == []

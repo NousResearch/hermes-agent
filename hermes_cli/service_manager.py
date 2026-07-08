@@ -413,6 +413,41 @@ _HERMES_UID = 10000
 _HERMES_GID = 10000
 
 
+def _reset_staging_dir(tmp_dir: Path) -> None:
+    """Clear a leftover registration staging dir and create it fresh.
+
+    A previous interrupted run can leave ``tmp_dir`` behind. Usually a
+    plain rmtree suffices, but when the leftover is owned by another user
+    — a root-owned ``0700`` dir from a run interrupted before the
+    cont-init privilege drop (issue #60774) — this process can neither
+    list nor delete it, ``rmtree(ignore_errors=True)`` silently does
+    nothing, and the subsequent ``mkdir`` crashes registration.
+    ``Path.exists()`` itself can also raise ``PermissionError`` (EACCES is
+    not in pathlib's ignored-errno set).
+
+    In that case, rename the leftover aside instead: rename only needs
+    write+search permission on the scandir, which the reconciler user
+    always has. The renamed entry keeps its dot prefix so s6-svscan keeps
+    ignoring it, and the cont-init boot script sweeps ``.gateway-*.tmp*``
+    entries as root on the next container start.
+    """
+    import os
+    import shutil
+    import time
+
+    try:
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+    except OSError:
+        pass
+    try:
+        tmp_dir.mkdir(parents=True)
+    except OSError:
+        stale = tmp_dir.with_name(f"{tmp_dir.name}.stale-{time.time_ns()}")
+        os.replace(tmp_dir, stale)
+        tmp_dir.mkdir(parents=True)
+
+
 def _seed_supervise_skeleton(svc_dir: Path) -> None:
     """Pre-create the ``supervise/`` and top-level ``event/`` skeleton
     inside a service directory, owned by the hermes user.
@@ -982,9 +1017,7 @@ class S6ServiceManager:
         # rescan land inside the ~ms seed window). The atomic rename to
         # the dotless live name below is unaffected.
         tmp_dir = svc_dir.with_name("." + svc_dir.name + ".tmp")
-        if tmp_dir.exists():
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-        tmp_dir.mkdir(parents=True)
+        _reset_staging_dir(tmp_dir)
 
         try:
             (tmp_dir / "type").write_text("longrun\n")

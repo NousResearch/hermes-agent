@@ -27,6 +27,7 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 | `--port` | `9119` | Port to run the web server on |
 | `--host` | `127.0.0.1` | Bind address |
 | `--no-open` | — | Don't auto-open the browser |
+| `--light` | off | Start the lightweight status/session dashboard without the full admin backend |
 | `--insecure` | off | Allow binding to non-localhost hosts (**DANGEROUS** — exposes API keys on the network; pair with a firewall and strong auth) |
 | `--isolated` | off | When launched from a named profile (`worker dashboard`), run a dedicated per-profile server instead of routing to the machine dashboard |
 
@@ -39,7 +40,31 @@ hermes dashboard --host 0.0.0.0
 
 # Start without opening browser
 hermes dashboard --no-open
+
+# Run the lightweight dashboard for constrained hosts
+hermes dashboard --light --port 9119
 ```
+
+### Lightweight mode
+
+`hermes dashboard --light` runs a small stdlib HTTP server instead of the full
+FastAPI/React dashboard backend. It exposes only the status page and recent
+session list, and it skips the admin UI, plugin route loading, dashboard MCP
+discovery, frontend build, and FastAPI/Pydantic route initialization.
+
+Use it on memory-constrained self-hosted machines where the dashboard is only a
+monitoring surface. To make it persistent, set:
+
+```yaml
+dashboard:
+  mode: lightweight
+```
+
+Lightweight mode is intentionally loopback-only. It refuses `--host 0.0.0.0`
+and other non-loopback binds because it does not load the full dashboard auth
+gate. For remote access, bind to `127.0.0.1` and use SSH or Tailscale tunneling,
+or run the full dashboard when you need authenticated public/reverse-proxy
+access and the admin pages.
 
 ## Managing multiple profiles
 

@@ -107,6 +107,21 @@ def build_dashboard_parser(
     dashboard_parser.add_argument(
         "--no-open", action="store_true", help="Don't open browser automatically"
     )
+    dashboard_parser.add_argument(
+        "--light",
+        dest="light_dashboard",
+        action="store_true",
+        help=(
+            "Start the lightweight status/session dashboard without the full "
+            "FastAPI/React admin backend"
+        ),
+    )
+    dashboard_parser.add_argument(
+        "--legacy",
+        dest="light_dashboard",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     # Backward-compat shim: older Hermes desktop app shells (<= 0.15.x) spawn the
     # backend as `hermes dashboard --no-open --tui --host ... --port ...`. The
     # `--tui` flag was removed from this subcommand in cae6b5486 (embedded chat is

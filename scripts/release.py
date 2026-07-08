@@ -283,6 +283,7 @@ AUTHOR_MAP = {
     "techxacm@gmail.com": "ProgramCaiCai",
     "266365592+bmoore210@users.noreply.github.com": "bmoore210",
     "123150002+deaneeth@users.noreply.github.com": "deaneeth",
+    "dnethusahan.h05@gmail.com": "deaneeth",
     "157839748+psionic73@users.noreply.github.com": "psionic73",
     "manishbyatroy@gmail.com": "manishbyatroy",
     "manusjs@users.noreply.github.com": "manus-use",  # PR #51129 salvage (Discord thread-starter dedup, #51057)

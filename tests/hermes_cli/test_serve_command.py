@@ -68,3 +68,9 @@ def test_serve_is_a_headless_backend_but_dashboard_is_not():
     # build; only `serve` carries it.
     assert getattr(_parser().parse_args(["serve"]), "headless_backend", False) is True
     assert getattr(_parser().parse_args(["dashboard"]), "headless_backend", False) is False
+
+
+def test_dashboard_supports_lightweight_mode_aliases():
+    assert _parser().parse_args(["dashboard", "--light"]).light_dashboard is True
+    assert _parser().parse_args(["dashboard", "--legacy"]).light_dashboard is True
+    assert getattr(_parser().parse_args(["dashboard"]), "light_dashboard", False) is False

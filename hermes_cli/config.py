@@ -1938,6 +1938,10 @@ DEFAULT_CONFIG = {
 
     # Web dashboard settings
     "dashboard": {
+        # "full" runs the FastAPI + React admin dashboard. "lightweight" runs a
+        # stdlib loopback-only status/session dashboard for memory-constrained
+        # hosts that do not need the admin UI.
+        "mode": "full",
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
         # Hide the token/cost analytics surfaces (Analytics page, token bars and
         # cost figures on the Models page) by default.  The numbers shown there

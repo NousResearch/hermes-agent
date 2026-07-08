@@ -11941,6 +11941,18 @@ def cmd_dashboard(args):
     # ready sentinel. Resolved once and threaded through the re-exec, the
     # build gate, and start_server.
     _headless_backend = getattr(args, "headless_backend", False)
+    _light_dashboard = False
+    if not _headless_backend:
+        _light_dashboard = bool(getattr(args, "light_dashboard", False))
+        if not _light_dashboard:
+            try:
+                from hermes_cli.config import load_config
+
+                _dashboard_cfg = (load_config().get("dashboard") or {})
+                _dashboard_mode = str(_dashboard_cfg.get("mode", "full")).strip().lower()
+                _light_dashboard = _dashboard_mode in {"light", "legacy", "lightweight"}
+            except Exception:
+                _light_dashboard = False
 
     # ── Unified profile launch routing ────────────────────────────────
     # The dashboard is a MACHINE management surface: it can read/write any
@@ -12000,6 +12012,8 @@ def cmd_dashboard(args):
             reexec_argv.append("--insecure")
         if getattr(args, "skip_build", False):
             reexec_argv.append("--skip-build")
+        if _light_dashboard:
+            reexec_argv.append("--light")
         env = os.environ.copy()
         # Pin the child to the machine ROOT, not the launching profile's
         # HERMES_HOME.  We must resolve the root explicitly instead of just
@@ -12037,6 +12051,17 @@ def cmd_dashboard(args):
         _setup_logging_gui(mode="gui")
     except Exception:
         pass
+
+    if _light_dashboard:
+        from hermes_cli.light_dashboard_server import start_light_dashboard_server
+
+        start_light_dashboard_server(
+            host=args.host,
+            port=args.port,
+            open_browser=not args.no_open,
+            initial_profile=getattr(args, "open_profile", "") or "",
+        )
+        return
 
     try:
         import fastapi  # noqa: F401

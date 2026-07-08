@@ -658,6 +658,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Web dashboard visual theme",
         "options": ["default", "midnight", "ember", "mono", "cyberpunk", "rose"],
     },
+    "dashboard.mode": {
+        "type": "select",
+        "description": "Dashboard backend mode",
+        "options": ["full", "lightweight"],
+    },
     "display.resume_display": {
         "type": "select",
         "description": "How resumed sessions display history",

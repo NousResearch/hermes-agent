@@ -1348,6 +1348,11 @@ updates:
 # (the ~/.hermes/.env file is reserved for API keys and secrets).
 #
 # dashboard:
+#   # full        -> FastAPI + React admin dashboard (default)
+#   # lightweight -> stdlib loopback-only status/session dashboard for
+#   #                memory-constrained hosts that do not need the admin UI
+#   mode: full
+#
 #   oauth:
 #     client_id: ""    # agent:{instance_id}; Portal provisions this at deploy
 #     portal_url: ""   # blank → default https://portal.nousresearch.com

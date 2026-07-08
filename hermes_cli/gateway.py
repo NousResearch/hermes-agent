@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import plistlib
 import shlex
 import shutil
 import signal
@@ -3985,6 +3986,56 @@ def launchd_plist_is_current() -> bool:
     ) == _normalize_launchd_plist_for_comparison(expected)
 
 
+def _launchd_plist_runtime(plist_text: str) -> tuple[str | None, str | None]:
+    """Return (python_path, HERMES_HOME) from a launchd plist, if parseable."""
+    try:
+        parsed = plistlib.loads(plist_text.encode("utf-8"))
+    except Exception:
+        return None, None
+    if not isinstance(parsed, dict):
+        return None, None
+    args = parsed.get("ProgramArguments")
+    python_path = (
+        args[0] if isinstance(args, list) and args and isinstance(args[0], str) else None
+    )
+    env = parsed.get("EnvironmentVariables")
+    hermes_home = None
+    if isinstance(env, dict):
+        raw_home = env.get("HERMES_HOME")
+        if isinstance(raw_home, str):
+            hermes_home = raw_home
+    return python_path, hermes_home
+
+
+def _path_is_inside_macos_app_bundle(path: str | None) -> bool:
+    if not path:
+        return False
+    parts = Path(path).parts
+    for index, part in enumerate(parts[:-1]):
+        if (
+            part.endswith(".app")
+            and index + 1 < len(parts)
+            and parts[index + 1] == "Contents"
+        ):
+            return True
+    return False
+
+
+def _should_preserve_launchd_runtime(installed_plist: str, new_plist: str) -> bool:
+    """Avoid replacing a user gateway runtime with a GUI app-bundled Python."""
+    installed_python, installed_home = _launchd_plist_runtime(installed_plist)
+    new_python, new_home = _launchd_plist_runtime(new_plist)
+    if not installed_python or not new_python or installed_python == new_python:
+        return False
+    if not _path_is_inside_macos_app_bundle(new_python):
+        return False
+    if _path_is_inside_macos_app_bundle(installed_python):
+        return False
+    if installed_home and new_home and installed_home != new_home:
+        return False
+    return True
+
+
 def refresh_launchd_plist_if_needed() -> bool:
     """Rewrite the installed launchd plist when the generated definition has changed.
 
@@ -3996,7 +4047,17 @@ def refresh_launchd_plist_if_needed() -> bool:
     if not plist_path.exists() or launchd_plist_is_current():
         return False
 
+    installed_plist = plist_path.read_text(encoding="utf-8")
     new_plist = generate_launchd_plist()
+    if _should_preserve_launchd_runtime(installed_plist, new_plist):
+        installed_python, _ = _launchd_plist_runtime(installed_plist)
+        new_python, _ = _launchd_plist_runtime(new_plist)
+        print("↻ Existing launchd gateway service uses a standalone Hermes runtime; leaving it unchanged")
+        print(f"  Current service Python: {installed_python}")
+        print(f"  Refusing to replace it with app-bundled Python: {new_python}")
+        print("  Use 'hermes gateway install --force' from the desired Hermes CLI to switch runtimes.")
+        return False
+
     if _refuse_temp_home_service_write(new_plist, "launchd plist"):
         return False
 
@@ -4124,8 +4185,10 @@ def launchd_install(force: bool = False):
     if plist_path.exists() and not force:
         if not launchd_plist_is_current():
             print(f"↻ Repairing outdated launchd service at: {plist_path}")
-            refresh_launchd_plist_if_needed()
-            print("✓ Service definition updated")
+            if refresh_launchd_plist_if_needed():
+                print("✓ Service definition updated")
+            else:
+                print("Service definition left unchanged")
             return
         print(f"Service already installed at: {plist_path}")
         print("Use --force to reinstall")

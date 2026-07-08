@@ -681,6 +681,48 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "bootstrap", domain, str(plist_path)],
         ]
 
+    def test_refresh_preserves_user_venv_when_invoked_from_app_bundle(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        user_python = "/Users/alice/.hermes/hermes-agent/venv/bin/python"
+        user_venv = Path("/Users/alice/.hermes/hermes-agent/venv")
+        app_python = (
+            "/Applications/Hermes Studio.app/Contents/Resources/python/bin/python"
+        )
+        app_venv = Path("/Applications/Hermes Studio.app/Contents/Resources/python")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: user_python)
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: user_venv)
+        installed = gateway_cli.generate_launchd_plist()
+        plist_path.write_text(installed, encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: app_python)
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: app_venv)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("launchctl should not run"),
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "Popen",
+            lambda *args, **kwargs: pytest.fail("detached reload should not run"),
+        )
+
+        assert gateway_cli.launchd_plist_is_current() is False
+        assert gateway_cli.refresh_launchd_plist_if_needed() is False
+
+        assert plist_path.read_text(encoding="utf-8") == installed
+        out = capsys.readouterr().out
+        assert "Refusing to replace it with app-bundled Python" in out
+        assert user_python in out
+        assert app_python in out
+
     def test_refresh_defers_reload_when_running_inside_gateway_tree(self, tmp_path, monkeypatch):
         """#43842: when the refresh runs inside the gateway's own process tree,
         a direct bootout would kill this CLI before bootstrap. The reload must

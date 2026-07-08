@@ -480,6 +480,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._startup_seen_uid_cutoff: Optional[int] = None
+        self._startup_seen_uidvalidity: Optional[bytes] = None
         self._poll_task: Optional[asyncio.Task] = None
 
         # Map chat_id (sender email) -> last subject + message-id for threading
@@ -588,6 +589,7 @@ class EmailAdapter(BasePlatformAdapter):
             _send_imap_id(imap)
             # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
+            self._startup_seen_uidvalidity = self._selected_uidvalidity(imap)
             status, data = imap.uid("search", None, "ALL")
             if status == "OK" and data and data[0]:
                 startup_cutoff: Optional[int] = None
@@ -670,6 +672,18 @@ class EmailAdapter(BasePlatformAdapter):
                 imap.login(self._address, self._password)
                 _send_imap_id(imap)
                 imap.select("INBOX")
+                current_uidvalidity = self._selected_uidvalidity(imap)
+                if (
+                    self._startup_seen_uidvalidity
+                    and current_uidvalidity
+                    and current_uidvalidity != self._startup_seen_uidvalidity
+                ):
+                    logger.info(
+                        "[Email] INBOX UIDVALIDITY changed; clearing cached UID state"
+                    )
+                    self._seen_uids.clear()
+                    self._startup_seen_uid_cutoff = None
+                    self._startup_seen_uidvalidity = current_uidvalidity
 
                 status, data = imap.uid("search", None, "UNSEEN")
                 if status != "OK" or not data or not data[0]:
@@ -760,6 +774,22 @@ class EmailAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[Email] IMAP fetch error: %s", e)
         return results
+
+    @staticmethod
+    def _selected_uidvalidity(imap: "imaplib.IMAP4") -> Optional[bytes]:
+        """Return the selected mailbox UIDVALIDITY when the server exposes it."""
+        try:
+            _status, values = imap.response("UIDVALIDITY")
+        except Exception:  # noqa: BLE001 - UIDVALIDITY is a best-effort guard
+            return None
+        if not values:
+            return None
+        value = values[-1]
+        if isinstance(value, bytes):
+            return value
+        if isinstance(value, str):
+            return value.encode("ascii", errors="ignore")
+        return None
 
     def _is_startup_seen_uid(self, uid: bytes) -> bool:
         """Return True when *uid* was already present at adapter startup."""

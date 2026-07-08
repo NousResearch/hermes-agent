@@ -9290,6 +9290,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return ("Agent is running — wait or /stop first, then "
                         "change runtime.")
 
+            # Numbered approval shortcuts (1/2/3/4) for text-only platforms
+            # where typing long slash commands on mobile is awkward.
+            # Intercepted BEFORE the /approve-/deny guard so bare numbers
+            # resolve pending approvals without requiring a / prefix.
+            _raw_approval_text = (event.text or "").strip()
+            if _raw_approval_text in {"1", "2", "3", "4"}:
+                from tools.approval import has_blocking_approval, resolve_gateway_approval
+                if has_blocking_approval(_quick_key):
+                    if _raw_approval_text == "4":
+                        count = resolve_gateway_approval(_quick_key, "deny")
+                        if not count:
+                            return "No pending dangerous command to deny."
+                        logger.info(
+                            "User denied %d dangerous command(s) via shortcut '4'", count
+                        )
+                        return "✋ Command denied."
+                    else:
+                        choice = {"1": "once", "2": "session", "3": "always"}[_raw_approval_text]
+                        count = resolve_gateway_approval(_quick_key, choice)
+                        if not count:
+                            return "No pending dangerous command to approve."
+                        # Resume typing indicator — agent is about to continue.
+                        _adapter = self.adapters.get(source.platform)
+                        if _adapter:
+                            _adapter.resume_typing_for_chat(source.chat_id)
+                        logger.info(
+                            "User approved %d dangerous command(s) via shortcut '%s' (%s)",
+                            count, _raw_approval_text, choice,
+                        )
+                        plural = "plural" if count > 1 else "singular"
+                        return t(f"gateway.approve.{choice}_{plural}", count=count)
+                # No pending approval — fall through to normal message handling.
+                # Don't let a bare "1" start an agent turn unless it's really
+                # the user's conversational input.
+
             # /approve and /deny must bypass the running-agent interrupt path.
             # The agent thread is blocked on a threading.Event inside
             # tools/approval.py — sending an interrupt won't unblock it.
@@ -18394,12 +18429,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Slack threads and reserved by Matrix clients.
                 _p = getattr(_status_adapter, "typed_command_prefix", "/")
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                # Numbered shortcuts for text-only platforms (WeChat, SMS, etc.)
+                # where typing long commands on mobile is painful.
                 msg = (
                     f"⚠️ **Dangerous command requires approval:**\n"
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n\n"
-                    f"Reply `{_p}approve` to execute, `{_p}approve session` to approve this pattern "
-                    f"for the session, `{_p}approve always` to approve permanently, or `{_p}deny` to cancel."
+                    f"Reply `{_p}approve` (or **1**), "
+                    f"`{_p}approve session` (or **2**), "
+                    f"`{_p}approve always` (or **3**), "
+                    f"or `{_p}deny` (or **4**)."
                 )
                 try:
                     _approval_send_fut = safe_schedule_threadsafe(

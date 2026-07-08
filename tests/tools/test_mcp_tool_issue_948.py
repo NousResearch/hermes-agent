@@ -5,7 +5,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
-from tools.mcp_tool import MCPServerTask, _format_connect_error, _resolve_stdio_command, _MCP_AVAILABLE
+from tools.mcp_tool import (
+    MCPServerTask,
+    _MCP_AVAILABLE,
+    _format_connect_error,
+    _resolve_stdio_argv,
+    _resolve_stdio_command,
+)
 
 # Ensure the mcp module symbols exist for patching even when the SDK isn't installed
 if not _MCP_AVAILABLE:
@@ -79,6 +85,79 @@ def test_resolve_stdio_command_respects_explicit_empty_path():
     assert command == "python"
     assert env["PATH"] == ""
     assert seen_paths == [""]
+
+
+def test_resolve_stdio_argv_launches_managed_studio_mcp_via_node(tmp_path, monkeypatch):
+    webui_bin = (
+        tmp_path
+        / ".hermes-web-ui"
+        / "webui"
+        / "0.6.20"
+        / "bin"
+    )
+    webui_bin.mkdir(parents=True)
+    studio_script = webui_bin / "hermes-studio-mcp.mjs"
+    studio_script.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+
+    node_bin = tmp_path / ".hermes" / "node" / "bin"
+    node_bin.mkdir(parents=True)
+    node_path = node_bin / "node"
+    node_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    node_path.chmod(0o755)
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    command, args, env = _resolve_stdio_argv(
+        "hermes-studio-mcp",
+        ["api"],
+        {"PATH": "/usr/bin", "HERMES_WEB_UI_MANAGED_MCP": "1"},
+    )
+
+    assert command == str(node_path)
+    assert args == [str(studio_script), "api"]
+    path_parts = env["PATH"].split(os.pathsep)
+    assert path_parts[0] == str(webui_bin)
+    assert str(node_bin) in path_parts
+    assert str(webui_bin) in path_parts
+
+
+def test_resolve_stdio_argv_does_not_rewrite_unmarked_user_server(
+    tmp_path, monkeypatch
+):
+    webui_bin = tmp_path / ".hermes-web-ui" / "webui" / "0.6.20" / "bin"
+    webui_bin.mkdir(parents=True)
+    (webui_bin / "hermes-studio-mcp.mjs").write_text(
+        "#!/usr/bin/env node\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    command, args, env = _resolve_stdio_argv(
+        "hermes-studio-mcp",
+        ["user-mode"],
+        {"PATH": "/custom/bin"},
+    )
+
+    assert command == "hermes-studio-mcp"
+    assert args == ["user-mode"]
+    assert env["PATH"] == "/custom/bin"
+
+
+def test_resolve_stdio_argv_leaves_studio_mcp_alone_without_managed_script(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    command, args, env = _resolve_stdio_argv(
+        "hermes-studio-mcp",
+        ["api"],
+        {"PATH": "/usr/bin"},
+    )
+
+    assert command == "hermes-studio-mcp"
+    assert args == ["api"]
+    assert env["PATH"] == "/usr/bin"
 
 
 def test_format_connect_error_unwraps_exception_group():

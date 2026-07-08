@@ -93,6 +93,7 @@ import asyncio
 import contextvars
 import concurrent.futures
 import errno
+import glob
 import inspect
 import json
 import logging
@@ -679,6 +680,89 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
         resolved_env = _prepend_path(resolved_env, command_dir)
 
     return resolved_command, resolved_env
+
+
+def _is_bare_command(command: str) -> bool:
+    return not any(sep and sep in command for sep in (os.sep, os.altsep, "/", "\\") if sep)
+
+
+def _find_hermes_studio_mcp_script() -> Optional[str]:
+    """Return the newest Hermes Studio managed MCP script, if installed.
+
+    Hermes Web UI/Studio may generate managed MCP entries with a bare
+    ``command: hermes-studio-mcp`` even though the actual launcher on disk is
+    ``hermes-studio-mcp.mjs`` under the Web UI install tree.  Resolve it here
+    at spawn time so existing config files recover without requiring a config
+    rewrite.
+    """
+    script_name = "hermes-studio-mcp.mjs"
+    roots = []
+    for env_key in ("HERMES_WEB_UI_HOME", "HERMES_WEBUI_HOME"):
+        value = os.environ.get(env_key, "").strip()
+        if value:
+            roots.append(os.path.expanduser(value))
+    roots.append(os.path.join(os.path.expanduser("~"), ".hermes-web-ui"))
+
+    patterns = []
+    for root in roots:
+        patterns.extend([
+            os.path.join(root, "webui", "*", "bin", script_name),
+            os.path.join(root, "*", "bin", script_name),
+            os.path.join(root, "bin", script_name),
+        ])
+
+    candidates = {
+        os.path.abspath(path)
+        for pattern in patterns
+        for path in glob.glob(pattern)
+        if os.path.isfile(path)
+    }
+    if not candidates:
+        return None
+
+    def _mtime_key(path: str) -> tuple[float, str]:
+        try:
+            return (os.path.getmtime(path), path)
+        except OSError:
+            return (0.0, path)
+
+    return max(candidates, key=_mtime_key)
+
+
+def _resolve_node_for_stdio(env: dict) -> tuple[str, dict]:
+    """Resolve Node for Hermes-managed stdio launchers."""
+    try:
+        from hermes_constants import with_hermes_node_path
+
+        resolved_env = with_hermes_node_path(env)
+    except Exception:
+        resolved_env = dict(env or {})
+
+    node = shutil.which("node", path=resolved_env.get("PATH"))
+    if node:
+        return node, _prepend_path(resolved_env, os.path.dirname(node))
+    return "node", resolved_env
+
+
+def _resolve_stdio_argv(command: str, args: list, env: dict) -> tuple[str, list, dict]:
+    """Resolve stdio command, args, and env before passing them to the MCP SDK."""
+    original_command = str(command).strip()
+    resolved_args = list(args or [])
+    if (
+        _is_bare_command(original_command)
+        and original_command.lower() == "hermes-studio-mcp"
+        and str((env or {}).get("HERMES_WEB_UI_MANAGED_MCP", "")).strip() == "1"
+    ):
+        script = _find_hermes_studio_mcp_script()
+        if script:
+            resolved_command, resolved_env = _resolve_node_for_stdio(env)
+            resolved_env = _prepend_path(resolved_env, os.path.dirname(script))
+            if os.path.dirname(resolved_command):
+                resolved_env = _prepend_path(resolved_env, os.path.dirname(resolved_command))
+            return resolved_command, [script, *resolved_args], resolved_env
+
+    resolved_command, resolved_env = _resolve_stdio_command(command, env)
+    return resolved_command, resolved_args, resolved_env
 
 
 def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
@@ -2359,7 +2443,7 @@ class MCPServerTask:
             )
 
         safe_env = _build_safe_env(user_env)
-        command, safe_env = _resolve_stdio_command(command, safe_env)
+        command, args, safe_env = _resolve_stdio_argv(command, args, safe_env)
 
         # Check package against OSV malware database before spawning.
         # Run off the event loop (the urllib HTTPS call is blocking) and bound

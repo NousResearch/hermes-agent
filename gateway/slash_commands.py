@@ -3822,6 +3822,12 @@ class GatewaySlashCommandsMixin:
 
         parent_session_id = current_entry.session_id
 
+        # Branch-point: how many messages the branch inherits from the parent.
+        # Everything AFTER this index in the branch transcript is NEW exploration
+        # that happened only in the branch — that's the DELTA /merge folds back,
+        # so it doesn't re-summarize history the parent already has.
+        branch_point_len = len(history)
+
         # Create the new session with parent link.
         # Persist a stable ``_branched_from`` marker in model_config so
         # list_sessions_rich() keeps the branch visible in /resume and
@@ -3832,7 +3838,7 @@ class GatewaySlashCommandsMixin:
                 session_id=new_session_id,
                 source=source.platform.value if source.platform else "gateway",
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
-                model_config={"_branched_from": parent_session_id},
+                model_config={"_branched_from": parent_session_id, "_branch_point_len": branch_point_len},
                 parent_session_id=parent_session_id,
             )
         except Exception as e:
@@ -4208,6 +4214,7 @@ class GatewaySlashCommandsMixin:
         thread_adapter = None
         target_id = None
         target_title = None
+        branch_point_len = None  # thread form: index into source_history where new exploration begins
 
         if not name:
             # No arg. In a branched Discord thread → target = parent, archive after.
@@ -4219,16 +4226,21 @@ class GatewaySlashCommandsMixin:
                     row = None
                 if row:
                     branch_parent = row.get("parent_session_id")
-                    if not branch_parent:
-                        mc = row.get("model_config")
-                        if isinstance(mc, str) and mc:
-                            try:
-                                import json as _json
-                                mc = _json.loads(mc)
-                            except Exception:
-                                mc = {}
-                        if isinstance(mc, dict):
+                    mc = row.get("model_config")
+                    if isinstance(mc, str) and mc:
+                        try:
+                            import json as _json
+                            mc = _json.loads(mc)
+                        except Exception:
+                            mc = {}
+                    if isinstance(mc, dict):
+                        if not branch_parent:
                             branch_parent = mc.get("_branched_from")
+                        # Delta boundary: only summarize turns AFTER the branch
+                        # point so we don't re-fold history the parent already has.
+                        _bpl = mc.get("_branch_point_len")
+                        if isinstance(_bpl, int) and _bpl >= 0:
+                            branch_point_len = _bpl
             if branch_parent:
                 is_thread_form = True
                 thread_adapter = self.adapters.get(Platform.DISCORD) if getattr(self, "adapters", None) else None
@@ -4274,13 +4286,29 @@ class GatewaySlashCommandsMixin:
             return t("gateway.merge.no_conversation")
         source_title = await self._session_db.get_session_title(source_session_id) or "session"
 
+        # Thread form: only summarize the DELTA — the turns that happened in the
+        # branch AFTER the branch point. A branched thread is a full copy of the
+        # parent up to the branch, plus the new exploration; folding the whole
+        # copy back re-summarizes context the parent already has. The named form
+        # has no shared prefix, so it summarizes the whole source session.
+        summarize_history = source_history
+        if is_thread_form and isinstance(branch_point_len, int) and branch_point_len >= 0:
+            # The delta is authoritative once we have a valid branch point: even
+            # branch_point_len == len(source_history) (zero new turns) must yield
+            # an EMPTY delta → no_new_turns, NOT a re-summary of the whole copy.
+            summarize_history = source_history[branch_point_len:]
+            if not summarize_history:
+                return t("gateway.merge.no_new_turns")
+        if not summarize_history:
+            return t("gateway.merge.no_new_turns")
+
         summarizer = self._build_merge_summarizer()
         summary = None
         if summarizer is not None:
             try:
                 summary = await asyncio.to_thread(
                     summarizer._generate_summary,
-                    source_history,
+                    summarize_history,
                     f"merging session '{source_title}' into '{target_title}'",
                 )
             except Exception as exc:
@@ -4334,33 +4362,39 @@ class GatewaySlashCommandsMixin:
             except Exception as exc:
                 logger.debug("merge: target agent eviction skipped: %s", exc)
 
-        # --- Layer 3: best-effort visible note into the TARGET's origin channel. ---
+        # --- Layer 3: visible note posted where the fold LANDED — the TARGET
+        # session's own origin channel/thread — for BOTH forms. (Previously the
+        # thread form posted to source.parent_chat_id, the Discord *hosting
+        # channel*, which for a thread-branched-from-a-thread is NOT where the
+        # parent SESSION lives — so the note showed up in the wrong place.) We
+        # resolve the target's real origin and post there so the "merged in" note
+        # always lands in the conversation that just received the summary. ---
         note_short = summary if len(summary) <= 600 else summary[:597] + "..."
         path_str = str(record_path) if record_path else ""
-        if is_thread_form:
-            # Thread form: note goes to the parent channel (the thread's parent).
-            parent_channel_id = source.parent_chat_id
-            if thread_adapter is not None and parent_channel_id:
+        try:
+            target_origin = self._gateway_session_origin_for_id(target_id)
+        except Exception:
+            target_origin = None
+        posted_note = False
+        if isinstance(target_origin, SessionSource) and target_origin.platform:
+            dest_adapter = self.adapters.get(target_origin.platform) if getattr(self, "adapters", None) else None
+            dest_chat = target_origin.thread_id or target_origin.chat_id
+            if dest_adapter is not None and dest_chat:
                 try:
-                    note = t("gateway.merge.parent_note", title=source_title, summary=note_short)
-                    await thread_adapter.send(str(parent_channel_id), note)
+                    note = t("gateway.merge.target_note", source=source_title, summary=note_short)
+                    await dest_adapter.send(str(dest_chat), note)
+                    posted_note = True
                 except Exception as exc:
-                    logger.debug("merge: parent-channel note send failed: %s", exc)
-        else:
-            # Named form: resolve the target session's live origin and post there.
+                    logger.debug("merge: target-origin note send failed: %s", exc)
+        # Fallback (thread form only): if the target's origin couldn't be resolved
+        # (e.g. the parent session isn't live in the store), post to the thread's
+        # hosting channel so the merge is still visible somewhere sensible.
+        if not posted_note and is_thread_form and thread_adapter is not None and source.parent_chat_id:
             try:
-                target_origin = self._gateway_session_origin_for_id(target_id)
-            except Exception:
-                target_origin = None
-            if isinstance(target_origin, SessionSource) and target_origin.platform:
-                dest_adapter = self.adapters.get(target_origin.platform) if getattr(self, "adapters", None) else None
-                dest_chat = target_origin.thread_id or target_origin.chat_id
-                if dest_adapter is not None and dest_chat:
-                    try:
-                        note = t("gateway.merge.target_note", source=source_title, summary=note_short)
-                        await dest_adapter.send(str(dest_chat), note)
-                    except Exception as exc:
-                        logger.debug("merge: target-origin note send failed: %s", exc)
+                note = t("gateway.merge.parent_note", title=source_title, summary=note_short)
+                await thread_adapter.send(str(source.parent_chat_id), note)
+            except Exception as exc:
+                logger.debug("merge: parent-channel fallback note send failed: %s", exc)
 
         # --- Archive the thread (thread form only). ---
         archived = False

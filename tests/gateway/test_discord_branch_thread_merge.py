@@ -154,6 +154,120 @@ class TestBranchDiscordThread:
         assert "thread999" in result or "<#thread999>" in result
 
     @pytest.mark.asyncio
+    async def test_branch_stamps_branch_point_len(self, session_db):
+        """The branch session records how many messages it inherited from the
+        parent, so /merge can later summarize only the post-branch delta."""
+        adapter = MagicMock()
+        adapter.create_handoff_thread = AsyncMock(return_value="thrX")
+        adapter.send = AsyncMock()
+        runner = _make_runner(session_db, adapter)
+
+        source = _discord_source(chat_type="group", chat_id="parent_chan")
+        _seed_session(session_db, "parent_sess", title="Parent Work")
+        runner.session_store.get_or_create_session.return_value = _entry(
+            build_session_key(source), "parent_sess", source
+        )
+        # Parent has 3 inherited messages at branch time.
+        runner.session_store.load_transcript.return_value = [
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "b"},
+            {"role": "user", "content": "c"},
+        ]
+        runner.session_store.switch_session.return_value = _entry("any", "b", source)
+
+        await runner._handle_branch_command(_event("/branch idea", source))
+
+        # The new branch session row carries _branch_point_len == 3.
+        import json as _json, sqlite3
+        conn = sqlite3.connect(str(session_db.db_path))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT model_config FROM sessions WHERE parent_session_id = ?",
+            ("parent_sess",),
+        ).fetchall()
+        conn.close()
+        assert rows, "no branch child session row found"
+        mc = _json.loads(rows[0]["model_config"] or "{}")
+        assert mc.get("_branched_from") == "parent_sess"
+        assert mc.get("_branch_point_len") == 3
+
+    @pytest.mark.asyncio
+    async def test_native_slash_branch_in_thread_spawns_sibling_e2e(self, session_db):
+        """END-TO-END: a NATIVE Discord slash /branch inside a thread must build
+        a source WITH parent_chat_id (via the real adapter _build_slash_event)
+        and spawn a SIBLING thread under the parent channel — not fall back to a
+        classic in-place branch. This is the exact path that regressed (#230):
+        the native-slash source-builder dropped parent_chat_id.
+        """
+        import sys
+        discord_mod = sys.modules.get("discord")
+        # Build the REAL adapter source-builder path.
+        from types import SimpleNamespace
+        from plugins.platforms.discord import adapter as adapter_mod
+
+        Adapter = getattr(adapter_mod, "DiscordPlatformAdapter", None) or getattr(adapter_mod, "DiscordAdapter")
+        a = object.__new__(Adapter)
+        a._get_effective_topic = lambda ch, is_thread=False: None
+        a._resolve_channel_prompt = lambda cid, pid=None: None
+        # capture what build_source produces, but return a real SessionSource
+        captured = {}
+        def _bs(**kw):
+            captured.update(kw)
+            return SessionSource(
+                platform=Platform.DISCORD,
+                chat_id=kw.get("chat_id"),
+                chat_type=kw.get("chat_type", "group"),
+                user_id=kw.get("user_id"),
+                user_name=kw.get("user_name"),
+                thread_id=kw.get("session_id"),
+                parent_chat_id=kw.get("parent_chat_id"),
+            )
+        a.build_source = _bs
+
+        # A thread interaction: patch discord.Thread/DMChannel so isinstance works.
+        class StubThread: pass
+        class StubDM: pass
+        orig_t, orig_dm = discord_mod.Thread, discord_mod.DMChannel
+        discord_mod.Thread, discord_mod.DMChannel = StubThread, StubDM
+        adapter_mod.discord.Thread, adapter_mod.discord.DMChannel = StubThread, StubDM
+        try:
+            tc = StubThread()
+            tc.id = 555
+            tc.name = "existing-thread"
+            tc.guild = SimpleNamespace(name="Daemonarchy")
+            tc.parent = None
+            tc.parent_id = 700  # hosting channel
+            inter = SimpleNamespace(channel_id=555, channel=tc,
+                                    user=SimpleNamespace(id=1, display_name="Ace"))
+            event = a._build_slash_event(inter, "/branch")
+        finally:
+            discord_mod.Thread, discord_mod.DMChannel = orig_t, orig_dm
+            adapter_mod.discord.Thread, adapter_mod.discord.DMChannel = orig_t, orig_dm
+
+        # The native-slash source now carries parent_chat_id — the #230 fix.
+        assert event.source.parent_chat_id == "700"
+        assert event.source.chat_type == "thread"
+
+        # Feed that real source into the branch handler; it must spawn a SIBLING
+        # thread under the parent channel (700), not fall back to in-place.
+        branch_adapter = MagicMock()
+        branch_adapter.create_handoff_thread = AsyncMock(return_value="sibling888")
+        branch_adapter.send = AsyncMock()
+        runner = _make_runner(session_db, branch_adapter)
+        _seed_session(session_db, "src_sess", title="In Thread")
+        runner.session_store.get_or_create_session.return_value = _entry(
+            build_session_key(event.source), "src_sess", event.source
+        )
+        runner.session_store.load_transcript.return_value = [{"role": "user", "content": "x"}]
+        runner.session_store.switch_session.return_value = _entry("k", "b", event.source)
+
+        result = await runner._handle_branch_command(event)
+
+        branch_adapter.create_handoff_thread.assert_awaited_once()
+        assert branch_adapter.create_handoff_thread.await_args.args[0] == "700"  # sibling under parent
+        assert "sibling888" in result
+
+    @pytest.mark.asyncio
     async def test_branch_in_thread_spawns_sibling_under_parent(self, session_db):
         adapter = MagicMock()
         adapter.create_handoff_thread = AsyncMock(return_value="sibling777")
@@ -271,6 +385,9 @@ class TestMergeCommand:
         runner.session_store.lookup_by_session_id.return_value = _entry(
             build_session_key(parent_src), "parent_sess", parent_src
         )
+        # Target (parent) session's live origin — the note must land HERE (where
+        # the fold went), not in source.parent_chat_id.
+        runner._gateway_session_origin_for_id = lambda sid: parent_src
 
         result = await runner._handle_merge_command(_event("/merge", source))
 
@@ -282,12 +399,90 @@ class TestMergeCommand:
         assert len(folds) == 1
         assert "SUMMARY BODY" in folds[0]["content"]
 
-        # Note posted to the PARENT channel; thread archived; confirm says so.
+        # Note posted to the TARGET SESSION's origin (parent_chan here); thread
+        # archived; confirm says so.
         adapter.send.assert_awaited()
         assert adapter.send.await_args.args[0] == "parent_chan"
         adapter.archive_thread.assert_awaited_once()
         assert "archived" in result.lower()
         runner._evict_cached_agent.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_merge_thread_summarizes_only_delta_after_branch_point(self, session_db):
+        """Thread form summarizes ONLY turns after the branch point, not the
+        whole inherited copy of the parent."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+        adapter.archive_thread = AsyncMock(return_value=True)
+
+        runner = _make_runner(session_db, adapter)
+        seen = {}
+        fake = MagicMock()
+        def _cap_summary(history, focus=None):
+            seen["history"] = history
+            return "DELTA SUMMARY"
+        fake._generate_summary = _cap_summary
+        runner._build_merge_summarizer = lambda: fake
+
+        _seed_session(session_db, "parent_sess", title="Parent")
+        # Branch inherited 2 messages from the parent (branch point = 2).
+        _seed_session(session_db, "branch_sess", title="Explore",
+                      parent="parent_sess",
+                      model_config={"_branched_from": "parent_sess", "_branch_point_len": 2})
+
+        source = _discord_source(chat_type="thread", chat_id="t9",
+                                 thread_id="t9", parent_chat_id="chan")
+        current = _entry(build_session_key(source), "branch_sess", source)
+        runner.session_store.get_or_create_session.return_value = current
+        # Full branch transcript: 2 inherited + 2 new exploration turns.
+        runner.session_store.load_transcript.return_value = [
+            {"role": "user", "content": "INHERITED q"},
+            {"role": "assistant", "content": "INHERITED a"},
+            {"role": "user", "content": "NEW exploration q"},
+            {"role": "assistant", "content": "NEW exploration a"},
+        ]
+        runner.session_store.lookup_by_session_id.return_value = None
+
+        await runner._handle_merge_command(_event("/merge", source))
+
+        # The summarizer saw ONLY the 2 post-branch turns.
+        summed = seen.get("history") or []
+        contents = " ".join(str(m.get("content", "")) for m in summed)
+        assert len(summed) == 2
+        assert "NEW exploration" in contents
+        assert "INHERITED" not in contents
+
+    @pytest.mark.asyncio
+    async def test_merge_thread_no_new_turns_does_not_refold(self, session_db):
+        """A branch with ZERO new turns (branch_point_len == len) must return
+        no_new_turns and fold NOTHING — not re-summarize the inherited copy."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+        adapter.archive_thread = AsyncMock(return_value=True)
+        runner = self._runner_with_summary(session_db, adapter)
+
+        _seed_session(session_db, "parent_sess", title="Parent")
+        _seed_session(session_db, "branch_sess", title="Explore",
+                      parent="parent_sess",
+                      model_config={"_branched_from": "parent_sess", "_branch_point_len": 2})
+        source = _discord_source(chat_type="thread", chat_id="t0",
+                                 thread_id="t0", parent_chat_id="chan")
+        current = _entry(build_session_key(source), "branch_sess", source)
+        runner.session_store.get_or_create_session.return_value = current
+        # Exactly the 2 inherited turns, nothing new.
+        runner.session_store.load_transcript.return_value = [
+            {"role": "user", "content": "INHERITED q"},
+            {"role": "assistant", "content": "INHERITED a"},
+        ]
+        runner.session_store.lookup_by_session_id.return_value = None
+
+        result = await runner._handle_merge_command(_event("/merge", source))
+
+        assert "nothing new" in result.lower() or "no turns" in result.lower()
+        parent_msgs = session_db.get_messages_as_conversation("parent_sess")
+        assert not any("BRANCHED THREAD MERGED" in str(m.get("content", ""))
+                       for m in parent_msgs)
+        adapter.archive_thread.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_merge_thread_uses_branched_from_marker(self, session_db):

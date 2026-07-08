@@ -104,6 +104,7 @@ gateway:
     list_header:           "🔀 **Sessions you can merge into** — reply `/merge <number>` or `/merge <name>`:"
     list_footer:           "_`/merge <number>` folds a summary of THIS session into that one._"
     no_conversation:       "Nothing to merge — this session has no conversation yet."
+    no_new_turns:          "Nothing new to merge — no turns happened in this thread after the branch point."
     no_summary:            "Couldn't generate a summary of this session; nothing was merged. Try again in a moment."
     fold_failed:           "Failed to fold the summary into the target session: {error}"
     ledger_failed:         "Couldn't safely record the merge (session store busy) — nothing was folded. Try again in a moment."

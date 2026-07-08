@@ -371,6 +371,21 @@ def mark_running_jobs_interrupted(reason: str) -> list:
     return marked
 
 
+def _is_interrupted(job_id: str) -> bool:
+    """Non-destructive peek at whether the shutdown path has marked
+    ``job_id`` interrupted (see ``mark_running_jobs_interrupted``).
+
+    Called by ``run_one_job`` BEFORE it decides what to deliver — a job
+    whose tool subprocess was killed mid-flight may still produce a
+    plausible-looking ``final_response`` from the truncated output, and
+    that must not go out to the user as if it were a normal result.
+    Unlike ``_consume_interrupted_flag`` below, this does not clear the
+    flag: the later, authoritative check (right before ``last_status`` is
+    written) still needs to see it."""
+    with _running_lock:
+        return job_id in _interrupted_job_ids
+
+
 def _consume_interrupted_flag(job_id: str) -> bool:
     """Return True and clear the flag if the shutdown path already marked
     ``job_id`` interrupted (see ``mark_running_jobs_interrupted``).
@@ -3419,6 +3434,20 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             output_file = save_job_output(job["id"], output)
             if verbose:
                 logger.info("Output saved to: %s", output_file)
+
+            # If the gateway shutdown killed this job's tool subprocess
+            # mid-flight (#60432), the agent may still have produced a
+            # plausible-looking final_response from the truncated output --
+            # force the failure path so the delivered message is an honest
+            # "this run was interrupted" summary instead of that response.
+            # Peek-only: the flag stays set for the authoritative check
+            # right before mark_job_run below.
+            if success and _is_interrupted(job["id"]):
+                success = False
+                error = (
+                    "Interrupted by gateway shutdown before the run finished "
+                    "(tool subprocess was killed mid-flight)."
+                )
 
             # Deliver the final response to the origin/target chat.
             # If the agent responded with [SILENT], skip delivery (but

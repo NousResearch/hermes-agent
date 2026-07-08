@@ -1,4 +1,4 @@
-name: ha-conversation-platform
+name: ha_conversation-platform
 label: HA Conversation Agent
 kind: platform
 version: 1.0.0

@@ -99,6 +99,14 @@ asked something slow and Room B asks something else in the meantime, Room
 A's eventual answer only ever plays in Room A (or nowhere, under `off`), never
 in Room B.
 
+One declared design corner: this per-room targeting only applies to a slow
+*voice* turn's own late reply. A background delivery that isn't tied to any
+open voice turn (e.g. a cron job finishing) arriving **while a voice turn is
+actively being processed** merges straight into that turn's spoken reply
+instead of following `announce_mode` — the shared `home` session has no way
+to distinguish "more from the same turn" from "an unrelated delivery" once a
+turn window is open.
+
 ## Home control
 
 `supports_home_control` is advertised to HA automatically — not a config
@@ -138,7 +146,8 @@ your Wi-Fi) to be able to talk to Hermes.
   service.
 - **English-only ack text.** The acknowledgement strings are not localized.
 - **One utterance in flight per turn slot, with a queue cap.** Utterances
-  are serialized behind a single turn lock; concurrently arriving requests
-  wait their turn, up to **8** waiting utterances — beyond that, new
-  requests get an immediate "I'm handling several requests right now — try
-  again in a moment." instead of queuing further.
+  are serialized behind a single turn lock; up to **8** utterances may be
+  in flight at once — one actively being processed under the lock, the
+  rest queued behind it — beyond that, new requests get an immediate "I'm
+  handling several requests right now — try again in a moment." instead of
+  queuing further.

@@ -2559,7 +2559,20 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # this return value is discarded anyway.
             if agent._interrupt_requested:
                 return None
-            return stream.get_final_message()
+            try:
+                return stream.get_final_message()
+            except Exception as exc:
+                from agent.anthropic_adapter import _is_stream_unavailable_error
+
+                if not _is_stream_unavailable_error(exc):
+                    raise
+                logger.debug(
+                    "%sAnthropic stream aggregation failed; falling back to "
+                    "messages.create(): %s",
+                    getattr(agent, "log_prefix", ""),
+                    exc,
+                )
+                return agent._anthropic_messages_create(api_kwargs)
 
     def _call():
         import httpx as _httpx

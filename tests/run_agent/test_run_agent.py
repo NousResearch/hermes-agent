@@ -6648,6 +6648,39 @@ class TestAnthropicCredentialRefresh:
         agent._anthropic_client.messages.create.assert_called_once_with(model="claude-sonnet-4-20250514")
         assert result is response
 
+    def test_anthropic_messages_create_falls_back_on_sdk_usage_aggregation_error(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            agent = AIAgent(
+                api_key="sk-ant-oat01-current-token",
+                base_url="https://api.minimaxi.com/anthropic",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        response = SimpleNamespace(content=[])
+        agent._anthropic_client = MagicMock()
+        stream_cm = MagicMock()
+        inner = MagicMock()
+        inner.get_final_message.side_effect = AttributeError(
+            "'NoneType' object has no attribute 'output_tokens'"
+        )
+        stream_cm.__enter__.return_value = inner
+        agent._anthropic_client.messages.stream.return_value = stream_cm
+        agent._anthropic_client.messages.create.return_value = response
+
+        with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=False):
+            result = agent._anthropic_messages_create({"model": "MiniMax-M3"})
+
+        agent._anthropic_client.messages.stream.assert_called_once_with(model="MiniMax-M3")
+        agent._anthropic_client.messages.create.assert_called_once_with(model="MiniMax-M3")
+        assert result is response
+
     def test_anthropic_messages_create_honors_disable_streaming(self):
         with (
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),

@@ -89,21 +89,22 @@ def validate_config(config) -> bool:
 
 
 def _apply_yaml_config(yaml_cfg: dict, platform_cfg: dict) -> Optional[dict]:
-    """Translate the top-level `voice_satellite:` config.yaml section.
+    """Translate the user's `voice_satellite` config.yaml block.
 
     Only seeds ``PlatformConfig.extra`` (satellites, endpointing, timeouts).
-    Enablement comes from the section's own ``enabled: true`` key, which the
+    Enablement comes from the block's own ``enabled: true`` key, which the
     loader's generic shared-key loop bridges onto ``PlatformConfig.enabled``.
-    Alternatively, users may add a ``platforms: voice_satellite: enabled: true``
-    map entry if preferred.
 
-    ``load_gateway_config()`` invokes this hook with ``platform_cfg`` bound to
-    the raw ``yaml_cfg["voice_satellite"]`` dict, and only merges this function's
-    *return value* into ``extra``; any in-place mutation of ``platform_cfg`` is
-    discarded and never reaches ``PlatformConfig.enabled``.
+    ``load_gateway_config()`` binds ``platform_cfg`` to whichever block the
+    user wrote — the top-level ``voice_satellite:`` section, or the nested
+    ``platforms.voice_satellite`` / ``gateway.platforms.voice_satellite``
+    fallbacks — so this hook must read from it rather than re-reading
+    ``yaml_cfg`` (a top-level key may not exist). The loader only merges this
+    function's *return value* into ``extra``; any in-place mutation of
+    ``platform_cfg`` is discarded and never reaches ``PlatformConfig.enabled``.
     """
-    section = yaml_cfg.get("voice_satellite") or {}
-    if not isinstance(section, dict) or not section.get("satellites"):
+    section = platform_cfg if isinstance(platform_cfg, dict) else {}
+    if not section.get("satellites"):
         return None
     return {
         "satellites": section.get("satellites", []),

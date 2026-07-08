@@ -60,21 +60,23 @@ def test_validate_config_requires_connectable_satellites():
 
 
 def test_apply_yaml_config_translates_section():
-    yaml_cfg = {
-        "voice_satellite": {
-            "satellites": [{"name": "kitchen", "host": "10.0.0.5", "port": 10700}],
-            "tts_sample_rate": 16000,
-        }
+    # The loader binds platform_cfg to the user's block wherever it lives
+    # (top-level section OR nested platforms map); the hook must read from
+    # the argument, not from yaml_cfg (gateway/config.py ~1261-1273).
+    section = {
+        "satellites": [{"name": "kitchen", "host": "10.0.0.5", "port": 10700}],
+        "tts_sample_rate": 16000,
     }
-    platform_cfg = {}
-    extra = _mod._apply_yaml_config(yaml_cfg, platform_cfg)
+    extra = _mod._apply_yaml_config({"voice_satellite": section}, section)
     assert extra["satellites"][0]["host"] == "10.0.0.5"
     assert extra["tts_sample_rate"] == 16000
-    # This hook only seeds `extra`; enablement comes from the section's own
-    # `enabled: true` key or via a `platforms: voice_satellite: enabled: true`
-    # entry (see test_voice_satellite_config.py::test_gateway_config_chain_enables_platform).
-    assert "enabled" not in platform_cfg
-    # absent/empty section -> None, no enablement
+    # nested-only config: top-level key absent, block passed as platform_cfg
+    nested = _mod._apply_yaml_config({}, section)
+    assert nested["satellites"][0]["host"] == "10.0.0.5"
+    # This hook only seeds `extra`; it must not write enablement keys into
+    # the user's block (see test_voice_satellite_config.py).
+    assert "enabled" not in section
+    # absent/empty block -> None, no enablement
     assert _mod._apply_yaml_config({}, {}) is None
 
 

@@ -55,6 +55,42 @@ def test_gateway_config_chain_enables_platform(tmp_path, monkeypatch):
     assert pc.extra["satellites"][0]["name"] == "kitchen"
 
 
+def test_gateway_config_chain_nested_platforms_block(tmp_path, monkeypatch):
+    """Satellites also reach extra when configured ONLY under the nested
+    ``platforms: voice_satellite:`` map (no top-level section).
+
+    The loader resolves that block and passes it as the hook's
+    ``platform_cfg`` argument (gateway/config.py ~1261-1273); the hook must
+    read from it rather than re-reading the absent top-level key, or the
+    platform starts enabled with zero satellites.
+    """
+    from gateway import config as gw_config
+
+    _mod.register(_RegistryCtx())
+
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        textwrap.dedent(
+            """
+            platforms:
+              voice_satellite:
+                enabled: true
+                satellites:
+                  - name: kitchen
+                    host: 192.168.1.40
+                    port: 10700
+            """
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = gw_config.load_gateway_config()
+    pc = config.platforms.get(gw_config.Platform("voice_satellite"))
+    assert pc is not None
+    assert pc.enabled is True
+    assert pc.extra["satellites"][0]["name"] == "kitchen"
+
+
 class _RegistryCtx:
     def register_platform(self, **kwargs):
         from gateway.platform_registry import PlatformEntry, platform_registry

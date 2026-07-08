@@ -13,7 +13,10 @@ import {
   $petRoam,
   $petRoamDir,
   clearPetUnread,
+  hasPetSpriteForMeta,
+  mergePetInfoMeta,
   type PetInfo,
+  type PetInfoMeta,
   petProfile,
   setPetInfo
 } from '@/store/pet'
@@ -37,25 +40,6 @@ const NOMINAL_PET_PX = 96
 interface Point {
   x: number
   y: number
-}
-
-interface PetInfoMeta {
-  enabled: boolean
-  slug?: string
-  displayName?: string
-  scale?: number
-  spritesheetRevision?: string
-}
-
-function samePetRevision(info: PetInfo, meta: PetInfoMeta): boolean {
-  return (
-    info.enabled &&
-    Boolean(info.spritesheetBase64) &&
-    info.slug === meta.slug &&
-    info.displayName === meta.displayName &&
-    info.scale === meta.scale &&
-    info.spritesheetRevision === meta.spritesheetRevision
-  )
 }
 
 // Keep a w×h box fully inside the viewport. Pre-pet-load callers pass a nominal
@@ -184,7 +168,11 @@ export function FloatingPet() {
               return
             }
 
-            if (samePetRevision($petInfo.get(), meta)) {
+            const current = $petInfo.get()
+
+            if (hasPetSpriteForMeta(current, meta)) {
+              setPetInfo(mergePetInfoMeta(current, meta))
+
               return
             }
           } catch {

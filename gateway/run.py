@@ -6521,6 +6521,84 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if changed:
             self._save_restart_failure_counts(counts)
 
+    def _announce_and_persist_served_route(
+        self,
+        *,
+        agent,
+        session_key,
+        served_provider,
+        served_model,
+        was_reinit: bool,
+    ) -> None:
+        """Announce a model RECOVERY (return-to-primary) and persist the served
+        route, at the ONE unified recovery-announce site.
+
+        Two paths return a session to its primary model — both surface here:
+          • cache-warm restore (same agent restored at the turn prologue) →
+            recovery_via="new turn".
+          • re-init (agent cache evicted/rebuilt → a fresh agent inited on the
+            config default, no fallback state to restore) → recovery_via=
+            "re-init" (its silent snap-back was previously invisible — the fix).
+
+        The announce is keyed on the FINAL served route: we compare the session's
+        PREVIOUS served route (``last_served_identity``, persisted at the prior
+        turn's end) against THIS turn's served ``(served_provider, served_model)``
+        (post any mid-turn failover). Only a genuine model change announces; a
+        re-init that happens to serve the same model is silent. The durable sink
+        line is written gate-independently; the chat emit is gated on
+        ``model.announce_recovery``. Then we persist this turn's served route for
+        the next comparison. Identity-only (``{provider, model}``) — never a
+        secret. Best-effort: never raises into the turn.
+        """
+        if not (agent and session_key and served_model and served_provider):
+            return
+        try:
+            entry = self.session_store._entries.get(session_key)
+            served_identity = {"provider": served_provider, "model": served_model}
+            prev_identity = getattr(entry, "last_served_identity", None) if entry else None
+            if isinstance(prev_identity, dict):
+                prev_route = (prev_identity.get("provider"), prev_identity.get("model"))
+                now_route = (served_provider, served_model)
+                # Announce only a genuine model return: the previous served model
+                # differs from this turn's, and we know what it was.
+                if prev_route != now_route and prev_route[1]:
+                    recovery_via = "new turn" if not was_reinit else "re-init"
+                    try:
+                        from agent.chat_completion_helpers import (
+                            _append_route_change,
+                            _emit_fallback_announce,
+                        )
+                        # Durable sink line always (gate-independent).
+                        _append_route_change(
+                            "recovery",
+                            prev_route[0], prev_route[1],
+                            served_provider, served_model,
+                        )
+                        announce = False
+                        try:
+                            from hermes_cli.config import read_raw_config
+                            raw = read_raw_config() or {}
+                            mcfg = raw.get("model", {}) if isinstance(raw, dict) else {}
+                            announce = bool(mcfg.get("announce_recovery", False))
+                        except Exception:
+                            pass  # config read failure → default-off (silent)
+                        _emit_fallback_announce(
+                            agent, prev_route[1], served_model, served_provider,
+                            old_provider=prev_route[0],
+                            announce_enabled=announce,
+                            record_event=False,
+                            kind="recovery",
+                            recovery_via=recovery_via,
+                        )
+                    except Exception:
+                        logger.debug("recovery announce failed", exc_info=True)
+            # Persist THIS turn's served route for the next comparison.
+            if entry is not None:
+                entry.last_served_identity = served_identity
+                self.session_store._save()
+        except Exception:
+            logger.debug("served-route announce/persist failed", exc_info=True)
+
     def _suspend_stuck_loop_sessions(self) -> int:
         """Suspend sessions that have been active across too many restarts.
 
@@ -19298,6 +19376,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
             _resolved_provider = getattr(_agent, "provider", None) if _agent else None
+
+            # Unified model-recovery announce (re-init snap-back + cache-warm
+            # restore), keyed on the FINAL served route — see
+            # _announce_and_persist_served_route. Both recovery paths surface at
+            # this ONE site (the #236 inline restore announce was removed from
+            # restore_primary_runtime), distinguished by the recovery_via rider.
+            self._announce_and_persist_served_route(
+                agent=_agent,
+                session_key=session_key,
+                served_provider=_resolved_provider,
+                served_model=_resolved_model,
+                was_reinit=not reused_cached_agent,
+            )
 
             # Sync session_id immediately after run_conversation(). Compression
             # can rotate before a follow-up model call fails; the failure return

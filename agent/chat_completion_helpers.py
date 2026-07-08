@@ -1533,6 +1533,7 @@ def _emit_fallback_announce(
     record_event: bool = True,
     kind: str = "fallback",
     reason: "Any | None" = None,
+    recovery_via: "str | None" = None,
 ) -> None:
     """Emit a single, always-visible chat status line when a model route changes
     (an automatic failover OR a recovery back to the primary).
@@ -1618,12 +1619,17 @@ def _emit_fallback_announce(
     new_label = _side_label(new_provider, new_model, _ne)
     verb = "Model recovery" if kind == "recovery" else "Model fallback"
     icon = "🔄"
-    # Reason rider (why the route changed) — e.g. "safety refusal" vs "rate limit".
-    # A same-model cross-provider failover reads like a rate-limit blip without it;
-    # a content-policy refusal (fable declined → opus answered) is a materially
-    # different event the user wants to distinguish. Recovery has no reason.
-    _reason_label = _fallback_reason_label(reason) if kind != "recovery" else None
-    _reason_suffix = f" ({_reason_label})" if _reason_label else ""
+    # Rider (why/how the route changed). For a FAILOVER: the fault reason —
+    # "safety refusal" vs "rate limit" — so a content-policy refusal (fable
+    # declined → opus answered) is distinguishable from a rate-limit blip.
+    # For a RECOVERY: not a fault, but WHICH recovery mechanism returned the
+    # session to its primary — "new turn" (same cached agent restored) vs
+    # "re-init" (the agent was rebuilt, prompt cache lost — more consequential).
+    if kind == "recovery":
+        _reason_suffix = f" ({recovery_via})" if recovery_via else ""
+    else:
+        _reason_label = _fallback_reason_label(reason)
+        _reason_suffix = f" ({_reason_label})" if _reason_label else ""
     msg = f"{icon} {verb}{_reason_suffix}: {old_label} → {new_label}"
     old_lbl = _format_context_window(old_window)
     new_lbl = _format_context_window(new_window)

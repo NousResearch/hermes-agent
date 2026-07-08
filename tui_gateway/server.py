@@ -979,6 +979,62 @@ def _profile_home(profile: str | None) -> Path | None:
     return home if (home / "state.db").exists() or home.exists() else None
 
 
+def _default_profile_state_db_path() -> Path:
+    """Return the launch/default profile's ``state.db`` path.
+
+    Used by session-owned persistence paths so they don't fall back to the
+    cached :func:`_get_db` handle when the process-global DB has been
+    initialised under a non-launch profile (see issue #59566). Falls back to
+    ``DEFAULT_DB_PATH`` from ``hermes_state`` when ``_hermes_home`` is unset
+    for any reason.
+    """
+    base = _hermes_home if _hermes_home else None
+    if base is None:
+        from hermes_state import DEFAULT_DB_PATH
+
+        return Path(DEFAULT_DB_PATH)
+    return Path(base) / "state.db"
+
+
+def _session_db_path(session: dict) -> Path:
+    """Resolve the DB path that owns a session's row.
+
+    For an explicit non-launch profile (``session['profile_home']``) the
+    session persists to that profile's ``state.db``. For a launch/default
+    profile session we return the launch profile's ``state.db`` explicitly —
+    we deliberately do NOT use the cached :func:`_get_db` handle, because
+    that handle's ``db_path`` is captured at first-call and may have been
+    initialised under a different profile in app-global remote mode
+    (issue #59566).
+    """
+    profile_home = session.get("profile_home")
+    if profile_home:
+        return Path(profile_home) / "state.db"
+    return _default_profile_state_db_path()
+
+
+def _explicit_db_for(profile_home: str | os.PathLike[str] | None) -> "object | None":
+    """Open a short-lived ``SessionDB`` for a profile home without using ``_get_db``.
+
+    Used as the default fallback when an agent is built without an explicit
+    ``session_db``. Returns ``None`` when the DB can't be opened so the
+    caller can degrade gracefully (matching ``_get_db``'s contract on
+    failure). The returned handle is short-lived per call; long-lived
+    callers should open their own with :func:`_session_db_path`.
+    """
+    if profile_home:
+        db_path = Path(profile_home) / "state.db"
+    else:
+        db_path = _default_profile_state_db_path()
+    try:
+        from hermes_state import SessionDB
+
+        return SessionDB(db_path=db_path)
+    except Exception:
+        logger.debug("failed to open explicit session db for %s", db_path, exc_info=True)
+        return None
+
+
 def _profile_scoped(handler):
     """Bind ``params['profile']``'s HERMES_HOME around a pet RPC handler.
 
@@ -1306,15 +1362,19 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # Build against the session's profile (global-remote): bind its
             # HERMES_HOME so config/skills/model resolve to it, and hand the
             # agent that profile's db so turns persist to the right state.db.
+            # For launch/default sessions we also open an explicit db handle
+            # against the launch-profile state.db so a cached process-global
+            # handle from a previous non-launch profile can never be reused
+            # for the agent's own persistence (#59566).
             session_db = None
             if profile_home:
                 home_token = set_hermes_home_override(profile_home)
-                try:
-                    from hermes_state import SessionDB
+            try:
+                from hermes_state import SessionDB
 
-                    session_db = SessionDB(db_path=Path(profile_home) / "state.db")
-                except Exception:
-                    session_db = None
+                session_db = SessionDB(db_path=_session_db_path(current))
+            except Exception:
+                session_db = None
             try:
                 # Lazy-resumed (watch) sessions carry the stored conversation
                 # id — pass it through so the upgrade continues that session
@@ -1340,7 +1400,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                         kw["reasoning_config_override"] = reasoning
                     if (tier := current.get("create_service_tier_override")) is not None:
                         kw["service_tier_override"] = tier
-                agent = _make_agent(sid, key, **kw)
+                agent = _make_agent(sid, key, profile_home=profile_home, **kw)
             finally:
                 _clear_session_context(tokens)
 
@@ -1639,20 +1699,20 @@ def _ensure_session_db_row(session: dict) -> None:
         return
     # Persist into the session's own profile db (global remote mode), not the
     # launch profile's — otherwise the row lands in the wrong state.db, the
-    # unified list mis-tags it, and resume 404s ("session not found").
+    # unified list mis-tags it, and resume 404s ("session not found"). For a
+    # launch/default session we also open the DB explicitly via the
+    # session-derived path so a cached process-global handle previously
+    # initialised under another profile can never be reused (#59566).
     profile_home = session.get("profile_home")
-    if profile_home:
-        from hermes_state import SessionDB
+    db_path = _session_db_path(session)
+    from hermes_state import SessionDB
 
-        try:
-            db = SessionDB(db_path=Path(profile_home) / "state.db")
-        except Exception:
-            logger.debug("failed to open profile db for session row", exc_info=True)
-            return
-        close_db = True
-    else:
-        db = _get_db()
-        close_db = False
+    try:
+        db = SessionDB(db_path=db_path)
+    except Exception:
+        logger.debug("failed to open session db for row", exc_info=True)
+        return
+    close_db = True
     if db is None:
         return
     # The session's own model/effort/fast pick — the composer override shipped on
@@ -1766,16 +1826,18 @@ def _session_db(session: dict):
     None when the db is unavailable.
     """
     db, close_db = None, False
-    profile_home = session.get("profile_home")
-    if profile_home:
-        from hermes_state import SessionDB
+    # Always open the session's own db explicitly — even for launch/default
+    # sessions — so a cached ``_get_db`` handle initialised under a different
+    # profile can't be reused (#59566). The DB is short-lived and closed on
+    # exit; the launch-profile list/sidebar reads that genuinely want the
+    # shared handle should keep using ``_get_db`` directly.
+    db_path = _session_db_path(session)
+    from hermes_state import SessionDB
 
-        try:
-            db, close_db = SessionDB(db_path=Path(profile_home) / "state.db"), True
-        except Exception:
-            logger.debug("failed to open profile db for session", exc_info=True)
-    else:
-        db = _get_db()
+    try:
+        db, close_db = SessionDB(db_path=db_path), True
+    except Exception:
+        logger.debug("failed to open session db", exc_info=True)
     try:
         yield db
     finally:
@@ -4371,6 +4433,7 @@ def _make_agent(
     provider_override: str | None = None,
     reasoning_config_override: dict | None = None,
     service_tier_override: str | None = None,
+    profile_home: str | os.PathLike[str] | None = None,
 ):
     from run_agent import AIAgent
 
@@ -4515,7 +4578,15 @@ def _make_agent(
         provider_data_collection=_pr.get("data_collection"),
         platform="tui",
         session_id=session_id or key,
-        session_db=session_db if session_db is not None else _get_db(),
+        # When the caller doesn't pass an explicit session_db, resolve one
+        # against the launch profile's state.db (or the named profile_home)
+        # rather than reusing the cached ``_get_db`` handle, which may have
+        # been initialised under a different profile (#59566). The session
+        # already owns its DB path via ``_session_db_path``; this fallback
+        # mirrors that contract for callers that skipped the helper.
+        session_db=session_db
+        if session_db is not None
+        else _explicit_db_for(profile_home),
         ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
@@ -5441,13 +5512,15 @@ def _(rid, params: dict) -> dict:
     profile_home = _profile_home(profile)
 
     # In a profile scope, the agent OWNS a long-lived db handle bound to that
-    # profile (do NOT auto-close it here). Otherwise reuse the shared launch db.
-    if profile_home is not None:
-        from hermes_state import SessionDB
+    # profile (do NOT auto-close it here). For a launch/default profile we
+    # open the explicit launch-profile state.db so a cached process-global
+    # handle from another profile can't be reused here either (#59566).
+    from hermes_state import SessionDB
 
+    if profile_home is not None:
         db = SessionDB(db_path=profile_home / "state.db")
     else:
-        db = _get_db()
+        db = SessionDB(db_path=_default_profile_state_db_path())
     if db is None:
         return _db_unavailable_error(rid, code=5000)
 

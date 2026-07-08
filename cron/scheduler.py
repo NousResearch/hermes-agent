@@ -58,6 +58,28 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     text = (error or "unknown error").strip()
     lower = text.lower()
 
+    # no_agent jobs are script-only; their failures must not be mislabeled as
+    # provider/fallback-chain failures just because the script output contains
+    # words like "timeout". The detailed, redacted script output is saved in the
+    # cron output file; chat gets a concise watchdog failure.
+    if job.get("no_agent"):
+        cleaned = re.sub(
+            r"^(RuntimeError|Exception|ValueError):\s*",
+            "",
+            text[:2000],
+        )
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if len(cleaned) > 180:
+            cleaned = cleaned[:177].rstrip() + "..."
+        if "script timed out" in lower or "timed out" in lower or "timeout" in lower:
+            return (
+                f"⚠️ Cron watchdog '{job_name}' script timed out. "
+                "Full details saved in cron output."
+            )
+        if cleaned:
+            return f"⚠️ Cron watchdog '{job_name}' script failed: {cleaned}"
+        return f"⚠️ Cron watchdog '{job_name}' script failed."
+
     # Provider/API failures are the common noisy path. Keep these short.
     if "429" in text or "rate limit" in lower or "usage limit" in lower:
         reason = "rate limit"

@@ -3948,6 +3948,47 @@ class APIServerAdapter(BasePlatformAdapter):
         return out
 
     @staticmethod
+    def _reasoning_events_from_messages(
+        messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Build final reasoning events from persisted assistant messages.
+
+        Provider-native reasoning often lands only on the completed assistant
+        message, after live callback previews have already fired. Returning a
+        final reasoning event lets /v1/runs SSE clients reconcile with the same
+        reasoning fields that session/history readers see after refresh.
+        """
+        events: List[Dict[str, Any]] = []
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+
+            reasoning = msg.get("reasoning")
+            reasoning_content = msg.get("reasoning_content")
+            if not reasoning and reasoning_content is None:
+                continue
+
+            text = ""
+            if isinstance(reasoning_content, str) and reasoning_content:
+                text = reasoning_content
+            elif isinstance(reasoning, str):
+                text = reasoning
+
+            payload: Dict[str, Any] = {
+                "text": text,
+                "final": True,
+                "source": "messages",
+            }
+            if msg.get("id"):
+                payload["message_id"] = msg.get("id")
+            if reasoning:
+                payload["reasoning"] = reasoning
+            if reasoning_content is not None:
+                payload["reasoning_content"] = reasoning_content
+            events.append(payload)
+        return events
+
+    @staticmethod
     def _extract_output_items(result: Dict[str, Any], start_index: int = 0) -> List[Dict[str, Any]]:
         """
         Build the output item array from the agent's messages.
@@ -4465,13 +4506,34 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                    _put_event_if_active({
+                    turn_messages = (
+                        self._turn_transcript_messages(
+                            conversation_history,
+                            user_message,
+                            result,
+                        )
+                        if isinstance(result, dict)
+                        else []
+                    )
+                    reasoning_events = self._reasoning_events_from_messages(turn_messages)
+                    for payload in reasoning_events:
+                        _put_event_if_active({
+                            "event": "reasoning.available",
+                            "run_id": run_id,
+                            "timestamp": time.time(),
+                            **payload,
+                        })
+
+                    completed_event = {
                         "event": "run.completed",
                         "run_id": run_id,
                         "timestamp": time.time(),
                         "output": final_response,
                         "usage": usage,
-                    })
+                    }
+                    if turn_messages:
+                        completed_event["messages"] = turn_messages
+                    _put_event_if_active(completed_event)
                     self._set_run_status(
                         run_id,
                         "completed",

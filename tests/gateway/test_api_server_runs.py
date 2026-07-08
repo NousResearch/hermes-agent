@@ -9,6 +9,7 @@ Covers:
 """
 
 import asyncio
+import json
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -52,6 +53,14 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
     return app
+
+
+def _sse_events(body: str) -> list[dict]:
+    events = []
+    for line in body.splitlines():
+        if line.startswith("data: "):
+            events.append(json.loads(line[len("data: ") :]))
+    return events
 
 
 def _make_slow_agent(**kwargs):
@@ -306,7 +315,58 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_events_stream_replays_final_message_reasoning(self, adapter):
+        """Completed runs should expose reasoning fields that history will show."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {
+                    "final_response": "Final answer",
+                    "messages": [
+                        {"role": "user", "content": "hello"},
+                        {
+                            "role": "assistant",
+                            "content": "Final answer",
+                            "reasoning": "short summary",
+                            "reasoning_content": "provider-native chain",
+                        },
+                    ],
+                }
+                mock_agent.session_prompt_tokens = 10
+                mock_agent.session_completion_tokens = 5
+                mock_agent.session_total_tokens = 15
+                mock_create.return_value = mock_agent
 
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                data = await resp.json()
+
+                events_resp = await cli.get(f"/v1/runs/{data['run_id']}/events")
+                assert events_resp.status == 200
+                events = _sse_events(await events_resp.text())
+
+        reasoning = [
+            event for event in events if event.get("event") == "reasoning.available"
+        ]
+        assert reasoning
+        assert reasoning[-1]["final"] is True
+        assert reasoning[-1]["source"] == "messages"
+        assert reasoning[-1]["text"] == "provider-native chain"
+        assert reasoning[-1]["reasoning"] == "short summary"
+        assert reasoning[-1]["reasoning_content"] == "provider-native chain"
+
+        completed = [event for event in events if event.get("event") == "run.completed"]
+        assert completed
+        assert completed[-1]["messages"] == [
+            {
+                "role": "assistant",
+                "content": "Final answer",
+                "reasoning": "short summary",
+                "reasoning_content": "provider-native chain",
+            }
+        ]
 
     @pytest.mark.asyncio
     async def test_approval_response_without_pending_returns_409(self, adapter):

@@ -310,6 +310,26 @@ def _multimodal_text_summary(value: Any) -> str:
         return str(value)
 
 
+def _session_db_text_content(value: Any) -> Any:
+    """Apply the session store's text-only multimodal persistence policy."""
+    if _is_multimodal_tool_result(value):
+        return _multimodal_text_summary(value)
+    if not isinstance(value, list):
+        return value
+
+    text_parts = []
+    for part in value:
+        if isinstance(part, dict) and part.get("type") == "text":
+            text_parts.append(str(part.get("text", "")))
+        elif isinstance(part, dict) and part.get("type") in {
+            "image",
+            "image_url",
+            "input_image",
+        }:
+            text_parts.append("[screenshot]")
+    return "\n".join(text_parts) if text_parts else None
+
+
 def _append_subdir_hint_to_multimodal(value: Dict[str, Any], hint: str) -> None:
     """Mutate a multimodal tool-result envelope to append a subdir hint.
 

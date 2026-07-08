@@ -208,6 +208,7 @@ from agent.tool_dispatch_helpers import (
     _paths_overlap,  # noqa: F401  # re-exported for tests that `from run_agent import _paths_overlap`
     _is_multimodal_tool_result,
     _multimodal_text_summary,
+    _session_db_text_content,
     _append_subdir_hint_to_multimodal,  # noqa: F401  # re-exported for tests that `from run_agent import _append_subdir_hint_to_multimodal`
     _extract_file_mutation_targets,
     _extract_landed_file_mutation_paths,
@@ -2048,20 +2049,9 @@ class AIAgent:
                     and sanitize_context(content).strip() != content.strip()
                 ):
                     _row_api_content = content
-                # Persist multimodal tool results as their text summary only —
-                # base64 images would bloat the session DB and aren't useful
-                # for cross-session replay.
-                if _is_multimodal_tool_result(content):
-                    content = _multimodal_text_summary(content)
-                elif isinstance(content, list):
-                    # List of OpenAI-style content parts: strip images, keep text.
-                    _txt = []
-                    for p in content:
-                        if isinstance(p, dict) and p.get("type") == "text":
-                            _txt.append(str(p.get("text", "")))
-                        elif isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}:
-                            _txt.append("[screenshot]")
-                    content = "\n".join(_txt) if _txt else None
+                # Keep session persistence text-only; image blocks belong in
+                # live provider context, not state.db.
+                content = _session_db_text_content(content)
                 tool_calls_data = None
                 if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:
                     tool_calls_data = [
@@ -2083,6 +2073,7 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    steer_applied=msg.get("_steer_applied"),
                     timestamp=_row_timestamp,
                     api_content=_row_api_content,
                     display_kind=(

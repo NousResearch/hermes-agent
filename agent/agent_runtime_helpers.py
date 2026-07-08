@@ -34,7 +34,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.prompt_builder import format_steer_marker
-from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
+from agent.tool_dispatch_helpers import (
+    _session_db_text_content,
+    _trajectory_normalize_msg,
+    make_tool_result_message,
+)
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
@@ -3374,6 +3378,63 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
 
 
 
+def _merged_steer_applied(existing: Any, steer_text: str) -> Any:
+    """Merge steer metadata without losing earlier applied steer text."""
+    if existing is None:
+        return [steer_text]
+    if isinstance(existing, list):
+        return [*existing, steer_text]
+    if isinstance(existing, str):
+        return [existing, steer_text] if existing else [steer_text]
+    return [existing, steer_text]
+
+
+def _persist_tool_result_steer(agent, tool_msg: dict) -> None:
+    session_db = getattr(agent, "_session_db", None)
+    update = getattr(session_db, "update_message_steer", None)
+    if not callable(update):
+        return
+    session_id = getattr(agent, "session_id", None)
+    tool_call_id = tool_msg.get("tool_call_id")
+    if not session_id or not tool_call_id:
+        return
+    try:
+        update(
+            session_id,
+            tool_call_id,
+            _session_db_text_content(tool_msg.get("content")),
+            tool_msg.get("_steer_applied"),
+        )
+    except Exception as exc:
+        logger.debug("Failed to persist /steer update for tool result: %s", exc)
+
+
+def apply_steer_to_tool_message(agent, tool_msg: dict, steer_text: str) -> bool:
+    """Append steer text to one tool result and persist the mutation if possible."""
+    if not isinstance(tool_msg, dict) or not steer_text:
+        return False
+    marker = format_steer_marker(steer_text)
+    existing_content = tool_msg.get("content", "")
+    if not isinstance(existing_content, str):
+        # Anthropic multimodal content blocks — preserve them and append
+        # a text block at the end.
+        try:
+            blocks = list(existing_content) if existing_content else []
+            blocks.append({"type": "text", "text": marker.lstrip()})
+            tool_msg["content"] = blocks
+        except Exception:
+            # Fall back to string replacement if content shape is unexpected.
+            tool_msg["content"] = f"{existing_content}{marker}"
+    else:
+        tool_msg["content"] = existing_content + marker
+    tool_msg["_steer_applied"] = _merged_steer_applied(
+        tool_msg.get("_steer_applied"),
+        steer_text,
+    )
+    _persist_tool_result_steer(agent, tool_msg)
+    return True
+
+
 def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
     """Append any pending /steer text to the last tool result in this turn.
 
@@ -3417,20 +3478,7 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
             existing = getattr(agent, "_pending_steer", None)
             agent._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
         return
-    marker = format_steer_marker(steer_text)
-    existing_content = messages[target_idx].get("content", "")
-    if not isinstance(existing_content, str):
-        # Anthropic multimodal content blocks — preserve them and append
-        # a text block at the end.
-        try:
-            blocks = list(existing_content) if existing_content else []
-            blocks.append({"type": "text", "text": marker.lstrip()})
-            messages[target_idx]["content"] = blocks
-        except Exception:
-            # Fall back to string replacement if content shape is unexpected.
-            messages[target_idx]["content"] = f"{existing_content}{marker}"
-    else:
-        messages[target_idx]["content"] = existing_content + marker
+    apply_steer_to_tool_message(agent, messages[target_idx], steer_text)
     _ra().logger.info(
         "Delivered /steer to agent after tool batch (%d chars): %s",
         len(steer_text),

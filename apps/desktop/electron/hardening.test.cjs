@@ -4,10 +4,11 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 const { pathToFileURL } = require('node:url')
-
 const {
+  DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret,
+  isNetworkSuspendError,
   resolveDirectoryForIpc,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
@@ -276,4 +277,27 @@ test('resolveDirectoryForIpc accepts directory symlinks or junctions', async t =
   const resolved = await resolveDirectoryForIpc(linkPath)
   assert.equal(resolved.resolvedPath, linkPath)
   assert.equal(resolved.stat.isDirectory(), true)
+})
+
+test('isNetworkSuspendError detects OS-level network suspension errors', () => {
+  // Canonical code field
+  assert.equal(isNetworkSuspendError({ code: 'ERR_NETWORK_IO_SUSPENDED' }), true)
+  assert.equal(isNetworkSuspendError({ code: 'ERR_NETWORK_CHANGED' }), true)
+  assert.equal(isNetworkSuspendError({ code: 'ERR_INTERNET_DISCONNECTED' }), true)
+  assert.equal(isNetworkSuspendError({ code: 'ERR_NETWORK_ACCESS_DENIED' }), true)
+
+  // Message-only detection (some Electron versions surface the code in message)
+  assert.equal(isNetworkSuspendError({ message: 'net::ERR_NETWORK_IO_SUSPENDED' }), true)
+  assert.equal(isNetworkSuspendError({ message: 'Error: net::ERR_NETWORK_CHANGED at ...' }), true)
+
+  // Non-network errors are not detected
+  assert.equal(isNetworkSuspendError({ code: 'ECONNREFUSED' }), false)
+  assert.equal(isNetworkSuspendError({ code: 'ETIMEDOUT' }), false)
+  assert.equal(isNetworkSuspendError({ message: 'Something else failed' }), false)
+
+  // Non-error inputs
+  assert.equal(isNetworkSuspendError(null), false)
+  assert.equal(isNetworkSuspendError(undefined), false)
+  assert.equal(isNetworkSuspendError('ERR_NETWORK_IO_SUSPENDED'), false)
+  assert.equal(isNetworkSuspendError(42), false)
 })

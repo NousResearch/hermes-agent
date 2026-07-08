@@ -30,6 +30,7 @@ from gateway.platforms.api_server import (
     ResponseStore,
     _IdempotencyCache,
     _derive_chat_session_id,
+    _hermes_version,
     _redact_api_error_text,
     check_api_server_requirements,
     cors_middleware,
@@ -775,6 +776,29 @@ class TestHealthEndpoint:
             assert "version" in data
             assert isinstance(data["version"], str)
             assert data["version"] != ""
+
+    def test_health_version_prefers_runtime_source_over_stale_metadata(self):
+        """Editable installs can leave importlib.metadata at an older release.
+
+        The health endpoint must report the running Hermes source version, not
+        stale ``hermes_agent-*.dist-info`` metadata from before a source update.
+        """
+        from hermes_cli import __version__
+
+        with patch("importlib.metadata.version", return_value="0.18.0"):
+            assert _hermes_version() == __version__
+
+    @pytest.mark.asyncio
+    async def test_health_endpoint_prefers_runtime_version_over_stale_metadata(self, adapter):
+        from hermes_cli import __version__
+
+        app = _create_app(adapter)
+        with patch("importlib.metadata.version", return_value="0.18.0"):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/health")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["version"] == __version__
 
     @pytest.mark.asyncio
     async def test_v1_health_alias_returns_ok(self, adapter):

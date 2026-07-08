@@ -1505,6 +1505,41 @@ class ElicitationHandler:
 # Server task -- each MCP server lives in one long-lived asyncio Task
 # ---------------------------------------------------------------------------
 
+
+async def _cancel_pending_task(task: asyncio.Task) -> None:
+    """Cancel a pending asyncio task, tolerating loop-shutdown races.
+
+    During CLI teardown or MCP reloads, a parked server task can still be in
+    ``_wait_for_reconnect_or_shutdown()`` while the owning event loop is already
+    closing. ``task.cancel()`` then raises ``RuntimeError('Event loop is closed')``
+    and emits a noisy "Exception ignored" traceback even though the MCP request
+    itself already completed successfully.
+
+    Treat that specific loop-shutdown race as benign teardown noise.
+    """
+    if task.done():
+        return
+
+    try:
+        loop = task.get_loop()
+    except Exception:
+        loop = None
+
+    if loop is not None and loop.is_closed():
+        return
+
+    try:
+        task.cancel()
+    except RuntimeError as exc:
+        if "Event loop is closed" in str(exc):
+            return
+        raise
+
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        pass
+
 class MCPServerTask:
     """Manages a single MCP server connection in a dedicated asyncio Task.
 
@@ -1993,12 +2028,7 @@ class MCPServerTask:
             )
         finally:
             for t in (shutdown_task, reconnect_task):
-                if not t.done():
-                    t.cancel()
-                    try:
-                        await t
-                    except (asyncio.CancelledError, Exception):
-                        pass
+                await _cancel_pending_task(t)
         if self._shutdown_event.is_set():
             return "shutdown"
         self._reconnect_event.clear()

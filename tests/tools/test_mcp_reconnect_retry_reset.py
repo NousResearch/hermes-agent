@@ -5,8 +5,70 @@ reconnection, so transient blips do not accumulate toward permanent parking.
 """
 
 import asyncio
+from typing import cast
 
 import pytest
+
+
+class _FakeLoop:
+    def __init__(self, closed):
+        self._closed = closed
+
+    def is_closed(self):
+        return self._closed
+
+
+class _FakeTask:
+    def __init__(self, *, done=False, loop_closed=False, cancel_exc=None):
+        self._done = done
+        self._loop = _FakeLoop(loop_closed)
+        self._cancel_exc = cancel_exc
+        self.cancel_called = 0
+        self.awaited = False
+
+    def done(self):
+        return self._done
+
+    def get_loop(self):
+        return self._loop
+
+    def cancel(self):
+        self.cancel_called += 1
+        if self._cancel_exc is not None:
+            raise self._cancel_exc
+
+    def __await__(self):
+        async def _inner():
+            self.awaited = True
+            raise asyncio.CancelledError()
+
+        return _inner().__await__()
+
+
+@pytest.mark.no_isolate
+def test_cancel_pending_task_skips_cancel_when_loop_already_closed(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools.mcp_tool import _cancel_pending_task
+
+    task = _FakeTask(loop_closed=True)
+    asyncio.run(_cancel_pending_task(cast(asyncio.Task, task)))
+
+    assert task.cancel_called == 0
+    assert not task.awaited
+
+
+@pytest.mark.no_isolate
+def test_cancel_pending_task_swallows_event_loop_closed_from_cancel(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools.mcp_tool import _cancel_pending_task
+
+    task = _FakeTask(cancel_exc=RuntimeError("Event loop is closed"))
+    asyncio.run(_cancel_pending_task(cast(asyncio.Task, task)))
+
+    assert task.cancel_called == 1
+    assert not task.awaited
 
 
 @pytest.mark.no_isolate

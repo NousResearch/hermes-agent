@@ -3830,7 +3830,7 @@ async def get_action_status(name: str, lines: int = 200):
 
 
 @app.get("/api/sessions")
-async def get_sessions(
+def get_sessions(
     limit: int = 20,
     offset: int = 0,
     min_messages: int = 0,

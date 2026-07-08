@@ -6324,7 +6324,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Queue a handoff of this session to a messaging platform.
 
-    Desktop parity with the CLI ``/handoff`` command: we only write
+    Desktop parity with the CLI ``/handoff-messaging`` command: we only write
     ``handoff_state='pending'`` onto the persisted session row. The actual
     transfer is performed by the separate ``hermes gateway`` process, whose
     ``_handoff_watcher`` claims the row, re-binds the session to the platform's

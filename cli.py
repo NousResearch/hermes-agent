@@ -8527,7 +8527,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             else:
                 from hermes_state import format_session_db_unavailable
                 _cprint(f"  {format_session_db_unavailable()}")
-        elif canonical == "handoff":
+        elif canonical == "handoff-messaging":
             if not self._handle_handoff_command(cmd_original):
                 return False
         elif canonical == "new":

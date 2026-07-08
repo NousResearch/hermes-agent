@@ -336,7 +336,7 @@ The registry of record is `hermes_cli/commands.py` — every consumer
 ### Utility
 ```
 /branch (/fork)      Branch the current session
-/handoff <platform>  Hand the live session off to a messaging platform (CLI)
+/handoff-messaging <platform>  Hand the live session off to a messaging platform (CLI)
 /fast                Toggle priority/fast processing
 /browser             Open CDP browser connection
 /history             Show conversation history (CLI)

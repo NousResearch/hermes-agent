@@ -84,7 +84,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[N]"),
     CommandDef("title", "Set a title for the current session", "Session",
                args_hint="[name]"),
-    CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
+    CommandDef("handoff-messaging", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
                args_hint="<platform>", cli_only=True),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
@@ -1870,7 +1870,7 @@ class SlashCommandCompleter(Completer):
 
     @staticmethod
     def _handoff_completions(sub_text: str, sub_lower: str):
-        """Yield platform completions for /handoff.
+        """Yield platform completions for /handoff-messaging.
 
         Offers connected (enabled + configured) gateway platforms. A recorded
         home channel is NOT required to list a platform — it's often learned at
@@ -1985,7 +1985,7 @@ class SlashCommandCompleter(Completer):
                 yield from self._tools_completions(sub_text, sub_lower)
                 return
 
-            if base_cmd == "/handoff":
+            if base_cmd == "/handoff-messaging":
                 yield from self._handoff_completions(sub_text, sub_lower)
                 return
 

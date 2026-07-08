@@ -516,7 +516,7 @@ class CLICommandsMixin:
         print()
 
     def _handle_handoff_command(self, cmd_original: str) -> bool:
-        """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.
+        """Handle ``/handoff-messaging <platform>`` — transfer this CLI session to a gateway platform.
 
         Flow:
           1. Validate platform name + the gateway has a home channel for it.
@@ -537,7 +537,7 @@ class CLICommandsMixin:
 
         parts = cmd_original.split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
-            _cprint("  Usage: /handoff <platform>")
+            _cprint("  Usage: /handoff-messaging <platform>")
             _cprint("  Hands the current session off to that platform's home channel.")
             _cprint("  The CLI session ends here; resume it later with /resume.")
             return True
@@ -577,7 +577,7 @@ class CLICommandsMixin:
         # Refuse mid-turn: an in-flight agent run would race with the
         # gateway's switch_session and the synthetic turn dispatch.
         if getattr(self, "_agent_running", False):
-            _cprint("  Agent is busy. Wait for the current turn to finish, then retry /handoff.")
+            _cprint("  Agent is busy. Wait for the current turn to finish, then retry /handoff-messaging.")
             return True
 
         # Make sure we have a SessionDB handle.
@@ -653,7 +653,7 @@ class CLICommandsMixin:
             if current == "failed":
                 err = (state_row or {}).get("error") or "unknown error"
                 _cprint(f"  Handoff failed: {err}")
-                _cprint("  Your CLI session is intact. Try /handoff again, or /resume on the platform manually.")
+                _cprint("  Your CLI session is intact. Try /handoff-messaging again, or /resume on the platform manually.")
                 return True
             _time.sleep(0.5)
 

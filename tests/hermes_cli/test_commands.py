@@ -884,7 +884,7 @@ class TestSubcommandCompletion:
         monkeypatch.setattr("gateway.config.load_gateway_config", lambda: fake)
 
     def test_handoff_completes_connected_platforms(self, monkeypatch):
-        """`/handoff ` offers connected platforms, with or without a home channel."""
+        """`/handoff-messaging ` offers connected platforms, with or without a home channel."""
         self._fake_gateway(
             monkeypatch,
             {
@@ -893,7 +893,7 @@ class TestSubcommandCompletion:
             },
         )
 
-        texts = {c.text for c in _completions(SlashCommandCompleter(), "/handoff ")}
+        texts = {c.text for c in _completions(SlashCommandCompleter(), "/handoff-messaging ")}
         assert texts == {"telegram", "discord"}
 
     def test_handoff_filters_by_prefix(self, monkeypatch):
@@ -905,19 +905,19 @@ class TestSubcommandCompletion:
             },
         )
 
-        texts = {c.text for c in _completions(SlashCommandCompleter(), "/handoff te")}
+        texts = {c.text for c in _completions(SlashCommandCompleter(), "/handoff-messaging te")}
         assert texts == {"telegram"}
 
     def test_handoff_no_completion_after_platform_chosen(self, monkeypatch):
         self._fake_gateway(monkeypatch, {"telegram": ("1", "H")})
-        assert _completions(SlashCommandCompleter(), "/handoff telegram ") == []
+        assert _completions(SlashCommandCompleter(), "/handoff-messaging telegram ") == []
 
     def test_handoff_completion_swallows_config_errors(self, monkeypatch):
         def _boom():
             raise RuntimeError("no gateway config")
 
         monkeypatch.setattr("gateway.config.load_gateway_config", _boom)
-        assert _completions(SlashCommandCompleter(), "/handoff ") == []
+        assert _completions(SlashCommandCompleter(), "/handoff-messaging ") == []
 
     def test_personality_completes_configured_personalities(self):
         """`/personality ` lists real personalities, not just `none`.

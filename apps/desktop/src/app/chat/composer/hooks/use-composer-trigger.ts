@@ -220,7 +220,7 @@ export function useComposerTrigger({
       const prefix = current.slice(0, Math.max(0, current.length - trigger.tokenLength))
 
       if (slashKind) {
-        // Two-step arg picks (e.g. `/handoff` pill already inserted, now picking
+        // Two-step arg picks (e.g. `/handoff-messaging` pill already inserted, now picking
         // the platform) land here because the caret sits past a contenteditable
         // chip. Rebuild the prefix and re-emit a single pill for the full command.
         renderComposerContents(editor, prefix)

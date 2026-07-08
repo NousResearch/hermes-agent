@@ -422,7 +422,7 @@ describe('usePromptActions desktop slash pickers', () => {
       <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
     )
 
-    const result = handle!.submitText('/handoff telegram')
+    const result = handle!.submitText('/handoff-messaging telegram')
     await vi.advanceTimersByTimeAsync(61_000)
     await result
 

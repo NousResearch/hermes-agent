@@ -1327,6 +1327,37 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _sqlite_connect_readonly(path: Path) -> sqlite3.Connection:
+    """Open a read-only Kanban SQLite connection for integrity probes.
+
+    Uses the ``immutable=1`` URI so SQLite skips WAL/SHM entirely: no
+    checkpoint is triggered, no SHM file is written, no lock is taken on
+    the WAL. This matters because :func:`_guard_existing_db_is_healthy`
+    runs on every new process's first ``connect()`` — under a worker
+    stampede (nightly cron spawning N workers + web-ui spawning
+    ``hermes kanban watch`` children) many processes would otherwise
+    concurrently run ``PRAGMA integrity_check`` in read/write mode,
+    each triggering a WAL checkpoint while the gateway is the active
+    writer. The racing checkpoint vs. writer corrupts indexes
+    (``wrong # of entries in index idx_events_*``).
+
+    ``immutable=1`` reads only the main DB file (the post-checkpoint
+    stable state), which is sufficient for structural integrity
+    verification. WAL contents are data, not structure; a deferred
+    WAL-resident corruption surfaces on the next checkpoint by the
+    gateway (the single writer) rather than racing it.
+
+    The probe still sets ``busy_timeout`` for the rare case where
+    immutable mode falls back to locking.
+    """
+    busy_timeout_ms = _resolve_busy_timeout_ms()
+    uri = f"file:{path}?immutable=1"
+    conn = sqlite3.connect(uri, uri=True, isolation_level=None,
+                           timeout=busy_timeout_ms / 1000.0)
+    conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+    return conn
+
+
 @contextlib.contextmanager
 def _cross_process_init_lock(path: Path):
     """Serialize first-connect WAL/schema/integrity setup across processes.
@@ -1623,12 +1654,18 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
 def _guard_existing_db_is_healthy(path: Path) -> None:
     """Run ``PRAGMA integrity_check`` on an existing non-empty DB file.
 
-    Opens the probe in read/write mode so SQLite can recover or
-    checkpoint a healthy WAL/hot-journal DB before we declare it
-    corrupt. If the file is malformed, copy it (and any WAL/SHM
-    sidecars) to a timestamped backup and raise
-    :class:`KanbanDbCorruptError` so callers cannot silently recreate
-    the schema on top of a damaged DB.
+    Opens the probe in **read-only immutable mode** (see
+    :func:`_sqlite_connect_readonly`) so SQLite skips WAL/SHM entirely
+    and does **not** trigger a checkpoint. This is the fix for the
+    recurring ``wrong # of entries in index idx_events_*`` corruption:
+    previously the probe opened in read/write mode, and under a worker
+    stampede (nightly cron + web-ui watch spawns) many processes would
+    concurrently checkpoint the WAL while the gateway was writing,
+    racing the checkpoint against the writer and corrupting indexes.
+
+    If the file is malformed, copy it (and any WAL/SHM sidecars) to a
+    timestamped backup and raise :class:`KanbanDbCorruptError` so
+    callers cannot silently recreate the schema on top of a damaged DB.
 
     Transient lock/busy errors (``sqlite3.OperationalError``) are NOT
     treated as corruption; they propagate raw so the caller sees a
@@ -1660,7 +1697,7 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
         return
     reason: Optional[str] = None
     try:
-        probe = _sqlite_connect(resolved)
+        probe = _sqlite_connect_readonly(resolved)
         try:
             row = probe.execute("PRAGMA integrity_check").fetchone()
         finally:

@@ -1762,13 +1762,30 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # ── Swap core runtime fields ──
         agent.model = new_model
         agent.provider = new_provider
-        # Use new base_url when provided; only fall back to current when the
-        # new provider genuinely has no endpoint (e.g. native SDK providers).
-        # Without this guard the old provider's URL (e.g. Ollama's localhost
-        # address) would persist silently after switching to a cloud provider
-        # that returns an empty base_url string.
+        # Use the new base_url when provided. When it's empty AND the
+        # provider is actually changing, do NOT fall back to the current
+        # (old provider's) URL — that silently pairs the new provider label
+        # with the previous provider's endpoint (e.g. new_provider=minimax
+        # paired with the leftover api.githubcopilot.com URL), and every
+        # request after the switch 400s at the wrong host. This mismatched
+        # pair also gets snapshotted into _primary_runtime below, so it
+        # keeps re-applying on every subsequent turn until a full restart.
+        # Fail loud instead: the caller (model_switch.switch_model())
+        # already resolves base_url for every real provider, so an empty
+        # value here means resolution failed upstream, not that the
+        # provider genuinely has none. Re-selecting the SAME provider with
+        # an empty base_url (e.g. a credential-only refresh) is still fine
+        # to keep the current URL. See #47828.
+        old_norm_provider = (old_provider or "").strip().lower()
+        new_norm_provider = (new_provider or "").strip().lower()
         if base_url:
             agent.base_url = base_url
+        elif old_norm_provider != new_norm_provider:
+            raise ValueError(
+                f"switch_model: no base_url resolved for provider "
+                f"'{new_provider}' (switching from '{old_provider}'); "
+                "refusing to keep the previous provider's endpoint"
+            )
         agent.api_mode = api_mode
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(agent, "_transport_cache"):

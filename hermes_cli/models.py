@@ -244,6 +244,30 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4o-mini",
     ],
     "openai-codex": _codex_curated_models(),
+    "cline": [
+        "cline-pass/glm-5.2",
+        "cline-pass/kimi-k2.7-code",
+        "cline-pass/kimi-k2.6",
+        "cline-pass/deepseek-v4-pro",
+        "cline-pass/deepseek-v4-flash",
+        "cline-pass/mimo-v2.5",
+        "cline-pass/mimo-v2.5-pro",
+        "cline-pass/minimax-m3",
+        "cline-pass/qwen3.7-max",
+        "cline-pass/qwen3.7-plus",
+    ],
+    "cline-pass": [
+        "cline-pass/glm-5.2",
+        "cline-pass/kimi-k2.7-code",
+        "cline-pass/kimi-k2.6",
+        "cline-pass/deepseek-v4-pro",
+        "cline-pass/deepseek-v4-flash",
+        "cline-pass/mimo-v2.5",
+        "cline-pass/mimo-v2.5-pro",
+        "cline-pass/minimax-m3",
+        "cline-pass/qwen3.7-max",
+        "cline-pass/qwen3.7-plus",
+    ],
     "xai-oauth": _xai_curated_models(),
     "copilot-acp": [
         "copilot-acp",
@@ -1064,6 +1088,8 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek; IAM or API key)"),
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint, your Azure AI deployment)"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (Reuses local Qwen CLI login)"),
+    ProviderEntry("cline",          "Cline",                    "Cline Usage-Billing (browser OAuth, OpenAI-compatible API)"),
+    ProviderEntry("cline-pass",     "ClinePass",                "ClinePass (browser OAuth, OpenAI-compatible API)"),
 ]
 
 # Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/
@@ -1804,7 +1830,7 @@ def _model_in_provider_catalog(name_lower: str, providers: set[str]) -> bool:
 
 
 _AGGREGATOR_PROVIDERS = frozenset(
-    {"nous", "openrouter", "copilot", "kilocode"}
+    {"nous", "openrouter", "copilot", "kilocode", "cline", "cline-pass"}
 )
 
 # Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models

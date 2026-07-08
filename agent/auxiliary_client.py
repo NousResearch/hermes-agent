@@ -271,6 +271,9 @@ _PROVIDER_ALIASES = {
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
+    "clinepass": "cline-pass",
+    "cline_pass": "cline-pass",
+    "cline-oauth": "cline-pass",
 }
 
 

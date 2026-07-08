@@ -221,6 +221,11 @@ class PooledCredential:
                 ):
                     return token.strip()
             return ""
+        if self.provider in ("cline", "cline-pass"):
+            raw = str(self.access_token or "").strip()
+            if not raw:
+                return ""
+            return auth_mod.format_cline_api_key(raw)
         return str(self.access_token or "")
 
     @property

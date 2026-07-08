@@ -83,6 +83,14 @@ NOUS_AUTH_PATH_INVOKE_JWT = "invoke_jwt"
 ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
 NOUS_INVOKE_JWT_MIN_TTL_SECONDS = ACCESS_TOKEN_REFRESH_SKEW_SECONDS
 DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
+DEFAULT_CLINE_API_BASE_URL = "https://api.cline.bot"
+DEFAULT_CLINE_INFERENCE_BASE_URL = f"{DEFAULT_CLINE_API_BASE_URL}/api/v1"
+CLINE_WORKOS_CLIENT_ID = "client_01K3A541FN8TA3EPPHTD2325AR"
+CLINE_WORKOS_DEVICE_CODE_URL = "https://api.workos.com/user_management/authorize/device"
+CLINE_WORKOS_TOKEN_URL = "https://api.workos.com/user_management/authenticate"
+CLINE_WORKOS_DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
+CLINE_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 60
+
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 DEFAULT_XAI_OAUTH_BASE_URL = "https://api.x.ai/v1"
 MINIMAX_OAUTH_CLIENT_ID = "78257093-7e40-4613-99e0-527b14b39113"
@@ -188,6 +196,22 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="OpenAI Codex",
         auth_type="oauth_external",
         inference_base_url=DEFAULT_CODEX_BASE_URL,
+    ),
+    "cline": ProviderConfig(
+        id="cline",
+        name="Cline",
+        auth_type="oauth_external",
+        inference_base_url=DEFAULT_CLINE_INFERENCE_BASE_URL,
+        api_key_env_vars=("CLINE_API_KEY", "CLINEPASS_TOKEN", "CLINE_ACCESS_TOKEN"),
+        base_url_env_var="CLINE_BASE_URL",
+    ),
+    "cline-pass": ProviderConfig(
+        id="cline-pass",
+        name="ClinePass",
+        auth_type="oauth_external",
+        inference_base_url=DEFAULT_CLINE_INFERENCE_BASE_URL,
+        api_key_env_vars=("CLINEPASS_TOKEN", "CLINE_API_KEY", "CLINE_ACCESS_TOKEN"),
+        base_url_env_var="CLINE_BASE_URL",
     ),
     "openai-api": ProviderConfig(
         id="openai-api",
@@ -8241,6 +8265,350 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
     except Exception as exc:
         print(f"Login failed: {exc}")
         raise SystemExit(1)
+
+
+# =============================================================================
+# Cline / ClinePass — WorkOS device-code OAuth + token refresh
+# =============================================================================
+
+def _strip_cline_api_key_prefix(token: str) -> str:
+    """Strip the 'workos:' prefix from a Cline API key if present."""
+    token = str(token or "").strip()
+    if token.lower().startswith("workos:"):
+        return token[7:]
+    return token
+
+
+def format_cline_api_key(token: str) -> str:
+    """Ensure a Cline access token has the 'workos:' prefix."""
+    token = str(token or "").strip()
+    if not token:
+        return ""
+    if token.lower().startswith("workos:"):
+        return token
+    return f"workos:{token}"
+
+
+def _cline_access_token_is_expiring(
+    access_token: str,
+    expires_at_ms: Optional[int],
+    skew_seconds: int = CLINE_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+) -> bool:
+    if not access_token:
+        return True
+    if expires_at_ms is None:
+        claims = _decode_jwt_claims(access_token)
+        exp = claims.get("exp")
+        if exp is not None:
+            expires_at_ms = int(exp) * 1000
+        else:
+            return False
+    now_ms = int(time.time() * 1000)
+    return expires_at_ms - now_ms <= skew_seconds * 1000
+
+
+def _save_cline_tokens(tokens: dict, provider_id: str = "cline") -> None:
+    """Persist Cline OAuth tokens to auth.json."""
+    store_key = "cline"
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        state = _load_provider_state(auth_store, store_key) or {}
+        access_token = _strip_cline_api_key_prefix(tokens.get("access_token", ""))
+        state["access_token"] = access_token
+        if tokens.get("refresh_token"):
+            state["refresh_token"] = tokens["refresh_token"]
+        if tokens.get("expires_at_ms"):
+            state["expires_at_ms"] = tokens["expires_at_ms"]
+        if tokens.get("inference_base_url"):
+            state["inference_base_url"] = tokens["inference_base_url"]
+        if tokens.get("api_base_url"):
+            state["api_base_url"] = tokens["api_base_url"]
+        if tokens.get("email"):
+            state["email"] = tokens["email"]
+        if tokens.get("account_id"):
+            state["account_id"] = tokens["account_id"]
+        state["last_refresh"] = tokens.get("last_refresh") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        state["auth_mode"] = "workos"
+        _save_provider_state(auth_store, store_key, state)
+        _save_auth_store(auth_store)
+
+
+def _resolve_cline_api_base_url() -> str:
+    return (
+        os.getenv("CLINE_API_BASE_URL", "").strip().rstrip("/")
+        or DEFAULT_CLINE_API_BASE_URL
+    )
+
+
+def _normalize_cline_api_base_url(url: str) -> str:
+    url = (url or "").strip().rstrip("/")
+    return url or DEFAULT_CLINE_API_BASE_URL
+
+
+def _cline_device_code_login(
+    provider_id: str = "cline",
+    open_browser: bool = True,
+    timeout_seconds: float = 15.0,
+) -> dict:
+    """Run the WorkOS device-code OAuth flow for Cline."""
+    import webbrowser
+
+    client_id = CLINE_WORKOS_CLIENT_ID
+    api_base_url = _resolve_cline_api_base_url()
+
+    # Step 1: Request device code
+    try:
+        resp = httpx.post(
+            CLINE_WORKOS_DEVICE_CODE_URL,
+            data={"client_id": client_id},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=httpx.Timeout(timeout_seconds),
+        )
+    except Exception as exc:
+        raise AuthError(
+            f"Cline device-code request failed: {exc}",
+            provider=provider_id,
+            code="cline_device_code_failed",
+        )
+    if resp.status_code != 200:
+        raise AuthError(
+            f"Cline device-code request failed: {resp.status_code} {resp.text[:200]}",
+            provider=provider_id,
+            code="cline_device_code_failed",
+        )
+    device_data = resp.json()
+    device_code = device_data.get("device_code", "")
+    user_code = device_data.get("user_code", "")
+    verification_uri = device_data.get("verification_uri", "")
+    verification_uri_complete = device_data.get("verification_uri_complete", "")
+    expires_in = int(device_data.get("expires_in", 300))
+    interval = int(device_data.get("interval", 5))
+
+    url = verification_uri_complete or verification_uri
+    print(f"\n  Open this URL in your browser: {url}")
+    if user_code:
+        print(f"  Enter code: {user_code}")
+    if open_browser:
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+
+    # Step 2: Poll for token
+    deadline = time.time() + expires_in
+    poll_interval = min(interval, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS)
+    while time.time() < deadline:
+        time.sleep(poll_interval)
+        token_resp = httpx.post(
+            CLINE_WORKOS_TOKEN_URL,
+            data={
+                "grant_type": CLINE_WORKOS_DEVICE_GRANT_TYPE,
+                "device_code": device_code,
+                "client_id": client_id,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=httpx.Timeout(30),
+        )
+        token_data = token_resp.json()
+        if token_resp.status_code == 200:
+            access_token = token_data.get("access_token", "")
+            refresh_token = token_data.get("refresh_token", "")
+            if not access_token:
+                raise AuthError(
+                    "Cline OAuth: no access_token in response",
+                    provider=provider_id,
+                    code="cline_no_access_token",
+                )
+            expires_at_ms = int(time.time() * 1000) + 3600 * 1000
+            email = ""
+            account_id = ""
+
+            # Step 3: Register with Cline API to get Cline-specific tokens
+            try:
+                register_resp = httpx.post(
+                    f"{api_base_url}/api/v1/auth/register",
+                    json={
+                        "accessToken": access_token,
+                        "refreshToken": refresh_token,
+                        "provider": "cline",
+                    },
+                    headers={"Content-Type": "application/json"},
+                    timeout=httpx.Timeout(30),
+                )
+                if register_resp.status_code == 200:
+                    reg_data = register_resp.json()
+                    if reg_data.get("success") and reg_data.get("data"):
+                        d = reg_data["data"]
+                        access_token = d.get("accessToken", access_token)
+                        refresh_token = d.get("refreshToken", refresh_token)
+                        expires_at_str = d.get("expiresAt", "")
+                        if expires_at_str:
+                            try:
+                                expires_at_ms = int(time.mktime(
+                                    time.fromisoformat(expires_at_str.replace("Z", "+00:00"))
+                                ) * 1000)
+                            except Exception:
+                                pass
+                        email = (d.get("userInfo") or {}).get("email", "")
+                        account_id = (d.get("userInfo") or {}).get("clineUserId", "")
+            except Exception:
+                pass
+
+            return {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "expires_at_ms": expires_at_ms,
+                "inference_base_url": DEFAULT_CLINE_INFERENCE_BASE_URL,
+                "api_base_url": api_base_url,
+                "email": email,
+                "account_id": account_id,
+                "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+
+        error = token_data.get("error", "")
+        if error == "authorization_pending":
+            continue
+        elif error == "slow_down":
+            poll_interval = min(poll_interval * 2, 10)
+            continue
+        elif error in ("expired_token", "access_denied"):
+            raise AuthError(
+                f"Cline OAuth {error}: {token_data.get('error_description', '')}",
+                provider=provider_id,
+                code=f"cline_{error}",
+                relogin_required=True,
+            )
+
+    raise AuthError(
+        "Cline OAuth: device code expired",
+        provider=provider_id,
+        code="cline_device_code_expired",
+        relogin_required=True,
+    )
+
+
+def refresh_cline_oauth_pure(
+    access_token: str,
+    refresh_token: str,
+    api_base_url: str = "",
+) -> dict:
+    """Refresh Cline/ClinePass WorkOS tokens through Cline's auth bridge."""
+    del access_token
+    refresh_token = str(refresh_token or "").strip()
+    if not refresh_token:
+        raise AuthError(
+            "Cline auth is missing refresh_token. Re-authenticate.",
+            provider="cline",
+            code="cline_auth_missing_refresh_token",
+            relogin_required=True,
+        )
+    api_base_url = _normalize_cline_api_base_url(api_base_url or _resolve_cline_api_base_url())
+    resp = httpx.post(
+        f"{api_base_url}/api/v1/auth/refresh",
+        json={"refreshToken": refresh_token},
+        headers={"Content-Type": "application/json"},
+        timeout=httpx.Timeout(30),
+    )
+    if resp.status_code != 200:
+        raise AuthError(
+            f"Cline token refresh failed: {resp.status_code} {resp.text[:200]}",
+            provider="cline",
+            code="cline_refresh_failed",
+            relogin_required=True,
+        )
+    data = resp.json()
+    d = data.get("data") if data.get("success") else None
+    if not d:
+        raise AuthError(
+            f"Cline refresh: unexpected response: {str(data)[:200]}",
+            provider="cline",
+            code="cline_refresh_bad_response",
+            relogin_required=True,
+        )
+    new_access = d.get("accessToken", "")
+    new_refresh = d.get("refreshToken", refresh_token)
+    expires_at_str = d.get("expiresAt", "")
+    expires_at_ms = int(time.time() * 1000) + 3600 * 1000
+    if expires_at_str:
+        try:
+            expires_at_ms = int(time.mktime(
+                time.fromisoformat(expires_at_str.replace("Z", "+00:00"))
+            ) * 1000)
+        except Exception:
+            pass
+    return {
+        "access_token": new_access,
+        "refresh_token": new_refresh,
+        "expires_at_ms": expires_at_ms,
+        "inference_base_url": DEFAULT_CLINE_INFERENCE_BASE_URL,
+        "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def resolve_cline_runtime_credentials(
+    provider_id: str = "cline",
+    refresh_if_expiring: bool = True,
+) -> dict:
+    """Resolve Cline runtime credentials from auth store, refreshing if needed."""
+    store_key = "cline"
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        state = _load_provider_state(auth_store, store_key)
+    if not state:
+        raise AuthError(
+            "No Cline credentials stored. Run `hermes auth add cline --type oauth` or `hermes model`.",
+            provider=provider_id,
+            code="cline_auth_missing",
+            relogin_required=True,
+        )
+    access_token = _strip_cline_api_key_prefix(state.get("access_token", ""))
+    refresh_token = str(state.get("refresh_token") or "").strip()
+    if not access_token:
+        raise AuthError(
+            "Cline auth missing access_token. Re-authenticate.",
+            provider=provider_id,
+            code="cline_auth_missing_access_token",
+            relogin_required=True,
+        )
+    if not refresh_token:
+        raise AuthError(
+            "Cline auth missing refresh_token. Re-authenticate.",
+            provider=provider_id,
+            code="cline_auth_missing_refresh_token",
+            relogin_required=True,
+        )
+
+    expires_at_ms = state.get("expires_at_ms")
+    if refresh_if_expiring and _cline_access_token_is_expiring(access_token, expires_at_ms):
+        try:
+            refreshed = refresh_cline_oauth_pure(
+                access_token,
+                refresh_token,
+                api_base_url=state.get("api_base_url", ""),
+            )
+            access_token = refreshed["access_token"]
+            refresh_token = refreshed.get("refresh_token", refresh_token)
+            expires_at_ms = refreshed.get("expires_at_ms")
+            state.update(refreshed)
+            state["access_token"] = access_token
+            state["refresh_token"] = refresh_token
+            with _auth_store_lock():
+                auth_store2 = _load_auth_store()
+                _save_provider_state(auth_store2, store_key, state)
+                _save_auth_store(auth_store2)
+        except AuthError:
+            if state.get("expires_at_ms") and time.time() * 1000 < state["expires_at_ms"]:
+                pass
+            else:
+                raise
+
+    return {
+        "api_key": format_cline_api_key(access_token),
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "base_url": state.get("inference_base_url") or DEFAULT_CLINE_INFERENCE_BASE_URL,
+        "expires_at_ms": expires_at_ms,
+    }
 
 
 def logout_command(args) -> None:

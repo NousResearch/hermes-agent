@@ -675,6 +675,45 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     else:
         print("No change.")
 
+def _model_flow_cline(_config, current_model=""):
+    """Cline OAuth provider: check auth, then pick model."""
+    from hermes_cli.auth import (
+        resolve_cline_runtime_credentials,
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+        DEFAULT_CLINE_INFERENCE_BASE_URL,
+        AuthError,
+        format_auth_error,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    try:
+        resolve_cline_runtime_credentials(refresh_if_expiring=False)
+    except AuthError as exc:
+        print(format_auth_error(exc))
+        print("\nRun: hermes auth add cline --type oauth")
+        return
+
+    models = list(_PROVIDER_MODELS.get("cline", []))
+    if not models:
+        print("No ClinePass models available.")
+        return
+
+    default = current_model or (models[0] if models else "cline-pass/glm-5.2")
+    selected = _prompt_model_selection(
+        models,
+        current_model=default,
+        confirm_provider="cline",
+        confirm_base_url=DEFAULT_CLINE_INFERENCE_BASE_URL,
+    )
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider("cline", DEFAULT_CLINE_INFERENCE_BASE_URL)
+        print(f"Default model set to: {selected} (via ClinePass)")
+    else:
+        print("No change.")
+
 def _model_flow_qwen_oauth(_config, current_model=""):
     """Qwen OAuth provider: reuse local Qwen CLI login, then pick model."""
     from hermes_cli.main import _DEFAULT_QWEN_PORTAL_MODELS

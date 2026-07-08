@@ -16,17 +16,20 @@ from agent.secret_scope import get_secret as _get_secret
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_CODEX_BASE_URL,
+    DEFAULT_CLINE_INFERENCE_BASE_URL,
     DEFAULT_QWEN_BASE_URL,
     DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY,
     _agent_key_is_usable,
     _nous_inference_env_override,
     format_auth_error,
+    format_cline_api_key,
     resolve_provider,
     resolve_nous_runtime_credentials,
     resolve_codex_runtime_credentials,
     resolve_xai_oauth_runtime_credentials,
     resolve_qwen_runtime_credentials,
+    resolve_cline_runtime_credentials,
     resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,
     has_usable_secret,
@@ -418,6 +421,11 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "qwen-oauth":
         api_mode = "chat_completions"
         base_url = base_url or DEFAULT_QWEN_BASE_URL
+    elif provider in ("cline", "cline-pass"):
+        api_mode = "chat_completions"
+        base_url = base_url or _getenv("CLINE_BASE_URL", "").strip().rstrip("/") or DEFAULT_CLINE_INFERENCE_BASE_URL
+        if api_key and not str(api_key).lower().startswith("workos:"):
+            api_key = format_cline_api_key(api_key)
     elif provider == "minimax-oauth":
         # MiniMax OAuth tokens are valid only against the Anthropic Messages
         # compatible endpoint. Do not honor stale model.api_mode values from a
@@ -1817,6 +1825,24 @@ def resolve_runtime_provider(
             if requested_provider != "auto":
                 raise
             logger.info("Qwen OAuth credentials failed; "
+                        "falling through to next provider.")
+
+    if provider in ("cline", "cline-pass"):
+        try:
+            creds = resolve_cline_runtime_credentials(provider_id=provider)
+            return {
+                "provider": provider,
+                "api_mode": "chat_completions",
+                "base_url": creds.get("base_url", "").rstrip("/"),
+                "api_key": creds.get("api_key", ""),
+                "source": creds.get("source", "oauth"),
+                "expires_at_ms": creds.get("expires_at_ms"),
+                "requested_provider": requested_provider,
+            }
+        except AuthError:
+            if requested_provider != "auto":
+                raise
+            logger.info("Cline OAuth credentials failed; "
                         "falling through to next provider.")
 
     if provider == "minimax-oauth":

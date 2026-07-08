@@ -81,6 +81,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://portal.qwen.ai/v1",
         base_url_env_var="HERMES_QWEN_BASE_URL",
     ),
+    "cline": HermesOverlay(
+        transport="openai_chat",
+        auth_type="oauth_external",
+        base_url_override="https://api.cline.bot/api/v1",
+        base_url_env_var="CLINE_BASE_URL",
+        is_aggregator=True,
+    ),
     "lmstudio": HermesOverlay(
         transport="openai_chat",
         auth_type="api_key",
@@ -342,6 +349,12 @@ ALIASES: Dict[str, str] = {
     # gmi
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
+
+    # cline / clinepass
+    "clinepass": "cline",
+    "cline_pass": "cline",
+    "cline-pass": "cline",
+    "cline-oauth": "cline",
 
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",

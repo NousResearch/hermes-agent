@@ -34,7 +34,7 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "cline", "cline-pass", "xai-oauth", "qwen-oauth", "minimax-oauth"}
 
 
 def _get_custom_provider_names() -> list:
@@ -80,6 +80,10 @@ def _normalize_provider(provider: str) -> str:
         return "openrouter"
     if normalized in {"grok-oauth", "xai-oauth", "x-ai-oauth", "xai-grok-oauth"}:
         return "xai-oauth"
+    if normalized in {"clinepass", "cline_pass", "cline-pass", "cline-oauth"}:
+        return "cline-pass"
+    if normalized == "cline":
+        return "cline"
     # Check if it matches a custom provider name
     custom_key = _resolve_custom_provider_input(normalized)
     if custom_key:
@@ -404,6 +408,36 @@ def auth_add_command(args) -> None:
             access_token=creds["access_token"],
             refresh_token=creds.get("refresh_token"),
             base_url=creds.get("inference_base_url"),
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
+    if provider in {"cline", "cline-pass"}:
+        auth_mod.unsuppress_credential_source(provider, "device_code")
+        creds = auth_mod._cline_device_code_login(
+            provider_id=provider,
+            open_browser=not getattr(args, "no_browser", False),
+            timeout_seconds=getattr(args, "timeout", None) or 15.0,
+        )
+        auth_mod._save_cline_tokens(creds, provider_id=provider)
+        label = (getattr(args, "label", None) or "").strip() or (
+            creds.get("email")
+            or creds.get("account_id")
+            or label_from_token(creds.get("access_token", ""), _oauth_default_label(provider, len(pool.entries()) + 1))
+        )
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source="device_code",
+            access_token=auth_mod.format_cline_api_key(creds.get("access_token", "")),
+            refresh_token=creds.get("refresh_token"),
+            expires_at_ms=creds.get("expires_at_ms"),
+            base_url=creds.get("inference_base_url") or creds.get("base_url"),
+            last_refresh=creds.get("last_refresh"),
         )
         pool.add_entry(entry)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')

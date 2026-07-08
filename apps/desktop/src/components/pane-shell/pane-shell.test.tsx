@@ -19,6 +19,21 @@ function getColumnTemplate(container: HTMLElement): string[] {
   return (container.style.gridTemplateColumns ?? '').split(/\s+/).filter(Boolean)
 }
 
+
+function clearLocalStorageForTest() {
+  const store = new Map<string, string>()
+
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      clear: () => store.clear(),
+      getItem: (key: string) => store.get(key) ?? null,
+      removeItem: (key: string) => store.delete(key),
+      setItem: (key: string, value: string) => store.set(key, String(value))
+    }
+  })
+}
+
 function mockWidth(element: HTMLElement, width: number) {
   Object.defineProperty(element, 'getBoundingClientRect', {
     configurable: true,
@@ -39,13 +54,13 @@ function mockWidth(element: HTMLElement, width: number) {
 describe('PaneShell composition', () => {
   beforeEach(() => {
     $paneStates.set({})
-    window.localStorage.clear()
+    clearLocalStorageForTest()
   })
 
   afterEach(() => {
     cleanup()
     $paneStates.set({})
-    window.localStorage.clear()
+    clearLocalStorageForTest()
   })
 
   it('builds a 2-column grid for one left pane + main', () => {
@@ -153,7 +168,7 @@ describe('PaneShell composition', () => {
 
     const rendered = render(
       <PaneShell>
-        <Pane id="files" side="left" width="240px">
+        <Pane id="files" resizable side="left" width="240px">
           files
         </Pane>
         <PaneMain>main</PaneMain>
@@ -161,6 +176,39 @@ describe('PaneShell composition', () => {
     )
 
     expect(getColumnTemplate(gridContainer(rendered))).toEqual(['320px', 'minmax(0,1fr)'])
+  })
+
+
+  it('clamps a persisted widthOverride to the pane max width before sizing the grid track', () => {
+    setPaneOpen('preview', true)
+    setPaneWidthOverride('preview', 1200)
+
+    const rendered = render(
+      <PaneShell>
+        <PaneMain>main</PaneMain>
+        <Pane id="preview" maxWidth={340} minWidth={220} resizable side="right" width="320px">
+          preview
+        </Pane>
+      </PaneShell>
+    )
+
+    expect(getColumnTemplate(gridContainer(rendered))).toEqual(['minmax(0,1fr)', '340px'])
+  })
+
+  it('clamps a persisted widthOverride to the pane min width before sizing the grid track', () => {
+    setPaneOpen('preview', true)
+    setPaneWidthOverride('preview', 100)
+
+    const rendered = render(
+      <PaneShell>
+        <PaneMain>main</PaneMain>
+        <Pane id="preview" maxWidth={340} minWidth={220} resizable side="right" width="320px">
+          preview
+        </Pane>
+      </PaneShell>
+    )
+
+    expect(getColumnTemplate(gridContainer(rendered))).toEqual(['minmax(0,1fr)', '220px'])
   })
 
   it('preserves CSS-string widths verbatim (clamp, var, etc.)', () => {

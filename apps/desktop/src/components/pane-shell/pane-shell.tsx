@@ -79,6 +79,8 @@ interface CollectedPane {
   forceCollapsed: boolean
   height: string
   id: string
+  maxWidth?: WidthValue
+  minWidth?: WidthValue
   resizable: boolean
   side: PaneSide
   width: string
@@ -197,6 +199,8 @@ function collectPanes(children: ReactNode) {
       forceCollapsed: props.forceCollapsed ?? false,
       height: widthToCss(props.height, DEFAULT_HEIGHT),
       id: props.id,
+      maxWidth: props.maxWidth,
+      minWidth: props.minWidth,
       resizable: props.resizable ?? false,
       side: props.side,
       width: widthToCss(props.width, DEFAULT_WIDTH)
@@ -225,7 +229,15 @@ function trackForPane(pane: CollectedPane, states: PaneStoreState) {
 
   const override = pane.resizable ? states[pane.id]?.widthOverride : undefined
 
-  return { open: true, track: override !== undefined ? `${override}px` : pane.width }
+  if (override !== undefined) {
+    const min = widthToPx(pane.minWidth) ?? DEFAULT_RESIZE_MIN_WIDTH
+    const max = widthToPx(pane.maxWidth) ?? Number.POSITIVE_INFINITY
+    const clamped = Math.round(Math.min(max, Math.max(min, override)))
+
+    return { open: true, track: `${clamped}px` }
+  }
+
+  return { open: true, track: pane.width }
 }
 
 function heightTrackForPane(pane: CollectedPane, states: PaneStoreState) {

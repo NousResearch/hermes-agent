@@ -1193,7 +1193,7 @@ def _count_status_active_sessions() -> int:
 
     db = SessionDB(read_only=True)
     try:
-        sessions = db.list_sessions_rich(limit=50)
+        sessions = db.list_sessions_rich(limit=50, compact_rows=True)
         now = time.time()
         return sum(
             1 for s in sessions
@@ -3913,7 +3913,10 @@ def get_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
-                compact_rows=True,
+                # SQL-level projection: when the caller didn't ask for full
+                # rows, skip the system_prompt blob inside SQLite too (pairs
+                # with the API-level _strip_session_list_rows below).
+                compact_rows=not full,
             )
             total = db.session_count(
                 source=source or None,
@@ -4032,7 +4035,8 @@ def get_profiles_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
-                compact_rows=True,
+                # Same SQL-level blob skip as /api/sessions (see above).
+                compact_rows=not full,
             )
             profile_total = db.session_count(
                 source=source_filter,
@@ -9358,7 +9362,7 @@ def _session_latest_descendant(session_id: str, db):
                 "started_at": row_get(row, "started_at", 2),
             })
     else:
-        rows = db.list_sessions_rich(limit=10000, offset=0)
+        rows = db.list_sessions_rich(limit=10000, offset=0, compact_rows=True)
 
     children = {}
     for row in rows:
@@ -9512,7 +9516,7 @@ async def get_session_stats(profile: Optional[str] = None):
         messages = db.message_count()
         by_source: Dict[str, int] = {}
         try:
-            for s in db.list_sessions_rich(limit=10000, include_archived=True):
+            for s in db.list_sessions_rich(limit=10000, include_archived=True, compact_rows=True):
                 src = str(s.get("source") or "cli")
                 by_source[src] = by_source.get(src, 0) + 1
         except Exception:

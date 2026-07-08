@@ -5422,3 +5422,87 @@ class TestCompactRows:
         self._create(db, "s1", system_prompt="present")
         rows = db.list_sessions_rich()
         assert "system_prompt" in rows[0]
+
+    def test_compact_projection_tracks_schema(self, db):
+        """Behavior contract: compact rows carry EVERY sessions column except
+        the excluded blob — including gateway/desktop fields (git_branch,
+        session_key) and any column added later via declarative
+        reconciliation. Guards against a hardcoded column list going stale."""
+        self._create(db, "s1")
+        live_cols = {
+            row[1] for row in db._conn.execute("PRAGMA table_info(sessions)")
+        }
+        row = db.list_sessions_rich(compact_rows=True)[0]
+        # Hardcode the one sanctioned exclusion: if the excluded set ever
+        # widens (or the projection silently drops a column), this fails and
+        # forces a conscious review of what list consumers lose.
+        missing = live_cols - set(row) - {"system_prompt"}
+        assert not missing, f"compact projection lost schema columns: {missing}"
+        assert "system_prompt" not in row
+
+    def test_compact_rows_tip_projection_omits_system_prompt(self, db):
+        """Compression-tip projection must not reintroduce the blob: the
+        merged tip row is fetched with the same compact_rows flag (salvage
+        follow-up for #47437)."""
+        import time as _time
+        t0 = _time.time() - 3600
+        db.create_session("root", "cli")
+        db.update_system_prompt("root", "root blob " * 200)
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root"))
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+            (t0 + 100, "root"),
+        )
+        db.create_session("tip", "cli", parent_session_id="root")
+        db.update_system_prompt("tip", "tip blob " * 200)
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 200, "tip"))
+        db._conn.commit()
+
+        rows = db.list_sessions_rich(compact_rows=True)
+        projected = [r for r in rows if r.get("_lineage_root_id") == "root"]
+        assert projected, "compression root should be projected to its tip"
+        assert all("system_prompt" not in r for r in rows)
+
+
+# =========================================================================
+# get_messages pagination (salvage follow-up for #60347)
+# =========================================================================
+
+class TestGetMessagesPagination:
+    """get_messages(limit=, offset=) pages in insertion order; the default
+    (limit=None) returns the full transcript unchanged."""
+
+    def _seed(self, db, n=10):
+        db.create_session(session_id="s1", source="cli")
+        for i in range(n):
+            db.append_message("s1", "user" if i % 2 == 0 else "assistant", f"msg-{i}")
+
+    def test_default_returns_all_messages(self, db):
+        self._seed(db)
+        messages = db.get_messages("s1")
+        assert [m["content"] for m in messages] == [f"msg-{i}" for i in range(10)]
+
+    def test_limit_pages_in_insertion_order(self, db):
+        self._seed(db)
+        page1 = db.get_messages("s1", limit=4, offset=0)
+        page2 = db.get_messages("s1", limit=4, offset=4)
+        page3 = db.get_messages("s1", limit=4, offset=8)
+        assert [m["content"] for m in page1] == ["msg-0", "msg-1", "msg-2", "msg-3"]
+        assert [m["content"] for m in page2] == ["msg-4", "msg-5", "msg-6", "msg-7"]
+        assert [m["content"] for m in page3] == ["msg-8", "msg-9"]
+
+    def test_offset_past_end_returns_empty(self, db):
+        self._seed(db, n=3)
+        assert db.get_messages("s1", limit=5, offset=10) == []
+
+    def test_pagination_respects_active_flag(self, db):
+        """Soft-deleted (inactive) rows must not consume page slots."""
+        self._seed(db, n=6)
+        # Soft-delete the first two rows the way rewind does.
+        db._conn.execute(
+            "UPDATE messages SET active = 0 WHERE session_id = 's1' "
+            "AND id IN (SELECT id FROM messages WHERE session_id = 's1' ORDER BY id LIMIT 2)"
+        )
+        db._conn.commit()
+        page = db.get_messages("s1", limit=3, offset=0)
+        assert [m["content"] for m in page] == ["msg-2", "msg-3", "msg-4"]

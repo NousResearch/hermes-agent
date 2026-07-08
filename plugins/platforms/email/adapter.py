@@ -479,6 +479,7 @@ class EmailAdapter(BasePlatformAdapter):
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
+        self._startup_seen_uid_cutoff: Optional[int] = None
         self._poll_task: Optional[asyncio.Task] = None
 
         # Map chat_id (sender email) -> last subject + message-id for threading
@@ -490,9 +491,9 @@ class EmailAdapter(BasePlatformAdapter):
         """Keep only the most recent UIDs to prevent unbounded memory growth.
 
         IMAP UIDs are monotonically increasing integers. When the set grows
-        beyond the cap, we keep only the highest half — old UIDs are safe to
-        drop because new messages always have higher UIDs and IMAP's UNSEEN
-        flag prevents re-delivery regardless.
+        beyond the cap, we keep only the highest half. UIDs observed during
+        startup remain covered by ``_startup_seen_uid_cutoff`` even after they
+        are trimmed from the in-memory duplicate set.
         """
         if len(self._seen_uids) <= self._seen_uids_max:
             return
@@ -589,8 +590,21 @@ class EmailAdapter(BasePlatformAdapter):
             imap.select("INBOX")
             status, data = imap.uid("search", None, "ALL")
             if status == "OK" and data and data[0]:
+                startup_cutoff: Optional[int] = None
                 for uid in data[0].split():
                     self._seen_uids.add(uid)
+                    try:
+                        numeric_uid = int(uid)
+                    except (ValueError, TypeError):
+                        continue
+                    startup_cutoff = (
+                        numeric_uid
+                        if startup_cutoff is None
+                        else max(startup_cutoff, numeric_uid)
+                    )
+                self._startup_seen_uid_cutoff = startup_cutoff
+            else:
+                self._startup_seen_uid_cutoff = None
             # Keep only the most recent UIDs to prevent unbounded growth
             self._trim_seen_uids()
             imap.logout()
@@ -663,6 +677,8 @@ class EmailAdapter(BasePlatformAdapter):
 
                 for uid in data[0].split():
                     if uid in self._seen_uids:
+                        continue
+                    if self._is_startup_seen_uid(uid):
                         continue
                     self._seen_uids.add(uid)
                     # Trim periodically to prevent unbounded memory growth
@@ -744,6 +760,15 @@ class EmailAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[Email] IMAP fetch error: %s", e)
         return results
+
+    def _is_startup_seen_uid(self, uid: bytes) -> bool:
+        """Return True when *uid* was already present at adapter startup."""
+        if self._startup_seen_uid_cutoff is None:
+            return False
+        try:
+            return int(uid) <= self._startup_seen_uid_cutoff
+        except (ValueError, TypeError):
+            return False
 
     @staticmethod
     def _allow_all_senders() -> bool:

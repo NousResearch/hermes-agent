@@ -1015,6 +1015,27 @@ class TestConnectDisconnect(unittest.TestCase):
             if adapter._poll_task:
                 adapter._poll_task.cancel()
 
+    def test_connect_records_startup_uid_cutoff_before_trimming(self):
+        """The startup high-water UID survives trimming the duplicate set."""
+        import asyncio
+        adapter = self._make_adapter()
+        adapter._seen_uids_max = 4
+
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b"1 2 3 4 5 6"])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp, \
+             patch("asyncio.create_task", return_value=None):
+            mock_smtp.return_value = MagicMock()
+
+            result = asyncio.run(adapter.connect())
+
+            self.assertTrue(result)
+            self.assertEqual(adapter._startup_seen_uid_cutoff, 6)
+            self.assertEqual(adapter._seen_uids, {b"5", b"6"})
+            adapter._running = False
+
     def test_connect_imap_failure(self):
         """IMAP connection failure returns False."""
         import asyncio
@@ -1097,6 +1118,38 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["sender_addr"], "user@test.com")
         self.assertIn(b"3", adapter._seen_uids)
+
+    def test_fetch_skips_trimmed_startup_uids(self):
+        """Old unread startup messages trimmed from _seen_uids are not replayed."""
+        adapter = self._make_adapter()
+        adapter._seen_uids = {b"1001"}
+        adapter._startup_seen_uid_cutoff = 1001
+
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "user@test.com"
+        raw_email["Subject"] = "Test"
+        raw_email["Message-ID"] = "<msg@test.com>"
+
+        mock_imap = MagicMock()
+        fetched_uids = []
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"999 1002"])
+            if command == "fetch":
+                fetched_uids.append(args[0])
+                return ("OK", [(args[0], raw_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["uid"], b"1002")
+        self.assertEqual(fetched_uids, [b"1002"])
+        self.assertNotIn(b"999", adapter._seen_uids)
 
     def test_fetch_no_unseen_messages(self):
         """No unseen messages returns empty list."""

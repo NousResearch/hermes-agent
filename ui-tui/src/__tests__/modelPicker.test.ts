@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { providerIndexAfterClearingFilter } from '../components/modelPicker.js'
+import { modelOptionsRequestParams, providerIndexAfterClearingFilter } from '../components/modelPicker.js'
 import type { ModelOptionProvider } from '../gatewayTypes.js'
 
 const provider = (slug: string, name = slug): ModelOptionProvider => ({ name, slug })
@@ -21,9 +21,7 @@ describe('ModelPicker provider filtering', () => {
   })
 
   it('returns -1 when provider is undefined', () => {
-    const rows = [
-      { name: 'A', provider: provider('a') }
-    ]
+    const rows = [{ name: 'A', provider: provider('a') }]
 
     expect(providerIndexAfterClearingFilter(rows, undefined)).toBe(-1)
   })
@@ -50,5 +48,35 @@ describe('ModelPicker provider filtering', () => {
     ]
 
     expect(providerIndexAfterClearingFilter(rows, p)).toBe(0)
+  })
+})
+
+describe('ModelPicker model.options params', () => {
+  it('requests the full provider universe by default', () => {
+    expect(modelOptionsRequestParams('sess-1', false, false)).toEqual({
+      session_id: 'sess-1',
+      include_unconfigured: true
+    })
+  })
+
+  it('requests explicit configured providers when hiding unconfigured providers', () => {
+    expect(modelOptionsRequestParams('sess-1', false, true)).toEqual({
+      session_id: 'sess-1',
+      explicit_only: true
+    })
+  })
+
+  it('preserves refresh while requesting all providers', () => {
+    expect(modelOptionsRequestParams(null, true, false)).toEqual({
+      refresh: true,
+      include_unconfigured: true
+    })
+  })
+
+  it('preserves refresh while requesting configured providers', () => {
+    expect(modelOptionsRequestParams(null, true, true)).toEqual({
+      refresh: true,
+      explicit_only: true
+    })
   })
 })

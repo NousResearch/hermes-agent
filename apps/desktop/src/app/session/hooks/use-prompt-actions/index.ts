@@ -7,6 +7,7 @@ import { useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
 import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import { pathLabel, SLASH_COMMAND_RE } from '@/lib/chat-runtime'
+import { agentLaneTitle, parseAgentTagPrompt } from '@/lib/agent-lanes'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { normalize } from '@/lib/text'
@@ -24,6 +25,8 @@ import { clearAllPrompts } from '@/store/prompts'
 import { $busy, $connection, $messages, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
+
+import { openAgentTerminal } from '@/app/right-sidebar/terminal/terminals'
 
 import type {
   ClientSessionState,
@@ -463,6 +466,59 @@ export function usePromptActions({
       const visibleText = rawText.trim()
       const attachments = options?.attachments ?? $composerAttachments.get()
 
+      const agentPrompt = !attachments.length ? parseAgentTagPrompt(visibleText) : null
+
+      if (agentPrompt) {
+        if (!agentPrompt.prompt) {
+          notify({
+            kind: 'error',
+            message: `Write a prompt after @${agentPrompt.lane}`,
+            title: `${agentLaneTitle(agentPrompt.lane)} needs a prompt`
+          })
+
+          return false
+        }
+
+        try {
+          const sessionId = activeSessionIdRef.current || (await createBackendSessionForSend(visibleText))
+
+          if (!sessionId) {
+            notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
+
+            return false
+          }
+
+          const result = await requestGateway<{
+            can_write?: boolean
+            command?: string
+            process_id?: string
+            title?: string
+          }>('agent.start', {
+            lane: agentPrompt.lane,
+            prompt: agentPrompt.prompt,
+            session_id: sessionId
+          })
+          const processId = result.process_id || ''
+
+          if (!processId) {
+            throw new Error('agent.start did not return a process id')
+          }
+
+          const title = result.title || `${agentLaneTitle(agentPrompt.lane)}: ${agentPrompt.prompt}`
+          openAgentTerminal(processId, title, {
+            canWrite: result.can_write !== false,
+            ownerSessionId: sessionId
+          })
+          appendSessionTextMessage(sessionId, 'system', `Started ${agentLaneTitle(agentPrompt.lane)} lane in the terminal.`)
+
+          return true
+        } catch (err) {
+          notifyError(err, `Could not start ${agentLaneTitle(agentPrompt.lane)}`)
+
+          return false
+        }
+      }
+
       if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
         triggerHaptic('selection')
         await executeSlashCommand(visibleText)
@@ -472,7 +528,7 @@ export function usePromptActions({
 
       return await submitPromptText(rawText, options)
     },
-    [executeSlashCommand, submitPromptText]
+    [activeSessionIdRef, appendSessionTextMessage, copy, createBackendSessionForSend, executeSlashCommand, requestGateway, submitPromptText]
   )
 
   const transcribeVoiceAudio = useCallback(

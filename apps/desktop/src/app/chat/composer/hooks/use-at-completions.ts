@@ -9,10 +9,14 @@ import { useLiveCompletionAdapter } from './use-live-completion-adapter'
 
 const KIND_RE = /^@(file|folder|url|image|tool|git):(.*)$/
 const REF_STARTERS = new Set(['file', 'folder', 'url', 'image', 'tool', 'git'])
+const AGENT_STARTERS = new Set(['claude', 'codex', 'gemini'])
 
 const STARTER_META: Record<string, string> = {
+  claude: 'Start a Claude Code lane',
+  codex: 'Start a Codex lane',
   file: 'Attach a file reference',
   folder: 'Attach a folder reference',
+  gemini: 'Start a Gemini CLI lane',
   url: 'Attach a URL reference',
   image: 'Attach an image reference',
   tool: 'Attach a tool reference',
@@ -21,12 +25,12 @@ const STARTER_META: Record<string, string> = {
 
 function starterEntries(query: string): CompletionEntry[] {
   const q = normalize(query)
-  const kinds = Array.from(REF_STARTERS)
+  const kinds = [...Array.from(AGENT_STARTERS), ...Array.from(REF_STARTERS)]
   const filtered = q ? kinds.filter(kind => kind.startsWith(q)) : kinds
 
   return filtered.map(kind => ({
-    text: `@${kind}:`,
-    display: `@${kind}:`,
+    text: REF_STARTERS.has(kind) ? `@${kind}:` : `@${kind}`,
+    display: REF_STARTERS.has(kind) ? `@${kind}:` : `@${kind}`,
     meta: STARTER_META[kind] || ''
   }))
 }

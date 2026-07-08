@@ -35,9 +35,9 @@ export function TerminalWorkspace({ onAddSelectionToChat }: TerminalWorkspacePro
   // Live chunks stream via agent.terminal.output; the process-list snapshot also
   // seeds/falls back so the tab never stays blank if the stream races startup.
   useEffect(() => {
-    for (const list of Object.values(background)) {
+    for (const [sessionId, list] of Object.entries(background)) {
       for (const item of list) {
-        ensureAgentTerminal(item.id, item.title)
+        ensureAgentTerminal(item.id, item.title, { canWrite: item.canWrite, ownerSessionId: sessionId })
         seedAgentTerminalCommand(item.id, item.title)
         syncAgentTerminalSnapshot(item.id, item.output ?? '')
       }
@@ -48,7 +48,14 @@ export function TerminalWorkspace({ onAddSelectionToChat }: TerminalWorkspacePro
     <>
       {terminals.map(term =>
         term.kind === 'agent' ? (
-          <AgentTerminalInstance active={term.id === activeId} id={term.id} key={term.id} procId={term.procId!} />
+          <AgentTerminalInstance
+            active={term.id === activeId}
+            canWrite={Boolean(term.canWrite)}
+            id={term.id}
+            key={term.id}
+            ownerSessionId={term.ownerSessionId}
+            procId={term.procId!}
+          />
         ) : (
           <TerminalInstance
             active={term.id === activeId}

@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import queue
+import shlex
 import subprocess
 import sys
 import threading
@@ -317,6 +318,8 @@ class _SlashWorker:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
             cwd=os.getcwd(),
             env=env,
@@ -11402,6 +11405,113 @@ def _(rid, params: dict) -> dict:
 # ── Methods: tools & system ──────────────────────────────────────────
 
 
+_AGENT_LANE_TITLES = {
+    "claude": "Claude",
+    "codex": "Codex",
+    "gemini": "Gemini",
+}
+
+
+def _agent_lane_command(lane: str, prompt: str) -> str:
+    quoted_prompt = shlex.quote(prompt)
+    if lane == "claude":
+        return f"claude --dangerously-skip-permissions {quoted_prompt}"
+    if lane == "codex":
+        return f"codex --dangerously-bypass-approvals-and-sandbox {quoted_prompt}"
+    if lane == "gemini":
+        return (
+            "GOOGLE_GENAI_USE_GCA=true npx -y @google/gemini-cli "
+            f"--skip-trust --approval-mode yolo --prompt-interactive {quoted_prompt}"
+        )
+    raise ValueError(f"unknown agent lane: {lane}")
+
+
+@method("agent.start")
+def _(rid, params: dict) -> dict:
+    """Start a PTY-backed Claude/Codex/Gemini CLI lane for the desktop app."""
+    session, err = _sess(params, rid)
+    if err:
+        return err
+
+    lane = str(params.get("lane") or "").strip().lower()
+    prompt = str(params.get("prompt") or "").strip()
+    if lane not in _AGENT_LANE_TITLES:
+        return _err(rid, 4004, "lane must be one of: claude, codex, gemini")
+    if not prompt:
+        return _err(rid, 4004, "prompt required")
+
+    session_key = str(session.get("session_key") or "")
+    if not session_key:
+        return _err(rid, 4001, "no session key")
+
+    command = _agent_lane_command(lane, prompt)
+    title = f"{_AGENT_LANE_TITLES[lane]}: {prompt[:80]}{'…' if len(prompt) > 80 else ''}"
+    approval_token = None
+    session_tokens = []
+    home_token = None
+
+    try:
+        _wire_agent_terminal_output()
+
+        from tools.approval import reset_current_session_key, set_current_session_key
+        from tools.terminal_tool import terminal_tool
+
+        approval_token = set_current_session_key(session_key)
+        session_tokens = _set_session_context(session_key)
+        profile_home = session.get("profile_home")
+        if profile_home:
+            home_token = set_hermes_home_override(profile_home)
+
+        cwd = _session_cwd(session)
+        _register_session_cwd(session)
+        raw = terminal_tool(
+            command,
+            background=True,
+            force=True,
+            notify_on_complete=False,
+            pty=True,
+            session_id=session_key,
+            task_id=session_key,
+            workdir=cwd,
+        )
+        data = json.loads(raw) if isinstance(raw, str) else {}
+    except Exception as exc:
+        return _err(rid, 5010, str(exc))
+    finally:
+        if home_token is not None:
+            try:
+                reset_hermes_home_override(home_token)
+            except Exception:
+                pass
+        if session_tokens:
+            try:
+                _clear_session_context(session_tokens)
+            except Exception:
+                pass
+        if approval_token is not None:
+            try:
+                reset_current_session_key(approval_token)
+            except Exception:
+                pass
+
+    if data.get("error"):
+        return _err(rid, 5010, str(data.get("error")))
+    process_id = str(data.get("session_id") or "")
+    if not process_id:
+        return _err(rid, 5010, "agent lane did not start")
+
+    return _ok(
+        rid,
+        {
+            "can_write": True,
+            "command": command,
+            "lane": lane,
+            "process_id": process_id,
+            "title": title,
+        },
+    )
+
+
 @method("process.stop")
 def _(rid, params: dict) -> dict:
     try:
@@ -11425,6 +11535,7 @@ def _session_processes(session: dict) -> list:
         # The 200-char list preview is too thin for the desktop's inline
         # terminal viewer — ship a real tail alongside it.
         entry["output_tail"] = (proc.output_buffer or "")[-4000:]
+        entry["can_write"] = bool(not proc.exited and getattr(proc, "_pty", None))
         owned.append(entry)
     return owned
 
@@ -11460,6 +11571,38 @@ def _(rid, params: dict) -> dict:
         ):
             return _err(rid, 4044, f"no such process: {proc_id}")
         return _ok(rid, process_registry.kill_process(proc_id))
+    except Exception as e:
+        return _err(rid, 5010, str(e))
+
+
+@method("process.write")
+def _(rid, params: dict) -> dict:
+    """Write raw stdin to a session-owned PTY background process."""
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    proc_id = str(params.get("process_id") or "")
+    if not proc_id:
+        return _err(rid, 4012, "process_id required")
+    data = params.get("data", "")
+    if not isinstance(data, str):
+        return _err(rid, 4004, "data must be a string")
+    try:
+        from tools.process_registry import process_registry
+
+        proc = process_registry.get(proc_id)
+        if proc is None or str(getattr(proc, "session_key", "") or "") != str(
+            session.get("session_key") or ""
+        ):
+            return _err(rid, 4044, f"no such process: {proc_id}")
+        result = process_registry.write_stdin(proc_id, data)
+        if result.get("status") != "ok":
+            return _err(
+                rid,
+                5010,
+                str(result.get("error") or result.get("status") or "write failed"),
+            )
+        return _ok(rid, result)
     except Exception as e:
         return _err(rid, 5010, str(e))
 
@@ -14297,7 +14440,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
+            cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, cwd=os.getcwd(),
             stdin=subprocess.DEVNULL,
         )
         return _ok(

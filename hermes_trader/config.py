@@ -36,6 +36,7 @@ class TraderConfig:
     consecutive_loss_alert_count: int = 3
     gate_reject_spike_threshold: int = 10
     enable_size_modifier: bool = False
+    pool_data_fallback: str = "auto"  # auto | defillama | mcp | none
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "TraderConfig":
@@ -65,6 +66,7 @@ class TraderConfig:
             consecutive_loss_alert_count=int(data.get("consecutive_loss_alert_count", 3)),
             gate_reject_spike_threshold=int(data.get("gate_reject_spike_threshold", 10)),
             enable_size_modifier=bool(data.get("enable_size_modifier", False)),
+            pool_data_fallback=str(data.get("pool_data_fallback", "auto")).strip().lower(),
         )
 
 

@@ -28,3 +28,7 @@ gate_reject_spike_threshold: 10
 enable_size_modifier: false  # reduce-only sizing inside RiskGate
 
 mcp_server_name: defi-trading
+
+# Pool discovery when CoinGecko MCP calls fail (401 / no API key).
+# auto = MCP first, then DeFiLlama yields API (free, no key).
+pool_data_fallback: auto  # auto | defillama | mcp | none

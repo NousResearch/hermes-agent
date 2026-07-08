@@ -82,6 +82,7 @@ def paper_config():
         min_confidence=0.6,
         min_pool_liquidity_usd=100_000.0,
         scan_interval_minutes=15,
+        pool_data_fallback="mcp",
     )
 
 

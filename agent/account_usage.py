@@ -24,6 +24,15 @@ class AccountUsageWindow:
 
 
 @dataclass(frozen=True)
+class AccountUsageVerdict:
+    verdict: str  # safe | caution | stop | unknown
+    reason: str
+    max_used_percent: Optional[float] = None
+    provider: Optional[str] = None
+    window_label: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class AccountUsageSnapshot:
     provider: str
     source: str
@@ -111,6 +120,59 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
     if snapshot.unavailable_reason:
         lines.append(f"Unavailable: {snapshot.unavailable_reason}")
     return lines
+
+
+def evaluate_account_usage(
+    snapshot: Optional[AccountUsageSnapshot],
+    *,
+    caution_at_percent: float = 80.0,
+    stop_at_percent: float = 95.0,
+) -> AccountUsageVerdict:
+    """Classify an account-usage snapshot for autonomous loop gating.
+
+    This function is intentionally pure and fail-open. Missing snapshots,
+    unavailable providers, and snapshots without numeric quota windows return
+    ``unknown`` rather than ``stop`` so a broken usage API cannot wedge normal
+    work. Callers that need a hard budget can layer stricter policy on top.
+    """
+    if snapshot is None:
+        return AccountUsageVerdict(
+            verdict="unknown",
+            reason="account usage unavailable",
+            max_used_percent=None,
+        )
+    if snapshot.unavailable_reason:
+        return AccountUsageVerdict(
+            verdict="unknown",
+            reason=f"account usage unavailable: {snapshot.unavailable_reason}",
+            max_used_percent=None,
+            provider=snapshot.provider,
+        )
+
+    numeric_windows = [w for w in snapshot.windows if w.used_percent is not None]
+    if not numeric_windows:
+        return AccountUsageVerdict(
+            verdict="unknown",
+            reason="account usage has no numeric quota windows",
+            max_used_percent=None,
+            provider=snapshot.provider,
+        )
+
+    max_window = max(numeric_windows, key=lambda w: float(w.used_percent or 0.0))
+    max_used = float(max_window.used_percent or 0.0)
+    if max_used >= float(stop_at_percent):
+        verdict = "stop"
+    elif max_used >= float(caution_at_percent):
+        verdict = "caution"
+    else:
+        verdict = "safe"
+    return AccountUsageVerdict(
+        verdict=verdict,
+        reason=f"{max_window.label} usage is {max_used:.1f}%",
+        max_used_percent=max_used,
+        provider=snapshot.provider,
+        window_label=max_window.label,
+    )
 
 
 def _resolve_codex_usage_url(base_url: str) -> str:
@@ -312,6 +374,14 @@ def fetch_account_usage(
     api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
     normalized = str(provider or "").strip().lower()
+    aliases = {
+        "codex": "openai-codex",
+        "openai_codex": "openai-codex",
+        "claude": "anthropic",
+        "claude-code": "anthropic",
+        "claude_code": "anthropic",
+    }
+    normalized = aliases.get(normalized, normalized)
     if normalized in {"", "auto", "custom"}:
         return None
     try:

@@ -29,12 +29,14 @@ Nothing in this module touches the agent's system prompt or toolset.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -66,6 +68,9 @@ _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 # exhausted with every reply shaped like `judge returned empty response` or
 # `judge reply was not JSON`.
 DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
+# Account-usage checks can involve live provider APIs. Cache verdicts briefly so
+# long /goal loops do not spend a network call on every continuation turn.
+DEFAULT_USAGE_GUARD_TTL_SECONDS = 60.0
 
 
 CONTINUATION_PROMPT_TEMPLATE = (
@@ -463,6 +468,54 @@ def judge_goal(
     return verdict, reason, parse_failed
 
 
+_USAGE_GUARD_CACHE: Dict[Tuple[str, str, str], Tuple[float, Any]] = {}
+
+
+def _usage_guard_cache_fingerprint(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _goal_usage_guard(*, now: Optional[float] = None) -> Any:
+    """Return an account-usage verdict for autonomous goal-loop gating.
+
+    Fail-open by design: missing config, unsupported providers, and API errors
+    all produce an ``unknown`` verdict rather than pausing the loop. A concrete
+    ``stop`` verdict is the only result that callers treat as a hard gate.
+    """
+    try:
+        from agent.account_usage import AccountUsageVerdict, evaluate_account_usage, fetch_account_usage
+        from hermes_cli.config import load_config
+    except Exception as exc:  # pragma: no cover - import failures are environment-specific
+        logger.debug("goal usage guard: import failed: %s", exc)
+        return SimpleNamespace(verdict="unknown", reason="usage guard unavailable")
+
+    try:
+        cfg = load_config()
+        model_cfg_raw = cfg.get("model") or {}
+        model_cfg = model_cfg_raw if isinstance(model_cfg_raw, dict) else {}
+        provider = str(model_cfg.get("provider") or cfg.get("provider") or "").strip()
+        base_url = model_cfg.get("base_url") or cfg.get("base_url")
+        api_key = model_cfg.get("api_key") or cfg.get("api_key")
+        key = (provider.lower(), str(base_url or ""), _usage_guard_cache_fingerprint(api_key))
+        ts = time.time() if now is None else float(now)
+        cached = _USAGE_GUARD_CACHE.get(key)
+        if cached and ts - cached[0] < DEFAULT_USAGE_GUARD_TTL_SECONDS:
+            return cached[1]
+        snapshot = fetch_account_usage(provider, base_url=base_url, api_key=api_key)
+        verdict = evaluate_account_usage(snapshot)
+        _USAGE_GUARD_CACHE[key] = (ts, verdict)
+        return verdict
+    except Exception as exc:
+        logger.debug("goal usage guard: failed open: %s", exc)
+        return AccountUsageVerdict(
+            verdict="unknown",
+            reason=f"usage guard unavailable: {type(exc).__name__}",
+        )
+
+
 # ──────────────────────────────────────────────────────────────────────
 # GoalManager — the orchestration surface CLI + gateway talk to
 # ──────────────────────────────────────────────────────────────────────
@@ -724,6 +777,24 @@ class GoalManager:
                 ),
             }
 
+        usage_verdict = _goal_usage_guard()
+        if getattr(usage_verdict, "verdict", "unknown") == "stop":
+            state.status = "paused"
+            state.paused_reason = f"usage guard stop: {usage_verdict.reason}"
+            save_goal(self.session_id, state)
+            return {
+                "status": "paused",
+                "should_continue": False,
+                "continuation_prompt": None,
+                "verdict": "continue",
+                "reason": reason,
+                "usage_verdict": usage_verdict.verdict,
+                "message": (
+                    f"⏸ Goal paused by usage guard — {usage_verdict.reason}. "
+                    "Use /goal resume after quota resets or switch to a lower-cost path."
+                ),
+            }
+
         save_goal(self.session_id, state)
         return {
             "status": "active",
@@ -731,6 +802,7 @@ class GoalManager:
             "continuation_prompt": self.next_continuation_prompt(),
             "verdict": "continue",
             "reason": reason,
+            "usage_verdict": getattr(usage_verdict, "verdict", "unknown"),
             "message": (
                 f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {reason}"
             ),

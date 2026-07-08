@@ -286,6 +286,85 @@ class TestGoalManager:
         assert mgr.state.status == "active"
         assert mgr.state.turns_used == 1
 
+    def test_evaluate_after_turn_pauses_on_usage_guard_stop(self, hermes_home):
+        from agent.account_usage import AccountUsageVerdict
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="eval-sid-usage-stop", default_max_turns=5)
+        mgr.set("a long expensive goal")
+
+        with patch.object(goals, "judge_goal", return_value=("continue", "more work", False)), patch.object(
+            goals,
+            "_goal_usage_guard",
+            return_value=AccountUsageVerdict(
+                verdict="stop",
+                reason="Weekly usage is 96.0%",
+                max_used_percent=96.0,
+                provider="openai-codex",
+                window_label="Weekly",
+            ),
+        ):
+            decision = mgr.evaluate_after_turn("made some progress")
+
+        assert decision["status"] == "paused"
+        assert decision["should_continue"] is False
+        assert decision["continuation_prompt"] is None
+        assert decision["usage_verdict"] == "stop"
+        assert "usage guard" in decision["message"].lower()
+        assert mgr.state.status == "paused"
+        assert "usage guard" in (mgr.state.paused_reason or "").lower()
+
+    def test_evaluate_after_turn_continues_when_usage_guard_unknown(self, hermes_home):
+        from agent.account_usage import AccountUsageVerdict
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="eval-sid-usage-unknown", default_max_turns=5)
+        mgr.set("a long goal")
+
+        with patch.object(goals, "judge_goal", return_value=("continue", "more work", False)), patch.object(
+            goals,
+            "_goal_usage_guard",
+            return_value=AccountUsageVerdict(
+                verdict="unknown",
+                reason="account usage unavailable",
+            ),
+        ):
+            decision = mgr.evaluate_after_turn("made some progress")
+
+        assert decision["status"] == "active"
+        assert decision["should_continue"] is True
+        assert decision["usage_verdict"] == "unknown"
+
+    def test_goal_usage_guard_handles_string_model_config_and_caches_by_api_key(self, hermes_home):
+        from datetime import datetime, timezone
+
+        from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+        from hermes_cli import goals
+
+        goals._USAGE_GUARD_CACHE.clear()
+        snapshot = AccountUsageSnapshot(
+            provider="openai-codex",
+            source="usage_api",
+            fetched_at=datetime.now(timezone.utc),
+            windows=(AccountUsageWindow(label="Weekly", used_percent=96),),
+        )
+        with patch("hermes_cli.config.load_config", side_effect=[
+            {"model": "gpt-5.5", "provider": "codex", "api_key": "key-a"},
+            {"model": "gpt-5.5", "provider": "codex", "api_key": "key-a"},
+            {"model": "gpt-5.5", "provider": "codex", "api_key": "key-b"},
+        ]), patch("agent.account_usage.fetch_account_usage", return_value=snapshot) as fetch_mock:
+            first = goals._goal_usage_guard(now=1000)
+            second = goals._goal_usage_guard(now=1010)
+            third = goals._goal_usage_guard(now=1020)
+
+        assert first.verdict == "stop"
+        assert second.verdict == "stop"
+        assert third.verdict == "stop"
+        # Same key is cached, but a different credential fingerprint fetches again.
+        assert fetch_mock.call_count == 2
+
     def test_evaluate_after_turn_budget_exhausted(self, hermes_home):
         """When turn budget hits ceiling, auto-pause instead of continuing."""
         from hermes_cli import goals

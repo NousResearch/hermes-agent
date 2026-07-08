@@ -2,7 +2,9 @@ from datetime import datetime, timezone
 
 from agent.account_usage import (
     AccountUsageSnapshot,
+    AccountUsageVerdict,
     AccountUsageWindow,
+    evaluate_account_usage,
     fetch_account_usage,
     render_account_usage_lines,
 )
@@ -201,3 +203,92 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
     assert snapshot.windows == ()
     assert "Credits balance: $74.50" in snapshot.details
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
+
+
+def test_evaluate_account_usage_unknown_when_snapshot_missing_or_unavailable():
+    missing = evaluate_account_usage(None)
+    assert missing == AccountUsageVerdict(
+        verdict="unknown",
+        reason="account usage unavailable",
+        max_used_percent=None,
+    )
+
+    unavailable = evaluate_account_usage(
+        AccountUsageSnapshot(
+            provider="anthropic",
+            source="oauth_usage_api",
+            fetched_at=datetime.now(timezone.utc),
+            unavailable_reason="OAuth required",
+        )
+    )
+    assert unavailable.verdict == "unknown"
+    assert "OAuth required" in unavailable.reason
+
+
+def test_evaluate_account_usage_safe_caution_and_stop_thresholds():
+    fetched_at = datetime.now(timezone.utc)
+    snapshot = AccountUsageSnapshot(
+        provider="openai-codex",
+        source="usage_api",
+        fetched_at=fetched_at,
+        windows=(AccountUsageWindow(label="Session", used_percent=79.9),),
+    )
+    verdict = evaluate_account_usage(snapshot)
+    assert verdict.verdict == "safe"
+    assert verdict.max_used_percent == 79.9
+
+    caution = evaluate_account_usage(
+        AccountUsageSnapshot(
+            provider="openai-codex",
+            source="usage_api",
+            fetched_at=fetched_at,
+            windows=(AccountUsageWindow(label="Weekly", used_percent=80),),
+        )
+    )
+    assert caution.verdict == "caution"
+    assert "Weekly" in caution.reason
+
+    stop = evaluate_account_usage(
+        AccountUsageSnapshot(
+            provider="openai-codex",
+            source="usage_api",
+            fetched_at=fetched_at,
+            windows=(
+                AccountUsageWindow(label="Session", used_percent=50),
+                AccountUsageWindow(label="Weekly", used_percent=95),
+            ),
+        )
+    )
+    assert stop.verdict == "stop"
+    assert "Weekly" in stop.reason
+
+
+def test_evaluate_account_usage_windows_without_percent_are_unknown():
+    verdict = evaluate_account_usage(
+        AccountUsageSnapshot(
+            provider="openrouter",
+            source="credits_api",
+            fetched_at=datetime.now(timezone.utc),
+            details=("Credits balance: $9.00",),
+        )
+    )
+    assert verdict.verdict == "unknown"
+    assert verdict.max_used_percent is None
+
+
+def test_fetch_account_usage_accepts_provider_aliases(monkeypatch):
+    codex_snapshot = AccountUsageSnapshot(
+        provider="openai-codex",
+        source="usage_api",
+        fetched_at=datetime.now(timezone.utc),
+    )
+    anthropic_snapshot = AccountUsageSnapshot(
+        provider="anthropic",
+        source="oauth_usage_api",
+        fetched_at=datetime.now(timezone.utc),
+    )
+    monkeypatch.setattr("agent.account_usage._fetch_codex_account_usage", lambda: codex_snapshot)
+    monkeypatch.setattr("agent.account_usage._fetch_anthropic_account_usage", lambda: anthropic_snapshot)
+
+    assert fetch_account_usage("codex") is codex_snapshot
+    assert fetch_account_usage("claude-code") is anthropic_snapshot

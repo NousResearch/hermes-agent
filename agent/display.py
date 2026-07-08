@@ -128,6 +128,55 @@ def _get_skin():
         return None
 
 
+_INDICATOR_STYLES = {"ascii", "emoji", "kaomoji", "unicode"}
+
+
+def _normalize_indicator_style(raw, default: str) -> str:
+    value = str(raw or default).strip().lower()
+    return value if value in _INDICATOR_STYLES else default
+
+
+def _default_tui_status_indicator() -> str:
+    try:
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        display = DEFAULT_CONFIG.get("display", {})
+        if isinstance(display, dict):
+            return _normalize_indicator_style(
+                display.get("tui_status_indicator"), "kaomoji"
+            )
+    except Exception:
+        pass
+    return "kaomoji"
+
+
+def _get_tui_status_indicator() -> str:
+    """Return the resolved busy-indicator style.
+
+    ``load_config_readonly`` merges ``DEFAULT_CONFIG`` with the active profile's
+    config, so profile overrides remain authoritative. Historically this
+    module's ``KawaiiSpinner`` had its own kaomoji fallback, separate from the
+    TUI status-bar setting. That meant users could set
+    ``display.tui_status_indicator: emoji`` and still see kaomoji in CLI/tool
+    progress. Treat the same resolved config key as the global indicator-style
+    selector for these spinner faces too.
+    """
+    default = _default_tui_status_indicator()
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        display = cfg.get("display") if isinstance(cfg, dict) else {}
+        raw = (
+            display.get("tui_status_indicator", default)
+            if isinstance(display, dict)
+            else default
+        )
+        return _normalize_indicator_style(raw, default)
+    except Exception:
+        return default
+
+
 def get_skin_tool_prefix() -> str:
     """Get tool output prefix character from active skin."""
     skin = _get_skin()
@@ -983,6 +1032,18 @@ class KawaiiSpinner:
         "٩(๑❛ᴗ❛๑)۶", "(⊙_⊙)", "(¬_¬)", "( ͡° ͜ʖ ͡°)", "ಠ_ಠ",
     ]
 
+    STYLE_WAITING = {
+        "ascii": ["*", "+", "-", "~"],
+        "emoji": ["⚕", "🌀", "✨", "🍵", "🔮"],
+        "unicode": ["⠋", "⠙", "⠹", "⠸", "⠼"],
+    }
+
+    STYLE_THINKING = {
+        "ascii": ["?", "*", "+", "~"],
+        "emoji": ["🤔", "🧠", "💭", "💡", "✨"],
+        "unicode": ["⠋", "⠙", "⠹", "⠸", "⠼"],
+    }
+
     THINKING_VERBS = [
         "pondering", "contemplating", "musing", "cogitating", "ruminating",
         "deliberating", "mulling", "reflecting", "processing", "reasoning",
@@ -991,7 +1052,11 @@ class KawaiiSpinner:
 
     @classmethod
     def get_waiting_faces(cls) -> list:
-        """Return waiting faces from the active skin, falling back to KAWAII_WAITING."""
+        """Return waiting faces for the configured indicator style."""
+        style = _get_tui_status_indicator()
+        if style != "kaomoji":
+            return cls.STYLE_WAITING.get(style, cls.STYLE_WAITING["emoji"])
+
         try:
             skin = _get_skin()
             if skin:
@@ -1004,7 +1069,11 @@ class KawaiiSpinner:
 
     @classmethod
     def get_thinking_faces(cls) -> list:
-        """Return thinking faces from the active skin, falling back to KAWAII_THINKING."""
+        """Return thinking faces for the configured indicator style."""
+        style = _get_tui_status_indicator()
+        if style != "kaomoji":
+            return cls.STYLE_THINKING.get(style, cls.STYLE_THINKING["emoji"])
+
         try:
             skin = _get_skin()
             if skin:

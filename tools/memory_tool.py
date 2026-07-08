@@ -1034,9 +1034,21 @@ def memory_tool(
     return json.dumps(result, ensure_ascii=False)
 
 
+
 def check_memory_requirements() -> bool:
-    """Memory tool has no external requirements -- always available."""
-    return True
+    """Memory tool requires memory_enabled=true in config.
+
+    When memory_enabled is false (e.g. when using Mnemosyne as provider),
+    hide the legacy memory tool to avoid confusion.
+    """
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        memory_cfg = config.get("memory", {})
+        return memory_cfg.get("memory_enabled", True)
+    except Exception:
+        # Fail open on config errors to avoid breaking memory in broken configs
+        return True
 
 
 def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:

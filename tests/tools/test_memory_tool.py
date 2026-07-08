@@ -915,3 +915,62 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+
+class TestMemoryToolCheckRequirements:
+    """Test check_memory_requirements respects memory_enabled config."""
+
+    def test_returns_true_when_memory_enabled_true(self, monkeypatch, tmp_path):
+        """When memory_enabled is true, the legacy tool should be visible."""
+        from tools.memory_tool import check_memory_requirements
+
+        # Mock config with memory_enabled: true
+        def mock_load_config():
+            return {"memory": {"memory_enabled": True}}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", mock_load_config)
+        assert check_memory_requirements() is True
+
+    def test_returns_false_when_memory_enabled_false(self, monkeypatch, tmp_path):
+        """When memory_enabled is false, hide the legacy tool (e.g., for Mnemosyne)."""
+        from tools.memory_tool import check_memory_requirements
+
+        # Mock config with memory_enabled: false
+        def mock_load_config():
+            return {"memory": {"memory_enabled": False}}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", mock_load_config)
+        assert check_memory_requirements() is False
+
+    def test_returns_true_when_memory_section_missing(self, monkeypatch, tmp_path):
+        """Default to true when memory section is absent (backward compatibility)."""
+        from tools.memory_tool import check_memory_requirements
+
+        # Mock config without memory section
+        def mock_load_config():
+            return {}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", mock_load_config)
+        assert check_memory_requirements() is True
+
+    def test_returns_true_when_memory_enabled_key_missing(self, monkeypatch, tmp_path):
+        """Default to true when memory_enabled key is absent (backward compatibility)."""
+        from tools.memory_tool import check_memory_requirements
+
+        # Mock config with memory section but no memory_enabled key
+        def mock_load_config():
+            return {"memory": {"provider": "mnemosyne"}}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", mock_load_config)
+        assert check_memory_requirements() is True
+
+    def test_fails_open_on_config_load_error(self, monkeypatch, tmp_path):
+        """Config errors should not break memory tool — fail open for safety."""
+        from tools.memory_tool import check_memory_requirements
+
+        # Mock load_config that raises an exception
+        def mock_load_config():
+            raise RuntimeError("Config file corrupted")
+
+        monkeypatch.setattr("hermes_cli.config.load_config", mock_load_config)
+        assert check_memory_requirements() is True

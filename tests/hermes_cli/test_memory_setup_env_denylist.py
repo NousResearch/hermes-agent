@@ -140,6 +140,19 @@ def test_legitimate_value_writes_round_trip():
     assert env["MEM0_API_KEY"] == "m0-test-key-abc"
 
 
+def test_explicit_hermes_home_writes_to_that_env_file(tmp_path):
+    """Plugin ``post_setup`` hooks (e.g. Supermemory) pass an explicit
+    Hermes home; keep that target while still routing through
+    ``save_env_value`` validation instead of writing directly."""
+    home = tmp_path / "plugin-home"
+
+    _write_env_vars({"MEM0_API_KEY": "m0-test-key-abc"}, hermes_home=home)
+
+    assert "MEM0_API_KEY=m0-test-key-abc\n" in (home / ".env").read_text(
+        encoding="utf-8"
+    )
+
+
 def test_value_with_embedded_newline_is_stripped():
     """``save_env_value`` strips CR/LF from the value to prevent
     .env-file structure injection (a value containing ``\\n`` would

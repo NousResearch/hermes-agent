@@ -377,7 +377,10 @@ def cmd_setup(args) -> None:
     print("\n  Start a new session to activate.\n")
 
 
-def _write_env_vars(env_writes: dict) -> None:
+def _write_env_vars(
+    env_writes: dict,
+    hermes_home: str | os.PathLike[str] | None = None,
+) -> None:
     """Persist memory-provider env vars through the canonical ``.env`` writer.
 
     Delegates to ``hermes_cli.config.save_env_value`` so every key flows
@@ -400,14 +403,26 @@ def _write_env_vars(env_writes: dict) -> None:
     Non-validation errors (filesystem failures, permission errors) are
     intentionally NOT caught — those indicate the wizard cannot safely
     persist any subsequent key either and should propagate.
+
+    ``hermes_home`` may be supplied by plugin ``post_setup`` hooks that
+    already received an explicit home directory (e.g. a non-default
+    profile). It is applied through the context-local Hermes home override
+    so ``save_env_value`` still owns the validation, sanitization, and
+    atomic-write path without mutating global ``os.environ``.
     """
     from hermes_cli.config import save_env_value
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-    for key, val in env_writes.items():
-        try:
-            save_env_value(key, val)
-        except ValueError as exc:
-            print(f"  Skipping {key}: {exc}")
+    token = set_hermes_home_override(hermes_home) if hermes_home is not None else None
+    try:
+        for key, val in env_writes.items():
+            try:
+                save_env_value(key, val)
+            except ValueError as exc:
+                print(f"  Skipping {key}: {exc}")
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
 
 
 # ---------------------------------------------------------------------------

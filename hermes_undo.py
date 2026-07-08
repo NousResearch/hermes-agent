@@ -131,6 +131,74 @@ def _prefill_from_tail(tail: Optional[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
+def _content_to_text(content: Any) -> str:
+    """Flatten message content (str or content-part list) to plain text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            p.get("text", "")
+            for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
+        ]
+        return "\n".join(t for t in parts if t)
+    return ""
+
+
+def _preview_text(text: str, max_len: int) -> str:
+    """Collapse whitespace and trim to a short, sentence-aware preview."""
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= max_len:
+        return collapsed
+    window = collapsed[:max_len]
+    # Prefer cutting at the first sentence boundary that lands past the halfway
+    # point of the window, so a short leading sentence reads cleanly and we
+    # don't return a one-word stub.
+    best = -1
+    for mark in (". ", "! ", "? "):
+        idx = window.find(mark)
+        if idx >= max_len // 2:
+            best = max(best, idx + 1)
+    if best > 0:
+        return window[:best].rstrip()
+    return window.rstrip() + "…"
+
+
+def tail_preview(session_id: str, max_len: int = 140) -> Dict[str, Any]:
+    """Describe the CURRENT active tail of a session for at-a-glance confirmation.
+
+    Returns ``{"role": <role|None>, "preview": <str|None>, "empty": <bool>,
+    "error": <bool>}``. ``preview`` is ``None`` when the tail carries no text
+    (e.g. a tool-call-only assistant row); callers should then fall back to
+    naming the role. ``error`` is ``True`` when the tail could not be read at
+    all (a transient DB failure) — distinct from ``empty`` (the transcript is
+    genuinely at the start): callers should OMIT the confirmation suffix on
+    ``error`` rather than tell the user the thread is empty. Note that a
+    half-turn is a *transcript* row (one party's run), not a platform display
+    bubble — a long assistant reply that a chat platform splits into several
+    messages is a single tail row here.
+    """
+    db = _get_db()
+    try:
+        msgs = db.get_messages(session_id, include_inactive=False)
+    except Exception:
+        # Distinct from empty: the read FAILED, we don't know the tail. The
+        # primary undo/redo already succeeded, so the caller should drop the
+        # suffix, NOT claim the thread is empty.
+        return {"role": None, "preview": None, "empty": False, "error": True}
+    tail = _new_tail(msgs)
+    if tail is None:
+        return {"role": None, "preview": None, "empty": True, "error": False}
+    text = _content_to_text(tail.get("content"))
+    preview = _preview_text(text, max_len) if text else None
+    return {
+        "role": tail.get("role") or "message",
+        "preview": preview or None,
+        "empty": False,
+        "error": False,
+    }
+
+
 def undo(session_id: str, n: int) -> Dict[str, Any]:
     db = _get_db()
     state = get_state(session_id)

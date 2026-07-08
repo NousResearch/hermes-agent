@@ -193,6 +193,14 @@ async def auth_login(request: Request, provider: str, next: str = ""):
             detail=f"Provider does not support interactive login: {provider!r}",
         )
 
+    # Password-only providers don't have an OAuth redirect flow — redirect
+    # to the login page which renders the username/password form.
+    if getattr(p, "supports_password", False):
+        login_url = "/login"
+        if next:
+            login_url += f"?next={next}"
+        return RedirectResponse(url=login_url, status_code=302)
+
     try:
         ls = p.start_login(redirect_uri=_redirect_uri(request))
     except ProviderError as e:

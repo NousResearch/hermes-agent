@@ -270,7 +270,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
         is_edit = bool(sources)
         modality = "image" if is_edit else "text"
 
-        client = openai.OpenAI()
+        client = openai.OpenAI(default_headers={"OpenAI-Project": ""})
 
         if is_edit:
             # images.edit() expects file-like objects. Download/read each

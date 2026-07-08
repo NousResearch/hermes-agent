@@ -136,7 +136,12 @@ export interface BillingMutationResponse {
   granted?: boolean
   message?: string
   ok: boolean
-  payload?: BillingErrorPayload
+  /**
+   * On ok:false, the structured error payload. On ok:true the gateway passes
+   * through the raw NAS success body (e.g. rail, changeType, cancelAtPeriodEnd
+   * for subscription mutations), which has no stable shape here.
+   */
+  payload?: BillingErrorPayload | Record<string, unknown>
   portal_url?: string | null
   recovery?: string
   retry_after?: number | null

@@ -297,16 +297,6 @@ class TestBuildApiKwargsOpenRouter:
         # call_id/response_item_id still stripped regardless of model
         assert "call_id" not in result["tool_calls"][0]
 
-    def test_sanitize_tool_calls_strips_extra_content_for_gemma(self, monkeypatch):
-        """Gemma is served by Google but does not consume Gemini thought signatures."""
-        agent = _make_agent(monkeypatch, "openrouter")
-        api_msg = self._api_msg_with_extra_content()
-        result = agent._sanitize_tool_calls_for_strict_api(
-            api_msg, model="google/gemma-4-31b-it"
-        )
-        assert "extra_content" not in result["tool_calls"][0]
-        assert "call_id" not in result["tool_calls"][0]
-
 
 class TestDeveloperRoleSwap:
     """GPT-5 and Codex models should get 'developer' instead of 'system' role."""

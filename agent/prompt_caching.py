@@ -8,6 +8,7 @@ single session.
 Pure functions -- no class state, no AIAgent dependency.
 """
 
+import copy
 from typing import Any, Dict, List
 
 
@@ -80,41 +81,6 @@ def _build_marker(ttl: str) -> Dict[str, str]:
     return marker
 
 
-def _copy_message_for_api_mutation(msg: Dict[str, Any]) -> Dict[str, Any]:
-    """Copy message containers that later API-retry recovery may mutate."""
-    copied = dict(msg)
-
-    content = msg.get("content")
-    if isinstance(content, list) and content:
-        copied_content = []
-        for part in content:
-            if isinstance(part, dict):
-                copied_part = dict(part)
-                image_url = part.get("image_url")
-                if isinstance(image_url, dict):
-                    copied_part["image_url"] = dict(image_url)
-                copied_content.append(copied_part)
-            else:
-                copied_content.append(part)
-        copied["content"] = copied_content
-
-    tool_calls = msg.get("tool_calls")
-    if isinstance(tool_calls, list) and tool_calls:
-        copied_tool_calls = []
-        for tool_call in tool_calls:
-            if isinstance(tool_call, dict):
-                copied_tool_call = dict(tool_call)
-                function = tool_call.get("function")
-                if isinstance(function, dict):
-                    copied_tool_call["function"] = dict(function)
-                copied_tool_calls.append(copied_tool_call)
-            else:
-                copied_tool_calls.append(tool_call)
-        copied["tool_calls"] = copied_tool_calls
-
-    return copied
-
-
 def apply_anthropic_cache_control(
     api_messages: List[Dict[str, Any]],
     cache_ttl: str = "5m",
@@ -126,17 +92,11 @@ def apply_anthropic_cache_control(
     messages, all at the same TTL.
 
     Returns:
-        Copy of messages with cache_control breakpoints injected. Message
-        containers are copied so later API-retry recovery can mutate the
-        returned request copy without touching canonical history.
+        Deep copy of messages with cache_control breakpoints injected.
     """
-    if not api_messages:
-        return []
-
-    messages = [
-        _copy_message_for_api_mutation(msg) if isinstance(msg, dict) else msg
-        for msg in api_messages
-    ]
+    messages = copy.deepcopy(api_messages)
+    if not messages:
+        return messages
 
     marker = _build_marker(cache_ttl)
 

@@ -129,6 +129,7 @@ def dispatch_async_delegation(
     model: Optional[str],
     session_key: str,
     runner: Callable[[], Dict[str, Any]],
+    origin_ui_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
 ) -> Dict[str, Any]:
@@ -171,6 +172,7 @@ def dispatch_async_delegation(
         "role": role,
         "model": model,
         "session_key": session_key,
+        "origin_ui_session_id": origin_ui_session_id,
         "status": "running",
         "dispatched_at": dispatched_at,
         "completed_at": None,
@@ -281,6 +283,7 @@ def _push_completion_event(
         # session_key routes the completion back to the originating gateway
         # session; empty string => CLI (single-session) path.
         "session_key": record.get("session_key", ""),
+        "origin_ui_session_id": record.get("origin_ui_session_id", ""),
         "goal": record.get("goal", ""),
         "context": record.get("context"),
         "toolsets": record.get("toolsets"),
@@ -316,6 +319,7 @@ def dispatch_async_delegation_batch(
     model: Optional[str],
     session_key: str,
     runner: Callable[[], Dict[str, Any]],
+    origin_ui_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
 ) -> Dict[str, Any]:
@@ -355,6 +359,7 @@ def dispatch_async_delegation_batch(
         "role": role,
         "model": model,
         "session_key": session_key,
+        "origin_ui_session_id": origin_ui_session_id,
         "status": "running",
         "dispatched_at": dispatched_at,
         "completed_at": None,
@@ -452,6 +457,7 @@ def _finalize_batch(
         "type": "async_delegation",
         "delegation_id": delegation_id,
         "session_key": event_record.get("session_key", ""),
+        "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
         "goal": event_record.get("goal", ""),
         "goals": event_record.get("goals"),
         "context": event_record.get("context"),
@@ -515,6 +521,54 @@ def interrupt_all(reason: str = "shutdown") -> int:
                 )
     if count:
         logger.info("Interrupted %d async delegation(s) (%s)", count, reason)
+    return count
+
+
+def interrupt_for_session(
+    session_key: str = "",
+    origin_ui_session_id: str = "",
+    reason: str = "session_end",
+) -> int:
+    """Signal running async delegations owned by ONE session to stop.
+
+    A delegation's lifecycle is bound to the session that spawned it: when
+    that session ends, its in-flight background subagents must end with it —
+    a completed orphan would otherwise sit on the shared completion queue
+    with no live owner, either leaking into another chat or burning tokens
+    with no one listening (#55578).
+
+    Matches on ``origin_ui_session_id`` (the live UI session that
+    commissioned the work) and/or the durable ``session_key``; either
+    matching field claims the record. Returns how many were interrupted.
+    """
+    if not session_key and not origin_ui_session_id:
+        return 0
+    count = 0
+    with _records_lock:
+        targets = [
+            r for r in _records.values()
+            if r.get("status") == "running"
+            and (
+                (origin_ui_session_id and str(r.get("origin_ui_session_id") or "") == origin_ui_session_id)
+                or (session_key and str(r.get("session_key") or "") == session_key)
+            )
+        ]
+    for r in targets:
+        fn = r.get("interrupt_fn")
+        if callable(fn):
+            try:
+                fn()
+                count += 1
+            except Exception as exc:
+                logger.debug(
+                    "interrupt_for_session: %s interrupt failed: %s",
+                    r.get("delegation_id"), exc,
+                )
+    if count:
+        logger.info(
+            "Interrupted %d async delegation(s) for ending session (%s)",
+            count, reason,
+        )
     return count
 
 

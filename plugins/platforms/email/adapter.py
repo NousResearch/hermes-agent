@@ -588,7 +588,7 @@ class EmailAdapter(BasePlatformAdapter):
             _send_imap_id(imap)
             # Establish a startup UID boundary so we only process later messages.
             imap.select("INBOX")
-            startup_count = self._establish_uid_baseline(imap)
+            startup_count = self._establish_uid_baseline(imap, reset_seen_uids=True)
             if startup_count is None:
                 try:
                     imap.logout()

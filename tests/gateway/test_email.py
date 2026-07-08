@@ -1242,6 +1242,47 @@ class TestFetchNewMessages(unittest.TestCase):
         if adapter._poll_task:
             adapter._poll_task.cancel()
 
+    def test_connect_rebaseline_clears_stale_seen_uids(self):
+        """A new connect baseline must not let old UID cache suppress fresh mail."""
+        import asyncio
+        adapter = self._make_adapter()
+        adapter._poll_loop = AsyncMock()
+        adapter._seen_uids = {b"500"}
+        adapter._startup_seen_uid_cutoff = 1000
+        adapter._startup_seen_uidvalidity = b"old"
+
+        raw_email = MIMEText("Fresh after mailbox reset", "plain", "utf-8")
+        raw_email["From"] = "user@test.com"
+        raw_email["Subject"] = "Fresh"
+        raw_email["Message-ID"] = "<fresh@test.com>"
+
+        startup_imap = MagicMock()
+        startup_imap.response.return_value = ("UIDVALIDITY", [b"new"])
+        startup_imap.uid.return_value = ("OK", [b"1 400"])
+
+        poll_imap = MagicMock()
+        poll_imap.response.return_value = ("UIDVALIDITY", [b"new"])
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"500"])
+            if command == "fetch":
+                return ("OK", [(args[0], raw_email.as_bytes())])
+            return ("NO", [])
+
+        poll_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", side_effect=[startup_imap, poll_imap]), \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+            self.assertTrue(asyncio.run(adapter.connect(is_reconnect=True)))
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual([msg["uid"] for msg in results], [b"500"])
+        adapter._running = False
+        if adapter._poll_task:
+            adapter._poll_task.cancel()
+
     def test_fetch_rebaselines_without_dispatch_when_uidvalidity_changes(self):
         """A UIDVALIDITY reset establishes a fresh baseline before dispatch."""
         adapter = self._make_adapter()

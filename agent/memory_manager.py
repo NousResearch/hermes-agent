@@ -25,12 +25,13 @@ Usage in run_agent.py:
 
 from __future__ import annotations
 
-import inspect
+import json
 import logging
 import re
+import inspect
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from agent.skill_commands import extract_user_instruction_from_skill_message
@@ -42,6 +43,39 @@ logger = logging.getLogger(__name__)
 # before abandoning it. A wedged provider must never block process teardown
 # indefinitely. Sync and prefetch lanes share this single shutdown budget.
 _BACKGROUND_DRAIN_TIMEOUT_S = 5.0
+
+
+def normalize_tool_schema(schema: Any) -> Optional[Dict[str, Any]]:
+    """Return a function-tool dict with a resolvable top-level ``name``.
+
+    Context engines and memory providers expose tool schemas via
+    ``get_tool_schemas()``. The expected shape is a bare function schema
+    (``{"name": ..., "description": ..., "parameters": ...}``) which callers
+    wrap as ``{"type": "function", "function": schema}``.
+
+    Some providers instead return an entry that is *already* in OpenAI tool
+    form (``{"type": "function", "function": {"name": ...}}``). Wrapping that
+    a second time produces ``{"type": "function", "function": {"type":
+    "function", "function": {...}}}`` whose ``function`` has no top-level
+    ``name``. Strict providers (e.g. DeepSeek) reject the *entire* request
+    with ``tools[N].function: missing field name`` (HTTP 400), so one bad
+    schema disables the whole toolset and breaks every turn (#47707).
+
+    This helper normalizes both shapes to the bare function schema and
+    returns ``None`` for anything without a resolvable name, so callers can
+    skip-with-warning rather than appending a nameless tool.
+    """
+    if not isinstance(schema, dict):
+        return None
+    # Unwrap an already-wrapped OpenAI tool entry.
+    if schema.get("type") == "function" and isinstance(schema.get("function"), dict):
+        schema = schema["function"]
+        if not isinstance(schema, dict):
+            return None
+    name = schema.get("name", "")
+    if not name or not isinstance(name, str):
+        return None
+    return schema
 
 
 def memory_provider_tools_enabled(enabled_toolsets: Optional[List[str]]) -> bool:
@@ -90,11 +124,17 @@ def inject_memory_provider_tools(agent: Any) -> int:
         agent.valid_tool_names = valid_tool_names
 
     added = 0
-    for schema in get_schemas():
-        if not isinstance(schema, dict):
+    for raw_schema in get_schemas():
+        schema = normalize_tool_schema(raw_schema)
+        if schema is None:
+            logger.warning(
+                "Memory provider returned a tool schema with no resolvable "
+                "name; skipping to avoid poisoning the request (%r)",
+                raw_schema,
+            )
             continue
-        tool_name = schema.get("name", "")
-        if not tool_name or tool_name in existing_tool_names:
+        tool_name = schema["name"]
+        if tool_name in existing_tool_names:
             continue
         tools.append({"type": "function", "function": schema})
         valid_tool_names.add(tool_name)
@@ -374,8 +414,11 @@ class MemoryManager:
         _core_tool_names = set(_HERMES_CORE_TOOLS)
 
         # Index tool names → provider for routing
-        for schema in provider.get_tool_schemas():
-            tool_name = schema.get("name", "")
+        for raw_schema in provider.get_tool_schemas():
+            schema = normalize_tool_schema(raw_schema)
+            if schema is None:
+                continue
+            tool_name = schema["name"]
             if tool_name in _core_tool_names:
                 logger.warning(
                     "Memory provider '%s' tool '%s' shadows a reserved core "
@@ -582,7 +625,7 @@ class MemoryManager:
         preserves write ordering for each provider; the prefetch lane keeps
         next-turn prefetch dispatch from waiting behind a slow same-provider
         sync. If the executor can't be created or has already been shut down,
-        ``fn`` runs inline as a last-resort fallback — losing the async benefit
+        ``fn`` runs inline as a last-resort fallback - losing the async benefit
         but never losing the write itself. ``fn`` must do its own per-provider
         error handling; this wrapper only guards executor plumbing.
         """
@@ -591,7 +634,7 @@ class MemoryManager:
         else:
             executor = self._get_sync_executor(provider_name)
         if executor is None:
-            # Executor unavailable (shut down / creation failed) — run
+            # Executor unavailable (shut down / creation failed) - run
             # inline rather than drop the work. Slow, but correct.
             try:
                 fn()
@@ -620,7 +663,12 @@ class MemoryManager:
         with self._background_executor_lock:
             if provider_name not in self._sync_executors:
                 try:
-                    self._sync_executors[provider_name] = ThreadPoolExecutor(
+                    # Daemon workers (see tools.daemon_pool): a provider wedged
+                    # on a network call must never block interpreter exit -
+                    # stdlib ThreadPoolExecutor's atexit hook would join it
+                    # unconditionally even after shutdown(wait=False).
+                    from tools.daemon_pool import DaemonThreadPoolExecutor
+                    self._sync_executors[provider_name] = DaemonThreadPoolExecutor(
                         max_workers=1,
                         thread_name_prefix=f"mem-sync-{provider_name}",
                     )
@@ -637,7 +685,8 @@ class MemoryManager:
         with self._background_executor_lock:
             if provider_name not in self._prefetch_executors:
                 try:
-                    self._prefetch_executors[provider_name] = ThreadPoolExecutor(
+                    from tools.daemon_pool import DaemonThreadPoolExecutor
+                    self._prefetch_executors[provider_name] = DaemonThreadPoolExecutor(
                         max_workers=1,
                         thread_name_prefix=f"mem-prefetch-{provider_name}",
                     )
@@ -687,11 +736,19 @@ class MemoryManager:
         seen = set()
         for provider in self._providers:
             try:
-                for schema in provider.get_tool_schemas():
-                    name = schema.get("name", "")
+                for raw_schema in provider.get_tool_schemas():
+                    schema = normalize_tool_schema(raw_schema)
+                    if schema is None:
+                        logger.warning(
+                            "Memory provider '%s' returned a tool schema with "
+                            "no resolvable name; skipping (%r)",
+                            provider.name, raw_schema,
+                        )
+                        continue
+                    name = schema["name"]
                     if name in _core_tool_names:
                         continue
-                    if name and name not in seen:
+                    if name not in seen:
                         schemas.append(schema)
                         seen.add(name)
             except Exception as e:
@@ -751,9 +808,10 @@ class MemoryManager:
             try:
                 provider.on_session_end(messages)
             except Exception as e:
-                logger.debug(
+                logger.warning(
                     "Memory provider '%s' on_session_end failed: %s",
                     provider.name, e,
+                    exc_info=True,
                 )
 
     def on_session_switch(
@@ -879,6 +937,87 @@ class MemoryManager:
                     provider.name, e,
                 )
 
+    # Actions the bridge mirrors to external providers. The built-in memory
+    # tool can also return non-mutating shapes (errors, staged-for-approval
+    # records); those are filtered out by ``notify_memory_tool_write`` before
+    # we ever reach a provider.
+    _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "remove"}
+
+    @staticmethod
+    def _memory_tool_result_succeeded(result: Any) -> bool:
+        """True only when the built-in memory tool actually committed a write.
+
+        Fails closed: a string that isn't JSON, a non-dict result, a missing
+        ``success``, or a write staged for approval (``staged is True``) all
+        return False so external providers are never told about a write that
+        did not land.
+        """
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except Exception:
+                return False
+        if not isinstance(result, dict):
+            return False
+        return result.get("success") is True and result.get("staged") is not True
+
+    def notify_memory_tool_write(
+        self,
+        tool_result: Any,
+        tool_args: Dict[str, Any],
+        *,
+        build_metadata: Optional[Callable[[], Dict[str, Any]]] = None,
+    ) -> None:
+        """Mirror a built-in memory tool call to external providers.
+
+        This is the single entry point the agent loop calls after running the
+        built-in ``memory`` tool. All the decisions about *whether* and *what*
+        to mirror live here, behind the manager interface — the loop only hands
+        over the raw tool result and args:
+
+        * gate on a committed (non-staged, successful) write,
+        * expand the single-op and batched (``operations``) shapes,
+        * keep only mutating actions (add/replace/remove),
+        * build per-op provenance metadata and forward ``old_text``.
+
+        ``build_metadata`` is an optional agent-side callable (the loop knows
+        session/task/tool-call provenance the manager does not) invoked once per
+        mirrored op.
+        """
+        if not self._memory_tool_result_succeeded(tool_result):
+            return
+
+        target = str(tool_args.get("target") or "memory")
+        operations = tool_args.get("operations")
+        if isinstance(operations, list) and operations:
+            raw_operations = operations
+        else:
+            raw_operations = [{
+                "action": tool_args.get("action"),
+                "content": tool_args.get("content"),
+                "old_text": tool_args.get("old_text"),
+            }]
+
+        for op in raw_operations:
+            if not isinstance(op, dict):
+                continue
+            action = str(op.get("action") or "")
+            if action not in self._MIRRORED_MEMORY_ACTIONS:
+                continue
+            try:
+                metadata = dict(build_metadata() if build_metadata else {})
+                old_text = op.get("old_text")
+                if old_text:
+                    metadata["old_text"] = str(old_text)
+                self.on_memory_write(
+                    action,
+                    target,
+                    str(op.get("content") or ""),
+                    metadata=metadata,
+                )
+            except Exception as e:
+                logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
+
     def on_delegation(self, task: str, result: str, *,
                       child_session_id: str = "", **kwargs) -> None:
         """Notify all providers that a subagent completed."""
@@ -942,7 +1081,7 @@ class MemoryManager:
         for executor, lane in executor_lanes:
             try:
                 # Stop accepting new work and drop anything still queued, but
-                # do NOT block here — cancel_futures cancels not-yet-started
+                # do NOT block here - cancel_futures cancels not-yet-started
                 # tasks; any in-flight task keeps running in the background.
                 executor.shutdown(wait=False, cancel_futures=True)
             except TypeError:

@@ -9,7 +9,7 @@ every interface (CLI, TUI, gateway) kept the agent marked "running" for
 minutes and any follow-up message triggered an aggressive interrupt that
 dropped the message.
 
-The fix dispatches provider work to per-provider background executors.
+The fix dispatches provider work to a single-worker background executor.
 ``sync_all`` / ``queue_prefetch_all`` return immediately; the work completes
 (or fails, logged) in the background. ``flush_pending`` provides a barrier
 for session boundaries and deterministic tests. ``shutdown_all`` drains the

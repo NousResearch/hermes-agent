@@ -38,8 +38,8 @@ def test_workflow_dashboard_hides_default_reactflow_grid_overlays() -> None:
 
 def test_workflow_dashboard_has_responsive_editor_css() -> None:
     css = (ROOT / "plugins" / "workflows" / "dashboard" / "dist" / "style.css").read_text(encoding="utf-8")
-    assert "hermes-workflows-editor-layout" in css
     assert "@media" in css
+    assert "hermes-workflows-app" in css
 
 
 def test_workflow_dashboard_cell_editor_exposes_agent_routing_controls() -> None:

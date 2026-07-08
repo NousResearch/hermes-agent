@@ -175,12 +175,6 @@
   text-overflow: ellipsis;
 }
 
-.hermes-workflows .hermes-workflows-sidebar-item-meta {
-  font-size: 0.72rem;
-  color: var(--color-muted-foreground);
-  white-space: nowrap;
-}
-
 .hermes-workflows .hermes-workflows-sidebar-badge {
   font-size: 0.68rem;
   padding: 0.1rem 0.35rem;
@@ -568,19 +562,11 @@
 
 
 
-.hermes-workflows .hermes-workflows-header,
 .hermes-workflows .hermes-workflows-panel {
   border: 1px solid var(--color-border);
   border-radius: var(--radius, 0.75rem);
   background: color-mix(in srgb, var(--color-card) 88%, transparent);
   padding: 1rem;
-}
-
-.hermes-workflows .hermes-workflows-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  align-items: flex-start;
 }
 
 .hermes-workflows h1,
@@ -614,13 +600,6 @@
   border-left: 2px solid rgba(255, 193, 7, 0.65);
   padding-left: 0.75rem;
   margin: 0.5rem 0 1rem;
-}
-
-.hermes-workflows .hermes-workflows-grid {
-  display: grid;
-  grid-template-columns: minmax(260px, 0.9fr) minmax(340px, 1.3fr);
-  gap: 1rem;
-  align-items: start;
 }
 
 .hermes-workflows .hermes-workflows-panel {
@@ -953,21 +932,6 @@
   max-height: 12rem;
 }
 
-.hermes-workflows .hermes-workflows-editor-layout,
-.hermes-workflows .hermes-workflows-builder {
-  display: grid;
-  grid-template-columns: minmax(420px, 1fr) minmax(320px, 420px);
-  gap: 1rem;
-  align-items: start;
-  min-height: 28rem;
-}
-
-.hermes-workflows .hermes-workflows-editor-main,
-.hermes-workflows .hermes-workflows-cell-list {
-  display: grid;
-  gap: 0.75rem;
-}
-
 .hermes-workflows .hermes-workflows-cell-list {
   margin: 0.25rem 0 0.75rem;
 }
@@ -1076,16 +1040,4 @@
   inset: 0;
   opacity: 0;
   cursor: pointer;
-}
-
-@media (max-width: 980px) {
-  .hermes-workflows .hermes-workflows-grid,
-  .hermes-workflows .hermes-workflows-editor-layout,
-  .hermes-workflows .hermes-workflows-builder {
-    grid-template-columns: 1fr;
-  }
-
-  .hermes-workflows .hermes-workflows-header {
-    flex-direction: column;
-  }
 }

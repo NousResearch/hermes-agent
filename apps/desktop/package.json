@@ -44,7 +44,7 @@
     "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'electron/**/*.ts' 'vite.config.ts'",
     "fix": "npm run lint:fix && npm run fmt",
     "test:ui": "vitest run --project ui",
-    "test:desktop:platforms": "vitest run --project electron",
+    "test:desktop:platforms": "node --test scripts/backend-ready-artifact.node-test.mjs && vitest run --project electron",
     "test": "vitest run",
     "preview": "node scripts/assert-root-install.mjs && vite preview --host 127.0.0.1 --port 4174",
     "check": "npm run typecheck && npm run test && npm run test:desktop:all && npm run build"

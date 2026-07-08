@@ -5919,6 +5919,39 @@ class TestPtyWebSocket:
         assert env["HERMES_TUI_INLINE"] == "1"
         assert env["HERMES_TUI_DISABLE_MOUSE"] == "1"
 
+    def test_resolve_chat_argv_backfills_colorterm_truecolor(self, monkeypatch):
+        """Headless servers (cloud/systemd) have no COLORTERM, which made
+        chalk in the TUI child degrade skin hex colors to the xterm 256
+        palette (gold banner rendered salmon-red). xterm.js always supports
+        24-bit color, so the PTY env must advertise truecolor."""
+        import hermes_cli.main as main_mod
+
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+        monkeypatch.delenv("COLORTERM", raising=False)
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env["COLORTERM"] == "truecolor"
+
+    def test_resolve_chat_argv_keeps_operator_colorterm(self, monkeypatch):
+        """An explicit operator COLORTERM wins over the backfill."""
+        import hermes_cli.main as main_mod
+
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+        monkeypatch.setenv("COLORTERM", "24bit")
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env["COLORTERM"] == "24bit"
+
     def test_resolve_chat_argv_applies_terminal_backend_config(
         self, monkeypatch, _isolate_hermes_home
     ):

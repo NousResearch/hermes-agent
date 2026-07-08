@@ -13087,6 +13087,17 @@ def _resolve_chat_argv(
     # the dashboard PTY path.
     env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
     env.setdefault("HERMES_TUI_INLINE", "1")
+    # The dashboard terminal is xterm.js, which always renders 24-bit RGB.
+    # But chalk inside the TUI child decides its color depth from the
+    # SERVER process env — and hosted/cloud deploys run the dashboard under
+    # a process manager (container init, systemd) with no COLORTERM, so
+    # chalk downgrades every hex color to the xterm 256 palette. The skin's
+    # bronze border #CD7F32 snaps to palette 173 (#D7875F, salmon-red) and
+    # the banner reads red/yellow instead of gold. Local launches dodge
+    # this only because the operator's interactive terminal leaks
+    # COLORTERM=truecolor into os.environ. Backfill it for the PTY child;
+    # setdefault so an explicit operator value still wins.
+    env.setdefault("COLORTERM", "truecolor")
     env["HERMES_TUI_DASHBOARD"] = "1"
 
     if profile_dir is not None:

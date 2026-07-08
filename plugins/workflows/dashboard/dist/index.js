@@ -604,8 +604,18 @@
 
   function cleanedNodeForSpec(node) {
     const cleaned = Object.assign({}, node || {});
+    const providerText = providerValue(cleaned).trim();
+    const modelText = modelValue(cleaned).trim();
     delete cleaned.specKind;
     delete cleaned.trigger_type;
+    delete cleaned.provider_override;
+    delete cleaned.model_override;
+    delete cleaned.provider;
+    delete cleaned.model;
+    if (cleaned.type === "agent_task") {
+      if (providerText) cleaned.provider = providerText;
+      if (modelText) cleaned.model = modelText;
+    }
     return cleaned;
   }
 
@@ -667,6 +677,26 @@
     return next;
   }
 
+  function providerValue(node) {
+    return node && (node.provider || node.provider_override) ? String(node.provider || node.provider_override) : "";
+  }
+
+  function modelValue(node) {
+    return node && (node.model || node.model_override) ? String(node.model || node.model_override) : "";
+  }
+
+  function providerRows(options) {
+    return asArray(options && options.providers).filter(function (provider) {
+      return provider && (provider.slug || provider.provider);
+    });
+  }
+
+  function profileRows(options) {
+    return asArray(options && options.profiles).filter(function (profile) {
+      return profile && profile.name;
+    });
+  }
+
   function WorkflowsPage() {
     const useState = React.useState;
     const useEffect = React.useEffect;
@@ -703,6 +733,15 @@
     const stateAgentProfile = useState("");
     const agentProfile = stateAgentProfile[0];
     const setAgentProfile = stateAgentProfile[1];
+    const stateAgentProvider = useState("");
+    const agentProvider = stateAgentProvider[0];
+    const setAgentProvider = stateAgentProvider[1];
+    const stateAgentModel = useState("");
+    const agentModel = stateAgentModel[0];
+    const setAgentModel = stateAgentModel[1];
+    const stateAgentRoutingOptions = useState({ profiles: [], providers: [], default_provider: "", default_model: "" });
+    const agentRoutingOptions = stateAgentRoutingOptions[0];
+    const setAgentRoutingOptions = stateAgentRoutingOptions[1];
     const stateAgentTitle = useState("");
     const agentTitle = stateAgentTitle[0];
     const setAgentTitle = stateAgentTitle[1];
@@ -866,6 +905,8 @@
       setCellId(node && (node.id || node.name) ? String(node.id || node.name) : "");
       setCellType(node && node.specKind === "trigger" ? String(node.trigger_type || node.type || "manual") : String((node && node.type) || "pass"));
       setAgentProfile(node && node.profile ? String(node.profile) : "");
+      setAgentProvider(providerValue(node));
+      setAgentModel(modelValue(node));
       setAgentTitle(node && node.title ? String(node.title) : "");
       setPromptText(rawPrompt === null || rawPrompt === undefined ? "" : (typeof rawPrompt === "string" ? rawPrompt : jsonBlock(rawPrompt)));
       setResultContractText(jsonBlock((node && node.result_contract) || {}));
@@ -996,11 +1037,20 @@
       });
     }
 
+    function loadAgentRoutingOptions() {
+      return api("/agent-routing-options").then(function (res) {
+        setAgentRoutingOptions(res || { profiles: [], providers: [], default_provider: "", default_model: "" });
+      }).catch(function () {
+        setAgentRoutingOptions({ profiles: [], providers: [], default_provider: "", default_model: "" });
+      });
+    }
+
     function refresh(preferExecutionId) {
       setLoading(true);
       setError("");
       loadWorkflowStatus();
       loadWorkflowCapabilities();
+      loadAgentRoutingOptions();
       return Promise.all([loadDefinitions(), loadExecutions(preferExecutionId)])
         .catch(fail)
         .finally(function () { setLoading(false); });
@@ -1282,6 +1332,14 @@
       } else {
         delete nextNode.result_contract;
       }
+      const providerText = agentProvider.trim();
+      const modelText = agentModel.trim();
+      delete nextNode.provider_override;
+      delete nextNode.model_override;
+      if (providerText) nextNode.provider = providerText;
+      else delete nextNode.provider;
+      if (modelText) nextNode.model = modelText;
+      else delete nextNode.model;
       const nextSpec = upsertSpecNode(spec, selectedNode.id, cleanedNodeForSpec(nextNode));
       updateEditorText(specToEditorText(nextSpec));
       setDraftSpec(nextSpec);
@@ -1308,14 +1366,26 @@
       if (promptValue && selectedNode.specKind !== "trigger") nextNode.prompt = promptText;
       else delete nextNode.prompt;
 
+      delete nextNode.provider_override;
+      delete nextNode.model_override;
+      if (nextType === "agent_task") {
+        const providerText = agentProvider.trim();
+        const modelText = agentModel.trim();
+        if (providerText) nextNode.provider = providerText;
+        else delete nextNode.provider;
+        if (modelText) nextNode.model = modelText;
+        else delete nextNode.model;
+      } else {
+        delete nextNode.provider;
+        delete nextNode.model;
+      }
+
       if (selectedNode.specKind === "trigger") {
         const nextSpec = cloneSpec(spec);
         nextSpec.triggers = asArray(nextSpec.triggers).map(function (trigger) {
           const triggerId = trigger.id || trigger.name;
           if (triggerId !== selectedNode.id) return trigger;
-          const clean = Object.assign({}, trigger, { id: nextId, type: nextType });
-          delete clean.specKind;
-          delete clean.trigger_type;
+          const clean = cleanedNodeForSpec(Object.assign({}, trigger, { id: nextId, type: nextType }));
           if (titleText) clean.title = titleText;
           else delete clean.title;
           return clean;
@@ -1837,13 +1907,52 @@
     }
 
     function renderAgentCellEditor() {
+      const profiles = profileRows(agentRoutingOptions);
+      const providers = providerRows(agentRoutingOptions);
+      const selectedProvider = providers.find(function (provider) {
+        return String(provider.slug || provider.provider || "") === agentProvider;
+      });
+      const models = asArray(selectedProvider && selectedProvider.models);
       return h("div", { className: "hermes-workflows-stack" },
         h("h3", null, "Cell editor"),
         h("div", { className: "hermes-workflows-meta" }, "Agent task " + safeString(selectedNode.id)),
         h("label", null,
           h("span", { className: "hermes-workflows-muted" }, "Assigned profile"),
-          h("input", { value: agentProfile, onChange: function (event) { setAgentProfile(event.target.value); }, placeholder: "reviewer" })
+          profiles.length ? h("select", { value: agentProfile, onChange: function (event) { setAgentProfile(event.target.value); } },
+            [h("option", { key: "", value: "" }, "Choose profile")].concat(profiles.map(function (profile) {
+              const label = profile.name + (profile.provider || profile.model ? " \u00b7 " + safeString(profile.provider) + " / " + safeString(profile.model) : "");
+              return h("option", { key: profile.name, value: profile.name }, label);
+            }))
+          ) : h("input", { value: agentProfile, onChange: function (event) { setAgentProfile(event.target.value); }, placeholder: "reviewer" })
         ),
+        h("label", null,
+          h("span", { className: "hermes-workflows-muted" }, "Provider override"),
+          h("select", {
+            value: agentProvider,
+            onChange: function (event) {
+              setAgentProvider(event.target.value);
+              setAgentModel("");
+            },
+          }, [h("option", { key: "", value: "" }, "Use profile default provider")].concat(providers.map(function (provider) {
+            const slug = String(provider.slug || provider.provider || "");
+            const label = provider.label || slug;
+            return h("option", { key: slug, value: slug }, safeString(label));
+          })))
+        ),
+        h("label", null,
+          h("span", { className: "hermes-workflows-muted" }, "Model override"),
+          models.length ? h("select", {
+            value: agentModel,
+            onChange: function (event) { setAgentModel(event.target.value); },
+          }, [h("option", { key: "", value: "" }, "Use profile default model")].concat(models.map(function (model) {
+            return h("option", { key: String(model), value: String(model) }, safeString(model));
+          }))) : h("input", {
+            value: agentModel,
+            onChange: function (event) { setAgentModel(event.target.value); },
+            placeholder: agentProvider ? "Model name for selected provider" : "Use profile default model",
+          })
+        ),
+        h("p", { className: "hermes-workflows-muted" }, "Profile selects the worker identity. Provider/model are optional per-cell overrides; leave blank to use that profile's defaults."),
         h("label", null,
           h("span", { className: "hermes-workflows-muted" }, "Task title"),
           h("input", { value: agentTitle, onChange: function (event) { setAgentTitle(event.target.value); }, placeholder: "Review change" })

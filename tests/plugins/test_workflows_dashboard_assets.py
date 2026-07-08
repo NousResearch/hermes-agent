@@ -40,3 +40,13 @@ def test_workflow_dashboard_has_responsive_editor_css() -> None:
     css = (ROOT / "plugins" / "workflows" / "dashboard" / "dist" / "style.css").read_text(encoding="utf-8")
     assert "hermes-workflows-editor-layout" in css
     assert "@media" in css
+
+
+def test_workflow_dashboard_cell_editor_exposes_agent_routing_controls() -> None:
+    text = BUNDLE.read_text(encoding="utf-8")
+    assert "Assigned profile" in text
+    assert "Provider override" in text
+    assert "Model override" in text
+    assert "Use profile default provider" in text
+    assert "Use profile default model" in text
+    assert "/agent-routing-options" in text

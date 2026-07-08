@@ -1,0 +1,59 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: blockout
+description: Drive the Blockout previs desktop app — stage scenes, choreograph cast and camera, export motion-reference packages for AI video generators.
+source: https://github.com/wassermanproductions/blockout-mcp
+
+# Blockout (https://github.com/wassermanproductions/blockout, Apache-2.0) is a
+# desktop previs tool for AI filmmaking. On launch the app starts a
+# localhost-only control server on a random port and writes a discovery file
+# to ~/.config/blockout/control.json (per-launch random bearer token, mode
+# 0600, removed on quit). This bridge is a single zero-dependency Node script
+# that reads the discovery file and forwards MCP tool calls to the running
+# app — nothing listens on a public port and there is nothing to configure.
+transport:
+  type: stdio
+  command: "node"
+  args:
+    - "${INSTALL_DIR}/blockout-mcp.mjs"
+
+# The bridge is zero-dependency (Node >= 18) — clone is the whole install,
+# so no bootstrap commands.
+install:
+  type: git
+  url: https://github.com/wassermanproductions/blockout-mcp.git
+  # Pin to a commit/tag. Required — manifests do not float HEAD.
+  ref: v1.0.0
+
+# The app's control server binds to 127.0.0.1 only and authenticates with a
+# per-launch random token the bridge auto-discovers from the local discovery
+# file. Nothing to prompt for.
+auth:
+  type: none
+
+# Tool selection at install time:
+# The bridge exposes ~30 tools (get_state, add_entity, spawn_sequence,
+# apply_camera_move, screenshot, ...). All of them mutate only the user's
+# local previs project inside the app — there is no external side effect —
+# so nothing is pruned. Leave default_enabled unset; the install-time
+# checklist lists the full surface and users prune per taste.
+
+post_install: |
+  This bridge talks to the Blockout desktop app, which must be RUNNING before
+  Hermes connects:
+
+    1. Get Blockout from https://github.com/wassermanproductions/blockout
+       (build from source, or use a release DMG on macOS).
+    2. Launch the app. It writes its control endpoint + token to
+       ~/.config/blockout/control.json automatically.
+    3. Start a new Hermes session to load the Blockout tools.
+
+  If the app is not running, tool calls return a friendly "launch the app
+  first" error rather than hanging.
+
+  Agent workflow: call get_state first (it carries the scene conventions —
+  meters, +X right, -Z forward), then stage with add_entity/spawn_sequence,
+  frame with apply_framing/apply_camera_move, and use screenshot to see the
+  viewport.

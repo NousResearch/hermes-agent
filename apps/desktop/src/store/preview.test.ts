@@ -12,6 +12,7 @@ import {
   beginPreviewServerRestart,
   clearSessionPreviewRegistry,
   closeActiveRightRailTab,
+  closeRightRail,
   dismissPreviewTarget,
   getSessionPreviewRecord,
   type PreviewTarget,
@@ -35,12 +36,27 @@ function withRenderMode(target: PreviewTarget, renderMode: PreviewTarget['render
   return { ...target, renderMode }
 }
 
+
+function clearLocalStorageForTest() {
+  const store = new Map<string, string>()
+
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      clear: () => store.clear(),
+      getItem: (key: string) => store.get(key) ?? null,
+      removeItem: (key: string) => store.delete(key),
+      setItem: (key: string, value: string) => store.set(key, String(value))
+    }
+  })
+}
+
 describe('preview store', () => {
   beforeEach(() => {
     $previewServerRestart.set(null)
     $activeSessionId.set('session-1')
     $selectedStoredSessionId.set(null)
-    window.localStorage.clear()
+    clearLocalStorageForTest()
     clearSessionPreviewRegistry()
   })
 
@@ -48,7 +64,7 @@ describe('preview store', () => {
     $previewServerRestart.set(null)
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
-    window.localStorage.clear()
+    clearLocalStorageForTest()
     clearSessionPreviewRegistry()
   })
 
@@ -134,5 +150,35 @@ describe('preview store', () => {
     expect($filePreviewTarget.get()).toBeNull()
     expect($rightRailActiveTabId.get()).toBe(RIGHT_RAIL_PREVIEW_TAB_ID)
     expect($previewTarget.get()).toEqual(withRenderMode(live, 'preview'))
+  })
+
+  it('closes the preview pane when the last live preview tab closes', () => {
+    const live = previewTarget('/work/live.html')
+
+    setCurrentSessionPreviewTarget(live, 'tool-result')
+
+    expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(true)
+
+    closeActiveRightRailTab()
+
+    expect($previewTarget.get()).toBeNull()
+    expect($filePreviewTabs.get()).toEqual([])
+    expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(false)
+  })
+
+  it('closes the preview pane when closing all rail tabs', () => {
+    const file = previewTarget('/work/file.html')
+    const live = previewTarget('/work/live.html')
+
+    setCurrentSessionPreviewTarget(file, 'manual')
+    setCurrentSessionPreviewTarget(live, 'tool-result')
+
+    expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(true)
+
+    closeRightRail()
+
+    expect($previewTarget.get()).toBeNull()
+    expect($filePreviewTabs.get()).toEqual([])
+    expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(false)
   })
 })

@@ -124,6 +124,10 @@ function showLivePreviewTab() {
   selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
 }
 
+function syncPreviewPaneOpen() {
+  setPaneOpen(PREVIEW_PANE_ID, Boolean($previewTarget.get() || $filePreviewTabs.get().length > 0))
+}
+
 export function setPreviewTarget(target: PreviewTarget | null) {
   if (isSamePreviewTarget($previewTarget.get(), target)) {
     if (target) {
@@ -452,6 +456,8 @@ export function closeRightRailTab(tabId: RightRailTabId) {
   if (tabId === RIGHT_RAIL_PREVIEW_TAB_ID) {
     if ($previewTarget.get()) {
       dismissPreviewTarget()
+    } else {
+      syncPreviewPaneOpen()
     }
 
     return

@@ -42,6 +42,38 @@ def _make_cli_stub():
     return cli
 
 
+def test_stream_response_body_uses_readable_hermes_foreground(monkeypatch):
+    """The streamed response body must not force dark-theme cornsilk text.
+
+    On light Terminal.app backgrounds that color is nearly invisible. The
+    response border/label can stay themed; the body should use a darker Hermes
+    foreground.
+    """
+    import cli as cli_mod
+    from cli import HermesCLI
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.show_reasoning = False
+    cli.show_timestamps = False
+    cli._stream_buf = ""
+    cli._stream_box_opened = False
+    cli._stream_text_ansi = ""
+    cli._stream_table_buf = []
+    cli._in_stream_table = False
+    cli.final_response_markdown = "strip"
+    cli._scrollback_box_width = lambda: 80
+    cli._close_reasoning_box = lambda: None
+    emitted = []
+
+    monkeypatch.setattr(cli_mod, "_cprint", lambda text: emitted.append(text))
+
+    HermesCLI._emit_stream_text(cli, "Hello from Hermes\n")
+
+    assert cli._stream_box_opened is True
+    assert cli._stream_text_ansi == "\033[38;2;122;90;15m"
+    assert "Hello from Hermes" in "".join(emitted)
+
+
 class TestThinkTagInProse:
     """<think> mentioned in prose should NOT trigger reasoning suppression."""
 

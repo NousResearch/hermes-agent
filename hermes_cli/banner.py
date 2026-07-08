@@ -55,6 +55,13 @@ def _skin_color(key: str, fallback: str) -> str:
         return get_active_skin().get_color(key, fallback)
     except Exception:
         return fallback
+
+
+def _banner_body_color(dim_color: str) -> str:
+    """Use a readable Hermes-toned body color without changing theme chrome."""
+    return "#7A5A0F" if dim_color.upper() == "#B8860B" else dim_color
+
+
 # =========================================================================
 # ASCII Art & Branding
 # =========================================================================
@@ -601,6 +608,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
             bare model slug.
     """
     from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+    from rich.markup import escape as _escape
     from rich.panel import Panel
     from rich.table import Table
     if get_toolset_for_tool is None:
@@ -643,7 +651,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     # Resolve skin colors once for the entire banner
     accent = _skin_color("banner_accent", "#FFBF00")
     dim = _skin_color("banner_dim", "#B8860B")
-    text = _skin_color("banner_text", "#FFF8DC")
+    body = _banner_body_color(dim)
     session_color = _skin_color("session_border", "#8B8682")
 
     # Use skin's custom caduceus art if provided
@@ -723,7 +731,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
             elif name in lazy_tools:
                 colored_names.append(f"[yellow]{name}[/]")
             else:
-                colored_names.append(f"[{text}]{name}[/]")
+                colored_names.append(f"[{body}]{_escape(name)}[/]")
 
         tools_str = ", ".join(colored_names)
         if len(", ".join(sorted(tool_names))) > 45:
@@ -744,7 +752,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                 elif name in lazy_tools:
                     colored_names.append(f"[yellow]{name}[/]")
                 else:
-                    colored_names.append(f"[{text}]{name}[/]")
+                    colored_names.append(f"[{body}]{_escape(name)}[/]")
             tools_str = ", ".join(colored_names)
 
         right_lines.append(f"[dim {dim}]{toolset}:[/] {tools_str}")
@@ -766,8 +774,8 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
             status = srv.get("status")
             if srv["connected"]:
                 right_lines.append(
-                    f"[dim {dim}]{srv['name']}[/] [{text}]({srv['transport']})[/] "
-                    f"[dim {dim}]—[/] [{text}]{srv['tools']} tool(s)[/]"
+                    f"[dim {dim}]{_escape(str(srv['name']))}[/] [{body}]({_escape(str(srv['transport']))})[/] "
+                    f"[dim {dim}]—[/] [{body}]{_escape(str(srv['tools']))} tool(s)[/]"
                 )
             elif srv.get("disabled") or status == "disabled":
                 right_lines.append(
@@ -832,7 +840,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                 parts.append(name)
                 length += _needed
             skills_str = ", ".join(parts)
-            right_lines.append(f"[dim {dim}]{category}:[/] [{text}]{skills_str}[/]")
+            right_lines.append(f"[dim {dim}]{_escape(category)}:[/] [{body}]{_escape(skills_str)}[/]")
     else:
         right_lines.append(f"[dim {dim}]No skills installed[/]")
 
@@ -850,7 +858,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         from hermes_cli.config import load_config as _load_cfg
         if get_current_runtime(_load_cfg()) == "codex_app_server":
             right_lines.append(
-                f"[bold {accent}]Runtime:[/] [{text}]codex app-server[/] "
+                f"[bold {accent}]Runtime:[/] [{body}]codex app-server[/] "
                 f"[dim {dim}](terminal/file ops/MCP run inside codex)[/]"
             )
     except Exception:
@@ -860,7 +868,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         from hermes_cli.profiles import get_active_profile_name
         _profile_name = get_active_profile_name()
         if _profile_name and _profile_name != "default":
-            right_lines.append(f"[bold {accent}]Profile:[/] [{text}]{_profile_name}[/]")
+            right_lines.append(f"[bold {accent}]Profile:[/] [{body}]{_escape(_profile_name)}[/]")
     except Exception:
         pass  # Never break the banner over a profiles.py bug
 

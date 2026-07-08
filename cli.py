@@ -2264,6 +2264,16 @@ def _maybe_remap_for_light_mode(hex_color: str) -> str:
 _LIGHT_MODE_REMAP_UPPER = {k.upper(): v for k, v in _LIGHT_MODE_REMAP.items()}
 
 
+def _readable_body_hex(hex_color: str) -> str:
+    """Readable Hermes-toned foreground for long body text.
+
+    Preserve custom skin body colors, but replace the default dark-theme
+    cornsilk with a darker warm color that remains visible on light terminals
+    without changing the rest of the theme chrome (#60141).
+    """
+    return "#7A5A0F" if (hex_color or "").upper() == "#FFF8DC" else hex_color
+
+
 def _install_skin_light_mode_hook() -> None:
     """Wrap SkinConfig.get_color at import time so EVERY skin color read goes
     through the light-mode remap.  Idempotent."""
@@ -5770,12 +5780,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 from hermes_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
                 label = _skin.get_branding("response_label", "⚕ Hermes")
-                _text_hex = _skin.get_color("banner_text", "#FFF8DC")
+                _text_hex = _readable_body_hex(_skin.get_color("banner_text", "#FFF8DC"))
             except Exception:
                 label = "⚕ Hermes"
-                _text_hex = "#FFF8DC"
-            # Build a true-color ANSI escape for the response text color
-            # so streamed content matches the Rich Panel appearance.
+                _text_hex = "#7A5A0F"
+            # Keep custom skin body colors, but replace the default dark-theme
+            # cornsilk with a darker Hermes-toned body color that remains
+            # visible on light Terminal.app profiles (#60141).
             try:
                 _r = int(_text_hex[1:3], 16)
                 _g = int(_text_hex[3:5], 16)
@@ -12577,11 +12588,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     _skin = get_active_skin()
                     label = _skin.get_branding("response_label", "⚕ Hermes")
                     _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
-                    _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
+                    _resp_text = _readable_body_hex(_skin.get_color("banner_text", "#FFF8DC"))
                 except Exception:
                     label = "⚕ Hermes"
                     _resp_color = _maybe_remap_for_light_mode("#CD7F32")
-                    _resp_text = _maybe_remap_for_light_mode("#FFF8DC")
+                    _resp_text = "#7A5A0F"
 
                 is_error_response = result and (result.get("failed") or result.get("partial"))
                 already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
@@ -13075,7 +13086,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."
             _welcome_color = "#FFF8DC"
-        self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
+        self._console_print(f"[{_welcome_color}]{_escape(_welcome_text)}[/]")
 
         # Warm the /model picker's provider-models cache off-thread during this
         # idle window (banner shown, user about to type). The no-args picker

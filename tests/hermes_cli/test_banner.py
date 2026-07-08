@@ -70,6 +70,39 @@ def test_build_welcome_banner_uses_normalized_toolset_names():
     assert "web_tools:" not in output
 
 
+def test_build_welcome_banner_does_not_force_cornsilk_on_body_text():
+    """Banner body text should use readable Hermes-toned foreground.
+
+    The Hermes gold/amber chrome stays themed, but long text and lists must not
+    use the dark-theme cornsilk foreground because it disappears on light
+    Terminal.app backgrounds.
+    """
+    import io
+
+    with (
+        patch.object(model_tools, "check_tool_availability", return_value=(["file", "skills"], [])),
+        patch.object(banner, "get_available_skills", return_value={"general": ["dogfood"]}),
+        patch.object(banner, "get_update_result", return_value=None),
+        patch.object(tools.mcp_tool, "get_mcp_status", return_value=[]),
+        patch.object(banner, "get_latest_release_tag", return_value=None),
+    ):
+        buf = io.StringIO()
+        console = Console(file=buf, force_terminal=True, color_system="truecolor", width=160)
+        banner.build_welcome_banner(
+            console=console,
+            model="anthropic/test-model",
+            cwd="/tmp/project",
+            tools=[{"function": {"name": "read_file"}}],
+            enabled_toolsets=["file", "skills"],
+            get_toolset_for_tool=lambda name: "file",
+        )
+
+    raw = buf.getvalue()
+    assert "read_file" in raw
+    assert "dogfood" in raw
+    assert "\x1b[38;2;255;248;220m" not in raw
+
+
 def test_build_welcome_banner_title_is_hyperlinked_to_release():
     """Panel title (version label) is wrapped in an OSC-8 hyperlink to the GitHub release."""
     import io

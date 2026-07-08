@@ -12,6 +12,14 @@ import pytest
 @pytest.fixture
 def temp_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # CRON_DIR/JOBS_FILE/OUTPUT_DIR are resolved at import time, so setting
+    # HERMES_HOME alone does NOT redirect the store — cronjob(action="create")
+    # below would write to the real ~/.hermes/cron/jobs.json and leak test jobs
+    # (named "w"/"r") into production. Redirect the module path constants too,
+    # mirroring the tmp_cron_dir fixture in test_jobs.py.
+    monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
     yield tmp_path
 
 

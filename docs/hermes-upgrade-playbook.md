@@ -74,6 +74,21 @@ config.yaml `model:`), breaking `${VAR}` expansion and the spend-safety
 model-drift guard. Grafting KEEP-config onto a rewritten hotspot is exactly where
 semantics drift — diff the resolution order against pristine and test the guards.
 
+### 6. Run test suites against a throwaway HERMES_HOME — they can pollute prod
+Running `pytest tests/cron/` from the live checkout leaked test jobs (named
+`w`/`r`, prompt `echo hi`/`x`, every-5-min) into the **production**
+`~/.hermes/cron/jobs.json`. Cause: a test fixture set `HERMES_HOME` via env var,
+but `cron.jobs.JOBS_FILE`/`CRON_DIR`/`OUTPUT_DIR` are resolved at **import time**,
+so `cronjob(action="create")` wrote to the real store regardless. A `create`-only
+test never cleaned up → one leaked job per run.
+
+**Rules:** (a) run hermes test suites with an isolated home —
+`HERMES_HOME=$(mktemp -d) pytest …` — never against `~/.hermes`. (b) Any fixture
+that isolates the cron store must monkeypatch the module path constants
+(`cron.jobs.JOBS_FILE` etc.), not just `setenv("HERMES_HOME")` — mirror
+`tmp_cron_dir` in `test_jobs.py`. (c) After a test session, sanity-check the live
+store didn't grow (`hermes cron list`).
+
 ---
 
 ## Upgrade log

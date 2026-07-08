@@ -1748,6 +1748,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self,
         turns_to_summarize: List[Dict[str, Any]],
         focus_topic: Optional[str] = None,
+        pre_compress_context: Optional[str] = None,
     ) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
@@ -1776,6 +1777,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
+        provider_context = (pre_compress_context or "").strip()
 
         # Current date for temporal anchoring (see ## Temporal Anchoring below).
         # Date-only granularity matches system_prompt.py:337 (PR #20451) and the
@@ -1901,6 +1903,13 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
 {_temporal_anchoring_rule}
 Write only the summary body. Do not include any preamble or prefix."""
 
+        provider_context_block = (
+            "\n\nMemory Provider Pre-Compression Context:\n"
+            f"{provider_context}\n"
+            if provider_context
+            else ""
+        )
+
         if self._previous_summary:
             # Iterative update: preserve existing info, add new progress
             prompt = f"""{_summarizer_preamble}
@@ -1911,7 +1920,7 @@ PREVIOUS SUMMARY:
 {self._previous_summary}
 
 NEW TURNS TO INCORPORATE:
-{content_to_summarize}
+{content_to_summarize}{provider_context_block}
 
 Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
 
@@ -1923,7 +1932,7 @@ Update the summary using this exact structure. PRESERVE all existing information
 Create a structured checkpoint summary for the conversation after earlier turns are compacted. The summary should preserve enough detail for continuity without re-reading the original turns.
 
 TURNS TO SUMMARIZE:
-{content_to_summarize}
+{content_to_summarize}{provider_context_block}
 
 Use this exact structure:
 
@@ -2790,7 +2799,14 @@ This compaction should PRIORITISE preserving all information related to the focu
     # Main compression entry point
     # ------------------------------------------------------------------
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None, force: bool = False) -> List[Dict[str, Any]]:
+    def compress(
+        self,
+        messages: List[Dict[str, Any]],
+        current_tokens: int = None,
+        focus_topic: str = None,
+        force: bool = False,
+        pre_compress_context: str | None = None,
+    ) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
 
         Algorithm:
@@ -2932,7 +2948,11 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         # Phase 3: Generate structured summary
         summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
-        summary = self._generate_summary(turns_to_summarize, focus_topic=summary_focus_topic)
+        summary = self._generate_summary(
+            turns_to_summarize,
+            focus_topic=summary_focus_topic,
+            pre_compress_context=pre_compress_context,
+        )
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):

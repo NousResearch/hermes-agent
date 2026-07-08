@@ -518,6 +518,30 @@ class TestTailBudgetCodexReplayFields:
 class TestGenerateSummaryNoneContent:
     """Regression: content=None (from tool-call-only assistant messages) must not crash."""
 
+    def test_pre_compress_context_is_included_in_summary_prompt(self):
+        """Provider pre-compress insights must reach the summarizer prompt."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary body"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "do the migration"},
+            {"role": "assistant", "content": "working"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            c._generate_summary(
+                messages,
+                pre_compress_context="Provider extracted durable fact: migration target is v2.",
+            )
+
+        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        assert "Provider extracted durable fact: migration target is v2." in prompt
+        assert "Memory Provider Pre-Compression Context" in prompt
+
     def test_none_content_does_not_crash(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]

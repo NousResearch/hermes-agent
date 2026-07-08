@@ -150,11 +150,29 @@ async def test_send_speaks_when_idle_and_noops_mid_turn(rig):
     assert len(sat.play_buffer) > 0
 
     # mid-turn: text reply is a silent no-op success (play_tts owns audio)
+    tm = _mod._import_sibling("turn_machine")
     machine = adapter._machines["kitchen"]
-    machine.on_pipeline_start(now=0.0)
-    machine.on_transcript_ready("hi")  # -> THINKING
+    machine.phase = tm.TurnPhase.THINKING
     sat.play_buffer.clear()
     result = await adapter.send("kitchen", "text reply body")
     assert result.success is True
+    await asyncio.sleep(0.2)  # would let any wrongly-started playback arrive
     assert len(sat.play_buffer) == 0
     machine.to_idle()
+
+
+@pytest.mark.asyncio
+async def test_stt_failure_recovers_turn(rig, monkeypatch):
+    sat, adapter, dispatched = rig
+    import tools.transcription_tools as tt
+
+    def boom(path, model=None):
+        raise RuntimeError("stt exploded")
+
+    monkeypatch.setattr(tt, "transcribe_audio", boom)
+    await sat.wake_and_stream(make_pcm(0.5, 3000) + make_pcm(0.6, 0))
+    # failure path ends satellite streaming with an empty transcript
+    await asyncio.wait_for(sat.transcript_received.wait(), timeout=5)
+    tm = _mod._import_sibling("turn_machine")
+    assert adapter._machines["kitchen"].phase is tm.TurnPhase.IDLE
+    assert dispatched == []

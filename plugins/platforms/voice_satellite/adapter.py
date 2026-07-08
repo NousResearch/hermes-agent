@@ -94,6 +94,7 @@ class VoiceSatelliteAdapter(BasePlatformAdapter):
         self._tts_sample_rate = int(extra.get("tts_sample_rate", 22050))
         self._links: Dict[str, Any] = {}
         self._machines: Dict[str, Any] = {}
+        self._transcribe_tasks: set = set()
         self._audio = _import_sibling("audio")
         self._tm = _import_sibling("turn_machine")
 
@@ -131,6 +132,9 @@ class VoiceSatelliteAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._running = False
+        for task in list(self._transcribe_tasks):
+            task.cancel()
+        self._transcribe_tasks.clear()
         for link in self._links.values():
             await link.stop()
         self._links.clear()
@@ -164,7 +168,11 @@ class VoiceSatelliteAdapter(BasePlatformAdapter):
             await self._abort_turn(name)
         elif action[0] == "transcribe":
             _, utterance, utt_rate = action
-            asyncio.create_task(self._transcribe_and_dispatch(name, utterance, utt_rate))
+            task = asyncio.create_task(
+                self._transcribe_and_dispatch(name, utterance, utt_rate)
+            )
+            self._transcribe_tasks.add(task)
+            task.add_done_callback(self._transcribe_tasks.discard)
 
     async def _on_played(self, name: str) -> None:
         """Satellite acknowledged that queued audio finished playing.
@@ -184,6 +192,27 @@ class VoiceSatelliteAdapter(BasePlatformAdapter):
             pass
 
     async def _transcribe_and_dispatch(
+        self, name: str, utterance: bytes, rate: int
+    ) -> None:
+        try:
+            await self._transcribe_and_dispatch_inner(name, utterance, rate)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "[voice_satellite:%s] transcription turn failed", name
+            )
+            machine = self._machines.get(name)
+            if machine is not None:
+                machine.to_idle()
+            link = self._links.get(name)
+            if link is not None:
+                try:
+                    await link.send_transcript("")
+                except ConnectionError:
+                    pass
+
+    async def _transcribe_and_dispatch_inner(
         self, name: str, utterance: bytes, rate: int
     ) -> None:
         from tools.transcription_tools import transcribe_audio

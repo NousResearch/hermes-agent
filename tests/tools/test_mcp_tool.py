@@ -5,6 +5,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 
 import asyncio
 import json
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -4454,3 +4455,173 @@ class TestMcpParallelToolCalls:
             register_mcp_servers(config_off)
         with _lock:
             assert sanitize_mcp_name_component("toggle_srv") not in _parallel_safe_servers
+
+
+class TestStdioOrphanCleanup:
+    """Tests for immediate orphan-kill on reconnect (#60385)."""
+
+    def setup_method(self):
+        """Clear module-level orphan state between tests."""
+        from tools.mcp_tool import _lock, _orphan_stdio_pids, _stdio_pgids
+        with _lock:
+            _orphan_stdio_pids.clear()
+            _stdio_pgids.clear()
+
+    def test_kills_orphan_when_sdk_teardown_fails(self):
+        """When _run_stdio exits and a child PID is still alive, the
+        finally block must SIGKILL it immediately instead of just
+        collecting it for the shutdown sweep."""
+        import signal as _signal
+
+        from tools.mcp_tool import MCPServerTask
+
+        server = MCPServerTask("leaky_srv")
+        fake_pid = 99999
+
+        kill_calls = []
+
+        def _fake_kill(pid, sig):
+            kill_calls.append((pid, sig))
+
+        killpg_calls = []
+        _has_killpg = hasattr(os, "killpg")
+        if _has_killpg:
+            def _fake_killpg(pgid, sig):
+                killpg_calls.append((pgid, sig))
+
+        class FakeSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def initialize(self):
+                return None
+
+            async def list_tools(self):
+                from types import SimpleNamespace
+                return SimpleNamespace(tools=[])
+
+        async def _test():
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._build_safe_env", return_value={}), \
+                 patch("tools.mcp_tool._resolve_stdio_command",
+                       return_value=("python3", {})), \
+                 patch("tools.osv_check.check_package_for_malware",
+                       return_value=None), \
+                 patch("tools.mcp_tool.stdio_client") as mock_stdio, \
+                 patch("tools.mcp_tool.ClientSession", FakeSession), \
+                 patch("tools.mcp_tool._snapshot_child_pids",
+                       side_effect=[set(), {fake_pid}]), \
+                 patch("tools.mcp_tool._filter_mcp_children",
+                       return_value={fake_pid}), \
+                 patch("gateway.status._pid_exists", return_value=True), \
+                 patch("tools.mcp_tool._register_server_tools",
+                       return_value=set()), \
+                 patch.object(MCPServerTask, "_wait_for_lifecycle_event",
+                              AsyncMock()), \
+                 patch.object(os, "kill", _fake_kill):
+                mock_stdio.return_value.__aenter__ = AsyncMock(
+                    return_value=(MagicMock(), MagicMock()))
+                mock_stdio.return_value.__aexit__ = AsyncMock(
+                    return_value=False)
+
+                if _has_killpg:
+                    with patch.object(os, "killpg", _fake_killpg), \
+                         patch.object(os, "getpgid",
+                                      return_value=fake_pid + 100):
+                        await server._run_stdio(
+                            {"command": "python3",
+                             "args": ["-c", "import time; time.sleep(999)"]})
+                else:
+                    await server._run_stdio(
+                        {"command": "python3",
+                         "args": ["-c", "import time; time.sleep(999)"]})
+
+        asyncio.run(_test())
+
+        total_kills = len(killpg_calls) + len(kill_calls)
+        assert total_kills >= 1, "orphan process was not killed"
+
+        all_sigs = [sig for _, sig in killpg_calls + kill_calls]
+        # SIGKILL is POSIX-only; on Windows the fallback is SIGTERM
+        _sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)
+        assert any(
+            sig in (_sigkill, _signal.SIGTERM)
+            for sig in all_sigs
+        ), f"expected SIGKILL or SIGTERM, got {all_sigs}"
+
+        from tools.mcp_tool import _orphan_stdio_pids
+        assert fake_pid in _orphan_stdio_pids, \
+            "PID not tracked in orphans after kill"
+
+    def test_does_not_kill_already_dead_process(self):
+        """When the SDK teardown succeeds and the process is already dead,
+        the finally block must not attempt to kill it."""
+        import os as _os
+
+        from tools.mcp_tool import MCPServerTask
+
+        server = MCPServerTask("clean_srv")
+        fake_pid = 88888
+        kill_calls = []
+
+        def _fake_kill(pid, sig):
+            kill_calls.append((pid, sig))
+
+        class FakeSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def initialize(self):
+                return None
+
+            async def list_tools(self):
+                from types import SimpleNamespace
+                return SimpleNamespace(tools=[])
+
+        async def _test():
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._build_safe_env", return_value={}), \
+                 patch("tools.mcp_tool._resolve_stdio_command",
+                       return_value=("echo", {})), \
+                 patch("tools.osv_check.check_package_for_malware",
+                       return_value=None), \
+                 patch("tools.mcp_tool.stdio_client") as mock_stdio, \
+                 patch("tools.mcp_tool.ClientSession", FakeSession), \
+                 patch("tools.mcp_tool._snapshot_child_pids",
+                       side_effect=[set(), {fake_pid}]), \
+                 patch("tools.mcp_tool._filter_mcp_children",
+                       return_value={fake_pid}), \
+                 patch("gateway.status._pid_exists", return_value=False), \
+                 patch("tools.mcp_tool._register_server_tools",
+                       return_value=set()), \
+                 patch.object(MCPServerTask, "_wait_for_lifecycle_event",
+                              AsyncMock()), \
+                 patch.object(_os, "kill", _fake_kill):
+                mock_stdio.return_value.__aenter__ = AsyncMock(
+                    return_value=(MagicMock(), MagicMock()))
+                mock_stdio.return_value.__aexit__ = AsyncMock(
+                    return_value=False)
+
+                await server._run_stdio(
+                    {"command": "echo", "args": ["hello"]})
+
+            assert len(kill_calls) == 0, \
+                f"kill called on already-dead process: {kill_calls}"
+
+            from tools.mcp_tool import _orphan_stdio_pids
+            assert fake_pid not in _orphan_stdio_pids, \
+                "dead PID incorrectly tracked as orphan"
+
+        asyncio.run(_test())

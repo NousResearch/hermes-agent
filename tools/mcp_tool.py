@@ -2197,6 +2197,26 @@ class MCPServerTask:
                             except (ProcessLookupError, PermissionError, OSError):
                                 pgroup_alive = False
                         if pid_alive or pgroup_alive:
+                            # The SDK teardown already attempted graceful
+                            # shutdown and failed — kill immediately so old
+                            # processes don't accumulate across reconnects
+                            # (#60385). Use SIGKILL directly since the
+                            # graceful path was already exhausted.
+                            import signal as _signal
+                            _sigkill = getattr(
+                                _signal, "SIGKILL", _signal.SIGTERM,
+                            )
+                            try:
+                                if pgid is not None and _killpg is not None:
+                                    _killpg(pgid, _sigkill)
+                                else:
+                                    os.kill(pid, _sigkill)
+                            except (
+                                ProcessLookupError, PermissionError, OSError,
+                            ):
+                                pass
+                            # Track as orphan so the shutdown sweep gets one
+                            # more chance if our immediate kill fails.
                             _orphan_stdio_pids.add(pid)
                             _orphan_stdio_pid_servers[pid] = self.name
                         else:

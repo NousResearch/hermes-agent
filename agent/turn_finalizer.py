@@ -68,6 +68,13 @@ def finalize_turn(
                 "— requesting summary..."
             )
         final_response = agent._handle_max_iterations(messages, api_call_count)
+        _interruption_marker = (
+            f"{'─' * 48}\n"
+            f"[Interrupted: reached tool call limit ({api_call_count}/{agent.max_iterations}). "
+            f"Here's what was found so far:]\n"
+            f"{'─' * 48}\n"
+        )
+        final_response = _interruption_marker + (final_response or "")
 
         # If running as a kanban worker, signal the dispatcher that the
         # worker could not complete (rather than treating it as a
@@ -120,6 +127,22 @@ def finalize_turn(
                     _kanban_task,
                     exc_info=True,
                 )
+
+    elif (
+        final_response is not None
+        and not str(_turn_exit_reason).startswith("text_response(")
+        and (
+            api_call_count >= agent.max_iterations
+            or agent.iteration_budget.remaining <= 0
+        )
+    ):
+        _interruption_marker = (
+            f"{'─' * 48}\n"
+            f"[Interrupted: reached tool call limit ({api_call_count}/{agent.max_iterations}). "
+            f"Partial output:]\n"
+            f"{'─' * 48}\n"
+        )
+        final_response = _interruption_marker + final_response
 
     # Determine if conversation completed successfully
     normal_text_response = str(_turn_exit_reason).startswith("text_response(")

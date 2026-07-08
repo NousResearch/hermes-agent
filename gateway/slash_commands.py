@@ -4620,5 +4620,22 @@ class GatewaySlashCommandsMixin:
             exit_code_path.unlink(missing_ok=True)
             return t("gateway.update.start_failed", error=e)
 
+        # Trigger the same drain-then-stop path as /restart so in-flight
+        # cron jobs and agent tool work get a graceful drain window
+        # before the gateway process exits.  Without this, /update exits
+        # immediately after spawning the detached update helper, killing
+        # active tool subprocesses mid-work (#60432).
+        active_agents = self._running_agent_count()
+        _under_service = bool(os.environ.get("INVOCATION_ID")) or os.environ.get(
+            "XPC_SERVICE_NAME", "0"
+        ) not in ("", "0")
+        _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+        if _under_service or _in_container:
+            self.request_restart(detached=False, via_service=True)
+        else:
+            self.request_restart(detached=True, via_service=False)
+
         self._schedule_update_notification_watch()
+        if active_agents:
+            return t("gateway.draining", count=active_agents)
         return t("gateway.update.starting")

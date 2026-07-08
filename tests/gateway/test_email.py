@@ -1222,7 +1222,10 @@ class TestFetchNewMessages(unittest.TestCase):
         adapter._startup_seen_uidvalidity = b"old"
 
         mock_imap = MagicMock()
-        mock_imap.response.return_value = ("UIDVALIDITY", [b"new"])
+        mock_imap.response.side_effect = [
+            ("UIDVALIDITY", [b"new"]),
+            (None, []),
+        ]
         search_criteria = []
 
         def uid_handler(command, *args):
@@ -1244,6 +1247,85 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(search_criteria, ["ALL"])
         self.assertEqual(adapter._startup_seen_uid_cutoff, 999)
         self.assertEqual(adapter._startup_seen_uidvalidity, b"new")
+        self.assertEqual(adapter._seen_uids, set())
+
+    def test_fetch_retries_failed_uidvalidity_rebaseline(self):
+        """A failed rebaseline keeps old state so the next poll retries safely."""
+        adapter = self._make_adapter()
+        adapter._seen_uids = {b"1001"}
+        adapter._startup_seen_uid_cutoff = 1001
+        adapter._startup_seen_uidvalidity = b"old"
+
+        mock_imap = MagicMock()
+        mock_imap.response.return_value = ("UIDVALIDITY", [b"new"])
+        search_all_attempts = 0
+
+        def uid_handler(command, *args):
+            nonlocal search_all_attempts
+            if command == "search" and args[-1] == "ALL":
+                search_all_attempts += 1
+                if search_all_attempts == 1:
+                    return ("NO", [b"server error"])
+                return ("OK", [b"1 999"])
+            if command == "search":
+                raise AssertionError("unsafe rebaseline should not reach UNSEEN search")
+            if command == "fetch":
+                raise AssertionError("failed rebaseline should not fetch messages")
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            self.assertEqual(adapter._fetch_new_messages(), [])
+            self.assertEqual(adapter._startup_seen_uid_cutoff, 1001)
+            self.assertEqual(adapter._startup_seen_uidvalidity, b"old")
+            self.assertEqual(adapter._seen_uids, {b"1001"})
+
+            self.assertEqual(adapter._fetch_new_messages(), [])
+
+        self.assertEqual(adapter._startup_seen_uid_cutoff, 999)
+        self.assertEqual(adapter._startup_seen_uidvalidity, b"new")
+        self.assertEqual(adapter._seen_uids, set())
+        self.assertEqual(search_all_attempts, 2)
+
+    def test_fetch_keeps_state_when_uidvalidity_rebaseline_raises(self):
+        """A rebaseline exception should not publish partial mailbox state."""
+        adapter = self._make_adapter()
+        adapter._seen_uids = {b"1001"}
+        adapter._startup_seen_uid_cutoff = 1001
+        adapter._startup_seen_uidvalidity = b"old"
+
+        mock_imap = MagicMock()
+        mock_imap.response.return_value = ("UIDVALIDITY", [b"new"])
+
+        def uid_handler(command, *args):
+            if command == "search" and args[-1] == "ALL":
+                raise Exception("connection dropped")
+            if command == "search":
+                raise AssertionError("failed rebaseline should not reach UNSEEN search")
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(results, [])
+        self.assertEqual(adapter._startup_seen_uid_cutoff, 1001)
+        self.assertEqual(adapter._startup_seen_uidvalidity, b"old")
+        self.assertEqual(adapter._seen_uids, {b"1001"})
+
+    def test_establish_uid_baseline_uses_highest_uid_not_response_order(self):
+        """The startup cutoff uses max UID rather than the final response token."""
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.response.return_value = ("UIDVALIDITY", [b"123"])
+        mock_imap.uid.return_value = ("OK", [b"10 2 9"])
+
+        self.assertEqual(adapter._establish_uid_baseline(mock_imap), 3)
+        self.assertEqual(adapter._startup_seen_uid_cutoff, 10)
+        self.assertEqual(adapter._startup_seen_uidvalidity, b"123")
         self.assertEqual(adapter._seen_uids, set())
 
     def test_fetch_no_unseen_messages(self):

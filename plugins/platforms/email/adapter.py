@@ -476,7 +476,7 @@ class EmailAdapter(BasePlatformAdapter):
             extra.get("authserv_id", "") or os.getenv("EMAIL_AUTHSERV_ID", "")
         ).strip().lower()
 
-        # Track message IDs we've already processed to avoid duplicates
+        # Track UIDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._startup_seen_uid_cutoff: Optional[int] = None
@@ -671,8 +671,11 @@ class EmailAdapter(BasePlatformAdapter):
                     logger.info(
                         "[Email] INBOX UIDVALIDITY changed; clearing cached UID state"
                     )
-                    self._seen_uids.clear()
-                    startup_count = self._establish_uid_baseline(imap)
+                    startup_count = self._establish_uid_baseline(
+                        imap,
+                        uidvalidity=current_uidvalidity,
+                        reset_seen_uids=True,
+                    )
                     if startup_count is not None:
                         logger.info(
                             "[Email] Re-established INBOX UID baseline with %d existing messages skipped.",
@@ -770,31 +773,47 @@ class EmailAdapter(BasePlatformAdapter):
             logger.error("[Email] IMAP fetch error: %s", e)
         return results
 
-    def _establish_uid_baseline(self, imap: "imaplib.IMAP4") -> Optional[int]:
+    def _establish_uid_baseline(
+        self,
+        imap: "imaplib.IMAP4",
+        *,
+        uidvalidity: Optional[bytes] = None,
+        reset_seen_uids: bool = False,
+    ) -> Optional[int]:
         """Capture the selected mailbox's current UID high-water mark."""
-        self._startup_seen_uidvalidity = self._selected_uidvalidity(imap)
-        status, data = imap.uid("search", None, "ALL")
+        if uidvalidity is None:
+            uidvalidity = self._selected_uidvalidity(imap)
+        try:
+            status, data = imap.uid("search", None, "ALL")
+        except Exception:
+            logger.error("[Email] Could not establish startup UID baseline")
+            return None
         if status != "OK":
             logger.error("[Email] Could not establish startup UID baseline")
-            self._startup_seen_uid_cutoff = None
             return None
 
         startup_count = 0
         startup_cutoff: Optional[int] = None
+        malformed_uids: set = set()
         if data and data[0]:
             for uid in data[0].split():
                 startup_count += 1
                 try:
                     numeric_uid = int(uid)
                 except (ValueError, TypeError):
-                    self._seen_uids.add(uid)
+                    malformed_uids.add(uid)
                     continue
                 startup_cutoff = (
                     numeric_uid
                     if startup_cutoff is None
                     else max(startup_cutoff, numeric_uid)
                 )
+        self._startup_seen_uidvalidity = uidvalidity
         self._startup_seen_uid_cutoff = startup_cutoff
+        if reset_seen_uids:
+            self._seen_uids = malformed_uids
+        else:
+            self._seen_uids.update(malformed_uids)
         self._trim_seen_uids()
         return startup_count
 

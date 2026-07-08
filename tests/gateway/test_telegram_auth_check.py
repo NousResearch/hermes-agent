@@ -216,6 +216,28 @@ def test_is_user_authorized_from_message_allow_from():
     assert adapter._is_user_authorized_from_message(msg) is False
 
 
+def test_is_user_authorized_from_message_allow_from_scalar_int():
+    """allow_from can be a YAML scalar when set via `hermes config set`."""
+    adapter = _make_adapter(allow_from=111)
+
+    msg = _make_message(from_user_id=111)
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+    msg = _make_message(from_user_id=222)
+    assert adapter._is_user_authorized_from_message(msg) is False
+
+
+def test_is_user_authorized_from_message_allow_from_csv_string():
+    """allow_from should accept comma-separated config/env style values."""
+    adapter = _make_adapter(allow_from="111,222")
+
+    msg = _make_message(from_user_id=222)
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+    msg = _make_message(from_user_id=333)
+    assert adapter._is_user_authorized_from_message(msg) is False
+
+
 def test_is_user_authorized_from_message_wildcard():
     """_is_user_authorized_from_message should accept wildcard '*'."""
     adapter = _make_adapter(allow_from=["*"])

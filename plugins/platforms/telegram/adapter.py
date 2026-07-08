@@ -928,7 +928,14 @@ class TelegramAdapter(BasePlatformAdapter):
         # Adapter-level allow_from: when set, it is the sole authority.
         adapter_allow_from = self.config.extra.get("allow_from")
         if adapter_allow_from is not None:
-            allowed = {str(u).strip() for u in adapter_allow_from if str(u).strip()}
+            if isinstance(adapter_allow_from, list):
+                allowed = {str(u).strip() for u in adapter_allow_from if str(u).strip()}
+            else:
+                allowed = {
+                    part.strip()
+                    for part in str(adapter_allow_from).split(",")
+                    if part.strip()
+                }
             return user_id in allowed or "*" in allowed
 
         # Test/custom injection only. The class method named

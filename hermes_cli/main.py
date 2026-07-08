@@ -512,12 +512,26 @@ def _apply_profile_override() -> None:
 
 _apply_profile_override()
 
+# Desktop-spawned local backends mint a fresh per-process dashboard session
+# token and pass it through the environment. The normal env loader intentionally
+# lets ~/.hermes/.env override stale shell exports, but that would replace the
+# Desktop token with any stable remote-dashboard token saved in .env and make
+# Electron's X-Hermes-Session-Token calls 401. Capture and restore this one
+# in-process secret after dotenv loading; never log or persist it.
+_desktop_session_token_override = (
+    os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN")
+    if os.environ.get("HERMES_DESKTOP") == "1"
+    else None
+)
+
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.config import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
 
 load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
+if _desktop_session_token_override:
+    os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] = _desktop_session_token_override
 
 # Bridge security.redact_secrets from config.yaml → HERMES_REDACT_SECRETS env
 # var BEFORE hermes_logging imports agent.redact (which snapshots the flag at

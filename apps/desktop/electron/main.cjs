@@ -5358,7 +5358,9 @@ async function spawnPoolBackend(profile, entry) {
   // --profile wins over the inherited HERMES_HOME env (see _apply_profile_override
   // step 3 in hermes_cli/main.py), so the child re-homes to this profile.
   // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
-  const backendArgs = ['--profile', profile, 'serve', '--host', '127.0.0.1', '--port', '0']
+  // --isolated keeps the desktop-owned profile backend from routing into a unified
+  // machine dashboard whose session token can differ from the desktop token.
+  const backendArgs = ['--profile', profile, 'serve', '--host', '127.0.0.1', '--port', '0', '--isolated']
   const backend = await ensureRuntime(resolveHermesBackend(backendArgs))
   // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
   backend.args = getBackendArgsForRuntime(backend)
@@ -5426,13 +5428,13 @@ async function spawnPoolBackend(profile, entry) {
   entry.port = port
 
   const baseUrl = `http://127.0.0.1:${port}`
-  await Promise.race([waitForHermes(baseUrl, token), startFailed])
-  ready = true
   const authToken = await adoptServedDashboardToken(baseUrl, token, {
     childAlive: () => child.exitCode === null && !child.killed,
     label: `Hermes backend for profile "${profile}"`,
     rememberLog
   })
+  await Promise.race([waitForHermes(baseUrl, authToken), startFailed])
+  ready = true
   entry.token = authToken
 
   return {
@@ -5570,7 +5572,9 @@ async function startHermes() {
 
     const token = crypto.randomBytes(32).toString('base64url')
     // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
-    const backendArgs = ['serve', '--host', '127.0.0.1', '--port', '0']
+    // --isolated keeps the desktop-owned backend from routing into a unified
+    // machine dashboard whose session token can differ from the desktop token.
+    const backendArgs = ['serve', '--host', '127.0.0.1', '--port', '0', '--isolated']
     // Pin the desktop's chosen profile via the global --profile flag. This is
     // deterministic (it wins over the sticky ~/.hermes/active_profile file) and
     // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
@@ -5680,14 +5684,21 @@ async function startHermes() {
 
     const baseUrl = `http://127.0.0.1:${port}`
     await advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
-    await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
-    backendReady = true
-    backendStartFailure = null
+
+    // Post-update fix (2026-07-07): adopt served token *before* readiness probe.
+    // The original spawn token can be rejected if the dashboard regenerates it.
+    // This prevents the first `waitForHermes` (and subsequent hermes:api calls)
+    // from hitting 401 Unauthorized.
     const authToken = await adoptServedDashboardToken(baseUrl, token, {
       // The exit/error handlers null hermesProcess when the child dies.
       childAlive: () => hermesProcess !== null && hermesProcess.exitCode === null && !hermesProcess.killed,
       rememberLog
     })
+
+    await Promise.race([waitForHermes(baseUrl, authToken), backendStartFailed])
+    backendReady = true
+    backendStartFailure = null
+
     updateBootProgress({
       phase: 'backend.ready',
       message: 'Hermes backend is ready. Finalizing desktop startup',

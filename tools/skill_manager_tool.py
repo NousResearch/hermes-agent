@@ -615,10 +615,18 @@ def _valid_shared_groups() -> List[str]:
         excluded = {".git", ".archive", ".hub", "__pycache__"}
     groups = []
     try:
+        from agent.skill_utils import is_queue_note_name
+    except Exception:
+        is_queue_note_name = lambda _n: False  # noqa: E731
+    try:
         for d in shared.iterdir():
             if not d.is_dir():
                 continue
             if d.name.startswith(".") or d.name in excluded:
+                continue
+            # A rotted pending-* queue note that landed at group level must never
+            # be selectable as a shared group (G2: same exclusion the loader uses).
+            if is_queue_note_name(d.name):
                 continue
             groups.append(d.name)
     except OSError:
@@ -655,6 +663,38 @@ def _shared_authoring_enabled() -> bool:
     if setting is not None:
         return setting
     return _shared_skills_root().is_dir()
+
+
+def _enforce_shared_placement_setting() -> Optional[bool]:
+    """Read skills.hygiene.enforce_shared_placement from config.
+
+    Returns True/False when set, or None when unset (caller auto-detects).
+    G1's placement guard: behavioral flag → config.yaml (never an env var).
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        raw = cfg_get(cfg, "skills", "hygiene", "enforce_shared_placement")
+        if raw is None:
+            return None
+        return is_truthy_value(raw, default=False)
+    except Exception:
+        return None
+
+
+def _enforce_shared_placement() -> bool:
+    """Should a create loud-fail when it would land outside skills-shared/<group>/?
+
+    G1 (write-time placement guard). Explicit config wins; unset auto-detects to
+    ``_shared_authoring_enabled()`` — so a vanilla upstream user (no shared tree)
+    is unaffected (guard off → legacy-local authoring unchanged), while a fleet
+    with a shared tree gets the guard on by default. Committing
+    ``skills.hygiene.enforce_shared_placement: true`` makes it hard-on regardless.
+    """
+    setting = _enforce_shared_placement_setting()
+    if setting is not None:
+        return setting
+    return _shared_authoring_enabled()
 
 
 def _invalid_group_msg(category: Optional[str], groups: List[str]) -> str:
@@ -978,18 +1018,98 @@ def _create_skill(name: str, content: str, category: str = None, *, local: bool 
             "error": f"A skill named '{name}' already exists at {existing['path']}."
         }
 
+    # Reject a create whose name is a reserved work-queue-note prefix (G2 at the
+    # source): a pending-* dir is a cross-session work queue, not a loadable
+    # skill, and must never be born as one.
+    try:
+        from agent.skill_utils import is_queue_note_name
+    except Exception:
+        is_queue_note_name = lambda _n: False  # noqa: E731
+    if is_queue_note_name(name):
+        return {
+            "success": False,
+            "error": (
+                f"'{name}' uses a reserved work-queue-note prefix and is not a "
+                "loadable skill. Write a work-queue note to "
+                "plans/pending-skill-patches/ instead (a plain .md file), or "
+                "pick a name that does not start with a pending-* prefix."
+            ),
+        }
+
     # Resolve the destination (shared by default, local on request). A bad/missing
     # group in shared mode fails loud here, BEFORE any directory is created.
     try:
         skill_dir = _resolve_skill_dir(name, category, local=local)
     except SkillCreateError as e:
         return {"success": False, "error": str(e)}
-    authored_shared = _is_within(skill_dir, _shared_skills_root())
+
+    shared_root = _shared_skills_root()
+    authored_shared = _is_within(skill_dir, shared_root)
+
+    # G1 — write-time placement guard (loud-fail on a leak-born create).
+    # When placement is enforced and this create did NOT explicitly opt into the
+    # local tree, the resolved path MUST be strictly inside skills-shared/<group>/.
+    # A resolution that lands in the gitignored local tree, a profile sandbox, or a
+    # skills-shared root that fail-opened to a nonexistent dir is a silent leak
+    # (single-copy-on-disk, not backed up) — refuse it here, BEFORE any dir is made.
+    if not local and _enforce_shared_placement():
+        if not shared_root.is_dir():
+            profile_key = f"{_active_profile_name()}/{name}"
+            return {
+                "success": False,
+                "error": (
+                    f"Refusing to author '{name}': cannot locate the git-backed "
+                    f"skills-shared root from HERMES_HOME (resolved to "
+                    f"'{shared_root}', which does not exist). Authoring now would "
+                    "create a leak in a gitignored tree (single-copy-on-disk, NOT "
+                    "backed up). Fix the profile HERMES_HOME / shared tree, or pass "
+                    f"local=true AND add '{profile_key}' to "
+                    "local-skills-allowlist.txt to intentionally author locally."
+                ),
+            }
+        if not authored_shared:
+            groups = _valid_shared_groups()
+            profile_key = f"{_active_profile_name()}/{name}"
+            return {
+                "success": False,
+                "error": (
+                    f"Refusing to author '{name}' at '{skill_dir}': that path is "
+                    "outside the git-backed skills-shared/<group>/ tree, so the "
+                    "skill would be a leak (gitignored, single-copy-on-disk, NOT "
+                    "backed up). Pass a valid category — one of: "
+                    f"{', '.join(groups) if groups else '(none found)'} — or pass "
+                    f"local=true AND add '{profile_key}' to "
+                    "local-skills-allowlist.txt to intentionally author locally."
+                ),
+            }
+
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     # Write SKILL.md atomically
     skill_md = skill_dir / "SKILL.md"
     _atomic_write_text(skill_md, content)
+
+    # G1 post-write assertion (defense in depth): a partial write must never leave
+    # a leak. Unless this was an explicit local create, verify the file actually
+    # landed inside skills-shared/<group>/ ON DISK; if not, rmtree the just-created
+    # dir and raise so nothing survives outside the git-backed tree.
+    if not local and _enforce_shared_placement():
+        landed_shared = _is_within(skill_md, shared_root) and skill_md.exists()
+        if not landed_shared:
+            shutil.rmtree(skill_dir, ignore_errors=True)
+            return {
+                "success": False,
+                "error": (
+                    f"Post-write placement check failed for '{name}': SKILL.md "
+                    f"landed at '{skill_md}', outside the git-backed "
+                    f"skills-shared root '{shared_root}'. The partial write was "
+                    "removed to avoid a leak. Retry with a valid category or "
+                    "local=true."
+                ),
+            }
+        # Record the on-disk TRUTH, not the intended mode: a creeping local-create
+        # bypass shows up in the metric because 'shared' reflects the verified path.
+        authored_shared = True
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)

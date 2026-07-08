@@ -1651,6 +1651,73 @@ def _emit_fallback_announce(
         emit(msg)
 
 
+def _emit_switch_announce(
+    agent,
+    old_model: str,
+    new_model: str,
+    new_provider: str,
+    *,
+    old_provider: "str | None" = None,
+    old_window: "int | None" = None,
+    new_window: "int | None" = None,
+    old_effort: "str | None" = None,
+    new_effort: "str | None" = None,
+) -> None:
+    """Emit a single, always-visible chat status line when a DELIBERATE
+    ``/model`` switch lands mid-session.
+
+    This is the sibling of :func:`_emit_fallback_announce`: the automatic
+    failover half already announces to the conversation, but a deliberate
+    ``/model`` switch was only stored as a ``[Note:…]`` model-context prepend
+    plus an ephemeral slash reply — so a spectator who did not personally run
+    ``/model`` saw the footer change silently. This closes that gap by routing
+    the switch through the SAME ``_emit_status`` seam the failover announce uses,
+    reaching the gateway ``status_callback`` (Discord/Telegram) and the CLI.
+
+    Both sides are rendered ``provider/model`` so the route is unambiguous. When
+    the reasoning effort or the context window differ across the switch, they are
+    appended as ``· effort A→B`` / ``· context window A→B`` deltas — symmetric
+    to/from, per Ace's explicit ask that the change be loud in both directions.
+
+    De-duplicated on the ``(old_model, new_model)`` pair (sibling of
+    ``agent._last_fallback_announced``) so a re-entrant / double-dispatch handler
+    announces once. A no-op transition (``old_model == new_model`` with no
+    effort/window delta) is silent — the switch itself already surfaced its
+    ephemeral confirmation.
+
+    **Cache invariant:** this is an out-of-band status EMISSION. It does not
+    touch conversation history, the system prompt, or the toolset, so it cannot
+    invalidate the per-conversation prompt cache. (Contrast the ``[Note:…]``
+    injection, which is deliberately a model-context prepend and is left intact.)
+    """
+    old_lbl_ctx = _format_context_window(old_window)
+    new_lbl_ctx = _format_context_window(new_window)
+    _window_differs = bool(old_lbl_ctx and new_lbl_ctx and old_lbl_ctx != new_lbl_ctx)
+    _old_eff = (old_effort or "").strip()
+    _new_eff = (new_effort or "").strip()
+    _effort_differs = bool(_old_eff and _new_eff and _old_eff != _new_eff)
+    # Silent-on-no-op: nothing meaningful changed.
+    if not new_model or (
+        old_model == new_model and not _window_differs and not _effort_differs
+    ):
+        return
+    transition = (old_model, new_model)
+    if getattr(agent, "_last_switch_announced", None) == transition:
+        return
+    agent._last_switch_announced = transition
+
+    old_label = f"{old_provider}/{old_model}" if old_provider else old_model
+    new_label = f"{new_provider}/{new_model}" if new_provider else new_model
+    msg = f"🔀 Model switched: {old_label} → {new_label}"
+    if _effort_differs:
+        msg += f" · effort {_old_eff}→{_new_eff}"
+    if _window_differs:
+        msg += f" · context window {old_lbl_ctx}→{new_lbl_ctx}"
+    emit = getattr(agent, "_emit_status", None)
+    if callable(emit):
+        emit(msg)
+
+
 def rewrite_prompt_model_identity(agent, model: str, provider: str) -> None:
     """Point the cached system prompt's ``Model:``/``Provider:`` lines at
     the active runtime after a provider switch.

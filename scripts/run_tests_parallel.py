@@ -306,12 +306,44 @@ def _run_one_file(
 
         output +=  "\n"
 
+    summary = _parse_pytest_summary(output)
     if rc == 5:
         # No tests collected — every test in the file was filtered out.
-        # Treat as a pass; surface info in a slightly distinct status
-        # so the operator can spot it.
+        # Treat as a pass (a correctly marker-filtered file SHOULD be a
+        # no-op in the unit lane) BUT record the no-op instead of erasing
+        # it: tag the summary so the aggregate verdict site can see that
+        # this file collected zero tests. Without this tag, an exit-5 file
+        # is coerced to rc=0, never enters `failures`, and a whole-suite
+        # zero-collect run reports green ("green because it didn't run").
         rc = 0
-    summary = _parse_pytest_summary(output)
+        summary["noop_exit5"] = 1
+        # Distinguish a LEGITIMATE optional-dep skip (a module-level
+        # ``pytest.importorskip("numpy")`` or ``pytest.skip(..., allow_module_level=True)``
+        # aborts collection with exit-5 AND prints a skip line, but reports 0
+        # collected — so `skipped` stays 0 and it would otherwise trip the
+        # explicit-no-op RED gate) from a genuine no-op (bad selector / broken
+        # import). A skip reason in the output means the file opted out on
+        # purpose; tag it so Gate 2 excludes it (skip ≠ caller-intent no-op).
+        _low = output.lower()
+        if ("importorskip" in _low or "skipped" in _low
+                or "allow_module_level" in _low or "collected 0 items / 1 skipped" in _low):
+            summary["noop_skip"] = 1
+        else:
+            # No skip reason. Distinguish an INTENTIONALLY testless file (an empty
+            # tombstone left after a feature was removed, or a __main__-driven
+            # standalone script with no pytest test functions at all) from a file
+            # that SHOULD have tests but collected zero (a real no-op / broken
+            # selector). A file whose source defines no ``def test``/``class Test``
+            # is not a pytest target — flag it ⚠, don't RED the whole suite on it.
+            try:
+                _src = file.read_text(encoding="utf-8", errors="replace")
+                import re as _re
+                _has_tests = bool(_re.search(r"^\s*(async\s+)?def\s+test|^\s*class\s+Test",
+                                             _src, _re.MULTILINE))
+                if not _has_tests:
+                    summary["noop_testless"] = 1
+            except Exception:
+                pass
     subproc_wall = time.monotonic() - subproc_start
     return file, rc, output, summary, subproc_wall
 
@@ -658,6 +690,40 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--min-tests",
+        metavar="N",
+        type=int,
+        default=None,
+        help=(
+            "No-op floor: fail the whole run RED if fewer than N tests were "
+            "actually executed (passed+failed). OFF by default. Opt-in per "
+            "invocation for a suite whose expected count the operator knows — "
+            "catches a whole directory silently vanishing from discovery."
+        ),
+    )
+    parser.add_argument(
+        "--strict-noop",
+        dest="strict_noop",
+        action="store_true",
+        default=False,
+        help=(
+            "OPT-IN: hard RED on an EXPLICITLY-requested test file that executed "
+            "0 tests (--files entries / positional .py files). OFF by default "
+            "because a full suite run legitimately lists many files that filter to "
+            "zero in a given lane (marker-filtered integration tests, platform "
+            "importorskips, module skipif). Whole-suite-zero is ALWAYS a hard RED "
+            "regardless of this flag (the load-bearing 'green because it didn't "
+            "run' guard); skip-storm/testless ⚠ surfacing is also unconditional. "
+            "Turn this on for a targeted run where every named file MUST have run."
+        ),
+    )
+    parser.add_argument(
+        "--no-strict-noop",
+        dest="strict_noop",
+        action="store_false",
+        help="Explicit off (already the default); kept for back-compat.",
+    )
+    parser.add_argument(
         "paths_positional",
         nargs="*",
         metavar="PATH",
@@ -686,6 +752,7 @@ def main() -> int:
     OUR_FLAGS = {
         "-j", "--jobs", "--paths", "--include-integration",
         "--file-timeout", "--slice", "--generate-slices", "--files",
+        "--min-tests", "--strict-noop", "--no-strict-noop",
     }
     # pytest short flags that consume the NEXT token as their value.
     PYTEST_VALUE_FLAGS = {"-k", "-m", "-p", "-o", "-c", "-r", "-W"}
@@ -748,14 +815,29 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
 
     # --files: explicit file list from the CI generate job — skip discovery.
+    # Track which files were *explicitly requested* (by --files or by a
+    # positional .py path) vs. discovered by directory recursion. An
+    # explicitly-requested file that collects 0 tests is a no-op the caller
+    # did not intend (they asked for those specific tests) → hard RED under
+    # --strict-noop. A default-discovery marker-filtered 0-collect file is
+    # legitimate and only ⚠-surfaced.
+    explicit_files: set[Path] = set()
     if args.files:
         files = [repo_root / f for f in args.files.split(":") if f.strip()]
         roots = []
+        explicit_files = {f.resolve() for f in files}
     else:
         # Resolve discovery roots: positional path args override --paths if any
         # were supplied, otherwise --paths (which itself defaults to 'tests').
         if args.paths_positional:
             roots = [repo_root / p for p in args.paths_positional]
+            # A positional that names a .py file directly is an explicit
+            # request for that file's tests.
+            explicit_files = {
+                (repo_root / p).resolve()
+                for p in args.paths_positional
+                if str(p).endswith(".py")
+            }
         else:
             roots = [repo_root / p for p in args.paths.split(":") if p]
 
@@ -820,6 +902,10 @@ def main() -> int:
     # terminal clean rather than interleaving N parallel pytest outputs).
     failures: List[Tuple[Path, str, Dict[str, int]]] = []
     file_times: List[Tuple[Path, float]] = []  # (file, subprocess_wall) for distribution
+    # Per-file summary for EVERY completed file (not just failures), so the
+    # aggregate no-op gate can see exit-5→0-coerced zero-collect files that
+    # never enter `failures`. Without this the silent no-op is invisible.
+    all_summaries: List[Tuple[Path, Dict[str, int]]] = []
     started = time.monotonic()
     files_done = 0
     tests_done = 0
@@ -855,6 +941,7 @@ def main() -> int:
             tests_passed += summary.get("passed", 0)
             tests_failed += summary.get("failed", 0)
             file_times.append((fpath, subproc_wall))
+            all_summaries.append((fpath, summary))
             if rc == 0:
                 pass_count += 1
             else:
@@ -925,6 +1012,7 @@ def main() -> int:
         for f, t in slowest:
             print(f"    {t:>6.2f}s  {_format_file(f, repo_root)}")
 
+    had_failures = False
     if failures:
         print()
         print("=== Failure output ===")
@@ -953,9 +1041,142 @@ def main() -> int:
             print(f"=== {len(no_tests_ran)} file{'s' if len(no_tests_ran) != 1 else ''} where no tests ran (collection/import error, timeout before collection, etc.) ===")
             for file, s in no_tests_ran:
                 print(f"  {_format_file(file, repo_root)}")
+        had_failures = True
+
+    # ── No-op guard: count EXECUTED tests, don't trust exit codes ────────────
+    # This is the single aggregate-verdict site (test-gate-honesty §5). It
+    # catches the silent no-op: a suite that collected 0 tests reads "green"
+    # only because nothing ran. Every no-op cause (missing dep → importorskip
+    # storm, marker-emptied file, fixture-nuked collection, exit-5→0 coercion)
+    # funnels through "0 executed" here.
+    total_executed = tests_passed + tests_failed
+    noop_red = _noop_guard(
+        all_summaries=all_summaries,
+        total_executed=total_executed,
+        explicit_files=explicit_files,
+        strict_noop=args.strict_noop,
+        min_tests=args.min_tests,
+        repo_root=repo_root,
+    )
+
+    if had_failures or noop_red:
         return 1
 
     return 0
+
+
+def _noop_guard(
+    *,
+    all_summaries: List[Tuple[Path, Dict[str, int]]],
+    total_executed: int,
+    explicit_files: set[Path],
+    strict_noop: bool,
+    min_tests: int | None,
+    repo_root: Path,
+) -> bool:
+    """Fail LOUD when a suite collected/executed zero tests.
+
+    Returns True if the run should be RED for a no-op reason. Prints loud
+    banners for each trip. The gates, in order of severity:
+
+      1. Whole-suite-zero (hard RED, always): total executed == 0 across the
+         entire invoked set is never legitimate — the Ace-named "green because
+         it didn't run" failure.
+      2. Explicitly-requested 0-collect (RED under --strict-noop): a file the
+         caller named specifically (--files / positional .py) that executed 0
+         tests is a no-op the caller did not intend. Scoped to explicit
+         requests so a default-discovery marker-filtered file stays GREEN.
+      3. --min-tests N floor (opt-in): fewer than N executed → RED.
+
+    Skip-storms (skipped>0, passed==0, failed==0) are a loud ⚠ *surfacing*,
+    not a gate — a dep-missing skip-storm stays visible even where the dep is
+    genuinely optional, without false-reding an optional-dep environment.
+    """
+    def _executed(s: Dict[str, int]) -> int:
+        return s.get("passed", 0) + s.get("failed", 0)
+
+    red = False
+
+    # ── ⚠ skip-storm surfacing (unconditional, never a gate) ──────────────
+    skip_storms = [
+        (f, s) for f, s in all_summaries
+        if (s.get("skipped", 0) > 0 and s.get("passed", 0) == 0 and s.get("failed", 0) == 0)
+        or s.get("noop_skip")  # exit-5 from a module-level importorskip/skip
+    ]
+    if skip_storms:
+        print()
+        print(f"⚠  {len(skip_storms)} file{'s' if len(skip_storms) != 1 else ''} skipped every test and executed none "
+              f"(importorskip fired? missing optional dep?) — surfaced, not failed:")
+        for f, s in skip_storms:
+            _n = s.get("skipped", 0)
+            print(f"  ⚠  {_format_file(f, repo_root)}  ({_n} skipped, 0 run)")
+
+    # ── ⚠ intentionally-testless files (tombstones / __main__ scripts) ────
+    testless = [(f, s) for f, s in all_summaries if s.get("noop_testless")]
+    if testless:
+        print()
+        print(f"⚠  {len(testless)} file{'s' if len(testless) != 1 else ''} in the set define no pytest tests "
+              f"(empty tombstone or __main__ script) — surfaced, not failed:")
+        for f, s in testless:
+            print(f"  ⚠  {_format_file(f, repo_root)}  (no def test / class Test)")
+
+    # ── Gate 1: whole-suite-zero (hard RED, always) ───────────────────────
+    if total_executed == 0:
+        print()
+        print("=== NO TESTS EXECUTED — suite is a no-op (missing dep? bad selector? all filtered?) ===")
+        print("    A run that executed 0 tests is RED, not green (test-gate-honesty §5).")
+        red = True
+
+    # ── Gate 2: explicitly-requested paths that collected 0 tests ─────────
+    if explicit_files:
+        # Aggregate per resolved path first: a file can appear in all_summaries
+        # more than once (e.g. a skip-reported entry AND a separate exit-5→0 entry
+        # under parallel/retry). It is a legit skip if ANY entry indicates a skip
+        # — so fold the skip signals across all of a file's entries before gating,
+        # else a duplicate no-skip entry false-REDs a file already surfaced as ⚠.
+        by_path: dict = {}
+        for f, s in all_summaries:
+            rp = f.resolve()
+            agg = by_path.setdefault(rp, {"f": f, "executed": 0, "skipped": 0,
+                                          "noop_skip": False, "noop_testless": False,
+                                          "noop_exit5": False})
+            agg["executed"] += _executed(s)
+            agg["skipped"] += s.get("skipped", 0)
+            agg["noop_skip"] = agg["noop_skip"] or bool(s.get("noop_skip"))
+            agg["noop_testless"] = agg["noop_testless"] or bool(s.get("noop_testless"))
+            agg["noop_exit5"] = agg["noop_exit5"] or bool(s.get("noop_exit5"))
+        noop_explicit = [
+            (agg["f"], agg) for rp, agg in by_path.items()
+            # An explicit file that executed 0 tests is a caller-intent no-op —
+            # EXCEPT it legitimately SKIPPED rather than silently no-op'd:
+            #   (a) noop_skip: a module-level importorskip opted out (missing dep);
+            #   (b) noop_testless: an empty tombstone / __main__ script with no tests;
+            #   (c) skipped>0: every test skipped (module skipif / empty-parametrize /
+            #       per-test pytest.skip()) — pytest ran the file, the tests opted out.
+            # None is a broken request; all surface as ⚠ above, never a RED gate. A
+            # file that DOES define tests, skipped none, and collected zero still REDs
+            # (the real silent no-op the guard exists to catch).
+            if rp in explicit_files and agg["executed"] == 0
+            and not agg["noop_skip"] and not agg["noop_testless"]
+            and agg["skipped"] == 0
+        ]
+        if noop_explicit:
+            print()
+            verb = "RED" if strict_noop else "⚠ (--no-strict-noop: surfaced only)"
+            print(f"=== {len(noop_explicit)} explicitly-requested file(s) collected 0 tests (no-op) — {verb} ===")
+            for f, s in noop_explicit:
+                tag = " [exit-5 no-op]" if s.get("noop_exit5") else ""
+                print(f"    {_format_file(f, repo_root)}{tag}")
+            if strict_noop:
+                red = True
+
+    # ── Gate 3: --min-tests floor (opt-in) ────────────────────────────────
+    if min_tests is not None and total_executed < min_tests:
+        print()
+        print(f"=== EXECUTED {total_executed} tests, below --min-tests floor of {min_tests} — RED ===")
+        red = True
+
+    return red
 
 
 if __name__ == "__main__":

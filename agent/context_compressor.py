@@ -808,6 +808,31 @@ class ContextCompressor(ContextEngine):
         max_tokens: int | None = None,
     ) -> None:
         """Update model info after a model switch or fallback activation."""
+        # ── Reset a stale runtime-carried summary_model on a real switch ──
+        # When the destination model differs from the prior model AND the
+        # summary_model was NOT explicitly pinned by config, clear it so a swap
+        # never drags a stale summarizer model onto the new provider (which may
+        # reject it → a 400/"model does not exist" that degrades compaction to
+        # a static marker). A config-pinned summary_model (arrived via the
+        # constructor override from a concrete auxiliary.compression.model) is
+        # preserved — the user deliberately chose a specific summarizer, and the
+        # provider-mismatch guard in auxiliary_client protects THAT path instead
+        # of silently discarding the pin here. Empty summary_model = "use main
+        # model", which is the safe inherit-the-live-model default. Cache-safe:
+        # this only touches the compressor's own routing fields, never the
+        # conversation history or system prompt.
+        _model_changed = bool(model) and str(model) != str(self.model)
+        if (
+            _model_changed
+            and getattr(self, "summary_model", "")
+            and not getattr(self, "_summary_model_is_config_pinned", False)
+        ):
+            logger.info(
+                "Model switch (%s → %s): clearing stale runtime summary_model "
+                "'%s' so compaction inherits the live model.",
+                self.model, model, self.summary_model,
+            )
+            self.summary_model = ""
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
@@ -949,6 +974,7 @@ class ContextCompressor(ContextEngine):
         summary_target_ratio: float = 0.20,
         quiet_mode: bool = False,
         summary_model_override: str = None,
+        summary_model_is_config_pinned: bool = False,
         base_url: str = "",
         api_key: str = "",
         config_context_length: int | None = None,
@@ -1071,6 +1097,18 @@ class ContextCompressor(ContextEngine):
         self._session_id: str = ""
 
         self.summary_model = summary_model_override or ""
+        # True when summary_model came from a CONCRETE config pin
+        # (auxiliary.compression.model set to a real id, not `auto`/empty). A
+        # config-pinned summary model is preserved across a mid-session switch
+        # (update_model keeps it); a runtime-carried one is reset so compaction
+        # inherits the live model. The provider-mismatch guard in
+        # auxiliary_client protects the pinned path from sending an unsupported
+        # id to a swapped provider. Threaded from agent_init via the
+        # ``summary_model_is_config_pinned`` kwarg; defaults False for direct
+        # callers / a bare override.
+        self._summary_model_is_config_pinned = bool(
+            summary_model_is_config_pinned and (summary_model_override or "")
+        )
         self._previous_summary: Optional[str] = None
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0

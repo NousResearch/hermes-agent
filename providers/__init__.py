@@ -62,6 +62,109 @@ def register_provider(profile: ProviderProfile) -> None:
         _ALIASES[alias] = profile.name
 
 
+def _lint_provider_collisions() -> list[str]:
+    """Detect accidental fN provider-alias/name/base_url/env-key collisions.
+
+    Lint/observability ONLY — does NOT change registration semantics
+    (last-writer-wins stays, so user plugins can still override bundled
+    profiles). It surfaces the class of drift that a copy-paste fN plugin
+    introduces silently: a duplicated ``name``/``alias`` shadowing a real
+    failover lane, or two profiles pointing at the same ``base_url`` / env-key.
+
+    Edge-triggered: returns one warning line per real collision and an empty
+    list when the registry is clean (no per-boot spam). The proxy-vs-bridge
+    case (same host, different port/path) is NOT a collision because the full
+    ``base_url`` incl. port + path differs — the compare is on the full URL,
+    never just the host.
+    """
+    warnings: list[str] = []
+    profiles = list_providers()
+
+    # name/alias → the profile.name that claims it. A second, DIFFERENT profile
+    # claiming the same key is a collision (the shadowing that hides a lane).
+    claim: dict[str, str] = {}
+    for prof in profiles:
+        keys = [("name", prof.name)] + [("alias", a) for a in (prof.aliases or ())]
+        for kind, key in keys:
+            k = str(key or "").strip().lower()
+            if not k:
+                continue
+            prior = claim.get(k)
+            if prior is not None and prior != prof.name:
+                warnings.append(
+                    f"provider {kind} collision: '{key}' is claimed by both "
+                    f"'{prior}' and '{prof.name}'"
+                )
+            else:
+                claim.setdefault(k, prof.name)
+
+    # Full base_url collision (incl. port + path). Two DIFFERENT profiles on the
+    # exact same endpoint is a copy-paste smell; same host + different port
+    # (fN proxy :18801/anthropic vs fN bridge :3556/v1) is NOT flagged. A
+    # deliberate api_key-vs-oauth split on the same upstream (e.g. minimax vs
+    # minimax-oauth) is also NOT a collision — the auth_type differs, so they
+    # are distinct lanes by design. Key the owner map on (url, auth_type) so
+    # only a same-url same-auth pair — the real copy-paste — trips.
+    url_owner: dict[str, str] = {}
+    for prof in profiles:
+        url = str(getattr(prof, "base_url", "") or "").strip().rstrip("/").lower()
+        if not url:
+            continue
+        auth = str(getattr(prof, "auth_type", "") or "").strip().lower()
+        okey = f"{url}\x00{auth}"
+        prior = url_owner.get(okey)
+        if prior is not None and prior != prof.name:
+            warnings.append(
+                f"provider base_url collision: '{url}' is shared by "
+                f"'{prior}' and '{prof.name}'"
+            )
+        else:
+            url_owner.setdefault(okey, prof.name)
+
+    # Env-key collision: two profiles whose PRIMARY credential env var
+    # (``env_vars[0]``) is the same var. Only the primary is compared — a
+    # provider that lists another lane's var as a SECONDARY fallback (e.g.
+    # alibaba-coding-plan listing DASHSCOPE_API_KEY after its own
+    # ALIBABA_CODING_PLAN_API_KEY) is deliberate credential reuse, not a
+    # copy-paste collision, and must not warn on a clean fleet.
+    env_owner: dict[str, str] = {}
+    for prof in profiles:
+        _envs = getattr(prof, "env_vars", ()) or ()
+        if not _envs:
+            continue
+        e = str(_envs[0] or "").strip().upper()
+        if not e:
+            continue
+        prior = env_owner.get(e)
+        if prior is not None and prior != prof.name:
+            warnings.append(
+                f"provider env-key collision: '{e}' is the primary "
+                f"credential for both '{prior}' and '{prof.name}'"
+            )
+        else:
+            env_owner.setdefault(e, prof.name)
+
+    return warnings
+
+
+def lint_provider_collisions(emit_log: bool = True) -> list[str]:
+    """Public entry: return (and optionally log) fN provider collision warnings.
+
+    Ensures discovery has run, then runs the edge-triggered collision lint.
+    ``hermes doctor`` and the fleet cli-parity sweep call this to surface an
+    accidental fN name/alias/base_url/env-key collision on demand. Loud on a
+    real collision; silent (empty list, no log) when clean.
+    """
+    if not _discovered:
+        _discover_providers()
+    warnings = _lint_provider_collisions()
+    if emit_log:
+        for w in warnings:
+            logger.warning("Provider collision lint: %s", w)
+    return warnings
+
+
+
 def get_provider_profile(name: str) -> ProviderProfile | None:
     """Look up a provider profile by name or alias.
 

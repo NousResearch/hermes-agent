@@ -557,7 +557,8 @@ def compress_context(
     # concurrent-compression session fork; an infinite no-progress loop
     # that never compresses at all is strictly worse.
     try:
-        _lock_ttl = float(getattr(agent, "_compression_lock_ttl_seconds", 300.0) or 300.0)
+        _raw_ttl = getattr(agent, "_compression_lock_ttl_seconds", None)
+        _lock_ttl = float(_raw_ttl) if _raw_ttl is not None else 300.0
     except (TypeError, ValueError):
         _lock_ttl = 300.0
     _lock_refresh_interval = getattr(agent, "_compression_lock_refresh_interval", None)

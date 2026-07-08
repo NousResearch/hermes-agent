@@ -672,3 +672,32 @@ def test_lease_refresher_stops_on_persistent_raise() -> None:
     _no_sleep(refresher)
     refresher._run()  # must not propagate
     assert db.calls == refresher._max_consecutive_failures
+
+
+def test_lock_ttl_zero_is_respected_not_swallowed(tmp_path, monkeypatch):
+    """TTL=0 must be passed through, not swallowed by ``or 300.0``."""
+    from hermes_state import SessionDB
+
+    captured_ttl = []
+
+    def _capture_ttl(self, session_id, holder, ttl_seconds=300.0):
+        captured_ttl.append(ttl_seconds)
+        return True
+
+    monkeypatch.setattr(
+        SessionDB, "try_acquire_compression_lock", _capture_ttl,
+    )
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "TTL_ZERO_TEST"
+    db.create_session(sid, source="discord")
+    agent = _build_agent_with_db(db, sid)
+    agent._compression_lock_ttl_seconds = 0
+
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+    agent._compress_context(messages, "sys", approx_tokens=10_000)
+
+    assert len(captured_ttl) >= 1
+    assert captured_ttl[0] == 0.0, (
+        f"expected TTL=0.0, got {captured_ttl[0]}"
+    )

@@ -62,8 +62,8 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Sequence
@@ -409,6 +409,7 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    observe_unmentioned_group_messages: bool = False
 
 
 @dataclass
@@ -1600,6 +1601,15 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            observe_unmentioned_group_messages=_to_boolean(
+                extra.get(
+                    "observe_unmentioned_group_messages",
+                    extra.get(
+                        "ingest_unmentioned_group_messages",
+                        os.getenv("FEISHU_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "false"),
+                    ),
+                )
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1632,6 +1642,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._observe_unmentioned_group_messages = settings.observe_unmentioned_group_messages
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -3302,6 +3313,10 @@ class FeishuAdapter(BasePlatformAdapter):
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
             timestamp=datetime.now(),
         )
+        if self._should_observe_unmentioned_group_message(message, normalized):
+            self._observe_unmentioned_group_message(normalized)
+            return
+        normalized = self._apply_feishu_group_observe_attribution(message, normalized)
         await self._dispatch_inbound_event(normalized)
 
     async def _dispatch_inbound_event(self, event: MessageEvent) -> None:
@@ -4272,6 +4287,8 @@ class FeishuAdapter(BasePlatformAdapter):
         ):
             return "group_policy_rejected"
         if require_mention and not self._mentions_self(message):
+            if self._should_observe_unmentioned_group_message(message):
+                return None
             return "group_policy_rejected"
         return None
 
@@ -4280,6 +4297,99 @@ class FeishuAdapter(BasePlatformAdapter):
         if rule and rule.require_mention is not None:
             return rule.require_mention
         return self._require_mention
+
+    def _feishu_observe_unmentioned_group_messages(self) -> bool:
+        return bool(getattr(self, "_observe_unmentioned_group_messages", False))
+
+    def _is_group_message(self, message: Any) -> bool:
+        return getattr(message, "chat_type", "p2p") != "p2p"
+
+    def _should_observe_unmentioned_group_message(
+        self,
+        message: Any,
+        event: Optional[MessageEvent] = None,
+    ) -> bool:
+        """Return True when a Feishu group message should be stored only."""
+        if not self._feishu_observe_unmentioned_group_messages():
+            return False
+        if not self._is_group_message(message):
+            return False
+        chat_id = getattr(message, "chat_id", "") or ""
+        if not self._require_mention_for(chat_id):
+            return False
+        if self._mentions_self(message):
+            return False
+        return True
+
+    @staticmethod
+    def _feishu_group_observe_shared_source(source: Any):
+        return replace(source, user_id=None, user_name=None, user_id_alt=None)
+
+    @staticmethod
+    def _feishu_group_observe_attributed_text(event: MessageEvent) -> str:
+        user_id = event.source.user_id or "unknown"
+        sender = event.source.user_name or user_id
+        return f"[{sender}|{user_id}]\n{event.text or ''}"
+
+    def _feishu_group_observe_channel_prompt(self) -> str:
+        bot_name = self._bot_name or "unknown"
+        bot_id = self._bot_open_id or self._bot_user_id or "unknown"
+        return (
+            "You are handling a Feishu group chat message.\n"
+            f"- Your identity: user_id={bot_id}, @-mention name in this group={bot_name}\n"
+            "- observed Feishu group context may be provided in a separate context-only block "
+            "before the current message; it is not necessarily addressed to you.\n"
+            "- Treat only the current new message as a request explicitly directed at you, "
+            "and use observed context only when the current message asks for it."
+        )
+
+    def _apply_feishu_group_observe_attribution(
+        self,
+        message: Any,
+        event: MessageEvent,
+    ) -> MessageEvent:
+        if not self._feishu_observe_unmentioned_group_messages():
+            return event
+        if not self._is_group_message(message):
+            return event
+        shared_source = self._feishu_group_observe_shared_source(event.source)
+        observe_prompt = self._feishu_group_observe_channel_prompt()
+        channel_prompt = (
+            f"{event.channel_prompt}\n\n{observe_prompt}" if event.channel_prompt else observe_prompt
+        )
+        if event.message_type == MessageType.COMMAND:
+            return replace(event, source=shared_source, channel_prompt=channel_prompt)
+        return replace(
+            event,
+            text=self._feishu_group_observe_attributed_text(event),
+            source=shared_source,
+            channel_prompt=channel_prompt,
+        )
+
+    def _observe_unmentioned_group_message(self, event: MessageEvent) -> None:
+        """Append skipped Feishu group chatter to the group session only."""
+        store = getattr(self, "_session_store", None)
+        if not store:
+            return
+        try:
+            shared_source = self._feishu_group_observe_shared_source(event.source)
+            session_entry = store.get_or_create_session(shared_source)
+            entry = {
+                "role": "user",
+                "content": self._feishu_group_observe_attributed_text(event),
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "observed": True,
+            }
+            if event.message_id:
+                entry["message_id"] = str(event.message_id)
+            store.append_to_transcript(session_entry.session_id, entry)
+            logger.info(
+                "[Feishu] Group message observed (no bot trigger): chat=%s from=%s",
+                event.source.chat_id or "unknown",
+                event.source.user_id or "unknown",
+            )
+        except Exception as exc:
+            logger.warning("[Feishu] Failed to observe group message: %s", exc)
 
     # --- Group policy ---------------------------------------------------------
 
@@ -5624,7 +5734,13 @@ def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
     """
     if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
         os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
-    return None
+    extras: dict = {}
+    if "observe_unmentioned_group_messages" in feishu_cfg:
+        value = feishu_cfg["observe_unmentioned_group_messages"]
+        if not os.getenv("FEISHU_OBSERVE_UNMENTIONED_GROUP_MESSAGES"):
+            os.environ["FEISHU_OBSERVE_UNMENTIONED_GROUP_MESSAGES"] = str(value).lower()
+        extras.setdefault("observe_unmentioned_group_messages", value)
+    return extras or None
 
 
 def _is_connected(config) -> bool:

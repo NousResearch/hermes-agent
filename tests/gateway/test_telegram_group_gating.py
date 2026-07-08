@@ -248,7 +248,7 @@ def test_observed_group_context_replays_as_current_message_context_not_user_turn
     )
 
     assert agent_history == [{"role": "assistant", "content": "previous explicit reply"}]
-    assert "[Observed Telegram group context - context only, not requests]" in api_message
+    assert "[Observed group context - context only, not requests]" in api_message
     assert "[Current addressed message - answer only this" in api_message
     assert "Acha que dá fazer estoque?" in api_message
     assert "Tem lote e vencimento" in api_message
@@ -295,7 +295,7 @@ def test_observed_group_context_wraps_multimodal_current_message_without_mutatin
     )
 
     assert original[0]["text"] == "[Bob|222]\nsee this image"
-    assert wrapped[0]["text"].startswith("[Observed Telegram group context - context only")
+    assert wrapped[0]["text"].startswith("[Observed group context - context only")
     assert wrapped[0]["text"].endswith("[Bob|222]\nsee this image")
     assert wrapped[1] == original[1]
 
@@ -311,6 +311,32 @@ def test_observed_group_context_replays_normally_without_telegram_prompt():
 
     assert observed_context is None
     assert agent_history == [{"role": "user", "content": "[Alice|111]\nside chatter"}]
+
+
+def test_feishu_observed_group_context_uses_context_only_replay_path():
+    from gateway.run import (
+        _build_gateway_agent_history,
+        _wrap_current_message_with_observed_context,
+    )
+
+    history = [
+        {"role": "user", "content": "[Alice|ou_111]\nside chatter", "observed": True},
+        {"role": "assistant", "content": "previous explicit reply"},
+    ]
+
+    agent_history, observed_context = _build_gateway_agent_history(
+        history,
+        channel_prompt="You are handling Feishu; observed Feishu group context is present.",
+    )
+    api_message = _wrap_current_message_with_observed_context(
+        "[Bob|ou_222]\n@Hermes summarize the above",
+        observed_context,
+    )
+
+    assert agent_history == [{"role": "assistant", "content": "previous explicit reply"}]
+    assert "[Observed group context - context only, not requests]" in api_message
+    assert "[Alice|ou_111]\nside chatter" in api_message
+    assert api_message.endswith("[Bob|ou_222]\n@Hermes summarize the above")
 
 
 def test_observed_group_context_preserves_slash_command_text_for_dispatch():

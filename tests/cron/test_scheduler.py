@@ -2967,6 +2967,78 @@ class TestParallelTick:
         assert start_s2 >= end_s1, "Jobs ran concurrently despite max_parallel=1"
 
 
+    def test_skipped_job_does_not_advance_next_run_at(self):
+        """When a job is skipped because it's already running (in-flight guard),
+        advance_next_run must NOT be called — otherwise next_run_at gets bumped
+        forward and the job never retries, appearing to have run when it hasn't.
+
+        Regression: advance_next_run was historically called for ALL due jobs
+        BEFORE the in-flight dedup guard, so a job already running from a
+        previous tick would have its next_run_at advanced and silently skip an
+        entire scheduling window.
+        """
+        import cron.scheduler as sched
+        from cron.scheduler import tick
+
+        # Create a recurring job that is "due" (next_run_at in the past).
+        job = {
+            "id": "skip-test-job",
+            "name": "skip-test",
+            "prompt": "hello",
+            "schedule": {"kind": "interval", "minutes": 60},
+            "enabled": True,
+            "next_run_at": "2020-01-01T00:00:00",
+            "deliver": "local",
+        }
+
+        # Simulate: this job is already running from a previous tick.
+        with sched._running_lock:
+            sched._running_job_ids.add("skip-test-job")
+
+        try:
+            with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+                 patch("cron.scheduler.run_job", return_value=(True, "output", "ok", None)), \
+                 patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+                 patch("cron.scheduler._deliver_result", return_value=None), \
+                 patch("cron.scheduler.mark_job_run"), \
+                 patch("cron.scheduler.advance_next_run") as mock_advance:
+                tick(verbose=False)
+
+            # The skipped job must NOT have had advance_next_run called —
+            # it was never dispatched so next_run_at must stay unchanged.
+            mock_advance.assert_not_called()
+        finally:
+            with sched._running_lock:
+                sched._running_job_ids.discard("skip-test-job")
+
+    def test_dispatched_job_still_advances_next_run_at(self):
+        """A job that IS successfully dispatched should still have
+        advance_next_run called (preserving at-most-once semantics)."""
+        import cron.scheduler as sched
+        from cron.scheduler import tick
+
+        job = {
+            "id": "dispatch-test-job",
+            "name": "dispatch-test",
+            "prompt": "hello",
+            "schedule": {"kind": "interval", "minutes": 60},
+            "enabled": True,
+            "next_run_at": "2020-01-01T00:00:00",
+            "deliver": "local",
+        }
+
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.run_job", return_value=(True, "output", "ok", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result", return_value=None), \
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler.advance_next_run") as mock_advance:
+            tick(verbose=False)
+
+        # The dispatched job MUST have advance_next_run called.
+        mock_advance.assert_called_once_with("dispatch-test-job")
+
+
 class TestDeliverResultTimeoutCancelsFuture:
     """When future.result(timeout=60) raises TimeoutError in the live adapter
     delivery path, the outcome depends on whether the coroutine was already

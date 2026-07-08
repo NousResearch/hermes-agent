@@ -293,7 +293,7 @@ def _cmd_install(*, realtime: bool, assume_yes: bool) -> int:
         elif system == "Darwin":
             have_bh = False
             try:
-                out = _sp.check_output(["system_profiler", "SPAudioDataType"], text=True)
+                out = _sp.check_output(["system_profiler", "SPAudioDataType"], text=True)  # windows-footgun: ok — macOS only (system_profiler), guarded by platform check above
                 have_bh = "BlackHole" in out
             except Exception:
                 pass

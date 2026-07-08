@@ -1091,3 +1091,28 @@ class TestDeleteSkillRmtreeGuard:
         assert result["success"] is False
         assert "skills root" in result["error"].lower()
         assert outside.exists()
+
+
+class TestFindSkillFollowsSymlinks:
+    """_find_skill must follow symlinks, matching skill_view's behavior."""
+
+    def test_finds_skill_via_symlinked_directory(self, tmp_path):
+        """A skill reached through a symlink should be found, just as skill_view finds it."""
+        from tools.skill_manager_tool import _find_skill
+
+        skills = tmp_path / "local-skills"
+        skills.mkdir()
+        real_dir = tmp_path / "real-skill"
+        real_dir.mkdir()
+        (real_dir / "SKILL.md").write_text("---\nname: test-symlink\ndescription: test\n---\n# Test\n")
+        symlink = skills / "test-symlink"
+        symlink.symlink_to(real_dir, target_is_directory=True)
+
+        with patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills]):
+            found = _find_skill("test-symlink")
+
+        assert found is not None, (
+            f"_find_skill should discover skill via symlink; got None. "
+            f"Symlink: {symlink} -> {real_dir}"
+        )
+        assert found["path"] == symlink

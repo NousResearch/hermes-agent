@@ -680,6 +680,11 @@ class TelegramAdapter(BasePlatformAdapter):
             min_value=1.0,
             max_value=300.0,
         )
+        # Secretary Mode: tracks active business connections by ID. Keyed by
+        # connection_id, value is {can_reply, user_chat_id}. Updated by the
+        # BusinessConnection lifecycle handler when the owner connects,
+        # disconnects, or edits the bot's settings in Chat Automation.
+        self._business_connections: Dict[str, dict] = {}
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = env_float("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", 0.8)
@@ -3534,6 +3539,15 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+
+            # Secretary Mode: handle BusinessConnection lifecycle updates
+            # (connect/disconnect/settings changes). These arrive as
+            # update.business_connection, not as message updates.
+            from telegram.ext import TypeHandler
+            self._app.add_handler(
+                TypeHandler(Update, self._handle_business_connection),
+                group=-1,  # run before message handlers
+            )
             
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable
@@ -5829,6 +5843,36 @@ class TelegramAdapter(BasePlatformAdapter):
             )
         except Exception:
             pass
+
+    async def _handle_business_connection(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle BusinessConnection updates (Secretary Mode lifecycle).
+
+        Fired when the owner connects/disconnects the bot via Chat Automation,
+        or edits the connection settings. We track active connections so we
+        know whether we have reply permission (can_reply) for each.
+        """
+        conn = getattr(update, "business_connection", None)
+        if conn is None:
+            return
+
+        conn_id = getattr(conn, "id", None)
+        if conn_id is None:
+            return
+
+        if getattr(conn, "is_enabled", False):
+            self._business_connections[conn_id] = {
+                "can_reply": getattr(conn, "can_reply", False),
+                "user_chat_id": getattr(conn, "user_chat_id", None),
+            }
+            logger.info(
+                "[Telegram] Business connection active: id=%s can_reply=%s",
+                conn_id, getattr(conn, "can_reply", False),
+            )
+        else:
+            self._business_connections.pop(conn_id, None)
+            logger.info("[Telegram] Business connection removed: id=%s", conn_id)
 
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"

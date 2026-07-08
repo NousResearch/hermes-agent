@@ -664,3 +664,145 @@ def test_opus_is_only_brain_in_default_chain():
     assert relay_call.DEFAULT_ACCOUNTS["fallback"]["brain"] == ["opus"]
     brains = [t for t, spec in relay_call.DEFAULT_ADAPTERS.items() if spec.get("brain")]
     assert brains == ["opus"]
+
+
+_PLAN_WITH_TASKS = """\
+# Plan — GRD · test fixture
+
+> **plan_id: GRD** · branch: feature/plan-guardrails
+
+## กติกาเหล็กของแผนนี้ — fixture
+
+1. **เลขงานต้องขึ้นต้นด้วย plan_id** เช่น `GRD-P1-I1`
+
+## GRD-P1 — fixture phase
+
+- **GRD-P1-I1** plan-anchor script
+- **GRD-P1-I2** relay integration
+"""
+
+
+def _run_relay_main(tmp_path, task_id, *, plan_text=None, no_plan=False):
+    """เรียก relay-call.main() ใน tmp cwd · คืน (exit_code, json_payload, tool_invocations)"""
+    import sys
+
+    prompt_file = tmp_path / "brief.md"
+    prompt_file.write_text("test prompt", encoding="utf-8")
+    if plan_text is not None:
+        plan_dir = tmp_path / ".project"
+        plan_dir.mkdir(parents=True, exist_ok=True)
+        (plan_dir / "plan.md").write_text(plan_text, encoding="utf-8")
+
+    invoked = {"count": 0}
+    orig_run_once = relay_call.run_once
+
+    def fake_run_once(*args, **kwargs):
+        invoked["count"] += 1
+        return 0, "RELAYOK", ""
+
+    relay_call.run_once = fake_run_once
+    argv = [
+        "relay-call.py",
+        "--tool",
+        "grok",
+        "--task-id",
+        task_id,
+        "--prompt-file",
+        str(prompt_file),
+        "--cwd",
+        str(tmp_path),
+    ]
+    if no_plan:
+        argv.append("--no-plan")
+
+    old_argv = sys.argv
+    sys.argv = argv
+    captured = io.StringIO()
+    old_stdout = sys.stdout
+    sys.stdout = captured
+    exit_code = None
+    try:
+        try:
+            relay_call.main()
+        except SystemExit as exc:
+            exit_code = exc.code
+    finally:
+        sys.argv = old_argv
+        sys.stdout = old_stdout
+        relay_call.run_once = orig_run_once
+
+    lines = [ln for ln in captured.getvalue().splitlines() if ln.strip()]
+    payload = json.loads(lines[-1]) if lines else {}
+    return exit_code, payload, invoked["count"]
+
+
+def _ledger_text(tmp_path):
+    ledger_dir = tmp_path / ".hermes" / "ai-relay"
+    files = sorted(ledger_dir.glob("calls-*.md"))
+    return files[0].read_text(encoding="utf-8") if files else ""
+
+
+def test_off_plan_task_blocks_tool_and_writes_ledger(tmp_path):
+    exit_code, payload, tool_calls = _run_relay_main(
+        tmp_path, "GRD-P9-Z9", plan_text=_PLAN_WITH_TASKS
+    )
+    assert exit_code == 60
+    assert payload["status"] == "off_plan"
+    assert payload["tool"] == "grok"
+    assert payload["ledger_written"] is True
+    assert "เลขงานไม่อยู่ในแผน" in payload["reason_human"]
+    assert tool_calls == 0
+    ledger = _ledger_text(tmp_path)
+    assert "off_plan" in ledger
+    assert "GRD-P9-Z9" in ledger
+    assert "| off_plan | 0 |" in ledger
+
+
+def test_off_plan_three_times_does_not_bump_counters(tmp_path):
+    """off_plan ต้องไม่กิน session-calls / rounds — ยิง 3 ครั้ง counter ยังเท่าเดิม"""
+    cfg = tmp_path / ".hermes" / "ai-relay"
+    task_ids = ["GRD-P9-Z9", "GRD-P9-Z8", "GRD-P9-Z7"]
+
+    for task_id in task_ids:
+        exit_code, payload, tool_calls = _run_relay_main(
+            tmp_path, task_id, plan_text=_PLAN_WITH_TASKS
+        )
+        assert exit_code == 60
+        assert payload["status"] == "off_plan"
+        assert tool_calls == 0
+
+    session_calls = cfg / ".session-calls"
+    if session_calls.exists():
+        data = json.loads(session_calls.read_text(encoding="utf-8"))
+        assert int(data.get("count", 0)) == 0
+    assert not list(cfg.glob(".rounds-*"))
+
+
+def test_no_plan_flag_invokes_tool_and_tags_ledger(tmp_path):
+    exit_code, payload, tool_calls = _run_relay_main(
+        tmp_path, "GRD-P9-Z9", plan_text=_PLAN_WITH_TASKS, no_plan=True
+    )
+    assert exit_code == 0
+    assert payload["status"] == "ok"
+    assert tool_calls == 1
+    ledger = _ledger_text(tmp_path)
+    assert "[no-plan]" in ledger
+    assert "GRD-P9-Z9 [no-plan]" in ledger
+
+
+def test_missing_plan_md_keeps_old_behavior(tmp_path):
+    exit_code, payload, tool_calls = _run_relay_main(tmp_path, "GRD-P9-Z9", plan_text=None)
+    assert exit_code == 0
+    assert payload["status"] == "ok"
+    assert tool_calls == 1
+    assert payload.get("status") != "off_plan"
+
+
+def test_plan_without_plan_id_keeps_old_behavior(tmp_path):
+    plan_no_id = "# Plan\n\nno plan id here\n- **GRD-P1-I1** something\n"
+    exit_code, payload, tool_calls = _run_relay_main(
+        tmp_path, "GRD-P9-Z9", plan_text=plan_no_id
+    )
+    assert exit_code == 0
+    assert payload["status"] == "ok"
+    assert tool_calls == 1

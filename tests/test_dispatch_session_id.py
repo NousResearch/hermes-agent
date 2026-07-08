@@ -73,3 +73,51 @@ class TestSessionIdForwarding:
                 skip_pre_tool_call_hook=True,
             )
         assert captured.get("task_id") == "task-999"
+
+
+class TestToolCallIdForwarding:
+    """tool_call_id must reach registry.dispatch so tools (e.g. terminal) can
+    attribute their output to the originating tool call."""
+
+    def test_standard_path_forwards_tool_call_id(self):
+        captured = {}
+        with patch("model_tools.registry", _make_registry(captured)):
+            from model_tools import handle_function_call
+            handle_function_call(
+                "web_search",
+                {"query": "test"},
+                task_id="t1",
+                session_id="sess-abc",
+                tool_call_id="call-abc",
+                skip_pre_tool_call_hook=True,
+            )
+        assert captured.get("tool_call_id") == "call-abc"
+
+    def test_execute_code_path_forwards_tool_call_id(self):
+        captured = {}
+        with patch("model_tools.registry", _make_registry(captured)):
+            from model_tools import handle_function_call
+            handle_function_call(
+                "execute_code",
+                {"code": "print(1)"},
+                task_id="t1",
+                session_id="sess-xyz",
+                tool_call_id="call-xyz",
+                skip_pre_tool_call_hook=True,
+            )
+        assert captured.get("tool_call_id") == "call-xyz"
+
+    def test_tool_call_id_default_is_none(self):
+        """When tool_call_id is omitted, dispatch receives None (the tool's own
+        fire site normalizes it to '')."""
+        captured = {}
+        with patch("model_tools.registry", _make_registry(captured)):
+            from model_tools import handle_function_call
+            handle_function_call(
+                "web_search",
+                {"query": "test"},
+                task_id="t1",
+                skip_pre_tool_call_hook=True,
+            )
+        assert "tool_call_id" in captured
+        assert captured["tool_call_id"] is None

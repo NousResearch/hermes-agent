@@ -2018,6 +2018,7 @@ def terminal_tool(
     pty: bool = False,
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
+    tool_call_id: Optional[str] = None,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -2033,6 +2034,10 @@ def terminal_tool(
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
         notify_on_complete: If True and background=True, you'll be notified exactly once when the process exits. The right choice for almost every long task. MUTUALLY EXCLUSIVE with watch_patterns.
         watch_patterns: List of strings to watch for in background output. HARD rate limit: 1 notification per 15s per process. After 3 strike windows in a row, watch_patterns is disabled and the session is auto-promoted to notify_on_complete. Use ONLY for rare, one-shot mid-process signals on long-lived processes (server readiness, migration-done markers). NEVER use in loops/batch jobs — error patterns there will hit the strike limit and get disabled. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both.
+        tool_call_id: Identifier of the originating tool call, so observers can
+            attribute terminal output to a specific tool invocation. Appended
+            at the end of the signature to keep this change purely additive for
+            any positional caller (must not shift the ``force`` safety gate).
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -2695,6 +2700,12 @@ def terminal_tool(
                     returncode=returncode,
                     task_id=effective_task_id or "",
                     env_type=env_type,
+                    # session_id/tool_call_id let observers attribute terminal
+                    # output to the session and originating tool call without a
+                    # thread-local/task_id shim (effective_task_id collapses to
+                    # "default" for most sessions, so it isn't a reliable key).
+                    session_id=session_id or "",
+                    tool_call_id=tool_call_id or "",
                 )
                 for hook_result in hook_results:
                     if isinstance(hook_result, str):
@@ -3011,6 +3022,7 @@ def _handle_terminal(args, **kw):
         timeout=args.get("timeout"),
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
+        tool_call_id=kw.get("tool_call_id"),
         workdir=args.get("workdir"),
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),

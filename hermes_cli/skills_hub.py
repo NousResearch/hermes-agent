@@ -1196,18 +1196,14 @@ def do_list_modified(console: Optional[Console] = None,
     for entry in modified:
         c.print(f"  [yellow]~[/] {entry['name']}")
     c.print()
-    c.print("[dim]See changes:   hermes skills diff <name>[/]")
+    c.print("[dim]See all changes: hermes skills diff all[/]")
+    c.print("[dim]See one skill:   hermes skills diff <name>[/]")
     c.print("[dim]Resume updates: hermes skills reset <name>          (keep your copy, re-baseline)[/]")
     c.print("[dim]Revert to stock: hermes skills reset <name> --restore[/]\n")
 
 
-def do_diff(name: str, console: Optional[Console] = None) -> None:
-    """Show how the user's copy of a bundled skill differs from the stock version."""
-    from tools.skills_sync import diff_bundled_skill
-
-    c = console or _console
-    result = diff_bundled_skill(name)
-
+def _print_bundled_skill_diff_result(result: dict, c: Console,
+                                     *, show_reset_hint: bool = True) -> None:
     if not result["ok"]:
         c.print(f"[bold red]Error:[/] {result['message']}\n")
         return
@@ -1237,7 +1233,42 @@ def do_diff(name: str, console: Optional[Console] = None) -> None:
         else:  # binary
             c.print(f"[yellow]~ {entry['path']}:[/] binary file differs")
     c.print()
-    c.print(f"[dim]Revert with: hermes skills reset {name} --restore[/]\n")
+    if show_reset_hint:
+        c.print(f"[dim]Revert with: hermes skills reset {result['name']} --restore[/]\n")
+
+
+def do_diff_all(console: Optional[Console] = None) -> None:
+    """Show diffs for all user-modified bundled skills."""
+    from tools.skills_sync import diff_bundled_skill_paths, list_user_modified_bundled_skills
+
+    c = console or _console
+    modified = list_user_modified_bundled_skills()
+    if not modified:
+        c.print("[dim]No user-modified bundled skills — everything tracks upstream.[/]\n")
+        return
+
+    c.print(f"\n[bold]{len(modified)} user-modified bundled skill diff(s)[/]\n")
+    for index, entry in enumerate(modified):
+        name = entry["name"]
+        if index:
+            c.print("[dim]" + ("-" * 72) + "[/]\n")
+        c.print(f"[bold cyan]# {name}[/]")
+        result = diff_bundled_skill_paths(name, entry["dest"], entry["bundled_src"])
+        _print_bundled_skill_diff_result(result, c, show_reset_hint=False)
+    c.print("[dim]Revert one skill with: hermes skills reset <name> --restore[/]\n")
+
+
+def do_diff(name: str, console: Optional[Console] = None) -> None:
+    """Show how the user's copy of a bundled skill differs from the stock version."""
+    from tools.skills_sync import diff_bundled_skill
+
+    c = console or _console
+    if name.lower() == "all":
+        do_diff_all(console=c)
+        return
+
+    result = diff_bundled_skill(name)
+    _print_bundled_skill_diff_result(result, c)
 
 
 def do_opt_out(remove: bool = False,

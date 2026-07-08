@@ -936,11 +936,12 @@ def _read_for_diff(path: Path) -> Tuple[Optional[bytes], Optional[str]]:
         return data, None
 
 
-def diff_bundled_skill(name: str) -> dict:
-    """Diff a user's copy of a bundled skill against the current stock version.
+def diff_bundled_skill_paths(name: str, dest: Path, bundled_src: Path) -> dict:
+    """Diff a local bundled skill path against a specific stock skill path.
 
-    Lets a user see exactly what diverged before deciding whether to keep their
-    edits or ``hermes skills reset`` back to upstream.
+    ``list_user_modified_bundled_skills`` already resolves ``dest`` and
+    ``bundled_src``. This path-based helper lets callers diff those entries
+    without re-discovering the bundled skills catalog for every skill.
 
     Returns a dict:
         ``ok`` (bool), ``name`` (str), ``found`` (bool — bundled source exists),
@@ -951,10 +952,7 @@ def diff_bundled_skill(name: str) -> dict:
     """
     import difflib
 
-    bundled_dir = _get_bundled_dir()
-    bundled_by_name = dict(_discover_bundled_skills(bundled_dir))
-    bundled_src = bundled_by_name.get(name)
-    if bundled_src is None:
+    if not bundled_src.exists():
         return {
             "ok": False,
             "name": name,
@@ -966,7 +964,7 @@ def diff_bundled_skill(name: str) -> dict:
                 f"diff against). Hub-installed skills use `hermes skills inspect`."
             ),
         }
-    dest = _compute_relative_dest(bundled_src, bundled_dir)
+
     if not dest.exists():
         return {
             "ok": False,
@@ -1033,6 +1031,31 @@ def diff_bundled_skill(name: str) -> dict:
             else f"'{name}' differs from the stock version in {len(diffs)} file(s)."
         ),
     }
+
+
+def diff_bundled_skill(name: str) -> dict:
+    """Diff a user's copy of a bundled skill against the current stock version.
+
+    Lets a user see exactly what diverged before deciding whether to keep their
+    edits or ``hermes skills reset`` back to upstream.
+    """
+    bundled_dir = _get_bundled_dir()
+    bundled_by_name = dict(_discover_bundled_skills(bundled_dir))
+    bundled_src = bundled_by_name.get(name)
+    if bundled_src is None:
+        return {
+            "ok": False,
+            "name": name,
+            "found": False,
+            "modified": False,
+            "diffs": [],
+            "message": (
+                f"'{name}' is not a tracked bundled skill (no stock version to "
+                f"diff against). Hub-installed skills use `hermes skills inspect`."
+            ),
+        }
+    dest = _compute_relative_dest(bundled_src, bundled_dir)
+    return diff_bundled_skill_paths(name, dest, bundled_src)
 
 
 def set_bundled_skills_opt_out(enabled: bool) -> dict:

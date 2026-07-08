@@ -82,11 +82,13 @@ class ToolEntry:
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
         "max_result_size_chars", "dynamic_schema_overrides",
+        "include_in_messaging_toolsets",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 include_in_messaging_toolsets=False):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -97,6 +99,12 @@ class ToolEntry:
         self.description = description
         self.emoji = emoji
         self.max_result_size_chars = max_result_size_chars
+        # When True, this tool is unioned into every toolset that carries the
+        # full Hermes core tool set (CLI, cron, and all messaging platforms)
+        # at resolve time, even though it is registered under its own toolset.
+        # Lets a plugin expose a tool across all of those surfaces without
+        # core hardcoding its name in toolsets._HERMES_CORE_TOOLS.
+        self.include_in_messaging_toolsets = include_in_messaging_toolsets
         # Optional zero-arg callable returning a dict of schema overrides
         # applied at get_definitions() time. Use for fields that depend on
         # runtime config (e.g. delegate_task's description must reflect the
@@ -278,6 +286,14 @@ class ToolRegistry:
             if entry.toolset == toolset
         )
 
+    def get_messaging_optin_tool_names(self) -> List[str]:
+        """Return sorted names of tools registered with
+        ``include_in_messaging_toolsets=True`` (see ``toolsets.resolve_toolset``)."""
+        return sorted(
+            entry.name for entry in self._snapshot_entries()
+            if entry.include_in_messaging_toolsets
+        )
+
     def register_toolset_alias(self, alias: str, toolset: str) -> None:
         """Register an explicit alias for a canonical toolset name."""
         with self._lock:
@@ -367,6 +383,7 @@ class ToolRegistry:
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
         override: bool = False,
+        include_in_messaging_toolsets: bool = False,
     ):
         """Register a tool.  Called at module-import time by each tool file.
 
@@ -375,6 +392,14 @@ class ToolRegistry:
         default browser tool for a headed-Chrome CDP backend). Without it,
         registrations that would shadow an existing tool from a different
         toolset are rejected to prevent accidental overwrites.
+
+        ``include_in_messaging_toolsets=True`` makes the tool appear in every
+        toolset that carries the full Hermes core tool set — CLI, cron, and
+        all messaging platforms — at resolve time (see
+        ``toolsets.resolve_toolset``). It is the generic alternative to
+        hardcoding a tool name into ``toolsets._HERMES_CORE_TOOLS``, so a
+        plugin (e.g. a notes plugin whose capture tool should be reachable
+        from any chat surface) doesn't need a core patch.
         """
         with self._lock:
             existing = self._tools.get(name)
@@ -436,6 +461,7 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                include_in_messaging_toolsets=include_in_messaging_toolsets,
             )
             # Availability is now derived per-tool (_toolset_has_exposable_tools),
             # so this map no longer gates a toolset. It is still consumed by

@@ -270,7 +270,7 @@ def register(ctx):
 
 **What `register()` does:**
 - Called exactly once at startup
-- `ctx.register_tool()` puts your tool in the registry — the model sees it immediately
+- `ctx.register_tool()` puts your tool in the registry — the model sees it immediately. Pass `include_in_messaging_toolsets=True` to also expose the tool in every toolset that carries the full core tool set (CLI, cron, and all messaging platforms), e.g. a notes plugin whose capture tool should work from any chat surface
 - `ctx.register_hook()` subscribes to lifecycle events
 - `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below

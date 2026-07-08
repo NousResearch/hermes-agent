@@ -255,6 +255,91 @@ class TestDefaultPlatformWebSearchCoverage:
         assert "web_search" in resolve_toolset("hermes-api-server")
 
 
+class TestMessagingOptInTools:
+    """Tools registered with include_in_messaging_toolsets=True are unioned
+    into every toolset that carries the full core tool set (CLI, cron, and all
+    messaging platforms) at resolve time, without core hardcoding them."""
+
+    def _registry_with_optin(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="optin_tool",
+            toolset="notes_plugin",
+            schema=_make_schema("optin_tool", "Opt-in tool"),
+            handler=_dummy_handler,
+            include_in_messaging_toolsets=True,
+        )
+        reg.register(
+            name="plain_tool",
+            toolset="notes_plugin",
+            schema=_make_schema("plain_tool", "Plain tool"),
+            handler=_dummy_handler,
+        )
+        return reg
+
+    def test_core_family_membership(self):
+        from toolsets import _HERMES_CORE_FAMILY, _HERMES_CORE_TOOLS
+
+        # Every member must actually carry the full core tool set.
+        for name in _HERMES_CORE_FAMILY:
+            assert set(_HERMES_CORE_TOOLS) <= set(TOOLSETS[name]["tools"]), name
+
+        expected_members = {
+            "hermes-cli", "hermes-cron",
+            "hermes-telegram", "hermes-discord", "hermes-whatsapp",
+            "hermes-slack", "hermes-signal", "hermes-bluebubbles",
+            "hermes-homeassistant", "hermes-email", "hermes-sms",
+        }
+        assert expected_members <= _HERMES_CORE_FAMILY
+
+        # Constrained/curated toolsets must never be picked up.
+        for name in ["hermes-webhook", "hermes-acp", "hermes-api-server", "hermes-gateway", "coding", "web"]:
+            assert name not in _HERMES_CORE_FAMILY, name
+
+    def test_optin_tool_resolves_into_core_family_toolsets(self, monkeypatch):
+        monkeypatch.setattr("tools.registry.registry", self._registry_with_optin())
+        for ts in ["hermes-telegram", "hermes-discord", "hermes-slack", "hermes-cli", "hermes-cron"]:
+            resolved = resolve_toolset(ts)
+            assert "optin_tool" in resolved, f"{ts} missing opt-in tool"
+            assert "plain_tool" not in resolved, f"{ts} leaked non-opt-in tool"
+
+    def test_optin_tool_excluded_from_non_core_toolsets(self, monkeypatch):
+        monkeypatch.setattr("tools.registry.registry", self._registry_with_optin())
+        # Webhook is intentionally constrained; acp/api-server are curated.
+        for ts in ["hermes-webhook", "hermes-acp", "hermes-api-server", "web"]:
+            assert "optin_tool" not in resolve_toolset(ts), f"{ts} wrongly got opt-in tool"
+
+    def test_optin_tool_reaches_gateway_via_includes(self, monkeypatch):
+        # hermes-gateway has no direct tools; it must inherit the opt-in tool
+        # through its included platform toolsets.
+        monkeypatch.setattr("tools.registry.registry", self._registry_with_optin())
+        assert "optin_tool" in resolve_toolset("hermes-gateway")
+
+    def test_optin_tool_resolves_into_plugin_platform_toolsets(self, monkeypatch):
+        # Auto-generated toolsets for plugin platforms (hermes-<name>) get the
+        # core surface, so they must union opt-in tools too.
+        monkeypatch.setattr("tools.registry.registry", self._registry_with_optin())
+        from gateway.platform_registry import platform_registry
+        monkeypatch.setattr(platform_registry, "is_registered", lambda name: name == "notesplatform")
+        resolved = resolve_toolset("hermes-notesplatform")
+        assert "optin_tool" in resolved
+        assert "terminal" in resolved  # core tools still present
+
+    def test_static_view_excludes_optin_tools(self, monkeypatch):
+        # include_registry=False is the pure-TOOLSETS view used by platform
+        # reverse-mapping (#49622); registry-derived unions must not leak in.
+        monkeypatch.setattr("tools.registry.registry", self._registry_with_optin())
+        assert "optin_tool" not in resolve_toolset("hermes-telegram", include_registry=False)
+
+    def test_registry_query_returns_optin_names(self):
+        reg = self._registry_with_optin()
+        assert reg.get_messaging_optin_tool_names() == ["optin_tool"]
+
+    def test_optin_tool_still_in_its_own_toolset(self, monkeypatch):
+        monkeypatch.setattr("tools.registry.registry", self._registry_with_optin())
+        assert resolve_toolset("notes_plugin") == ["optin_tool", "plain_tool"]
+
+
 class TestResolveToolsetIncludeRegistry:
     """include_registry flag exposes the static (pre-registry-merge) view used
     by platform reverse-mapping. Regression harness for issue #49622."""

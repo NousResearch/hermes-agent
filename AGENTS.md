@@ -514,7 +514,11 @@ be core tools. For custom or local-only tools, do **not** edit Hermes core.
 Use the plugin route instead: create `~/.hermes/plugins/<name>/plugin.yaml`
 and `~/.hermes/plugins/<name>/__init__.py`, then register tools with
 `ctx.register_tool(...)`. Plugin toolsets are discovered automatically and can be
-enabled or disabled without touching `tools/` or `toolsets.py`.
+enabled or disabled without touching `tools/` or `toolsets.py`. A plugin tool
+that should be available everywhere the core tools are (CLI, cron, and every
+messaging platform) can pass `include_in_messaging_toolsets=True` to
+`ctx.register_tool(...)` — it is unioned into those toolsets at resolve time,
+so there is no need to hand-patch `_HERMES_CORE_TOOLS`.
 
 Use the built-in route below only when the user is explicitly contributing a new
 core Hermes tool that should ship in the base system.

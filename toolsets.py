@@ -582,6 +582,30 @@ TOOLSETS = {
 }
 
 
+# Toolsets that carry the full Hermes core tool set (CLI, cron, and every
+# messaging platform). Computed by membership rather than a hand-maintained
+# list so new platforms that build on _HERMES_CORE_TOOLS are picked up
+# automatically. Tools registered with ``include_in_messaging_toolsets=True``
+# are unioned into exactly these toolsets at resolve time — the plugin-friendly
+# replacement for hardcoding a tool name into _HERMES_CORE_TOOLS. Deliberately
+# excluded by construction: hermes-webhook (untrusted-input constrained) and
+# the curated hermes-acp / hermes-api-server sets.
+_CORE_TOOLS_SET = frozenset(_HERMES_CORE_TOOLS)
+_HERMES_CORE_FAMILY = frozenset(
+    name
+    for name, ts in TOOLSETS.items()
+    if _CORE_TOOLS_SET.issubset(ts.get("tools", []))
+)
+
+
+def _messaging_optin_tool_names() -> Set[str]:
+    """Tool names plugins opted into the core/messaging family (registry-backed)."""
+    try:
+        from tools.registry import registry
+        return set(registry.get_messaging_optin_tool_names())
+    except Exception:
+        return set()
+
 
 def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[str, Any]]:
     """
@@ -739,6 +763,9 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
                 from gateway.platform_registry import platform_registry
                 if platform_registry.is_registered(platform_name):
                     plugin_tools = set(_HERMES_CORE_TOOLS)
+                    # Plugin platforms get the same core surface as built-in
+                    # messaging platforms, so opt-in tools belong here too.
+                    plugin_tools.update(_messaging_optin_tool_names())
                     try:
                         from tools.registry import registry
                         plugin_tools.update(
@@ -762,6 +789,13 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
     for included_name in toolset.get("includes", []):
         included_tools = resolve_toolset(included_name, visited, include_registry=include_registry)
         tools.update(included_tools)
+
+    # Union in plugin tools opted into the core/messaging family via
+    # register(..., include_in_messaging_toolsets=True). Registry-derived, so
+    # it only applies to the merged view — the static view
+    # (include_registry=False) must stay pure TOOLSETS (see #49622).
+    if include_registry and name in _HERMES_CORE_FAMILY:
+        tools.update(_messaging_optin_tool_names())
 
     return sorted(tools)
 

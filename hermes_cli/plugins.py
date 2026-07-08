@@ -398,6 +398,7 @@ class PluginContext:
         description: str = "",
         emoji: str = "",
         override: bool = False,
+        include_in_messaging_toolsets: bool = False,
     ) -> None:
         """Register a tool in the global registry **and** track it as plugin-provided.
 
@@ -405,6 +406,12 @@ class PluginContext:
         same name (e.g. swap the default ``browser_navigate`` for a custom
         CDP-backed implementation). Without it, attempting to register a name
         already claimed by a different toolset is rejected.
+
+        Pass ``include_in_messaging_toolsets=True`` to have the tool unioned
+        into every toolset that carries the full Hermes core tool set (CLI,
+        cron, and all messaging platforms) at resolve time — e.g. a notes
+        plugin whose capture tool should be reachable from any chat surface —
+        instead of patching ``toolsets.py``.
 
         ``override=True`` against a built-in tool requires the operator to
         opt in via ``plugins.entries.<plugin_id>.allow_tool_override: true``
@@ -436,6 +443,7 @@ class PluginContext:
             description=description,
             emoji=emoji,
             override=override,
+            include_in_messaging_toolsets=include_in_messaging_toolsets,
         )
         self._manager._plugin_tool_names.add(name)
         logger.debug(

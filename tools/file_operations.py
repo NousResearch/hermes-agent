@@ -1388,6 +1388,33 @@ class ShellFileOperations(FileOperations):
         if self._file_has_bom(path, pre_content) and not _has_bom(content):
             content = _UTF8_BOM + content
 
+        # ── Pre-write syntax gate (JSON / YAML / TOML) ─────────────
+        # For structured-data formats whose in-process linters do a
+        # full parse, validate *before* _atomic_write() so that
+        # syntactically-invalid content is never persisted to disk.
+        # Previously the check ran post-write (post-first) and merely
+        # attached the lint result to the response — the write was
+        # already committed, so callers gating on ``error`` reported
+        # success for files that don't even parse.  See #60525.
+        #
+        # Deliberately scoped to JSON/YAML/TOML only (not .py):
+        # the existing test suite writes non-Python text through .py
+        # paths as generic write-mechanics fixtures; a naive full-
+        # LINTERS_INPROC scope broke 3 previously-green tests.
+        _SYNTAX_GATE_EXTS = {'.json', '.yaml', '.yml', '.toml'}
+        if ext in _SYNTAX_GATE_EXTS:
+            _linter = LINTERS_INPROC.get(ext)
+            if _linter is not None:
+                ok, err_msg = _linter(content)
+                if not ok and err_msg != "__SKIP__":
+                    return WriteResult(
+                        error=(
+                            f"Pre-write syntax check failed for {path}: "
+                            f"{err_msg}. File NOT written — fix the syntax "
+                            f"and retry."
+                        ),
+                    )
+
         # Snapshot LSP diagnostics for this file (best-effort) so the
         # post-write LSP layer can return only diagnostics introduced
         # by this specific edit.  Mirrors claude-code's

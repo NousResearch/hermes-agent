@@ -2575,33 +2575,42 @@ async def get_status(profile: Optional[str] = None):
             "nous_session_valid": nous_session_valid,
         }
 
-        # Absolute host paths, the gateway PID, and the internal gateway health
-        # URL are deployment recon a liveness probe never needs. ``/api/status``
-        # is in ``PUBLIC_API_PATHS`` so it bypasses dashboard auth; on a
-        # network-exposed (gated) bind that means *any* unauthenticated caller
-        # reaches it, and leaking host metadata there contradicts the allowlist's
-        # own contract ("version, gateway state, active session count, and the
-        # dashboard auth-gate shape. No bodies, no session content, no secrets").
-        # Surface this detail only on a loopback / ``--insecure`` bind, where the
-        # dashboard is local-only and the caller is already inside the trust
-        # envelope — the same loopback/gated split ``should_require_auth`` draws.
+        # Profile + gateway topology: which profiles exist, whether one
+        # multiplexed gateway or several per-profile gateways serve them, and
+        # (gated) which host ports the live gateways' port-binding platforms
+        # listen on.  Enumerating profiles walks the filesystem and probes the
+        # process table, so keep it off the event loop.
+        #
+        # Split by sensitivity: profile NAMES (``profiles``) and the gateway
+        # ``gateway_mode`` are low-sensitivity PRODUCT surface — Hermes Cloud
+        # renders the profile list in the Portal, which reads this endpoint over
+        # the network (a gated bind), so they must survive the auth gate. The
+        # per-gateway ``gateways[]`` detail carries host ports (deployment
+        # recon), so it stays gated with the host paths / PID below.
+        topology = await asyncio.get_running_loop().run_in_executor(
+            None, _collect_profile_gateway_topology
+        )
+        status["profiles"] = topology["profiles"]
+        status["gateway_mode"] = topology["gateway_mode"]
+
+        # Absolute host paths, the gateway PID, the internal gateway health
+        # URL, and per-gateway ports are deployment recon a liveness probe never
+        # needs. ``/api/status`` is in ``PUBLIC_API_PATHS`` so it bypasses
+        # dashboard auth; on a network-exposed (gated) bind that means *any*
+        # unauthenticated caller reaches it, and leaking host metadata there
+        # contradicts the allowlist's own contract ("version, gateway state,
+        # active session count, and the dashboard auth-gate shape. No bodies, no
+        # session content, no secrets"). Surface this detail only on a loopback
+        # / ``--insecure`` bind, where the dashboard is local-only and the
+        # caller is already inside the trust envelope — the same loopback/gated
+        # split ``should_require_auth`` draws.
         if not auth_required:
-            # Profile + gateway topology: which profiles exist, whether one
-            # multiplexed gateway or several per-profile gateways serve them,
-            # and which host ports the live gateways' port-binding platforms
-            # listen on.  Enumerating profiles walks the filesystem and probes
-            # the process table, so keep it off the event loop.
-            topology = await asyncio.get_running_loop().run_in_executor(
-                None, _collect_profile_gateway_topology
-            )
             status.update({
                 "hermes_home": str(get_hermes_home()),
                 "config_path": str(get_config_path()),
                 "env_path": str(get_env_path()),
                 "gateway_pid": gateway_pid,
                 "gateway_health_url": _GATEWAY_HEALTH_URL,
-                "profiles": topology["profiles"],
-                "gateway_mode": topology["gateway_mode"],
                 "gateways": topology["gateways"],
             })
 

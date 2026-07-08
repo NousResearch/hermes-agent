@@ -523,23 +523,61 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     Plugin-registered slash commands that require arguments are **excluded**
     because plugins may not provide a no-arg usage fallback.
     """
+    try:
+        from hermes_cli.config import load_config_readonly as _load_cfg
+        cfg = _load_cfg()
+    except Exception:
+        cfg = {}
+
+    cmd_config = cfg.get("commands", {}) or {}
+    if not isinstance(cmd_config, dict):
+        cmd_config = {}
+
+    builtin_cfg = cmd_config.get("builtin", {}) or {}
+    custom_cmds = cmd_config.get("custom", {}) or {}
+
     overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
+
+    # 1. Built-in commands
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
+
+        # Check enabled & visible status
+        override = builtin_cfg.get(cmd.name, {}) or {}
+        if not override.get("enabled", True):
+            continue
+        if not override.get("visible", {}).get("telegram", True):
+            continue
+
         # Built-in arg-taking commands are included — their handlers show
         # usage text when invoked without arguments, and hiding them from
         # the menu hurts discoverability (issue #24312).
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
             result.append((tg_name, cmd.description))
+
+    # 2. Plugin commands
     for name, description, args_hint in _iter_plugin_command_entries():
         if _requires_argument(args_hint):
             continue
         tg_name = _sanitize_telegram_name(name)
         if tg_name:
             result.append((tg_name, description))
+
+    # 3. Custom commands
+    for name, cmd in custom_cmds.items():
+        if not isinstance(cmd, dict):
+            continue
+        if not cmd.get("enabled", True):
+            continue
+        if not cmd.get("visible", {}).get("telegram", True):
+            continue
+        tg_name = _sanitize_telegram_name(name)
+        if tg_name:
+            result.append((tg_name, cmd.get("description", "") or f"Custom command /{name}"))
+
     return result
 
 

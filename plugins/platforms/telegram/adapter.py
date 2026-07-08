@@ -2846,6 +2846,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 for scope_cls in (BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats):
                     scope_name = getattr(scope_cls, "__name__", str(scope_cls))
                     try:
+                        try:
+                            await self._bot.delete_my_commands(scope=scope_cls())
+                        except Exception as delete_err:
+                            logger.debug("[%s] delete_my_commands failed (non-fatal) for scope %s: %s", self.name, scope_name, delete_err)
                         await self._bot.set_my_commands(bot_commands, scope=scope_cls())
                         logger.info("[%s] set_my_commands OK for scope %s (%d cmds)", self.name, scope_name, len(bot_commands))
                     except Exception as scope_err:

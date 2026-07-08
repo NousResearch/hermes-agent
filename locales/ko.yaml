@@ -395,6 +395,14 @@ Future messages in this room will use that transcript until `/reset` or another 
     disabled:                   "⚠️ 이 세션에서 YOLO 모드 **꺼짐** — 위험한 명령은 승인이 필요합니다."
     enabled:                    "⚡ 이 세션에서 YOLO 모드 **켜짐** — 모든 명령이 자동 승인됩니다. 주의해서 사용하세요."
 
+  auto:
+    disabled:                   "⚠️ 이 세션에서 자동 모드 **꺼짐** — 표시된 명령은 승인이 필요합니다."
+    enabled:                    "🤖 이 세션에서 자동 모드 **켜짐** — 표시된 명령은 안전 분류기에 의해 자동으로 승인되거나 거부됩니다. 프롬프트 없음; 주의해서 사용하세요."
+    state_on:                   "켜짐"
+    state_off:                  "꺼짐"
+    status:                     "🤖 자동 모드: **{state}**"
+    usage:                      "사용법: `/auto [on|off|status]`"
+
   shared:
     session_db_unavailable:      "세션 데이터베이스를 사용할 수 없습니다."
     session_db_unavailable_prefix: "세션 데이터베이스를 사용할 수 없습니다"

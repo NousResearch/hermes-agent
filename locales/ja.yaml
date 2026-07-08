@@ -395,6 +395,14 @@ Future messages in this room will use that transcript until `/reset` or another 
     disabled:                   "⚠️ このセッションの YOLO モードは **OFF** — 危険なコマンドには承認が必要です。"
     enabled:                    "⚡ このセッションの YOLO モードは **ON** — すべてのコマンドが自動承認されます。注意して使用してください。"
 
+  auto:
+    disabled:                   "⚠️ このセッションの Auto Mode は **OFF** — フラグが立てられたコマンドには承認が必要です。"
+    enabled:                    "🤖 このセッションの Auto Mode は **ON** — フラグが立てられたコマンドは安全性分類器によって自動的に承認または拒否されます。プロンプトは表示されません。注意して使用してください。"
+    state_on:                   "ON"
+    state_off:                  "OFF"
+    status:                     "🤖 Auto Mode: **{state}**"
+    usage:                      "使い方: `/auto [on|off|status]`"
+
   shared:
     session_db_unavailable:      "セッションデータベースが利用できません。"
     session_db_unavailable_prefix: "セッションデータベースが利用できません"

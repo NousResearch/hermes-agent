@@ -395,6 +395,14 @@ Future messages in this room will use that transcript until `/reset` or another 
     disabled:                   "⚠️ Bu oturumda YOLO modu **KAPALI** — tehlikeli komutlar onay gerektirecek."
     enabled:                    "⚡ Bu oturumda YOLO modu **AÇIK** — tüm komutlar otomatik onaylanır. Dikkatli kullanın."
 
+  auto:
+    disabled:                   "⚠️ Bu oturumda Otomatik Mod **KAPALI** — işaretlenen komutlar onay gerektirecek."
+    enabled:                    "🤖 Bu oturumda Otomatik Mod **AÇIK** — işaretlenen komutlar bir güvenlik sınıflandırıcısı tarafından otomatik olarak onaylanır veya reddedilir. Onay istemi yok; dikkatli kullanın."
+    state_on:                   "AÇIK"
+    state_off:                  "KAPALI"
+    status:                     "🤖 Otomatik Mod: **{state}**"
+    usage:                      "Kullanım: `/auto [on|off|status]`"
+
   shared:
     session_db_unavailable:      "Oturum veritabanı kullanılamıyor."
     session_db_unavailable_prefix: "Oturum veritabanı kullanılamıyor"

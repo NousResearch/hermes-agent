@@ -399,6 +399,14 @@ Future messages in this room will use that transcript until `/reset` or another 
     disabled:                   "⚠️ Mód YOLO **AS** don seisiún seo — beidh cead de dhíth d'orduithe contúirteacha."
     enabled:                    "⚡ Mód YOLO **AR** don seisiún seo — gach ordú ceadaithe go huathoibríoch. Úsáid go cúramach."
 
+  auto:
+    disabled:                   "⚠️ Mód Uathoibríoch **AS** don seisiún seo — beidh cead de dhíth d'orduithe brataithe."
+    enabled:                    "🤖 Mód Uathoibríoch **AR** don seisiún seo — ceadaítear nó diúltaítear orduithe brataithe go huathoibríoch trí aicmeoir slándála. Gan leideanna; úsáid go cúramach."
+    state_on:                   "AR"
+    state_off:                  "AS"
+    status:                     "🤖 Mód Uathoibríoch: **{state}**"
+    usage:                      "Úsáid: `/auto [on|off|status]`"
+
   shared:
     session_db_unavailable:      "Níl bunachar sonraí na seisiún ar fáil."
     session_db_unavailable_prefix: "Níl bunachar sonraí na seisiún ar fáil"

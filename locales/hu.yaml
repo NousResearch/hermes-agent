@@ -395,6 +395,14 @@ Future messages in this room will use that transcript until `/reset` or another 
     disabled:                   "⚠️ YOLO mód **KI** ebben a munkamenetben — a veszélyes parancsok jóváhagyást igényelnek."
     enabled:                    "⚡ YOLO mód **BE** ebben a munkamenetben — minden parancs automatikusan jóváhagyva. Óvatosan használd."
 
+  auto:
+    disabled:                   "⚠️ Automata mód **KI** ebben a munkamenetben — a megjelölt parancsok jóváhagyást igényelnek."
+    enabled:                    "🤖 Automata mód **BE** ebben a munkamenetben — a megjelölt parancsokat egy biztonsági osztályozó automatikusan jóváhagyja vagy elutasítja. Nincs megerősítés; körültekintően használd."
+    state_on:                   "BE"
+    state_off:                  "KI"
+    status:                     "🤖 Automata mód: **{state}**"
+    usage:                      "Használat: `/auto [on|off|status]`"
+
   shared:
     session_db_unavailable:      "A munkamenet-adatbázis nem érhető el."
     session_db_unavailable_prefix: "A munkamenet-adatbázis nem érhető el"

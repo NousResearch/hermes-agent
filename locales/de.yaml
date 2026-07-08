@@ -395,6 +395,14 @@ Future messages in this room will use that transcript until `/reset` or another 
     disabled:                   "⚠️ YOLO-Modus für diese Sitzung **AUS** — gefährliche Befehle benötigen eine Genehmigung."
     enabled:                    "⚡ YOLO-Modus für diese Sitzung **AN** — alle Befehle werden automatisch genehmigt. Mit Vorsicht verwenden."
 
+  auto:
+    disabled:                   "⚠️ Auto-Modus für diese Sitzung **AUS** — markierte Befehle benötigen eine Genehmigung."
+    enabled:                    "🤖 Auto-Modus für diese Sitzung **AN** — markierte Befehle werden automatisch von einem Sicherheits-Klassifizierer genehmigt oder abgelehnt. Keine Eingabeaufforderungen; mit Bedacht verwenden."
+    state_on:                   "AN"
+    state_off:                  "AUS"
+    status:                     "🤖 Auto-Modus: **{state}**"
+    usage:                      "Verwendung: `/auto [on|off|status]`"
+
   shared:
     session_db_unavailable:      "Session-Datenbank nicht verfügbar."
     session_db_unavailable_prefix: "Session-Datenbank nicht verfügbar"

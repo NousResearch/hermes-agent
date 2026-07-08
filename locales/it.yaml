@@ -395,6 +395,14 @@ Future messages in this room will use that transcript until `/reset` or another 
     disabled:                   "⚠️ Modalità YOLO **OFF** per questa sessione — i comandi pericolosi richiederanno approvazione."
     enabled:                    "⚡ Modalità YOLO **ON** per questa sessione — tutti i comandi auto-approvati. Usa con cautela."
 
+  auto:
+    disabled:                   "⚠️ Modalità Auto **OFF** per questa sessione — i comandi segnalati richiederanno approvazione."
+    enabled:                    "🤖 Modalità Auto **ON** per questa sessione — i comandi segnalati vengono approvati o rifiutati automaticamente da un classificatore di sicurezza. Nessuna richiesta; usa con consapevolezza."
+    state_on:                   "ON"
+    state_off:                  "OFF"
+    status:                     "🤖 Modalità Auto: **{state}**"
+    usage:                      "Utilizzo: `/auto [on|off|status]`"
+
   shared:
     session_db_unavailable:      "Database delle sessioni non disponibile."
     session_db_unavailable_prefix: "Database delle sessioni non disponibile"

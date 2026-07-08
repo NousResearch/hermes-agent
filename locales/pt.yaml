@@ -395,6 +395,14 @@ Future messages in this room will use that transcript until `/reset` or another 
     disabled:                   "⚠️ Modo YOLO **DESATIVADO** nesta sessão — comandos perigosos exigirão aprovação."
     enabled:                    "⚡ Modo YOLO **ATIVADO** nesta sessão — todos os comandos são aprovados automaticamente. Usa com precaução."
 
+  auto:
+    disabled:                   "⚠️ Modo Auto **DESATIVADO** nesta sessão — comandos sinalizados exigirão aprovação."
+    enabled:                    "🤖 Modo Auto **ATIVADO** nesta sessão — comandos sinalizados são aprovados ou recusados automaticamente por um classificador de segurança. Sem avisos; usa com cautela."
+    state_on:                   "ATIVADO"
+    state_off:                  "DESATIVADO"
+    status:                     "🤖 Modo Auto: **{state}**"
+    usage:                      "Uso: `/auto [on|off|status]`"
+
   shared:
     session_db_unavailable:      "Base de dados de sessões indisponível."
     session_db_unavailable_prefix: "Base de dados de sessões indisponível"

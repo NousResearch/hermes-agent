@@ -395,6 +395,14 @@ Future messages in this room will use that transcript until `/reset` or another 
     disabled:                   "⚠️ 本工作階段 YOLO 模式 **已關閉** — 危險指令將需要批准。"
     enabled:                    "⚡ 本工作階段 YOLO 模式 **已開啟** — 所有指令自動批准。請謹慎使用。"
 
+  auto:
+    disabled:                   "⚠️ 本工作階段 Auto Mode **已關閉** — 標記的指令將需要批准。"
+    enabled:                    "🤖 本工作階段 Auto Mode **已開啟** — 標記的指令將由安全分類器自動批准或拒絕。不會有提示；請謹慎使用。"
+    state_on:                   "開啟"
+    state_off:                  "關閉"
+    status:                     "🤖 Auto Mode：**{state}**"
+    usage:                      "用法：`/auto [on|off|status]`"
+
   shared:
     session_db_unavailable:      "工作階段資料庫無法使用。"
     session_db_unavailable_prefix: "工作階段資料庫無法使用"

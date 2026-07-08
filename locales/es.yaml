@@ -392,6 +392,14 @@ gateway:
     disabled:                   "⚠️ Modo YOLO **DESACTIVADO** en esta sesión — los comandos peligrosos requerirán aprobación."
     enabled:                    "⚡ Modo YOLO **ACTIVADO** en esta sesión — todos los comandos se aprueban automáticamente. Úsalo con precaución."
 
+  auto:
+    disabled:                   "⚠️ Modo Auto **DESACTIVADO** en esta sesión — los comandos marcados requerirán aprobación."
+    enabled:                    "🤖 Modo Auto **ACTIVADO** en esta sesión — los comandos marcados se aprueban o rechazan automáticamente mediante un clasificador de seguridad. Sin avisos; úsalo con precaución."
+    state_on:                   "ACTIVADO"
+    state_off:                  "DESACTIVADO"
+    status:                     "🤖 Modo Auto: **{state}**"
+    usage:                      "Uso: `/auto [on|off|status]`"
+
   shared:
     session_db_unavailable:      "Base de datos de sesiones no disponible."
     session_db_unavailable_prefix: "Base de datos de sesiones no disponible"

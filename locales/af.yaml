@@ -395,6 +395,14 @@ Future messages in this room will use that transcript until `/reset` or another 
     disabled:                   "⚠️ YOLO-modus **AF** vir hierdie sessie — gevaarlike opdragte sal goedkeuring vereis."
     enabled:                    "⚡ YOLO-modus **AAN** vir hierdie sessie — alle opdragte word outomaties goedgekeur. Gebruik versigtig."
 
+  auto:
+    disabled:                   "⚠️ Outo-modus **AF** vir hierdie sessie — gemerkte opdragte sal goedkeuring vereis."
+    enabled:                    "🤖 Outo-modus **AAN** vir hierdie sessie — gemerkte opdragte word outomaties goedgekeur of afgekeur deur 'n veiligheidsklassifiseerder. Geen aanwysings nie; gebruik met omsigtigheid."
+    state_on:                   "AAN"
+    state_off:                  "AF"
+    status:                     "🤖 Outo-modus: **{state}**"
+    usage:                      "Gebruik: `/auto [on|off|status]`"
+
   shared:
     session_db_unavailable:      "Sessie-databasis is nie beskikbaar nie."
     session_db_unavailable_prefix: "Sessie-databasis is nie beskikbaar"

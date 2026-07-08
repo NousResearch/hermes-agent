@@ -187,7 +187,10 @@
       const outgoing = Array.from(new Set(nextTargets.map(String))).join(", ") || "—";
       const promptObjective = promptObjectiveText(node.prompt);
       const objective = node.title || promptObjective || node.description || node.type || "—";
-      return { id: id, type: node.type || "pass", profile: node.profile || "—", objective: objective, next: outgoing };
+      const provider = providerValue(node);
+      const model = modelValue(node);
+      const routing = provider || model ? (safeString(provider || "profile default") + " / " + safeString(model || "profile default")) : "profile default";
+      return { id: id, type: node.type || "pass", profile: node.profile || "—", routing: routing, objective: objective, next: outgoing };
     });
   }
 
@@ -1499,6 +1502,7 @@
                 h("th", null, "Cell"),
                 h("th", null, "Type"),
                 h("th", null, "Profile"),
+                h("th", null, "Provider / model"),
                 h("th", null, "Objective"),
                 h("th", null, "Next")
               )
@@ -1508,6 +1512,7 @@
                 h("td", null, safeString(row.id)),
                 h("td", null, safeString(row.type)),
                 h("td", null, safeString(row.profile)),
+                h("td", null, safeString(row.routing)),
                 h("td", null, safeString(row.objective)),
                 h("td", null, safeString(row.next))
               );
@@ -1796,6 +1801,9 @@
               const row = item.row;
               const status = safeString(row.status);
               const workerStatus = row.kanban_task_id && row.status === "waiting" ? "waiting on agent" : status;
+              const payload = row.payload && typeof row.payload === "object" ? row.payload : {};
+              const runProvider = row.provider || row.provider_override || payload.provider || payload.provider_override || "";
+              const runModel = row.model || row.model_override || payload.model || payload.model_override || "";
               return h("div", { key: String(row.id || row.event_id || item.index), className: "hermes-workflows-node-run-card" },
                 h("div", { className: "hermes-workflows-item-title" },
                   h("strong", null, safeString(row.node_id)),
@@ -1804,6 +1812,9 @@
                 row.kanban_task_id ? h("div", { className: "hermes-workflows-node-run-worker" },
                   h("div", null, "Linked worker task: " + safeString(row.kanban_task_id)),
                   h("div", { className: "hermes-workflows-meta" }, "Worker status: " + workerStatus)
+                ) : null,
+                (runProvider || runModel) ? h("div", { className: "hermes-workflows-node-run-routing" },
+                  h("div", { className: "hermes-workflows-meta" }, "Provider / model: " + safeString(runProvider || "profile default") + " / " + safeString(runModel || "profile default"))
                 ) : null,
                 renderNodeRunPreview("Output", row.output),
                 renderNodeRunPreview("Error", row.error)
@@ -1829,6 +1840,7 @@
           },
             h("span", null, safeString(id)),
             h("span", null, safeString(node.type || "unknown")),
+            h("span", null, node.type === "agent_task" ? safeString(providerValue(node) || "profile provider") : "—"),
             h("span", null, "Edit cell")
           );
         }) : h("p", { className: "hermes-workflows-muted" }, "No workflow cells available.")

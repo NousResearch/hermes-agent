@@ -50,3 +50,10 @@ def test_workflow_dashboard_cell_editor_exposes_agent_routing_controls() -> None
     assert "Use profile default provider" in text
     assert "Use profile default model" in text
     assert "/agent-routing-options" in text
+
+
+def test_workflow_dashboard_summarizes_agent_routing() -> None:
+    text = BUNDLE.read_text(encoding="utf-8")
+    assert "Provider / model" in text
+    assert "providerValue" in text
+    assert "modelValue" in text

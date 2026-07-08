@@ -17,6 +17,7 @@ chmod +x "${ROOT}/scripts/ai-relay/gate-run.py"
 chmod +x "${ROOT}/scripts/ai-relay/relay-report.py"
 chmod +x "${ROOT}/scripts/ai-relay/relay-status.py"
 chmod +x "${ROOT}/scripts/ai-relay/relay-suggest.py"
+chmod +x "${ROOT}/scripts/ai-relay/relay-relogin.py"
 chmod +x "${ROOT}/scripts/ai-relay/relay-doctor.sh"
 chmod +x "${ROOT}/scripts/ai-relay/relay-status.sh"
 chmod +x "${ROOT}/scripts/ai-relay/relay-now.sh"
@@ -29,6 +30,7 @@ ln -sf "${ROOT}/scripts/ai-relay/relay-call.py" "${BIN_DIR}/relay-call"
 ln -sf "${ROOT}/scripts/ai-relay/gate-run.py" "${BIN_DIR}/gate-run"
 ln -sf "${ROOT}/scripts/ai-relay/relay-report.py" "${BIN_DIR}/relay-report"
 ln -sf "${ROOT}/scripts/ai-relay/relay-suggest.py" "${BIN_DIR}/relay-suggest"
+ln -sf "${ROOT}/scripts/ai-relay/relay-relogin.py" "${BIN_DIR}/relay-relogin"
 ln -sf "${ROOT}/scripts/ai-relay/relay-doctor.sh" "${BIN_DIR}/relay-doctor"
 ln -sf "${ROOT}/scripts/ai-relay/relay-status.sh" "${BIN_DIR}/relay-status"
 ln -sf "${ROOT}/scripts/ai-relay/relay-now.sh" "${BIN_DIR}/relay-now"
@@ -65,6 +67,7 @@ AI Relay ติดตั้งคำสั่งให้เครื่อง�
   relay-report
   relay-status
   relay-suggest
+  relay-relogin
   relay-doctor
   relay-now
   relay-add-grok

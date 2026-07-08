@@ -15,7 +15,6 @@ DEFAULT_CODEX_MODELS: List[str] = [
     "gpt-5.5",
     "gpt-5.4-mini",
     "gpt-5.4",
-    "gpt-5.3-codex",
     # gpt-5.3-codex-spark is in research preview and is exposed *only* via
     # the Codex CLI / OAuth backend (chatgpt.com/backend-api/codex/models)
     # for ChatGPT Pro subscribers. It is NOT available in the public OpenAI
@@ -29,12 +28,13 @@ DEFAULT_CODEX_MODELS: List[str] = [
     # curated fallback so Pro users still see Spark in `/model` when live
     # discovery is unavailable (offline first run, transient API failure).
     "gpt-5.3-codex-spark",
-    # NOTE: gpt-5.2-codex / gpt-5.1-codex-max / gpt-5.1-codex-mini were
-    # previously listed here but the chatgpt.com Codex backend returns
-    # HTTP 400 "The '<model>' model is not supported when using Codex with
-    # a ChatGPT account." for all three on every ChatGPT Pro account we've
-    # tested (verified live 2026-05-27). Keeping them in the fallback list
-    # leaked dead slugs into /model when live discovery was unavailable
+    # NOTE: gpt-5.3-codex / gpt-5.2-codex / gpt-5.1-codex-max /
+    # gpt-5.1-codex-mini were previously listed here but the chatgpt.com
+    # Codex backend returns HTTP 400 "The '<model>' model is not supported
+    # when using Codex with a ChatGPT account." for all of them on every
+    # ChatGPT Pro account tested (gpt-5.2/5.1 verified 2026-05-27,
+    # gpt-5.3-codex verified 2026-06-25 per issue #52492). Keeping them in
+    # the fallback list leaked dead slugs into /model when live discovery was unavailable
     # (transient API failure, first-run before refresh) and surfaced HTTP 400
     # crashes on selection. The Codex CLI public catalog still references
     # these slugs, which is why they survived previously — but those entries
@@ -44,14 +44,12 @@ DEFAULT_CODEX_MODELS: List[str] = [
 ]
 
 _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
-    ("gpt-5.5", ("gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex")),
-    ("gpt-5.4-mini", ("gpt-5.3-codex",)),
-    ("gpt-5.4", ("gpt-5.3-codex",)),
+    ("gpt-5.5", ("gpt-5.4", "gpt-5.4-mini")),
     # Surface Spark whenever any compatible Codex template is present so
     # accounts hitting the live endpoint with an older lineup still see
     # Spark in the picker. Backend gates real availability by ChatGPT Pro
     # entitlement; Hermes does not.
-    ("gpt-5.3-codex-spark", ("gpt-5.3-codex",)),
+    ("gpt-5.3-codex-spark", ("gpt-5.4", "gpt-5.5")),
 ]
 
 

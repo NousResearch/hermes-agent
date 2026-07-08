@@ -253,7 +253,7 @@ class TestDetectProviderForModel:
 
     def test_current_provider_model_returns_none(self):
         """Models belonging to the current provider should not trigger a switch."""
-        assert detect_provider_for_model("gpt-5.3-codex", "openai-codex") is None
+        assert detect_provider_for_model("gpt-5.3-codex-spark", "openai-codex") is None
 
     def test_short_alias_resolves_to_static_model(self):
         """Short aliases (e.g. sonnet) should resolve without network lookups."""

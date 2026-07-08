@@ -32,6 +32,7 @@ Requires:
 """
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -56,7 +57,10 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE,
     BasePlatformAdapter,
+    CachedMedia,
     SendResult,
+    cache_media_bytes,
+    get_image_cache_dir,
     is_network_accessible,
     validate_media_delivery_path,
 )
@@ -207,6 +211,66 @@ _IMAGE_PART_TYPES = frozenset({"image_url", "input_image"})
 _FILE_PART_TYPES = frozenset({"file", "input_file"})
 
 
+def _persist_data_url_image(url_value: str) -> Optional[CachedMedia]:
+    """Decode a ``data:image/...;base64,...`` URL and persist it to the gateway
+    media cache, mirroring what platform adapters (Weixin, Telegram, ...) do
+    for inbound media before the agent ever runs.
+
+    Returns ``None`` (never raises) on any decode/classification failure so a
+    persistence problem degrades to "no local path note" rather than a 400 —
+    the original ``image_url`` part is still forwarded to the model either way.
+    Only ``data:`` URLs are handled here; ``http(s)://`` URLs are intentionally
+    left untouched (no remote download at the gateway layer).
+    """
+    header, _, payload = url_value.partition(",")
+    try:
+        raw = base64.b64decode(payload, validate=True)
+    except Exception:
+        return None
+    declared_mime = header[len("data:"):].split(";", 1)[0].strip().lower()
+    try:
+        cached = cache_media_bytes(raw, mime_type=declared_mime, default_kind="image")
+    except Exception:
+        return None
+    if cached is None or cached.kind != "image":
+        return None
+
+    suffix = Path(cached.path).suffix or ".jpg"
+    digest = hashlib.sha256(raw).hexdigest()[:16]
+    stable_path = get_image_cache_dir() / f"api_inbound_{digest}{suffix}"
+    if not stable_path.exists():
+        stable_path.write_bytes(raw)
+
+    try:
+        from tools.credential_files import from_agent_visible_cache_path, to_agent_visible_cache_path
+
+        Path(from_agent_visible_cache_path(cached.path)).unlink(missing_ok=True)
+        agent_visible_path = to_agent_visible_cache_path(str(stable_path))
+    except Exception:
+        agent_visible_path = str(stable_path)
+
+    return CachedMedia(
+        path=agent_visible_path,
+        media_type=cached.media_type,
+        kind=cached.kind,
+        display_name=cached.display_name,
+    )
+
+
+def _inject_local_path_note(normalized_parts: List[Dict[str, Any]], note: str) -> None:
+    """Append ``note`` as a text part unless an identical note is already present.
+
+    Idempotency guard: API requests routinely replay prior turns as
+    ``conversation_history``/``previous_response_id`` chains, so re-normalizing
+    the same message on every request must not keep stacking duplicate
+    "saved at" notes for the same cached file.
+    """
+    for part in normalized_parts:
+        if part.get("type") == "text" and note in (part.get("text") or ""):
+            return
+    normalized_parts.append({"type": "text", "text": note})
+
+
 def _normalize_multimodal_content(content: Any) -> Any:
     """Validate and normalize multimodal content for the API server.
 
@@ -282,12 +346,21 @@ def _normalize_multimodal_content(content: Any) -> Any:
                 raise ValueError("invalid_image_url:Image parts must include a non-empty image URL.")
             url_value = url_value.strip()
             lowered = url_value.lower()
+            cached_image: Optional[CachedMedia] = None
             if lowered.startswith("data:"):
                 if not lowered.startswith("data:image/") or "," not in url_value:
                     raise ValueError(
                         "unsupported_content_type:Only image data URLs are supported. "
                         "Non-image data payloads are not supported."
                     )
+                # Gateway-layer persistence: mirror what platform adapters
+                # (Weixin, Telegram, ...) already do for inbound media —
+                # save the bytes to the local media cache *before* the agent
+                # runs, so the image survives past a one-shot vision analysis
+                # and any tool can re-read it later by its stable local path.
+                # Remote http(s) URLs are intentionally left untouched here
+                # (no gateway-side download).
+                cached_image = _persist_data_url_image(url_value)
             elif not (lowered.startswith("http://") or lowered.startswith("https://")):
                 raise ValueError(
                     "invalid_image_url:Image inputs must use http(s) URLs or data:image/... URLs."
@@ -297,6 +370,12 @@ def _normalize_multimodal_content(content: Any) -> Any:
                 if not isinstance(detail, str) or not detail.strip():
                     raise ValueError("invalid_content_part:Image detail must be a non-empty string when provided.")
                 image_part["image_url"]["detail"] = detail.strip()
+            if cached_image is not None:
+                # Keep the original image_url part unchanged (native-vision
+                # providers still get valid image data) and add a sibling
+                # text note pointing at the stable local path, so both native
+                # vision and the run_agent.py fallback-vision path can see it.
+                _inject_local_path_note(normalized_parts, cached_image.context_note())
             normalized_parts.append(image_part)
             continue
 

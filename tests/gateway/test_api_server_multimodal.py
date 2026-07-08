@@ -7,6 +7,9 @@ path (including the ``run_agent`` prologue that used to crash on list content)
 executes against a real aiohttp app.
 """
 
+import base64
+import importlib
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,6 +24,22 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+
+# Minimal valid 1x1 PNG (magic bytes only matter for cache_image_from_bytes's sniff).
+_PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+_PNG_DATA_URL = "data:image/png;base64," + base64.b64encode(_PNG_BYTES).decode("ascii")
+
+
+def _reload_api_server(monkeypatch, hermes_home: Path):
+    """Reload api_server (and its cache-dir dependencies) under an isolated HERMES_HOME."""
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    import hermes_constants
+    importlib.reload(hermes_constants)
+    import gateway.platforms.base as base_mod
+    importlib.reload(base_mod)
+    import gateway.platforms.api_server as api_server_mod
+    importlib.reload(api_server_mod)
+    return api_server_mod
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +86,9 @@ class TestNormalizeMultimodalContent:
         ]
 
     def test_data_image_url_accepted(self):
+        # "AAAA" decodes to non-image bytes, so gateway persistence silently
+        # no-ops (see TestGatewayDataUrlPersistence for the persisted case) —
+        # the original image_url part must still be forwarded either way.
         content = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]
         out = _normalize_multimodal_content(content)
         assert out == [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]
@@ -115,6 +137,98 @@ class TestContentHasVisiblePayload:
 
     def test_list_with_only_empty_text(self):
         assert not _content_has_visible_payload([{"type": "text", "text": ""}])
+
+
+# ---------------------------------------------------------------------------
+# Gateway-layer persistence of data: URL images (aligns HTTP API ingestion
+# with what platform adapters like Weixin already do: save inbound media to
+# a stable local cache path before the agent runs).
+# ---------------------------------------------------------------------------
+
+
+class TestGatewayDataUrlPersistence:
+    def test_data_url_image_persisted_and_note_injected(self, tmp_path, monkeypatch):
+        api_server_mod = _reload_api_server(monkeypatch, tmp_path / "hermes")
+        content = [
+            {"type": "text", "text": "what is this?"},
+            {"type": "image_url", "image_url": {"url": _PNG_DATA_URL}},
+        ]
+        out = api_server_mod._normalize_multimodal_content(content)
+
+        assert isinstance(out, list)
+        # Original image_url part is preserved unchanged for native-vision providers.
+        image_parts = [p for p in out if p.get("type") == "image_url"]
+        assert image_parts == [{"type": "image_url", "image_url": {"url": _PNG_DATA_URL}}]
+
+        # A sibling text note with the stable local path was appended.
+        text_parts = [p for p in out if p.get("type") == "text"]
+        assert len(text_parts) == 2
+        note = text_parts[-1]["text"]
+        assert "saved at:" in note
+        cache_dir = tmp_path / "hermes" / "cache" / "images"
+        assert str(cache_dir) in note
+
+        # The file actually exists with the decoded bytes.
+        cached_files = list(cache_dir.glob("*"))
+        assert len(cached_files) == 1
+        assert cached_files[0].read_bytes() == _PNG_BYTES
+
+    def test_http_url_not_persisted(self, tmp_path, monkeypatch):
+        api_server_mod = _reload_api_server(monkeypatch, tmp_path / "hermes")
+        content = [{"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}}]
+        out = api_server_mod._normalize_multimodal_content(content)
+
+        assert out == [{"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}}]
+        cache_dir = tmp_path / "hermes" / "cache" / "images"
+        assert not cache_dir.exists()
+
+    def test_invalid_base64_data_url_not_persisted_but_still_forwarded(self, tmp_path, monkeypatch):
+        api_server_mod = _reload_api_server(monkeypatch, tmp_path / "hermes")
+        content = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]
+        out = api_server_mod._normalize_multimodal_content(content)
+
+        assert out == [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]
+        cache_dir = tmp_path / "hermes" / "cache" / "images"
+        assert not cache_dir.exists()
+
+    def test_idempotent_when_note_already_present(self, tmp_path, monkeypatch):
+        """Replayed conversation history must not stack duplicate 'saved at' notes."""
+        api_server_mod = _reload_api_server(monkeypatch, tmp_path / "hermes")
+        content = [{"type": "image_url", "image_url": {"url": _PNG_DATA_URL}}]
+
+        first = api_server_mod._normalize_multimodal_content(content)
+        first_note = next(p["text"] for p in first if p.get("type") == "text")
+
+        # Re-normalize the *original* request content again (simulating a
+        # fresh request with the same inline image) — the cached path is
+        # content-addressed, so the note text is identical and must not be
+        # duplicated within a single normalization pass either.
+        second = api_server_mod._normalize_multimodal_content(content)
+        second_note = next(p["text"] for p in second if p.get("type") == "text")
+        assert second_note == first_note
+        assert len([p for p in second if p.get("type") == "text"]) == 1
+
+        # Simulate replaying a message that ALREADY contains the note
+        # (e.g. stored conversation_history from a prior turn) — normalizing
+        # it again must not append a second copy.
+        replayed = [
+            {"type": "text", "text": first_note},
+            {"type": "image_url", "image_url": {"url": _PNG_DATA_URL}},
+        ]
+        third = api_server_mod._normalize_multimodal_content(replayed)
+        assert len([p for p in third if p.get("type") == "text"]) == 1
+
+    def test_responses_input_image_persisted(self, tmp_path, monkeypatch):
+        """The same helper covers the Responses API's input_image shape."""
+        api_server_mod = _reload_api_server(monkeypatch, tmp_path / "hermes")
+        content = [{"type": "input_image", "image_url": _PNG_DATA_URL}]
+        out = api_server_mod._normalize_multimodal_content(content)
+
+        image_parts = [p for p in out if p.get("type") == "image_url"]
+        assert image_parts == [{"type": "image_url", "image_url": {"url": _PNG_DATA_URL}}]
+        text_parts = [p for p in out if p.get("type") == "text"]
+        assert len(text_parts) == 1
+        assert "saved at:" in text_parts[0]["text"]
 
 
 # ---------------------------------------------------------------------------

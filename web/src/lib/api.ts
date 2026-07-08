@@ -75,6 +75,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/mcp",
   "/api/messaging/platforms",
   "/api/messaging/telegram/onboarding",
+  "/api/messaging/whatsapp/onboarding",
   "/api/model/info",
   "/api/model/set",
   "/api/model/auxiliary",
@@ -369,9 +370,12 @@ export const api = {
     fetchJSON<SessionInfo>(
       appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
     ),
-  getSessionLatestDescendant: (id: string) =>
+  getSessionLatestDescendant: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionLatestDescendantResponse>(
-      `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
+      appendProfileParam(
+        `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
+        profile,
+      ),
     ),
   deleteSession: (id: string, profile = getManagementProfile()) =>
     fetchJSON<{ ok: boolean }>(
@@ -471,10 +475,12 @@ export const api = {
     fetchJSON<ModelsAnalyticsResponse>(
       appendProfileParam(`/api/analytics/models?days=${days}`, profile),
     ),
-  getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
+  getConfig: (profile = getManagementProfile()) =>
+    fetchJSON<Record<string, unknown>>(appendProfileParam("/api/config", profile)),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
-  getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
+  getModelInfo: (profile = getManagementProfile()) =>
+    fetchJSON<ModelInfoResponse>(appendProfileParam("/api/model/info", profile)),
   getModelOptions: (
     profileOrOptions?: string | { profile?: string; refresh?: boolean },
   ) => {
@@ -495,7 +501,10 @@ export const api = {
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return fetchJSON<ModelOptionsResponse>(`/api/model/options${suffix}`);
   },
-  getAuxiliaryModels: () => fetchJSON<AuxiliaryModelsResponse>("/api/model/auxiliary"),
+  getAuxiliaryModels: (profile = getManagementProfile()) =>
+    fetchJSON<AuxiliaryModelsResponse>(
+      appendProfileParam("/api/model/auxiliary", profile),
+    ),
   getMoaModels: () => fetchJSON<MoaConfigResponse>("/api/model/moa"),
   saveMoaModels: (body: MoaConfigResponse) =>
     fetchJSON<MoaConfigResponse & { ok: boolean }>("/api/model/moa", {
@@ -503,21 +512,30 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
-  setModelAssignment: (body: ModelAssignmentRequest) =>
-    fetchJSON<ModelAssignmentResponse>("/api/model/set", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-  saveConfig: (config: Record<string, unknown>) =>
-    fetchJSON<{ ok: boolean }>("/api/config", {
+  setModelAssignment: (
+    body: ModelAssignmentRequest,
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<ModelAssignmentResponse>(
+      appendProfileParam("/api/model/set", profile),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  saveConfig: (config: Record<string, unknown>, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean }>(appendProfileParam("/api/config", profile), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ config }),
     }),
-  getConfigRaw: () => fetchJSON<{ yaml: string; path?: string }>("/api/config/raw"),
-  saveConfigRaw: (yaml_text: string) =>
-    fetchJSON<{ ok: boolean }>("/api/config/raw", {
+  getConfigRaw: (profile = getManagementProfile()) =>
+    fetchJSON<{ yaml: string; path?: string }>(
+      appendProfileParam("/api/config/raw", profile),
+    ),
+  saveConfigRaw: (yaml_text: string, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean }>(appendProfileParam("/api/config/raw", profile), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ yaml_text }),
@@ -870,6 +888,39 @@ export const api = {
       `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
       { method: "DELETE" },
     ),
+  startWhatsAppOnboarding: (body: {
+    mode?: "bot" | "self-chat";
+    allowed_users?: string;
+  }) =>
+    fetchJSON<WhatsAppOnboardingStartResponse>(
+      "/api/messaging/whatsapp/onboarding/start",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  getWhatsAppOnboardingStatus: (pairingId: string) =>
+    fetchJSON<WhatsAppOnboardingStatusResponse>(
+      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
+    ),
+  applyWhatsAppOnboarding: (
+    pairingId: string,
+    body: { mode?: "bot" | "self-chat"; allowed_users?: string; profile?: string },
+  ) =>
+    fetchJSON<WhatsAppOnboardingApplyResponse>(
+      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}/apply`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  cancelWhatsAppOnboarding: (pairingId: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
+      { method: "DELETE" },
+    ),
 
   // Gateway / update actions
   restartGateway: () =>
@@ -1070,6 +1121,28 @@ export const api = {
 
   // ── Admin: Memory provider ──────────────────────────────────────────
   getMemory: () => fetchJSON<MemoryStatus>("/api/memory"),
+  getMemoryProviderConfig: (provider: string) =>
+    fetchJSON<MemoryProviderConfig>(
+      `/api/memory/providers/${encodeURIComponent(provider)}/config`,
+    ),
+  updateMemoryProviderConfig: (provider: string, values: Record<string, unknown>) =>
+    fetchJSON<{ ok: boolean; active: string }>(
+      `/api/memory/providers/${encodeURIComponent(provider)}/config`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values }),
+      },
+    ),
+  setupMemoryProvider: (provider: string, values: Record<string, unknown> = {}) =>
+    fetchJSON<MemoryProviderSetupResponse>(
+      `/api/memory/providers/${encodeURIComponent(provider)}/setup`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values }),
+      },
+    ),
   setMemoryProvider: (provider: string) =>
     fetchJSON<{ ok: boolean; active: string }>("/api/memory/provider", {
       method: "PUT",
@@ -1427,6 +1500,11 @@ export interface MessagingPlatform {
   error_message: string | null;
   updated_at: string | null;
   home_channel: { platform: string; chat_id: string; name: string; thread_id?: string } | null;
+  whatsapp_setup?: {
+    mode?: string;
+    allowed_users_set?: boolean;
+    home_channel_set?: boolean;
+  } | null;
   env_vars: MessagingPlatformEnvVar[];
 }
 
@@ -1524,13 +1602,73 @@ export interface CredentialPoolProvider {
 export interface MemoryProviderInfo {
   name: string;
   description: string;
+  available: boolean;
   configured: boolean;
+  status: "ready" | "needs_config" | "unavailable" | "missing";
+  setup?: MemoryProviderSetupInfo;
 }
 
 export interface MemoryStatus {
   active: string;
   providers: MemoryProviderInfo[];
   builtin_files: { memory: number; user: number };
+}
+
+export interface MemoryProviderExternalDependency {
+  name: string;
+  install: string;
+  check: string;
+}
+
+export interface MemoryProviderSetupInfo {
+  pip_dependencies: string[];
+  external_dependencies: MemoryProviderExternalDependency[];
+  required_env: string[];
+  dependencies_installed: boolean;
+}
+
+export interface MemoryProviderSetupResult {
+  kind: string;
+  name: string;
+  status: string;
+  command: string;
+  returncode: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+export interface MemoryProviderSetupResponse {
+  ok: boolean;
+  provider: string;
+  results: MemoryProviderSetupResult[];
+  status?: MemoryProviderInfo | null;
+}
+
+export interface MemoryProviderFieldOption {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+export interface MemoryProviderField {
+  key: string;
+  label: string;
+  kind: "text" | "secret" | "select" | "boolean";
+  description: string;
+  placeholder: string;
+  required: boolean;
+  value: string | boolean;
+  is_set: boolean;
+  options: MemoryProviderFieldOption[];
+  url: string;
+  when?: Record<string, string | boolean | number> | null;
+}
+
+export interface MemoryProviderConfig {
+  name: string;
+  label: string;
+  fields: MemoryProviderField[];
+  setup?: MemoryProviderSetupInfo;
 }
 
 export interface HookEntry {
@@ -1743,6 +1881,38 @@ export interface TelegramOnboardingApplyResponse {
   ok: boolean;
   platform: "telegram";
   bot_username?: string;
+  needs_restart: boolean;
+  restart_started?: boolean;
+  restart_action?: string;
+  restart_pid?: number | null;
+  restart_error?: string;
+}
+
+export interface WhatsAppOnboardingStartResponse {
+  pairing_id: string;
+  status:
+    | "starting"
+    | "installing"
+    | "waiting"
+    | "connected"
+    | "error"
+    | "expired"
+    | "cancelled";
+  qr_payload?: string | null;
+  expires_at: string;
+  mode: "bot" | "self-chat";
+  allowed_users: string;
+  account_id?: string | null;
+  account_name?: string | null;
+  account_phone?: string | null;
+  error?: string | null;
+}
+
+export type WhatsAppOnboardingStatusResponse = WhatsAppOnboardingStartResponse;
+
+export interface WhatsAppOnboardingApplyResponse {
+  ok: boolean;
+  platform: "whatsapp";
   needs_restart: boolean;
   restart_started?: boolean;
   restart_action?: string;
@@ -2317,7 +2487,7 @@ export interface HubAgentPluginRow {
 
 export interface PluginsHubProviders {
   memory_provider: string;
-  memory_options: Array<{ name: string; description: string }>;
+  memory_options: MemoryProviderInfo[];
   context_engine: string;
   context_options: Array<{ name: string; description: string }>;
 }

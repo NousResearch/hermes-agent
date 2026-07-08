@@ -5995,6 +5995,58 @@ function createWindow() {
     webPreferences: chatWindowWebPreferences(path.join(__dirname, 'preload.cjs'))
   })
 
+  // System Tray Setup
+  if (!global.appTray) {
+    const iconPath = getAppIconPath()
+    if (iconPath) {
+      try {
+        const { Tray, Menu } = require('electron')
+        global.appTray = new Tray(iconPath)
+        const contextMenu = Menu.buildFromTemplate([
+          {
+            label: 'Show Hermes',
+            click: () => {
+              if (mainWindow) {
+                mainWindow.show()
+                mainWindow.focus()
+              }
+            }
+          },
+          {
+            label: 'Quit',
+            click: () => {
+              app.isQuiting = true
+              app.quit()
+            }
+          }
+        ])
+        global.appTray.setToolTip('Hermes Desktop')
+        global.appTray.setContextMenu(contextMenu)
+        global.appTray.on('click', () => {
+          if (mainWindow) {
+            if (mainWindow.isVisible()) {
+              mainWindow.hide()
+            } else {
+              mainWindow.show()
+              mainWindow.focus()
+            }
+          }
+        })
+      } catch (e) {
+        console.error('Failed to create system tray:', e)
+      }
+    }
+  }
+
+  // Minimize to tray on close
+  mainWindow.on('close', (event) => {
+    if (!app.isQuiting) {
+      event.preventDefault()
+      mainWindow.hide()
+    }
+    return false
+  })
+
   if (IS_MAC) {
     mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
     if (icon) {

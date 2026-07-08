@@ -381,22 +381,23 @@ def test_current_model_injected_when_genuinely_absent(monkeypatch):
 
 
 def test_numbered_failover_lanes_hidden_from_picker(monkeypatch):
-    """claude-{api-proxy,bridge}-fN lanes are hidden from the interactive picker.
+    """claude-apx-N / claude-bpx-N failover lanes are hidden from the picker.
 
     They are internal auto-failover targets, not hand-selectable providers, and
-    20+ of them crowd real providers out of the dropdown's 25-option cap. They
-    must NOT appear in the picker; the base (non-numbered) claude-api-proxy /
-    claude-bridge providers and everything else must survive.
+    20+ of them crowd real providers out of the dropdown's 25-option cap. N
+    INCLUDES 0 (claude-bpx-0 / claude-apx-0 are lanes too). They must NOT appear
+    in the picker; the relay pools (claude-apr / claude-bpr) and everything else
+    must survive.
     """
     base = [
         _make_provider("anthropic", models=["claude-opus-4-8"]),
-        _make_provider("claude-app", models=["claude-opus-4-8"]),
-        _make_provider("claude-bpp", models=["claude-opus-4-8"]),
-        _make_provider("claude-api-proxy", models=["claude-opus-4-8"]),
-        _make_provider("claude-bridge", models=["claude-opus-4-8"]),
-        _make_provider("claude-api-proxy-f1", models=["claude-opus-4-8"]),
-        _make_provider("claude-api-proxy-f10", models=["claude-opus-4-8"]),
-        _make_provider("claude-bridge-f5", models=["claude-opus-4-8"]),
+        _make_provider("claude-apr", models=["claude-opus-4-8"]),
+        _make_provider("claude-bpr", models=["claude-opus-4-8"]),
+        _make_provider("claude-apx-0", models=["claude-opus-4-8"]),
+        _make_provider("claude-apx-1", models=["claude-opus-4-8"]),
+        _make_provider("claude-apx-10", models=["claude-opus-4-8"]),
+        _make_provider("claude-bpx-0", models=["claude-opus-4-8"]),
+        _make_provider("claude-bpx-5", models=["claude-opus-4-8"]),
         _make_provider("yunwu", models=["claude-opus-4-8"]),
     ]
 
@@ -407,25 +408,24 @@ def test_numbered_failover_lanes_hidden_from_picker(monkeypatch):
 
     result = [p["slug"] for p in model_switch.list_picker_providers(max_models=50)]
 
-    # Every numbered lane is gone.
-    assert "claude-api-proxy-f1" not in result
-    assert "claude-api-proxy-f10" not in result
-    assert "claude-bridge-f5" not in result
-    # Base providers + real providers survive.
-    for keep in ("anthropic", "claude-app", "claude-bpp",
-                 "claude-api-proxy", "claude-bridge", "yunwu"):
+    # Every numbered lane — INCLUDING -0 — is gone.
+    for lane in ("claude-apx-0", "claude-apx-1", "claude-apx-10",
+                 "claude-bpx-0", "claude-bpx-5"):
+        assert lane not in result, f"{lane} should be hidden"
+    # Relay pools + real providers survive.
+    for keep in ("anthropic", "claude-apr", "claude-bpr", "yunwu"):
         assert keep in result, f"{keep} should remain visible"
 
 
 def test_current_failover_lane_stays_visible(monkeypatch):
     """A numbered lane is kept ONLY when it's the currently-active provider.
 
-    So a user who is actually running on claude-bridge-f5 can still see it in
+    So a user who is actually running on claude-bpx-5 can still see it in
     the picker (to switch away), while the other lanes stay hidden.
     """
     base = [
-        _make_provider("claude-bridge-f1", models=["claude-opus-4-8"]),
-        _make_provider("claude-bridge-f5", models=["claude-opus-4-8"],
+        _make_provider("claude-bpx-1", models=["claude-opus-4-8"]),
+        _make_provider("claude-bpx-5", models=["claude-opus-4-8"],
                        is_current=True),
         _make_provider("yunwu", models=["claude-opus-4-8"]),
     ]
@@ -436,25 +436,24 @@ def test_current_failover_lane_stays_visible(monkeypatch):
                         lambda *a, **kw: pytest.fail("should not be called"))
 
     result = [p["slug"] for p in model_switch.list_picker_providers(
-        current_provider="claude-bridge-f5", max_models=50)]
+        current_provider="claude-bpx-5", max_models=50)]
 
-    assert "claude-bridge-f5" in result   # current lane visible
-    assert "claude-bridge-f1" not in result  # other lanes still hidden
+    assert "claude-bpx-5" in result   # current lane visible
+    assert "claude-bpx-1" not in result  # other lanes still hidden
     assert "yunwu" in result
 
 
 def test_non_failover_claude_providers_never_hidden(monkeypatch):
-    """The hide-rule must be surgical: only claude-{api-proxy,bridge}-fN match.
+    """The hide-rule must be surgical: only claude-{apx,bpx}-N (N any int) match.
 
-    Base claude-* providers and unrelated slugs that merely contain '-f' must
+    Relay pools and unrelated slugs that merely contain 'apx'/'bpx' text must
     not be swept up by the failover-lane regex.
     """
     base = [
-        _make_provider("claude-app"),        # not a lane
-        _make_provider("claude-bpp"),        # not a lane
-        _make_provider("claude-api-proxy"),  # base, not numbered
-        _make_provider("claude-bridge"),     # base, not numbered
-        _make_provider("claude-fable-proxy"),  # '-f' but not the -fN pattern
+        _make_provider("claude-apr"),        # relay pool, not a lane
+        _make_provider("claude-bpr"),        # relay pool, not a lane
+        _make_provider("claude-app"),        # legacy base, not a lane
+        _make_provider("claude-apxtra"),     # 'apx' substring but not -N
     ]
     for p in base:
         p["models"] = ["m"]
@@ -467,6 +466,5 @@ def test_non_failover_claude_providers_never_hidden(monkeypatch):
     result = [p["slug"] for p in model_switch.list_picker_providers(max_models=50)]
 
     assert result == [
-        "claude-app", "claude-bpp", "claude-api-proxy",
-        "claude-bridge", "claude-fable-proxy",
+        "claude-apr", "claude-bpr", "claude-app", "claude-apxtra",
     ]

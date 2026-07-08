@@ -97,17 +97,23 @@ _NOUS_HERMES_NON_AGENTIC_RE = re.compile(
 )
 
 
-# Numbered Claude failover-lane providers (claude-api-proxy-fN / claude-bridge-fN,
-# any integer N). These are INTERNAL auto-failover targets that the fallback
-# router selects on its own — a user never manually switches to a specific lane.
-# There can be 20+ of them, which crowds real, hand-selectable providers out of
-# the interactive /model picker (Discord's select menu hard-caps at 25 options),
-# so a newly-added provider past slot 25 becomes unreachable from the dropdown.
-# We hide these lanes from the picker (see list_picker_providers). They remain
-# fully reachable by typed `/model claude-bridge-f5/...` and unaffected as
-# failover routing targets — this only affects the interactive dropdown. Mirrors
-# agent/usage_pricing.py::_NOTIONAL_ANTHROPIC_FN_RE (same lane family).
-_PICKER_HIDDEN_FAILOVER_LANE_RE = re.compile(r"^claude-(?:api-proxy|bridge)-f\d+$")
+# Numbered Claude failover-lane providers. As of the 2026-07-08 provider-slug
+# rename these are ``claude-apx-N`` (api-proxy failover) and ``claude-bpx-N``
+# (bridge failover), N any non-negative integer INCLUDING 0 (``claude-bpx-0`` /
+# ``claude-apx-0`` are also lanes and are hidden). They are INTERNAL
+# auto-failover targets the fallback router selects on its own — a user never
+# manually switches to a specific lane. There can be 20+ of them, which crowds
+# real, hand-selectable providers out of the interactive /model picker (Discord's
+# select menu hard-caps at 25 options), so a newly-added provider past slot 25
+# becomes unreachable from the dropdown. We hide these lanes from the picker
+# (see list_picker_providers). They remain fully reachable by typed
+# ``/model claude-bpx-5/...`` and unaffected as failover routing targets — this
+# only affects the interactive dropdown.
+#
+# The hand-selectable relay POOLS ``claude-apr`` / ``claude-bpr`` (no numeric
+# suffix) stay visible — those are the front-door providers a user picks; the
+# ``-N`` lanes behind them are plumbing.
+_PICKER_HIDDEN_FAILOVER_LANE_RE = re.compile(r"^claude-(?:apx|bpx)-\d+$")
 
 
 def is_nous_hermes_non_agentic(model_name: str) -> bool:

@@ -3065,13 +3065,15 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
 
     real_connect = _sqlite3.connect
 
-    class _WalBlockingConnection(_sqlite3.Connection):
-        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
-            if "journal_mode=wal" in sql.lower().replace(" ", ""):
-                raise _sqlite3.OperationalError("locking protocol")
-            return super().execute(sql, *args, **kwargs)
-
     def wal_blocking_connect(*args, **kwargs):
+        requested_factory = kwargs.pop("factory", _sqlite3.Connection)
+
+        class _WalBlockingConnection(requested_factory):
+            def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+                if "journal_mode=wal" in sql.lower().replace(" ", ""):
+                    raise _sqlite3.OperationalError("locking protocol")
+                return super().execute(sql, *args, **kwargs)
+
         return real_connect(
             *args, factory=_WalBlockingConnection, **kwargs
         )
@@ -4752,17 +4754,83 @@ def test_connect_closing_yields_usable_connection(tmp_path):
         assert task.title == "closing-cm test"
 
 
-def test_bare_connect_does_not_close_on_context_exit(tmp_path):
-    """Document the leak that connect_closing exists to prevent.
+def test_connect_closes_fd_on_context_manager_exit(tmp_path):
+    """Regression: with kb.connect() as conn: must close the FD on exit.
 
-    sqlite3.Connection's __exit__ commits/rollbacks but doesn't close.
-    This is the upstream behaviour we cannot change; the regression
-    guard is to make sure connect_closing() does the right thing.
+    Before the ``_ConnContext`` fix, ``sqlite3.Connection.__exit__`` only
+    committed/rolled back the transaction; it did NOT close the file
+    descriptor.  Every ``with connect()`` call therefore leaked an open FD
+    to kanban.db + kanban.db-wal.  In long-lived gateway / dashboard
+    processes these accumulated until the kernel FD limit was hit:
+    ``[Errno 24] Too many open files``.  Production incident: #33159.
     """
+    import gc
+
     db_path = tmp_path / "kanban.db"
     kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    try:
+        fd_before = set(int(f) for f in os.listdir(f"/proc/{os.getpid()}/fd"))
+    except OSError:
+        pytest.skip("Cannot enumerate /proc FDs on this platform")
+
     with kb.connect(db_path=db_path) as conn:
-        pass
-    # Still usable after with-block exit (the leak).
-    conn.execute("SELECT 1").fetchone()
-    conn.close()  # explicit close to avoid leaking THIS test
+        _ = kb.list_tasks(conn)
+
+    gc.collect()
+
+    fd_after = set(int(f) for f in os.listdir(f"/proc/{os.getpid()}/fd"))
+    new_fds = fd_after - fd_before
+    assert len(new_fds) <= 2, (
+        f"FD leak: {len(new_fds)} new file descriptors remain open after "
+        f"'with kb.connect() as conn:' block exited. "
+        f"_ConnContext.__exit__ must close the connection. New FDs: {new_fds}"
+    )
+
+
+def test_connect_closes_fd_on_exception_inside_with_block(tmp_path):
+    """FD must be released even when an exception is raised inside the with block."""
+    import gc
+
+    db_path = tmp_path / "kanban.db"
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    try:
+        fd_before = set(int(f) for f in os.listdir(f"/proc/{os.getpid()}/fd"))
+    except OSError:
+        pytest.skip("Cannot enumerate /proc FDs on this platform")
+
+    with pytest.raises(RuntimeError, match="intentional"):
+        with kb.connect(db_path=db_path) as conn:
+            _ = kb.list_tasks(conn)
+            raise RuntimeError("intentional error inside with block")
+
+    gc.collect()
+
+    fd_after = set(int(f) for f in os.listdir(f"/proc/{os.getpid()}/fd"))
+    new_fds = fd_after - fd_before
+    assert len(new_fds) <= 2, (
+        f"FD leak on exception: {len(new_fds)} new FDs remain after exception "
+        f"in 'with kb.connect()' block. _ConnContext.__exit__ must close on error."
+    )
+
+
+def test_connect_returns_conn_context_type(tmp_path):
+    """connect() must return a _ConnContext instance, not a bare sqlite3.Connection.
+
+    This is an isinstance guard: if someone ever removes the _ConnContext wrapper
+    from connect(), this test will catch the regression immediately.
+    """
+    from hermes_cli.kanban_db import _ConnContext
+
+    db_path = tmp_path / "kanban.db"
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert isinstance(conn, _ConnContext), (
+            f"connect() returned {type(conn).__qualname__}, expected _ConnContext. "
+            "The FD-leak fix (_ConnContext wrapper) is not active."
+        )
+    finally:
+        conn.close()
+

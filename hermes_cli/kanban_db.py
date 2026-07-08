@@ -1312,11 +1312,23 @@ def _resolve_busy_timeout_ms() -> int:
     return DEFAULT_BUSY_TIMEOUT_MS
 
 
-def _sqlite_connect(path: Path) -> sqlite3.Connection:
-    """Open a Kanban SQLite connection with consistent lock waiting."""
+def _sqlite_connect(
+    path: Path,
+    factory: type = sqlite3.Connection,
+) -> sqlite3.Connection:
+    """Open a Kanban SQLite connection with consistent lock waiting.
+
+    Args:
+        path: Path to the SQLite database file.
+        factory: Connection class to instantiate (default: ``sqlite3.Connection``).
+            Pass ``_ConnContext`` to get a connection whose context manager
+            ``__exit__`` closes the file descriptor in addition to the
+            normal commit/rollback.
+    """
     busy_timeout_ms = _resolve_busy_timeout_ms()
     conn = sqlite3.connect(
         str(path),
+        factory=factory,
         isolation_level=None,
         timeout=busy_timeout_ms / 1000.0,
     )
@@ -1678,11 +1690,51 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     raise KanbanDbCorruptError(resolved, backup, reason)
 
 
+class _ConnContext(sqlite3.Connection):
+    """``sqlite3.Connection`` subclass that closes the FD on context-manager exit.
+
+    ``sqlite3.Connection.__exit__`` only commits or rolls back the active
+    transaction; it does **not** close the underlying file descriptor (see
+    CPython ``Modules/_sqlite/connection.c``).  Every
+    ``with kb.connect() as conn:`` call site therefore leaks an open FD to
+    ``kanban.db`` and its WAL sidecar file.  In long-lived processes (gateway
+    dispatcher, dashboard server) that route every kanban operation through
+    ``connect()``, these accumulate until the process hits the kernel FD
+    limit and crashes with ``[Errno 24] Too many open files``.
+    Production incident: #33159.
+
+    This subclass overrides ``__exit__`` to call ``self.close()`` after the
+    base commit/rollback, making ``with kb.connect() as conn:`` safe without
+    requiring any call-site changes.  ``connect_closing()`` is kept for
+    backwards compatibility but is now redundant.
+    """
+
+    def __exit__(
+        self,
+        exc_type: object,
+        exc_val: object,
+        exc_tb: object,
+    ) -> bool:
+        # Let the base class handle commit/rollback first.
+        try:
+            super().__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            # Always release the file descriptor regardless of transaction
+            # outcome. Swallow any error from close() itself so as not to
+            # mask the original exception.
+            try:
+                self.close()
+            except Exception:  # pragma: no cover
+                pass
+        # Return False — do not suppress the caller's exception.
+        return False
+
+
 def connect(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
-) -> sqlite3.Connection:
+) -> "_ConnContext":
     """Open (and initialize if needed) the kanban DB.
 
     WAL mode is enabled on every connection; it's a no-op after the first
@@ -1719,7 +1771,7 @@ def connect(
     # connection with WAL/pragmas under the cheap in-process _INIT_LOCK.
     resolved = str(path.resolve())
     if resolved in _INITIALIZED_PATHS:
-        conn = _sqlite_connect(path)
+        conn = _sqlite_connect(path, factory=_ConnContext)
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
@@ -1744,7 +1796,7 @@ def connect(
         # via _INITIALIZED_PATHS so it only runs once per process per path.
         _guard_existing_db_is_healthy(path)
         resolved = str(path.resolve())
-        conn = _sqlite_connect(path)
+        conn = _sqlite_connect(path, factory=_ConnContext)
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
@@ -1805,9 +1857,9 @@ def connect_closing(
 
     See #33159 for the production incident.
 
-    The ``connect()`` function itself remains unchanged so callers that
-    intentionally manage the connection lifetime (tests, long-lived
-    callers) continue to work.
+    The ``connect()`` function now returns a ``_ConnContext`` whose context
+    manager automatically closes the connection, making this wrapper
+    redundant, but it is kept for backwards compatibility.
     """
     conn = connect(db_path=db_path, board=board)
     try:
@@ -1817,6 +1869,7 @@ def connect_closing(
             conn.close()
         except Exception:
             pass
+
 
 
 def init_db(

@@ -921,14 +921,19 @@ class SessionDB:
                 # must already exist + be initialised (callers guard on
                 # db_path.exists()); a SELECT against an empty file raises and
                 # the caller degrades per-profile.
-                self._conn = sqlite3.connect(
+                _ro_conn = sqlite3.connect(
                     f"file:{self.db_path}?mode=ro",
                     uri=True,
                     check_same_thread=False,
                     timeout=1.0,
                     isolation_level=None,
                 )
-                self._conn.row_factory = sqlite3.Row
+                try:
+                    _ro_conn.row_factory = sqlite3.Row
+                except Exception:
+                    _ro_conn.close()
+                    raise
+                self._conn = _ro_conn
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)

@@ -113,6 +113,35 @@ class TestMarkRunningJobsInterrupted:
         assert marked == ["job-2"]
 
 
+class TestIsInterrupted:
+    """Peek-only check used at the delivery gate -- must NOT clear the
+    flag, unlike _consume_interrupted_flag."""
+
+    def test_false_when_not_marked(self):
+        import cron.scheduler as sched
+
+        assert sched._is_interrupted("job-1") is False
+
+    def test_true_when_marked(self):
+        import cron.scheduler as sched
+
+        sched._interrupted_job_ids.add("job-1")
+
+        assert sched._is_interrupted("job-1") is True
+
+    def test_does_not_clear_the_flag(self):
+        import cron.scheduler as sched
+
+        sched._interrupted_job_ids.add("job-1")
+
+        sched._is_interrupted("job-1")
+
+        # Still set -- the later, authoritative check before mark_job_run
+        # must still see it.
+        assert "job-1" in sched._interrupted_job_ids
+        assert sched._is_interrupted("job-1") is True
+
+
 class TestConsumeInterruptedFlag:
     def test_false_when_not_marked(self):
         import cron.scheduler as sched
@@ -164,6 +193,46 @@ class TestRunOneJobHonoursInterruptedFlag:
         # Flag is consumed so a later, unrelated fire of the same job ID
         # isn't permanently silenced.
         assert job["id"] not in sched._interrupted_job_ids
+
+    def test_interrupted_job_delivers_failure_summary_not_raw_response(self):
+        """The status-write guard alone isn't enough: delivery happens
+        BEFORE mark_job_run in run_one_job's own flow, so a job that kept
+        running post-kill and produced a plausible-looking final_response
+        must not have that response sent to the user just because the
+        eventual status write gets suppressed. Interrupted jobs must route
+        through the same failure-summary delivery path a real failure
+        would."""
+        import cron.scheduler as sched
+
+        job = self._make_job()
+        sched._interrupted_job_ids.add(job["id"])
+
+        with patch("cron.scheduler.claim_dispatch", return_value=True), \
+             patch("agent.secret_scope.set_secret_scope", return_value=None), \
+             patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+             patch("agent.secret_scope.reset_secret_scope"), \
+             patch(
+                 "cron.scheduler.run_job",
+                 return_value=(True, "full output", "a plausible final response", None),
+             ), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch(
+                 "cron.scheduler._summarize_cron_failure_for_delivery",
+                 return_value="This run was interrupted.",
+             ) as mock_summarize, \
+             patch("cron.scheduler._is_cron_silence_response", return_value=False), \
+             patch("cron.scheduler._deliver_result", return_value=None) as mock_deliver, \
+             patch("cron.scheduler.mark_job_run"):
+            result = sched.run_one_job(job)
+
+        assert result is True
+        mock_summarize.assert_called_once()
+        # The summarizer's error argument must mention the interruption,
+        # not be silently None / the agent's own (possibly absent) error.
+        assert "interrupt" in mock_summarize.call_args.args[1].lower()
+        delivered_content = mock_deliver.call_args.args[1]
+        assert delivered_content == "This run was interrupted."
+        assert "plausible final response" not in delivered_content
 
     def test_success_path_writes_normally_when_not_interrupted(self):
         """Control case: the guard must not swallow ordinary, un-interrupted

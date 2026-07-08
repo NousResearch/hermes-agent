@@ -589,6 +589,9 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     Searches the local skills dir (~/.hermes/skills/) first, then any
     external dirs configured via skills.external_dirs.  Returns
     {"path": Path} or None.
+
+    Name resolution supports both directory slug and frontmatter name
+    (the `name:` field in SKILL.md), matching the behavior of skill_view().
     """
     from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
     for skills_dir in get_all_skills_dirs():
@@ -597,8 +600,24 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
         for skill_md in skills_dir.rglob("SKILL.md"):
             if is_excluded_skill_path(skill_md):
                 continue
+            # Match by directory slug (fast path)
             if skill_md.parent.name == name:
                 return {"path": skill_md.parent}
+            # Match by frontmatter name (slower, but necessary for Dashboard consistency)
+            try:
+                with open(skill_md, "r", encoding="utf-8") as f:
+                    content = f.read()
+                # Extract YAML frontmatter between --- markers
+                if content.startswith("---"):
+                    end_match = re.search(r'\n---\s*\n', content[3:])
+                    if end_match:
+                        yaml_content = content[3:end_match.start() + 3]
+                        parsed = yaml.safe_load(yaml_content)
+                        if isinstance(parsed, dict) and parsed.get("name") == name:
+                            return {"path": skill_md.parent}
+            except Exception:
+                # If frontmatter parsing fails, skip this skill (directory match already handled)
+                continue
     return None
 
 

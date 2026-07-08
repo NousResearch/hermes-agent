@@ -19,6 +19,7 @@ from tools.skill_manager_tool import (
     _write_file,
     _remove_file,
     skill_manage,
+    _find_skill,
     MAX_NAME_LENGTH,
 )
 
@@ -1343,8 +1344,83 @@ class TestCuratorConsolidationDeleteGuard:
                 action="write_file",
                 name="reviewed",
                 file_path="references/workflow.md",
-                file_content="new workflow\n",
+                file_content="new workflow\\n",
             ))
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+# ---------------------------------------------------------------------------
+# _find_skill frontmatter name resolution (#61172)
+# ---------------------------------------------------------------------------
+
+
+class TestFindSkillFrontmatterNameResolution:
+    """Tests for _find_skill() frontmatter name matching (#61172)."""
+
+    def test_find_skill_by_directory_slug(self, tmp_path):
+        """Original behavior: find skill by directory slug."""
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: Display Name\ndescription: A skill.\n---\n# My Skill\n",
+            encoding="utf-8",
+        )
+        with patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
+            result = _find_skill("my-skill")
+        assert result is not None
+        assert result["path"] == skill_dir
+
+    def test_find_skill_by_frontmatter_name(self, tmp_path):
+        """Bug fix: find skill by frontmatter name when it differs from directory."""
+        skill_dir = tmp_path / "development-workflow-policy"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: Development Workflow Policy\ndescription: A skill.\n---\n# Development Workflow Policy\n",
+            encoding="utf-8",
+        )
+        with patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
+            result = _find_skill("Development Workflow Policy")
+        assert result is not None
+        assert result["path"] == skill_dir
+
+    def test_find_skill_not_found_when_name_mismatch(self, tmp_path):
+        """Return None when neither directory slug nor frontmatter name matches."""
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: My Skill\ndescription: A skill.\n---\n# My Skill\n",
+            encoding="utf-8",
+        )
+        with patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
+            result = _find_skill("wrong-name")
+        assert result is None
+
+    def test_find_skill_handles_missing_frontmatter(self, tmp_path):
+        """Gracefully handle SKILL.md without frontmatter (directory match still works)."""
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# My Skill\n", encoding="utf-8")
+        with patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
+            # Directory slug still works
+            result = _find_skill("my-skill")
+            assert result is not None
+            assert result["path"] == skill_dir
+            # Frontmatter name doesn't exist, so no match
+            result = _find_skill("My Skill")
+            assert result is None
+
+    def test_find_skill_handles_corrupt_frontmatter(self, tmp_path):
+        """Gracefully handle SKILL.md with corrupt YAML (directory match still works)."""
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: [[invalid yaml\n---\n# My Skill\n",
+            encoding="utf-8",
+        )
+        with patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
+            # Directory slug still works despite corrupt frontmatter
+            result = _find_skill("my-skill")
+            assert result is not None
+            assert result["path"] == skill_dir

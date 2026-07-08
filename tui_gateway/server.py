@@ -586,22 +586,27 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
         try:
             db = _get_db()
             if db is not None:
-                # Don't end gateway-originated sessions — the gateway owns their
-                # lifecycle.  The TUI is a viewer, not the owner.  Ending a
-                # gateway session in state.db triggers a Groundhog Day routing
-                # loop: the gateway's #54878 self-heal detects the stale entry,
-                # recovers to the parent session, context compression splits
-                # back to the reaped child, and the cycle repeats on every
-                # inbound message.  (#60609)
-                _GATEWAY_SOURCES = frozenset({
-                    "bluebubbles", "telegram", "discord", "signal",
-                    "whatsapp", "sms", "slack", "mattermost",
-                    "matrix", "line", "wechat", "facebook",
-                    "imessage", "googlechat",
-                })
+                # Only end sessions the TUI actually OWNS (created via
+                # session.create — source "tui"/"cli"/etc.). Gateway-originated
+                # sessions (telegram, bluebubbles, ...) are merely *viewed*
+                # here via session.resume; the messaging gateway is their
+                # lifecycle owner and still routes inbound messages to them.
+                # Ending one in state.db triggers a Groundhog Day routing
+                # loop: the gateway's #54878 self-heal detects the stale
+                # entry, recovers to the pre-compression parent, compression
+                # splits back to the reaped child, and the cycle repeats on
+                # every inbound message.  (#60609)
+                #
+                # Fail-closed allow-list, NOT a platform deny-list: platform
+                # names drift (plugins, new adapters), and the gateway can
+                # even stamp source="unknown". Sub-agent rows (source="tool")
+                # are owned by their parent run — a watch window closing must
+                # not end them either. Anything not provably TUI-owned is
+                # left alone; worst case is a ghost row in /resume, never
+                # context amnesia.
                 row = db.get_session(session_id)
-                source = (row or {}).get("source", "")
-                if source not in _GATEWAY_SOURCES:
+                source = str((row or {}).get("source") or "").strip().lower()
+                if source in _TUI_OWNED_SESSION_SOURCES:
                     db.end_session(session_id, end_reason)
         except Exception:
             pass
@@ -1574,6 +1579,18 @@ def _session_source(session: dict | None) -> str:
         if source:
             return source
     return "tui"
+
+
+# Session sources whose lifecycle THIS process owns. ``_finalize_session``
+# only writes ``end_session()`` for these; anything else (gateway platforms
+# like telegram/bluebubbles, sub-agent ``tool`` rows, plugin platforms,
+# ``unknown``) is merely viewed here via session.resume and must never be
+# marked ended by a TUI/desktop teardown (#60609). Strictly the sources this
+# server's session.create can stamp — note "local" is a gateway Platform
+# value (Platform.LOCAL) and deliberately NOT in this set.
+_TUI_OWNED_SESSION_SOURCES = frozenset({
+    "tui", "cli", "desktop", "webui",
+})
 
 
 def _register_session_cwd(session: dict | None) -> None:

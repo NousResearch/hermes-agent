@@ -174,6 +174,8 @@ class TestFinalizeSessionPersist:
         from tui_gateway.server import _finalize_session
 
         mock_db = MagicMock()
+        # TUI-owned session — end_session must still fire (#60609 guard).
+        mock_db.get_session.return_value = {"source": "tui"}
         mock_get_db.return_value = mock_db
 
         agent = _make_agent(session_id="sess_123")

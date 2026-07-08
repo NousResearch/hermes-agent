@@ -4378,6 +4378,37 @@ class GatewaySlashCommandsMixin:
             summary, source.platform.value if source.platform else "gateway",
         )
 
+        # --- Layer 1b: mark the SOURCE session as merged too. ---
+        # /merge records the merge on the TARGET (the _merged_into ledger) but
+        # historically wrote nothing back to the SOURCE — so if you kept talking
+        # in the branch (or resumed it later), the agent had no idea a merge ever
+        # happened. Append a small labeled marker into the source transcript so a
+        # resumed branch knows its exploration was already folded into the parent.
+        # Best-effort; never blocks the merge.
+        try:
+            from hermes_time import now as _merge_now
+            _ts = _merge_now().strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            from datetime import datetime as _dt
+            _ts = _dt.now().strftime("%Y-%m-%d %H:%M")
+        try:
+            await self._session_db.append_message(
+                session_id=source_session_id,
+                role="user",
+                content=t(
+                    "gateway.merge.source_marker" if is_thread_form else "gateway.merge.source_marker_named",
+                    target=target_title, when=_ts,
+                ),
+            )
+        except Exception as exc:
+            logger.debug("merge: source-marker append skipped: %s", exc)
+        # Evict the source's cached agent so the marker is live if it keeps going.
+        try:
+            src_key = self._session_key_for_source(source)
+            self._evict_cached_agent(src_key)
+        except Exception as exc:
+            logger.debug("merge: source agent eviction skipped: %s", exc)
+
         # Evict the target's cached agent so the fold is live on its next turn.
         target_entry = self.session_store.lookup_by_session_id(target_id)
         if target_entry is not None:
@@ -4392,9 +4423,15 @@ class GatewaySlashCommandsMixin:
         # channel*, which for a thread-branched-from-a-thread is NOT where the
         # parent SESSION lives — so the note showed up in the wrong place.) We
         # resolve the target's real origin and post there so the "merged in" note
-        # always lands in the conversation that just received the summary. ---
-        note_short = summary if len(summary) <= 600 else summary[:597] + "..."
+        # always lands in the conversation that just received the summary.
+        #
+        # The note is INTENTIONALLY terse: it says WHAT happened (context added),
+        # HOW MUCH (N user turns folded), and WHERE the detail is (the .md path).
+        # The full summary is already in the agent's context — dumping it into the
+        # channel as a wall of text is noise, not signal (Ace, 2026-07-08). ---
+        turns_folded = sum(1 for m in summarize_history if m.get("role") == "user")
         path_str = str(record_path) if record_path else ""
+        md_note = t("gateway.merge.note_record_suffix", path=path_str) if path_str else ""
         try:
             target_origin = self._gateway_session_origin_for_id(target_id)
         except Exception:
@@ -4405,7 +4442,10 @@ class GatewaySlashCommandsMixin:
             dest_chat = target_origin.thread_id or target_origin.chat_id
             if dest_adapter is not None and dest_chat:
                 try:
-                    note = t("gateway.merge.target_note", source=source_title, summary=note_short)
+                    note = t(
+                        "gateway.merge.target_note" if is_thread_form else "gateway.merge.target_note_named",
+                        source=source_title, turns=turns_folded, record=md_note,
+                    )
                     await dest_adapter.send(str(dest_chat), note)
                     posted_note = True
                 except Exception as exc:
@@ -4415,7 +4455,8 @@ class GatewaySlashCommandsMixin:
         # hosting channel so the merge is still visible somewhere sensible.
         if not posted_note and is_thread_form and thread_adapter is not None and source.parent_chat_id:
             try:
-                note = t("gateway.merge.parent_note", title=source_title, summary=note_short)
+                note = t("gateway.merge.target_note", source=source_title,
+                         turns=turns_folded, record=md_note)
                 await thread_adapter.send(str(source.parent_chat_id), note)
             except Exception as exc:
                 logger.debug("merge: parent-channel fallback note send failed: %s", exc)

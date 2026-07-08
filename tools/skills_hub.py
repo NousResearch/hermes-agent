@@ -29,7 +29,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from agent.skill_utils import is_excluded_skill_path
 from typing import Any, Dict, List, Optional, Tuple, Union
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 import httpx
 import yaml
@@ -1318,17 +1318,30 @@ class WellKnownSkillSource(SkillSource):
 # ---------------------------------------------------------------------------
 
 class UrlSource(SkillSource):
-    """Fetch a single-file SKILL.md skill directly from an HTTP(S) URL.
+    """Fetch a SKILL.md skill directly from an HTTP(S) URL.
 
     The identifier IS the URL (e.g. ``https://example.com/path/SKILL.md``).
-    Only single-file skills are supported — multi-file skills with
-    ``references/`` or ``scripts/`` subfolders need a manifest we can't
-    discover from a bare URL.
+    Generic URLs remain single-file. Raw GitHub ``SKILL.md`` URLs are expanded
+    into a bounded bundle by copying common support folders that live beside
+    the skill file (``references/``, ``templates/``, ``examples/``,
+    ``scripts/``, ``assets/``).
 
     The skill name is read from the ``name:`` field in the SKILL.md YAML
     frontmatter (with a URL-slug fallback). Trust level is always
     ``community`` and the same security scan runs as for every other source.
     """
+
+    _GITHUB_RAW_HOST = "raw.githubusercontent.com"
+    _SUPPORT_DIRS = frozenset({
+        "references",
+        "templates",
+        "examples",
+        "scripts",
+        "assets",
+    })
+    _MAX_SUPPORT_FILES = 64
+    _MAX_SUPPORT_FILE_BYTES = 256_000
+    _MAX_SUPPORT_TOTAL_BYTES = 1_000_000
 
     def source_id(self) -> str:
         return "url"
@@ -1416,13 +1429,21 @@ class UrlSource(SkillSource):
                 logger.warning("URL skill %s produced unsafe skill name: %r", url, name)
                 return None
 
+        files: Dict[str, Union[str, bytes]] = {"SKILL.md": text}
+        support_files = self._fetch_github_raw_support_files(url)
+        files.update(support_files)
+
+        metadata: Dict[str, Any] = {"url": url, "awaiting_name": not skill_name}
+        if support_files:
+            metadata["support_files"] = sorted(support_files)
+
         return SkillBundle(
             name=skill_name,
-            files={"SKILL.md": text},
+            files=files,
             source="url",
             identifier=url,
             trust_level="community",
-            metadata={"url": url, "awaiting_name": not skill_name},
+            metadata=metadata,
         )
 
     @staticmethod
@@ -1431,6 +1452,156 @@ class UrlSource(SkillSource):
         if resp is not None and resp.status_code == 200:
             return resp.text
         return None
+
+    @classmethod
+    def _fetch_github_raw_support_files(
+        cls,
+        skill_url: str,
+    ) -> Dict[str, Union[str, bytes]]:
+        """Fetch bounded support files adjacent to a raw GitHub SKILL.md URL."""
+        ctx = cls._raw_github_skill_context(skill_url)
+        if ctx is None:
+            return {}
+
+        tree_url = (
+            "https://api.github.com/repos/"
+            f"{quote(ctx['owner'])}/{quote(ctx['repo'])}/git/trees/"
+            f"{quote(ctx['ref'], safe='')}?recursive=1"
+        )
+        resp = _guarded_http_get(tree_url, timeout=20)
+        if resp is None or resp.status_code != 200:
+            return {}
+        try:
+            data = resp.json()
+        except (ValueError, json.JSONDecodeError):
+            return {}
+        tree = data.get("tree") if isinstance(data, dict) else None
+        if not isinstance(tree, list):
+            return {}
+
+        skill_dir = ctx["skill_dir"]
+        repo_skill_path = ctx["repo_skill_path"]
+        skill_prefix = f"{skill_dir}/" if skill_dir else ""
+        support_prefixes = {
+            f"{skill_prefix}{support_dir}/" for support_dir in cls._SUPPORT_DIRS
+        }
+
+        files: Dict[str, Union[str, bytes]] = {}
+        total_bytes = 0
+        candidates: list[tuple[str, int]] = []
+        for item in tree:
+            if not isinstance(item, dict) or item.get("type") != "blob":
+                continue
+            repo_path = str(item.get("path") or "")
+            if not repo_path or repo_path == repo_skill_path:
+                continue
+            if not any(repo_path.startswith(prefix) for prefix in support_prefixes):
+                continue
+            rel_path = repo_path[len(skill_prefix):] if skill_prefix else repo_path
+            try:
+                _validate_bundle_rel_path(rel_path)
+            except ValueError:
+                logger.warning(
+                    "URL skill %s skipped unsafe support file path: %r",
+                    skill_url,
+                    rel_path,
+                )
+                continue
+            try:
+                size = int(item.get("size") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            if size > cls._MAX_SUPPORT_FILE_BYTES:
+                logger.warning(
+                    "URL skill %s skipped large support file %s (%s bytes)",
+                    skill_url,
+                    rel_path,
+                    size,
+                )
+                continue
+            candidates.append((repo_path, size))
+
+        for repo_path, _size_hint in sorted(candidates)[: cls._MAX_SUPPORT_FILES]:
+            rel_path = repo_path[len(skill_prefix):] if skill_prefix else repo_path
+            fetched = cls._fetch_github_raw_file(ctx, repo_path)
+            if fetched is None:
+                continue
+            content, size = fetched
+            if size > cls._MAX_SUPPORT_FILE_BYTES:
+                logger.warning(
+                    "URL skill %s skipped large support file %s (%s bytes)",
+                    skill_url,
+                    rel_path,
+                    size,
+                )
+                continue
+            if total_bytes + size > cls._MAX_SUPPORT_TOTAL_BYTES:
+                logger.warning(
+                    "URL skill %s support files exceeded bundle limit; skipped remaining files",
+                    skill_url,
+                )
+                break
+            total_bytes += size
+            files[rel_path] = content
+
+        return files
+
+    @classmethod
+    def _fetch_github_raw_file(
+        cls,
+        ctx: Dict[str, str],
+        repo_path: str,
+    ) -> Optional[tuple[Union[str, bytes], int]]:
+        raw_url = cls._github_raw_url(ctx, repo_path)
+        resp = _guarded_http_get(raw_url, timeout=20)
+        if resp is None or resp.status_code != 200:
+            return None
+        content = resp.content
+        try:
+            return content.decode("utf-8"), len(content)
+        except UnicodeDecodeError:
+            return content, len(content)
+
+    @classmethod
+    def _raw_github_skill_context(cls, skill_url: str) -> Optional[Dict[str, str]]:
+        try:
+            parsed = urlparse(skill_url)
+        except ValueError:
+            return None
+        if parsed.netloc.lower() != cls._GITHUB_RAW_HOST:
+            return None
+        parts = [p for p in parsed.path.split("/") if p]
+        if len(parts) < 4:
+            return None
+        owner, repo, ref = parts[:3]
+        repo_skill_path = "/".join(parts[3:])
+        if PurePosixPath(repo_skill_path).name != "SKILL.md":
+            return None
+        if not owner or not repo or not ref:
+            return None
+        try:
+            safe_skill_path = _validate_bundle_rel_path(repo_skill_path)
+        except ValueError:
+            return None
+        parent = PurePosixPath(safe_skill_path).parent
+        skill_dir = "" if str(parent) == "." else str(parent)
+        return {
+            "owner": owner,
+            "repo": repo,
+            "ref": ref,
+            "repo_skill_path": safe_skill_path,
+            "skill_dir": skill_dir,
+        }
+
+    @staticmethod
+    def _github_raw_url(ctx: Dict[str, str], repo_path: str) -> str:
+        quoted_parts = [
+            quote(ctx["owner"]),
+            quote(ctx["repo"]),
+            quote(ctx["ref"], safe=""),
+            *(quote(part) for part in PurePosixPath(repo_path).parts),
+        ]
+        return "https://raw.githubusercontent.com/" + "/".join(quoted_parts)
 
     # Skill names must look like identifiers: lowercase letters/digits with
     # optional hyphens/underscores. Blocks dangerous (``../evil``) AND useless

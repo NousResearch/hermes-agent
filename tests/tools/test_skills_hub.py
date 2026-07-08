@@ -1038,6 +1038,68 @@ class TestUrlSource:
         assert bundle.metadata["awaiting_name"] is False
 
     @patch("tools.skills_hub.httpx.get")
+    def test_fetch_raw_github_skill_includes_support_files(self, mock_get):
+        skill_url = "https://raw.githubusercontent.com/bothiu/arsitek-kampung/main/SKILL.md"
+        skill_md = (
+            "---\n"
+            "name: arsitek-kampung\n"
+            "description: Village architecture reports.\n"
+            "---\n\n"
+            "See references/report-template.md and examples/endpoint-inventory.md.\n"
+        )
+
+        def response(*, status=200, text="", content=None, json_data=None):
+            resp = MagicMock(status_code=status)
+            resp.text = text
+            resp.content = content if content is not None else text.encode("utf-8")
+            if json_data is not None:
+                resp.json.return_value = json_data
+            return resp
+
+        def fake_get(url, **_kwargs):
+            if url == skill_url:
+                return response(text=skill_md)
+            if url == (
+                "https://api.github.com/repos/bothiu/arsitek-kampung/"
+                "git/trees/main?recursive=1"
+            ):
+                return response(json_data={
+                    "tree": [
+                        {"path": "SKILL.md", "type": "blob", "size": len(skill_md)},
+                        {"path": "references/report-template.md", "type": "blob", "size": 9},
+                        {"path": "examples/endpoint-inventory.md", "type": "blob", "size": 10},
+                        {"path": "docs/not-installed.md", "type": "blob", "size": 12},
+                    ]
+                })
+            if url == (
+                "https://raw.githubusercontent.com/bothiu/arsitek-kampung/main/"
+                "references/report-template.md"
+            ):
+                return response(text="# Report\n")
+            if url == (
+                "https://raw.githubusercontent.com/bothiu/arsitek-kampung/main/"
+                "examples/endpoint-inventory.md"
+            ):
+                return response(text="# Example\n")
+            raise AssertionError(url)
+
+        mock_get.side_effect = fake_get
+
+        bundle = self._source().fetch(skill_url)
+
+        assert bundle is not None
+        assert bundle.name == "arsitek-kampung"
+        assert bundle.files == {
+            "SKILL.md": skill_md,
+            "examples/endpoint-inventory.md": "# Example\n",
+            "references/report-template.md": "# Report\n",
+        }
+        assert bundle.metadata["support_files"] == [
+            "examples/endpoint-inventory.md",
+            "references/report-template.md",
+        ]
+
+    @patch("tools.skills_hub.httpx.get")
     def test_fetch_falls_back_to_url_directory_name(self, mock_get):
         # Frontmatter has no ``name:`` — we slug from the URL directory.
         mock_get.return_value = MagicMock(

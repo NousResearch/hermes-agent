@@ -4,6 +4,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 """
 
 import asyncio
+import concurrent.futures
 import json
 import threading
 import time
@@ -1599,6 +1600,76 @@ class TestShutdown:
         assert len(_servers) == 0
         # Parallel: ~1s, not ~3s. Allow some margin.
         assert elapsed < 2.5, f"Shutdown took {elapsed:.1f}s, expected ~1s (parallel)"
+
+    def test_shutdown_timeout_forgets_stale_servers_and_tools(self):
+        """A timed-out reload teardown must still clear stale registry state.
+
+        Otherwise a subsequent discover pass treats dead server names as
+        already connected, leaving the old MCP tool list visible even though
+        every call fails on a closed transport.
+        """
+        import tools.mcp_tool as mcp_mod
+        from tools.mcp_tool import MCPServerTask, shutdown_mcp_servers
+        from tools.registry import registry
+        from toolsets import resolve_toolset, validate_toolset
+
+        with mcp_mod._lock:
+            mcp_mod._servers.clear()
+            mcp_mod._server_connecting.clear()
+            mcp_mod._server_connect_errors.clear()
+
+        registry.register(
+            name="mcp__test__ping",
+            toolset="mcp-test",
+            schema={
+                "name": "mcp__test__ping",
+                "description": "Ping",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+        registry.register_toolset_alias("test", "mcp-test")
+
+        server = MCPServerTask("test")
+        server._registered_tool_names = ["mcp__test__ping"]
+        with mcp_mod._lock:
+            mcp_mod._servers["test"] = server
+            mcp_mod._server_connecting.add("test")
+            mcp_mod._server_connect_errors["test"] = "stale session"
+
+        fake_future = MagicMock()
+        fake_future.result.side_effect = concurrent.futures.TimeoutError()
+        fake_loop = MagicMock()
+        fake_loop.is_running.return_value = True
+        scheduled = {}
+
+        def _fake_schedule(coro, _loop, **_kwargs):
+            scheduled["coro"] = coro
+            return fake_future
+
+        try:
+            assert validate_toolset("test") is True
+            assert "mcp__test__ping" in resolve_toolset("test")
+
+            with patch.object(mcp_mod, "_mcp_loop", fake_loop), \
+                 patch("agent.async_utils.safe_schedule_threadsafe", side_effect=_fake_schedule), \
+                 patch("tools.mcp_tool._stop_mcp_loop"):
+                shutdown_mcp_servers()
+        finally:
+            coro = scheduled.get("coro")
+            if coro is not None:
+                coro.close()
+            with mcp_mod._lock:
+                mcp_mod._servers.clear()
+                mcp_mod._server_connecting.clear()
+                mcp_mod._server_connect_errors.clear()
+
+        with mcp_mod._lock:
+            assert mcp_mod._servers == {}
+            assert mcp_mod._server_connecting == set()
+            assert mcp_mod._server_connect_errors == {}
+        assert "mcp__test__ping" not in registry.get_all_tool_names()
+        assert validate_toolset("test") is False
 
 
 # ---------------------------------------------------------------------------

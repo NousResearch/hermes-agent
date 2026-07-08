@@ -5422,11 +5422,37 @@ def shutdown_mcp_servers():
     the anyio cancel-scope cleanup happens in the same Task that opened it.
     All servers are shut down in parallel via ``asyncio.gather``.
     """
+    def _forget_all_servers() -> None:
+        """Drop all registered MCP server state, even on teardown failure.
+
+        Reload must fail closed: once we decide to tear down MCP, the next
+        discovery pass needs a clean slate. If shutdown hangs or the loop is
+        already unhealthy, leaving ``_servers`` populated makes
+        ``discover_mcp_tools()`` treat dead sessions as already connected,
+        preserving stale tool registrations that then fail every call with a
+        closed transport error.
+        """
+        with _lock:
+            servers_to_forget = list(_servers.values())
+            _servers.clear()
+            _server_connecting.clear()
+            _server_connect_errors.clear()
+        for server in servers_to_forget:
+            try:
+                server._deregister_tools()
+            except Exception:
+                logger.debug(
+                    "Error deregistering MCP server '%s' during forced forget",
+                    getattr(server, "name", "<unknown>"),
+                    exc_info=True,
+                )
+
     with _lock:
         servers_snapshot = list(_servers.values())
 
     # Fast path: nothing to shut down.
     if not servers_snapshot:
+        _forget_all_servers()
         _stop_mcp_loop()
         return
 
@@ -5457,6 +5483,11 @@ def shutdown_mcp_servers():
                 future.result(timeout=15)
             except BaseException as exc:
                 logger.debug("Error during MCP shutdown: %s", exc)
+                _forget_all_servers()
+        else:
+            _forget_all_servers()
+    else:
+        _forget_all_servers()
 
     _stop_mcp_loop()
 

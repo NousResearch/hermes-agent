@@ -51,6 +51,7 @@ class _RecordingProvider(MemoryProvider):
         self.prefetched = []
         self.queued = []
         self.synced = []
+        self.synced_messages = []
 
     @property
     def name(self) -> str:
@@ -74,6 +75,8 @@ class _RecordingProvider(MemoryProvider):
 
     def sync_turn(self, user_content, assistant_content, *, session_id: str = "", messages=None) -> None:
         self.synced.append(user_content)
+        if messages is not None:
+            self.synced_messages.append(messages)
 
     def get_tool_schemas(self):
         return []
@@ -147,6 +150,40 @@ class TestMemoryManagerStripsScaffolding:
         mgr.sync_all(_SINGLE_SKILL_TURN, "Done.")
         mgr.flush_pending(timeout=5.0)
         assert provider.synced == ["make a skill for release triage"]
+
+    def test_sync_all_strips_skill_scaffolding_from_messages_payload(self):
+        mgr, provider = _manager_with_recorder()
+        messages = [
+            {"role": "user", "content": _SINGLE_SKILL_TURN},
+            {"role": "assistant", "content": "Done."},
+        ]
+
+        mgr.sync_all(_SINGLE_SKILL_TURN, "Done.", messages=messages)
+        mgr.flush_pending(timeout=5.0)
+
+        assert provider.synced == ["make a skill for release triage"]
+        assert provider.synced_messages == [[
+            {"role": "user", "content": "make a skill for release triage"},
+            {"role": "assistant", "content": "Done."},
+        ]]
+        assert messages[0]["content"] == _SINGLE_SKILL_TURN
+
+    def test_sync_all_drops_bare_skill_turns_from_messages_payload(self):
+        mgr, provider = _manager_with_recorder()
+        messages = [
+            {"role": "user", "content": _BARE_SKILL_TURN},
+            {"role": "assistant", "content": "Loaded."},
+            {"role": "user", "content": "now use that skill"},
+        ]
+
+        mgr.sync_all("now use that skill", "Done.", messages=messages)
+        mgr.flush_pending(timeout=5.0)
+
+        assert provider.synced == ["now use that skill"]
+        assert provider.synced_messages == [[
+            {"role": "assistant", "content": "Loaded."},
+            {"role": "user", "content": "now use that skill"},
+        ]]
 
     def test_sync_all_skips_bare_skill(self):
         mgr, provider = _manager_with_recorder()

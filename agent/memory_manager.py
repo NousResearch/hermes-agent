@@ -625,6 +625,46 @@ class MemoryManager:
             return True
         return "messages" in signature.parameters
 
+    @classmethod
+    def _strip_skill_scaffolding_from_messages(
+        cls,
+        messages: Optional[List[Dict[str, Any]]],
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Return a messages payload safe to expose to memory providers.
+
+        ``sync_all`` already strips the primary user text before fan-out, but
+        providers that opt into the optional ``messages=`` context can otherwise
+        receive earlier slash-skill-expanded user messages verbatim. Strip the
+        same scaffolding there too, while leaving the caller-owned transcript
+        objects untouched.
+        """
+        if messages is None:
+            return None
+
+        cleaned: List[Dict[str, Any]] = []
+        changed = False
+        for message in messages:
+            if not isinstance(message, dict):
+                cleaned.append(message)
+                continue
+
+            content = message.get("content")
+            if message.get("role") != "user" or not isinstance(content, str):
+                cleaned.append(message)
+                continue
+
+            stripped = cls._strip_skill_scaffolding(content)
+            if stripped is None:
+                changed = True
+                continue
+            if stripped != content:
+                message = dict(message)
+                message["content"] = stripped
+                changed = True
+            cleaned.append(message)
+
+        return cleaned if changed else messages
+
     def sync_all(
         self,
         user_content: str,
@@ -658,16 +698,17 @@ class MemoryManager:
         if not clean_user_content:
             return
         user_content = clean_user_content
+        sync_messages = self._strip_skill_scaffolding_from_messages(messages)
 
         def _run() -> None:
             for provider in providers:
                 try:
-                    if messages is not None and self._provider_sync_accepts_messages(provider):
+                    if sync_messages is not None and self._provider_sync_accepts_messages(provider):
                         provider.sync_turn(
                             user_content,
                             assistant_content,
                             session_id=session_id,
-                            messages=messages,
+                            messages=sync_messages,
                         )
                     else:
                         provider.sync_turn(

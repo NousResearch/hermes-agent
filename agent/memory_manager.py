@@ -811,8 +811,7 @@ class MemoryManager:
         ``_submit_background`` degrades to inline execution — the pre-#16454
         synchronous behavior, slow but correct.
         """
-        providers = list(self._providers)
-        if not providers:
+        if not self._providers:
             return
         snapshot = list(messages or [])
 

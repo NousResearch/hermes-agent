@@ -395,7 +395,75 @@ select = ["PLW1514"]
 
 [tool.codespell]
 # Ref: https://github.com/codespell-project/codespell#using-a-config-file
-skip = '.git,.gitignore,.gitattributes,*.pdf,*.svg,package-lock.json,i18n,*.lock,*.css'
+skip = '.git,.git-meta,.gitignore,.gitattributes,*.pdf,*.svg,package-lock.json,*.lock,*.css,uv.lock,./locales/[!e]*.yaml,./locales/e[!n]*.yaml,./web/src/i18n/[!e]*.ts,./web/src/i18n/e[!n]*.ts,CONTRIBUTING.es.md,SECURITY.es.md,README.es.md,README.zh-CN.md,README.ur-pk.md,./skills/productivity/powerpoint/scripts/office/schemas,./skills/index-cache,./skills/research/research-paper-writing/templates,./optional-skills/mlops/*/references,./apps/desktop/src/components/chat/intro-copy.jsonl,./website/src/data/userStories.json'
 check-hidden = true
-# ignore-regex = ''
-# ignore-words-list = ''
+# Ignore URLs and camelCase/PascalCase identifiers (common in JS/TS/Python code)
+ignore-regex = 'https?://\S+|\b[a-z]+[A-Z]\w*\b|\b[A-Z][a-z]+[A-Z]\w*\b'
+# Domain terms, abbreviations, and intentional test-fixture typos.
+# aci    - Signal Account Identifier (UUID variant)
+# afile  - test filename fixture
+# aks    - Azure Kubernetes Service
+# ans    - "answer" short variable name
+# appy   - "app-y" (app-like) slang describing the sound design of chimes
+# asend  - async generator method (.asend())
+# assum  - LaTeX label prefix (\label{assum:...})
+# binar  - intentional partial word match ("missing binar...")
+# bu     - "base_url" short variable name
+# buildd - Debian buildd hostname (Ubuntu kernel version strings)
+# caf    - Core Audio Format file extension
+# cant   - verbatim quotes / string-match fixtures preserved as-is
+#          (agent/context_compressor.py: user bug report quoted verbatim;
+#          gateway/platforms/base.py: matches BOTH "can't parse entities"
+#          and the apostrophe-less variant emitted by some Telegram builds)
+# categor - JS template literal split (`categor${...}y`)
+# coo    - intentional split-string test fixture ("coo" + "kie")
+# couldn - false hit on Couldn&rsquo;t and Couldn\'t (escaped/HTML-entity apostrophes)
+# datas  - Python list variable name
+# edn    - Clojure EDN file extension
+# fo     - Windows schtasks /FO flag
+# foto   - Portuguese "foto" in test caption fixtures
+# gameboy - Game Boy platform tag
+# get's  - possessive of the "@electron/get" package name in a comment
+# hace   - Spanish word in embedded i18n string
+# hass   - Home Assistant (HASS_URL, HASS_TOKEN env vars)
+# hda    - Linux disk device (/dev/hda)
+# hel    - CLI test prefix "/hel" (prefix-matching tests)
+# inh    - "inherited" short variable name
+# ist    - German "ist" appearing in test data strings
+# isnt   - verbatim test env-var value ("sk-kim...isnt" GLM_API_KEY fixture)
+# iterm  - iTerm2 macOS terminal (kitty/iterm image protocols)
+# leace  - LEACE (Linear Erasure via Closed-form Estimation) ML technique
+# lightening - correct usage (making colors lighter) in p5js blendMode docs
+# loafing - pet "loafing" pose (cat sitting like a loaf)
+# maks   - email address local-part (maks.mir@yahoo.com in mailmap)
+# methode - "Methode 635" German paper title reference
+# mis    - "(mis)used" parenthetical qualifier
+# mor    - email address local-part (mor.aleksandr@yahoo.com in mailmap)
+# nce    - false hit on "[o]nce" bracket-choice construct in prompts
+# nd     - "n-Dimensional" abbreviation (nD tensors)
+# nk     - split test fixture for streaming tag detection ("<thi", "nk>...")
+# notin  - test variable name
+# ot     - "Ot" xterm keypress escape sequence
+# pash   - person's name (contributor)
+# portugues - Spanish "portugués" (unaccented) alias in i18n language map
+# pres   - pptxgenjs presentation variable convention
+# provid - intentional partial-word regex ("provid|shar|giv|help")
+# retuned - correct English "re-tuned" (adjusted) — codespell suggests "returned"
+# rouge  - ROUGE evaluation metric (Recall-Oriented Understudy for Gisting Evaluation)
+# som    - Set-of-Mark visual grounding technique
+# spcae  - intentional typo test fixture (ctrl+spcae fallback tests)
+# statics - "static_facts" short variable name
+# strat  - "strategy" short variable name (session_strat)
+# te     - HTTP "TE" (Transfer-Encoding) header name
+# theres - verbatim user bug-report text preserved in a JS string fixture
+# thi    - split test fixture for streaming tag detection ("<thi", "nk>...")
+# tiem   - intentional typo test fixture (blueprint slot filling)
+# trough - correct financial term ("trough scenarios" in DCF valuation)
+# truncat - intentional partial-string match ("truncat" in err_msg.lower())
+# understandin - truncated description text in generated docs ("understandin...")
+# unparseable - programming term (accepted alternate of "unparsable")
+# unsupport - truncated "Unsupported" in section-divider comment
+# whe    - truncated description text in generated tables ("whe...")
+# wit    - "wit.id" email domain (mailmap)
+# yur    - intentional "uwu"-speak pet personality text
+ignore-words-list = "aci,afile,aks,ans,appy,asend,assum,binar,bu,buildd,caf,cant,categor,coo,couldn,datas,edn,fo,foto,gameboy,get's,hace,hass,hda,hel,inh,isnt,ist,iterm,leace,lightening,loafing,maks,methode,mis,mor,nce,nd,nk,notin,ot,pash,portugues,pres,provid,retuned,rouge,som,spcae,statics,strat,te,theres,thi,tiem,trough,truncat,understandin,unparseable,unsupport,whe,wit,yur"

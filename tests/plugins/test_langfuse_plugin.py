@@ -1,4 +1,5 @@
 """Tests for the bundled observability/langfuse plugin."""
+
 from __future__ import annotations
 
 import importlib
@@ -19,6 +20,7 @@ PLUGIN_DIR = REPO_ROOT / "plugins" / "observability" / "langfuse"
 # Manifest + layout
 # ---------------------------------------------------------------------------
 
+
 class TestManifest:
     def test_plugin_directory_exists(self):
         assert PLUGIN_DIR.is_dir()
@@ -31,9 +33,12 @@ class TestManifest:
         assert data["version"]
         # All six hooks the plugin implements.
         assert set(data["hooks"]) == {
-            "pre_api_request", "post_api_request",
-            "pre_llm_call", "post_llm_call",
-            "pre_tool_call", "post_tool_call",
+            "pre_api_request",
+            "post_api_request",
+            "pre_llm_call",
+            "post_llm_call",
+            "pre_tool_call",
+            "post_tool_call",
         }
         # Required env vars are the user-facing HERMES_ prefixed keys.
         assert "HERMES_LANGFUSE_PUBLIC_KEY" in data["requires_env"]
@@ -45,6 +50,7 @@ class TestManifest:
 # This guards against someone accidentally re-introducing a per-hook
 # load_config() gate or making the plugin auto-load.
 # ---------------------------------------------------------------------------
+
 
 class TestDiscovery:
     def test_plugin_is_discovered_as_standalone_opt_in(self, tmp_path, monkeypatch):
@@ -74,6 +80,7 @@ class TestDiscovery:
 # per-hook load_config() design.
 # ---------------------------------------------------------------------------
 
+
 class TestRuntimeGate:
     def _fresh_plugin(self):
         """Import the plugin module fresh (clears any cached client)."""
@@ -83,8 +90,10 @@ class TestRuntimeGate:
 
     def test_get_langfuse_returns_none_without_credentials(self, monkeypatch):
         for k in (
-            "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
-            "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+            "HERMES_LANGFUSE_PUBLIC_KEY",
+            "HERMES_LANGFUSE_SECRET_KEY",
+            "LANGFUSE_PUBLIC_KEY",
+            "LANGFUSE_SECRET_KEY",
         ):
             monkeypatch.delenv(k, raising=False)
 
@@ -94,8 +103,10 @@ class TestRuntimeGate:
     def test_get_langfuse_caches_failure_no_config_load(self, monkeypatch):
         """A miss must be cached — no per-hook config.yaml reads, no env re-reads."""
         for k in (
-            "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
-            "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+            "HERMES_LANGFUSE_PUBLIC_KEY",
+            "HERMES_LANGFUSE_SECRET_KEY",
+            "LANGFUSE_PUBLIC_KEY",
+            "LANGFUSE_SECRET_KEY",
         ):
             monkeypatch.delenv(k, raising=False)
 
@@ -107,6 +118,7 @@ class TestRuntimeGate:
         # Now block os.environ.get — a correctly-cached plugin must not
         # touch env again.
         import os
+
         called = {"n": 0}
         real_get = os.environ.get
 
@@ -128,8 +140,10 @@ class TestRuntimeGate:
     def test_get_langfuse_does_not_import_hermes_config(self, monkeypatch):
         """The plugin must not re-read config.yaml per hook."""
         for k in (
-            "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
-            "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+            "HERMES_LANGFUSE_PUBLIC_KEY",
+            "HERMES_LANGFUSE_SECRET_KEY",
+            "LANGFUSE_PUBLIC_KEY",
+            "LANGFUSE_SECRET_KEY",
         ):
             monkeypatch.delenv(k, raising=False)
 
@@ -150,31 +164,44 @@ class TestRuntimeGate:
 # Hooks are inert when the client is unavailable.
 # ---------------------------------------------------------------------------
 
+
 class TestHooksInert:
     def test_hooks_noop_without_client(self, monkeypatch):
         """All 6 hooks must return without raising when _get_langfuse() is None."""
         for k in (
-            "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
-            "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+            "HERMES_LANGFUSE_PUBLIC_KEY",
+            "HERMES_LANGFUSE_SECRET_KEY",
+            "LANGFUSE_PUBLIC_KEY",
+            "LANGFUSE_SECRET_KEY",
         ):
             monkeypatch.delenv(k, raising=False)
 
         sys.modules.pop("plugins.observability.langfuse", None)
         import importlib
+
         mod = importlib.import_module("plugins.observability.langfuse")
 
         # Each hook should just return; no exceptions.
-        mod.on_pre_llm_call(task_id="t", session_id="s", messages=[{"role": "user", "content": "hi"}])
-        mod.on_pre_llm_request(task_id="t", session_id="s", api_call_count=1, request_messages=[])
+        mod.on_pre_llm_call(
+            task_id="t", session_id="s", messages=[{"role": "user", "content": "hi"}]
+        )
+        mod.on_pre_llm_request(
+            task_id="t", session_id="s", api_call_count=1, request_messages=[]
+        )
         mod.on_post_llm_call(task_id="t", session_id="s", api_call_count=1)
-        mod.on_pre_tool_call(tool_name="read_file", args={}, task_id="t", session_id="s")
-        mod.on_post_tool_call(tool_name="read_file", args={}, result="ok", task_id="t", session_id="s")
+        mod.on_pre_tool_call(
+            tool_name="read_file", args={}, task_id="t", session_id="s"
+        )
+        mod.on_post_tool_call(
+            tool_name="read_file", args={}, result="ok", task_id="t", session_id="s"
+        )
 
 
 class TestPayloadSanitization:
     def test_safe_value_redacts_base64_data_uri_instead_of_truncating(self):
         sys.modules.pop("plugins.observability.langfuse", None)
         import importlib
+
         mod = importlib.import_module("plugins.observability.langfuse")
 
         payload = "data:image/png;base64," + ("a" * 20000)
@@ -190,11 +217,15 @@ class TestPayloadSanitization:
     def test_serialize_messages_redacts_data_uri_parts(self):
         sys.modules.pop("plugins.observability.langfuse", None)
         import importlib
+
         mod = importlib.import_module("plugins.observability.langfuse")
 
         payload = "data:image/jpeg;base64," + ("b" * 20000)
         serialized = mod._serialize_messages([
-            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": payload}}]}
+            {
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": {"url": payload}}],
+            }
         ])
 
         assert serialized[0]["content"][0]["image_url"]["url"] == {
@@ -372,8 +403,12 @@ class TestTurnTraceIsolation:
         turn_id = "S:T:turnX"
         api_request_id = f"{turn_id}:api:1"
 
-        k_pre_api = mod._trace_key("T", "S", turn_id=turn_id, api_request_id=api_request_id)
-        k_post_api = mod._trace_key("T", "S", turn_id=turn_id, api_request_id=api_request_id)
+        k_pre_api = mod._trace_key(
+            "T", "S", turn_id=turn_id, api_request_id=api_request_id
+        )
+        k_post_api = mod._trace_key(
+            "T", "S", turn_id=turn_id, api_request_id=api_request_id
+        )
         k_post_turn = mod._trace_key("T", "S", turn_id=turn_id, api_request_id="")
 
         assert k_pre_api == k_post_api == k_post_turn
@@ -409,7 +444,7 @@ class TestTurnTraceIsolation:
         assert tk("", "s", turn_id="u") == "session:s:turn:u"
         assert tk("t", "s", api_request_id="r") == "task:t:api:r"
         assert tk("", "s", api_request_id="r") == "session:s:api:r"
-        assert tk("t", "s") == "t"                       # legacy: bare task_id
+        assert tk("t", "s") == "t"  # legacy: bare task_id
         assert tk("", "s") == "session:s"
         # turn_id wins over api_request_id when both are present.
         assert tk("t", "s", turn_id="u", api_request_id="r") == "task:t:turn:u"
@@ -465,8 +500,10 @@ class TestPlaceholderKeyDetection:
     @staticmethod
     def _clear_env(monkeypatch):
         for k in (
-            "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
-            "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+            "HERMES_LANGFUSE_PUBLIC_KEY",
+            "HERMES_LANGFUSE_SECRET_KEY",
+            "LANGFUSE_PUBLIC_KEY",
+            "LANGFUSE_SECRET_KEY",
         ):
             monkeypatch.delenv(k, raising=False)
 
@@ -499,19 +536,23 @@ class TestPlaceholderKeyDetection:
     def test_validate_langfuse_key_accepts_documented_prefix(self, monkeypatch):
         self._clear_env(monkeypatch)
         plugin = self._fresh_plugin()
-        assert plugin._validate_langfuse_key(
-            "HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz"
-        ) is None
-        assert plugin._validate_langfuse_key(
-            "HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz"
-        ) is None
+        assert (
+            plugin._validate_langfuse_key(
+                "HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz"
+            )
+            is None
+        )
+        assert (
+            plugin._validate_langfuse_key(
+                "HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz"
+            )
+            is None
+        )
 
     def test_validate_langfuse_key_rejects_wrong_prefix(self, monkeypatch):
         self._clear_env(monkeypatch)
         plugin = self._fresh_plugin()
-        msg = plugin._validate_langfuse_key(
-            "HERMES_LANGFUSE_PUBLIC_KEY", "placeholder"
-        )
+        msg = plugin._validate_langfuse_key("HERMES_LANGFUSE_PUBLIC_KEY", "placeholder")
         assert msg is not None
         assert "HERMES_LANGFUSE_PUBLIC_KEY" in msg
         assert "pk-lf-" in msg
@@ -520,7 +561,10 @@ class TestPlaceholderKeyDetection:
         """Defensive: an env var with no registered prefix is trusted."""
         self._clear_env(monkeypatch)
         plugin = self._fresh_plugin()
-        assert plugin._validate_langfuse_key("HERMES_LANGFUSE_BASE_URL", "anything") is None
+        assert (
+            plugin._validate_langfuse_key("HERMES_LANGFUSE_BASE_URL", "anything")
+            is None
+        )
 
     # -- end-to-end _get_langfuse() behaviour --------------------------------
     # These tests pass `monkeypatch` to _fresh_plugin() so the helper can
@@ -567,8 +611,11 @@ class TestPlaceholderKeyDetection:
         plugin = self._fresh_plugin(monkeypatch)
         with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             assert plugin._get_langfuse() is None
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"
-                    and r.name == self.LOGGER_NAME]
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelname == "WARNING" and r.name == self.LOGGER_NAME
+        ]
         assert len(warnings) == 1, (
             f"Expected a single combined warning; got {len(warnings)}:\n"
             + "\n".join(r.getMessage() for r in warnings)
@@ -589,33 +636,157 @@ class TestPlaceholderKeyDetection:
         with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             for _ in range(15):
                 assert plugin._get_langfuse() is None
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"
-                    and r.name == self.LOGGER_NAME]
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelname == "WARNING" and r.name == self.LOGGER_NAME
+        ]
         assert len(warnings) == 1, (
             f"Warning fired {len(warnings)} times across 15 calls; "
             "expected 1 (cached via _INIT_FAILED)"
         )
 
-    @pytest.mark.parametrize("placeholder", [
+    @pytest.mark.parametrize(
         "placeholder",
-        "test-key",
-        "your-langfuse-key",
-        "change-me",
-        "xxx",
-        "dummy-key-here",
-        "<your-key>",
-        "REPLACE_ME",
-    ])
+        [
+            "placeholder",
+            "test-key",
+            "your-langfuse-key",
+            "change-me",
+            "xxx",
+            "dummy-key-here",
+            "<your-key>",
+            "REPLACE_ME",
+        ],
+    )
     def test_common_placeholders_detected(self, monkeypatch, caplog, placeholder):
         """A grab-bag of values that real-world ``.env.example`` templates
         use as stand-ins.  Any of them in either key must trip the guard."""
         self._clear_env(monkeypatch)
         monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", placeholder)
-        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "«redacted:sk-…»")
         plugin = self._fresh_plugin(monkeypatch)
         with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             assert plugin._get_langfuse() is None
         assert "HERMES_LANGFUSE_PUBLIC_KEY" in caplog.text
+
+
+class TestRuntimeIngestionError:
+    """Issue #60961 (part 2): a structurally-valid key whose credentials are
+    rejected by the Langfuse API at flush time must surface a clear error on
+    the first failure, not be swallowed silently."""
+
+    LOGGER_NAME = "plugins.observability.langfuse"
+
+    def _fresh_plugin(self, monkeypatch):
+        mod_name = "plugins.observability.langfuse"
+        sys.modules.pop(mod_name, None)
+        mod = importlib.import_module(mod_name)
+        monkeypatch.setattr(mod, "Langfuse", _FakeLangfuse, raising=False)
+        _FakeLangfuse.instances.clear()
+        return mod
+
+    def _clear_env(self, monkeypatch):
+        for k in (
+            "HERMES_LANGFUSE_PUBLIC_KEY",
+            "HERMES_LANGFUSE_SECRET_KEY",
+            "LANGFUSE_PUBLIC_KEY",
+            "LANGFUSE_SECRET_KEY",
+        ):
+            monkeypatch.delenv(k, raising=False)
+
+    def test_on_unexpected_error_logs_first_failure(self, monkeypatch, caplog):
+        """If the SDK's on_unexpected_error callback fires, the plugin must log
+        an ERROR naming the likely cause (bad creds / missing project)."""
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz")
+        plugin = self._fresh_plugin(monkeypatch)
+
+        # Build a real client so _get_langfuse() reaches the SDK-construction
+        # path and wires up on_unexpected_error.
+        client = plugin._get_langfuse()
+        assert client is not None, "client should construct with valid-looking keys"
+
+        # The callback is stored on the constructed Langfuse instance kwargs.
+        cb = client.kwargs.get("on_unexpected_error")
+        assert cb is not None, "on_unexpected_error callback must be wired"
+
+        with caplog.at_level(logging.ERROR, logger=self.LOGGER_NAME):
+            cb(RuntimeError("401 Unauthorized"))
+        assert any(
+            r.levelname == "ERROR" and "ingestion failed" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_on_unexpected_error_fires_once(self, monkeypatch, caplog):
+        """The warning must not spam the log on every failed flush."""
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz")
+        plugin = self._fresh_plugin(monkeypatch)
+        client = plugin._get_langfuse()
+        cb = client.kwargs.get("on_unexpected_error")
+        with caplog.at_level(logging.ERROR, logger=self.LOGGER_NAME):
+            for _ in range(10):
+                cb(RuntimeError("401"))
+        errors = [
+            r
+            for r in caplog.records
+            if r.levelname == "ERROR" and "ingestion failed" in r.getMessage()
+        ]
+        assert len(errors) == 1, f"expected 1 error log, got {len(errors)}"
+
+
+class TestIssue60961PlaceholderFragments:
+    """Issue #60961: placeholder fragments must be caught even when the key
+    carries the correct prefix (e.g. ``sk-lf-...`` from the report)."""
+
+    LOGGER_NAME = "plugins.observability.langfuse"
+
+    def _fresh_plugin(self, monkeypatch=None):
+        mod_name = "plugins.observability.langfuse"
+        sys.modules.pop(mod_name, None)
+        mod = importlib.import_module(mod_name)
+        if monkeypatch is not None:
+            _FakeLangfuse.instances.clear()
+            monkeypatch.setattr(mod, "Langfuse", _FakeLangfuse, raising=False)
+        return mod
+
+    def _clear_env(self, monkeypatch):
+        for k in (
+            "HERMES_LANGFUSE_PUBLIC_KEY",
+            "HERMES_LANGFUSE_SECRET_KEY",
+            "LANGFUSE_PUBLIC_KEY",
+            "LANGFUSE_SECRET_KEY",
+        ):
+            monkeypatch.delenv(k, raising=False)
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "pk-lf-...",
+            "sk-lf-...",
+            "pk-lf-placeholder-xyz",
+            "sk-lf-***",
+            "pk-lf-unset",
+            "sk-lf-change-me",
+            "pk-lf-example-key",
+        ],
+    )
+    def test_validate_langfuse_key_rejects_placeholder_fragments(
+        self, monkeypatch, value
+    ):
+        self._clear_env(monkeypatch)
+        plugin = self._fresh_plugin(monkeypatch)
+        env_name = (
+            "HERMES_LANGFUSE_PUBLIC_KEY"
+            if value.startswith("pk-lf-")
+            else "HERMES_LANGFUSE_SECRET_KEY"
+        )
+        msg = plugin._validate_langfuse_key(env_name, value)
+        assert msg is not None, f"{value!r} should be flagged as placeholder"
+        assert "placeholder" in msg
 
     def test_legacy_LANGFUSE_PUBLIC_KEY_also_validated(self, monkeypatch, caplog):
         """The plugin reads both the canonical HERMES_-prefixed env var and
@@ -643,8 +814,11 @@ class TestPlaceholderKeyDetection:
         plugin = self._fresh_plugin(monkeypatch)
         with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             assert plugin._get_langfuse() is None
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"
-                    and r.name == self.LOGGER_NAME]
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelname == "WARNING" and r.name == self.LOGGER_NAME
+        ]
         assert warnings == []
 
     def test_sdk_not_installed_still_skips_silently(self, monkeypatch, caplog):
@@ -664,11 +838,16 @@ class TestPlaceholderKeyDetection:
         monkeypatch.setattr(plugin, "Langfuse", None, raising=False)
         with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             assert plugin._get_langfuse() is None
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"
-                    and r.name == self.LOGGER_NAME]
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelname == "WARNING" and r.name == self.LOGGER_NAME
+        ]
         assert warnings == []
 
-    def test_valid_prefixes_do_not_trigger_placeholder_warning(self, monkeypatch, caplog):
+    def test_valid_prefixes_do_not_trigger_placeholder_warning(
+        self, monkeypatch, caplog
+    ):
         """Real Langfuse keys (``pk-lf-…`` / ``sk-lf-…``) must pass the
         guard and proceed to SDK init.  We stub the SDK constructor with
         a recording fake so the assertion can confirm BOTH that the
@@ -690,7 +869,9 @@ class TestPlaceholderKeyDetection:
 
 
 class TestRequestMessageCoercion:
-    def test_prefers_request_messages_then_messages_then_history_then_user_message(self):
+    def test_prefers_request_messages_then_messages_then_history_then_user_message(
+        self,
+    ):
         sys.modules.pop("plugins.observability.langfuse", None)
         mod = importlib.import_module("plugins.observability.langfuse")
 
@@ -709,7 +890,9 @@ class TestRequestMessageCoercion:
             conversation_history=[{"role": "user", "content": "h"}],
             user_message="u",
         ) == [{"role": "user", "content": "h"}]
-        assert mod._coerce_request_messages(user_message="u") == [{"role": "user", "content": "u"}]
+        assert mod._coerce_request_messages(user_message="u") == [
+            {"role": "user", "content": "u"}
+        ]
 
 
 class TestToolCallOutputBackfill:
@@ -736,7 +919,9 @@ class TestToolCallOutputBackfill:
 
         ended = {}
 
-        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
+        def fake_end_observation(
+            obs, *, output=None, metadata=None, usage_details=None, cost_details=None
+        ):
             ended["observation"] = obs
             ended["output"] = output
             ended["metadata"] = metadata
@@ -763,19 +948,23 @@ class TestToolCallOutputBackfill:
         sys.modules.pop("plugins.observability.langfuse", None)
         mod = importlib.import_module("plugins.observability.langfuse")
 
-        messages = [{
-            "role": "tool",
-            "name": "web_extract",
-            "tool_call_id": "call-1",
-            "content": '{"ok": true}',
-        }]
+        messages = [
+            {
+                "role": "tool",
+                "name": "web_extract",
+                "tool_call_id": "call-1",
+                "content": '{"ok": true}',
+            }
+        ]
 
-        assert mod._serialize_messages(messages) == [{
-            "role": "tool",
-            "name": "web_extract",
-            "tool_call_id": "call-1",
-            "content": {"ok": True},
-        }]
+        assert mod._serialize_messages(messages) == [
+            {
+                "role": "tool",
+                "name": "web_extract",
+                "tool_call_id": "call-1",
+                "content": {"ok": True},
+            }
+        ]
 
     def test_serialize_tool_calls_emits_openai_style_function_shape(self):
         sys.modules.pop("plugins.observability.langfuse", None)
@@ -790,16 +979,18 @@ class TestToolCallOutputBackfill:
             type = "function"
             function = _Fn()
 
-        assert mod._serialize_tool_calls([_ToolCall()]) == [{
-            "id": "call-1",
-            "type": "function",
-            "name": "web_extract",
-            "arguments": '{"urls": ["https://example.com"]}',
-            "function": {
+        assert mod._serialize_tool_calls([_ToolCall()]) == [
+            {
+                "id": "call-1",
+                "type": "function",
                 "name": "web_extract",
                 "arguments": '{"urls": ["https://example.com"]}',
-            },
-        }]
+                "function": {
+                    "name": "web_extract",
+                    "arguments": '{"urls": ["https://example.com"]}',
+                },
+            }
+        ]
 
 
 class TestToolObservationKeying:
@@ -839,7 +1030,9 @@ class TestToolObservationKeying:
         assert ended["output"] == {"ok": True}
         assert state.pending_tools_by_name.get("my_tool") is None
 
-    def test_empty_tool_call_id_observations_are_fifo_within_tool_name(self, monkeypatch):
+    def test_empty_tool_call_id_observations_are_fifo_within_tool_name(
+        self, monkeypatch
+    ):
         """Two queued observations are consumed in FIFO order so the first
         post hook gets the first observation's output, not the second.
 
@@ -864,12 +1057,20 @@ class TestToolObservationKeying:
         monkeypatch.setattr(mod, "_end_observation", fake_end)
 
         mod.on_post_tool_call(
-            tool_name="web_extract", args={}, result='{"val": "a"}',
-            task_id="task-1", session_id="sess-1", tool_call_id="",
+            tool_name="web_extract",
+            args={},
+            result='{"val": "a"}',
+            task_id="task-1",
+            session_id="sess-1",
+            tool_call_id="",
         )
         mod.on_post_tool_call(
-            tool_name="web_extract", args={}, result='{"val": "b"}',
-            task_id="task-1", session_id="sess-1", tool_call_id="",
+            tool_name="web_extract",
+            args={},
+            result='{"val": "b"}',
+            task_id="task-1",
+            session_id="sess-1",
+            tool_call_id="",
         )
 
         assert calls[0] == (obs_a, {"val": "a"})
@@ -906,8 +1107,12 @@ class TestToolObservationKeying:
         def worker():
             barrier.wait()
             mod.on_post_tool_call(
-                tool_name="web_extract", args={}, result='{"ok": true}',
-                task_id="task-thr", session_id="sess-thr", tool_call_id="",
+                tool_name="web_extract",
+                args={},
+                result='{"ok": true}',
+                task_id="task-thr",
+                session_id="sess-thr",
+                tool_call_id="",
             )
 
         threads = [threading.Thread(target=worker) for _ in range(n)]
@@ -940,8 +1145,12 @@ class TestToolObservationKeying:
         monkeypatch.setattr(mod, "_end_observation", fake_end)
 
         mod.on_post_tool_call(
-            tool_name="my_tool", args={}, result='{"status": "done"}',
-            task_id="task-1", session_id="sess-1", tool_call_id="call-99",
+            tool_name="my_tool",
+            args={},
+            result='{"status": "done"}',
+            task_id="task-1",
+            session_id="sess-1",
+            tool_call_id="call-99",
         )
 
         assert ended["obs"] is obs
@@ -961,10 +1170,14 @@ class TestUsageFromSanitizedResponse:
         observation = object()
         state = mod.TraceState(trace_id="trace-1", root_ctx=None, root_span=None)
         state.generations[mod._request_key(1)] = observation
-        monkeypatch.setitem(mod._TRACE_STATE, mod._trace_key("task-1", "session-1"), state)
+        monkeypatch.setitem(
+            mod._TRACE_STATE, mod._trace_key("task-1", "session-1"), state
+        )
         captured = {}
 
-        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
+        def fake_end_observation(
+            obs, *, output=None, metadata=None, usage_details=None, cost_details=None
+        ):
             captured["usage_details"] = usage_details
 
         monkeypatch.setattr(mod, "_end_observation", fake_end_observation)
@@ -981,7 +1194,10 @@ class TestUsageFromSanitizedResponse:
             session_id="session-1",
             api_call_count=1,
             model="gemini-3-flash-preview",
-            response={"model": "gemini-3-flash-preview", "usage": {"input_tokens": 100, "output_tokens": 20}},
+            response={
+                "model": "gemini-3-flash-preview",
+                "usage": {"input_tokens": 100, "output_tokens": 20},
+            },
             usage={"input_tokens": 100, "output_tokens": 20},
             assistant_content_chars=42,
         )

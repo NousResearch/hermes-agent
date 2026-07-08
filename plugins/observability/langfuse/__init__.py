@@ -20,6 +20,7 @@ Optional env vars:
   HERMES_LANGFUSE_MAX_CHARS   - max chars per field (default: 12000)
   HERMES_LANGFUSE_DEBUG       - set to "true" for verbose logging
 """
+
 from __future__ import annotations
 
 import json
@@ -79,6 +80,46 @@ _LANGFUSE_KEY_PREFIXES: Dict[str, str] = {
     "HERMES_LANGFUSE_SECRET_KEY": "sk-lf-",
 }
 
+# Substring fragments that mark an *unmodified template* credential even when
+# it happens to start with the right prefix (or no prefix is registered).
+# These are caught so operators get a clear warning instead of silent zero-trace
+# behavior.  See issue #60961.  Keep this list to substrings that can NEVER
+# appear in a real key (template leftovers like "placeholder", "your-", "unset").
+_LANGFUSE_PLACEHOLDER_FRAGMENTS: tuple[str, ...] = (
+    "placeholder",
+    "change-me",
+    "changeit",
+    "your-",
+    "your_",
+    "example",
+    "sample",
+    "test",
+    "demo",
+    "dummy",
+    "fake",
+    "xxxx",
+    "xxxxxx",
+    "todo",
+    "fixme",
+    "unset",
+    "redacted",
+)
+
+# Whole-value placeholders from the issue report (e.g. ``sk-lf-...``) — matched
+# on exact equality only, so a real key like ``sk-lf-...-abc`` is NOT flagged.
+_LANGFUSE_PLACEHOLDER_EXACT: tuple[str, ...] = (
+    "sk-lf-...",
+    "pk-lf-...",
+    "sk-...",
+    "pk-...",
+    "sk-lf-***",
+    "pk-lf-***",
+    "***",
+    "*",
+    "xxx",
+    "xxxx",
+)
+
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
@@ -129,21 +170,37 @@ def _redact_key_preview(value: str) -> str:
 def _validate_langfuse_key(env_name: str, value: str) -> Optional[str]:
     """Return an error message if ``value`` is not a real Langfuse key.
 
-    Returns ``None`` when the value matches the documented Langfuse
-    prefix for ``env_name``, or when no prefix is registered for the
-    name (in which case we trust the operator).  When validation
-    fails the returned string is suitable for direct inclusion in a
+    Two independent checks run:
+
+    1. Prefix check — Langfuse always issues keys with a documented prefix
+       (``pk-lf-`` / ``sk-lf-``).  A value without that prefix is rejected.
+    2. Placeholder check — even a value with the right prefix can still be an
+       unmodified template (e.g. ``sk-lf-...``, ``pk-lf-placeholder``).  Any
+       known placeholder fragment causes rejection.
+
+    Returns ``None`` when the value looks like a real key, or when no prefix is
+    registered for``env_name`` (in which case we trust the operator).  When
+    validation fails the returned string is suitable for direct inclusion in a
     single log line — it names the env var and shows a safe preview.
     """
     expected = _LANGFUSE_KEY_PREFIXES.get(env_name, "")
     if not expected:
         return None
-    if value.startswith(expected):
-        return None
-    return (
-        f"{env_name}={_redact_key_preview(value)} "
-        f"(expected {expected!r} prefix)"
-    )
+    if not value.startswith(expected):
+        return f"{env_name}={_redact_key_preview(value)} (expected {expected!r} prefix)"
+    lowered = value.lower()
+    for fragment in _LANGFUSE_PLACEHOLDER_FRAGMENTS:
+        if fragment in lowered:
+            return (
+                f"{env_name}={_redact_key_preview(value)} "
+                f"looks like a placeholder (contains {fragment!r})"
+            )
+    if lowered in _LANGFUSE_PLACEHOLDER_EXACT:
+        return (
+            f"{env_name}={_redact_key_preview(value)} "
+            f"looks like a placeholder (template value)"
+        )
+    return None
 
 
 def _get_langfuse() -> Optional[Langfuse]:
@@ -198,7 +255,11 @@ def _get_langfuse() -> Optional[Langfuse]:
         _LANGFUSE_CLIENT = _INIT_FAILED
         return None
 
-    base_url = _env("HERMES_LANGFUSE_BASE_URL") or _env("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
+    base_url = (
+        _env("HERMES_LANGFUSE_BASE_URL")
+        or _env("LANGFUSE_BASE_URL")
+        or "https://cloud.langfuse.com"
+    )
     environment = _env("HERMES_LANGFUSE_ENV") or _env("LANGFUSE_ENV")
     release = _env("HERMES_LANGFUSE_RELEASE") or _env("LANGFUSE_RELEASE")
     sample_rate = _env("HERMES_LANGFUSE_SAMPLE_RATE")
@@ -218,8 +279,38 @@ def _get_langfuse() -> Optional[Langfuse]:
         except ValueError:
             logger.warning("Invalid HERMES_LANGFUSE_SAMPLE_RATE=%r", sample_rate)
 
+    # Surface runtime ingestion failures instead of swallowing them. The SDK
+    # validates nothing eagerly and only discovers bad credentials when the
+    # background flush thread posts traces, so we hook its error callback and
+    # log the first failure clearly (#60961).  Subsequent failures are muted
+    # to avoid log floods; the operator must restart to re-arm the warning.
+    runtime_error_logged = {"fired": False}
+
+    def _on_unexpected_error(exc: Exception) -> None:
+        if runtime_error_logged["fired"]:
+            return
+        runtime_error_logged["fired"] = True
+        logger.error(
+            "Langfuse plugin: ingestion failed (%s). Traces may not be "
+            "reaching Langfuse — check HERMES_LANGFUSE_PUBLIC_KEY / "
+            "HERMES_LANGFUSE_SECRET_KEY and that the project exists at %s.",
+            exc,
+            base_url,
+        )
+
     try:
+        kwargs["on_unexpected_error"] = _on_unexpected_error
         _LANGFUSE_CLIENT = Langfuse(**kwargs)
+    except TypeError:
+        # Older SDK versions don't accept on_unexpected_error; retry without it
+        # (we still get the fail-open construction guard below).
+        kwargs.pop("on_unexpected_error", None)
+        try:
+            _LANGFUSE_CLIENT = Langfuse(**kwargs)
+        except Exception as exc:  # pragma: no cover - fail-open
+            logger.warning("Could not initialize Langfuse client: %s", exc)
+            _LANGFUSE_CLIENT = _INIT_FAILED
+            return None
     except Exception as exc:  # pragma: no cover - fail-open
         logger.warning("Could not initialize Langfuse client: %s", exc)
         _LANGFUSE_CLIENT = _INIT_FAILED
@@ -357,11 +448,15 @@ def _build_read_file_preview(lines: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "head": lines[:_READ_FILE_HEAD_LINES],
         "tail": lines[-_READ_FILE_TAIL_LINES:],
-        "omitted_line_count": len(lines) - _READ_FILE_HEAD_LINES - _READ_FILE_TAIL_LINES,
+        "omitted_line_count": len(lines)
+        - _READ_FILE_HEAD_LINES
+        - _READ_FILE_TAIL_LINES,
     }
 
 
-def _normalize_read_file_payload(value: dict[str, Any], *, args: Any = None) -> dict[str, Any]:
+def _normalize_read_file_payload(
+    value: dict[str, Any], *, args: Any = None
+) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     if isinstance(args, dict):
         path = args.get("path")
@@ -422,9 +517,18 @@ def _normalize_payload(value: Any, *, tool_name: str = "", args: Any = None) -> 
     return value
 
 
-def _safe_value(value: Any, *, max_chars: Optional[int] = None, depth: int = 0,
-                parse_json_strings: bool = False) -> Any:
-    max_chars = max_chars if max_chars is not None else int(_env("HERMES_LANGFUSE_MAX_CHARS", "12000") or "12000")
+def _safe_value(
+    value: Any,
+    *,
+    max_chars: Optional[int] = None,
+    depth: int = 0,
+    parse_json_strings: bool = False,
+) -> Any:
+    max_chars = (
+        max_chars
+        if max_chars is not None
+        else int(_env("HERMES_LANGFUSE_MAX_CHARS", "12000") or "12000")
+    )
     if depth > 4:
         return "<max-depth>"
     if value is None or isinstance(value, (int, float, bool)):
@@ -435,23 +539,45 @@ def _safe_value(value: Any, *, max_chars: Optional[int] = None, depth: int = 0,
         if parse_json_strings:
             parsed = _maybe_parse_json_string(value)
             if parsed is not value:
-                return _safe_value(parsed, max_chars=max_chars, depth=depth, parse_json_strings=True)
+                return _safe_value(
+                    parsed, max_chars=max_chars, depth=depth, parse_json_strings=True
+                )
         return _truncate_text(value, max_chars)
     if isinstance(value, dict):
         normalized = _normalize_payload(value)
         if normalized is not value:
-            return _safe_value(normalized, max_chars=max_chars, depth=depth, parse_json_strings=parse_json_strings)
+            return _safe_value(
+                normalized,
+                max_chars=max_chars,
+                depth=depth,
+                parse_json_strings=parse_json_strings,
+            )
         return {
-            str(k): _safe_value(v, max_chars=max_chars, depth=depth + 1, parse_json_strings=parse_json_strings)
+            str(k): _safe_value(
+                v,
+                max_chars=max_chars,
+                depth=depth + 1,
+                parse_json_strings=parse_json_strings,
+            )
             for k, v in list(value.items())[:50]
         }
     if isinstance(value, (list, tuple, set)):
         return [
-            _safe_value(v, max_chars=max_chars, depth=depth + 1, parse_json_strings=parse_json_strings)
+            _safe_value(
+                v,
+                max_chars=max_chars,
+                depth=depth + 1,
+                parse_json_strings=parse_json_strings,
+            )
             for v in list(value)[:50]
         ]
     if hasattr(value, "__dict__"):
-        return _safe_value(vars(value), max_chars=max_chars, depth=depth + 1, parse_json_strings=parse_json_strings)
+        return _safe_value(
+            vars(value),
+            max_chars=max_chars,
+            depth=depth + 1,
+            parse_json_strings=parse_json_strings,
+        )
     return _truncate_text(repr(value), max_chars)
 
 
@@ -503,7 +629,9 @@ def _serialize_messages(messages: Any) -> list[dict[str, Any]]:
             if message.get("name"):
                 item["name"] = _safe_value(message.get("name"))
         if message.get("tool_calls"):
-            item["tool_calls"] = _safe_value(message.get("tool_calls"), parse_json_strings=True)
+            item["tool_calls"] = _safe_value(
+                message.get("tool_calls"), parse_json_strings=True
+            )
         serialized.append(item)
     return serialized
 
@@ -538,7 +666,9 @@ def _serialize_assistant_message(message: Any) -> dict[str, Any]:
     }
 
 
-def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, base_url: str) -> tuple[dict[str, int], dict[str, float]]:
+def _usage_and_cost(
+    response: Any, *, provider: str, api_mode: str, model: str, base_url: str
+) -> tuple[dict[str, int], dict[str, float]]:
     usage_details: Dict[str, int] = {}
     cost_details: Dict[str, float] = {}
     raw_usage = getattr(response, "usage", None)
@@ -579,17 +709,46 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
             try:
                 from agent.usage_pricing import get_pricing_entry
                 from decimal import Decimal
+
                 _ONE_M = Decimal("1000000")
                 entry = get_pricing_entry(model, provider=provider, base_url=base_url)
                 if entry:
-                    if entry.input_cost_per_million is not None and canonical.input_tokens:
-                        cost_details["input"] = float(Decimal(canonical.input_tokens) * entry.input_cost_per_million / _ONE_M)
-                    if entry.output_cost_per_million is not None and canonical.output_tokens:
-                        cost_details["output"] = float(Decimal(canonical.output_tokens) * entry.output_cost_per_million / _ONE_M)
-                    if entry.cache_read_cost_per_million is not None and canonical.cache_read_tokens:
-                        cost_details["cache_read_input_tokens"] = float(Decimal(canonical.cache_read_tokens) * entry.cache_read_cost_per_million / _ONE_M)
-                    if entry.cache_write_cost_per_million is not None and canonical.cache_write_tokens:
-                        cost_details["cache_creation_input_tokens"] = float(Decimal(canonical.cache_write_tokens) * entry.cache_write_cost_per_million / _ONE_M)
+                    if (
+                        entry.input_cost_per_million is not None
+                        and canonical.input_tokens
+                    ):
+                        cost_details["input"] = float(
+                            Decimal(canonical.input_tokens)
+                            * entry.input_cost_per_million
+                            / _ONE_M
+                        )
+                    if (
+                        entry.output_cost_per_million is not None
+                        and canonical.output_tokens
+                    ):
+                        cost_details["output"] = float(
+                            Decimal(canonical.output_tokens)
+                            * entry.output_cost_per_million
+                            / _ONE_M
+                        )
+                    if (
+                        entry.cache_read_cost_per_million is not None
+                        and canonical.cache_read_tokens
+                    ):
+                        cost_details["cache_read_input_tokens"] = float(
+                            Decimal(canonical.cache_read_tokens)
+                            * entry.cache_read_cost_per_million
+                            / _ONE_M
+                        )
+                    if (
+                        entry.cache_write_cost_per_million is not None
+                        and canonical.cache_write_tokens
+                    ):
+                        cost_details["cache_creation_input_tokens"] = float(
+                            Decimal(canonical.cache_write_tokens)
+                            * entry.cache_write_cost_per_million
+                            / _ONE_M
+                        )
                 else:
                     cost_details["total"] = float(cost.amount_usd)
             except Exception:
@@ -600,10 +759,23 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
     return usage_details, cost_details
 
 
-def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform: str, provider: str, model: str,
-                      api_mode: str, messages: Any, client: Langfuse,
-                      turn_id: str = "", api_request_id: str = "") -> TraceState:
-    trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{task_id or task_key}")
+def _start_root_trace(
+    task_key: str,
+    *,
+    task_id: str,
+    session_id: str,
+    platform: str,
+    provider: str,
+    model: str,
+    api_mode: str,
+    messages: Any,
+    client: Langfuse,
+    turn_id: str = "",
+    api_request_id: str = "",
+) -> TraceState:
+    trace_id = client.create_trace_id(
+        seed=f"{session_id or 'sessionless'}::{task_id or task_key}"
+    )
     trace_input = _extract_last_user_message(messages)
     metadata = {
         "source": "hermes",
@@ -667,9 +839,17 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
     return TraceState(trace_id=trace_id, root_ctx=root_ctx, root_span=root_span)
 
 
-def _start_child_observation(state: TraceState, *, client: Langfuse, name: str, as_type: str,
-                             input_value: Any, metadata: Optional[dict] = None,
-                             model: Optional[str] = None, model_parameters: Optional[dict] = None) -> Any:
+def _start_child_observation(
+    state: TraceState,
+    *,
+    client: Langfuse,
+    name: str,
+    as_type: str,
+    input_value: Any,
+    metadata: Optional[dict] = None,
+    model: Optional[str] = None,
+    model_parameters: Optional[dict] = None,
+) -> Any:
     return state.root_span.start_observation(
         name=name,
         as_type=as_type,
@@ -680,8 +860,14 @@ def _start_child_observation(state: TraceState, *, client: Langfuse, name: str, 
     )
 
 
-def _end_observation(observation: Any, *, output: Any = None, metadata: Optional[dict] = None,
-                     usage_details: Optional[dict] = None, cost_details: Optional[dict] = None) -> None:
+def _end_observation(
+    observation: Any,
+    *,
+    output: Any = None,
+    metadata: Optional[dict] = None,
+    usage_details: Optional[dict] = None,
+    cost_details: Optional[dict] = None,
+) -> None:
     if observation is None:
         return
     try:
@@ -774,11 +960,24 @@ def _request_key(api_call_count: Any) -> str:
     return str(api_call_count or 0)
 
 
-def on_pre_llm_call(*, task_id: str = "", session_id: str = "", platform: str = "", model: str = "",
-                    provider: str = "", base_url: str = "", api_mode: str = "",
-                    api_call_count: int = 0, messages: Any = None, turn_type: str = "user",
-                    conversation_history: Any = None, user_message: Any = None,
-                    turn_id: str = "", api_request_id: str = "", **_: Any) -> None:
+def on_pre_llm_call(
+    *,
+    task_id: str = "",
+    session_id: str = "",
+    platform: str = "",
+    model: str = "",
+    provider: str = "",
+    base_url: str = "",
+    api_mode: str = "",
+    api_call_count: int = 0,
+    messages: Any = None,
+    turn_type: str = "user",
+    conversation_history: Any = None,
+    user_message: Any = None,
+    turn_id: str = "",
+    api_request_id: str = "",
+    **_: Any,
+) -> None:
     # Older Hermes branches used pre_llm_call for request-scoped tracing and
     # passed the actual API messages. Current Hermes also has a turn-scoped
     # pre_llm_call used for context injection; tracing that hook creates an
@@ -905,14 +1104,27 @@ def on_pre_llm_request(
         )
 
 
-def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str = "", base_url: str = "",
-                     api_mode: str = "", model: str = "", api_call_count: int = 0,
-                     assistant_message: Any = None, response: Any = None,
-                     api_duration: float = 0.0, finish_reason: str = "",
-                     usage: Any = None, assistant_content_chars: int = 0,
-                     assistant_tool_call_count: int = 0, assistant_response: Any = None,
-                     turn_id: str = "", api_request_id: str = "",
-                     **_: Any) -> None:
+def on_post_llm_call(
+    *,
+    task_id: str = "",
+    session_id: str = "",
+    provider: str = "",
+    base_url: str = "",
+    api_mode: str = "",
+    model: str = "",
+    api_call_count: int = 0,
+    assistant_message: Any = None,
+    response: Any = None,
+    api_duration: float = 0.0,
+    finish_reason: str = "",
+    usage: Any = None,
+    assistant_content_chars: int = 0,
+    assistant_tool_call_count: int = 0,
+    assistant_response: Any = None,
+    turn_id: str = "",
+    api_request_id: str = "",
+    **_: Any,
+) -> None:
     client = _get_langfuse()
     if client is None:
         return
@@ -938,13 +1150,21 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
         output = _serialize_assistant_message(assistant_message)
     elif assistant_response is not None:
         # post_llm_call passes assistant_response as a plain string
-        output = {"content": _safe_value(assistant_response), "reasoning": None, "tool_calls": []}
+        output = {
+            "content": _safe_value(assistant_response),
+            "reasoning": None,
+            "tool_calls": [],
+        }
     else:
         # post_api_request path — reconstruct from summary kwargs
         output = {
-            "content": f"[{assistant_content_chars} chars]" if assistant_content_chars else None,
+            "content": f"[{assistant_content_chars} chars]"
+            if assistant_content_chars
+            else None,
             "reasoning": None,
-            "tool_calls": [{"id": f"tc_{i}"} for i in range(assistant_tool_call_count)] if assistant_tool_call_count else [],
+            "tool_calls": [{"id": f"tc_{i}"} for i in range(assistant_tool_call_count)]
+            if assistant_tool_call_count
+            else [],
         }
 
     if output.get("tool_calls"):
@@ -990,8 +1210,13 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
         cost_details = {}
         # Estimate per-type cost from the summary if possible
         try:
-            from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, get_pricing_entry
+            from agent.usage_pricing import (
+                CanonicalUsage,
+                estimate_usage_cost,
+                get_pricing_entry,
+            )
             from decimal import Decimal
+
             _ONE_M = Decimal("1000000")
             _cu = CanonicalUsage(
                 input_tokens=_input,
@@ -1003,15 +1228,29 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
             entry = get_pricing_entry(model, provider=provider, base_url=base_url)
             if entry:
                 if entry.input_cost_per_million is not None and _input:
-                    cost_details["input"] = float(Decimal(_input) * entry.input_cost_per_million / _ONE_M)
+                    cost_details["input"] = float(
+                        Decimal(_input) * entry.input_cost_per_million / _ONE_M
+                    )
                 if entry.output_cost_per_million is not None and _output:
-                    cost_details["output"] = float(Decimal(_output) * entry.output_cost_per_million / _ONE_M)
+                    cost_details["output"] = float(
+                        Decimal(_output) * entry.output_cost_per_million / _ONE_M
+                    )
                 if entry.cache_read_cost_per_million is not None and _cache_read:
-                    cost_details["cache_read_input_tokens"] = float(Decimal(_cache_read) * entry.cache_read_cost_per_million / _ONE_M)
+                    cost_details["cache_read_input_tokens"] = float(
+                        Decimal(_cache_read)
+                        * entry.cache_read_cost_per_million
+                        / _ONE_M
+                    )
                 if entry.cache_write_cost_per_million is not None and _cache_write:
-                    cost_details["cache_creation_input_tokens"] = float(Decimal(_cache_write) * entry.cache_write_cost_per_million / _ONE_M)
+                    cost_details["cache_creation_input_tokens"] = float(
+                        Decimal(_cache_write)
+                        * entry.cache_write_cost_per_million
+                        / _ONE_M
+                    )
             else:
-                _cost = estimate_usage_cost(model, _cu, provider=provider, base_url=base_url, api_key="")
+                _cost = estimate_usage_cost(
+                    model, _cu, provider=provider, base_url=base_url, api_key=""
+                )
                 if _cost.amount_usd is not None:
                     cost_details["total"] = float(_cost.amount_usd)
         except Exception:
@@ -1033,15 +1272,27 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
         metadata=gen_metadata,
     )
 
-    has_tools = _assistant_has_tool_calls(assistant_message) if assistant_message else (assistant_tool_call_count > 0)
+    has_tools = (
+        _assistant_has_tool_calls(assistant_message)
+        if assistant_message
+        else (assistant_tool_call_count > 0)
+    )
     has_content = bool(output.get("content"))
     if not has_tools and has_content:
         _finish_trace(task_key, output=output)
 
 
-def on_pre_tool_call(*, tool_name: str = "", args: Any = None, task_id: str = "",
-                     session_id: str = "", tool_call_id: str = "",
-                     turn_id: str = "", api_request_id: str = "", **_: Any) -> None:
+def on_pre_tool_call(
+    *,
+    tool_name: str = "",
+    args: Any = None,
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
+    **_: Any,
+) -> None:
     client = _get_langfuse()
     if client is None:
         return
@@ -1071,9 +1322,18 @@ def on_pre_tool_call(*, tool_name: str = "", args: Any = None, task_id: str = ""
             state.pending_tools_by_name.setdefault(tool_name, []).append(observation)
 
 
-def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = None,
-                      task_id: str = "", session_id: str = "", tool_call_id: str = "",
-                      turn_id: str = "", api_request_id: str = "", **_: Any) -> None:
+def on_post_tool_call(
+    *,
+    tool_name: str = "",
+    args: Any = None,
+    result: Any = None,
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
+    **_: Any,
+) -> None:
     task_key = _trace_key(
         task_id,
         session_id,
@@ -1121,7 +1381,10 @@ def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = No
     _end_observation(
         observation,
         output=safe_result_value,
-        metadata={"tool_name": tool_name, "args": _safe_value(args, parse_json_strings=True)},
+        metadata={
+            "tool_name": tool_name,
+            "args": _safe_value(args, parse_json_strings=True),
+        },
     )
 
 

@@ -600,8 +600,12 @@ class WebhookAdapter(BasePlatformAdapter):
             )
 
         if route_config.get("script"):
-            keep, transformed_payload = self._route_processor.run_route_script(
-                route_config.get("script"), payload
+            # run_route_script shells out (subprocess.run, up to its timeout);
+            # run it in a worker thread so it can't block the gateway event loop.
+            keep, transformed_payload = await asyncio.to_thread(
+                self._route_processor.run_route_script,
+                route_config.get("script"),
+                payload,
             )
             if not keep:
                 logger.info(

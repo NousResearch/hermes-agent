@@ -357,17 +357,15 @@ def _install_pip(pkg: str, bin_name: str) -> Optional[str]:
     pip_target.mkdir(parents=True, exist_ok=True)
     try:
         logger.info("[install] pip install --target %s %s", pip_target, pkg)
-        proc = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--target", str(pip_target), "--quiet", pkg],
-            check=False,
-            capture_output=True,
-            text=True,
+        from hermes_cli.tools_config import _pip_install
+
+        proc = _pip_install(
+            ["--target", str(pip_target), "--quiet", pkg],
             timeout=300,
-            stdin=subprocess.DEVNULL,
         )
         if proc.returncode != 0:
             logger.warning(
-                "[install] pip install failed for %s: %s", pkg, proc.stderr.strip()[:500]
+                "[install] pip install failed for %s: %s", pkg, (proc.stderr or "").strip()[:500]
             )
             return None
     except (subprocess.TimeoutExpired, OSError) as e:

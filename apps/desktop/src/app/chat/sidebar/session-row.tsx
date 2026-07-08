@@ -15,6 +15,7 @@ import {
   getSessionStatusLabels,
   type SessionStatusLabel
 } from '@/lib/session-status-labels'
+import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $attentionSessionIds } from '@/store/session'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
@@ -39,11 +40,7 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
 }
 
-const AGE_TICKS: ReadonlyArray<[number, 'ageDay' | 'ageHour' | 'ageMin']> = [
-  [86_400_000, 'ageDay'],
-  [3_600_000, 'ageHour'],
-  [60_000, 'ageMin']
-]
+const AGE_KEY = { day: 'ageDay', hour: 'ageHour', minute: 'ageMin' } as const
 
 const STATUS_LABEL_CLASS: Record<SessionStatusLabel['tone'], string> = {
   destructive: 'border-red-500/30 bg-red-500/10 text-red-400',
@@ -53,15 +50,10 @@ const STATUS_LABEL_CLASS: Record<SessionStatusLabel['tone'], string> = {
 }
 
 function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
-  const delta = Math.max(0, Date.now() - seconds * 1000)
+  const { unit, value } = coarseElapsed(Date.now() - seconds * 1000)
 
-  for (const [ms, key] of AGE_TICKS) {
-    if (delta >= ms) {
-      return `${Math.floor(delta / ms)}${r[key]}`
-    }
-  }
-
-  return r.ageNow
+  // Under a minute reads as "now" — the sidebar never shows a seconds tick.
+  return unit === 'second' ? r.ageNow : `${value}${r[AGE_KEY[unit]]}`
 }
 
 export function SidebarSessionRow({
@@ -141,7 +133,7 @@ export function SidebarSessionRow({
           </div>
         }
         className={cn(
-          'group relative cursor-pointer transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
+          'group row-hover relative',
           isSelected && 'bg-(--ui-row-active-background)',
           isWorking && 'text-foreground',
           // Opaque surface while lifted so the dragged row erases what's under

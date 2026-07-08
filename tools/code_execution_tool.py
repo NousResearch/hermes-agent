@@ -685,6 +685,7 @@ def _get_or_create_env(task_id: str):
                 "container_persistent": config.get("container_persistent", True),
                 "docker_volumes": config.get("docker_volumes", []),
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                "docker_network": config.get("docker_network", True),
             }
 
         ssh_config = None
@@ -1167,6 +1168,16 @@ def execute_code(
             "tool_calls_made": 0,
             "duration_seconds": 0,
         }, ensure_ascii=False)
+
+    # Clean interrupt slate for a user-approved script before EITHER dispatch
+    # path spawns it: drop a stale bit that landed on this thread during the
+    # blocking approval-wait so it can't kill the just-approved run on the first
+    # poll (local _wait_for_process loop, or remote/ssh env.execute which routes
+    # through the same poll loop).  A genuine post-clear interrupt re-sets the
+    # bit and is still caught downstream.
+    if _guard.get("user_approved"):
+        from tools.interrupt import clear_current_thread_interrupt
+        clear_current_thread_interrupt()
 
     if env_type != "local":
         return _execute_remote(code, task_id, enabled_tools)

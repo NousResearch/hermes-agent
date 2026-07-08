@@ -430,6 +430,70 @@ def test_runtime_evaluate_blocked_when_current_page_is_private(monkeypatch):
     assert calls == []
 
 
+def test_frame_id_route_blocked_when_current_page_is_private(monkeypatch):
+    """frame_id routing (OOPIF via supervisor) must not bypass the guard
+    applied to the stateless path — same private-page boundary either way."""
+    supervisor_calls = []
+
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt, "_current_page_private_url", lambda task_id: PRIVATE_URL)
+
+    def fake_supervisor_route(**kwargs):
+        supervisor_calls.append(kwargs)
+        return json.dumps({"success": True, "result": {"value": "private data"}})
+
+    monkeypatch.setattr(
+        browser_cdp_tool, "_browser_cdp_via_supervisor", fake_supervisor_route
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            params={"expression": "document.body.innerText"},
+            frame_id="frame-1",
+            task_id="task-1",
+        )
+    )
+
+    assert "error" in result
+    assert PRIVATE_URL in result["error"]
+    assert "private or internal address" in result["error"]
+    assert supervisor_calls == []
+
+
+def test_frame_id_route_allowed_when_page_is_not_private(monkeypatch):
+    """Sanity check: the new guard call must not block ordinary frame_id
+    routing when the current page isn't private."""
+    supervisor_calls = []
+
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt, "_current_page_private_url", lambda task_id: None)
+
+    def fake_supervisor_route(**kwargs):
+        supervisor_calls.append(kwargs)
+        return json.dumps({"success": True, "result": {"value": "ok"}})
+
+    monkeypatch.setattr(
+        browser_cdp_tool, "_browser_cdp_via_supervisor", fake_supervisor_route
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            params={"expression": "document.title"},
+            frame_id="frame-1",
+            task_id="task-1",
+        )
+    )
+
+    assert result.get("success") is True
+    assert len(supervisor_calls) == 1
+
+
 def test_page_navigate_to_private_url_blocked_before_cdp(monkeypatch):
     calls = []
 

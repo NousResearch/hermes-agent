@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-07-01T20:08:52Z",
+  "updated_at": "2026-07-08T18:59:16Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -57,6 +57,10 @@
           "description": ""
         },
         {
+          "id": "x-ai/grok-4.5",
+          "description": ""
+        },
+        {
           "id": "x-ai/grok-4.3",
           "description": ""
         },
@@ -105,7 +109,7 @@
           "description": ""
         },
         {
-          "id": "tencent/hy3-preview",
+          "id": "tencent/hy3",
           "description": ""
         },
         {
@@ -129,15 +133,11 @@
           "description": "free"
         },
         {
-          "id": "openrouter/owl-alpha",
-          "description": "free"
-        },
-        {
           "id": "poolside/laguna-m.1:free",
           "description": "free"
         },
         {
-          "id": "tencent/hy3-preview:free",
+          "id": "tencent/hy3:free",
           "description": "free"
         },
         {
@@ -191,6 +191,9 @@
           "id": "google/gemini-3.5-flash"
         },
         {
+          "id": "x-ai/grok-4.5"
+        },
+        {
           "id": "x-ai/grok-4.3"
         },
         {
@@ -227,7 +230,7 @@
           "id": "xiaomi/mimo-v2.5-pro"
         },
         {
-          "id": "tencent/hy3-preview"
+          "id": "tencent/hy3"
         },
         {
           "id": "stepfun/step-3.7-flash"

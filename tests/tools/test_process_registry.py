@@ -1396,6 +1396,181 @@ def test_drain_notifications_empty_queue():
     assert results == []
 
 
+def test_drain_notifications_filters_async_delegation_by_session_key():
+    """Async-delegation events should only be consumed by the matching session's drain.
+
+    Regression test for issue #58684: background delegation results delivered
+    to the wrong session when the user switches sessions while a subagent runs.
+    """
+    from tools.process_registry import process_registry
+
+    # Clear the queue first
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    try:
+        # Put events for different sessions
+        process_registry.completion_queue.put({
+            "type": "async_delegation",
+            "delegation_id": "deleg_session_a",
+            "session_key": "telegram:dm:111:user_a",
+            "goal": "task A",
+            "status": "completed",
+            "summary": "done A",
+            "api_calls": 1,
+            "duration_seconds": 0.5,
+        })
+        process_registry.completion_queue.put({
+            "type": "async_delegation",
+            "delegation_id": "deleg_session_b",
+            "session_key": "telegram:dm:222:user_b",
+            "goal": "task B",
+            "status": "completed",
+            "summary": "done B",
+            "api_calls": 1,
+            "duration_seconds": 0.3,
+        })
+
+        # Drain for session A — should only get deleg_session_a
+        results_a = process_registry.drain_notifications(session_key="telegram:dm:111:user_a")
+        assert len(results_a) == 1, (
+            f"Expected 1 event for session A, got {len(results_a)}"
+        )
+        assert results_a[0][0]["delegation_id"] == "deleg_session_a"
+        assert "done A" in results_a[0][1]
+
+        # Session B's event should have been re-queued — drain for session B
+        results_b = process_registry.drain_notifications(session_key="telegram:dm:222:user_b")
+        assert len(results_b) == 1, (
+            f"Expected 1 event for session B, got {len(results_b)}"
+        )
+        assert results_b[0][0]["delegation_id"] == "deleg_session_b"
+        assert "done B" in results_b[0][1]
+
+        # No more events should remain
+        assert process_registry.completion_queue.empty()
+    finally:
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_drain_notifications_no_filter_passes_all_async_delegation():
+    """Without a session_key filter, all async-delegation events are consumed.
+
+    This ensures backward compatibility — the default (session_key="") permits
+    all events, matching pre-fix behavior.
+    """
+    from tools.process_registry import process_registry
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    try:
+        process_registry.completion_queue.put({
+            "type": "async_delegation",
+            "delegation_id": "deleg_1",
+            "session_key": "telegram:dm:111:user_a",
+            "goal": "task 1",
+            "status": "completed",
+            "summary": "done 1",
+            "api_calls": 1,
+            "duration_seconds": 0.5,
+        })
+        process_registry.completion_queue.put({
+            "type": "async_delegation",
+            "delegation_id": "deleg_2",
+            "session_key": "telegram:dm:222:user_b",
+            "goal": "task 2",
+            "status": "completed",
+            "summary": "done 2",
+            "api_calls": 1,
+            "duration_seconds": 0.3,
+        })
+
+        # No filter — both should be consumed
+        results = process_registry.drain_notifications()
+        assert len(results) == 2, (
+            f"Expected 2 events without filter, got {len(results)}"
+        )
+        ids = {r[0]["delegation_id"] for r in results}
+        assert ids == {"deleg_1", "deleg_2"}
+    finally:
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_drain_notifications_owns_event_callback_beats_key_equality():
+    """The positive-proof ownership callback consumes ONLY approved events —
+    including across a compression rotation where bare key equality would
+    wrongly re-queue the session's own pre-compression dispatch (#55578)."""
+    from tools.process_registry import process_registry
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    try:
+        # Pre-compression dispatch: event carries the OLD key.
+        process_registry.completion_queue.put({
+            "type": "async_delegation",
+            "delegation_id": "deleg_precompress",
+            "session_key": "old_parent_key",
+            "goal": "task", "status": "completed", "summary": "mine",
+            "api_calls": 1, "duration_seconds": 0.1,
+        })
+        # Foreign event that plain key equality would also reject.
+        process_registry.completion_queue.put({
+            "type": "async_delegation",
+            "delegation_id": "deleg_foreign",
+            "session_key": "someone_else",
+            "goal": "task", "status": "completed", "summary": "not mine",
+            "api_calls": 1, "duration_seconds": 0.1,
+        })
+
+        # Chain-aware ownership: this session's lineage includes old_parent_key.
+        lineage = {"old_parent_key", "new_child_key"}
+        results = process_registry.drain_notifications(
+            session_key="new_child_key",
+            owns_event=lambda e: e.get("session_key") in lineage,
+        )
+        assert [r[0]["delegation_id"] for r in results] == ["deleg_precompress"]
+
+        # The foreign event was re-queued, not consumed.
+        leftover = process_registry.completion_queue.get_nowait()
+        assert leftover["delegation_id"] == "deleg_foreign"
+    finally:
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_drain_notifications_owns_event_callback_fails_closed():
+    """A broken ownership callback must re-queue (never leak) the event."""
+    from tools.process_registry import process_registry
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    try:
+        process_registry.completion_queue.put({
+            "type": "async_delegation",
+            "delegation_id": "deleg_x",
+            "session_key": "k",
+            "goal": "task", "status": "completed", "summary": "s",
+            "api_calls": 1, "duration_seconds": 0.1,
+        })
+
+        def broken(_evt):
+            raise RuntimeError("ownership check exploded")
+
+        results = process_registry.drain_notifications(
+            session_key="k", owns_event=broken
+        )
+        assert results == []
+        assert process_registry.completion_queue.get_nowait()["delegation_id"] == "deleg_x"
+    finally:
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
 # ---------------------------------------------------------------------------
 # _terminate_host_pid — cross-platform process-tree termination
 # ---------------------------------------------------------------------------

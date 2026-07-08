@@ -117,6 +117,7 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     res = ad.dispatch_async_delegation(
         goal="compute X", context="some context", toolsets=["web", "file"],
         role="leaf", model="test-model", session_key="agent:main:cli:dm:local",
+        parent_session_id="20260703_parent_sid",
         runner=runner, max_async_children=3,
     )
     assert res["status"] == "dispatched"
@@ -126,6 +127,7 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["type"] == "async_delegation"
     assert evt["summary"] == "the result"
     assert evt["session_key"] == "agent:main:cli:dm:local"
+    assert evt["parent_session_id"] == "20260703_parent_sid"
     assert evt["delegation_id"] == res["delegation_id"]
 
 
@@ -615,6 +617,68 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     text = format_process_notification(evt)
     assert text is not None
     assert "the real task" in text
+
+
+def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
+    """TUI async delegation must route to the live/compressed agent id.
+
+    Regression: delegate_task captured the stale approval/session context key
+    after compression rotated parent_agent.session_id. The resulting completion
+    was orphaned and could be consumed by an unrelated desktop session poller.
+    """
+    import json
+    from unittest.mock import MagicMock
+    import tools.delegate_tool as dt
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools.approval import reset_current_session_key, set_current_session_key
+
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent.session_id = "post-compress-tip"
+    parent._interrupt_requested = False
+    parent._active_children = []
+    parent._active_children_lock = None
+    fake_child = MagicMock()
+    fake_child._delegate_role = "leaf"
+
+    creds = {
+        "model": "m", "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "command": None, "args": None,
+    }
+    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr(
+        dt,
+        "_run_single_child",
+        lambda *a, **k: {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "done",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+            "model": "m",
+            "exit_reason": "completed",
+        },
+    )
+
+    approval_token = set_current_session_key("pre-compress-parent")
+    session_tokens = set_session_vars(
+        source="tui",
+        session_key="pre-compress-parent",
+        ui_session_id="origin-tab",
+    )
+    try:
+        out = dt.delegate_task(goal="bg task", background=True, parent_agent=parent)
+        assert json.loads(out)["status"] == "dispatched"
+        evt = _drain_one()
+    finally:
+        reset_current_session_key(approval_token)
+        clear_session_vars(session_tokens)
+
+    assert evt is not None
+    assert evt["type"] == "async_delegation"
+    assert evt["session_key"] == "post-compress-tip"
+    assert evt["origin_ui_session_id"] == "origin-tab"
 
 
 def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):

@@ -47,8 +47,8 @@ OAuth needs a browser, but the loopback callback runs on the machine where Herme
 ssh -N -L 8642:127.0.0.1:8642 user@remote-host    # in a local terminal
 hermes setup --portal                              # on the remote, open the printed URL in your local browser
 
-# Option B: manual paste (for Cloud Shell, Codespaces, EC2 Instance Connect)
-hermes auth add nous --type oauth --manual-paste
+# Option B: device-code login (works from Cloud Shell, Codespaces, EC2 Instance Connect)
+hermes auth add nous --type oauth
 # Then re-run `hermes setup --portal` to wire the provider + gateway
 ```
 
@@ -186,7 +186,7 @@ The OAuth flow didn't complete. Re-run it:
 hermes portal
 ```
 
-If your browser doesn't open or the callback fails, you're likely on a remote/headless host — see [OAuth over SSH](/guides/oauth-over-ssh) for the port-forwarding and manual-paste workarounds.
+If your browser doesn't open or the callback fails, you're likely on a remote/headless host — see [OAuth over SSH](/guides/oauth-over-ssh) for the port-forwarding workarounds.
 
 ### "Model: currently openrouter" (or some other provider) instead of "using Nous as inference provider"
 

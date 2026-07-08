@@ -44,6 +44,34 @@ def _preserve_file_mode(path: Path) -> "int | None":
         return None
 
 
+def _preserve_file_owner(path: Path) -> "tuple[int, int] | None":
+    """Capture the owning uid/gid of *path* if the platform supports it."""
+    if os.name != "posix":
+        return None
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_uid, st.st_gid
+
+
+def _restore_file_owner(path: Path, owner: "tuple[int, int] | None") -> None:
+    """Re-apply uid/gid after an atomic replace when permitted.
+
+    Docker and NAS-backed installs often run some commands as root while the
+    persistent volume is owned by the runtime user. ``os.replace`` swaps in the
+    temp file's owner, so a root-run config write can leave ``config.yaml`` owned
+    by root. Best-effort chown preserves the existing owner for privileged
+    callers and is harmless for unprivileged callers that cannot chown.
+    """
+    if owner is None or not hasattr(os, "chown"):
+        return
+    try:
+        os.chown(path, owner[0], owner[1])
+    except OSError:
+        pass
+
+
 def _restore_file_mode(path: Path, mode: "int | None") -> None:
     """Re-apply *mode* to *path* after an atomic replace.
 
@@ -146,6 +174,7 @@ def atomic_json_write(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     original_mode = None if mode is not None else _preserve_file_mode(path)
+    original_owner = _preserve_file_owner(path)
 
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
@@ -170,13 +199,15 @@ def atomic_json_write(
             os.fsync(f.fileno())
         # Preserve symlinks — swap in-place on the real file (GitHub #16743).
         real_path = atomic_replace(tmp_path, path)
+        real_path_obj = Path(real_path)
+        _restore_file_owner(real_path_obj, original_owner)
         if mode is not None:
             try:
-                os.chmod(real_path, mode)
+                os.chmod(real_path_obj, mode)
             except OSError:
                 pass
         else:
-            _restore_file_mode(Path(real_path), original_mode)
+            _restore_file_mode(real_path_obj, original_mode)
     except BaseException:
         # Intentionally catch BaseException so temp-file cleanup still runs for
         # KeyboardInterrupt/SystemExit before re-raising the original signal.
@@ -229,6 +260,7 @@ def atomic_yaml_write(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     original_mode = _preserve_file_mode(path)
+    original_owner = _preserve_file_owner(path)
 
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
@@ -258,7 +290,9 @@ def atomic_yaml_write(
             os.fsync(f.fileno())
         # Preserve symlinks — swap in-place on the real file (GitHub #16743).
         real_path = atomic_replace(tmp_path, path)
-        _restore_file_mode(real_path, original_mode)
+        real_path_obj = Path(real_path)
+        _restore_file_owner(real_path_obj, original_owner)
+        _restore_file_mode(real_path_obj, original_mode)
     except BaseException:
         # Match atomic_json_write: cleanup must also happen for process-level
         # interruptions before we re-raise them.
@@ -313,6 +347,7 @@ def atomic_roundtrip_yaml_update(
     current[keys[-1]] = value
 
     original_mode = _preserve_file_mode(path)
+    original_owner = _preserve_file_owner(path)
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
         prefix=f".{path.stem}_",
@@ -324,7 +359,9 @@ def atomic_roundtrip_yaml_update(
             f.flush()
             os.fsync(f.fileno())
         real_path = atomic_replace(tmp_path, path)
-        _restore_file_mode(real_path, original_mode)
+        real_path_obj = Path(real_path)
+        _restore_file_owner(real_path_obj, original_owner)
+        _restore_file_mode(real_path_obj, original_mode)
     except BaseException:
         try:
             os.unlink(tmp_path)

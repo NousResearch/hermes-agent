@@ -2,7 +2,14 @@
 // switcher). They pin just under the title bar, centered, and lean on a crisp
 // border + shadow to separate from the app — no dimming/blurring backdrop.
 // Each caller layers on its own z-index, width, and overflow.
-export const HUD_POSITION = 'fixed left-1/2 top-3 -translate-x-1/2'
+//
+// Narrow screens: the centered HUD widens toward full-width and its top-left
+// corner slides under the macOS traffic lights. Below ~44rem (where the overlap
+// begins) drop the whole surface beneath the titlebar band so the search row
+// always clears the window controls. These HUDs portal to <body>, outside the
+// app-shell subtree that defines --titlebar-height, so the var needs a fallback.
+export const HUD_POSITION =
+  'fixed left-1/2 top-3 -translate-x-1/2 max-[44rem]:top-[calc(var(--titlebar-height,34px)+0.375rem)]'
 
 // Matches the app's borderless-overlay surface (dialog, keybind panel, …):
 // hairline `--stroke-nous` paired with the soft `--shadow-nous` float.

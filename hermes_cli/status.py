@@ -543,17 +543,39 @@ def show_status(args):
     print()
     print(color("◆ Sessions", Colors.CYAN, Colors.BOLD))
 
-    sessions_file = get_hermes_home() / "sessions" / "sessions.json"
-    if sessions_file.exists():
-        import json
+    # Gateway session count: state.db is the source of truth (#9006);
+    # fall back to sessions.json for pre-migration installs.
+    _session_count = None
+    try:
+        from hermes_state import SessionDB
+        _db = SessionDB()
         try:
-            with open(sessions_file, encoding="utf-8") as f:
-                data = json.load(f)
-                print(f"  Active:       {len(data)} session(s)")
-        except Exception:
-            print("  Active:       (error reading sessions file)")
+            _lister = getattr(_db, "list_gateway_sessions", None)
+            if callable(_lister):
+                _session_count = len(_lister(active_only=True))
+        finally:
+            _db.close()
+    except Exception:
+        _session_count = None
+
+    if _session_count is not None and _session_count > 0:
+        print(f"  Active:       {_session_count} session(s)")
     else:
-        print("  Active:       0")
+        sessions_file = get_hermes_home() / "sessions" / "sessions.json"
+        if sessions_file.exists():
+            import json
+            try:
+                with open(sessions_file, encoding="utf-8") as f:
+                    data = json.load(f)
+                    _entries = {
+                        k: v for k, v in data.items()
+                        if not str(k).startswith("_")
+                    } if isinstance(data, dict) else {}
+                    print(f"  Active:       {len(_entries)} session(s)")
+            except Exception:
+                print("  Active:       (error reading sessions file)")
+        else:
+            print(f"  Active:       {_session_count if _session_count is not None else 0}")
 
     # =========================================================================
     # Deep checks

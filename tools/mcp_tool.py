@@ -4147,9 +4147,13 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
                 if not isinstance(repaired.get("properties"), dict):
                     repaired["properties"] = {}
 
-            # Prune required to only include names that exist in properties
+            # Prune required to only include names that exist in properties.
+            # Also strip ``required: null`` (None) — strict OpenAI-compatible
+            # backends reject ``null`` where an array is expected (#60752).
             required = repaired.get("required")
-            if isinstance(required, list):
+            if required is None and "required" in repaired:
+                repaired.pop("required")
+            elif isinstance(required, list):
                 props = repaired.get("properties") or {}
                 valid = [r for r in required if isinstance(r, str) and r in props]
                 if len(valid) != len(required):

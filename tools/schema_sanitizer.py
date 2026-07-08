@@ -325,13 +325,18 @@ def _sanitize_node(node: Any, path: str) -> Any:
     # Prune ``required`` entries that don't exist in properties (defense
     # against malformed MCP schemas; also caught upstream for MCP tools, but
     # built-in tools or plugin tools may not have been through that path).
-    if out.get("type") == "object" and isinstance(out.get("required"), list):
-        props = out.get("properties") or {}
-        valid = [r for r in out["required"] if isinstance(r, str) and r in props]
-        if not valid:
-            out.pop("required", None)
-        elif len(valid) != len(out["required"]):
-            out["required"] = valid
+    # Also strip ``required: null`` — strict backends reject non-array values.
+    if out.get("type") == "object":
+        req = out.get("required")
+        if req is None and "required" in out:
+            out.pop("required")
+        elif isinstance(req, list):
+            props = out.get("properties") or {}
+            valid = [r for r in req if isinstance(r, str) and r in props]
+            if not valid:
+                out.pop("required", None)
+            elif len(valid) != len(req):
+                out["required"] = valid
 
     return out
 

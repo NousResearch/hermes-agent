@@ -198,6 +198,35 @@ def test_telegram_final_response_redacts_auth_secrets():
     assert "sk-live" not in sanitized
 
 
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+def test_chat_gateways_prefer_rate_limit_over_auth_wrapper(platform):
+    """A provider auth wrapper can carry the real 429/rate-limit cause (#60846)."""
+    raw = (
+        "⚠️ Provider authentication failed: API call failed after 3 retries: "
+        "HTTP 429 Rate limit reached for requests."
+    )
+
+    sanitized = _sanitize_gateway_final_response(platform, raw)
+
+    assert "rate-limiting" in sanitized.lower()
+    assert "authentication failed" not in sanitized.lower()
+    assert "check the configured credentials" not in sanitized.lower()
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+def test_chat_gateways_keep_policy_precedence_over_http_429(platform):
+    raw = (
+        "API call failed after 3 retries: HTTP 429: request blocked under "
+        "the provider security policy."
+    )
+
+    sanitized = _sanitize_gateway_final_response(platform, raw)
+
+    assert "provider rejected" in sanitized.lower()
+    assert "rate-limiting" not in sanitized.lower()
+    assert "security policy" not in sanitized.lower()
+
+
 def test_telegram_final_response_keeps_normal_answers():
     """Normal assistant content should not be rewritten."""
     answer = "Here is the clean summary you asked for."

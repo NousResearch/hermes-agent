@@ -11866,6 +11866,72 @@ def _(rid, params: dict) -> dict:
                 },
             )
 
+    if name in {"compress", "compact"}:
+        if not session:
+            return _err(rid, 4001, "no active session to compress")
+        if session.get("running"):
+            return _err(
+                rid, 4009, "session busy — /interrupt the current turn before /compress"
+            )
+        sid = params.get("session_id", "")
+        try:
+            from agent.manual_compression_feedback import summarize_manual_compression
+            from agent.model_metadata import estimate_request_tokens_rough
+
+            with session["history_lock"]:
+                before_messages = list(session.get("history", []))
+                history_version = int(session.get("history_version", 0))
+            before_count = len(before_messages)
+            _agent = session["agent"]
+            _sys_prompt = getattr(_agent, "_cached_system_prompt", "") or ""
+            _tools = getattr(_agent, "tools", None) or None
+            before_tokens = (
+                estimate_request_tokens_rough(
+                    before_messages, system_prompt=_sys_prompt, tools=_tools
+                )
+                if before_count
+                else 0
+            )
+            removed, usage = _compress_session_history(
+                session,
+                arg.strip() or None,
+                approx_tokens=before_tokens,
+                before_messages=before_messages,
+                history_version=history_version,
+            )
+            with session["history_lock"]:
+                after_messages = list(session.get("history", []))
+            after_count = len(after_messages)
+            _sys_prompt_after = (
+                getattr(_agent, "_cached_system_prompt", "") or _sys_prompt
+            )
+            _tools_after = getattr(_agent, "tools", None) or _tools
+            after_tokens = (
+                estimate_request_tokens_rough(
+                    after_messages,
+                    system_prompt=_sys_prompt_after,
+                    tools=_tools_after,
+                )
+                if after_count
+                else 0
+            )
+            _sync_session_key_after_compress(sid, session)
+            summary = summarize_manual_compression(
+                before_messages, after_messages, before_tokens, after_tokens
+            )
+            _emit("session.info", sid, _session_info(session.get("agent"), session))
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": "\n".join(
+                        filter(None, [summary["headline"], summary["token_line"], summary.get("note")])
+                    ),
+                },
+            )
+        except Exception as exc:
+            return _err(rid, 5009, f"compress failed: {exc}")
+
     return _err(rid, 4018, f"not a quick/plugin/skill command: {name}")
 
 

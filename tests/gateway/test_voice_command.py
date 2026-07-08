@@ -130,6 +130,17 @@ class TestHandleVoiceCommand:
         )
 
     @pytest.mark.asyncio
+    async def test_voice_leave_dispatches_with_optional_channel_id(self, runner):
+        event = _make_event("/voice leave 1282930260911984660")
+        runner._handle_voice_channel_leave = AsyncMock(return_value="left")
+
+        result = await runner._handle_voice_command(event)
+
+        assert result == "left"
+        runner._handle_voice_channel_leave.assert_called_once_with(event)
+        assert "telegram:123" not in runner._voice_mode
+
+    @pytest.mark.asyncio
     async def test_voice_status_off(self, runner):
         event = _make_event("/voice status")
         result = await runner._handle_voice_command(event)

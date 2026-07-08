@@ -71,6 +71,7 @@ def _make_compressor():
     c.awaiting_real_usage_after_compression = False
     c._previous_summary = None
     c._summary_has_user_turn = None
+    c.max_tail_message_floor = 0
     return c
 
 

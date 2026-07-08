@@ -978,7 +978,7 @@ def _(home, kb):
 def _(home, kb):
     """FastAPI TestClient POST /tasks with atypical JSON bodies."""
     kb.init_db()
-    # Set a session token so the ws check doesnt bomb on import
+    # Set a session token so the ws check doesn't bomb on import
     try:
         from hermes_cli import web_server as ws  # noqa
     except Exception:

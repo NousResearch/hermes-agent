@@ -25,8 +25,6 @@ import { $clarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 
-import { selectMessageRunning } from './tool/fallback-model'
-
 interface ClarifyArgs {
   allowOther?: boolean
   choices?: string[] | null
@@ -308,6 +306,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
       if (!multiSelect) {
         return
       }
+
       setDraft('')
       setSelectedChoice(null)
       setSelectedChoices(current => toggleChoice(current, choice, maxSelections))
@@ -374,6 +373,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
         if (index >= 0 && index < choices.length) {
           event.preventDefault()
+
           if (multiSelect) {
             toggleMultiChoice(choices[index])
           } else {

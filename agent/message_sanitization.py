@@ -269,14 +269,47 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
-    # Last resort: replace with empty object so the API request doesn't
-    # crash the entire session.
-    logger.warning(
-        "Unrepairable tool_call arguments for %s — "
-        "replaced with empty object (was: %s)",
-        tool_name, raw_stripped[:80],
-    )
-    return "{}"
+    # Last resort: for write/create tools, return a structured error
+    # to prompt the model to re-emit the full content. For other tools,
+    # return empty object to avoid crashing the session.
+    if tool_name in {"write_file", "create_file"}:
+        # Try to extract which field(s) are present in the truncated JSON
+        # Path typically appears first, so check if we can extract it.
+        missing_fields = []
+        has_path = False
+        try:
+            # Try to extract path using regex (robust to truncated JSON)
+            import re as _re
+            path_match = _re.search(r'\"path\"\s*:\s*\"([^\"]+)\"', raw_stripped)
+            if path_match:
+                has_path = True
+                missing_fields.append("content")
+            else:
+                # Can't find path — assume both missing
+                missing_fields = ["path", "content"]
+        except Exception:
+            # Can't parse partial — assume both missing
+            missing_fields = ["path", "content"]
+
+        error_msg = (
+            f"Tool call arguments for {tool_name} were truncated and could not be "
+            f"repaired. Missing required field(s): {', '.join(missing_fields)}. "
+            f"Please re-emit the full {tool_name} call with all required arguments."
+        )
+        logger.warning(
+            "Unrepairable tool_call arguments for %s (truncated JSON) — "
+            "returning structured error (was: %s)",
+            tool_name, raw_stripped[:80],
+        )
+        return json.dumps({"error": error_msg})
+    else:
+        # Other tools: empty object fallback
+        logger.warning(
+            "Unrepairable tool_call arguments for %s — "
+            "replaced with empty object (was: %s)",
+            tool_name, raw_stripped[:80],
+        )
+        return "{}"
 
 
 def close_interrupted_tool_sequence(messages: list, final_response: Any = None) -> bool:

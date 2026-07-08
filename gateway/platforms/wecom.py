@@ -365,22 +365,39 @@ class WeComAdapter(BasePlatformAdapter):
                 raise RuntimeError("WeCom websocket closed")
 
     async def _heartbeat_loop(self) -> None:
-        """Send lightweight application-level pings."""
+        """Send application-level pings and verify pong responses.
+
+        Uses _send_request (await response) instead of _send_json
+        (fire-and-forget) so that a half-open TCP connection (CLOSE_WAIT)
+        is detected when the ping response times out.  On timeout, marks
+        the connection as disconnected so _listen_loop triggers a
+        reconnect (#58649).
+        """
         try:
             while self._running:
                 await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
                 if not self._ws or self._ws.closed:
                     continue
                 try:
-                    await self._send_json(
-                        {
-                            "cmd": APP_CMD_PING,
-                            "headers": {"req_id": self._new_req_id("ping")},
-                            "body": {},
-                        }
+                    await self._send_request(
+                        APP_CMD_PING,
+                        {},
+                        timeout=HEARTBEAT_INTERVAL_SECONDS,
                     )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[%s] Heartbeat ping timed out — marking connection stale for reconnect",
+                        self.name,
+                    )
+                    self._mark_disconnected()
+                    if self._ws and not self._ws.closed:
+                        try:
+                            await self._ws.close()
+                        except Exception:
+                            pass
                 except Exception as exc:
                     logger.debug("[%s] Heartbeat send failed: %s", self.name, exc)
+                    self._mark_disconnected()
         except asyncio.CancelledError:
             pass
 

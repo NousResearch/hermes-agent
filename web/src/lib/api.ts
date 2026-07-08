@@ -1685,11 +1685,21 @@ export interface SystemStats {
   python_impl: string;
   hermes_version: string;
   cpu_count: number | null;
+  host_cpu_count?: number | null;
+  cpu_limit_cores?: number;
+  stats_scope?: "host" | "container";
   psutil: boolean;
   cpu_percent?: number;
   load_avg?: number[];
   uptime_seconds?: number;
-  memory?: { total: number; available: number; used: number; percent: number };
+  host_uptime_seconds?: number;
+  memory?: { total: number; available?: number; used?: number; percent?: number };
+  host_memory?: { total: number; available: number; used: number; percent: number };
+  cgroup?: {
+    cpu_quota_cores?: number;
+    memory_limit?: number;
+    memory_current?: number;
+  };
   disk?: { total: number; used: number; free: number; percent: number };
   process?: { pid: number; rss: number; create_time: number; num_threads: number };
 }

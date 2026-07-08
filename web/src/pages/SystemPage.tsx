@@ -825,6 +825,11 @@ export default function SystemPage() {
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
           <Server className="h-4 w-4" /> Host
+          {stats?.stats_scope === "container" && (
+            <Badge tone="outline" className="text-[10px]">
+              container limits
+            </Badge>
+          )}
         </H2>
         <Card>
           <CardContent className="py-4">
@@ -868,6 +873,9 @@ export default function SystemPage() {
                 </div>
                 <div>
                   {stats?.cpu_count ?? "—"} cores
+                  {stats?.stats_scope === "container" && typeof stats.host_cpu_count === "number"
+                    ? ` (host ${stats.host_cpu_count})`
+                    : ""}
                   {typeof stats?.cpu_percent === "number"
                     ? ` · ${stats.cpu_percent.toFixed(0)}%`
                     : ""}
@@ -875,9 +883,13 @@ export default function SystemPage() {
               </div>
               {stats?.memory && (
                 <div>
-                  <div className="text-xs uppercase tracking-wider text-muted-foreground">Memory</div>
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                    {stats.stats_scope === "container" ? "Memory limit" : "Memory"}
+                  </div>
                   <div>
-                    {formatBytes(stats.memory.used)} / {formatBytes(stats.memory.total)} ({stats.memory.percent}%)
+                    {typeof stats.memory.used === "number" && typeof stats.memory.percent === "number"
+                      ? `${formatBytes(stats.memory.used)} / ${formatBytes(stats.memory.total)} (${stats.memory.percent}%)`
+                      : formatBytes(stats.memory.total)}
                   </div>
                 </div>
               )}
@@ -893,7 +905,9 @@ export default function SystemPage() {
               )}
               {typeof stats?.uptime_seconds === "number" && (
                 <div>
-                  <div className="text-xs uppercase tracking-wider text-muted-foreground">Uptime</div>
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                    {stats.stats_scope === "container" ? "Container uptime" : "Uptime"}
+                  </div>
                   <div>{formatDuration(stats.uptime_seconds)}</div>
                 </div>
               )}

@@ -2795,6 +2795,254 @@ def _display_system_platform(
     }
 
 
+_CGROUP_ROOT = Path("/sys/fs/cgroup")
+_PROC_SELF_CGROUP = Path("/proc/self/cgroup")
+_CGROUP_V1_UNLIMITED_THRESHOLD = 1 << 50
+
+
+@dataclass(frozen=True)
+class _CgroupLimits:
+    memory_limit: Optional[int] = None
+    memory_current: Optional[int] = None
+    cpu_quota_cores: Optional[float] = None
+
+    @property
+    def active(self) -> bool:
+        return self.memory_limit is not None or self.cpu_quota_cores is not None
+
+
+def _read_cgroup_file(root: Path, relative: str) -> Optional[str]:
+    try:
+        return (root / relative).read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):
+        return None
+
+
+def _parse_cgroup_limit(raw: Optional[str]) -> Optional[int]:
+    if raw is None or raw == "" or raw == "max":
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    if value <= 0 or value >= _CGROUP_V1_UNLIMITED_THRESHOLD:
+        return None
+    return value
+
+
+def _parse_cgroup_current(raw: Optional[str]) -> Optional[int]:
+    if raw is None or raw == "":
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def _read_cgroup_memory_limit(root: Path = _CGROUP_ROOT) -> Optional[int]:
+    for relative in ("memory.max", "memory/memory.limit_in_bytes"):
+        limit = _parse_cgroup_limit(_read_cgroup_file(root, relative))
+        if limit is not None:
+            return limit
+    return None
+
+
+def _read_cgroup_memory_current(root: Path = _CGROUP_ROOT) -> Optional[int]:
+    for relative in ("memory.current", "memory/memory.usage_in_bytes"):
+        current = _parse_cgroup_current(_read_cgroup_file(root, relative))
+        if current is not None:
+            return current
+    return None
+
+
+def _read_cgroup_cpu_quota(root: Path = _CGROUP_ROOT) -> Optional[float]:
+    raw_v2 = _read_cgroup_file(root, "cpu.max")
+    if raw_v2:
+        parts = raw_v2.split()
+        if len(parts) >= 2 and parts[0] != "max":
+            try:
+                quota = int(parts[0])
+                period = int(parts[1])
+            except ValueError:
+                quota = period = 0
+            if quota > 0 and period > 0:
+                return quota / period
+
+    quota_raw = _read_cgroup_file(root, "cpu/cpu.cfs_quota_us")
+    period_raw = _read_cgroup_file(root, "cpu/cpu.cfs_period_us")
+    try:
+        quota = int(quota_raw or "")
+        period = int(period_raw or "")
+    except ValueError:
+        return None
+    if quota <= 0 or period <= 0:
+        return None
+    return quota / period
+
+
+def _process_cgroup_membership(proc_cgroup_path: Path) -> tuple[Optional[str], dict[str, str]]:
+    """Return the v2 path and v1 controller paths for the current process."""
+    try:
+        raw = proc_cgroup_path.read_text(encoding="utf-8")
+    except OSError:
+        return None, {}
+
+    v2_path: Optional[str] = None
+    v1_paths: dict[str, str] = {}
+    for line in raw.splitlines():
+        parts = line.strip().split(":", 2)
+        if len(parts) != 3:
+            continue
+        hierarchy, controllers, member_path = parts
+        if hierarchy == "0" and not controllers:
+            v2_path = member_path
+            continue
+        for controller in controllers.split(","):
+            if controller:
+                v1_paths[controller] = member_path
+    return v2_path, v1_paths
+
+
+def _cgroup_member_dir(root: Path, member_path: str) -> Path:
+    """Resolve a kernel-reported cgroup path beneath its mounted root."""
+    candidate = (root / member_path.lstrip("/")).resolve()
+    try:
+        candidate.relative_to(root.resolve())
+    except ValueError:
+        return root
+    return candidate
+
+
+def _read_cgroup_limits(
+    root: Path = _CGROUP_ROOT,
+    *,
+    proc_cgroup_path: Path = _PROC_SELF_CGROUP,
+) -> _CgroupLimits:
+    # Injected roots are direct cgroup fixtures unless the caller also injects
+    # a proc membership file. Production uses the real root + /proc pairing.
+    resolve_membership = root == _CGROUP_ROOT or proc_cgroup_path != _PROC_SELF_CGROUP
+    v2_path, v1_paths = (
+        _process_cgroup_membership(proc_cgroup_path)
+        if resolve_membership
+        else (None, {})
+    )
+
+    if v2_path:
+        member_root = _cgroup_member_dir(root, v2_path)
+        return _CgroupLimits(
+            memory_limit=_parse_cgroup_limit(_read_cgroup_file(member_root, "memory.max")),
+            memory_current=_parse_cgroup_current(_read_cgroup_file(member_root, "memory.current")),
+            cpu_quota_cores=_read_cgroup_cpu_quota(member_root),
+        )
+
+    if v1_paths:
+        memory_member = v1_paths.get("memory")
+        memory_root = (
+            _cgroup_member_dir(root / "memory", memory_member)
+            if memory_member
+            else root / "memory"
+        )
+        cpu_member = v1_paths.get("cpu") or v1_paths.get("cpuacct")
+        cpu_roots = [root / "cpu", root / "cpu,cpuacct"]
+        if cpu_member:
+            cpu_roots = [_cgroup_member_dir(candidate, cpu_member) for candidate in cpu_roots]
+        cpu_quota = None
+        for cpu_root in cpu_roots:
+            quota_raw = _read_cgroup_file(cpu_root, "cpu.cfs_quota_us")
+            period_raw = _read_cgroup_file(cpu_root, "cpu.cfs_period_us")
+            try:
+                quota = int(quota_raw or "")
+                period = int(period_raw or "")
+            except ValueError:
+                continue
+            if quota > 0 and period > 0:
+                cpu_quota = quota / period
+                break
+        return _CgroupLimits(
+            memory_limit=_parse_cgroup_limit(
+                _read_cgroup_file(memory_root, "memory.limit_in_bytes")
+            ),
+            memory_current=_parse_cgroup_current(
+                _read_cgroup_file(memory_root, "memory.usage_in_bytes")
+            ),
+            cpu_quota_cores=cpu_quota,
+        )
+
+    return _CgroupLimits(
+        memory_limit=_read_cgroup_memory_limit(root),
+        memory_current=_read_cgroup_memory_current(root),
+        cpu_quota_cores=_read_cgroup_cpu_quota(root),
+    )
+
+
+def _display_cpu_cores(cores: float) -> float | int:
+    rounded = round(cores, 2)
+    return int(rounded) if float(rounded).is_integer() else rounded
+
+
+def _container_uptime_seconds(psutil_module: Any) -> Optional[int]:
+    now = time.time()
+    for pid in (1, None):
+        try:
+            proc = psutil_module.Process(pid) if pid is not None else psutil_module.Process()
+            created = proc.create_time()
+        except Exception:
+            continue
+        if created > 0 and created <= now:
+            return int(now - created)
+    return None
+
+
+def _apply_cgroup_limits(
+    info: Dict[str, Any],
+    limits: _CgroupLimits,
+    *,
+    psutil_module: Any = None,
+) -> None:
+    if not limits.active:
+        return
+
+    info["stats_scope"] = "container"
+    cgroup: Dict[str, Any] = {}
+
+    if limits.cpu_quota_cores is not None:
+        info["host_cpu_count"] = info.get("cpu_count")
+        info["cpu_count"] = _display_cpu_cores(limits.cpu_quota_cores)
+        info["cpu_limit_cores"] = round(limits.cpu_quota_cores, 4)
+        cgroup["cpu_quota_cores"] = round(limits.cpu_quota_cores, 4)
+
+    if limits.memory_limit is not None:
+        host_memory = info.get("memory")
+        if isinstance(host_memory, dict):
+            info["host_memory"] = dict(host_memory)
+        current = limits.memory_current
+        memory: Dict[str, Any] = {"total": limits.memory_limit}
+        if current is not None:
+            used = min(max(current, 0), limits.memory_limit)
+            memory.update(
+                {
+                    "used": used,
+                    "available": max(limits.memory_limit - used, 0),
+                    "percent": round((used / limits.memory_limit) * 100, 1),
+                }
+            )
+        info["memory"] = memory
+        cgroup["memory_limit"] = limits.memory_limit
+        if limits.memory_current is not None:
+            cgroup["memory_current"] = limits.memory_current
+
+    if psutil_module is not None:
+        uptime = _container_uptime_seconds(psutil_module)
+        if uptime is not None:
+            if "uptime_seconds" in info:
+                info["host_uptime_seconds"] = info["uptime_seconds"]
+            info["uptime_seconds"] = uptime
+
+    if cgroup:
+        info["cgroup"] = cgroup
+
+
 @app.get("/api/system/stats")
 async def get_system_stats():
     """Host + process system stats for the System page.
@@ -2818,7 +3066,9 @@ async def get_system_stats():
         "python_impl": _platform.python_implementation(),
         "hermes_version": __version__,
         "cpu_count": os.cpu_count(),
+        "stats_scope": "host",
     }
+    cgroup_limits = _read_cgroup_limits()
 
     # psutil enriches the picture when present; everything below is optional.
     try:
@@ -2863,6 +3113,7 @@ async def get_system_stats():
             }
         except Exception:
             pass
+        _apply_cgroup_limits(info, cgroup_limits, psutil_module=psutil)
         info["psutil"] = True
     except Exception:
         info["psutil"] = False
@@ -2872,6 +3123,7 @@ async def get_system_stats():
             info["load_avg"] = list(os.getloadavg())
         except (OSError, AttributeError):
             pass
+        _apply_cgroup_limits(info, cgroup_limits)
 
     return info
 

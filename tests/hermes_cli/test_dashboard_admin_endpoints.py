@@ -408,6 +408,149 @@ class TestSystemStatsEndpoint:
             assert key in s and s[key]
         # psutil flag tells the UI whether the richer metrics are populated.
         assert "psutil" in s
+        assert s["stats_scope"] in {"host", "container"}
+
+    def test_cgroup_v2_limits_override_host_stats(self, tmp_path, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        (tmp_path / "memory.max").write_text(str(4 * 1024 * 1024 * 1024), encoding="utf-8")
+        (tmp_path / "memory.current").write_text(str(1024 * 1024 * 1024), encoding="utf-8")
+        (tmp_path / "cpu.max").write_text("200000 100000\n", encoding="utf-8")
+
+        limits = ws._read_cgroup_limits(tmp_path)
+        assert limits.memory_limit == 4 * 1024 * 1024 * 1024
+        assert limits.memory_current == 1024 * 1024 * 1024
+        assert limits.cpu_quota_cores == 2.0
+
+        monkeypatch.setattr(ws.time, "time", lambda: 500.0)
+
+        class _FakeProcess:
+            def __init__(self, pid=None):
+                self.pid = pid
+
+            def create_time(self):
+                return 100.0 if self.pid == 1 else 200.0
+
+        class _FakePsutil:
+            Process = _FakeProcess
+
+        info = {
+            "cpu_count": 24,
+            "memory": {
+                "total": 31 * 1024 * 1024 * 1024,
+                "used": 25 * 1024 * 1024 * 1024,
+                "available": 6 * 1024 * 1024 * 1024,
+                "percent": 80.0,
+            },
+            "uptime_seconds": 89 * 24 * 60 * 60,
+            "stats_scope": "host",
+        }
+
+        ws._apply_cgroup_limits(info, limits, psutil_module=_FakePsutil)
+
+        assert info["stats_scope"] == "container"
+        assert info["host_cpu_count"] == 24
+        assert info["cpu_count"] == 2
+        assert info["cpu_limit_cores"] == 2.0
+        assert info["host_memory"]["total"] == 31 * 1024 * 1024 * 1024
+        assert info["memory"] == {
+            "total": 4 * 1024 * 1024 * 1024,
+            "used": 1024 * 1024 * 1024,
+            "available": 3 * 1024 * 1024 * 1024,
+            "percent": 25.0,
+        }
+        assert info["host_uptime_seconds"] == 89 * 24 * 60 * 60
+        assert info["uptime_seconds"] == 400
+        assert info["cgroup"] == {
+            "cpu_quota_cores": 2.0,
+            "memory_limit": 4 * 1024 * 1024 * 1024,
+            "memory_current": 1024 * 1024 * 1024,
+        }
+
+    def test_cgroup_unlimited_values_keep_host_scope(self, tmp_path):
+        import hermes_cli.web_server as ws
+
+        (tmp_path / "memory.max").write_text("max\n", encoding="utf-8")
+        (tmp_path / "cpu.max").write_text("max 100000\n", encoding="utf-8")
+
+        limits = ws._read_cgroup_limits(tmp_path)
+
+        assert limits.active is False
+
+    def test_nested_cgroup_v2_limits_override_unrestricted_root(self, tmp_path):
+        import hermes_cli.web_server as ws
+
+        root = tmp_path / "cgroup"
+        member = root / "system.slice" / "hermes-dashboard.service"
+        member.mkdir(parents=True)
+        (root / "memory.max").write_text("max\n", encoding="utf-8")
+        (root / "cpu.max").write_text("max 100000\n", encoding="utf-8")
+        (member / "memory.max").write_text(str(2 * 1024**3), encoding="utf-8")
+        (member / "memory.current").write_text(str(512 * 1024**2), encoding="utf-8")
+        (member / "cpu.max").write_text("150000 100000\n", encoding="utf-8")
+        proc_cgroup = tmp_path / "proc-self-cgroup"
+        proc_cgroup.write_text(
+            "0::/system.slice/hermes-dashboard.service\n", encoding="utf-8"
+        )
+
+        limits = ws._read_cgroup_limits(
+            root, proc_cgroup_path=proc_cgroup
+        )
+
+        assert limits.memory_limit == 2 * 1024**3
+        assert limits.memory_current == 512 * 1024**2
+        assert limits.cpu_quota_cores == 1.5
+
+    def test_nested_cgroup_v1_controller_paths_are_resolved(self, tmp_path):
+        import hermes_cli.web_server as ws
+
+        root = tmp_path / "cgroup"
+        memory_member = root / "memory" / "docker" / "abc"
+        cpu_member = root / "cpu,cpuacct" / "docker" / "abc"
+        memory_member.mkdir(parents=True)
+        cpu_member.mkdir(parents=True)
+        (memory_member / "memory.limit_in_bytes").write_text(
+            str(3 * 1024**3), encoding="utf-8"
+        )
+        (memory_member / "memory.usage_in_bytes").write_text(
+            str(1024**3), encoding="utf-8"
+        )
+        (cpu_member / "cpu.cfs_quota_us").write_text("250000\n", encoding="utf-8")
+        (cpu_member / "cpu.cfs_period_us").write_text("100000\n", encoding="utf-8")
+        proc_cgroup = tmp_path / "proc-self-cgroup"
+        proc_cgroup.write_text(
+            "5:memory:/docker/abc\n2:cpu,cpuacct:/docker/abc\n",
+            encoding="utf-8",
+        )
+
+        limits = ws._read_cgroup_limits(
+            root, proc_cgroup_path=proc_cgroup
+        )
+
+        assert limits.memory_limit == 3 * 1024**3
+        assert limits.memory_current == 1024**3
+        assert limits.cpu_quota_cores == 2.5
+
+    def test_cgroup_memory_limit_without_usage_reports_limit_only(self):
+        import hermes_cli.web_server as ws
+
+        info = {
+            "memory": {
+                "total": 31 * 1024 * 1024 * 1024,
+                "used": 25 * 1024 * 1024 * 1024,
+                "available": 6 * 1024 * 1024 * 1024,
+                "percent": 80.0,
+            },
+            "stats_scope": "host",
+        }
+        limits = ws._CgroupLimits(memory_limit=4 * 1024 * 1024 * 1024)
+
+        ws._apply_cgroup_limits(info, limits)
+
+        assert info["stats_scope"] == "container"
+        assert info["host_memory"]["used"] == 25 * 1024 * 1024 * 1024
+        assert info["memory"] == {"total": 4 * 1024 * 1024 * 1024}
+        assert info["cgroup"] == {"memory_limit": 4 * 1024 * 1024 * 1024}
 
 
 class TestCuratorEndpoints:

@@ -4975,6 +4975,47 @@ class SessionDB:
             cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions s{where_sql}", params)
             return cursor.fetchone()[0]
 
+    def session_count_by_source(
+        self,
+        *,
+        include_archived: bool = False,
+        archived_only: bool = False,
+        exclude_children: bool = False,
+        limit: int = 100,
+    ) -> Dict[str, int]:
+        """Count sessions grouped by source without materialising rich rows.
+
+        ``exclude_children=True`` mirrors ``list_sessions_rich`` visibility:
+        roots plus branch sessions, excluding sub-agent runs, delegates, and
+        compression continuations. Use that when the source badges accompany
+        list-style session stats.
+        """
+        where_clauses = []
+        params = []
+
+        if exclude_children:
+            where_clauses.append(_LISTABLE_CHILD_SQL)
+            where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
+        if archived_only:
+            where_clauses.append("s.archived = 1")
+        elif not include_archived:
+            where_clauses.append("s.archived = 0")
+
+        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        safe_limit = max(1, min(int(limit or 100), 1000))
+
+        with self._lock:
+            if self._conn is None:
+                raise RuntimeError("SessionDB connection is closed")
+            rows = self._conn.execute(
+                "SELECT COALESCE(s.source, 'cli') AS source, COUNT(*) AS count "
+                f"FROM sessions s{where_sql} "
+                "GROUP BY COALESCE(s.source, 'cli') "
+                "ORDER BY count DESC LIMIT ?",
+                params + [safe_limit],
+            ).fetchall()
+        return {str(row["source"]): int(row["count"] or 0) for row in rows}
+
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
         with self._lock:

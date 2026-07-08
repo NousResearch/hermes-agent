@@ -1388,6 +1388,30 @@ class ShellFileOperations(FileOperations):
         if self._file_has_bom(path, pre_content) and not _has_bom(content):
             content = _UTF8_BOM + content
 
+        # ── Pre-write syntax gate (JSON / YAML / TOML) ──────────────
+        # For structured data formats, validate the content *before* any
+        # disk write so that malformed content never lands on disk.  The
+        # post-write lint check (`_check_lint_delta`) still runs and
+        # reports issues, but it fires *after* the file is committed — too
+        # late for cases like corrupted cron config or live JSON manifests.
+        #
+        # Deliberately scoped to JSON, YAML, and TOML only.  Python is
+        # excluded because existing test suites write non-Python text
+        # through ``*.py`` paths as generic write-mechanics fixtures — a
+        # naive blanket scope broke 3 previously-green tests.
+        _SYNTAX_GATE_EXTENSIONS = ('.json', '.yaml', '.yml', '.toml')
+        _inproc_linter = LINTERS_INPROC.get(ext)
+        if ext in _SYNTAX_GATE_EXTENSIONS and _inproc_linter is not None:
+            _gate_ok, _gate_msg = _inproc_linter(content)
+            if not _gate_ok:
+                return WriteResult(
+                    error=(
+                        f"Syntax check failed for {path}: {_gate_msg}. "
+                        "Write aborted — no content was written to disk."
+                    ),
+                    lint={"status": "error", "message": _gate_msg},
+                )
+
         # Snapshot LSP diagnostics for this file (best-effort) so the
         # post-write LSP layer can return only diagnostics introduced
         # by this specific edit.  Mirrors claude-code's

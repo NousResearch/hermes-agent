@@ -26,7 +26,11 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _RUNNER = _REPO_ROOT / "scripts" / "run_tests_parallel.py"
-_WORKTREE_MARKER = "/.worktrees/sendoff-a5-e2e-closeout/"
+# Stable across any worktree name AND the merged main tree: assert the
+# module resolves under THIS test file's repo, not a separate editable
+# install copy elsewhere on disk.
+import pathlib as _pl
+_REPO_ROOT = str(_pl.Path(__file__).resolve().parents[1])
 
 
 def _load_runner_module():
@@ -47,11 +51,11 @@ def test_module_under_test_is_worktree_bytes() -> None:
     __file__ BEFORE trusting any green. The runner is also invoked as a
     subprocess in the other tests via _RUNNER, whose path we assert here.
     """
-    assert _WORKTREE_MARKER in str(_RUNNER), (
+    assert _REPO_ROOT in str(_RUNNER), (
         f"runner path is not in the A5 worktree: {_RUNNER}"
     )
     mod = _load_runner_module()
-    assert mod.__file__ and _WORKTREE_MARKER in mod.__file__, (
+    assert mod.__file__ and _REPO_ROOT in mod.__file__, (
         f"imported runner is not worktree bytes: {mod.__file__}"
     )
     # The guard itself must exist on these bytes (else every green below is a

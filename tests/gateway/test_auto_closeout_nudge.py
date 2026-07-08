@@ -19,7 +19,11 @@ import copy
 import gateway.run as gr
 from gateway.run import _build_resume_pending_message
 
-_WORKTREE_MARKER = "/.worktrees/sendoff-a5-e2e-closeout/"
+# Stable across any worktree name AND the merged main tree: assert the
+# module resolves under THIS test file's repo, not a separate editable
+# install copy elsewhere on disk.
+import pathlib as _pl
+_REPO_ROOT = str(_pl.Path(__file__).resolve().parents[2])
 
 _CLOSEOUT_TELL = "run the prd-closeout gate"
 
@@ -32,7 +36,7 @@ def test_module_under_test_is_worktree_bytes() -> None:
     finder so this import resolves to the worktree. Assert it before trusting
     the behavioral assertions below.
     """
-    assert gr.__file__ and _WORKTREE_MARKER in gr.__file__, (
+    assert gr.__file__ and _REPO_ROOT in gr.__file__, (
         f"gateway.run is not worktree bytes: {gr.__file__}"
     )
 

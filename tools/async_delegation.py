@@ -519,6 +519,48 @@ def interrupt_all(reason: str = "shutdown") -> int:
     return count
 
 
+def interrupt_for_session(
+    *,
+    session_key: str,
+    parent_session_id: str = "",
+    reason: str = "session_reset",
+) -> int:
+    """Interrupt running async delegations tied to a gateway session.
+
+    Used on ``/new`` and session reset so delegations whose spawning
+    conversation has ended don't burn tokens and park orphaned completions
+    on the shared queue. Matches by ``session_key`` (captured at dispatch
+    time) and logs ``parent_session_id`` for diagnostics.
+
+    Returns how many delegations were interrupted.
+    """
+    count = 0
+    with _records_lock:
+        targets = [
+            r
+            for r in _records.values()
+            if r.get("status") == "running"
+            and r.get("session_key") == session_key
+        ]
+    for r in targets:
+        fn = r.get("interrupt_fn")
+        if callable(fn):
+            try:
+                fn()
+                count += 1
+            except Exception as exc:
+                logger.debug(
+                    "interrupt_for_session: %s interrupt failed: %s",
+                    r.get("delegation_id"), exc,
+                )
+    if count:
+        logger.info(
+            "Interrupted %d async delegation(s) for session_key=%s (%s)",
+            count, session_key, reason,
+        )
+    return count
+
+
 def _reset_for_tests() -> None:
     """Test-only: clear all state and tear down the executor."""
     global _executor, _executor_max_workers

@@ -1820,6 +1820,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     around_message_id=next_args.get("around_message_id"),
                     window=next_args.get("window", 5),
                     sort=next_args.get("sort"),
+                    profile=next_args.get("profile"),
                     db=session_db,
                     current_session_id=agent.session_id,
                 ),

@@ -18,6 +18,8 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home, _get_platform_default_hermes_home
@@ -40,6 +42,9 @@ _gateway_lock_handle = None
 # past the JSON payload so runtime status / PID readers can still read the file
 # while another process holds the mutual-exclusion lock.
 _WINDOWS_LOCK_OFFSET = 1024 * 1024
+_GATEWAY_RUNNING_PID_CACHE_TTL_SECONDS = 1.0
+_gateway_running_pid_cache_lock = threading.Lock()
+_gateway_running_pid_cache: dict[tuple[str, bool, bool], tuple[float, tuple[Any, ...], Optional[int]]] = {}
 
 
 def _get_process_hermes_home() -> Path:
@@ -497,6 +502,33 @@ def _pid_from_record(record: Optional[dict[str, Any]]) -> Optional[int]:
         return None
 
 
+def _clear_running_pid_cache() -> None:
+    with _gateway_running_pid_cache_lock:
+        _gateway_running_pid_cache.clear()
+
+
+def _file_cache_signature(path: Path) -> tuple[bool, Optional[int], Optional[int]]:
+    try:
+        st = path.stat()
+    except OSError:
+        return (False, None, None)
+    return (True, st.st_mtime_ns, st.st_size)
+
+
+def _running_pid_cache_signature(
+    pid_path: Path,
+    *,
+    include_runtime_status: bool,
+) -> tuple[Any, ...]:
+    parts: list[Any] = [
+        _file_cache_signature(pid_path),
+        _file_cache_signature(_get_gateway_lock_path(pid_path)),
+    ]
+    if include_runtime_status:
+        parts.append(_file_cache_signature(_get_runtime_status_path()))
+    return tuple(parts)
+
+
 def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
     """Delete a stale gateway PID file (and its sibling lock metadata).
 
@@ -509,6 +541,7 @@ def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
     """
     if not cleanup_stale:
         return
+    _clear_running_pid_cache()
     try:
         pid_path.unlink(missing_ok=True)
     except Exception:
@@ -694,6 +727,7 @@ def acquire_gateway_runtime_lock() -> bool:
         return False
     _write_gateway_lock_record(handle)
     _gateway_lock_handle = handle
+    _clear_running_pid_cache()
     return True
 
 
@@ -709,6 +743,7 @@ def release_gateway_runtime_lock() -> None:
         handle.close()
     except OSError:
         pass
+    _clear_running_pid_cache()
 
 
 def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
@@ -751,6 +786,7 @@ def write_pid_file() -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(record)
+        _clear_running_pid_cache()
     except Exception:
         try:
             path.unlink(missing_ok=True)
@@ -968,6 +1004,7 @@ def remove_pid_file() -> None:
                 # PID file belongs to a different process — leave it alone.
                 return
         path.unlink(missing_ok=True)
+        _clear_running_pid_cache()
     except Exception:
         pass
 
@@ -1471,6 +1508,54 @@ def get_running_pid(
         if runtime_pid is not None:
             return runtime_pid
     return None
+
+
+def get_running_pid_cached(
+    pid_path: Optional[Path] = None,
+    *,
+    cleanup_stale: bool = True,
+    ttl_seconds: float = _GATEWAY_RUNNING_PID_CACHE_TTL_SECONDS,
+) -> Optional[int]:
+    """Cached read-side wrapper for dashboard/status polling.
+
+    ``get_running_pid()`` probes the runtime lock by briefly opening and locking
+    ``gateway.lock``. That is the right authoritative check for control paths,
+    but high-frequency read-only HTTP polling can call it hundreds of times per
+    minute. Cache for a short window and invalidate on PID/lock/runtime-status
+    file changes so status endpoints do not churn file descriptors while still
+    noticing gateway start/stop transitions quickly.
+    """
+    if ttl_seconds <= 0:
+        return get_running_pid(pid_path, cleanup_stale=cleanup_stale)
+
+    resolved_pid_path = pid_path or _get_pid_path()
+    include_runtime_status = pid_path is None
+    signature = _running_pid_cache_signature(
+        resolved_pid_path,
+        include_runtime_status=include_runtime_status,
+    )
+    key = (str(resolved_pid_path), bool(cleanup_stale), include_runtime_status)
+    now = time.monotonic()
+
+    with _gateway_running_pid_cache_lock:
+        cached = _gateway_running_pid_cache.get(key)
+        if cached is not None:
+            cached_at, cached_signature, cached_pid = cached
+            if now - cached_at <= ttl_seconds and cached_signature == signature:
+                return cached_pid
+
+    pid = get_running_pid(pid_path, cleanup_stale=cleanup_stale)
+    refreshed_signature = _running_pid_cache_signature(
+        resolved_pid_path,
+        include_runtime_status=include_runtime_status,
+    )
+    with _gateway_running_pid_cache_lock:
+        _gateway_running_pid_cache[key] = (
+            time.monotonic(),
+            refreshed_signature,
+            pid,
+        )
+    return pid
 
 
 def is_gateway_running(

@@ -2080,7 +2080,21 @@ DEFAULT_CONFIG = {
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
     },
-    
+
+    "voice_satellite": {
+        # Wyoming voice satellites ("Hey Hermes" hardware). Empty list = off.
+        # Each entry: {name: kitchen, host: 192.168.1.40, port: 10700}
+        "satellites": [],
+        "listen_timeout_seconds": 30.0,
+        "tts_sample_rate": 22050,
+        "endpointing": {
+            "silence_threshold": 200,      # RMS below this = silence (0-32767)
+            "silence_duration": 1.2,       # trailing silence that ends an utterance
+            "min_speech_seconds": 0.5,     # shorter = discard as noise
+            "max_utterance_seconds": 20.0, # hard cap per utterance
+        },
+    },
+
     "human_delay": {
         "mode": "off",
         "min_ms": 800,

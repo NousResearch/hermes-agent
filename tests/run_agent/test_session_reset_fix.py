@@ -67,6 +67,7 @@ class TestResetSessionState:
         compressor.last_total_tokens = 150
         compressor.compression_count = 3
         compressor._context_probed = True
+        compressor.max_tail_message_floor = 0
 
         agent.context_compressor = compressor
 
@@ -101,6 +102,7 @@ class TestResetSessionState:
         compressor.last_total_tokens = 0
         compressor.compression_count = 0
         compressor._context_probed = False
+        compressor.max_tail_message_floor = 0
         agent.context_compressor = compressor
 
         agent.reset_session_state()

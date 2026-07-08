@@ -109,6 +109,8 @@ class TestTokenBudgetWithImages:
         # Minimal compressor fixture — just enough to call _find_tail_cut_by_tokens
         cc = object.__new__(ContextCompressor)
         cc.tail_token_budget = 5000
+        cc.protect_last_n = 12
+        cc.max_tail_message_floor = 0
 
         # Build 10 messages: 5 with images, 5 with short text. Without the
         # image-tokens fix, the compressor would think all 10 fit in 5K and

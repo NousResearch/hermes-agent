@@ -877,6 +877,7 @@ class TestCompressorScreenshotPruning:
         from agent.context_compressor import ContextCompressor
         # Minimal constructor — _prune_old_tool_results doesn't need a real client.
         c = ContextCompressor.__new__(ContextCompressor)
+        c.max_tail_message_floor = 0
         return c
 
     def test_prunes_openai_content_parts_image(self):

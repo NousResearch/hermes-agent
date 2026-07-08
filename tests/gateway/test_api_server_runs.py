@@ -9,6 +9,7 @@ Covers:
 """
 
 import asyncio
+import json
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -51,6 +52,15 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
     return app
+
+
+def _sse_data_events(body: str) -> list[dict]:
+    events: list[dict] = []
+    for line in body.splitlines():
+        if not line.startswith("data: "):
+            continue
+        events.append(json.loads(line.removeprefix("data: ")))
+    return events
 
 
 def _make_slow_agent(**kwargs):
@@ -305,6 +315,56 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+
+    @pytest.mark.asyncio
+    async def test_events_stream_exposes_final_reasoning_payload(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {
+                    "final_response": "Visible answer",
+                    "last_reasoning": "short summary",
+                    "messages": [
+                        {"role": "user", "content": "hello"},
+                        {
+                            "role": "assistant",
+                            "content": "Visible answer",
+                            "reasoning": "short summary",
+                            "reasoning_content": "provider-native scratchpad",
+                            "reasoning_details": [
+                                {"type": "reasoning.summary", "text": "step one"}
+                            ],
+                        },
+                    ],
+                }
+                mock_agent.session_prompt_tokens = 10
+                mock_agent.session_completion_tokens = 5
+                mock_agent.session_total_tokens = 15
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                events = _sse_data_events(await events_resp.text())
+
+        reasoning_events = [e for e in events if e.get("event") == "reasoning.available"]
+        assert reasoning_events
+        final_reasoning = reasoning_events[-1]
+        assert final_reasoning["source"] == "final_result"
+        assert final_reasoning["text"] == "provider-native scratchpad"
+        assert final_reasoning["reasoning"] == "short summary"
+        assert final_reasoning["reasoning_content"] == "provider-native scratchpad"
+        assert final_reasoning["reasoning_details"] == [
+            {"type": "reasoning.summary", "text": "step one"}
+        ]
+
+        completed = [e for e in events if e.get("event") == "run.completed"][-1]
+        assert completed["reasoning"]["text"] == "provider-native scratchpad"
+        assert completed["reasoning"]["reasoning_content"] == "provider-native scratchpad"
 
 
     @pytest.mark.asyncio

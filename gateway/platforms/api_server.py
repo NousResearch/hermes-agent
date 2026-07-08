@@ -4119,6 +4119,60 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_statuses[run_id] = current
         return current
 
+    @staticmethod
+    def _reasoning_details_text(details: Any) -> str:
+        if isinstance(details, str):
+            return details
+        if not isinstance(details, list):
+            return ""
+        parts: List[str] = []
+        for item in details:
+            if isinstance(item, str):
+                text = item
+            elif isinstance(item, dict):
+                text = item.get("text") or item.get("summary") or ""
+            else:
+                text = ""
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+        return "\n".join(parts)
+
+    @classmethod
+    def _run_reasoning_payload(cls, result: Any) -> Dict[str, Any]:
+        if not isinstance(result, dict):
+            return {}
+
+        payload: Dict[str, Any] = {}
+        last_reasoning = result.get("last_reasoning")
+        if isinstance(last_reasoning, str) and last_reasoning.strip():
+            payload["reasoning"] = last_reasoning
+
+        messages = result.get("messages")
+        if isinstance(messages, list):
+            for msg in reversed(messages):
+                if not isinstance(msg, dict):
+                    continue
+                role = msg.get("role")
+                if role == "user":
+                    break
+                if role != "assistant":
+                    continue
+                for key in ("reasoning_content", "reasoning_details", "reasoning"):
+                    value = msg.get(key)
+                    if key not in payload and value not in (None, "", []):
+                        payload[key] = value
+
+        text = (
+            payload.get("reasoning_content")
+            or payload.get("reasoning")
+            or cls._reasoning_details_text(payload.get("reasoning_details"))
+        )
+        if isinstance(text, str) and text.strip():
+            payload["text"] = text
+        elif payload:
+            payload["text"] = ""
+        return payload
+
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
         def _push(event: Dict[str, Any]) -> None:
@@ -4391,19 +4445,35 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                    q.put_nowait({
+                    reasoning_payload = self._run_reasoning_payload(result)
+                    completed_event = {
                         "event": "run.completed",
                         "run_id": run_id,
                         "timestamp": time.time(),
                         "output": final_response,
                         "usage": usage,
-                    })
+                    }
+                    status_fields: Dict[str, Any] = {
+                        "output": final_response,
+                        "usage": usage,
+                        "last_event": "run.completed",
+                    }
+                    if reasoning_payload:
+                        now = time.time()
+                        q.put_nowait({
+                            "event": "reasoning.available",
+                            "run_id": run_id,
+                            "timestamp": now,
+                            "source": "final_result",
+                            **reasoning_payload,
+                        })
+                        completed_event["reasoning"] = reasoning_payload
+                        status_fields["reasoning"] = reasoning_payload
+                    q.put_nowait(completed_event)
                     self._set_run_status(
                         run_id,
                         "completed",
-                        output=final_response,
-                        usage=usage,
-                        last_event="run.completed",
+                        **status_fields,
                     )
             except asyncio.CancelledError:
                 self._set_run_status(

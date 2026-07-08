@@ -783,6 +783,56 @@ class MemoryManager:
                     exc_info=True,
                 )
 
+    def commit_session_boundary_async(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        new_session_id: str,
+        parent_session_id: str = "",
+        reason: str = "new_session",
+    ) -> None:
+        """Queue old-session extraction + provider rebinding as ONE serialized task.
+
+        Session rotation (/new) must deliver ``on_session_end`` (end-of-session
+        extraction — an LLM-bound call that can take seconds) strictly BEFORE
+        ``on_session_switch`` (which rebinds provider-internal ``_session_id`` /
+        turn buffers to the new session). Running extraction inline blocked the
+        /new command for the whole LLM round-trip (#16454); running it on an
+        ad-hoc thread raced the inline switch — providers key off internal
+        state, so a late ``on_session_end`` ran against post-switch bindings
+        (transcript misattributed to the new session id, double-ingest of the
+        old turn buffer, new-session buffers cleared).
+
+        Submitting BOTH hooks as one task on the manager's single background
+        worker gives both properties at a single chokepoint: the caller returns
+        immediately, and the worker's FIFO order serializes end→switch against
+        every other provider write (per-turn ``sync_all``, prefetches), which
+        already share the same worker. If the executor is unavailable,
+        ``_submit_background`` degrades to inline execution — the pre-#16454
+        synchronous behavior, slow but correct.
+        """
+        providers = list(self._providers)
+        if not providers:
+            return
+        snapshot = list(messages or [])
+
+        def _run() -> None:
+            try:
+                self.on_session_end(snapshot)
+            except Exception as e:  # pragma: no cover - on_session_end guards per-provider
+                logger.warning("Session-boundary extraction failed: %s", e)
+            try:
+                self.on_session_switch(
+                    new_session_id,
+                    parent_session_id=parent_session_id,
+                    reset=True,
+                    reason=reason,
+                )
+            except Exception as e:  # pragma: no cover - on_session_switch guards per-provider
+                logger.warning("Session-boundary switch failed: %s", e)
+
+        self._submit_background(_run)
+
     def on_session_switch(
         self,
         new_session_id: str,

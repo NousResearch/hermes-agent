@@ -69,10 +69,11 @@ class TestFindHermesRoot:
 
     def test_package_installation_searches_upward(self, tmp_path: Path):
         """Test that package installations search upward for pyproject.toml."""
-        # Create package installation structure
-        site_packages = tmp_path / "site-packages"
+        # Create package installation structure (like Brew)
+        # repo_root / site_packages / hermes_cli / main.py
+        repo_root = tmp_path / "cellar"
+        site_packages = repo_root / "libexec" / "lib" / "python3.14" / "site-packages"
         hermes_cli = site_packages / "hermes_cli"
-        repo_root = tmp_path / "hermes-repo"
         apps_desktop = repo_root / "apps" / "desktop"
 
         site_packages.mkdir(parents=True)

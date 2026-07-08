@@ -9303,7 +9303,17 @@ def _session_latest_descendant(session_id: str, db):
     rows = []
     if conn is not None:
         raw_rows = conn.execute(
-            "SELECT id, parent_session_id, started_at FROM sessions"
+            """
+            WITH RECURSIVE descendants(id, parent_session_id, started_at) AS (
+                SELECT id, parent_session_id, started_at FROM sessions WHERE id = ?
+                UNION ALL
+                SELECT s.id, s.parent_session_id, s.started_at
+                FROM sessions s
+                JOIN descendants d ON s.parent_session_id = d.id
+            )
+            SELECT id, parent_session_id, started_at FROM descendants
+            """,
+            (sid,),
         ).fetchall()
         for row in raw_rows:
             rows.append({

@@ -336,7 +336,7 @@ def _run_one_file(
             # selector). A file whose source defines no ``def test``/``class Test``
             # is not a pytest target — flag it ⚠, don't RED the whole suite on it.
             try:
-                _src = file.read_text(errors="replace")
+                _src = file.read_text(encoding="utf-8", errors="replace")
                 import re as _re
                 _has_tests = bool(_re.search(r"^\s*(async\s+)?def\s+test|^\s*class\s+Test",
                                              _src, _re.MULTILINE))

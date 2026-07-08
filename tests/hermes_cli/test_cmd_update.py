@@ -673,6 +673,96 @@ class TestCmdUpdateBranchFlag:
         assert "nonexistent" in out
 
 
+class TestCmdUpdateDivergedLocalCommitBackup:
+    """When ``git pull --ff-only`` fails, the update falls back to
+    ``git reset --hard origin/<branch>`` — which silently discards local-only
+    COMMITS (the autostash only covers uncommitted changes).  A backup branch
+    must be created at the pre-reset HEAD first so committed local work
+    survives (real incident: a live install carrying local gateway fixes as
+    commits on main would have lost them all to the reset fallback)."""
+
+    @staticmethod
+    def _diverged_side_effect(ahead_count="2", branch_create_rc=0):
+        """Simulate a checkout that is behind origin AND has local commits."""
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+
+            if "rev-parse" in joined and "--abbrev-ref" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+            if "rev-parse" in joined and "--verify" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            # Ahead check: local-only commits on top of origin/main.
+            if "rev-list" in joined and "origin/main..HEAD" in joined:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=f"{ahead_count}\n", stderr=""
+                )
+            # Behind check: updates are available.
+            if "rev-list" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="3\n", stderr="")
+            if "pull" in joined and "--ff-only" in joined:
+                return subprocess.CompletedProcess(
+                    cmd, 128, stdout="", stderr="fatal: Not possible to fast-forward\n"
+                )
+            if "branch" in joined and "hermes-local-commits-" in joined:
+                return subprocess.CompletedProcess(
+                    cmd, branch_create_rc, stdout="", stderr=""
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        return side_effect
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_backup_branch_created_before_reset(self, mock_run, _mock_which, capsys):
+        mock_run.side_effect = self._diverged_side_effect(ahead_count="2")
+        cmd_update(SimpleNamespace())
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+
+        backup_idx = next(
+            (i for i, c in enumerate(commands) if "branch" in c and "hermes-local-commits-" in c),
+            None,
+        )
+        reset_idx = next(
+            (i for i, c in enumerate(commands) if "reset" in c and "--hard" in c and "origin/main" in c),
+            None,
+        )
+        assert backup_idx is not None, commands
+        assert reset_idx is not None, commands
+        assert backup_idx < reset_idx, "backup branch must exist before the destructive reset"
+
+        out = capsys.readouterr().out
+        assert "2 local commit(s) preserved on branch" in out
+        assert "git cherry-pick origin/main..hermes-local-commits-" in out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_no_backup_branch_when_nothing_ahead(self, mock_run, _mock_which, capsys):
+        mock_run.side_effect = self._diverged_side_effect(ahead_count="0")
+        cmd_update(SimpleNamespace())
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert not any("hermes-local-commits-" in c for c in commands), commands
+        # The reset fallback itself must still run.
+        assert any("reset" in c and "--hard" in c for c in commands), commands
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_failed_backup_branch_prints_reflog_guidance(self, mock_run, _mock_which, capsys):
+        mock_run.side_effect = self._diverged_side_effect(
+            ahead_count="2", branch_create_rc=1
+        )
+        cmd_update(SimpleNamespace())
+
+        out = capsys.readouterr().out
+        assert "Could not create a backup branch" in out
+        assert "git reflog" in out
+        # The reset must proceed anyway — a failed backup must not brick the update.
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert any("reset" in c and "--hard" in c for c in commands), commands
+
+
 class TestCmdUpdateCheckBranchFlag:
     """``hermes update --check --branch <name>`` honors the branch override.
 

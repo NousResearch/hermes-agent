@@ -9727,11 +9727,58 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             if pull_result.returncode != 0:
                 # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
+                # force-pushed or rebase, or the user committed locally on the
+                # update branch).  Since local changes are already stashed,
+                # reset to match the remote exactly.
+                #
+                # The autostash only preserves UNCOMMITTED changes — local-only
+                # COMMITS would be silently discarded by the reset (reachable
+                # only via reflog, which nobody finds).  Park HEAD on a backup
+                # branch first so committed local work survives the reset and
+                # can be cherry-picked back afterwards.
                 print(
                     "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                 )
+                ahead_count = 0
+                ahead_result = subprocess.run(
+                    git_cmd + ["rev-list", "--count", f"origin/{branch}..HEAD"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if ahead_result.returncode == 0:
+                    try:
+                        ahead_count = int(ahead_result.stdout.strip())
+                    except ValueError:
+                        ahead_count = 0
+                if ahead_count > 0:
+                    from datetime import datetime, timezone
+
+                    backup_branch = datetime.now(timezone.utc).strftime(
+                        "hermes-local-commits-%Y%m%d-%H%M%S"
+                    )
+                    backup_result = subprocess.run(
+                        git_cmd + ["branch", backup_branch, "HEAD"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if backup_result.returncode == 0:
+                        print(
+                            f"  ✓ {ahead_count} local commit(s) preserved on "
+                            f"branch '{backup_branch}'"
+                        )
+                        print(
+                            "    Restore later with: git cherry-pick "
+                            f"origin/{branch}..{backup_branch}"
+                        )
+                    else:
+                        print(
+                            f"  ⚠ Could not create a backup branch for "
+                            f"{ahead_count} local commit(s); they stay "
+                            f"reachable via 'git reflog' (pre-reset HEAD: "
+                            f"{pre_pull_sha or 'unknown'})."
+                        )
                 reset_result = subprocess.run(
                     git_cmd + ["reset", "--hard", f"origin/{branch}"],
                     cwd=PROJECT_ROOT,

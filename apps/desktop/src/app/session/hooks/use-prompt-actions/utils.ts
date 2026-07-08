@@ -52,6 +52,18 @@ export function isSessionNotFoundError(error: unknown): boolean {
   return /session not found/i.test(message)
 }
 
+// Gateway JSON-RPC calls reject with "request timed out: <method>" when the
+// backend event loop is starved (e.g. a poller spin or a heavy async-injected
+// turn). For prompt.submit this is indistinguishable from a dead runtime
+// session on the client side — recovery must treat it like one (#55578):
+// resume the SELECTED stored session and retry, instead of surfacing an error
+// that leads to a null activeSessionId and a silently minted new session.
+export function isGatewayTimeoutError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return /request timed out/i.test(message)
+}
+
 // The gateway refuses prompt.submit while a turn is running (4009 "session
 // busy"). It's a transient concurrency guard, never a user-facing error: a
 // submit racing the settle edge (or a rewind interrupting mid-turn) just waits

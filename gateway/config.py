@@ -37,6 +37,43 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return is_truthy_value(value, default=default)
 
 
+# Recognized truthy / falsy tokens for the GATEWAY_MULTIPLEX_PROFILES operator
+# override. Anything not in either set — and a blank/whitespace value — is
+# treated as "unset" so it falls through to config.yaml rather than silently
+# forcing the flag off.
+_MULTIPLEX_TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+_MULTIPLEX_FALSY_STRINGS = frozenset({"0", "false", "no", "off"})
+
+
+def _env_multiplex_profiles_override() -> "bool | None":
+    """Resolve the GATEWAY_MULTIPLEX_PROFILES operator override.
+
+    Returns ``True``/``False`` when the env var is set to a recognized truthy/
+    falsy token, or ``None`` when it is unset, blank, or unrecognized — in which
+    case the caller keeps the config.yaml value (env > config > default). Blank
+    is deliberately ``None``, not ``False``: a provisioned-but-unpopulated Fly
+    secret arrives as ``""`` and must NOT shadow a config.yaml opt-in.
+    """
+    raw = os.getenv("GATEWAY_MULTIPLEX_PROFILES")
+    if raw is None:
+        return None
+    token = raw.strip().lower()
+    if not token:
+        return None
+    if token in _MULTIPLEX_TRUTHY_STRINGS:
+        return True
+    if token in _MULTIPLEX_FALSY_STRINGS:
+        return False
+    logger.warning(
+        "Ignoring unrecognized GATEWAY_MULTIPLEX_PROFILES=%r "
+        "(expected one of %s or %s); falling back to config.yaml.",
+        raw,
+        sorted(_MULTIPLEX_TRUTHY_STRINGS),
+        sorted(_MULTIPLEX_FALSY_STRINGS),
+    )
+    return None
+
+
 def _coerce_float(value: Any, default: float) -> float:
     """Coerce numeric config values, falling back on malformed input."""
     if value is None:
@@ -837,6 +874,18 @@ class GatewayConfig:
             # Also honor gateway.multiplex_profiles written by
             # ``hermes config set gateway.multiplex_profiles true``.
             multiplex_profiles = nested_gateway.get("multiplex_profiles")
+        # Operator override: GATEWAY_MULTIPLEX_PROFILES wins over config.yaml when
+        # set to a recognized value. Hosted deployments (Nous Portal / Fly) stamp
+        # it on the container so the single multiplexed gateway — which the
+        # connector now depends on for per-profile relay routing — is forced on at
+        # every boot regardless of the image's config.yaml, while self-hosted
+        # users keep setting gateway.multiplex_profiles in config.yaml. A blank or
+        # unrecognized env value falls through to config (the empty-secret trap:
+        # a provisioned-but-unpopulated Fly secret must not shadow config), so
+        # this is a genuine 3-tier chain: env > config.yaml > default False.
+        env_multiplex = _env_multiplex_profiles_override()
+        if env_multiplex is not None:
+            multiplex_profiles = env_multiplex
         if "max_concurrent_sessions" in data:
             max_concurrent_raw = data.get("max_concurrent_sessions")
             max_concurrent_key = "max_concurrent_sessions"

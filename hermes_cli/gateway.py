@@ -4488,16 +4488,29 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
         if not pid or not _pid_exists(pid):
             return
 
-        # (c) default config has multiplexing on
-        cfg_path = default_root / "config.yaml"
-        if not cfg_path.exists():
-            return
-        with open(cfg_path, encoding="utf-8") as f:
-            cfg = _yaml.safe_load(f) or {}
-        multiplex = bool(
-            cfg.get("multiplex_profiles")
-            or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")
-        )
+        # (c) multiplexing is on for the default gateway. Precedence mirrors
+        # gateway.config: the GATEWAY_MULTIPLEX_PROFILES env override wins over
+        # config.yaml when set to a recognized value, so a hosted gateway that
+        # forces multiplex on via env (with no multiplex_profiles in config.yaml)
+        # still trips this guard. A blank/unrecognized env value falls through
+        # to config.yaml.
+        from gateway.config import _env_multiplex_profiles_override
+
+        env_multiplex = _env_multiplex_profiles_override()
+        if env_multiplex is False:
+            return  # explicitly forced OFF by the operator env override
+        if env_multiplex is True:
+            multiplex = True
+        else:
+            cfg_path = default_root / "config.yaml"
+            if not cfg_path.exists():
+                return
+            with open(cfg_path, encoding="utf-8") as f:
+                cfg = _yaml.safe_load(f) or {}
+            multiplex = bool(
+                cfg.get("multiplex_profiles")
+                or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")
+            )
         if not multiplex:
             return
     except Exception:

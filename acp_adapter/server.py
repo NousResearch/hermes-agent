@@ -186,6 +186,53 @@ def _path_from_file_uri(uri: str) -> Path | None:
     return Path(path_text)
 
 
+def _blocked_resource_part(
+    *,
+    uri: str,
+    body: str,
+    name: str | None = None,
+    title: str | None = None,
+) -> list[dict[str, Any]]:
+    return [{
+        "type": "text",
+        "text": _format_resource_text(
+            uri=uri,
+            name=name,
+            title=title,
+            body=body,
+        ),
+    }]
+
+
+def _resolve_resource_path_for_read(
+    path: Path,
+    *,
+    allowed_root: str | Path | None,
+) -> tuple[Path | None, str | None]:
+    """Resolve an ACP file resource and keep host reads inside the session root."""
+    if allowed_root is None:
+        return path, None
+
+    try:
+        root = Path(allowed_root).expanduser().resolve(strict=True)
+    except OSError:
+        return None, "[Blocked attached file because the ACP session workspace is unavailable.]"
+
+    read_path = path.expanduser()
+    if not read_path.is_absolute():
+        read_path = root / read_path
+
+    try:
+        resolved = read_path.resolve(strict=True)
+    except OSError as exc:
+        return None, f"[Could not read attached file: {exc}]"
+
+    if not resolved.is_relative_to(root):
+        return None, "[Blocked attached file outside the ACP session workspace.]"
+
+    return resolved, None
+
+
 def _decode_text_bytes(data: bytes, mime_type: str | None) -> str | None:
     """Decode resource bytes if they are probably text; return None for binary."""
     if b"\x00" in data and not _is_text_resource(mime_type):
@@ -213,7 +260,11 @@ def _format_resource_text(
     return f"{header}\nURI: {uri}\n\n{body}"
 
 
-def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]:
+def _resource_link_to_parts(
+    block: ResourceContentBlock,
+    *,
+    allowed_root: str | Path | None,
+) -> list[dict[str, Any]]:
     """Convert an ACP resource_link block to OpenAI content parts.
 
     Returns a list of {"type": "text", ...} and/or {"type": "image_url", ...}
@@ -231,15 +282,24 @@ def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]
     path = _path_from_file_uri(uri)
 
     if path is None:
-        return [{
-            "type": "text",
-            "text": _format_resource_text(
-                uri=uri,
-                name=name,
-                title=title,
-                body="[Resource link only; Hermes cannot read non-file ACP resource URIs directly.]",
-            ),
-        }]
+        return _blocked_resource_part(
+            uri=uri,
+            name=name,
+            title=title,
+            body="[Resource link only; Hermes cannot read non-file ACP resource URIs directly.]",
+        )
+
+    path, blocked_reason = _resolve_resource_path_for_read(
+        path,
+        allowed_root=allowed_root,
+    )
+    if path is None:
+        return _blocked_resource_part(
+            uri=uri,
+            name=name,
+            title=title,
+            body=blocked_reason or "[Blocked attached file.]",
+        )
 
     # Image files: emit a short text header + image_url data URL so vision
     # models can see the attachment instead of a "binary omitted" note.
@@ -248,28 +308,22 @@ def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]
         try:
             size = path.stat().st_size
             if size > _MAX_ACP_RESOURCE_BYTES:
-                return [{
-                    "type": "text",
-                    "text": _format_resource_text(
-                        uri=uri,
-                        name=name,
-                        title=title,
-                        body=f"[Image too large to inline: {size} bytes, cap={_MAX_ACP_RESOURCE_BYTES}]",
-                    ),
-                }]
+                return _blocked_resource_part(
+                    uri=uri,
+                    name=name,
+                    title=title,
+                    body=f"[Image too large to inline: {size} bytes, cap={_MAX_ACP_RESOURCE_BYTES}]",
+                )
             with path.open("rb") as fh:
                 data = fh.read()
         except OSError as exc:
             logger.warning("ACP image resource read failed: %s", uri, exc_info=True)
-            return [{
-                "type": "text",
-                "text": _format_resource_text(
-                    uri=uri,
-                    name=name,
-                    title=title,
-                    body=f"[Could not read attached image: {exc}]",
-                ),
-            }]
+            return _blocked_resource_part(
+                uri=uri,
+                name=name,
+                title=title,
+                body=f"[Could not read attached image: {exc}]",
+            )
         display = _resource_display_name(uri, name=name, title=title)
         return [
             {"type": "text", "text": f"[Attached image: {display}]\nURI: {uri}"},
@@ -283,15 +337,12 @@ def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]
             data = fh.read(read_size)
         text = _decode_text_bytes(data, mime_type)
         if text is None:
-            return [{
-                "type": "text",
-                "text": _format_resource_text(
-                    uri=uri,
-                    name=name,
-                    title=title,
-                    body=f"[Binary file omitted: {size} bytes, mime={mime_type or 'unknown'}]",
-                ),
-            }]
+            return _blocked_resource_part(
+                uri=uri,
+                name=name,
+                title=title,
+                body=f"[Binary file omitted: {size} bytes, mime={mime_type or 'unknown'}]",
+            )
         note = None
         if size > _MAX_ACP_RESOURCE_BYTES:
             note = f"truncated to {_MAX_ACP_RESOURCE_BYTES} of {size} bytes"
@@ -301,15 +352,12 @@ def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]
         }]
     except OSError as exc:
         logger.warning("ACP resource read failed: %s", uri, exc_info=True)
-        return [{
-            "type": "text",
-            "text": _format_resource_text(
-                uri=uri,
-                name=name,
-                title=title,
-                body=f"[Could not read attached file: {exc}]",
-            ),
-        }]
+        return _blocked_resource_part(
+            uri=uri,
+            name=name,
+            title=title,
+            body=f"[Could not read attached file: {exc}]",
+        )
 
 
 def _embedded_resource_to_parts(block: EmbeddedResourceContentBlock) -> list[dict[str, Any]]:
@@ -404,6 +452,8 @@ def _content_blocks_to_openai_user_content(
         | ResourceContentBlock
         | EmbeddedResourceContentBlock
     ],
+    *,
+    allowed_root: str | Path | None,
 ) -> str | list[dict[str, Any]]:
     """Convert ACP prompt blocks into a Hermes/OpenAI-compatible user content payload."""
     parts: list[dict[str, Any]] = []
@@ -421,7 +471,10 @@ def _content_blocks_to_openai_user_content(
                 parts.append(image_part)
             continue
         if isinstance(block, ResourceContentBlock):
-            resource_parts = _resource_link_to_parts(block)
+            resource_parts = _resource_link_to_parts(
+                block,
+                allowed_root=allowed_root,
+            )
             for part in resource_parts:
                 parts.append(part)
                 if part.get("type") == "text":
@@ -1312,7 +1365,10 @@ class HermesACPAgent(acp.Agent):
             return PromptResponse(stop_reason="refusal")
 
         user_text = _extract_text(prompt).strip()
-        user_content = _content_blocks_to_openai_user_content(prompt)
+        user_content = _content_blocks_to_openai_user_content(
+            prompt,
+            allowed_root=state.cwd,
+        )
         text_only_prompt = all(isinstance(block, TextContentBlock) for block in prompt)
         has_content = bool(user_text) or (
             isinstance(user_content, list) and bool(user_content)

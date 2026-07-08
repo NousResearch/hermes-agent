@@ -8824,6 +8824,40 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._pending_moa_disable_after_turn = True
             self._pending_agent_seed = payload
             _cprint(f"  MoA one-shot queued with preset {preset}; previous model will be restored after this turn.")
+        elif canonical == "router":
+            # /router is status-only: show the router preset (classifier,
+            # tiers, fallbacks) and the session's last routing decision. To
+            # *switch* onto the router, pick "Model Router" from the model
+            # picker (presets surface as a virtual provider), same as MoA.
+            from hermes_cli.router_config import (
+                normalize_router_config,
+                router_usage,
+            )
+
+            router_cfg = self.config.get("router") if isinstance(self.config, dict) else {}
+            normalized = normalize_router_config(router_cfg)
+            on_router = (getattr(self, "provider", "") or "").lower() == "router"
+            preset_name = (
+                getattr(self, "model", None)
+                if on_router and getattr(self, "model", None) in normalized["presets"]
+                else normalized["default_preset"]
+            )
+            preset = normalized["presets"].get(preset_name) or {}
+            state = "active for this session" if on_router else "not active (pick 'Model Router' in /model)"
+            _cprint(f"  Model Router — preset {preset_name} ({state})")
+            classifier = preset.get("classifier") or {}
+            _cprint(f"    Classifier: {classifier.get('provider')}:{classifier.get('model')}")
+            for tier, slot in (preset.get("routes") or {}).items():
+                marker = "  ← default_route" if tier == preset.get("default_route") else ""
+                _cprint(f"    {tier:8s}: {slot.get('provider')}:{slot.get('model')}{marker}")
+            fallbacks = preset.get("fallbacks") or []
+            if fallbacks:
+                _cprint("    Fallbacks: " + " → ".join(f"{s.get('provider')}:{s.get('model')}" for s in fallbacks))
+            last = getattr(self, "_last_router_decision", None)
+            if last:
+                _cprint(f"    Last decision: {last}")
+            if not on_router:
+                _cprint(f"  {router_usage()}")
         elif canonical == "subgoal":
             self._handle_subgoal_command(cmd_original)
         elif canonical == "skin":
@@ -10899,6 +10933,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if event_type == "moa.aggregating":
             agg = function_name or ""
             self._spinner_text = f"◆ aggregating ({agg})" if agg else "◆ aggregating"
+            self._invalidate()
+            return
+
+        # Model Router display events (agent_init relay, display-only): a
+        # one-line dim note showing where the turn was routed, and a warning
+        # line per fallback hop. Mirrors the MoA reference rendering above.
+        if event_type == "router.decision":
+            label = function_name or ""
+            tier = preview or ""
+            note = f"routed {tier} → {label}" if tier else f"routed → {label}"
+            self._last_router_decision = note
+            _cprint(f"  {_DIM}┊ ⇢ {note}{_RST}")
+            self._invalidate()
+            return
+        if event_type == "router.fallback":
+            from_label = function_name or ""
+            to_label = preview or ""
+            err = str(kwargs.get("router_error") or "").strip()
+            err_part = f" ({err[:120]})" if err else ""
+            _cprint(f"  ⚠ router fallback: {from_label} → {to_label}{err_part}")
             self._invalidate()
             return
 

@@ -1298,7 +1298,7 @@ def run_conversation(
                 # probes) we keep the complete-response path: the facade returns a
                 # whole response when stream is not requested, preserving the
                 # prior behavior for those callers.
-                elif agent.provider == "moa" and not agent._has_stream_consumers():
+                elif agent.provider in {"moa", "router"} and not agent._has_stream_consumers():
                     _use_streaming = False
                 elif not agent._has_stream_consumers():
                     # No display/TTS consumer. Still prefer streaming for
@@ -2058,6 +2058,12 @@ def run_conversation(
                     # before the aggregator and returns only the aggregator's
                     # usage, so without this the entire advisor spend — usually
                     # the bulk of a MoA turn — is invisible in token counts.
+                    # NOTE: this protocol (consume_reference_usage /
+                    # consume_and_save_trace / last_aggregator_slot) is shared
+                    # by the MoA client AND the Model Router client
+                    # (agent/router_loop.py): for the router, the "reference"
+                    # usage is its classifier side-call and the "aggregator"
+                    # slot is the acting model the turn was routed to.
                     _moa_ref_cost = None
                     _moa_client = getattr(agent, "client", None)
                     if _moa_client is not None and hasattr(_moa_client, "consume_reference_usage"):

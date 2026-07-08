@@ -171,3 +171,7 @@ So MoA does not sacrifice prompt caching on either call type. Its only real cost
 - A preset's aggregator cannot be another MoA preset. Recursive MoA trees are intentionally blocked.
 - Credential failures on one reference model do not abort the turn. Hermes includes the failure in the reference context and continues with whatever models returned.
 - MoA increases model-call count. A single model iteration can involve multiple reference calls plus the aggregator call.
+
+## See also
+
+- [Model Router](/user-guide/features/model-router) — the inverse virtual provider: instead of many models advising one turn, a classifier picks **which single model** should run each turn (cost-reducing where MoA is quality-increasing).

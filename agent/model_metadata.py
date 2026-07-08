@@ -1947,6 +1947,34 @@ def get_model_context_length(
             logger.debug("MoA aggregator context-length resolution failed", exc_info=True)
         # Fall through to the generic default if aggregator resolution failed.
 
+    # 0a-bis. Model Router virtual provider — same problem shape as MoA:
+    # ``model`` is a preset name on ``router://local``. Resolve from the
+    # COMPLEX route slot: long/heavy turns are exactly the ones the classifier
+    # sends there, so it bounds the context planning; a short casual turn that
+    # somehow overflows the simple tier degrades through the preset's own
+    # fallback chain instead.
+    if (provider or "").strip().lower() == "router":
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.router_config import resolve_router_preset
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            preset = resolve_router_preset(load_config().get("router") or {}, model)
+            slot = (preset.get("routes") or {}).get("complex") or {}
+            slot_provider = str(slot.get("provider") or "").strip()
+            slot_model = str(slot.get("model") or "").strip()
+            if slot_model and slot_provider and slot_provider.lower() not in {"moa", "router"}:
+                rt = resolve_runtime_provider(requested=slot_provider, target_model=slot_model)
+                return get_model_context_length(
+                    slot_model,
+                    base_url=rt.get("base_url", "") or "",
+                    api_key=rt.get("api_key", "") or "",
+                    provider=slot_provider,
+                )
+        except Exception:
+            logger.debug("Router complex-route context-length resolution failed", exc_info=True)
+        # Fall through to the generic default if route resolution failed.
+
     # 0b. custom_providers per-model override — check before any probe.
     # This closes the gap where /model switch and display paths used to fall
     # back to 128K despite the user having a per-model context_length set.

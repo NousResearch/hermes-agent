@@ -4075,7 +4075,10 @@ class AIAgent:
         from unittest.mock import Mock
 
         primary_client = self._ensure_primary_openai_client(reason=reason)
-        if self.provider == "moa":
+        if self.provider in {"moa", "router"}:
+            # Virtual in-process facades (MoAClient / RouterClient) — never
+            # rebuild a request-local OpenAI client from the virtual runtime
+            # metadata (moa://local, router://local carry no real endpoint).
             return primary_client
         if isinstance(primary_client, Mock):
             return primary_client

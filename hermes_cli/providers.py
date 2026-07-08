@@ -49,6 +49,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         auth_type="virtual",
         base_url_override="moa://local",
     ),
+    "router": HermesOverlay(
+        transport="openai_chat",
+        auth_type="virtual",
+        base_url_override="router://local",
+    ),
     "openrouter": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
@@ -361,6 +366,7 @@ ALIASES: Dict[str, str] = {
 
 _LABEL_OVERRIDES: Dict[str, str] = {
     "moa": "Mixture of Agents",
+    "router": "Model Router",
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",

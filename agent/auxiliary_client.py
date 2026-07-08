@@ -1234,6 +1234,15 @@ class _AnthropicCompletionsAdapter:
         model = kwargs.get("model", self._model)
         tools = kwargs.get("tools")
         tool_choice = kwargs.get("tool_choice")
+        # Router/MoA facades park OpenAI-style request kwargs that call_llm's
+        # signature doesn't carry inside extra_body — wire-equivalent for
+        # OpenAI SDK clients, but invisible to this adapter, which reads
+        # kwargs directly. Hoist the ones this adapter understands so a
+        # routed slot on a native Anthropic endpoint keeps tool_choice
+        # parity with OpenAI-wire slots.
+        _extra_body = kwargs.get("extra_body")
+        if tool_choice is None and isinstance(_extra_body, dict):
+            tool_choice = _extra_body.get("tool_choice")
         # ZAI's Anthropic-compatible endpoint rejects max_tokens on vision
         # models (glm-4v-flash etc.) with error code 1210.  When the caller
         # signals this by setting _skip_zai_max_tokens in kwargs, omit it.
@@ -4197,6 +4206,31 @@ def _resolve_auto(
                 runtime_api_mode = ""
         except Exception:
             logger.debug("MoA aux resolution to aggregator failed", exc_info=True)
+
+    # Model Router virtual provider — same problem shape as MoA above:
+    # provider="router"/model=<preset> would send the preset name as the model
+    # id. Auxiliary tasks don't need routing; resolve to the preset's COMPLEX
+    # route (the capable acting tier — compression summaries can carry large
+    # inputs that the small simple tier couldn't hold).
+    if main_provider == "router":
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.router_config import resolve_router_preset
+
+            _preset = resolve_router_preset(load_config().get("router") or {}, main_model)
+            _slot = (_preset.get("routes") or {}).get("complex") or {}
+            _slot_provider = str(_slot.get("provider") or "").strip()
+            _slot_model = str(_slot.get("model") or "").strip()
+            if _slot_provider and _slot_model and _slot_provider.lower() not in {"moa", "router"}:
+                main_provider = _slot_provider
+                main_model = _slot_model
+                # Drop the virtual runtime metadata (router://local + placeholder
+                # key) so the slot resolves through its own provider credentials.
+                runtime_base_url = ""
+                runtime_api_key = ""
+                runtime_api_mode = ""
+        except Exception:
+            logger.debug("Router aux resolution to complex route failed", exc_info=True)
 
     if (main_provider and main_model
             and main_provider not in {"auto", ""}):

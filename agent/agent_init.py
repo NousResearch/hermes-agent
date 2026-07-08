@@ -862,6 +862,24 @@ def init_agent(
         agent.base_url = "moa://local"
         if not agent.quiet_mode:
             print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
+    elif agent.provider == "router":
+        from agent.router_loop import RouterClient, make_agent_decision_relay
+        agent.api_mode = "chat_completions"
+
+        agent.client = RouterClient(
+            agent.model or "default",
+            # Relays router.decision/router.fallback to the agent's
+            # tool_progress_callback, mirroring the MoA reference relay
+            # above. The helper is shared with switch_model so routing notes
+            # survive a mid-session /model switch onto the router.
+            decision_callback=make_agent_decision_relay(agent),
+            platform=getattr(agent, "platform", None),
+        )
+        agent._client_kwargs = {}
+        agent.api_key = api_key or "router-virtual-provider"
+        agent.base_url = "router://local"
+        if not agent.quiet_mode:
+            print(f"🤖 AI Agent initialized with Model Router preset: {agent.model}")
     elif agent.api_mode == "bedrock_converse":
         # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
         # Region is extracted from the base_url or defaults to us-east-1.

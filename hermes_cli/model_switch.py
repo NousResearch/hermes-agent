@@ -848,6 +848,7 @@ def switch_model(
     new_model = raw_input.strip()
     target_provider = current_provider
     resolved_moa_preset = False
+    resolved_router_preset = False
 
     # =================================================================
     # PATH A: Explicit --provider given
@@ -890,6 +891,14 @@ def switch_model(
                 from hermes_cli.moa_config import normalize_moa_config
 
                 new_model = normalize_moa_config(load_config().get("moa") or {})["default_preset"]
+            except Exception:
+                new_model = "default"
+        if target_provider == "router" and not new_model:
+            try:
+                from hermes_cli.config import load_config
+                from hermes_cli.router_config import normalize_router_config
+
+                new_model = normalize_router_config(load_config().get("router") or {})["default_preset"]
             except Exception:
                 new_model = "default"
 
@@ -977,14 +986,29 @@ def switch_model(
         try:
             from hermes_cli.config import load_config
             from hermes_cli.moa_config import exact_moa_preset_name, normalize_moa_config
+            from hermes_cli.router_config import exact_router_preset_name, normalize_router_config
 
-            _moa_cfg = normalize_moa_config(load_config().get("moa") or {})
+            _cfg = load_config()
+            _moa_cfg = normalize_moa_config(_cfg.get("moa") or {})
             _moa_match = exact_moa_preset_name(_moa_cfg, raw_input)
+            # Bare-name preset matching: MoA is checked first, so when a MoA
+            # preset and a Router preset share a name, MoA wins the implicit
+            # match — disambiguate with --provider router.
+            _router_match = None
+            if not _moa_match:
+                _router_cfg = normalize_router_config(_cfg.get("router") or {})
+                _router_match = exact_router_preset_name(_router_cfg, raw_input)
             if _moa_match:
                 target_provider = "moa"
                 new_model = _moa_match
                 resolved_alias = ""
                 resolved_moa_preset = True
+                alias_result = None
+            elif _router_match:
+                target_provider = "router"
+                new_model = _router_match
+                resolved_alias = ""
+                resolved_router_preset = True
                 alias_result = None
             else:
                 alias_result = resolve_alias(raw_input, current_provider)
@@ -993,7 +1017,7 @@ def switch_model(
 
         # --- Step a: Try alias resolution on current provider ---
 
-        if resolved_moa_preset:
+        if resolved_moa_preset or resolved_router_preset:
             pass
         elif alias_result is not None:
             target_provider, new_model, resolved_alias = alias_result
@@ -1028,7 +1052,7 @@ def switch_model(
                             f"Try specifying the full model name."
                         ),
                     )
-            elif not resolved_moa_preset:
+            elif not (resolved_moa_preset or resolved_router_preset):
                 # --- Step c: On aggregator, convert vendor:model to vendor/model ---
                 # Only convert when there's no slash — a slash means the name
                 # is already in vendor/model format and the colon is a variant
@@ -2389,6 +2413,27 @@ def _prepend_moa_picker_provider(providers: List[dict], current_provider: str = 
         return providers
 
 
+def _prepend_router_picker_provider(providers: List[dict], current_provider: str = "") -> List[dict]:
+    """Add the virtual Router provider row used by interactive model pickers.
+
+    Sibling of :func:`_prepend_moa_picker_provider`; reuses the inventory's
+    single row builder so the row shape stays defined in one place.
+    """
+    try:
+        from hermes_cli.inventory import _router_provider_row
+
+        router_row = _router_provider_row(current_provider)
+        if router_row is None:
+            return providers
+        rest = [p for p in providers if str(p.get("slug", "")).lower() != "router"]
+        # Keep the virtual rows adjacent: Router right after MoA when present.
+        if rest and str(rest[0].get("slug", "")).lower() == "moa":
+            return [rest[0], router_row] + rest[1:]
+        return [router_row] + rest
+    except Exception:
+        return providers
+
+
 def list_picker_providers(
     current_provider: str = "",
     current_base_url: str = "",
@@ -2397,6 +2442,7 @@ def list_picker_providers(
     max_models: int | None = None,
     current_model: str = "",
     include_moa: bool = False,
+    include_router: bool = False,
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
@@ -2429,6 +2475,8 @@ def list_picker_providers(
     )
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)
+    if include_router:
+        providers = _prepend_router_picker_provider(providers, current_provider=current_provider)
 
     filtered: List[dict] = []
     for p in providers:

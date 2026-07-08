@@ -2445,6 +2445,10 @@ def _get_channel_override(
 
     Looks up ``channel_overrides`` by ``chat_id``, then ``thread_id``, then
     ``parent_id`` (forum threads / child channels inherit the parent entry).
+    A ``"*"`` key acts as a platform-wide catch-all: it applies to every
+    channel on the platform that has no exact entry, sitting between exact
+    channel overrides and the global ``model.default`` in the resolution
+    priority (session /model override → channel override → ``"*"`` → global).
     """
     platforms = getattr(config, "platforms", None)
     if not platforms:
@@ -2459,7 +2463,7 @@ def _get_channel_override(
         ov = overrides.get(key)
         if ov is not None:
             return ov
-    return None
+    return overrides.get("*")
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:

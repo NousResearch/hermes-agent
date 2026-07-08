@@ -408,6 +408,16 @@ class ChannelOverride:
     Used in config under platforms.<name>.channel_overrides[channel_id].
     Enables different channels (e.g. Discord #daily vs #dev) to use different
     models and personas without running separate gateway instances.
+
+    The special channel id ``"*"`` is a platform-wide catch-all for
+    model/provider: it applies to every channel on the platform that has no
+    exact entry (see ``gateway/run.py::_get_channel_override``). Example —
+    route all WhatsApp chats through the Model Router virtual provider::
+
+        platforms:
+          whatsapp:
+            channel_overrides:
+              "*": {provider: router, model: default}
     """
     model: Optional[str] = None
     provider: Optional[str] = None

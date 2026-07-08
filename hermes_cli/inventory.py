@@ -185,6 +185,13 @@ def build_models_payload(
     if moa_row is not None:
         rows = [moa_row] + [r for r in rows if str(r.get("slug", "")).lower() != "moa"]
 
+    router_row = _router_provider_row(ctx.current_provider)
+    if router_row is not None:
+        # Keep the virtual rows adjacent: Router right after MoA (or first).
+        _insert_at = 1 if moa_row is not None else 0
+        rows = [r for r in rows if str(r.get("slug", "")).lower() != "router"]
+        rows.insert(_insert_at, router_row)
+
     if explicit_only:
         rows = _filter_explicit_provider_rows(rows, ctx)
 
@@ -234,7 +241,7 @@ def build_models_payload(
                     row["total_models"] = len(filtered)
 
     if include_unconfigured:
-        rows = list(rows) + [r for r in _append_unconfigured_rows(rows, ctx) if str(r.get("slug", "")).lower() != "moa"]
+        rows = list(rows) + [r for r in _append_unconfigured_rows(rows, ctx) if str(r.get("slug", "")).lower() not in {"moa", "router"}]
     if picker_hints:
         _apply_picker_hints(rows)
     if canonical_order:
@@ -337,10 +344,11 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
         if current_slug and slug == current_slug:
             kept.append(row)
             continue
-        if slug == "moa":
-            # MoA is a virtual routing mode, not an independently configured
-            # provider. Hide it from explicit-only pickers unless it is the
-            # current provider (handled above).
+        if slug in {"moa", "router"}:
+            # MoA and the Model Router are virtual routing modes, not
+            # independently configured providers. Hide them from
+            # explicit-only pickers unless one is the current provider
+            # (handled above).
             continue
         if is_provider_explicitly_configured(slug):
             kept.append(row)
@@ -520,6 +528,37 @@ def _moa_provider_row(current_provider: str = "") -> dict | None:
             "authenticated": True,
             "auth_type": "virtual",
             "warning": "Aggregator acts as the selected model; references provide analysis before each call.",
+        }
+    except Exception:
+        return None
+
+
+def _router_provider_row(current_provider: str = "") -> dict | None:
+    """Build the virtual ``router`` provider row for model pickers.
+
+    Sibling of :func:`_moa_provider_row` — shared by the CLI inventory and the
+    gateway picker path so the row shape stays in one place. Returns ``None``
+    when no Router presets exist.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.router_config import normalize_router_config
+
+        cfg = normalize_router_config(load_config().get("router") or {})
+        models = list(cfg.get("presets", {}).keys())
+        if not models:
+            return None
+        return {
+            "slug": "router",
+            "name": "Model Router",
+            "is_current": (current_provider or "").lower() == "router",
+            "is_user_defined": False,
+            "models": models,
+            "total_models": len(models),
+            "source": "virtual",
+            "authenticated": True,
+            "auth_type": "virtual",
+            "warning": "Each prompt is classified (simple/complex) and executed on the matching tier's model, with fallbacks.",
         }
     except Exception:
         return None

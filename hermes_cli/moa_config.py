@@ -85,7 +85,10 @@ def _clean_slot(slot: Any) -> dict[str, str] | None:
     # (the runtime guards in moa_loop.py skip references / raise on aggregators,
     # but that surfaces only mid-turn). Reject it here so it can never be saved:
     # an invalid slot is dropped, falling back to the preset's defaults.
-    if provider.lower() == "moa":
+    # "router" is rejected for the same reason: a MoA slot pointing at the
+    # Model Router virtual provider would nest a classifier-routed run inside
+    # the fan-out (router_config._clean_slot carries the symmetric guard).
+    if provider.lower() in {"moa", "router"}:
         return None
     return {"provider": provider, "model": model}
 

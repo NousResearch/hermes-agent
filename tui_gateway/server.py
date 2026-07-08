@@ -3598,6 +3598,32 @@ def _on_tool_progress(
     if event_type == "moa.aggregating":
         _emit("moa.aggregating", sid, {"aggregator": str(name or "")})
         return
+    if event_type == "router.decision":
+        # Model Router decision — relay the routed slot + tier so clients can
+        # show a small "routed simple → lmstudio:gemma" status chip. `name` is
+        # the acting slot label, `preview` the tier (agent_init relay shape).
+        _emit(
+            "router.decision",
+            sid,
+            {
+                "label": str(name or ""),
+                "tier": str(preview or ""),
+                "classifier": str(_kwargs.get("router_classifier") or ""),
+                "cached": bool(_kwargs.get("router_cached")),
+            },
+        )
+        return
+    if event_type == "router.fallback":
+        _emit(
+            "router.fallback",
+            sid,
+            {
+                "from": str(name or ""),
+                "to": str(preview or ""),
+                "error": str(_kwargs.get("router_error") or ""),
+            },
+        )
+        return
     if event_type.startswith("subagent."):
         payload = {
             "goal": str(_kwargs.get("goal") or ""),

@@ -1535,6 +1535,18 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
+    if requested_provider == "router":
+        # Virtual provider like "moa": the RouterClient facade resolves each
+        # routed slot to its real runtime per turn (agent/router_loop.py).
+        return {
+            "provider": "router",
+            "api_mode": "chat_completions",
+            "base_url": "router://local",
+            "api_key": "router-virtual-provider",
+            "source": "router-virtual-provider",
+            "requested_provider": requested_provider,
+        }
+
     # Azure Anthropic short-circuit: when explicitly targeting an Azure endpoint
     # with provider="anthropic", bypass _resolve_named_custom_runtime (which would
     # return provider="custom" with chat_completions api_mode and no valid key).

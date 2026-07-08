@@ -177,6 +177,7 @@ def _xai_curated_models() -> list[str]:
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "moa": ["default"],
+    "router": ["default"],
     "nous": [
         # Anthropic
         "anthropic/claude-fable-5",
@@ -1031,6 +1032,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Everything your agent needs, 300+ models with bundled tool use)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (Pay-per-use API aggregator)"),
     ProviderEntry("moa",            "Mixture of Agents",        "Mixture of Agents (named presets; aggregator acts after reference models)"),
+    ProviderEntry("router",         "Model Router",             "Model Router (named presets; a classifier picks the execution model per prompt)"),
     ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (Local desktop app with built-in model server)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models via API key or Claude Code)"),
@@ -3804,6 +3806,24 @@ def validate_requested_model(
             return {
                 "accepted": False, "persist": False, "recognized": False,
                 "message": f"Could not read MoA presets: {exc}",
+            }
+
+    if normalized == "router":
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.router_config import normalize_router_config
+
+            cfg = normalize_router_config(load_config().get("router") or {})
+            if requested in cfg["presets"]:
+                return {"accepted": True, "persist": True, "recognized": True, "message": None}
+            return {
+                "accepted": False, "persist": False, "recognized": False,
+                "message": f"Router preset `{requested}` was not found. Run `hermes router list`.",
+            }
+        except Exception as exc:
+            return {
+                "accepted": False, "persist": False, "recognized": False,
+                "message": f"Could not read Router presets: {exc}",
             }
 
     if any(ch.isspace() for ch in requested):

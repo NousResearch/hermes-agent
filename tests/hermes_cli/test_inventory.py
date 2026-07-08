@@ -193,7 +193,11 @@ def test_build_models_payload_returns_expected_shape():
     assert payload["provider"] == "openrouter"
     assert payload["providers"][0]["slug"] == "moa"
     assert payload["providers"][0]["models"] == ["default"]
-    assert payload["providers"][1:] == rows
+    # The Model Router virtual row sits right after MoA (both prepended by
+    # build_models_payload); real provider rows follow unchanged.
+    assert payload["providers"][1]["slug"] == "router"
+    assert payload["providers"][1]["models"] == ["default"]
+    assert payload["providers"][2:] == rows
 
 
 def test_build_models_payload_does_not_call_provider_model_ids():

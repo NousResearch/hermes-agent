@@ -2292,6 +2292,49 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Model Router — named presets for the classifier-routed virtual provider
+    # (the inverse of MoA): a small classifier call decides which execution
+    # tier the prompt needs ("simple" or "complex") and the whole turn runs on
+    # that tier's model. Retryable failures walk the preset's fallback chain
+    # (local-first by default). Select via the model picker ("Model Router")
+    # or per channel with platforms.<name>.channel_overrides.
+    "router": {
+        "default_preset": "default",
+        "active_preset": "",
+        # When true, every routed turn writes the classifier's exact input +
+        # raw verdict, the chosen route, any fallback hops, and the acting
+        # model's output to <hermes_home>/router-traces/<session_id>.jsonl.
+        # Off by default — turn it on to audit routing quality from real runs.
+        # Set trace_dir to override the output directory.
+        "save_traces": False,
+        "trace_dir": "",
+        "presets": {
+            "default": {
+                "enabled": True,
+                "classifier": {"provider": "openai-codex", "model": "gpt-5.5"},
+                # Verdict is one word; a tiny cap keeps classifier spend
+                # negligible even on a metered provider.
+                "classifier_max_tokens": 16,
+                "classifier_context_messages": 4,
+                # Fail-open target when the classifier errors or returns
+                # garbage (and when enabled is false). "simple" keeps chat
+                # working on the local tier when the classifier is down.
+                "default_route": "simple",
+                "routes": {
+                    "simple": {"provider": "lmstudio", "model": "google/gemma-4-e4b"},
+                    "complex": {"provider": "openai-codex", "model": "gpt-5.5"},
+                },
+                "fallbacks": [
+                    {"provider": "lmstudio", "model": "qwen/qwen3-4b-thinking-2507"},
+                    {"provider": "openai-codex", "model": "gpt-5.5"},
+                ],
+                # Platform → tier bias fed to the classifier prompt (e.g.
+                # whatsapp leans "simple" so texting stays on the local model).
+                "channel_hints": {"whatsapp": "simple"},
+            }
+        },
+    },
+
     # Skills — external skill directories for sharing skills across tools/agents.
     # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
     # always goes to ~/.hermes/skills/.
@@ -5187,7 +5230,7 @@ _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
-    "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
+    "auxiliary", "moa", "router", "custom_providers", "context", "memory", "gateway",
     "sessions", "streaming", "updates", "mcp_servers",
 }
 

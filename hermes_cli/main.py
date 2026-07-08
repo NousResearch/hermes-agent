@@ -622,6 +622,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_api_key_provider,
     _model_flow_anthropic,
     _model_flow_moa,
+    _model_flow_router,
 )
 logger = logging.getLogger(__name__)
 
@@ -3064,6 +3065,8 @@ def select_provider_and_model(args=None):
         _model_flow_openrouter(config, current_model)
     elif selected_provider == "moa":
         _model_flow_moa(config, current_model)
+    elif selected_provider == "router":
+        _model_flow_router(config, current_model)
     elif selected_provider == "nous":
         _model_flow_nous(config, current_model, args=args)
     elif selected_provider == "openai-codex":
@@ -12232,7 +12235,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "computer-use",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
-        "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
+        "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa", "router",
         "journey", "memory-graph", "learning",
         "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
         "project", "proxy",
@@ -12785,6 +12788,36 @@ def main():
     moa_delete = moa_subparsers.add_parser("delete", aliases=["rm"], help="Delete a MoA preset")
     moa_delete.add_argument("name", help="Preset name to delete")
     moa_parser.set_defaults(func=cmd_moa)
+
+    # =========================================================================
+    # router command — Model Router presets (classifier-routed execution)
+    # =========================================================================
+    from hermes_cli.router_cmd import cmd_router
+
+    router_parser = subparsers.add_parser(
+        "router",
+        help="Configure Model Router presets (classifier picks the model per prompt)",
+        description=(
+            "Configure the Model Router: a classifier model reads each prompt "
+            "and routes it to the matching tier's model (simple/complex), with "
+            "fallbacks."
+        ),
+    )
+    router_subparsers = router_parser.add_subparsers(dest="router_command")
+    router_subparsers.add_parser("list", aliases=["ls"], help="Show Router presets")
+    router_configure = router_subparsers.add_parser(
+        "configure", aliases=["config"], help="Interactively pick Router models"
+    )
+    router_configure.add_argument("name", nargs="?", help="Preset name to create or update")
+    router_delete = router_subparsers.add_parser("delete", aliases=["rm"], help="Delete a Router preset")
+    router_delete.add_argument("name", help="Preset name to delete")
+    router_test = router_subparsers.add_parser(
+        "test", help="Dry-run the classifier on a prompt and show the routing decision"
+    )
+    router_test.add_argument("prompt", nargs="+", help="Prompt to classify")
+    router_test.add_argument("--name", help="Preset name (default: the default preset)")
+    router_test.add_argument("--platform", help="Simulate a channel (e.g. whatsapp) for hint bias")
+    router_parser.set_defaults(func=cmd_router)
 
     # =========================================================================
     # fallback command — manage the fallback provider chain

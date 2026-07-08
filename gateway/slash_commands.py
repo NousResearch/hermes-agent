@@ -1482,6 +1482,7 @@ class GatewaySlashCommandsMixin:
                         custom_providers=custom_provs,
                         max_models=50,
                         include_moa=True,
+                        include_router=True,
                     )
                 except Exception:
                     providers = []

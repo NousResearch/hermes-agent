@@ -331,10 +331,11 @@ def interruptible_api_call(agent, api_kwargs: dict):
                         invalidate_runtime_client(region)
                     raise
                 result["response"] = normalize_converse_response(raw_response)
-            elif agent.provider == "moa":
-                # MoA is a virtual chat-completions provider backed by the
-                # in-process MoAClient facade. Do not rebuild a request-local
-                # OpenAI client from the virtual runtime metadata.
+            elif agent.provider in {"moa", "router"}:
+                # MoA / Model Router are virtual chat-completions providers
+                # backed by in-process facades (MoAClient / RouterClient). Do
+                # not rebuild a request-local OpenAI client from the virtual
+                # runtime metadata.
                 result["response"] = agent.client.chat.completions.create(**api_kwargs)
             else:
                 request_client = _set_request_client(

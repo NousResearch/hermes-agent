@@ -1061,6 +1061,36 @@ delegation:
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
 
 # =============================================================================
+# Model Router (classifier-routed virtual provider)
+# =============================================================================
+# A small classifier call reads each prompt and routes the whole turn to the
+# matching tier's model: `simple` (casual chat → cheap/local model) or
+# `complex` (coding, multi-step tasks → strong model), with an ordered
+# fallback chain when the routed model fails at call time. Presets appear as
+# selectable models under the `router` provider on every model picker
+# (`/model <preset> --provider router`). Opt-in: nothing routes until you
+# select the router as your model. Manage with `hermes router` (list /
+# configure / delete / test). Docs: /user-guide/features/model-router
+#
+# router:
+#   default_preset: default
+#   save_traces: false                        # true → audit each decision to ~/.hermes/router-traces/<session>.jsonl
+#   presets:
+#     default:
+#       enabled: true                         # false → skip the classifier, always use default_route
+#       classifier: {provider: openrouter, model: deepseek/deepseek-v4-flash}
+#       classifier_max_tokens: 16
+#       classifier_context_messages: 4        # recent messages shown to the classifier
+#       default_route: simple                 # fail-open target when the classifier errors
+#       routes:
+#         simple:  {provider: openrouter,   model: deepseek/deepseek-v4-flash}
+#         complex: {provider: openai-codex, model: gpt-5.5}
+#       fallbacks:                            # walked in order on acting-model failure
+#         - {provider: openai-codex, model: gpt-5.5}
+#       channel_hints:                        # platform → tier bias fed to the classifier
+#         whatsapp: simple
+
+# =============================================================================
 # Honcho Integration (Cross-Session User Modeling)
 # =============================================================================
 # AI-native persistent memory via Honcho (https://honcho.dev/).

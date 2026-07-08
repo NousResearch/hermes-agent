@@ -1860,6 +1860,26 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent.base_url = "moa://local"
             agent._client_kwargs = {}
             agent.client = MoAClient(agent.model or "default")
+        elif (new_provider or "").strip().lower() == "router":
+            from agent.router_loop import RouterClient, make_agent_decision_relay
+
+            # Same rationale as the MoA branch above: the Router virtual
+            # provider speaks only chat.completions via the RouterClient
+            # facade — each routed slot's real transport is resolved *inside*
+            # the facade, never on the outer primary call. Pin
+            # chat_completions so the primary call always dispatches through
+            # RouterClient.chat.completions, matching agent_init.py.
+            agent.api_mode = "chat_completions"
+            agent.api_key = api_key or "router-virtual-provider"
+            agent.base_url = "router://local"
+            agent._client_kwargs = {}
+            agent.client = RouterClient(
+                agent.model or "default",
+                # Same relay as agent_init — without it, routing notes
+                # silently disappear after a mid-session /model switch.
+                decision_callback=make_agent_decision_relay(agent),
+                platform=getattr(agent, "platform", None),
+            )
         elif api_mode == "anthropic_messages":
             from agent.anthropic_adapter import (
                 build_anthropic_client,

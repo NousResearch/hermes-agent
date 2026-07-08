@@ -281,6 +281,110 @@ def _model_flow_moa(config, current_model=""):
     _print_moa_preset(selected_name, preset)
 
 
+def _print_router_preset(name: str, preset: dict) -> None:
+    """Print the classifier + routes + fallbacks breakdown for a preset."""
+    print(f"  Preset: {name}")
+    classifier = preset.get("classifier") or {}
+    print(f"  Classifier:  {classifier.get('provider')}:{classifier.get('model')}")
+    print("  Routes:")
+    for tier, slot in (preset.get("routes") or {}).items():
+        marker = "  ← default_route" if tier == preset.get("default_route") else ""
+        print(f"    {tier:8s} {slot.get('provider')}:{slot.get('model')}{marker}")
+    fallbacks = preset.get("fallbacks") or []
+    if fallbacks:
+        print("  Fallbacks:")
+        for idx, slot in enumerate(fallbacks, start=1):
+            print(f"    {idx}. {slot.get('provider')}:{slot.get('model')}")
+
+
+def _model_flow_router(config, current_model=""):
+    """Model Router virtual provider: pick a preset, then persist it.
+
+    Sibling of :func:`_model_flow_moa` — no credential step, since a Router
+    preset only references already-configured providers. Shows the preset list
+    (even for a single preset), then prints the full breakdown on selection.
+    """
+    from hermes_cli.auth import _save_model_choice, deactivate_provider
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.router_config import normalize_router_config
+
+    router = normalize_router_config(config.get("router") if isinstance(config, dict) else {})
+    presets = router.get("presets") or {}
+    if not presets:
+        print("No Router presets configured. Run `hermes router configure <name>` first.")
+        return
+
+    names = list(presets.keys())
+    default_name = router.get("default_preset") or names[0]
+
+    # Labelled rows show both tiers + fallback count so the picker is
+    # informative before drilling into the full breakdown.
+    rows = []
+    for n in names:
+        routes = presets[n].get("routes") or {}
+        simple = routes.get("simple") or {}
+        complex_ = routes.get("complex") or {}
+        fb_count = len(presets[n].get("fallbacks") or [])
+        suffix = "  ← default" if n == default_name else ""
+        rows.append(
+            f"{n}  (simple → {simple.get('provider')}:{simple.get('model')}, "
+            f"complex → {complex_.get('provider')}:{complex_.get('model')}, "
+            f"{fb_count} fallbacks){suffix}"
+        )
+
+    default_idx = names.index(default_name) if default_name in names else 0
+
+    try:
+        from hermes_cli.setup import _curses_prompt_choice
+
+        idx = _curses_prompt_choice("Select a Model Router preset:", rows, default_idx)
+    except Exception:
+        print("Select a Model Router preset:")
+        for i, row in enumerate(rows, 1):
+            marker = "→" if (i - 1) == default_idx else " "
+            print(f"  {marker} {i}. {row}")
+        try:
+            raw = input(f"  Choice [1-{len(rows)}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("No change.")
+            return
+        if not raw:
+            idx = default_idx
+        else:
+            try:
+                idx = max(0, min(len(rows) - 1, int(raw) - 1))
+            except ValueError:
+                print("No change.")
+                return
+
+    if idx is None or idx < 0:
+        print("No change.")
+        return
+
+    selected_name = names[idx]
+    preset = presets[selected_name]
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["default"] = selected_name
+    model["provider"] = "router"
+    # Router is a virtual local provider — drop any stale endpoint credentials
+    # and base_url so auto-resolution doesn't keep pointing at the previous
+    # real provider (same rationale as the MoA flow above).
+    clear_model_endpoint_credentials(model, clear_api_mode=True)
+    model.pop("base_url", None)
+    save_config(cfg)
+    _save_model_choice(selected_name)
+    deactivate_provider()
+
+    print()
+    print(f"Default model set to: {selected_name} (via Model Router)")
+    _print_router_preset(selected_name, preset)
+
+
 def _model_flow_nous(config, current_model="", args=None):
     """Nous Portal provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (

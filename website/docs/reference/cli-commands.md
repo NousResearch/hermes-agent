@@ -40,6 +40,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes chat` | Interactive or one-shot chat with the agent. |
 | `hermes model` | Interactively choose the default provider and model. |
 | `hermes moa` | Configure named Mixture of Agents presets selectable from the model picker. |
+| `hermes router` | Configure Model Router presets (a classifier routes each prompt to a tier's model). |
 | `hermes fallback` | Manage fallback providers tried when the primary model errors. |
 | `hermes gateway` | Run or manage the messaging gateway service. |
 | `hermes proxy` | Local OpenAI-compatible proxy that attaches OAuth provider credentials. See [Subscription Proxy](../user-guide/features/subscription-proxy.md). |
@@ -1161,6 +1162,19 @@ hermes moa delete <name>
 ```
 
 `hermes moa configure` reuses Hermes' provider → model picker for each reference model and the aggregator. A preset is an execution-mode configuration, not a primary model or provider.
+
+## `hermes router`
+
+Configure named [Model Router](../user-guide/features/model-router.md) presets. Presets appear as selectable models under a `Model Router` provider in every model picker; a classifier reads each prompt and routes the turn to the matching tier's model (simple/complex), with fallbacks.
+
+```bash
+hermes router list
+hermes router configure [name]
+hermes router delete <name>
+hermes router test "<prompt>" [--name <preset>] [--platform whatsapp]
+```
+
+`hermes router test` runs the classifier once on a prompt and prints the raw output, verdict, resolved route, and fallback chain — a dry run for sanity-checking routing quality.
 
 ## `hermes fallback`
 

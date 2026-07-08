@@ -18,7 +18,8 @@ of the WebUI path silently skipping it.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +192,27 @@ def is_dangerous_confirmation(content: Any) -> bool:
     return any(pattern in text for pattern in _DANGEROUS_CONFIRMATION_PATTERNS)
 
 
+def _timestamp_to_epoch(value: Any) -> Optional[float]:
+    """Best-effort timestamp parser for replay-history timestamps."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    raw = value.strip()
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        return datetime.fromisoformat(raw).timestamp()
+    except ValueError:
+        return None
+
+
 def strip_stale_dangerous_confirmations(
     agent_history: List[Dict[str, Any]],
     *,
@@ -219,7 +241,7 @@ def strip_stale_dangerous_confirmations(
     text is replaced by a sentinel that tells the model the confirmation
     has expired.
 
-    Messages without a timestamp are left untouched (backward
+    Messages without a parseable timestamp are left untouched (backward
     compatibility: legacy transcripts and in-memory test scaffolding have
     no timestamps).  User messages that contain dangerous confirmation
     text but are within the expiry window are also left untouched — they
@@ -240,12 +262,12 @@ def strip_stale_dangerous_confirmations(
             and msg.get("role") == "user"
             and is_dangerous_confirmation(msg.get("content", ""))
         ):
-            ts = msg.get("timestamp")
-            if ts is not None and (now - float(ts)) > expiry_seconds:
+            ts_epoch = _timestamp_to_epoch(msg.get("timestamp"))
+            if ts_epoch is not None and (now - ts_epoch) > expiry_seconds:
                 logger.debug(
                     "Redacting stale dangerous-confirmation text in user "
                     "message (age=%.1fs, expiry=%.1fs): %r",
-                    now - float(ts),
+                    now - ts_epoch,
                     expiry_seconds,
                     (msg.get("content") or "")[:80],
                 )

@@ -293,6 +293,41 @@ class TestAdapterInit:
         assert adapter._api_key == ""
         assert adapter.platform == Platform.API_SERVER
 
+    @pytest.mark.asyncio
+    async def test_run_agent_uses_daemon_executor(self, monkeypatch):
+        from tools.daemon_pool import DaemonThreadPoolExecutor
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        real_loop = asyncio.get_running_loop()
+        captured = {}
+
+        class FakeLoop:
+            def run_in_executor(self, executor, func):
+                captured["executor"] = executor
+                fut = real_loop.create_future()
+                fut.set_result(func())
+                return fut
+
+        class FakeAgent:
+            session_prompt_tokens = 1
+            session_completion_tokens = 2
+            session_total_tokens = 3
+            session_id = "api-session"
+
+            def run_conversation(self, **kwargs):
+                return {"response": "ok"}
+
+        monkeypatch.setattr(asyncio, "get_running_loop", lambda: FakeLoop())
+        monkeypatch.setattr(adapter, "_bind_api_server_session", lambda **kwargs: [])
+        monkeypatch.setattr(adapter, "_create_agent", lambda **kwargs: FakeAgent())
+
+        result, usage = await adapter._run_agent("hello", [])
+
+        assert isinstance(captured["executor"], DaemonThreadPoolExecutor)
+        assert result["response"] == "ok"
+        assert result["session_id"] == "api-session"
+        assert usage == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+
     def test_custom_config_from_extra(self):
         config = PlatformConfig(
             enabled=True,

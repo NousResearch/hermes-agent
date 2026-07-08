@@ -61,6 +61,9 @@ from gateway.platforms.base import (
     validate_media_delivery_path,
 )
 from agent.redact import redact_sensitive_text
+from tools.daemon_pool import DaemonThreadPoolExecutor
+
+_AGENT_EXECUTOR = DaemonThreadPoolExecutor(thread_name_prefix="api-server-agent")
 
 logger = logging.getLogger(__name__)
 
@@ -4093,7 +4096,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         self._inflight_agent_runs += 1
         try:
-            return await loop.run_in_executor(None, _run)
+            return await loop.run_in_executor(_AGENT_EXECUTOR, _run)
         finally:
             self._inflight_agent_runs -= 1
 

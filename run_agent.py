@@ -4577,10 +4577,24 @@ class AIAgent:
         rebuilt client carries the reduced beta set.
         """
         _drop_1m = bool(getattr(self, "_oauth_1m_beta_disabled", False))
-        if getattr(self, "provider", None) == "bedrock":
+        _provider = getattr(self, "provider", None)
+        if _provider == "bedrock":
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
             self._anthropic_client = build_anthropic_bedrock_client(region)
+        elif _provider == "vertex":
+            # Claude-on-Vertex path — only reachable here because
+            # api_mode was resolved to anthropic_messages upstream (Gemini
+            # on Vertex uses chat_completions and never rebuilds an
+            # anthropic client). Project + region were stashed on the
+            # agent during init from the runtime dict.
+            from agent.anthropic_vertex_adapter import build_anthropic_vertex_client
+            project_id = getattr(self, "_vertex_project_id", None)
+            region = getattr(self, "_vertex_region", None) or "global"
+            self._anthropic_client = build_anthropic_vertex_client(
+                project_id, region,
+                timeout=get_provider_request_timeout(self.provider, self.model),
+            )
         else:
             from agent.anthropic_adapter import build_anthropic_client
             self._anthropic_client = build_anthropic_client(

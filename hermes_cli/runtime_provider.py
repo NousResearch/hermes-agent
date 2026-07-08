@@ -1581,8 +1581,77 @@ def resolve_runtime_provider(
     # margin) by get_vertex_config(); mid-session expiry is additionally
     # recovered on 401 by run_agent._try_refresh_vertex_client_credentials().
     if requested_provider in ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai"):
+        from agent.anthropic_vertex_adapter import (
+            build_anthropic_vertex_base_url,
+            get_anthropic_vertex_config,
+            has_anthropic_vertex_credentials,
+            is_anthropic_vertex_model,
+        )
         from agent.vertex_adapter import get_vertex_config
 
+        # Vertex Model Garden hosts models from multiple publishers behind
+        # one ``roles/aiplatform.user`` ADC surface: Google's own Gemini
+        # family and Anthropic's Claude family (with more partner families
+        # likely to follow). Each family has its own wire protocol on
+        # Vertex — Gemini via the OpenAI-compat aggregator, Anthropic via
+        # its native Messages API at ``publishers/anthropic/models/*:
+        # rawPredict`` — but the auth path, project/region config, and
+        # billing are all shared. Mirrors bedrock's dual-path dispatch
+        # (see below): one provider name, model-name-driven transport
+        # selection.
+        #
+        # Local name is ``_vertex_model_cfg`` (not ``model_cfg``) on
+        # purpose: ``model_cfg`` is assigned further down inside the
+        # ``if not explicit_base_url and not explicit_api_key:`` branch
+        # of this same function, and Python's static scoping makes the
+        # name local to the whole function once ANY assignment to it
+        # appears. Referencing a bare ``model_cfg`` here would raise
+        # UnboundLocalError on the call paths that skip target_model
+        # (cron scheduler + gateway per-turn agent resolve).
+        _vertex_model_cfg = _get_model_config()
+        _model_default = str(target_model or _vertex_model_cfg.get("default") or "").strip()
+
+        if is_anthropic_vertex_model(_model_default):
+            # Claude on Vertex → AnthropicVertex SDK → anthropic_messages path
+            if not has_anthropic_vertex_credentials():
+                raise AuthError(
+                    "Anthropic on Vertex AI credentials could not be resolved. "
+                    "Vertex uses OAuth2 (not a static API key): provide a "
+                    "service-account JSON via GOOGLE_APPLICATION_CREDENTIALS "
+                    "(or VERTEX_CREDENTIALS_PATH) in ~/.hermes/.env, or run "
+                    "'gcloud auth application-default login' for ADC. Set the "
+                    "GCP project/region under vertex: in config.yaml if they "
+                    "aren't embedded in the credentials. Anthropic models must "
+                    "ALSO be enabled in the Vertex Model Garden for your "
+                    "project (a one-time console click per model to accept "
+                    "Anthropic's TOS and start the Marketplace subscription)."
+                )
+            project_id, region = get_anthropic_vertex_config()
+            if not project_id:
+                raise AuthError(
+                    "Anthropic on Vertex AI: project_id resolution failed. "
+                    "Set VERTEX_PROJECT_ID (env) or vertex.project_id "
+                    "(config.yaml), or provide credentials with an embedded "
+                    "project_id."
+                )
+            return {
+                "provider": "vertex",
+                "api_mode": "anthropic_messages",
+                "base_url": build_anthropic_vertex_base_url(project_id, region),
+                # Opaque placeholder — the AnthropicVertex SDK mints its own
+                # tokens from the credentials chain. Never goes on the wire
+                # but must be non-empty for downstream code that treats
+                # ``api_key`` presence as "auth resolved".
+                "api_key": "vertex-adc",
+                "anthropic_api_key": "vertex-adc",
+                "source": "vertex-anthropic-oauth",
+                "vertex_project_id": project_id,
+                "vertex_region": region,
+                "vertex_anthropic": True,  # Signal for client-construction sites
+                "requested_provider": requested_provider,
+            }
+
+        # Gemini on Vertex → OpenAI-compat aggregator → chat_completions path
         token, base_url = get_vertex_config()
         if not token or not base_url:
             raise AuthError(

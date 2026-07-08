@@ -739,7 +739,44 @@ def init_agent(
         # Bedrock + Claude → use AnthropicBedrock SDK for full feature parity
         # (prompt caching, thinking budgets, adaptive thinking).
         _is_bedrock_anthropic = agent.provider == "bedrock"
-        if _is_bedrock_anthropic:
+        # Anthropic Claude on Vertex → use AnthropicVertex SDK. Same protocol
+        # as native Anthropic Messages, but authenticates via Google-cloud
+        # OAuth (ADC or service-account JSON) against Vertex's publisher-model
+        # endpoints. Project + region come from the vertex_adapter config
+        # (env vars + config.yaml + credentials-embedded project_id), which is
+        # the single source of truth shared with the Gemini-on-Vertex path.
+        # Same shape as ``_is_bedrock_anthropic``: one ``vertex`` provider,
+        # model-name-driven wire selection at resolve_runtime_provider time,
+        # detected here by the ``anthropic_messages`` api_mode we were handed.
+        _is_vertex_anthropic = agent.provider == "vertex"
+        if _is_vertex_anthropic:
+            from agent.anthropic_vertex_adapter import (
+                build_anthropic_vertex_client,
+                get_anthropic_vertex_config,
+            )
+            _project_id, _region = get_anthropic_vertex_config()
+            if not _project_id:
+                # runtime_provider.resolve_runtime_provider() already validated
+                # this at auth-resolution time — if it fails here, credentials
+                # were revoked mid-session (deleted SA file, revoked ADC token).
+                raise RuntimeError(
+                    "Anthropic-on-Vertex credentials became unavailable during "
+                    "agent init. Re-check GOOGLE_APPLICATION_CREDENTIALS / ADC."
+                )
+            agent._vertex_project_id = _project_id
+            agent._vertex_region = _region
+            agent._anthropic_client = build_anthropic_vertex_client(
+                _project_id, _region, timeout=_provider_timeout,
+            )
+            agent._anthropic_api_key = "vertex-adc"
+            agent._anthropic_base_url = base_url
+            agent._is_anthropic_oauth = False
+            agent.api_key = "vertex-adc"
+            agent.client = None
+            agent._client_kwargs = {}
+            if not agent.quiet_mode:
+                print(f"🤖 AI Agent initialized with model: {agent.model} (Anthropic on Vertex AI, {_project_id}/{_region})")
+        elif _is_bedrock_anthropic:
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             _region_match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
             _br_region = _region_match.group(1) if _region_match else "us-east-1"
@@ -2097,6 +2134,19 @@ def init_agent(
             "anthropic_base_url": agent._anthropic_base_url,
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
+        # Anthropic-on-Vertex needs project + region on the snapshot so
+        # restore/rebuild sites can reconstruct the AnthropicVertex client
+        # without re-reading config.yaml or credentials. Same reason bedrock
+        # stashes ``_bedrock_region`` — the rebuild path is turn-hot and
+        # should not hit disk. Guarded above by
+        # ``api_mode == "anthropic_messages"``, so ``provider == "vertex"``
+        # here unambiguously means the Claude-on-Vertex dispatch (Gemini
+        # on Vertex uses ``chat_completions`` and never reaches this branch).
+        if agent.provider == "vertex":
+            agent._primary_runtime.update({
+                "vertex_project_id": getattr(agent, "_vertex_project_id", None),
+                "vertex_region": getattr(agent, "_vertex_region", None),
+            })
 
 
 

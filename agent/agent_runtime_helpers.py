@@ -1009,14 +1009,28 @@ def try_recover_primary_transport(
         agent.api_key = rt["api_key"]
 
         if agent.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client
             agent._anthropic_api_key = rt["anthropic_api_key"]
             agent._anthropic_base_url = rt["anthropic_base_url"]
-            agent._anthropic_client = build_anthropic_client(
-                rt["anthropic_api_key"], rt["anthropic_base_url"],
-                timeout=get_provider_request_timeout(agent.provider, agent.model),
-            )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
+            # Anthropic-on-Vertex uses the shared ``vertex`` provider — the
+            # dispatch to AnthropicVertex vs. the OpenAI-compat Gemini path is
+            # decided at runtime-resolution time by ``is_anthropic_vertex_model``.
+            # Inside this ``anthropic_messages`` branch, ``provider=="vertex"``
+            # is unambiguous: it means Claude-on-Vertex.
+            if agent.provider == "vertex":
+                from agent.anthropic_vertex_adapter import build_anthropic_vertex_client
+                agent._vertex_project_id = rt.get("vertex_project_id")
+                agent._vertex_region = rt.get("vertex_region") or "global"
+                agent._anthropic_client = build_anthropic_vertex_client(
+                    agent._vertex_project_id, agent._vertex_region,
+                    timeout=get_provider_request_timeout(agent.provider, agent.model),
+                )
+            else:
+                from agent.anthropic_adapter import build_anthropic_client
+                agent._anthropic_client = build_anthropic_client(
+                    rt["anthropic_api_key"], rt["anthropic_base_url"],
+                    timeout=get_provider_request_timeout(agent.provider, agent.model),
+                )
             agent.client = None
         else:
             agent.client = agent._create_openai_client(
@@ -1181,14 +1195,28 @@ def restore_primary_runtime(agent) -> bool:
 
         # ── Rebuild client for the primary provider ──
         if agent.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client
             agent._anthropic_api_key = rt["anthropic_api_key"]
             agent._anthropic_base_url = rt["anthropic_base_url"]
-            agent._anthropic_client = build_anthropic_client(
-                rt["anthropic_api_key"], rt["anthropic_base_url"],
-                timeout=get_provider_request_timeout(agent.provider, agent.model),
-            )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
+            # Anthropic-on-Vertex uses the shared ``vertex`` provider — the
+            # dispatch to AnthropicVertex vs. the OpenAI-compat Gemini path is
+            # decided at runtime-resolution time by ``is_anthropic_vertex_model``.
+            # Inside this ``anthropic_messages`` branch, ``provider=="vertex"``
+            # is unambiguous: it means Claude-on-Vertex.
+            if agent.provider == "vertex":
+                from agent.anthropic_vertex_adapter import build_anthropic_vertex_client
+                agent._vertex_project_id = rt.get("vertex_project_id")
+                agent._vertex_region = rt.get("vertex_region") or "global"
+                agent._anthropic_client = build_anthropic_vertex_client(
+                    agent._vertex_project_id, agent._vertex_region,
+                    timeout=get_provider_request_timeout(agent.provider, agent.model),
+                )
+            else:
+                from agent.anthropic_adapter import build_anthropic_client
+                agent._anthropic_client = build_anthropic_client(
+                    rt["anthropic_api_key"], rt["anthropic_base_url"],
+                    timeout=get_provider_request_timeout(agent.provider, agent.model),
+                )
             agent.client = None
         else:
             agent.client = agent._create_openai_client(
@@ -2042,6 +2070,15 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             "anthropic_base_url": agent._anthropic_base_url,
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
+        # Anthropic-on-Vertex: stash project + region so restore/rebuild
+        # can reconstruct AnthropicVertex without re-reading config.yaml.
+        # Guarded above by ``api_mode == "anthropic_messages"``, so
+        # ``provider == "vertex"`` here can only mean Claude-on-Vertex.
+        if agent.provider == "vertex":
+            agent._primary_runtime.update({
+                "vertex_project_id": getattr(agent, "_vertex_project_id", None),
+                "vertex_region": getattr(agent, "_vertex_region", None),
+            })
 
     # ── Reset fallback state ──
     agent._fallback_activated = False

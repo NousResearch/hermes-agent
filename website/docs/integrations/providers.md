@@ -40,7 +40,8 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **DeepSeek** | `DEEPSEEK_API_KEY` in `~/.hermes/.env` (provider: `deepseek`) |
 | **Hugging Face** | `HF_TOKEN` in `~/.hermes/.env` (provider: `huggingface`, aliases: `hf`) |
 | **Google / Gemini** | `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) in `~/.hermes/.env` (provider: `gemini`) |
-| **Google Vertex AI** | `hermes model` → "Google Vertex AI" (provider: `vertex`; OAuth2 via service-account JSON or ADC, GCP billing) |
+| **Google Vertex AI (Gemini)** | `hermes model` → "Google Vertex AI" (provider: `vertex`, model: `google/gemini-…`; OAuth2 via service-account JSON or ADC, GCP billing) |
+| **Anthropic on Vertex AI** | `provider: vertex`, model: `anthropic/claude-…` in config.yaml (Claude via Vertex Model Garden; same `vertex` provider as Gemini — model name selects the wire; OAuth2 via service-account JSON or ADC, GCP billing). See [Anthropic on Vertex](/guides/anthropic-vertex). |
 | **OpenAI API (direct)** | `OPENAI_API_KEY` in `~/.hermes/.env` (provider: `openai-api`, optional `OPENAI_BASE_URL`) |
 | **Azure AI Foundry** | `hermes model` → "Azure AI Foundry" (provider: `azure-foundry`; uses Azure OpenAI / Foundry endpoint and key) |
 | **AWS Bedrock** | `hermes model` → "AWS Bedrock" (provider: `bedrock`; standard AWS credentials chain via boto3) |

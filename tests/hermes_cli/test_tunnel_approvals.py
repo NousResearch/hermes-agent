@@ -1,4 +1,3 @@
-import time
 import pytest
 from hermes_cli import tunnel_approvals as ta
 

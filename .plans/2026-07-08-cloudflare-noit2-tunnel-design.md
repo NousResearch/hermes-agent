@@ -87,7 +87,7 @@ Commands:
   URLs, pending hold request (if any).
 
 - `hermes tunnel doctor` — `cloudflared` present + reachable, credentials file valid,
-  origins up, DNS CNAMEs resolve.
+  origins up. (DNS CNAME resolution is a future check; out of scope for v1.)
 
 - `hermes tunnel hold [--reason <text>] [--until <time>]` — file a live hold request for
   the running tunnel.
@@ -126,11 +126,11 @@ signature and left for the user to implement during the build.
 - JSONL at `~/.hermes/tunnel/hold_requests.jsonl`.
 - Record shape: `id`, `user`, `subdomains`, `reason`, `requested_until`, `status`
   (`pending` / `approved` / `denied`), `approved_until`, `decided_by`, `created_at`,
-  `decided_at`.
+  `decided_at`, `"deny_reason" (optional, deny records only)`.
 - API: `file_request(...)`, `list_pending()`, `approve(id, until, by)`, `deny(id, reason,
   by)`, `is_approved(id)`, `approved_until(id)`. All mutating admin operations are gated to
   `tunnel.admin` identities.
-- Append-only writes; status transitions validated (`pending -> approved|denied` only).
+- Atomic current-state store: approve/deny rewrite the record in place via `os.replace` (no transition audit trail — consumers read current state only). Status transitions validated (``pending -> approved|denied`` only); any other transition raises `ValueError`. Unknown ids raise `KeyError`.
 - No external service. The dashboard may render this store later (out of scope here).
 
 ### 5.4 Config + env

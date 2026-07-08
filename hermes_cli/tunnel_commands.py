@@ -103,7 +103,6 @@ def _cmd_up(args) -> int:
 
 
 def _write_cloudflared_config(cfg) -> str:
-    import tempfile, json
     ingress = []
     for r in cfg["routes"]:
         ingress.append({"hostname": f"{r['subdomain']}.{cfg['zone']}",

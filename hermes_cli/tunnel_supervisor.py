@@ -9,6 +9,13 @@ that the idle timer resumes (no hard kill on approval expiry).
 
 from __future__ import annotations
 
+import logging
+import subprocess
+import time
+import urllib.request
+
+_log = logging.getLogger(__name__)
+
 
 def reset_idle_on(prev_counter: int, cur_counter: int) -> bool:
     """Return True when there has been incoming activity since the last poll.
@@ -49,13 +56,6 @@ def should_close_now(state: dict) -> bool:
     return (now - last_activity) >= idle_timeout_seconds
 
 
-import os
-import subprocess
-import time
-import urllib.request
-import json
-
-
 def _default_counter(metrics_port: int) -> int:
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{metrics_port}/metrics", timeout=2) as r:
@@ -85,6 +85,7 @@ class TunnelSupervisor:
         self._last_counter = 0
         self._last_activity = None
         self._hold_until = None
+        self._now = None
         self._closed = False
         self._proc = None
         self._config_path = None
@@ -104,7 +105,7 @@ class TunnelSupervisor:
         return self._closed
 
     @property
-    def last_activity(self) -> float:
+    def last_activity(self) -> float | None:
         return self._last_activity
 
     @property
@@ -116,7 +117,16 @@ class TunnelSupervisor:
             return
         from hermes_cli import tunnel_approvals as ta
         if ta.is_approved(self._approvals_path, self._hold_request_id):
-            self._hold_until = ta.approved_until(self._approvals_path, self._hold_request_id)
+            wall_until = ta.approved_until(self._approvals_path, self._hold_request_id)
+            if wall_until is None:
+                return
+            # approved_until is wall-clock (time.time, set by _parse_duration);
+            # the supervisor runs on monotonic time. Convert so should_close_now's
+            # `now < hold_until` compares like domains. Without this, monotonic now
+            # (seconds-since-boot) is always < wall-clock approved_until (~Unix
+            # epoch) and the hold never expires — the dead-man's switch stays
+            # defeated for ~55 years after any approval.
+            self._hold_until = self._now + max(0.0, wall_until - time.time())
 
     def _drain_and_kill(self):
         if self._proc is not None:
@@ -138,13 +148,20 @@ class TunnelSupervisor:
             self._proc = self._spawn(self._config_path, self._cfg.get("tunnel_name", ""),
                                      self._metrics_port)
         now = self._time()
+        self._now = now
         if self._last_activity is None:
             self._last_activity = now
         cur = int(self._counter())
         if reset_idle_on(self._last_counter, cur):
             self._last_activity = now
         self._last_counter = cur
-        self._check_hold()
+        try:
+            self._check_hold()
+        except Exception as exc:
+            # A corrupt/unreadable approvals file must not crash the safety
+            # loop and orphan cloudflared. Degrade to "no hold" (idle governs).
+            _log.warning("tunnel: approvals read failed (%s); degrading to no-hold", exc)
+            self._hold_until = None
         state = {"now": now, "last_activity": self._last_activity,
                  "idle_timeout_seconds": self._idle, "hold_until": self._hold_until}
         if should_close_now(state):

@@ -1,4 +1,3 @@
-import pytest
 from hermes_cli.tunnel_supervisor import reset_idle_on, should_close_now
 
 
@@ -44,16 +43,24 @@ class TestPolicy:
         assert should_close_now(state) is True
 
 
+import hermes_cli.tunnel_supervisor as ts_mod
 from hermes_cli.tunnel_supervisor import TunnelSupervisor
 
 
-def _sup(tmp_path, *, counters, times, idle=1800.0, hold_request_id=False,
-         approved_until=None, denied=False):
-    """Build a supervisor with scripted counter + time sequences.
+_OFFSET = 1_000_000.0  # wall-clock = monotonic + _OFFSET (faked time.time)
 
-    hold_request_id=False -> no hold request. Pass hold_request_id=True to
-    file a real request (capturing its generated id) and optionally
-    approve/deny it; the supervisor is wired to that same id.
+
+def _sup(tmp_path, monkeypatch, *, counters, times, idle=1800.0,
+         hold_request_id=False, approved_duration=None, denied=False):
+    """Supervisor with scripted counter + monotonic-time sequences.
+
+    Coordinated dual clock (models reality): monotonic = scripted `times`;
+    wall (time.time) = monotonic + _OFFSET. Approvals are filed as wall-clock
+    deadlines (OFFSET + duration) so _check_hold's wall->monotonic conversion
+    is exercised — the integration boundary no per-task test previously hit.
+
+    hold_request_id=True files a request; approved_duration (seconds) approves
+    it (wall deadline = OFFSET + duration); denied=True denies it.
     """
     cfg = {"idle_timeout_seconds": idle, "drain_seconds": 0,
            "poll_interval_seconds": 5, "metrics_port": 0,
@@ -61,12 +68,15 @@ def _sup(tmp_path, *, counters, times, idle=1800.0, hold_request_id=False,
            "admin": ["admin1"], "routes": []}
     it_c = iter(counters)
     it_t = iter(times)
+    mono_now = [0.0]
     killed = {"flag": False}
 
     def counter():
         return next(it_c)
     def ts():
-        return next(it_t)
+        v = next(it_t)
+        mono_now[0] = v
+        return v
     class P:
         def terminate(self):
             killed["flag"] = True
@@ -77,6 +87,8 @@ def _sup(tmp_path, *, counters, times, idle=1800.0, hold_request_id=False,
     def sleep(s):
         pass
 
+    monkeypatch.setattr(ts_mod.time, "time", lambda: mono_now[0] + _OFFSET)
+
     path = str(tmp_path / "hold.jsonl")
     filed_id = None
     if hold_request_id:
@@ -84,8 +96,8 @@ def _sup(tmp_path, *, counters, times, idle=1800.0, hold_request_id=False,
         filed_id = ta.file_request(path, user="alice",
                                     subdomains=["alice.noit2.com"], reason="demo",
                                     requested_until=None)
-        if approved_until is not None:
-            ta.approve(path, filed_id, until=approved_until,
+        if approved_duration is not None:
+            ta.approve(path, filed_id, until=mono_now[0] + _OFFSET + approved_duration,
                        by="admin1", admin_ids=["admin1"])
         elif denied:
             ta.deny(path, filed_id, reason="no", by="admin1", admin_ids=["admin1"])
@@ -99,41 +111,58 @@ def _sup(tmp_path, *, counters, times, idle=1800.0, hold_request_id=False,
 
 
 class TestSupervisor:
-    def test_activity_resets_idle_clock(self, tmp_path):
-        # All-increasing counters -> each tick is activity -> last_activity
-        # resets to now -> stays open despite the long wall-clock gap.
-        sup, killed = _sup(tmp_path, counters=[0, 10, 20], times=[0.0, 100.0, 1900.0])
-        assert sup.tick() is True      # t=0, counter 0 (flat vs init 0) -> open
-        assert sup.tick() is True      # t=100, counter 10 -> activity, reset
+    def test_activity_resets_idle_clock(self, tmp_path, monkeypatch):
+        sup, killed = _sup(tmp_path, monkeypatch, counters=[0, 10, 20],
+                           times=[0.0, 100.0, 1900.0])
+        assert sup.tick() is True
+        assert sup.tick() is True
         assert sup.last_activity == 100.0
-        assert sup.tick() is True      # t=1900, counter 20 -> activity resets to 1900 -> open
+        assert sup.tick() is True
         assert sup.last_activity == 1900.0
         assert sup.closed is False
         assert killed["flag"] is False
 
-    def test_idle_expiry_closes(self, tmp_path):
-        sup, killed = _sup(tmp_path, counters=[0, 0, 0], times=[0.0, 100.0, 2000.0])
-        assert sup.tick() is True      # open
-        assert sup.tick() is True      # no activity, 100-0 < 1800 -> open
-        assert sup.tick() is False     # 2000-0 >= 1800 -> close
+    def test_idle_expiry_closes(self, tmp_path, monkeypatch):
+        sup, killed = _sup(tmp_path, monkeypatch, counters=[0, 0, 0],
+                           times=[0.0, 100.0, 2000.0])
+        assert sup.tick() is True
+        assert sup.tick() is True
+        assert sup.tick() is False
         assert sup.closed is True
         assert killed["flag"] is True
 
-    def test_hold_approved_extends_past_idle(self, tmp_path):
-        sup, killed = _sup(tmp_path, counters=[0, 0, 0],
+    def test_hold_approved_extends_past_idle(self, tmp_path, monkeypatch):
+        sup, killed = _sup(tmp_path, monkeypatch, counters=[0, 0, 0],
                            times=[0.0, 2000.0, 4000.0],
-                           hold_request_id=True, approved_until=5000.0)
-        assert sup.tick() is True      # t=0, hold active (approved until 5000)
-        assert sup.tick() is True      # t=2000, no activity, but hold until 5000 -> open
+                           hold_request_id=True, approved_duration=5000.0)
+        assert sup.tick() is True
+        assert sup.tick() is True
         assert sup.hold_until == 5000.0
-        assert sup.tick() is True      # t=4000, still within hold -> open
+        assert sup.tick() is True
         assert sup.closed is False
 
-    def test_hold_denied_closes_on_idle(self, tmp_path):
-        sup, killed = _sup(tmp_path, counters=[0, 0, 0],
+    def test_hold_denied_closes_on_idle(self, tmp_path, monkeypatch):
+        sup, killed = _sup(tmp_path, monkeypatch, counters=[0, 0, 0],
                            times=[0.0, 100.0, 2000.0],
                            hold_request_id=True, denied=True)
         assert sup.tick() is True
         assert sup.tick() is True
-        assert sup.tick() is False     # idle closes; denied hold did not extend
+        assert sup.tick() is False
         assert sup.closed is True
+
+    def test_hold_approval_expires_then_idle_resumes(self, tmp_path, monkeypatch):
+        # The clock-domain integration test: approved_until is wall-clock;
+        # _check_hold must convert to monotonic so the hold can expire and the
+        # idle timer resume (the core dead-man's-switch guarantee). Without
+        # the fix, hold_until would be ~1_000_100 (wall) and the hold never
+        # expires, so the final tick would NOT close.
+        sup, killed = _sup(tmp_path, monkeypatch, counters=[0, 0, 0, 0],
+                           times=[0.0, 50.0, 100.0, 2000.0],
+                           hold_request_id=True, approved_duration=100.0)
+        assert sup.tick() is True              # t=0: hold_until = 0 + 100 = 100
+        assert sup.hold_until == 100.0         # monotonic domain, NOT ~1.75e9
+        assert sup.tick() is True              # t=50: hold active (50<100)
+        assert sup.tick() is True              # t=100: hold expired -> idle (100-0<1800) -> open
+        assert sup.tick() is False             # t=2000: idle (2000-0>=1800) -> close
+        assert sup.closed is True
+        assert killed["flag"] is True

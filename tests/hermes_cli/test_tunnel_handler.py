@@ -2,7 +2,7 @@ from argparse import Namespace
 from hermes_cli import tunnel_commands as tc
 
 
-def test_up_validates_missing_zone(monkeypatch, capsys):
+def test_up_validates_no_origins_or_zone(monkeypatch, capsys):
     # No zone configured and no origin -> error, no supervisor started.
     monkeypatch.setattr(tc, "resolve_tunnel_config",
                         lambda cli_origins=None: {"zone": "", "tunnel_name": "",

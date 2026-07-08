@@ -22,6 +22,7 @@ import platform
 import re
 import signal
 import subprocess
+from datetime import datetime, timezone
 
 _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
@@ -829,7 +830,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._bridge_process = None
         self._close_bridge_log()
         print(f"[{self.name}] Disconnected")
-    
+
+    def _is_group_chat(self, chat_id: str) -> bool:
+        """True if chat_id is a WhatsApp group (@g.us)."""
+        return str(chat_id or "").strip().lower().endswith("@g.us")
+
     async def send(
         self,
         chat_id: str,
@@ -852,6 +857,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
 
         chat_id = to_whatsapp_jid(chat_id)
+
+        # Read-only in groups: never send outbound messages to group chats.
+        if self._is_group_chat(chat_id):
+            logger.info("[%s] Suppressing outbound message to group %s (read-only)", self.name, chat_id)
+            return SendResult(success=True, message_id=None)
 
         try:
             import aiohttp
@@ -943,6 +953,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Send any media file via bridge /send-media endpoint."""
         if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
+        # Read-only in groups: suppress all outbound media to group chats.
+        if self._is_group_chat(chat_id):
+            return SendResult(success=True, message_id=None)
         bridge_exit = await self._check_managed_bridge_exit()
         if bridge_exit:
             return SendResult(success=False, error=bridge_exit)
@@ -997,6 +1010,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """
         if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
+        if self._is_group_chat(chat_id):
+            return SendResult(success=True, message_id=None)
         bridge_exit = await self._check_managed_bridge_exit()
         if bridge_exit:
             return SendResult(success=False, error=bridge_exit)
@@ -1081,6 +1096,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Send a native WhatsApp location pin via the Baileys bridge."""
         if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
+        if self._is_group_chat(chat_id):
+            return SendResult(success=True, message_id=None)
         bridge_exit = await self._check_managed_bridge_exit()
         if bridge_exit:
             return SendResult(success=False, error=bridge_exit)
@@ -1186,6 +1203,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Send typing indicator via bridge."""
         if not self._running or not self._http_session:
             return
+        if self._is_group_chat(chat_id):
+            return
         if await self._check_managed_bridge_exit():
             return
         
@@ -1249,6 +1268,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     if resp.status == 200:
                         messages = await resp.json()
                         for msg_data in messages:
+                            if self._should_observe_group_message(msg_data):
+                                event = await self._build_message_event(
+                                    msg_data,
+                                    observe_only=True,
+                                )
+                                if event:
+                                    self._observe_group_message(event)
+                                continue
+
                             event = await self._build_message_event(msg_data)
                             if event:
                                 if event.message_type == MessageType.TEXT:
@@ -1266,6 +1294,76 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 await asyncio.sleep(5)
             
             await asyncio.sleep(1)  # Poll interval
+
+    def _should_observe_group_message(self, data: Dict[str, Any]) -> bool:
+        """Return True for allowed WhatsApp groups that should be stored only.
+
+        WhatsApp groups are deliberately read-only for the agent: allowed group
+        messages are absorbed into the transcript as observed context, but never
+        dispatched to ``handle_message`` or text batching.  This is stronger than
+        mention gating: even direct mentions, replies to the bot, slash commands,
+        or free-response group config must not trigger an agent turn.
+        """
+        chat_id = str(data.get("chatId") or "")
+        if not data.get("isGroup", False) and not self._is_group_chat(chat_id):
+            return False
+        if self._is_broadcast_chat(chat_id):
+            return False
+        return self._is_group_allowed(chat_id)
+
+    def _observe_group_message(self, event: MessageEvent) -> None:
+        """Persist a WhatsApp group event as observed context without replying."""
+        store = getattr(self, "_session_store", None)
+        if not store:
+            return
+        try:
+            session_entry = store.get_or_create_session(event.source)
+            message_id = str(event.message_id) if event.message_id else ""
+            if message_id and store.has_platform_message_id(
+                session_entry.session_id,
+                message_id,
+            ):
+                logger.info(
+                    "[%s] Skipping duplicate observed WhatsApp group message: chat=%s message_id=%s",
+                    getattr(self, "name", "whatsapp"),
+                    event.source.chat_id,
+                    message_id,
+                )
+                return
+
+            content = self._observed_group_message_content(event)
+            entry: Dict[str, Any] = {
+                "role": "user",
+                "content": content,
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "observed": True,
+            }
+            if message_id:
+                entry["message_id"] = message_id
+            store.append_to_transcript(session_entry.session_id, entry)
+            logger.info(
+                "[%s] WhatsApp group message observed (no agent turn): chat=%s from=%s",
+                getattr(self, "name", "whatsapp"),
+                event.source.chat_id,
+                event.source.user_id or "unknown",
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] Failed to observe WhatsApp group message: %s",
+                getattr(self, "name", "whatsapp"),
+                exc,
+            )
+
+    def _observed_group_message_content(self, event: MessageEvent) -> str:
+        """Human-readable transcript text for a passive WhatsApp group event."""
+        author = event.source.user_name or event.source.user_id or "unknown sender"
+        text = (event.text or "").strip()
+        if not text:
+            media_label = getattr(event.message_type, "value", str(event.message_type)).lower()
+            text = f"[{media_label} received]"
+        if event.media_urls:
+            text = f"{text}\n[Media attachments: {len(event.media_urls)}]"
+        return f"[WhatsApp group observation from {author}] {text}"
 
     # ── Text debounce batching ──────────────────────────────────────
 
@@ -1327,10 +1425,22 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
 
-    async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
-        """Build a MessageEvent from bridge message data, downloading images to cache."""
+    async def _build_message_event(
+        self,
+        data: Dict[str, Any],
+        *,
+        observe_only: bool = False,
+    ) -> Optional[MessageEvent]:
+        """Build a MessageEvent from bridge data, downloading media to cache.
+
+        ``observe_only`` is used for WhatsApp groups that are allowed to be
+        passively absorbed but must never trigger an agent response.
+        """
         try:
-            if not self._should_process_message(data):
+            if observe_only:
+                if not self._should_observe_group_message(data):
+                    return None
+            elif not self._should_process_message(data):
                 return None
 
             # Determine message type
@@ -1353,7 +1463,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     msg_type = MessageType.DOCUMENT
             
             # Determine chat type
-            is_group = data.get("isGroup", False)
+            is_group = data.get("isGroup", False) or self._is_group_chat(data.get("chatId", ""))
             chat_type = "group" if is_group else "dm"
             
             # Build source

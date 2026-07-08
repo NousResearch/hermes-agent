@@ -1,5 +1,8 @@
 import json
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
@@ -414,3 +417,127 @@ def test_is_broadcast_chat_helper_recognizes_common_jids():
     assert WhatsAppAdapter._is_broadcast_chat("120363001234567890@g.us") is False
     assert WhatsAppAdapter._is_broadcast_chat("") is False
     assert WhatsAppAdapter._is_broadcast_chat(None) is False  # type: ignore[arg-type]
+
+
+def test_group_jid_is_observed_even_if_bridge_omits_is_group_flag():
+    adapter = _make_adapter(group_policy="open", require_mention=False)
+    data = _group_message("jid-only group")
+    data.pop("isGroup")
+
+    assert adapter._should_observe_group_message(data) is True
+
+
+class _AsyncCM:
+    def __init__(self, value):
+        self.value = value
+
+    async def __aenter__(self):
+        return self.value
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_allowed_group_messages_are_observed_even_without_response_trigger():
+    adapter = _make_adapter(
+        group_policy="open",
+        require_mention=True,
+        mention_patterns=[r"^\s*agus\b"],
+    )
+    data = _group_message("ordinary family chatter")
+
+    # Old response-trigger policy says this should not be answered.  The new
+    # observe-only policy is broader: allowed groups are still absorbed as
+    # context even when they do not mention the bot.
+    assert adapter._should_process_message(data) is False
+    assert adapter._should_observe_group_message(data) is True
+
+    event = await adapter._build_message_event(data, observe_only=True)
+
+    assert event is not None
+    assert event.source.chat_type == "group"
+    assert event.text == "ordinary family chatter"
+
+
+@pytest.mark.asyncio
+async def test_poll_observes_whatsapp_group_without_dispatching_agent(monkeypatch):
+    adapter = _make_adapter(group_policy="open", require_mention=False)
+    adapter._running = True
+    adapter._bridge_port = 19876
+    adapter._http_session = MagicMock()
+    adapter._check_managed_bridge_exit = AsyncMock(return_value=None)
+    adapter._observe_group_message = MagicMock()
+    adapter._enqueue_text_event = MagicMock()
+    adapter.handle_message = AsyncMock()
+
+    response = MagicMock()
+    response.status = 200
+    response.json = AsyncMock(return_value=[_group_message("please do not answer this")])
+    adapter._http_session.get = MagicMock(return_value=_AsyncCM(response))
+
+    async def stop_after_iteration(_delay):
+        adapter._running = False
+
+    monkeypatch.setattr("plugins.platforms.whatsapp.adapter.asyncio.sleep", stop_after_iteration)
+
+    await adapter._poll_messages()
+
+    adapter._observe_group_message.assert_called_once()
+    adapter._enqueue_text_event.assert_not_called()
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_observed_whatsapp_group_message_is_persisted_as_observed_context():
+    adapter = _make_adapter(group_policy="open", require_mention=False)
+    event = await adapter._build_message_event(
+        _group_message(
+            "dinner moved to 7",
+            senderId="447700900123@s.whatsapp.net",
+            senderName="Jenny",
+            messageId="wamid-1",
+        ),
+        observe_only=True,
+    )
+    store = MagicMock()
+    store.get_or_create_session.return_value = SimpleNamespace(session_id="session-1")
+    store.has_platform_message_id.return_value = False
+    adapter._session_store = store
+
+    adapter._observe_group_message(event)
+
+    store.get_or_create_session.assert_called_once_with(event.source)
+    store.has_platform_message_id.assert_called_once_with("session-1", "wamid-1")
+    store.append_to_transcript.assert_called_once()
+    _, entry = store.append_to_transcript.call_args.args
+    assert entry["role"] == "user"
+    assert entry["observed"] is True
+    assert entry["message_id"] == "wamid-1"
+    assert "WhatsApp group observation from Jenny" in entry["content"]
+    assert "dinner moved to 7" in entry["content"]
+
+
+def test_duplicate_observed_whatsapp_group_message_is_not_repersisted():
+    adapter = _make_adapter(group_policy="open", require_mention=False)
+    from gateway.platforms.base import MessageEvent, MessageType
+
+    event = MessageEvent(
+        text="already seen",
+        message_type=MessageType.TEXT,
+        source=adapter.build_source(
+            chat_id="120363001234567890@g.us",
+            chat_type="group",
+            user_id="447700900123@s.whatsapp.net",
+            user_name="Jenny",
+        ),
+        message_id="wamid-dupe",
+    )
+    store = MagicMock()
+    store.get_or_create_session.return_value = SimpleNamespace(session_id="session-1")
+    store.has_platform_message_id.return_value = True
+    adapter._session_store = store
+
+    adapter._observe_group_message(event)
+
+    store.append_to_transcript.assert_not_called()

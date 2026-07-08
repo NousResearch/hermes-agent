@@ -77,7 +77,7 @@ class TestChatCompletionsBasic:
         every turn — stripping it would 400. Keep extra_content for Gemini
         targets (including aggregator slugs like google/gemini-3-pro).
         """
-        for model in ("gemini-3-pro", "google/gemini-3-pro-preview"):
+        for model in ("gemini-3-pro", "google/gemini-3-pro-preview", "gemma-3-27b"):
             msgs = self._msg_with_extra_content()
             result = transport.convert_messages(msgs, model=model)
             assert result[0]["tool_calls"][0]["extra_content"] == {

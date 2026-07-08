@@ -629,7 +629,7 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 # time to finish; delegation.child_timeout_seconds (off by default) remains an
 # optional hard cap for users who want one.
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 15 * 30s = 450s idle between turns → stale
-_HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 40 * 30s = 1200s stuck on same tool → stale
+_HEARTBEAT_STALE_CYCLES_IN_TOOL = 80  # 80 * 30s = 2400s (40 min) stuck on same tool → stale
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 
 

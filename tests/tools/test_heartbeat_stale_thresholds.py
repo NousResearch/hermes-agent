@@ -11,9 +11,9 @@ class TestHeartbeatStaleThresholds:
         assert _HEARTBEAT_STALE_CYCLES_IDLE == 15
 
     def test_in_tool_cycles_value(self):
-        """IN_TOOL stale cycles should be 40 (40 * 30s = 1200s)."""
+        """IN_TOOL stale cycles should be 80 (80 * 30s = 2400s / 40 min)."""
         from tools.delegate_tool import _HEARTBEAT_STALE_CYCLES_IN_TOOL
-        assert _HEARTBEAT_STALE_CYCLES_IN_TOOL == 40
+        assert _HEARTBEAT_STALE_CYCLES_IN_TOOL == 80
 
     def test_idle_timeout_seconds(self):
         """Effective idle stale timeout: 15 * 30 = 450s (> typical LLM response time)."""
@@ -23,10 +23,10 @@ class TestHeartbeatStaleThresholds:
         assert effective > 300  # Must be > 5 minutes for slow LLM responses
 
     def test_in_tool_timeout_seconds(self):
-        """Effective in-tool stale timeout: 40 * 30 = 1200s (= 20 minutes)."""
+        """Effective in-tool stale timeout: 80 * 30 = 2400s (= 40 minutes)."""
         from tools.delegate_tool import _HEARTBEAT_STALE_CYCLES_IN_TOOL, _HEARTBEAT_INTERVAL
         effective = _HEARTBEAT_STALE_CYCLES_IN_TOOL * _HEARTBEAT_INTERVAL
-        assert effective == 1200
+        assert effective == 2400
 
     def test_interval_unchanged(self):
         """Heartbeat interval should remain 30s."""

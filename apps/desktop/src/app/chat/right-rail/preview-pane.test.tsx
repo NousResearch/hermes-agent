@@ -49,7 +49,7 @@ describe('PreviewPane console state', () => {
     expect(onPreviewFileChanged).not.toHaveBeenCalled()
   })
 
-  it('does not rebuild the pane titlebar group for streamed console logs', () => {
+  it('falls back to an iframe when Electron webview APIs are unavailable', () => {
     const setTitlebarToolGroup = vi.fn()
 
     const rendered = render(
@@ -65,18 +65,15 @@ describe('PreviewPane console state', () => {
     )
 
     const initialCalls = setTitlebarToolGroup.mock.calls.length
-    const webview = rendered.container.querySelector('webview')
+    const iframe = rendered.container.querySelector('iframe')
+    const latestTools = setTitlebarToolGroup.mock.calls.at(-1)?.[1] ?? []
 
-    expect(webview).toBeInstanceOf(HTMLElement)
+    expect(iframe).toBeInstanceOf(HTMLIFrameElement)
+    expect(iframe?.getAttribute('src')).toBe('http://localhost:5174')
+    expect(latestTools.map((tool: { id: string }) => tool.id)).not.toContain('preview-devtools')
 
     act(() => {
-      webview?.dispatchEvent(
-        Object.assign(new Event('console-message'), {
-          level: 0,
-          message: 'streamed log line',
-          sourceId: 'http://localhost:5174/src/main.tsx'
-        })
-      )
+      iframe?.dispatchEvent(new Event('load'))
     })
 
     expect(setTitlebarToolGroup).toHaveBeenCalledTimes(initialCalls)

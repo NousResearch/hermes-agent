@@ -141,6 +141,7 @@ export function PreviewPane({
   const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
   const [currentUrl, setCurrentUrl] = useState(target.url)
+  const [devtoolsAvailable, setDevtoolsAvailable] = useState(false)
   const [devtoolsOpen, setDevtoolsOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<PreviewLoadErrorState | null>(null)
@@ -297,13 +298,17 @@ export function PreviewPane({
               label: consoleOpen ? copy.hideConsole : copy.showConsole,
               onSelect: () => consoleState.setOpen(open => !open)
             },
-            {
-              active: devtoolsOpen,
-              icon: <Bug />,
-              id: `${TITLEBAR_GROUP_ID}-devtools`,
-              label: devtoolsOpen ? copy.hideDevTools : copy.openDevTools,
-              onSelect: toggleDevTools
-            }
+            ...(devtoolsAvailable
+              ? [
+                  {
+                    active: devtoolsOpen,
+                    icon: <Bug />,
+                    id: `${TITLEBAR_GROUP_ID}-devtools`,
+                    label: devtoolsOpen ? copy.hideDevTools : copy.openDevTools,
+                    onSelect: toggleDevTools
+                  }
+                ]
+              : [])
           ]
         : [])
     ]
@@ -311,7 +316,7 @@ export function PreviewPane({
     setTitlebarToolGroup(TITLEBAR_GROUP_ID, tools)
 
     return () => setTitlebarToolGroup(TITLEBAR_GROUP_ID, [])
-  }, [consoleOpen, consoleState, copy, devtoolsOpen, isWebPreview, setTitlebarToolGroup, toggleDevTools])
+  }, [consoleOpen, consoleState, copy, devtoolsAvailable, devtoolsOpen, isWebPreview, setTitlebarToolGroup, toggleDevTools])
 
   useEffect(() => {
     if (!consoleOpen) {
@@ -502,6 +507,7 @@ export function PreviewPane({
     host.replaceChildren()
     webviewRef.current = null
     setCurrentUrl(target.url)
+    setDevtoolsAvailable(false)
     setDevtoolsOpen(false)
     setLoadError(null)
     consoleState.reset()
@@ -518,6 +524,67 @@ export function PreviewPane({
     webview.setAttribute('partition', 'persist:hermes-preview')
     webview.setAttribute('src', target.url)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
+
+    const supportsElectronWebview =
+      typeof webview.reload === 'function' ||
+      typeof webview.reloadIgnoringCache === 'function' ||
+      typeof webview.openDevTools === 'function'
+
+    if (!supportsElectronWebview) {
+      const iframe = document.createElement('iframe') as HTMLIFrameElement & PreviewWebview
+
+      iframe.className = 'flex h-full w-full flex-1 border-0 bg-background'
+      iframe.setAttribute('allow', 'clipboard-read; clipboard-write; fullscreen; microphone; camera')
+      iframe.setAttribute('referrerpolicy', 'no-referrer')
+      iframe.src = target.url
+
+      const reloadIframe = (cacheBust = false) => {
+        const nextUrl = new URL(iframe.src || target.url, window.location.href)
+
+        if (cacheBust) {
+          nextUrl.searchParams.set('__hermes_preview_reload', String(Date.now()))
+        }
+
+        iframe.src = nextUrl.toString()
+        setLoading(true)
+      }
+
+      iframe.reload = () => reloadIframe(false)
+      iframe.reloadIgnoringCache = () => reloadIframe(true)
+      iframe.getURL = () => iframe.src
+
+      const onIframeLoad = () => {
+        setLoading(false)
+        setLoadError(null)
+        setCurrentUrl(iframe.src || target.url)
+      }
+
+      const onIframeError = () => {
+        setLoading(false)
+        setLoadError({ description: 'Browser iframe preview failed to load.', url: target.url })
+      }
+
+      iframe.addEventListener('load', onIframeLoad)
+      iframe.addEventListener('error', onIframeError)
+      host.appendChild(iframe)
+      webviewRef.current = iframe
+      appendConsoleEntry({
+        level: 1,
+        message: 'Browser preview fallback active; Electron webview console and DevTools are unavailable in browser mode.'
+      })
+
+      return () => {
+        iframe.removeEventListener('load', onIframeLoad)
+        iframe.removeEventListener('error', onIframeError)
+        host.replaceChildren()
+
+        if (webviewRef.current === iframe) {
+          webviewRef.current = null
+        }
+      }
+    }
+
+    setDevtoolsAvailable(true)
 
     const onConsole = (event: Event) => {
       const detail = event as Event & {

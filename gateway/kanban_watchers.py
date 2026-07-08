@@ -413,8 +413,13 @@ class GatewayKanbanWatchersMixin:
                             # internal transition. They are also excluded from
                             # _WAKE_KINDS below, so they never wake the creator.
                             continue
-                        metadata: dict[str, Any] = {}
-                        if sub.get("thread_id"):
+                        delivery_metadata = sub.get("delivery_metadata")
+                        metadata: dict[str, Any] = (
+                            dict(delivery_metadata)
+                            if isinstance(delivery_metadata, dict)
+                            else {}
+                        )
+                        if sub.get("thread_id") and not metadata.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
                         # Adapters with no push channel (the API server —
                         # ``supports_async_delivery = False``) can NEVER
@@ -638,13 +643,21 @@ class GatewayKanbanWatchersMixin:
                                 # from group/thread, so the old hardcoded
                                 # "group" mis-routed DM/thread creators into a
                                 # fresh session. Legacy rows written before the
-                                # column existed store NULL/'' — fall back to
-                                # "group" for them (the historical default that
-                                # suits the dashboard/group flows).
+                                # column existed may still carry chat_type in
+                                # delivery_metadata (#60600 rows) — fall back
+                                # to that, then to "group" (the historical
+                                # default that suits the dashboard/group flows).
                                 # handle_message() get_or_create_session's the
                                 # target, so a mismatch only ever degrades to a
                                 # fresh session, never an exception.
-                                _chat_type = str(sub.get("chat_type") or "").strip() or "group"
+                                _chat_type = str(sub.get("chat_type") or "").strip()
+                                if not _chat_type:
+                                    _delivery_meta = sub.get("delivery_metadata")
+                                    if isinstance(_delivery_meta, dict):
+                                        _chat_type = str(
+                                            _delivery_meta.get("chat_type") or ""
+                                        ).strip()
+                                _chat_type = _chat_type or "group"
                                 _source = SessionSource(
                                     platform=plat,
                                     chat_id=sub["chat_id"],

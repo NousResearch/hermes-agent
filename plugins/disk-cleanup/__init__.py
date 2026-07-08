@@ -73,14 +73,19 @@ def _attempt_track(path_str: str, task_id: str, session_id: str) -> None:
     """Best-effort auto-track. Never raises."""
     try:
         p = Path(path_str).expanduser()
+        if not p.exists():
+            return
+        category = dg.guess_category(p)
+        if category is None:
+            return
+        newly = dg.track(str(p), category, silent=True)
     except Exception:
+        # Terminal output can contain paths from other services/users.  Those
+        # may raise PermissionError (or other OSError subclasses) while the
+        # cleanup hook is merely trying to classify them.  Disk-cleanup is a
+        # best-effort hygiene hook and must never make the original tool call
+        # look failed.
         return
-    if not p.exists():
-        return
-    category = dg.guess_category(p)
-    if category is None:
-        return
-    newly = dg.track(str(p), category, silent=True)
     if newly:
         _record_track(task_id, session_id, p, category)
 

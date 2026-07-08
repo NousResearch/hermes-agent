@@ -127,6 +127,15 @@ class TestGuessCategory:
         # Even though it matches test_* pattern, logs/ is excluded.
         assert dg.guess_category(p) is None
 
+    def test_skips_durable_operator_trees(self, _isolate_env):
+        """Regression: durable profile/maintenance trees may contain real tests."""
+        dg = _load_lib()
+        for top in ("profiles", "maintenance", "scripts", "backups", "lsp"):
+            test_file = _isolate_env / top / "project" / "tests" / "test_real_source.py"
+            test_file.parent.mkdir(parents=True)
+            test_file.write_text("def test_real(): pass\n")
+            assert dg.guess_category(test_file) is None, top
+
     def test_cron_subtree_categorised(self, _isolate_env):
         dg = _load_lib()
         # Only files under ``cron/output/`` are disposable run artifacts.
@@ -504,6 +513,24 @@ class TestPostToolCallHook:
             task_id="t4", session_id="s4",
         )
         # read_file should never trigger tracking.
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
+
+    def test_attempt_track_is_best_effort_when_classifier_raises(self, _isolate_env, monkeypatch):
+        """Terminal output can mention unreadable paths from other services;
+        auto-tracking must not leak classifier/stat errors into the tool call."""
+        pi = _load_plugin_init()
+        p = _isolate_env / "test_unreadable.py"
+        p.write_text("x")
+        monkeypatch.setattr(pi.dg, "guess_category", lambda _p: (_ for _ in ()).throw(PermissionError("boom")))
+
+        pi._on_post_tool_call(
+            tool_name="terminal",
+            args={},
+            result=f"created {p}\n",
+            task_id="t5", session_id="s5",
+        )
+
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
 

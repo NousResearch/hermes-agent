@@ -563,6 +563,11 @@ def guess_category(path: Path) -> Optional[str]:
             "disk-cleanup", "logs", "memories", "sessions", "config.yaml",
             "skills", "plugins", ".env", "USER.md", "MEMORY.md", "SOUL.md",
             "auth.json", "hermes-agent",
+            # Durable operator/project trees can legitimately contain test_*.py
+            # sources. Do not classify them as ephemeral just because of their
+            # filename; real project tests under these trees must survive
+            # session cleanup.
+            "profiles", "maintenance", "scripts", "backups", "lsp",
         }:
             return None
         if top == "cron" or top == "cronjobs":

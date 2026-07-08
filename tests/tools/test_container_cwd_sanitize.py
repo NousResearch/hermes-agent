@@ -20,14 +20,32 @@ behaviour so neither path can regress.
 import tools.terminal_tool as tt
 
 
+def _windows_isabs(path):
+    return (
+        len(path) >= 3
+        and path[1] == ":"
+        and path[2] in ("\\", "/")
+    ) or path.startswith(("\\\\", "//"))
+
+
 class TestIsUnusableContainerCwd:
     def test_windows_backslash_host_path_rejected(self):
         # The exact shape from the bug report: a Windows host cwd reaching a
         # Linux container's -w flag.
         assert tt._is_unusable_container_cwd(r"C:\Users\someuser") is True
+        assert tt._is_unusable_container_cwd(r"E:\Oraca\workspaces\repo") is True
 
     def test_windows_forwardslash_host_path_rejected(self):
         assert tt._is_unusable_container_cwd("C:/Users/someuser") is True
+        assert tt._is_unusable_container_cwd("D:/workspaces/repo") is True
+
+    def test_non_c_windows_drive_rejected_on_native_windows(self, monkeypatch):
+        # On native Windows, os.path.isabs("E:\\...") is True, so the old
+        # relative-path fallback does not catch non-C drive letters.
+        monkeypatch.setattr(tt.os.path, "isabs", _windows_isabs)
+
+        assert tt._is_unusable_container_cwd(r"E:\Oraca\workspaces\repo") is True
+        assert tt._is_unusable_container_cwd("D:/workspaces/repo") is True
 
     def test_posix_home_host_path_rejected(self):
         assert tt._is_unusable_container_cwd("/home/ben/projects") is True
@@ -136,6 +154,14 @@ class TestOverrideCwdSanitizedAtCallSite:
             "It must be sanitized back to config['cwd']."
         )
 
+    def test_non_c_windows_host_override_does_not_reach_container(self, monkeypatch):
+        monkeypatch.setattr(tt.os.path, "isabs", _windows_isabs)
+        cwd = self._run_and_capture_cwd(monkeypatch, r"E:\Oraca\workspaces\repo")
+        assert cwd == "/root", (
+            f"Host-path cwd override leaked to the container builder: {cwd!r}. "
+            "Any Windows drive-letter cwd must be sanitized back to config['cwd']."
+        )
+
     def test_posix_host_override_does_not_reach_container(self, monkeypatch):
         cwd = self._run_and_capture_cwd(monkeypatch, "/home/someuser/project")
         assert cwd == "/root"
@@ -235,6 +261,11 @@ class TestFileOpsCwdSanitizedAtCallSite:
 
     def test_windows_host_override_does_not_reach_container(self, monkeypatch):
         cwd = self._run_and_capture_cwd(monkeypatch, r"C:\Users\someuser")
+        assert cwd == "/workspace"
+
+    def test_non_c_windows_host_override_does_not_reach_container(self, monkeypatch):
+        monkeypatch.setattr(tt.os.path, "isabs", _windows_isabs)
+        cwd = self._run_and_capture_cwd(monkeypatch, r"E:\Oraca\workspaces\repo")
         assert cwd == "/workspace"
 
     def test_relative_cwd_override_does_not_reach_container(self, monkeypatch):

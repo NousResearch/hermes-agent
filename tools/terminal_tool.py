@@ -1212,6 +1212,7 @@ def _safe_getcwd() -> str:
 # (``C:\Users\...`` / ``C:/Users/...``) — the latter is how a Windows host's
 # cwd looks when it leaks toward a Linux container's ``-w`` flag.
 _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
+_WINDOWS_DRIVE_CWD_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 _CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona"})
 
@@ -1245,9 +1246,9 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
         return False
     if any(cwd.startswith(p) for p in _HOST_CWD_PREFIXES):
         return True
-    # Relative paths (".", "src/") can't be a container workdir either. Windows
-    # drive paths are absolute on Windows but os.path.isabs() is False on a
-    # POSIX host, so they're already caught by the prefix check above.
+    if _WINDOWS_DRIVE_CWD_RE.match(cwd):
+        return True
+    # Relative paths (".", "src/") can't be a container workdir either.
     if not os.path.isabs(cwd):
         return True
     return False

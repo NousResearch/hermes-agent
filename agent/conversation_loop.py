@@ -59,7 +59,7 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff
+from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff, resolve_retry_after
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
@@ -4054,22 +4054,38 @@ def run_conversation(
                         "failure_reason": classified.reason.value,
                     }
 
-                # For rate limits, respect the Retry-After header if present
-                _retry_after = None
-                if is_rate_limited:
-                    _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
-                    if _resp_headers and hasattr(_resp_headers, "get"):
-                        _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
-                        if _ra_raw:
-                            try:
-                                # Cap at 10 minutes. Anthropic Tier 1 input-token
-                                # buckets reset in ~171s, so a 120s cap caused us to
-                                # retry before the actual reset window and re-trip the
-                                # limit. 600s covers all realistic provider reset
-                                # windows while still rejecting pathological values. (#26293)
-                                _retry_after = min(float(_ra_raw), 600)
-                            except (TypeError, ValueError):
-                                pass
+                # Respect the Retry-After header on a rate-limit AND on a
+                # provider OVERLOAD (503/529). A pool-at-capacity 503 from the
+                # local relay is a self-describing transient — it emits a bounded
+                # Retry-After telling us exactly how long until a slot frees — so
+                # honoring it beats blind jitter. The honor-policy (which reasons,
+                # the final-pre-fallback-retry carve-out, the per-class cap, and
+                # HTTP-date/garbage → jitter) lives in the pure, unit-tested
+                # ``resolve_retry_after`` helper. Crucially this is SEPARATE from
+                # ``is_rate_limited``: the rate-limit-specific side-effects below
+                # (adaptive backoff, status text) keep their own unchanged
+                # ``is_rate_limited`` guard, so an overload never triggers a
+                # cap-mark or credential rotation.
+                _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
+                _ra_raw = None
+                if _resp_headers and hasattr(_resp_headers, "get"):
+                    _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
+                _retry_after = resolve_retry_after(
+                    raw_value=_ra_raw,
+                    is_rate_limit=is_rate_limited,
+                    is_overload=(classified.reason == FailoverReason.overloaded),
+                    retry_count=retry_count,
+                    max_retries=max_retries,
+                )
+                if _retry_after:
+                    # RC-3: make the honored-vs-jitter decision visible so triage
+                    # can tell a relay-informed wait from a jitter coincidence at
+                    # the same duration.
+                    logger.info(
+                        "Honoring server Retry-After=%ss (reason=%s, attempt=%s/%s)",
+                        _retry_after, classified.reason.value,
+                        retry_count + 1, max_retries,
+                    )
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 _backoff_policy = None
                 if is_rate_limited and not _retry_after:

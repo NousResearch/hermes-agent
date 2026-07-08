@@ -210,3 +210,88 @@ def test_non_zai_backoff_returns_default_wait():
     )
     assert wait == 12.0
     assert policy is None
+
+
+# --- resolve_retry_after: honor Retry-After on rate-limit AND overload -------
+# SPEC 2026-07-07 (pool-at-capacity transient-503, 4b). The relay emits a bounded
+# Retry-After on a pool-at-capacity 503; the harness honors it on the overloaded
+# path (not just rate-limit), with a final-pre-fallback-retry carve-out.
+from agent.retry_utils import (  # noqa: E402
+    resolve_retry_after,
+    RETRY_AFTER_CAP_OVERLOAD_S,
+    RETRY_AFTER_CAP_RATE_LIMIT_S,
+)
+
+
+def _honor(**kw):
+    base = dict(raw_value="8", is_rate_limit=False, is_overload=True,
+                retry_count=0, max_retries=3)
+    base.update(kw)
+    return resolve_retry_after(**base)
+
+
+def test_retry_after_honored_on_overload():
+    # AC-3: an overload with a numeric Retry-After is honored (not None/jitter).
+    assert _honor(raw_value="8") == 8.0
+
+
+def test_retry_after_honored_on_rate_limit():
+    assert _honor(is_rate_limit=True, is_overload=False, raw_value="12") == 12.0
+
+
+def test_retry_after_ignored_for_other_reasons():
+    # AC-4-adjacent: neither rate-limit nor overload -> never honored (jitter).
+    assert _honor(is_rate_limit=False, is_overload=False, raw_value="8") is None
+
+
+def test_retry_after_overload_capped_at_60():
+    # INV-4: overload honors a tighter 60s cap.
+    assert _honor(raw_value="999") == RETRY_AFTER_CAP_OVERLOAD_S == 60.0
+
+
+def test_retry_after_rate_limit_capped_at_600():
+    assert _honor(is_rate_limit=True, is_overload=False,
+                  raw_value="99999") == RETRY_AFTER_CAP_RATE_LIMIT_S == 600.0
+
+
+def test_retry_after_not_honored_on_final_pre_fallback_retry():
+    # AC-8 / RC-1: reserve the LAST reachable retry for a fast jitter→fallback,
+    # but ONLY when there are ≥2 reachable retries (max_retries ≥ 3). The caller
+    # is 1-based (retry_count incremented before this runs) and activates
+    # fallback at retry_count >= max_retries, so reachable retries are 1..N-1.
+    # max_retries=3 -> reachable {1,2}: honor 1, jitter 2 (the last reachable).
+    assert _honor(retry_count=1, max_retries=3) == 8.0   # 1 < 3-1=2 -> honor
+    assert _honor(retry_count=2, max_retries=3) is None  # last reachable -> jitter
+    # boundary: honor iff retry_count < max_retries-1 (when max_retries >= 3)
+    assert _honor(retry_count=3, max_retries=5) == 8.0   # 3 < 5-1=4 -> honor
+    assert _honor(retry_count=4, max_retries=5) is None  # last reachable -> jitter
+
+
+def test_retry_after_honored_when_only_one_reachable_retry():
+    # Greptile #223 P1: with max_retries=2 there is exactly ONE reachable retry
+    # (retry_count=1); reserving it for jitter would make the whole overload
+    # feature a no-op. So it MUST be honored.
+    assert _honor(retry_count=1, max_retries=2) == 8.0
+
+
+def test_retry_after_max_retries_1_never_honors():
+    # max_retries=1: zero reachable retries (retry_count 1 >= max_retries 1) ->
+    # never honored (straight to fallback).
+    assert _honor(retry_count=1, max_retries=1) is None
+
+
+def test_retry_after_http_date_falls_through_to_jitter():
+    # A RFC-valid HTTP-date Retry-After is not float()-parseable -> None (jitter),
+    # not a crash. Covers the pass-2 security-lens HTTP-date path.
+    assert _honor(raw_value="Wed, 21 Oct 2026 07:28:00 GMT") is None
+
+
+def test_retry_after_garbage_and_missing_fall_through():
+    assert _honor(raw_value="abc") is None
+    assert _honor(raw_value=None) is None
+    assert _honor(raw_value="") is None
+
+
+def test_retry_after_nonpositive_falls_through():
+    assert _honor(raw_value="0") is None
+    assert _honor(raw_value="-5") is None

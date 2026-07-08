@@ -127,3 +127,70 @@ def adaptive_rate_limit_backoff(
     # A smaller jitter ratio keeps long waits readable while still avoiding
     # synchronized retry storms across concurrent Hermes sessions.
     return jittered_backoff(1, base_delay=base_delay, max_delay=base_delay, jitter_ratio=0.2), "zai_coding_overload_long"
+
+
+# Cap for a honored Retry-After, by class. A rate-limit reset window can be
+# minutes (Anthropic Tier-1 input buckets reset ~171s, some providers longer),
+# so 600s. A provider OVERLOAD / local-relay backpressure transient clears in
+# seconds, so a much tighter 60s cap is sufficient and safer.
+RETRY_AFTER_CAP_RATE_LIMIT_S = 600.0
+RETRY_AFTER_CAP_OVERLOAD_S = 60.0
+
+
+def resolve_retry_after(
+    *,
+    raw_value: Any,
+    is_rate_limit: bool,
+    is_overload: bool,
+    retry_count: int,
+    max_retries: int,
+) -> float | None:
+    """Decide whether to honor a server ``Retry-After`` and for how long.
+
+    Pure function (no I/O) so the honor-policy is unit-testable in isolation
+    from the conversation loop. Returns the number of seconds to wait, or
+    ``None`` to fall through to the caller's jittered backoff.
+
+    Policy:
+      * Honor only for a rate-limit OR a provider overload (503/529). A
+        pool-at-capacity 503 from the local relay is a self-describing
+        transient that emits a bounded ``Retry-After``; honoring it beats
+        blind jitter. Any other reason → ``None`` (jitter).
+      * The caller activates its fallback chain at ``retry_count >=
+        max_retries``, so the honor-reachable retries are ``1 .. max_retries-1``.
+        Reserve the LAST reachable retry for jitter (so the fast direct-box
+        fallback isn't delayed by a relay-informed wait) — but ONLY when there
+        are at least TWO reachable retries to spare one. When ``max_retries==2``
+        there is a single reachable retry; skipping it would make the whole
+        overload feature a no-op, so it IS honored (Greptile #223 P1).
+      * A non-numeric value (e.g. an HTTP-date ``Retry-After``, RFC-valid but
+        not a bare number) is NOT parsed here → ``None`` (jitter). This is
+        deliberate: overload/backpressure sources emit numeric seconds; date
+        parsing would be scope creep.
+      * The honored value is clamped to a class-specific cap
+        (rate-limit 600s, overload 60s) and floored at 0.
+
+    ``retry_count`` is the caller's 1-based attempt number (incremented before
+    this runs); ``max_retries`` is the retry ceiling.
+    """
+    if not (is_rate_limit or is_overload):
+        return None
+    # Past/at the fallback threshold → don't honor (defensive; the caller
+    # normally activates fallback before reaching here).
+    if retry_count >= max_retries:
+        return None
+    # Reserve the final reachable retry for a fast jitter→fallback, but only
+    # when there are ≥2 reachable retries (max_retries ≥ 3) so we don't spend
+    # our only reachable retry and disable the feature (Greptile #223 P1).
+    if max_retries >= 3 and retry_count >= max_retries - 1:
+        return None
+    if raw_value in (None, ""):
+        return None
+    try:
+        secs = float(raw_value)
+    except (TypeError, ValueError):
+        return None
+    if secs <= 0:
+        return None
+    cap = RETRY_AFTER_CAP_RATE_LIMIT_S if is_rate_limit else RETRY_AFTER_CAP_OVERLOAD_S
+    return min(secs, cap)

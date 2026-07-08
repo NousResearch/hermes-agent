@@ -2931,6 +2931,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 max_commands = telegram_menu_max_commands()
                 menu_commands, hidden_count = telegram_menu_commands(max_commands=max_commands)
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
+                # Allow users to disable auto-registration via config:
+                #   platforms.telegram.extra.command_menu.enabled: false
+                # When disabled, skip set_my_commands so manual BotFather edits survive.
+                try:
+                    from hermes_cli.commands import _telegram_command_menu_config
+                    menu_cfg = _telegram_command_menu_config()
+                    if menu_cfg.get("enabled") is False:
+                        logger.info("[%s] Telegram command menu auto-registration disabled by config", self.name)
+                        bot_commands = []
+                except Exception:
+                    pass
                 # Register for all scopes independently — Telegram picks the
                 # narrowest matching scope per chat type (forum topics fall
                 # through to AllGroupChats or Default).

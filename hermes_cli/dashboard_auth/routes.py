@@ -194,7 +194,11 @@ async def auth_login(request: Request, provider: str, next: str = ""):
         )
 
     try:
-        ls = p.start_login(redirect_uri=_redirect_uri(request))
+        # 🐛 patch(#55985): guard start_login() — BasicAuthProvider has no OAuth flow
+        if hasattr(p, "start_login") and callable(p.start_login):
+            ls = p.start_login(redirect_uri=_redirect_uri(request))
+        else:
+            ls = None
     except ProviderError as e:
         audit_log(
             AuditEvent.LOGIN_FAILURE,

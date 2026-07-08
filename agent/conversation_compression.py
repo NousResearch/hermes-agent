@@ -38,8 +38,114 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from agent.model_metadata import estimate_request_tokens_rough
+from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, resolve_billing_route
 
 logger = logging.getLogger(__name__)
+
+
+def record_summary_usage_for_session(agent: Any, summary_usage: dict) -> None:
+    """Persist canonical summarizer usage + cost at the compression route.
+
+    Called once per successful compression (before session rotation) so
+    summarizer tokens attribute to the session that was compressed (#58592).
+
+    Prices the delta at the *auxiliary compression* model/provider
+    (``ContextCompressor.summary_model`` when set, else the main model),
+    not blindly at the session's stored route. Writes:
+
+    * full canonical token buckets (input/output/cache/reasoning)
+    * estimated_cost_usd for this call only (summed into the session)
+    * billing_provider / billing_base_url / billing_mode from the route
+    * model = summary model (COALESCE first-writer only; does not overwrite
+      an already-set main model — first-writer-wins is intentional)
+
+    Best-effort; callers wrap in try/except so accounting never blocks
+    compression.
+    """
+    if not summary_usage:
+        return
+    session_db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if not session_db or not session_id:
+        return
+
+    compressor = getattr(agent, "context_compressor", None)
+    summary_model = (
+        (getattr(compressor, "summary_model", None) or "").strip()
+        or getattr(agent, "model", None)
+        or ""
+    )
+    # Aux compression can use a distinct provider; prefer compressor fields,
+    # then fall back to the main agent route.
+    provider = (
+        (getattr(compressor, "provider", None) or "").strip()
+        or (getattr(agent, "provider", None) or "")
+    )
+    base_url = (
+        (getattr(compressor, "base_url", None) or "").strip()
+        or (getattr(agent, "base_url", None) or "")
+    )
+    api_key = getattr(compressor, "api_key", None) or getattr(agent, "api_key", "") or ""
+
+    input_tokens = int(
+        summary_usage.get("input_tokens", summary_usage.get("prompt_tokens", 0)) or 0
+    )
+    output_tokens = int(
+        summary_usage.get("output_tokens", summary_usage.get("completion_tokens", 0))
+        or 0
+    )
+    cache_read_tokens = int(summary_usage.get("cache_read_tokens", 0) or 0)
+    cache_write_tokens = int(summary_usage.get("cache_write_tokens", 0) or 0)
+    reasoning_tokens = int(summary_usage.get("reasoning_tokens", 0) or 0)
+
+    usage = CanonicalUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
+        reasoning_tokens=reasoning_tokens,
+    )
+
+    cost_result = estimate_usage_cost(
+        summary_model,
+        usage,
+        provider=provider or None,
+        base_url=base_url or None,
+        api_key=api_key or None,
+    )
+    cost_delta = (
+        float(cost_result.amount_usd)
+        if cost_result.amount_usd is not None
+        else None
+    )
+
+    route = resolve_billing_route(
+        summary_model, provider=provider or None, base_url=base_url or None
+    )
+    billing_mode = (
+        "subscription_included"
+        if cost_result.status == "included"
+        else (route.billing_mode if route.billing_mode != "unknown" else None)
+    )
+
+    session_db.update_token_counts(
+        session_id,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cache_read_tokens=usage.cache_read_tokens,
+        cache_write_tokens=usage.cache_write_tokens,
+        reasoning_tokens=usage.reasoning_tokens,
+        estimated_cost_usd=cost_delta,
+        cost_status=cost_result.status,
+        cost_source=cost_result.source,
+        pricing_version=getattr(cost_result, "pricing_version", None),
+        billing_provider=provider or route.provider or None,
+        billing_base_url=base_url or route.base_url or None,
+        billing_mode=billing_mode,
+        model=summary_model or None,
+        api_call_count=1,
+    )
+
 
 # Stable marker the gateway matches on to re-tag the auto-compaction lifecycle
 # status as ``kind="compacting"`` (tui_gateway/server.py::_status_update), so
@@ -686,6 +792,31 @@ def compress_context(
             _existing_sp = agent._build_system_prompt(system_message)
         _release_lock()
         return messages, _existing_sp
+
+    # Fold the summarizer LLM call's token usage into session accounting so
+    # `hermes insights` counts auxiliary compression spend. This must happen
+    # BEFORE any session rotation below so the tokens attribute to the session
+    # that was actually compressed (#58592). Best-effort: never block
+    # compression on an accounting write.
+    #
+    # Price this call at the *actual* auxiliary compression route (distinct
+    # summary model/provider can differ from the session's main route). Persist
+    # the cost delta + billing route fields; Insights will re-price aggregate
+    # tokens at the session model, so storing estimated_cost_usd for this call
+    # (priced correctly) and full canonical token buckets is what keeps spend
+    # honest when main and compression routes diverge.
+    try:
+        _consume = getattr(agent.context_compressor, "consume_summary_usage", None)
+        _summary_usage = _consume() if callable(_consume) else None
+        if _summary_usage and agent._session_db and agent.session_id:
+            if not agent._session_db_created:
+                agent._ensure_db_session()
+            record_summary_usage_for_session(agent, _summary_usage)
+    except Exception as _acct_err:
+        logger.debug(
+            "compression summary usage accounting failed (session=%s): %s",
+            getattr(agent, "session_id", None), _acct_err,
+        )
 
     try:
         summary_error = getattr(agent.context_compressor, "_last_summary_error", None)

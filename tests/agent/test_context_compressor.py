@@ -46,6 +46,92 @@ class TestShouldCompress:
 
 
 
+class TestSummaryUsageCapture:
+    """#58592 — summarizer LLM token usage must be captured for accounting."""
+
+    def test_captures_usage_from_object(self, compressor):
+        from types import SimpleNamespace
+        resp = SimpleNamespace(usage=SimpleNamespace(
+            prompt_tokens=1200, completion_tokens=300, total_tokens=1500))
+        compressor._capture_summary_usage(resp)
+        usage = compressor._last_summary_usage
+        assert usage["prompt_tokens"] == 1200
+        assert usage["completion_tokens"] == 300
+        assert usage["total_tokens"] == 1500
+        assert usage["input_tokens"] == 1200
+        assert usage["output_tokens"] == 300
+        assert usage["cache_read_tokens"] == 0
+        assert usage["reasoning_tokens"] == 0
+
+    def test_captures_usage_from_dict(self, compressor):
+        from types import SimpleNamespace
+        resp = SimpleNamespace(usage={"prompt_tokens": 10, "completion_tokens": 5})
+        compressor._capture_summary_usage(resp)
+        # total_tokens missing -> derived from prompt + completion
+        assert compressor._last_summary_usage["total_tokens"] == 15
+        assert compressor._last_summary_usage["input_tokens"] == 10
+        assert compressor._last_summary_usage["output_tokens"] == 5
+
+    def test_captures_anthropic_and_cache_buckets(self, compressor):
+        """normalize_usage must not drop Anthropic field names / cache buckets."""
+        from types import SimpleNamespace
+        compressor.provider = "anthropic"
+        compressor.api_mode = "anthropic_messages"
+        resp = SimpleNamespace(usage=SimpleNamespace(
+            input_tokens=1000,
+            output_tokens=200,
+            cache_read_input_tokens=50,
+            cache_creation_input_tokens=25,
+        ))
+        compressor._capture_summary_usage(resp)
+        usage = compressor._last_summary_usage
+        assert usage is not None
+        assert usage["input_tokens"] == 1000
+        assert usage["output_tokens"] == 200
+        assert usage["cache_read_tokens"] == 50
+        assert usage["cache_write_tokens"] == 25
+        # prompt_tokens is the inclusive total (input + caches)
+        assert usage["prompt_tokens"] == 1000 + 50 + 25
+        assert usage["completion_tokens"] == 200
+
+    def test_missing_usage_leaves_none(self, compressor):
+        from types import SimpleNamespace
+        compressor._last_summary_usage = None
+        compressor._capture_summary_usage(SimpleNamespace(usage=None))
+        assert compressor._last_summary_usage is None
+
+    def test_zeroed_usage_not_recorded(self, compressor):
+        from types import SimpleNamespace
+        compressor._last_summary_usage = None
+        resp = SimpleNamespace(usage=SimpleNamespace(
+            prompt_tokens=0, completion_tokens=0, total_tokens=0))
+        compressor._capture_summary_usage(resp)
+        assert compressor._last_summary_usage is None
+
+    def test_consume_returns_and_clears(self, compressor):
+        compressor._last_summary_usage = {
+            "prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10,
+            "input_tokens": 7, "output_tokens": 3,
+            "cache_read_tokens": 0, "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+        }
+        first = compressor.consume_summary_usage()
+        assert first["prompt_tokens"] == 7
+        assert first["input_tokens"] == 7
+        # Second consume returns None — folded exactly once.
+        assert compressor.consume_summary_usage() is None
+
+    def test_non_numeric_fields_coerce_to_zero(self, compressor):
+        from types import SimpleNamespace
+        # normalize_usage treats non-numeric prompt/completion as 0; with no
+        # other buckets nonzero the capture is skipped (zeroed usage).
+        resp = SimpleNamespace(usage=SimpleNamespace(
+            prompt_tokens="oops", completion_tokens=None, total_tokens=42))
+        compressor._capture_summary_usage(resp)
+        # After normalize: all zero → not recorded.
+        assert compressor._last_summary_usage is None
+
+
 class TestUpdateFromResponse:
     def test_updates_fields(self, compressor):
         compressor.awaiting_real_usage_after_compression = True
@@ -3439,3 +3525,207 @@ class TestDoubleCompactionSummaryRole:
             "summary of earlier turns" in (m.get("content") or "")
             for m in result
         )
+
+
+class TestSummaryUsageSessionAccounting:
+    """#58592 follow-up: SessionDB persistence, cost delta, distinct route.
+
+    teknium1 keep_open review: normalize + persist canonical usage + actual
+    auxiliary billing route, price that call at its own route; integration test
+    covering distinct compression model/provider and pre-rotation attribution.
+    """
+
+    def test_record_summary_usage_distinct_model_temp_db(self, tmp_path):
+        from agent.conversation_compression import record_summary_usage_for_session
+        from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+        from types import SimpleNamespace
+
+        db_path = tmp_path / "summary_usage_acct.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            session_id = "sess-main-before-rotation"
+            # Session was started on the *main* model/provider.
+            db.create_session(
+                session_id=session_id,
+                source="cli",
+                model="openai/gpt-4o",
+            )
+            # Pre-existing main-loop usage (first writer sets model + billing).
+            db.update_token_counts(
+                session_id,
+                input_tokens=1000,
+                output_tokens=200,
+                model="openai/gpt-4o",
+                billing_provider="openrouter",
+                billing_base_url="https://openrouter.ai/api/v1",
+                api_call_count=1,
+            )
+
+            # Distinct compression model/provider vs main session.
+            compressor = SimpleNamespace(
+                summary_model="anthropic/claude-3-haiku",
+                provider="anthropic",
+                base_url="https://api.anthropic.com",
+                api_key="",
+            )
+            agent = SimpleNamespace(
+                _session_db=db,
+                session_id=session_id,
+                model="openai/gpt-4o",
+                provider="openrouter",
+                base_url="https://openrouter.ai/api/v1",
+                api_key="",
+                context_compressor=compressor,
+            )
+
+            summary_usage = {
+                "prompt_tokens": 500,
+                "completion_tokens": 100,
+                "total_tokens": 600,
+                "input_tokens": 480,
+                "output_tokens": 100,
+                "cache_read_tokens": 20,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+            }
+
+            # Expected cost priced at the *compression* route, not main.
+            expected = estimate_usage_cost(
+                "anthropic/claude-3-haiku",
+                CanonicalUsage(
+                    input_tokens=480,
+                    output_tokens=100,
+                    cache_read_tokens=20,
+                    cache_write_tokens=0,
+                    reasoning_tokens=0,
+                ),
+                provider="anthropic",
+                base_url="https://api.anthropic.com",
+            )
+
+            record_summary_usage_for_session(agent, summary_usage)
+
+            row = db._conn.execute(
+                "SELECT input_tokens, output_tokens, cache_read_tokens, "
+                "cache_write_tokens, reasoning_tokens, estimated_cost_usd, "
+                "api_call_count, model, billing_provider, billing_base_url "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            assert row is not None
+            # Token buckets: main (1000/200) + summary (480/100/20).
+            assert row[0] == 1000 + 480  # input_tokens
+            assert row[1] == 200 + 100   # output_tokens
+            assert row[2] == 20          # cache_read_tokens
+            assert row[3] == 0           # cache_write_tokens
+            assert row[5] is not None or expected.amount_usd is None
+            if expected.amount_usd is not None:
+                assert abs(float(row[5]) - float(expected.amount_usd)) < 1e-9
+            assert row[6] == 2  # main + compression API call
+            # model COALESCE first-writer-wins: stays main model.
+            assert row[7] == "openai/gpt-4o"
+            # billing_provider COALESCE first-writer-wins: stays openrouter.
+            assert row[8] == "openrouter"
+        finally:
+            db.close()
+
+    def test_pre_rotation_attribution_uses_current_session_id(self, tmp_path):
+        """Accounting must hit the pre-rotation session id (the compressed one)."""
+        from agent.conversation_compression import record_summary_usage_for_session
+        from types import SimpleNamespace
+
+        db_path = tmp_path / "pre_rotation.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            parent_id = "parent-compressed"
+            child_id = "child-after-rotation"
+            db.create_session(session_id=parent_id, source="cli", model="main-model")
+            db.create_session(session_id=child_id, source="cli", model="main-model")
+
+            agent = SimpleNamespace(
+                _session_db=db,
+                session_id=parent_id,  # still parent when accounting runs
+                model="main-model",
+                provider="openrouter",
+                base_url="",
+                api_key="",
+                context_compressor=SimpleNamespace(
+                    summary_model="cheap-compressor",
+                    provider="openrouter",
+                    base_url="",
+                    api_key="",
+                ),
+            )
+            record_summary_usage_for_session(
+                agent,
+                {
+                    "input_tokens": 50,
+                    "output_tokens": 10,
+                    "cache_read_tokens": 0,
+                    "cache_write_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "prompt_tokens": 50,
+                    "completion_tokens": 10,
+                },
+            )
+            parent = db._conn.execute(
+                "SELECT input_tokens, output_tokens, api_call_count FROM sessions WHERE id = ?",
+                (parent_id,),
+            ).fetchone()
+            child = db._conn.execute(
+                "SELECT input_tokens, output_tokens, api_call_count FROM sessions WHERE id = ?",
+                (child_id,),
+            ).fetchone()
+            assert parent[0] == 50 and parent[1] == 10 and parent[2] == 1
+            assert (child[0] or 0) == 0 and (child[1] or 0) == 0 and (child[2] or 0) == 0
+        finally:
+            db.close()
+
+    def test_capture_then_record_end_to_end(self, compressor, tmp_path):
+        from types import SimpleNamespace
+        from agent.conversation_compression import record_summary_usage_for_session
+
+        compressor.provider = "anthropic"
+        compressor.api_mode = "anthropic_messages"
+        compressor.summary_model = "anthropic/claude-3-haiku"
+        compressor.base_url = "https://api.anthropic.com"
+        compressor.api_key = ""
+
+        resp = SimpleNamespace(
+            usage=SimpleNamespace(
+                input_tokens=222,
+                output_tokens=33,
+                cache_read_input_tokens=11,
+                cache_creation_input_tokens=0,
+            )
+        )
+        compressor._capture_summary_usage(resp)
+        usage = compressor.consume_summary_usage()
+        assert usage is not None
+        assert usage["input_tokens"] == 222
+        assert usage["output_tokens"] == 33
+        assert usage["cache_read_tokens"] == 11
+        assert compressor.consume_summary_usage() is None  # once
+
+        db = SessionDB(db_path=tmp_path / "e2e.db")
+        try:
+            sid = "e2e-sess"
+            db.create_session(session_id=sid, source="cli", model="main")
+            agent = SimpleNamespace(
+                _session_db=db,
+                session_id=sid,
+                model="main",
+                provider="openrouter",
+                base_url="",
+                api_key="",
+                context_compressor=compressor,
+            )
+            record_summary_usage_for_session(agent, usage)
+            row = db._conn.execute(
+                "SELECT input_tokens, output_tokens, cache_read_tokens, api_call_count "
+                "FROM sessions WHERE id = ?",
+                (sid,),
+            ).fetchone()
+            assert row[0] == 222 and row[1] == 33 and row[2] == 11 and row[3] == 1
+        finally:
+            db.close()

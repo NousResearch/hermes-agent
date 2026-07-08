@@ -46,6 +46,24 @@ def _estimate_cost(
     """Estimate the USD cost for a session row or a model/token tuple."""
     if isinstance(session_or_model, dict):
         session = session_or_model
+        # Prefer the session's summed per-call estimated_cost_usd when the
+        # session has a non-default cost journal (cost_status/source set or a
+        # positive estimated amount). Main-loop + compression price each call
+        # at its *own* route; re-pricing the aggregate at the single COALESCE'd
+        # session model/provider would misprice sessions that used a distinct
+        # compression model (#58592). Leave pure re-estimate as fallback for
+        # rows that only ever had tokens written without cost deltas (older
+        # sessions / tests).
+        stored = session.get("estimated_cost_usd")
+        has_cost_journal = bool(
+            session.get("cost_status") or session.get("cost_source")
+        )
+        try:
+            stored_f = float(stored) if stored is not None else 0.0
+        except (TypeError, ValueError):
+            stored_f = 0.0
+        if has_cost_journal or stored_f > 0:
+            return stored_f, (session.get("cost_status") or "estimated")
         model = session.get("model") or ""
         usage = CanonicalUsage(
             input_tokens=session.get("input_tokens") or 0,

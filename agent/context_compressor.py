@@ -1131,6 +1131,12 @@ class ContextCompressor(ContextEngine):
         self.summary_model = summary_model_override or ""
         self._session_db: Any = None
         self._session_id: str = ""
+        # Token usage from the most recent summary LLM call, or None when the
+        # last compress() ran no LLM call (cheap prune-only path) or failed
+        # before usage was reported. The compression driver folds this into
+        # session accounting so `hermes insights` counts summarizer spend
+        # (#58592 — auxiliary compression tokens were silently dropped).
+        self._last_summary_usage: Optional[Dict[str, int]] = None
 
         # Stores the previous compaction summary for iterative updates
         self._previous_summary: Optional[str] = None
@@ -1178,6 +1184,85 @@ class ContextCompressor(ContextEngine):
         # succeeded.  Silent recovery would hide the broken config.
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
+
+    def _capture_summary_usage(self, response: Any) -> None:
+        """Record the summarizer LLM call's token usage for later accounting.
+
+        The summary call goes through the auxiliary ``call_llm`` path, which is
+        never folded into the session token counters that back
+        ``hermes insights``. We stash the reported usage here so the
+        compression driver can persist it exactly once per compaction (#58592).
+
+        Normalizes through :func:`agent.usage_pricing.normalize_usage` so
+        Anthropic ``input_tokens``/``output_tokens``, cache buckets, and
+        reasoning tokens are not silently dropped (OpenAI Chat Completions
+        field names alone are insufficient).
+
+        Defensive: proxies/local backends may omit ``usage`` or return partial
+        fields; missing values become 0 and a wholly absent usage object leaves
+        ``_last_summary_usage`` untouched (stays None).
+        """
+        raw_usage = getattr(response, "usage", None)
+        if raw_usage is None:
+            return
+
+        # normalize_usage expects attribute-style access (not bare dicts).
+        if isinstance(raw_usage, dict):
+            class _UsageView:
+                def __init__(self, data: dict):
+                    self._data = data
+
+                def __getattr__(self, name: str) -> Any:
+                    if name.startswith("_"):
+                        raise AttributeError(name)
+                    return self._data.get(name)
+
+            raw_usage = _UsageView(raw_usage)
+
+        try:
+            from agent.usage_pricing import normalize_usage
+
+            canonical = normalize_usage(
+                raw_usage,
+                provider=self.provider,
+                api_mode=self.api_mode,
+            )
+        except Exception:
+            return
+
+        prompt_tokens = int(canonical.prompt_tokens)
+        completion_tokens = int(canonical.output_tokens)
+        total_tokens = int(canonical.total_tokens)
+        # Only record when the call actually reported non-zero usage; a zeroed
+        # usage object carries no accounting value and would add a spurious
+        # api_call_count.
+        if not (prompt_tokens or completion_tokens or total_tokens
+                or canonical.cache_read_tokens or canonical.cache_write_tokens
+                or canonical.reasoning_tokens):
+            return
+
+        self._last_summary_usage = {
+            # OpenAI-style aliases (older callers / tests).
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            # Canonical buckets (persisted + priced by the compression driver).
+            "input_tokens": int(canonical.input_tokens),
+            "output_tokens": int(canonical.output_tokens),
+            "cache_read_tokens": int(canonical.cache_read_tokens),
+            "cache_write_tokens": int(canonical.cache_write_tokens),
+            "reasoning_tokens": int(canonical.reasoning_tokens),
+        }
+
+    def consume_summary_usage(self) -> Optional[Dict[str, int]]:
+        """Return and clear the most recent summary call's token usage.
+
+        The compression driver calls this once after compress() so summarizer
+        spend is folded into session accounting exactly once (#58592).
+        """
+        usage = self._last_summary_usage
+        self._last_summary_usage = None
+        return usage
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -2020,6 +2105,11 @@ This compaction should PRIORITISE preserving all information related to the focu
             # retry (_generate_summary recursion) re-enters harmlessly.
             with aux_interrupt_protection():
                 response = call_llm(**call_kwargs)
+            # Capture the summarizer's token usage so the compression driver
+            # can fold it into session accounting. Without this, every
+            # auxiliary compression call's tokens are invisible to
+            # ``hermes insights`` and undercount real spend (#58592).
+            self._capture_summary_usage(response)
             # ``_validate_llm_response`` only guarantees ``choices[0].message``
             # exists, not that it's an object with ``.content``. Some
             # OpenAI-compatible proxies / local backends return a dict- or
@@ -2873,6 +2963,9 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
         self._last_compression_made_progress = False
+        # Clear stale summarizer usage so a prune-only (no-LLM) compaction
+        # doesn't re-report the previous call's tokens (#58592).
+        self._last_summary_usage = None
         # NOTE: do NOT reset _last_summary_auth_failure or
         # _last_summary_network_failure here.  These flags are set by
         # _generate_summary() on a terminal failure and are already cleared on

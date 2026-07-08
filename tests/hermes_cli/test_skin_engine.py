@@ -8,10 +8,10 @@ def reset_skin_state():
     """Reset skin engine state between tests."""
     from hermes_cli import skin_engine
     skin_engine._active_skin = None
-    skin_engine._active_skin_name = "default"
+    skin_engine._active_skin_name = "ht"
     yield
     skin_engine._active_skin = None
-    skin_engine._active_skin_name = "default"
+    skin_engine._active_skin_name = "ht"
 
 
 class TestSkinConfig:
@@ -33,7 +33,7 @@ class TestSkinConfig:
     def test_get_branding_with_fallback(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("default")
-        assert skin.get_branding("agent_name") == "Hermes Agent"
+        assert skin.get_branding("agent_name") == "HT AI Agent"
         assert skin.get_branding("nonexistent", "fallback") == "fallback"
 
     def test_get_spinner_wings_empty_for_default(self):
@@ -43,6 +43,18 @@ class TestSkinConfig:
 
 
 class TestBuiltinSkins:
+    def test_ht_skin_loads(self):
+        from hermes_cli.skin_engine import load_skin
+        skin = load_skin("ht")
+        assert skin.name == "ht"
+        assert skin.tool_prefix == "┊"
+        assert skin.get_color("banner_border") == "#5B4BEA"
+        assert skin.get_color("banner_title") == "#C9BFFF"
+        assert skin.get_branding("agent_name") == "HT AI Agent"
+        assert skin.get_branding("response_label") == " ◆ HT "
+        assert skin.banner_logo  # has its own logo art (no Hermes fallback)
+        assert skin.banner_hero
+
     def test_ares_skin_loads(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("ares")
@@ -111,7 +123,7 @@ class TestBuiltinSkins:
     def test_unknown_skin_falls_back_to_default(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("nonexistent_skin_xyz")
-        assert skin.name == "default"
+        assert skin.name == "ht"
 
     def test_all_builtin_skins_have_complete_colors(self):
         from hermes_cli.skin_engine import _BUILTIN_SKINS, _build_skin_config
@@ -134,12 +146,13 @@ class TestSkinManagement:
     def test_get_active_skin_defaults(self):
         from hermes_cli.skin_engine import get_active_skin
         skin = get_active_skin()
-        assert skin.name == "default"
+        assert skin.name == "ht"
 
     def test_list_skins_includes_builtins(self):
         from hermes_cli.skin_engine import list_skins
         skins = list_skins()
         names = [s["name"] for s in skins]
+        assert "ht" in names
         assert "default" in names
         assert "ares" in names
         assert "mono" in names
@@ -158,25 +171,25 @@ class TestSkinManagement:
     def test_init_skin_from_empty_config(self):
         from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
         init_skin_from_config({})
-        assert get_active_skin_name() == "default"
+        assert get_active_skin_name() == "ht"
 
     def test_init_skin_from_null_display(self):
-        """display: null should fall back to default, not crash."""
+        """display: null should fall back to the ht default, not crash."""
         from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
         init_skin_from_config({"display": None})
-        assert get_active_skin_name() == "default"
+        assert get_active_skin_name() == "ht"
 
     def test_init_skin_from_non_dict_display(self):
-        """display: <non-dict> should fall back to default."""
+        """display: <non-dict> should fall back to the ht default."""
         from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
         init_skin_from_config({"display": "invalid"})
-        assert get_active_skin_name() == "default"
+        assert get_active_skin_name() == "ht"
 
         init_skin_from_config({"display": 42})
-        assert get_active_skin_name() == "default"
+        assert get_active_skin_name() == "ht"
 
         init_skin_from_config({"display": []})
-        assert get_active_skin_name() == "default"
+        assert get_active_skin_name() == "ht"
 
 
 class TestUserSkins:
@@ -233,7 +246,7 @@ class TestUserSkins:
 
         assert skin.name == "broken"
         assert skin.get_color("banner_title") == "#FFD700"
-        assert skin.get_branding("agent_name") == "Hermes Agent"
+        assert skin.get_branding("agent_name") == "HT AI Agent"
         assert skin.spinner.get("waiting_faces", []) == []
         assert skin.tool_emojis == {}
         assert skin.tool_prefix == "!"

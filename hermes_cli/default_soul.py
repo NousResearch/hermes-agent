@@ -1,7 +1,7 @@
 """Default SOUL.md template seeded into HERMES_HOME on first run."""
 
 DEFAULT_SOUL_MD = (
-    "You are Hermes Agent, an intelligent AI assistant created by Nous Research. "
+    "You are HT AI Agent, an intelligent AI assistant. "
     "You are helpful, knowledgeable, and direct. You assist users with a wide "
     "range of tasks including answering questions, writing and editing code, "
     "analyzing information, creative work, and executing actions via your tools. "
@@ -12,15 +12,28 @@ DEFAULT_SOUL_MD = (
 
 # Legacy SOUL.md boilerplate that older installers (install.sh / install.ps1 /
 # docker/SOUL.md) seeded before they were switched to write DEFAULT_SOUL_MD.
-# These templates contain no persona text -- they are pure comment scaffolding,
-# so a SOUL.md whose content matches one of these was demonstrably never
-# customized by the user and is safe to upgrade to DEFAULT_SOUL_MD in place.
+# These templates carry zero user intent -- pure comment scaffolding, or the
+# verbatim pre-rebrand default seed -- so a SOUL.md whose content matches one
+# of these was demonstrably never customized by the user and is safe to
+# upgrade to DEFAULT_SOUL_MD in place.
 #
 # Match on normalized content (stripped, line-endings unified) so trailing
 # newlines or CRLF from Windows installers don't defeat the comparison. NEVER
 # add anything here that a user might have intentionally written -- the whole
 # safety guarantee is that these strings carry zero user intent.
 _LEGACY_TEMPLATE_SOULS = (
+    # Pre-rebrand (Hermes-era) default seed, written verbatim by older
+    # installers and _ensure_default_soul_md. If it is byte-identical the
+    # user never customized it, so it upgrades to the HT AI Agent identity.
+    (
+        "You are Hermes Agent, an intelligent AI assistant created by Nous Research. "
+        "You are helpful, knowledgeable, and direct. You assist users with a wide "
+        "range of tasks including answering questions, writing and editing code, "
+        "analyzing information, creative work, and executing actions via your tools. "
+        "You communicate clearly, admit uncertainty when appropriate, and prioritize "
+        "being genuinely useful over being verbose unless otherwise directed below. "
+        "Be targeted and efficient in your exploration and investigations."
+    ),
     (
         "# Hermes Agent Persona\n"
         "\n"

@@ -65,10 +65,10 @@ All fields are optional. Missing values inherit from the ``default`` skin.
 
     # Branding: text strings used throughout the CLI
     branding:
-      agent_name: "Hermes Agent"          # Banner title, status display
+      agent_name: "HT AI Agent"           # Banner title, status display
       welcome: "Welcome message"          # Shown at CLI startup
-      goodbye: "Goodbye! ⚕"              # Shown on exit
-      response_label: " ⚕ Hermes "       # Response box header label
+      goodbye: "Goodbye! ◆"              # Shown on exit
+      response_label: " ◆ HT "           # Response box header label
       prompt_symbol: "❯"                 # Input prompt symbol (bare token; renderers add trailing space)
       help_header: "(^_^)? Commands"      # /help header text
 
@@ -90,7 +90,7 @@ USAGE
 
     skin = get_active_skin()
     print(skin.colors["banner_title"])    # "#FFD700"
-    print(skin.get_branding("agent_name"))  # "Hermes Agent"
+    print(skin.get_branding("agent_name"))  # "HT AI Agent"
 
     set_active_skin("ares")               # Switch to built-in ares skin
     set_active_skin("mytheme")            # Switch to user skin from ~/.hermes/skins/
@@ -98,7 +98,8 @@ USAGE
 BUILT-IN SKINS
 ==============
 
-- ``default`` — Classic Hermes gold/kawaii (the current look)
+- ``ht``      — HT AI Agent indigo/violet (the default look)
+- ``default`` — Classic gold/kawaii (legacy look)
 - ``ares``    — Crimson/bronze war-god theme with custom spinner wings
 - ``mono``    — Clean grayscale monochrome
 - ``slate``   — Cool blue developer-focused theme
@@ -162,9 +163,63 @@ class SkinConfig:
 # =============================================================================
 
 _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
+    "ht": {
+        "name": "ht",
+        "description": "HT AI Agent — indigo and violet (default)",
+        "colors": {
+            "banner_border": "#5B4BEA",
+            "banner_title": "#C9BFFF",
+            "banner_accent": "#8E7CFF",
+            "banner_dim": "#3E3670",
+            "banner_text": "#F0EDFF",
+            "ui_accent": "#8E7CFF",
+            "ui_label": "#C9BFFF",
+            "ui_ok": "#4caf50",
+            "ui_error": "#ef5350",
+            "ui_warn": "#ffa726",
+            "prompt": "#F0EDFF",
+            "input_rule": "#5B4BEA",
+            "response_border": "#8E7CFF",
+            "status_bar_bg": "#161232",
+            "status_bar_text": "#F0EDFF",
+            "status_bar_strong": "#C9BFFF",
+            "status_bar_dim": "#575180",
+            "status_bar_good": "#6ED7B0",
+            "status_bar_warn": "#C9BFFF",
+            "status_bar_bad": "#FF9E64",
+            "status_bar_critical": "#EF5350",
+            "session_label": "#C9BFFF",
+            "session_border": "#575180",
+        },
+        "spinner": {},
+        "branding": {
+            "agent_name": "HT AI Agent",
+            "welcome": "Welcome to HT AI Agent! Type your message or /help for commands.",
+            "goodbye": "Goodbye! ◆",
+            "response_label": " ◆ HT ",
+            "prompt_symbol": "❯",
+            "help_header": "(◆) Available Commands",
+        },
+        "tool_prefix": "┊",
+        "banner_logo": """[bold #C9BFFF]██╗  ██╗████████╗       █████╗ ██╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
+[bold #B3A5FF]██║  ██║╚══██╔══╝      ██╔══██╗██║      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
+[#9D8BFF]███████║   ██║   █████╗███████║██║█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
+[#8672F2]██╔══██║   ██║   ╚════╝██╔══██║██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
+[#6C59D6]██║  ██║   ██║         ██║  ██║██║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
+[#5245A8]╚═╝  ╚═╝   ╚═╝         ╚═╝  ╚═╝╚═╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]""",
+        "banner_hero": """[#8E7CFF]⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣠⣤⣶⣤⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#9D8BFF]⠀⠀⠀⠀⠀⠀⢀⣴⣿⠟⠋⠉⠙⠻⣿⣦⡀⠀⠀⠀⠀⠀⠀[/]
+[#B3A5FF]⠀⠀⠀⠀⣠⣾⡿⠋⠀⠀⠀⠀⠀⠀⠙⢿⣷⣄⠀⠀⠀⠀[/]
+[#C9BFFF]⠀⠀⢰⣿⡟⠁⠀⠀⠀⠀◆⠀⠀⠀⠀⠈⢻⣿⡆⠀⠀[/]
+[#C9BFFF]⠀⠀⢸⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⡇⠀⠀[/]
+[#B3A5FF]⠀⠀⠈⢿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⢀⣴⣿⡿⠁⠀⠀[/]
+[#9D8BFF]⠀⠀⠀⠀⠙⢿⣷⣦⣀⠀⠀⣀⣴⣾⡿⠋⠀⠀⠀⠀[/]
+[#8E7CFF]⠀⠀⠀⠀⠀⠀⠈⠛⠿⣿⣿⠿⠛⠁⠀⠀⠀⠀⠀⠀[/]
+[dim #5245A8]⠀⠀⠀⠀⠀⠀⠀ht ai agent online⠀⠀⠀⠀⠀⠀⠀[/]""",
+    },
     "default": {
         "name": "default",
-        "description": "Classic Hermes — gold and kawaii",
+        "description": "Classic gold — legacy gold and kawaii",
         "colors": {
             "banner_border": "#CD7F32",
             "banner_title": "#FFD700",
@@ -187,10 +242,10 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             # Empty = use hardcoded defaults in display.py
         },
         "branding": {
-            "agent_name": "Hermes Agent",
-            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
-            "goodbye": "Goodbye! ⚕",
-            "response_label": " ⚕ Hermes ",
+            "agent_name": "HT AI Agent",
+            "welcome": "Welcome to HT AI Agent! Type your message or /help for commands.",
+            "goodbye": "Goodbye! ◆",
+            "response_label": " ◆ HT ",
             "prompt_symbol": "❯",
             "help_header": "(^_^)? Available Commands",
         },
@@ -298,10 +353,10 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         },
         "spinner": {},
         "branding": {
-            "agent_name": "Hermes Agent",
-            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
-            "goodbye": "Goodbye! ⚕",
-            "response_label": " ⚕ Hermes ",
+            "agent_name": "HT AI Agent",
+            "welcome": "Welcome to HT AI Agent! Type your message or /help for commands.",
+            "goodbye": "Goodbye! ◆",
+            "response_label": " ◆ HT ",
             "prompt_symbol": "❯",
             "help_header": "[?] Available Commands",
         },
@@ -337,10 +392,10 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         },
         "spinner": {},
         "branding": {
-            "agent_name": "Hermes Agent",
-            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
-            "goodbye": "Goodbye! ⚕",
-            "response_label": " ⚕ Hermes ",
+            "agent_name": "HT AI Agent",
+            "welcome": "Welcome to HT AI Agent! Type your message or /help for commands.",
+            "goodbye": "Goodbye! ◆",
+            "response_label": " ◆ HT ",
             "prompt_symbol": "❯",
             "help_header": "(^_^)? Available Commands",
         },
@@ -374,10 +429,10 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         },
         "spinner": {},
         "branding": {
-            "agent_name": "Hermes Agent",
-            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
-            "goodbye": "Goodbye! ⚕",
-            "response_label": " ⚕ Hermes ",
+            "agent_name": "HT AI Agent",
+            "welcome": "Welcome to HT AI Agent! Type your message or /help for commands.",
+            "goodbye": "Goodbye! ◆",
+            "response_label": " ◆ HT ",
             "prompt_symbol": "❯",
             "help_header": "[?] Available Commands",
         },
@@ -411,10 +466,10 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         },
         "spinner": {},
         "branding": {
-            "agent_name": "Hermes Agent",
-            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
-            "goodbye": "Goodbye! \u2695",
-            "response_label": " \u2695 Hermes ",
+            "agent_name": "HT AI Agent",
+            "welcome": "Welcome to HT AI Agent! Type your message or /help for commands.",
+            "goodbye": "Goodbye! \u25c6",
+            "response_label": " \u25c6 HT ",
             "prompt_symbol": "\u276f",
             "help_header": "(^_^)? Available Commands",
         },
@@ -650,7 +705,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 # =============================================================================
 
 _active_skin: Optional[SkinConfig] = None
-_active_skin_name: str = "default"
+_active_skin_name: str = "ht"
 
 
 def _skins_dir() -> Path:
@@ -761,9 +816,9 @@ def load_skin(name: str) -> SkinConfig:
     if name in _BUILTIN_SKINS:
         return _build_skin_config(_BUILTIN_SKINS[name])
 
-    # Fallback to default
-    logger.warning("Skin '%s' not found, using default", name)
-    return _build_skin_config(_BUILTIN_SKINS["default"])
+    # Fallback to the ht default skin
+    logger.warning("Skin '%s' not found, using ht", name)
+    return _build_skin_config(_BUILTIN_SKINS["ht"])
 
 
 def get_active_skin() -> SkinConfig:
@@ -795,11 +850,11 @@ def init_skin_from_config(config: dict) -> None:
     display = config.get("display") or {}
     if not isinstance(display, dict):
         display = {}
-    skin_name = display.get("skin", "default")
+    skin_name = display.get("skin", "ht")
     if isinstance(skin_name, str) and skin_name.strip():
         set_active_skin(skin_name.strip())
     else:
-        set_active_skin("default")
+        set_active_skin("ht")
 
 
 # =============================================================================

@@ -1229,7 +1229,7 @@ display:
   #     prompt_symbol: "⚔"                  # Prompt symbol (bare token; renderers add trailing space)
   #   tool_prefix: "╎"                       # Tool output line prefix (default: ┊)
   #
-  skin: default
+  skin: ht
 
 # =============================================================================
 # Model Aliases — short names for /model command

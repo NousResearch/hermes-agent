@@ -8843,10 +8843,58 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _quick_key, _pending_confirm.get("confirm_id"), _confirm_choice,
                 )
                 return _resolved or ""
-            # Stale pending + unrelated command: drop the pending state so
-            # the confirm doesn't block normal usage indefinitely.  The user
-            # clearly moved on.
             _slash_confirm_mod.clear_if_stale(_quick_key)
+
+        # Early check if the slash command is disabled for this profile
+        command = event.get_command()
+        if command:
+            from hermes_cli.commands import (
+                resolve_command as _resolve_cmd_early,
+                is_gateway_known_command,
+            )
+            try:
+                _cmd_def_early = _resolve_cmd_early(command)
+                _canonical_early = _cmd_def_early.name if _cmd_def_early else command
+            except Exception:
+                _cmd_def_early = None
+                _canonical_early = command
+
+            # Resolve config for this source under the correct profile
+            profile_home = self._resolve_profile_home_for_source(source)
+            try:
+                with _profile_runtime_scope(profile_home):
+                    from hermes_cli.config import load_config_readonly as _load_cfg
+                    active_cfg = _load_cfg()
+            except Exception:
+                active_cfg = self.config
+
+            cmd_config = active_cfg.get("commands", {}) or {}
+            if not isinstance(cmd_config, dict):
+                cmd_config = {}
+
+            # Check built-in commands
+            if _canonical_early and is_gateway_known_command(_canonical_early):
+                builtin_cfg = cmd_config.get("builtin", {}) or {}
+                if isinstance(builtin_cfg, dict) and _canonical_early in builtin_cfg:
+                    b_cmd = builtin_cfg[_canonical_early]
+                    if isinstance(b_cmd, dict) and not b_cmd.get("enabled", True):
+                        return f"Command '/{command}' is disabled."
+            else:
+                # Check custom commands
+                custom_cfg = cmd_config.get("custom", {}) or {}
+                # Backward compat: also check quick_commands
+                quick_cfg = active_cfg.get("quick_commands", {}) or {}
+                if not isinstance(quick_cfg, dict):
+                    quick_cfg = {}
+
+                if isinstance(custom_cfg, dict) and command in custom_cfg:
+                    c_cmd = custom_cfg[command]
+                    if isinstance(c_cmd, dict) and not c_cmd.get("enabled", True):
+                        return f"Command '/{command}' is disabled."
+                elif command in quick_cfg:
+                    # quick_commands alias/exec - check if we can execute
+                    # quick_commands don't have disabled flags unless migrated, which is handled above
+                    pass
 
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
@@ -9668,15 +9716,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
-        # User-defined quick commands (bypass agent loop, no LLM call)
+        # User-defined custom / quick commands (bypass agent loop, no LLM call)
         if command:
-            if isinstance(self.config, dict):
-                quick_commands = self.config.get("quick_commands", {}) or {}
-            else:
-                quick_commands = getattr(self.config, "quick_commands", {}) or {}
+            # Load active config scoped to this source's profile
+            profile_home = self._resolve_profile_home_for_source(source)
+            try:
+                with _profile_runtime_scope(profile_home):
+                    from hermes_cli.config import load_config_readonly as _load_cfg
+                    active_cfg = _load_cfg()
+            except Exception:
+                active_cfg = self.config
+
+            cmd_config = active_cfg.get("commands", {}) or {}
+            custom_cmds = cmd_config.get("custom", {}) if isinstance(cmd_config, dict) else {}
+            if not isinstance(custom_cmds, dict):
+                custom_cmds = {}
+            # Backward compat: also check quick_commands
+            quick_commands = active_cfg.get("quick_commands", {}) or {}
             if not isinstance(quick_commands, dict):
                 quick_commands = {}
-            if command in quick_commands:
+
+            if command in custom_cmds:
                 # Quick commands are slash capabilities too — and type:exec
                 # ones run a shell command in the gateway process. The early
                 # gate above only fires for registry-known commands, so quick
@@ -9687,7 +9747,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _denied = self._check_slash_access(source, command)
                 if _denied is not None:
                     return _denied
-                qcmd = quick_commands[command]
+                qcmd = custom_cmds[command]
+                if not isinstance(qcmd, dict) or not qcmd.get("enabled", True):
+                    return f"Command '/{command}' is disabled."
                 if qcmd.get("type") == "exec":
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
@@ -9709,7 +9771,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             if output:
                                 from agent.redact import redact_sensitive_text
                                 output = redact_sensitive_text(output)
-                            return output if output else "Command returned no output."
+                            if not output:
+                                return "" if qcmd.get("silent_empty") else "Command returned no output."
+                            return output
                         except asyncio.TimeoutError:
                             return "Quick command timed out (30s)."
                         except Exception as e:
@@ -9725,6 +9789,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         event.text = f"{target} {user_args}".strip()
                         command = target_command.split()[0] if target_command else target_command
                         # Fall through to normal command dispatch below
+                    else:
+                        return f"Quick command '/{command}' has no target defined."
+                else:
+                    return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
+
+            elif command in quick_commands:
+                _denied = self._check_slash_access(source, command)
+                if _denied is not None:
+                    return _denied
+                qcmd = quick_commands[command]
+                if qcmd.get("type") == "exec":
+                    exec_cmd = qcmd.get("command", "")
+                    if exec_cmd:
+                        try:
+                            from tools.environments.local import _sanitize_subprocess_env
+                            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
+                            proc = await asyncio.create_subprocess_shell(
+                                exec_cmd,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE,
+                                env=sanitized_env,
+                            )
+                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                            output = (stdout or stderr).decode().strip()
+                            if output:
+                                from agent.redact import redact_sensitive_text
+                                output = redact_sensitive_text(output)
+                            return output if output else "Command returned no output."
+                        except asyncio.TimeoutError:
+                            return "Quick command timed out (30s)."
+                        except Exception as e:
+                            return f"Quick command error: {e}"
+                    else:
+                        return f"Quick command '/{command}' has no command defined."
+                elif qcmd.get("type") == "alias":
+                    target = qcmd.get("target", "").strip()
+                    if target:
+                        target = target if target.startswith("/") else f"/{target}"
+                        target_command = target.lstrip("/")
+                        user_args = event.get_command_args().strip()
+                        event.text = f"{target} {user_args}".strip()
+                        command = target_command.split()[0] if target_command else target_command
                     else:
                         return f"Quick command '/{command}' has no target defined."
                 else:
@@ -19872,6 +19978,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 logger.debug("spawn_async_diagnostic failed: %s", _e)
         asyncio.create_task(runner.stop())
 
+    async def _async_sync_all_commands():
+        for name, adapter in list(runner.adapters.items()):
+            try:
+                if name.value == "telegram" and hasattr(adapter, "_run_post_connect_housekeeping"):
+                    await adapter._run_post_connect_housekeeping()
+                elif name.value == "discord" and hasattr(adapter, "_safe_sync_slash_commands"):
+                    await adapter._safe_sync_slash_commands()
+            except Exception as e:
+                logger.error("Failed to sync commands for platform %s: %s", name, e)
+
+    def sync_signal_handler():
+        asyncio.create_task(_async_sync_all_commands())
+
     def restart_signal_handler():
         runner.request_restart(detached=False, via_service=True)
     
@@ -19900,6 +20019,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         if hasattr(signal, "SIGUSR1"):
             try:
                 loop.add_signal_handler(signal.SIGUSR1, restart_signal_handler)  # windows-footgun: ok — POSIX signal, guarded by hasattr above + try/except NotImplementedError
+            except NotImplementedError:
+                pass
+        if hasattr(signal, "SIGUSR2"):
+            try:
+                loop.add_signal_handler(signal.SIGUSR2, sync_signal_handler)
             except NotImplementedError:
                 pass
     else:

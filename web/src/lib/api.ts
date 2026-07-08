@@ -1191,7 +1191,53 @@ export const api = {
     fetchJSON<SkillHubScan>(
       `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
     ),
+
+  // Command Management
+  getCommands: (profile?: string) =>
+    fetchJSON<CommandInfo[]>(`/api/commands${profileQuery(profile)}`),
+  upsertCustomCommand: (command: Omit<CommandInfo, "source">, profile?: string) =>
+    fetchJSON<{ ok: boolean }>("/api/commands/custom", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...command, profile: profile || undefined }),
+    }),
+  deleteCustomCommand: (name: string, profile?: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/commands/custom/${encodeURIComponent(name)}${profileQuery(profile)}`,
+      { method: "DELETE" },
+    ),
+  updateBuiltinCommand: (name: string, update: { enabled?: boolean; visible?: Record<string, boolean> }, profile?: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/commands/builtin/${encodeURIComponent(name)}${profileQuery(profile)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(update),
+      },
+    ),
+  syncCommands: (profile?: string) =>
+    fetchJSON<{ ok: boolean; method?: string; pid?: number; detail?: string }>("/api/commands/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: profile || undefined }),
+    }),
 };
+
+export interface CommandInfo {
+  name: string;
+  description: string;
+  type: "builtin" | "exec" | "alias";
+  command: string;
+  enabled: boolean;
+  visible: {
+    telegram: boolean;
+    discord: boolean;
+    cli: boolean;
+    [key: string]: boolean;
+  };
+  silent_empty?: boolean;
+  source: "builtin" | "custom";
+}
 
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
  *

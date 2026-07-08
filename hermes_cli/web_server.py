@@ -9777,6 +9777,276 @@ async def remove_credential_pool_entry(provider: str, index: int):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Command management endpoints — list / add / delete / update / sync
+# ---------------------------------------------------------------------------
+
+
+class CustomCommandInput(BaseModel):
+    name: str
+    description: str = ""
+    type: str = "exec"
+    command: str = ""
+    enabled: bool = True
+    visible: Dict[str, bool] = {}
+    silent_empty: bool = False
+
+
+class BuiltinCommandUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    visible: Optional[Dict[str, bool]] = None
+
+
+@app.get("/api/commands")
+async def list_commands(profile: Optional[str] = None):
+    import copy
+    from hermes_cli.commands import COMMAND_REGISTRY
+    with _profile_scope(profile):
+        cfg = load_config()
+
+    cmd_config = cfg.get("commands", {}) or {}
+    if not isinstance(cmd_config, dict):
+        cmd_config = {}
+
+    builtin_overrides = cmd_config.get("builtin", {}) or {}
+    custom_cmds = cmd_config.get("custom", {}) or {}
+
+    # Backward compat: also include quick_commands
+    quick_cmds = cfg.get("quick_commands", {}) or {}
+
+    # 1. Collect all custom commands (both custom section and quick_commands)
+    custom_list = []
+    processed_custom = set()
+
+    if isinstance(custom_cmds, dict):
+        for name, cmd in custom_cmds.items():
+            if not isinstance(cmd, dict):
+                continue
+            processed_custom.add(name)
+            custom_list.append({
+                "name": name,
+                "description": cmd.get("description", ""),
+                "type": cmd.get("type", "exec"),
+                "command": cmd.get("command", ""),
+                "enabled": cmd.get("enabled", True),
+                "visible": cmd.get("visible", {"telegram": True, "discord": True, "cli": True}),
+                "silent_empty": cmd.get("silent_empty", False),
+                "source": "custom"
+            })
+
+    if isinstance(quick_cmds, dict):
+        for name, cmd in quick_cmds.items():
+            if name in processed_custom:
+                continue
+            if isinstance(cmd, dict):
+                custom_list.append({
+                    "name": name,
+                    "description": cmd.get("description", f"Quick command: {name}"),
+                    "type": cmd.get("type", "exec"),
+                    "command": cmd.get("command", ""),
+                    "enabled": cmd.get("enabled", True),
+                    "visible": cmd.get("visible", {"telegram": True, "discord": True, "cli": True}),
+                    "silent_empty": cmd.get("silent_empty", False),
+                    "source": "custom"
+                })
+            else:
+                custom_list.append({
+                    "name": name,
+                    "description": f"Quick command: {name}",
+                    "type": "exec",
+                    "command": str(cmd),
+                    "enabled": True,
+                    "visible": {"telegram": True, "discord": True, "cli": True},
+                    "silent_empty": True,
+                    "source": "custom"
+                })
+
+    # 2. Collect all built-in commands (filtering out cli_only=True)
+    builtin_list = []
+    for cmd in COMMAND_REGISTRY:
+        if cmd.cli_only:
+            continue
+        override = builtin_overrides.get(cmd.name, {}) or {}
+        default_visible = {"telegram": True, "discord": True, "cli": True}
+        builtin_list.append({
+            "name": cmd.name,
+            "description": cmd.description,
+            "type": "builtin",
+            "command": "",
+            "enabled": override.get("enabled", True),
+            "visible": override.get("visible", default_visible),
+            "silent_empty": False,
+            "source": "builtin"
+        })
+
+    return builtin_list + custom_list
+
+
+@app.post("/api/commands/custom")
+async def upsert_custom_command(body: CustomCommandInput, profile: Optional[str] = None):
+    import copy
+    import re
+    if not body.name or not re.match(r"^[a-zA-Z0-9_-]+$", body.name):
+        raise HTTPException(status_code=400, detail="Invalid command name")
+
+    with _profile_scope(profile):
+        cfg = load_config()
+        cmds = cfg.get("commands", {}) or {}
+        if not isinstance(cmds, dict) or "custom" not in cmds or "builtin" not in cmds:
+            cmds = {"builtin": {}, "custom": {}}
+        else:
+            cmds = copy.deepcopy(cmds)
+        custom = cmds.setdefault("custom", {}) or {}
+
+        visible = {
+            "telegram": bool(body.visible.get("telegram", True)),
+            "discord": bool(body.visible.get("discord", True)),
+            "cli": bool(body.visible.get("cli", True)),
+        }
+
+        custom[body.name] = {
+            "description": body.description,
+            "type": body.type,
+            "command": body.command,
+            "enabled": body.enabled,
+            "visible": visible,
+            "silent_empty": body.silent_empty,
+        }
+
+        cmds["custom"] = custom
+        cfg["commands"] = cmds
+
+        if "quick_commands" in cfg and isinstance(cfg["quick_commands"], dict):
+            cfg["quick_commands"].pop(body.name, None)
+
+        save_config(cfg)
+    return {"ok": True}
+
+
+@app.delete("/api/commands/custom/{name}")
+async def delete_custom_command(name: str, profile: Optional[str] = None):
+    with _profile_scope(profile):
+        cfg = load_config()
+        cmds = cfg.get("commands", {}) or {}
+        if not isinstance(cmds, dict):
+            cmds = {}
+        custom = cmds.get("custom", {}) or {}
+        if not isinstance(custom, dict):
+            custom = {}
+
+        deleted = False
+        if name in custom:
+            custom.pop(name)
+            cmds["custom"] = custom
+            cfg["commands"] = cmds
+            deleted = True
+
+        if "quick_commands" in cfg and isinstance(cfg["quick_commands"], dict) and name in cfg["quick_commands"]:
+            cfg["quick_commands"].pop(name)
+            deleted = True
+
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Command not found")
+
+        save_config(cfg)
+    return {"ok": True}
+
+
+@app.post("/api/commands/builtin/{name}")
+async def update_builtin_command(name: str, body: BuiltinCommandUpdate, profile: Optional[str] = None):
+    import copy
+    from hermes_cli.commands import resolve_command
+    try:
+        resolve_command(name)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Built-in command not found")
+
+    with _profile_scope(profile):
+        cfg = load_config()
+        cmds = cfg.get("commands", {}) or {}
+        if not isinstance(cmds, dict) or "custom" not in cmds or "builtin" not in cmds:
+            cmds = {"builtin": {}, "custom": {}}
+        else:
+            cmds = copy.deepcopy(cmds)
+        builtin = cmds.setdefault("builtin", {}) or {}
+
+        override = builtin.setdefault(name, {}) or {}
+        if not isinstance(override, dict):
+            override = {}
+
+        if body.enabled is not None:
+            override["enabled"] = body.enabled
+        if body.visible is not None:
+            vis = override.setdefault("visible", {"telegram": True, "discord": True, "cli": True}) or {}
+            for k, v in body.visible.items():
+                vis[k] = bool(v)
+            override["visible"] = vis
+
+        builtin[name] = override
+        cmds["builtin"] = builtin
+        cfg["commands"] = cmds
+        save_config(cfg)
+    return {"ok": True}
+
+
+@app.get("/api/commands/platform/{platform}")
+async def get_platform_commands(platform: str, profile: Optional[str] = None):
+    platform = platform.lower().strip()
+    if platform not in {"telegram", "discord", "cli"}:
+        raise HTTPException(status_code=400, detail="Invalid platform")
+
+    all_cmds = await list_commands(profile=profile)
+    visible_cmds = []
+    for cmd in all_cmds:
+        if cmd.get("visible", {}).get(platform, True):
+            visible_cmds.append(cmd)
+    return visible_cmds
+
+
+@app.post("/api/commands/sync")
+async def sync_platform_commands(profile: Optional[str] = None):
+    """Trigger command re-registration on all connected platforms."""
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+
+    if runner is not None:
+        synced = []
+        for name, adapter in list(runner.adapters.items()):
+            try:
+                if name.value == "telegram" and hasattr(adapter, "_run_post_connect_housekeeping"):
+                    await adapter._run_post_connect_housekeeping()
+                    synced.append("telegram")
+                elif name.value == "discord" and hasattr(adapter, "_safe_sync_slash_commands"):
+                    await adapter._safe_sync_slash_commands()
+                    synced.append("discord")
+            except Exception as e:
+                _log.error("Failed to sync commands for platform %s: %s", name, e)
+        return {"ok": True, "synced": synced}
+
+    pid = get_running_pid()
+    if not pid:
+        pid = get_runtime_status_running_pid()
+
+    if pid:
+        import os
+        import signal
+        try:
+            if hasattr(signal, "SIGUSR2"):
+                os.kill(pid, signal.SIGUSR2)
+                return {"ok": True, "method": "signal", "pid": pid}
+            else:
+                return {"ok": False, "detail": "Platform command sync requires POSIX signal support"}
+        except ProcessLookupError:
+            raise HTTPException(status_code=404, detail="Gateway process not running")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to signal gateway: {e}")
+    else:
+        raise HTTPException(status_code=404, detail="Gateway process not running")
+
+
 class MemoryProviderSelect(BaseModel):
     # "" or "built-in" disables the external provider (built-in only).
     provider: str

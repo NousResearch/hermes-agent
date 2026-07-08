@@ -25,7 +25,7 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Set
 
@@ -2441,6 +2441,11 @@ DEFAULT_CONFIG = {
     "command_allowlist": [],
     # User-defined quick commands that bypass the agent loop (type: exec only)
     "quick_commands": {},
+    # Unified command management system
+    "commands": {
+        "builtin": {},  # overrides for built-in commands (enabled/visible per platform)
+        "custom": {},   # user-defined commands (replaces quick_commands)
+    },
 
     # Per-platform system-prompt hint overrides. Lets an admin append to or
     # replace Hermes' built-in platform hint for a single messaging platform
@@ -3128,7 +3133,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 33,
+    "_config_version": 34,
 }
 
 # =============================================================================
@@ -4989,7 +4994,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming", "updates", "mcp_servers",
+    "sessions", "streaming", "updates", "mcp_servers", "commands", "quick_commands",
 }
 
 # Valid fields inside a custom_providers list entry
@@ -5004,6 +5009,17 @@ _VALID_CUSTOM_PROVIDER_FIELDS = {
 
 # Fields that look like they should be inside custom_providers, not at root
 _CUSTOM_PROVIDER_LIKE_FIELDS = {"base_url", "api_key", "rate_limit_delay", "api_mode"}
+
+
+@dataclass
+class CommandConfig:
+    """Per-profile command configuration."""
+    description: str = ""
+    type: str = "exec"  # "exec" or future "builtin-override"
+    command: str = ""
+    enabled: bool = True
+    visible: Dict[str, bool] = field(default_factory=dict)  # platform -> bool
+    silent_empty: bool = False
 
 
 @dataclass
@@ -5822,6 +5838,65 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     "delegation.max_concurrent_children now caps background "
                     "delegations too."
                 )
+
+    # ── Version 33 → 34: unify commands and quick_commands into commands.custom ──
+    if current_ver < 34:
+        config = read_raw_config()
+        touched = False
+        cmds = config.get("commands", {}) or {}
+        if not isinstance(cmds, dict) or "custom" not in cmds or "builtin" not in cmds:
+            # Let's rebuild cmds as dict
+            cmds = {"builtin": {}, "custom": {}}
+        else:
+            cmds = copy.deepcopy(cmds)
+        custom = cmds.setdefault("custom", {}) or {}
+
+        # Migrate quick_commands
+        quick = config.get("quick_commands")
+        if isinstance(quick, dict) and quick:
+            for name, cmd in quick.items():
+                if name not in custom:
+                    if isinstance(cmd, dict):
+                        custom[name] = copy.deepcopy(cmd)
+                    else:
+                        custom[name] = {
+                            "description": f"Quick command: {name}",
+                            "type": "exec",
+                            "command": str(cmd),
+                            "enabled": True,
+                            "visible": {"telegram": True, "discord": True, "cli": True},
+                            "silent_empty": True
+                        }
+            config.pop("quick_commands", None)
+            touched = True
+
+        # Migrate old flat commands if any
+        # Check original 'commands' section in raw config:
+        raw_cmds = config.get("commands")
+        if isinstance(raw_cmds, dict) and "custom" not in raw_cmds and "builtin" not in raw_cmds:
+            for name, cmd in raw_cmds.items():
+                if name not in custom:
+                    if isinstance(cmd, dict):
+                        custom[name] = copy.deepcopy(cmd)
+                    else:
+                        custom[name] = {
+                            "description": f"Custom command: {name}",
+                            "type": "exec",
+                            "command": str(cmd),
+                            "enabled": True,
+                            "visible": {"telegram": True, "discord": True, "cli": True},
+                            "silent_empty": True
+                        }
+            cmds["custom"] = custom
+            cmds["builtin"] = {}
+            touched = True
+
+        if touched:
+            config["commands"] = cmds
+            _persist_migration(config)
+            results["config_added"].append("commands.custom (migrated from quick_commands/commands)")
+            if not quiet:
+                print("  ✓ Migrated legacy quick_commands and commands into commands.custom")
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──
     # Users can hand-edit mcp_servers, and older installs may already contain a
@@ -6646,6 +6721,53 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                         agent_user_config["max_turns"] = user_config["max_turns"]
                     user_config["agent"] = agent_user_config
                     user_config.pop("max_turns", None)
+
+                # Normalize legacy quick_commands and commands in user_config before deep merge
+                if isinstance(user_config, dict):
+                    # (1) Migrate quick_commands
+                    quick = user_config.get("quick_commands")
+                    if isinstance(quick, dict) and quick:
+                        user_cmds = user_config.setdefault("commands", {}) or {}
+                        if not isinstance(user_cmds, dict) or "custom" not in user_cmds or "builtin" not in user_cmds:
+                            user_cmds = {"builtin": {}, "custom": {}}
+                        else:
+                            user_cmds = copy.deepcopy(user_cmds)
+                        user_custom = user_cmds.setdefault("custom", {}) or {}
+                        for name, cmd in quick.items():
+                            if name not in user_custom:
+                                if isinstance(cmd, dict):
+                                    user_custom[name] = copy.deepcopy(cmd)
+                                else:
+                                    user_custom[name] = {
+                                        "description": f"Quick command: {name}",
+                                        "type": "exec",
+                                        "command": str(cmd),
+                                        "enabled": True,
+                                        "visible": {"telegram": True, "discord": True, "cli": True},
+                                        "silent_empty": True
+                                    }
+                        user_cmds["custom"] = user_custom
+                        user_config["commands"] = user_cmds
+
+                    # (2) Migrate legacy flat commands
+                    raw_cmds = user_config.get("commands")
+                    if isinstance(raw_cmds, dict) and "custom" not in raw_cmds and "builtin" not in raw_cmds:
+                        user_cmds = {"builtin": {}, "custom": {}}
+                        user_custom = {}
+                        for name, cmd in raw_cmds.items():
+                            if isinstance(cmd, dict):
+                                user_custom[name] = copy.deepcopy(cmd)
+                            else:
+                                user_custom[name] = {
+                                    "description": f"Custom command: {name}",
+                                    "type": "exec",
+                                    "command": str(cmd),
+                                    "enabled": True,
+                                    "visible": {"telegram": True, "discord": True, "cli": True},
+                                    "silent_empty": True
+                                }
+                        user_cmds["custom"] = user_custom
+                        user_config["commands"] = user_cmds
 
                 config = _deep_merge(config, user_config)
             except Exception as e:

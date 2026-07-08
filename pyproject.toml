@@ -90,6 +90,16 @@ dependencies = [
   # cryptography is pulled in transitively by PyJWT[crypto]; pin it explicitly
   # so the WeCom/Weixin crypto paths can't drift below the CVE-fixed floor.
   "cryptography==46.0.7",  # CVE-2026-39892, CVE-2026-34073
+  # cbor2 is pulled transitively by mautrix (matrix extra). Pin explicitly
+  # so the resolution floor can't drop below the CVE-fixed version.
+  "cbor2==6.1.3",  # GHSA-3c37-wwvx-h642 (CVSS 7.5)
+  # msgpack is pulled transitively by fal-client (fal extra). Pin explicitly
+  # so the resolution floor can't drop below the CVE-fixed version.
+  "msgpack==1.2.1",  # GHSA-6v7p-g79w-8964 (CVSS 7.5)
+  # tornado is pulled transitively by python-telegram-bot[webhooks] (messaging
+  # extra). Pin explicitly so the resolution floor can't drop below the
+  # CVE-fixed version.
+  "tornado==6.5.7",  # GHSA-3x9g-8vmp-wqvf (CVSS 7.7)
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package

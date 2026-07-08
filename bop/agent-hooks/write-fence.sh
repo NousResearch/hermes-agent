@@ -207,6 +207,12 @@ if os.path.exists(wiki_marker) or truthy(os.environ.get("HERMES_FENCE_WIKI")):
         home_path("brain", "wiki", "concepts"),
     ])
 
+crm_marker = home_path(".hermes", "fence-crm-enabled")
+if os.path.exists(crm_marker) or truthy(os.environ.get("HERMES_FENCE_CRM")):
+    allow_roots.extend([
+        home_path("ai-agency", "_intake"),
+    ])
+
 targets = collect_targets(tool_name, tool_input)
 if not targets:
     fail("write-fence: missing target path")

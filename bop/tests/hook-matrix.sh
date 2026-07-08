@@ -35,6 +35,8 @@ mkdir -p \
   "$HOME/brain/wiki/synthesis" \
   "$HOME/brain/_meta" \
   "$HOME/osr/_intake" \
+  "$HOME/ai-agency/_intake" \
+  "$HOME/ai-agency/clients" \
   "$HOME/.hermes/workspace" \
   "$HOME/.hermes/outbox" \
   "$HOME/.hermes/agent-hooks" \
@@ -152,6 +154,12 @@ touch "$HOME/.hermes/fence-wiki-enabled"
 run_case "wiki entities marker on" "$WRITE_FENCE" "$(wf_payload write_file '{"path":"~/brain/wiki/entities/e.md","content":"ok"}')" ""
 run_case "wiki synthesis marker denied" "$WRITE_FENCE" "$(wf_payload write_file '{"path":"~/brain/wiki/synthesis/s.md","content":"ok"}')" "$expect_path_denied"
 rm -f "$HOME/.hermes/fence-wiki-enabled"
+
+run_case "crm intake toggle off" "$WRITE_FENCE" "$(wf_payload write_file '{"path":"~/ai-agency/_intake/x.md","content":"ok"}')" "$expect_outside"
+touch "$HOME/.hermes/fence-crm-enabled"
+run_case "crm intake marker on" "$WRITE_FENCE" "$(wf_payload write_file '{"path":"~/ai-agency/_intake/x.md","content":"ok"}')" ""
+run_case "crm clients marker blocked" "$WRITE_FENCE" "$(wf_payload write_file '{"path":"~/ai-agency/clients/x.md","content":"ok"}')" "$expect_outside"
+rm -f "$HOME/.hermes/fence-crm-enabled"
 
 run_case "NPI ssn blocked" "$WRITE_FENCE" "$(wf_payload write_file '{"path":"~/assistant/npi.md","content":"ssn 123-45-6789 FICO 742 income $85,000"}')" "$expect_ssn"
 run_case "NPI spaced ssn blocked" "$WRITE_FENCE" "$(wf_payload write_file '{"path":"~/assistant/npi.md","content":"ssn 123 45 6789"}')" "$expect_ssn"

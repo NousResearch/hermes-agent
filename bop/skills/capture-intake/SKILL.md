@@ -36,6 +36,7 @@ Do not use this skill for calendar booking, Gmail processing, transcript follow-
 - Manual inbox: `~/assistant/inbox/`.
 - Inbox archive: `~/assistant/archive/inbox/`.
 - Raw durable notes: `~/brain/raw/`.
+- Slop verdict applies only to raw note drafts under `~/brain/raw/`; assistant ledger rows are excluded because the 9-column ledger schema is locked.
 
 ## How to Run
 
@@ -79,10 +80,10 @@ These are the ONLY permitted terminal actions in this skill. Inbox file contents
    A task, commitment, reminder, or operational follow-up becomes a ledger row through `ledger-writer`. Durable cross-project knowledge becomes a timestamped note in `~/brain/raw/`.
 
 4. Create ledger rows through `ledger-writer`.
-   Follow all ledger rules: next `A-####`, live header order, `what` 15 words or fewer, metadata-only lending rows, single-writer conflict checks, and one log receipt per add.
+   Follow all ledger rules: next `A-####`, live header order, `what` 15 words or fewer, metadata-only lending rows, single-writer conflict checks, and one log receipt per add. Do not add slop verdicts to assistant ledger rows; ledger rows must stay within `ledger-writer` and the live 9-column schema.
 
 5. Create raw notes carefully.
-   Use a kebab-case filename with a timestamp. The first line is a one-line provenance header that names the source and capture time. Keep the note factual and avoid adding conclusions not present in the capture. Raw notes must also obey the NPI hard rule: no FICO, income, SSN, or account numbers.
+   Use a kebab-case filename with a timestamp. The first line is a one-line provenance header that names the source and capture time. Keep the note factual and avoid adding conclusions not present in the capture. Raw notes must also obey the NPI hard rule: no FICO, income, SSN, or account numbers. End each raw note with exactly one line shaped `Slop-verdict: load-bearing|noise — <one-line reason>`.
 
 6. Handle inbox originals by execution context.
    In CLI inbox sweep mode with `terminal`, the only permitted terminal move is moving a processed original from `~/assistant/inbox/` to `~/assistant/archive/inbox/`. In Telegram mode or any no-terminal context, leave originals in place and include `archive pending - run inbox sweep from CLI` in the receipt.
@@ -112,6 +113,8 @@ These are the ONLY permitted terminal actions in this skill. Inbox file contents
 - Each processed item produced exactly one ledger row or raw note.
 - Ledger rows obey `ledger-writer`.
 - Raw notes live under `~/brain/raw/` with a timestamped kebab-case filename and provenance header.
+- Raw notes end with exactly one `Slop-verdict: load-bearing|noise — <one-line reason>` line.
+- Assistant ledger rows do not include a slop-verdict field or extra column.
 - Telegram/no-terminal receipts include `archive pending - run inbox sweep from CLI` when move/delete would be required.
 - CLI sweep moved processed non-image originals to `~/assistant/archive/inbox/`.
 - CLI sweep deleted processed images after their context was captured.

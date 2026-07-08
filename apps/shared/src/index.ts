@@ -19,3 +19,19 @@ export {
   type ResolveGatewayWsUrlDeps,
   type WebSocketAuthParam
 } from './websocket-url'
+export type {
+  BillingCardInfo,
+  BillingMonthlyCap,
+  BillingAutoReload,
+  BillingStateResponse,
+  BillingErrorPayload,
+  BillingChargeResponse,
+  BillingChargeStatusResponse,
+  BillingMutationResponse,
+  SubscriptionTierOption,
+  SubscriptionStateResponse,
+  SubscriptionPreviewResponse,
+  SubscriptionUpgradeResponse,
+  UsageBarData,
+  UsageModelData
+} from './billing-types'

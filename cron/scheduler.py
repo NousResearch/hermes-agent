@@ -1821,6 +1821,12 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 os.environ.pop("TERMINAL_CWD", None)
             else:
                 os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
+        # Clean up the cron session marker so it doesn't leak into
+        # interactive sessions that share this process (issue #60350).
+        # The env var was set at the top of _run_job_impl; without this
+        # cleanup, every subsequent call to execute_code in interactive
+        # sessions is misidentified as a cron session and denied.
+        os.environ.pop("HERMES_CRON_SESSION", None)
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:

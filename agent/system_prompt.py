@@ -361,7 +361,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         active_profile = "default"
     if active_profile == "default":
         stable_parts.append(
-            "Active Hermes profile: default. Other profiles (if any) live "
+            "Active profile: default. Other profiles (if any) live "
             "under ~/.hermes/profiles/<name>/. Each profile has its own "
             "skills/, plugins/, cron/, and memories/ that affect a different "
             "session than this one. Do not modify another profile's "
@@ -370,7 +370,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         )
     else:
         stable_parts.append(
-            f"Active Hermes profile: {active_profile}. This session reads "
+            f"Active profile: {active_profile}. This session reads "
             f"and writes ~/.hermes/profiles/{active_profile}/. The default "
             f"profile's data lives at ~/.hermes/skills/, ~/.hermes/plugins/, "
             f"~/.hermes/cron/, ~/.hermes/memories/ — those belong to a "

@@ -120,8 +120,8 @@ _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
 # (e.g. nix-built hermes — no local git history to count against).
 UPDATE_AVAILABLE_NO_COUNT = -1
 
-_UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
-_OFFICIAL_REPO_CANONICAL = "github.com/nousresearch/hermes-agent"
+_UPSTREAM_REPO_URL = "https://github.com/uaixo/awesome-hermes-agent.git"
+_OFFICIAL_REPO_CANONICAL = "github.com/uaixo/awesome-hermes-agent"
 
 
 def _canonical_github_remote(url: str | None) -> str:
@@ -262,7 +262,7 @@ def _version_tuple(v: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
-def _fetch_pypi_latest(package: str = "hermes-agent") -> Optional[str]:
+def _fetch_pypi_latest(package: str = "ht-ai-agent") -> Optional[str]:
     """Fetch the latest version of a package from PyPI. Returns None on failure."""
     try:
         import urllib.request
@@ -457,7 +457,7 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     return {"upstream": upstream, "local": local, "ahead": max(ahead, 0)}
 
 
-_RELEASE_URL_BASE = "https://github.com/NousResearch/hermes-agent/releases/tag"
+_RELEASE_URL_BASE = "https://github.com/uaixo/awesome-hermes-agent/releases/tag"
 _latest_release_cache: Optional[tuple] = None  # (tag, url) once resolved
 
 

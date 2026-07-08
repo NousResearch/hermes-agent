@@ -105,7 +105,7 @@ try:  # Version tag for the Codex token-endpoint User-Agent; fall back if unavai
     from hermes_cli import __version__ as _HERMES_CLI_VERSION
 except Exception:  # pragma: no cover - version import should always succeed
     _HERMES_CLI_VERSION = "unknown"
-CODEX_OAUTH_USER_AGENT = f"hermes-cli/{_HERMES_CLI_VERSION}"
+CODEX_OAUTH_USER_AGENT = f"ht-cli/{_HERMES_CLI_VERSION}"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 XAI_OAUTH_ISSUER = "https://auth.x.ai"
 XAI_OAUTH_DISCOVERY_URL = f"{XAI_OAUTH_ISSUER}/.well-known/openid-configuration"

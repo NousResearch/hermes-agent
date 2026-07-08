@@ -54,7 +54,7 @@ class MicrosoftGraphClient:
         max_retries: int = 3,
         transport: httpx.AsyncBaseTransport | None = None,
         sleep: Callable[[float], Awaitable[None]] | None = None,
-        user_agent: str = "Hermes-Agent/graph-client",
+        user_agent: str = "HT-AI-Agent/graph-client",
     ) -> None:
         self.token_provider = token_provider
         self.base_url = base_url.rstrip("/")

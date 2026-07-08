@@ -7258,7 +7258,7 @@ async def cancel_whatsapp_onboarding(pairing_id: str):
 
 
 _TELEGRAM_ONBOARDING_DEFAULT_URL = "https://setup.hermes-agent.nousresearch.com"
-_TELEGRAM_ONBOARDING_USER_AGENT = f"HermesDashboard/{__version__}"
+_TELEGRAM_ONBOARDING_USER_AGENT = f"HTDashboard/{__version__}"
 _TELEGRAM_USER_ID_RE = re.compile(r"^\d+$")
 
 
@@ -8516,7 +8516,7 @@ def _submit_anthropic_pkce(
             data=exchange_data,
             headers={
                 "Content-Type": "application/json",
-                "User-Agent": "hermes-dashboard/1.0",
+                "User-Agent": "ht-dashboard/1.0",
             },
             method="POST",
         )

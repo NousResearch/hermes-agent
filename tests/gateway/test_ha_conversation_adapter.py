@@ -238,3 +238,108 @@ async def test_waiting_cap_returns_busy(rig):
     # exactly one over the cap of 8 is refused immediately; the rest queue
     assert len(busy) == 1
     assert len(answered) == 8
+
+
+@pytest_asyncio.fixture
+async def announce_rig(monkeypatch):
+    """Adapter with fast ack + captured HA service calls."""
+    def build(mode, entity=""):
+        adapter = _mod.HAConversationAdapter(
+            make_config(ack_after_seconds=0.05, announce_mode=mode,
+                        announce_entity=entity)
+        )
+        calls = []
+
+        async def fake_call_service(domain, service, entity_id, data):
+            calls.append((domain, service, entity_id, data))
+            return {"ok": True}
+
+        import tools.homeassistant_tool as ha_tool
+        monkeypatch.setattr(ha_tool, "async_call_service", fake_call_service)
+        return adapter, calls
+
+    return build
+
+
+async def _slow_turn(a, event):
+    await asyncio.sleep(0.3)
+    await a.send("home", "the real answer")
+
+
+@pytest.mark.asyncio
+async def test_slow_turn_ack_mentions_conversation_when_announce_off(
+    announce_rig, monkeypatch
+):
+    adapter, calls = announce_rig("off")
+    monkeypatch.setattr(adapter, "handle_message",
+                        lambda e: _slow_turn(adapter, e))
+    assert await adapter.connect() is True
+    try:
+        event = await _ask(adapter, "slow question")
+        text = Handled.from_event(event).text
+        assert "conversation" in text.lower()   # honest: no announce coming
+        await asyncio.sleep(0.5)                # let the turn finish
+        assert calls == []                      # off => no REST call
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_slow_turn_late_reply_targets_originating_satellite(
+    announce_rig, monkeypatch
+):
+    adapter, calls = announce_rig("last_active")
+    monkeypatch.setattr(adapter, "handle_message",
+                        lambda e: _slow_turn(adapter, e))
+    assert await adapter.connect() is True
+    try:
+        event = await _ask(adapter, "slow question",
+                           context={"satellite_id": "assist_satellite.office"})
+        assert "announce" in (Handled.from_event(event).text or "").lower()
+        await asyncio.sleep(0.5)
+        assert calls == [(
+            "assist_satellite", "announce", "assist_satellite.office",
+            {"message": "the real answer"},
+        )]
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_idle_announce_modes(announce_rig):
+    # default_device targets the configured entity
+    adapter, calls = announce_rig("default_device", "assist_satellite.kitchen")
+    await adapter._announce("dinner is ready", entity=None)
+    assert calls == [("assist_satellite", "announce",
+                      "assist_satellite.kitchen", {"message": "dinner is ready"})]
+
+    # broadcast targets all
+    adapter, calls = announce_rig("broadcast")
+    await adapter._announce("dinner is ready", entity=None)
+    assert calls == [("assist_satellite", "announce", "all",
+                      {"message": "dinner is ready"})]
+
+    # last_active falls back to the most recent speaker
+    adapter, calls = announce_rig("last_active")
+    adapter._last_active_satellite = "assist_satellite.bedroom"
+    await adapter._announce("dinner is ready", entity=None)
+    assert calls[0][2] == "assist_satellite.bedroom"
+
+    # off swallows silently and still reports success
+    adapter, calls = announce_rig("off")
+    result = await adapter._announce("dinner is ready", entity=None)
+    assert result.success is True
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_announce_failure_is_logged_not_raised(announce_rig, monkeypatch):
+    adapter, calls = announce_rig("broadcast")
+
+    async def exploding(domain, service, entity_id, data):
+        raise RuntimeError("HA is down")
+
+    import tools.homeassistant_tool as ha_tool
+    monkeypatch.setattr(ha_tool, "async_call_service", exploding)
+    result = await adapter._announce("hello", entity=None)
+    assert result.success is False  # reported, not raised

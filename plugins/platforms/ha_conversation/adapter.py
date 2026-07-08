@@ -314,14 +314,45 @@ class HAConversationAdapter(BasePlatformAdapter):
         # No active turn: Hermes-initiated (cron, background completion).
         return await self._announce(content, entity=None)
 
-    async def _announce(self, text: str, *, entity: Optional[str]) -> SendResult:
-        # Task 5 implements announce_mode routing; stub keeps turn flow honest.
-        logger.info("[ha_conversation] announce (stub): %.80s", text)
-        return SendResult(success=True)
-
     async def _deliver_late(self, text: str, window: "_TurnWindow") -> None:
-        # Task 5 implements originating-satellite targeting.
-        logger.info("[ha_conversation] late reply (stub): %.80s", text)
+        """Reply finished after the socket was answered (ack) or lost.
+
+        Targets the ORIGINATING satellite when known — Room A's late answer
+        must never play in Room B — falling back to mode routing otherwise.
+        The session transcript already holds the text either way.
+        """
+        if self._announce_mode == "off":
+            return
+        await self._announce(text, entity=window.satellite_id)
+
+    async def _announce(self, text: str, *, entity: Optional[str]) -> SendResult:
+        """Speak via HA's assist_satellite.announce (HA renders the TTS)."""
+        if self._announce_mode == "off":
+            return SendResult(success=True)  # transcript-only by config
+        target = entity
+        if target is None:
+            if self._announce_mode == "default_device":
+                target = self._announce_entity
+            elif self._announce_mode == "broadcast":
+                target = "all"
+            else:  # last_active
+                target = self._last_active_satellite
+        if not target:
+            logger.info(
+                "[ha_conversation] no announce target yet (mode=%s); "
+                "message stays in the conversation", self._announce_mode,
+            )
+            return SendResult(success=True)
+        try:
+            from tools import homeassistant_tool as ha_tool
+
+            await ha_tool.async_call_service(
+                "assist_satellite", "announce", target, {"message": text}
+            )
+            return SendResult(success=True)
+        except Exception as err:
+            logger.warning("[ha_conversation] announce failed: %s", err)
+            return SendResult(success=False, error=str(err), retryable=True)
 
     # -- misc required surface -------------------------------------------------
     async def send_typing(self, chat_id: str, metadata=None) -> None:

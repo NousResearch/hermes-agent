@@ -575,7 +575,7 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     # A concurrent connect(board=normed) after the rename/delete recreates
     # an empty sqlite file via mkdir(exist_ok=True); the cache entry must be
     # dropped first so the schema init pass re-runs on that fresh file.
-    _INITIALIZED_PATHS.discard(str((d / "kanban.db").resolve()))
+    _INITIALIZED_PATHS.pop(str((d / "kanban.db").resolve()), None)
 
     if archive:
         archive_root = boards_root() / "_archived"
@@ -951,7 +951,7 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 # Connection helpers
 # ---------------------------------------------------------------------------
 
-_INITIALIZED_PATHS: set[str] = set()
+_INITIALIZED_PATHS: dict[str, float] = {}  # path → last integrity_check timestamp
 _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 
@@ -1111,7 +1111,13 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     except OSError:
         return
     if str(resolved) in _INITIALIZED_PATHS:
-        return
+        # Re-check integrity periodically — the first check at startup can
+        # pass, but WAL corruption developing over days of uptime would go
+        # undetected. A one-hour re-check window catches drift without
+        # adding meaningful overhead (integrity_check is ~1ms on a 1.5MB DB).
+        last_check = _INITIALIZED_PATHS[str(resolved)]
+        if time.time() - last_check < 3600:
+            return
     reason: Optional[str] = None
     try:
         probe = sqlite3.connect(str(resolved), timeout=5, isolation_level=None)
@@ -1121,6 +1127,9 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
             probe.close()
         if not row or (row[0] or "").lower() != "ok":
             reason = f"integrity_check returned {row[0] if row else '<no row>'!r}"
+        else:
+            # Record successful check timestamp for periodic re-check
+            _INITIALIZED_PATHS[str(resolved)] = time.time()
     except sqlite3.OperationalError:
         # Lock contention, busy, transient IO — not corruption. Let it propagate.
         raise
@@ -1192,7 +1201,7 @@ def connect(
                 # stale PRAGMA snapshots during gateway startup.
                 conn.executescript(SCHEMA_SQL)
                 _migrate_add_optional_columns(conn)
-                _INITIALIZED_PATHS.add(resolved)
+                _INITIALIZED_PATHS[resolved] = time.time()
     except Exception:
         conn.close()
         raise
@@ -1223,7 +1232,7 @@ def init_db(
     # Clear the cache entry so the underlying connect() re-runs the
     # schema + migration pass unconditionally.
     with _INIT_LOCK:
-        _INITIALIZED_PATHS.discard(resolved)
+        _INITIALIZED_PATHS.pop(resolved, None)
     with contextlib.closing(connect(path)):
         pass
     return path
@@ -1632,6 +1641,33 @@ def create_task(
                 "capabilities (e.g. `web`, `browser`, `terminal`)."
             )
         skills_list = cleaned
+        # Validate skills exist in source tree and sync to assignee profile.
+        # Without this, tasks created with skills that haven't been synced
+        # to the worker profile will crash on dispatch with
+        # "Unknown skill(s): <name>".
+        if skills_list and assignee:
+            _skills_list, _unresolvable = _validate_and_sync_skills(skills_list, assignee, board=board)
+            if _unresolvable:
+                # Skills are missing from source tree — create the task
+                # already blocked so it never dispatches.  A worker
+                # running without its declared skills is dangerous.
+                missing_display = ", ".join(_unresolvable)
+                _log.error(
+                    "kanban_create: unresolvable skill(s) %s for assignee %r "
+                    "— task will be created BLOCKED (needs human review)",
+                    missing_display, assignee,
+                )
+                initial_status = "blocked"
+                # Inject the block reason into the task body so the human
+                # can see why without digging through gateway logs.
+                missing_block_notice = (
+                    f"\n\n> ⛔ **BLOCKED — skills not found:** "
+                    f"{missing_display}. "
+                    f"These skills are declared in the task but cannot be "
+                    f"resolved for assignee `{assignee}`. "
+                    f"Install or fix the skill symlinks, then unblock this task."
+                )
+                body = (body or "") + missing_block_notice
 
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
@@ -4461,16 +4497,32 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # times first.
     auto_blocked: list[str] = []
     if crash_details:
-        # Fingerprint errors to detect systemic failures.
+        # Intra-tick fingerprint counts — if 3+ tasks crash with the same
+        # error in a single tick the failure is systemic across the fleet.
         _fp_counts: dict[str, int] = {}
         for _, _, _, _, err_text in crash_details:
             fp = _error_fingerprint(err_text)
             _fp_counts[fp] = _fp_counts.get(fp, 0) + 1
         for tid, pid, claimer, protocol_violation, error_text in crash_details:
             fp = _error_fingerprint(error_text)
+            # Cross-tick check: does this task have 3 consecutive crashed
+            # runs with the same fingerprint?  The current crash was
+            # already recorded by _end_run above, so querying the last 3
+            # gives us current + 2 prior.  This catches single-task crash
+            # loops (e.g. unknown skill, missing dep) that the intra-tick
+            # counter misses because only one task crashes per dispatch tick.
+            recent = conn.execute(
+                "SELECT error FROM task_runs "
+                "WHERE task_id = ? AND status = 'crashed' AND error IS NOT NULL "
+                "ORDER BY id DESC LIMIT 3",
+                (tid,),
+            ).fetchall()
+            cross_tick_match = len(recent) >= 3 and all(
+                _error_fingerprint(err) == fp for (err,) in recent
+            )
             is_systemic = (
                 not protocol_violation
-                and _fp_counts.get(fp, 0) >= 3
+                and (_fp_counts.get(fp, 0) >= 3 or cross_tick_match)
             )
             tripped = _record_task_failure(
                 conn, tid,
@@ -5419,6 +5471,69 @@ def _tenant_project_skill_available(
     return tenant
 
 
+def _validate_and_sync_skills(
+    skills: list[str],
+    assignee: Optional[str],
+    board: Optional[str] = None,
+) -> list[str]:
+    """Validate each skill exists and sync to assignee profile if missing.
+
+    For each skill name in *skills*, searches the canonical source tree
+    (``~/.hermes/skills/``) for a matching ``SKILL.md``. If found and the
+    assignee's profile-scoped skills directory is missing it, copies the
+    skill over. Logs a warning for unresolvable skills (worker will crash
+    on startup with ``Unknown skill(s)`` at dispatch time).
+
+    Returns the original *skills* list unchanged — callers own the warning
+    decision. The sync is best-effort; a skill that doesn't exist in the
+    source tree can't be materialised and the warning is the only signal.
+    """
+    if not skills or not assignee:
+        return list(skills) if skills else []
+
+    from pathlib import Path as _Path
+    from shutil import copytree as _copytree
+
+    source_root = _Path.home() / ".hermes" / "skills"
+    if not source_root.is_dir():
+        return list(skills), []
+
+    profile_skills = _Path.home() / ".hermes" / "profiles" / assignee / "skills"
+    unresolvable: list[str] = []
+
+    for skill_name in skills:
+        skill_dir = None
+        try:
+            for skill_md in source_root.rglob(f"{skill_name}/SKILL.md"):
+                if skill_md.is_file():
+                    skill_dir = skill_md.parent
+                    break
+        except OSError:
+            pass
+
+        if skill_dir is None:
+            _log.warning(
+                "kanban_create: skill %r not found in %s — "
+                "worker for assignee %r will crash with "
+                "'Unknown skill(s)' unless it exists in the "
+                "profile's own skills directory",
+                skill_name, source_root, assignee,
+            )
+            unresolvable.append(skill_name)
+            continue
+
+        # Sync to profile if missing
+        rel = skill_dir.relative_to(source_root)
+        dest = profile_skills / rel
+        if not (dest / "SKILL.md").is_file():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            _copytree(skill_dir, dest, dirs_exist_ok=True)
+            _log.info(
+                "kanban_create: synced skill %r → profile %r (%s)",
+                skill_name, assignee, rel,
+            )
+
+    return list(skills), unresolvable
 def _worker_terminal_timeout_env(
     max_runtime_seconds: Optional[int],
     current_timeout: Optional[str],

@@ -4144,6 +4144,43 @@ class TestVisionAutoSkipsKimiCoding:
         assert client is fake_kimi_client
         gcc_mock.assert_called_once()
 
+    def test_explicit_auxiliary_vision_model_overrides_mapping(self, monkeypatch, tmp_path):
+        """When auxiliary.vision.model is explicitly configured, it should be
+        respected over the _PROVIDER_VISION_MODELS mapping (#60381).
+        """
+        # Setup minimal config to avoid import errors
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("model:\n  provider: zai\n  default: zai-pro\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("GLM_API_KEY", "test-key")
+        
+        # Mock the vision support check to return True
+        monkeypatch.setattr(
+            "agent.auxiliary_client._main_model_supports_vision",
+            lambda p, m: True,
+        )
+        
+        # Mock _get_cached_client to return a client and the model it was called with
+        def fake_cached_client(provider, model, *args, **kwargs):
+            # This should be called with glm-4v-flash (from auxiliary.vision.model),
+            # NOT glm-5v-turbo (from _PROVIDER_VISION_MODELS mapping)
+            fake_client = MagicMock(name=f"{provider}_client")
+            return fake_client, model
+        
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client", fake_cached_client,
+        )
+        
+        # Call with explicit model argument (simulates auxiliary.vision.model)
+        provider, client, model = resolve_vision_provider_client(
+            model="glm-4v-flash",
+        )
+        
+        # Verify the explicit model was used
+        assert model == "glm-4v-flash", f"Expected glm-4v-flash, got {model}"
+        # The provider should be zai (from _read_main_provider)
+        assert provider == "zai"
+
     def test_skip_set_covers_exactly_known_entries(self):
         """Guard against accidental widening of the skip list."""
         from agent.auxiliary_client import _PROVIDERS_WITHOUT_VISION

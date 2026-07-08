@@ -5307,7 +5307,14 @@ def resolve_vision_provider_client(
         main_provider = _read_main_provider()
         main_model = _read_main_model()
         if main_provider and main_provider not in {"auto", ""}:
-            vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
+            # Use explicit auxiliary.vision.model if configured, otherwise fall back to
+            # provider-specific vision model mapping or main model. This fixes #60381
+            # where a user-provided vision model (glm-4v-flash) was overwritten by the
+            # hardcoded zai → glm-5v-turbo mapping, causing "model not found" errors.
+            if resolved_model and resolved_model != "auto":
+                vision_model = resolved_model
+            else:
+                vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
             if main_provider == "nous":
                 sync_client, default_model = _resolve_strict_vision_backend(
                     main_provider, vision_model

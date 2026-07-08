@@ -7660,6 +7660,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         effect_disposition: Optional[str] = None,
         timestamp: Any = None,
         api_content: Optional[str] = None,
+        steer_applied: Any = None,
         display_kind: Optional[str] = None,
         display_metadata: Optional[Dict[str, Any]] = None,
         compression_lock_holder: Optional[str] = None,
@@ -7700,6 +7701,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             except (json.JSONDecodeError, TypeError):
                 tool_calls = []
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+        steer_applied_json = (
+            json.dumps(steer_applied) if steer_applied is not None else None
+        )
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
@@ -7725,10 +7729,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, effect_disposition, steer_applied,
+                   timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -7737,6 +7742,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     tool_calls_json,
                     _scrub_surrogates(tool_name),
                     effect_disposition,
+                    steer_applied_json,
                     message_timestamp,
                     token_count,
                     finish_reason,
@@ -7882,6 +7888,40 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 ),
             )
             return True
+
+        return bool(self._execute_write(_do))
+
+    def update_message_steer(
+        self,
+        session_id: str,
+        tool_call_id: str,
+        content: Any,
+        steer_applied: Any,
+    ) -> bool:
+        """Update an already-persisted active tool result after /steer lands.
+
+        Tool rows are appended before steer can be applied. Match only the
+        active tool result for this session/tool_call_id so archived or forked
+        rows are not rewritten.
+        """
+        if not session_id or not tool_call_id:
+            return False
+        stored_content = self._encode_content(content)
+        steer_applied_json = (
+            json.dumps(steer_applied) if steer_applied is not None else None
+        )
+
+        def _do(conn):
+            cursor = conn.execute(
+                """UPDATE messages
+                   SET content = ?, steer_applied = ?
+                   WHERE session_id = ?
+                     AND tool_call_id = ?
+                     AND role = 'tool'
+                     AND active = 1""",
+                (stored_content, steer_applied_json, session_id, tool_call_id),
+            )
+            return cursor.rowcount > 0
 
         return bool(self._execute_write(_do))
 
@@ -8092,7 +8132,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ).fetchone()
 
         return row[0] if row else None
-
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows for *session_id*.
 
@@ -8138,6 +8177,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 except (json.JSONDecodeError, TypeError):
                     tool_calls = []
             tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+            steer_applied_json = (
+                json.dumps(msg.get("_steer_applied"))
+                if msg.get("_steer_applied") is not None
+                else None
+            )
             # Accept either `platform_message_id` (new explicit name) or
             # `message_id` (yuanbao's existing convention on message dicts).
             platform_msg_id = (
@@ -8148,10 +8192,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
             conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, effect_disposition, steer_applied,
+                   timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -8160,6 +8205,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     tool_calls_json,
                     _scrub_surrogates(msg.get("tool_name")),
                     msg.get("effect_disposition"),
+                    steer_applied_json,
                     message_timestamp,
                     msg.get("token_count"),
                     msg.get("finish_reason"),
@@ -8454,7 +8500,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
                     msg["tool_calls"] = []
             if msg.get("display_metadata") is not None:
-                msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
+                msg["display_metadata"] = self._decode_display_metadata(
+                    msg["display_metadata"]
+                )
+            if msg.get("steer_applied") is not None:
+                try:
+                    msg["_steer_applied"] = json.loads(msg["steer_applied"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(
+                        "Failed to deserialize steer_applied in get_messages, "
+                        "falling back to raw value"
+                    )
+                    msg["_steer_applied"] = msg["steer_applied"]
             result.append(msg)
         return result
 
@@ -8713,6 +8770,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # SELECT can feed both the model-fed and display views.
     _CONVERSATION_ROW_COLUMNS = (
         "id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
+        "steer_applied, "
         "finish_reason, reasoning, reasoning_content, reasoning_details, "
         "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp, "
         "api_content, display_kind, display_metadata"
@@ -8770,6 +8828,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 msg["tool_name"] = row["tool_name"]
             if row["effect_disposition"]:
                 msg["effect_disposition"] = row["effect_disposition"]
+            if row["steer_applied"] is not None:
+                try:
+                    msg["_steer_applied"] = json.loads(row["steer_applied"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(
+                        "Failed to deserialize steer_applied in conversation replay, "
+                        "falling back to raw value"
+                    )
+                    msg["_steer_applied"] = row["steer_applied"]
             if row["tool_calls"]:
                 try:
                     msg["tool_calls"] = json.loads(row["tool_calls"])

@@ -1013,6 +1013,15 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
     2. Model-format normalization for the resolved provider via
        ``normalize_model_for_provider`` (e.g. ``anthropic/claude-opus-4.6``
        on native anthropic → ``claude-opus-4-6``).
+
+   修复：在执行 vendor-prefix fallback 逻辑之前，检查传入的 provider 是否存在于
+    用户的配置（providers: 或 custom_providers）中。如果存在，说明是用户显式配置的
+    自定义 provider，应保留不进行 fallback。
+
+    Case: 用户配置了 providers.litellm-proxy.base_url，通过 Desktop model picker
+    选择 litellm-proxy + nvidia/nim/deepseek-v4-pro。litellm-proxy 不在
+    _KNOWN_PROVIDER_NAMES 中，但它是用户配置的合法 provider，不应被 fallback 到
+    openrouter。(#50944)
     """
     from hermes_cli.models import _KNOWN_PROVIDER_NAMES, normalize_provider
     from hermes_cli.model_normalize import normalize_model_for_provider
@@ -1022,6 +1031,22 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
     canonical = normalize_provider(prov_in)
 
     if canonical not in _KNOWN_PROVIDER_NAMES and "/" in model_in:
+        # 检查 provider 是否在用户的 providers: 或 custom_providers 配置中
+        # 如果是，说明是用户显式配置的自定义 provider，保留不进行 fallback
+        try:
+            cfg = load_config()
+            user_providers = set(cfg.get("providers", {}).keys())
+            # 兼容 legacy custom_providers 格式（检查 name 或 id 字段）
+            for cp in cfg.get("custom_providers", []):
+                if isinstance(cp, dict):
+                    user_providers.add(cp.get("name", cp.get("id", "")))
+            if canonical in user_providers:
+                # 用户显式配置的 provider，保留原值
+                return prov_in, model_in
+        except Exception:
+            # 配置读取失败时，继续使用原有逻辑
+            pass
+
         # Vendor prefix posing as a provider (analytics fallback). Resolve
         # against the user's current provider when it's an aggregator that
         # serves vendor-prefixed slugs; otherwise default to openrouter.

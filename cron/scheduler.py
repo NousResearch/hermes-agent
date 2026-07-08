@@ -2664,19 +2664,25 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 # clobbers an already-resolved job/env value with ``None``.
                 _cron_cfg = _cfg.get("cron") or {}
                 _model_cfg = _cfg.get("model") or {}
-                if not job.get("model") and not env_model:
-                    if isinstance(_cron_cfg, dict):
-                        _cron_default = _cron_cfg.get("model") or _cron_cfg.get("default")
-                        if _cron_default:
-                            model = _cron_default
+                if not job.get("model"):
+                    # config.yaml ``model:`` overrides the HERMES_MODEL env default
+                    # (upstream v0.18 precedence; keeps ${VAR} expansion effective).
                     if isinstance(_model_cfg, str):
-                        model = model or _model_cfg
+                        if _model_cfg:
+                            model = _model_cfg
                     elif isinstance(_model_cfg, dict):
                         # Mirror the CLI/oneshot resolution: prefer ``default``,
                         # accept a ``model`` alias, overwrite only when truthy.
                         _default = _model_cfg.get("default") or _model_cfg.get("model")
-                        if _default and not model:
+                        if _default:
                             model = _default
+                    # Cron-specific ``cron.model`` routes scheduled jobs to their own
+                    # model (LFDM). Applied last so it wins over the config.yaml/env
+                    # default, but never over an explicit per-job ``model`` pin.
+                    if isinstance(_cron_cfg, dict):
+                        _cron_default = _cron_cfg.get("model") or _cron_cfg.get("default")
+                        if _cron_default:
+                            model = _cron_default
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 

@@ -9,8 +9,9 @@ subcommand dispatch.
 
 import json
 import os
-import tempfile
 import shutil
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -229,12 +230,92 @@ def test_pending_store_roundtrip(hermes_home):
     from tools import write_approval as wa
     rec = wa.stage_write("memory", {"action": "add", "target": "user", "content": "x"},
                          summary="add x", origin="foreground")
+    assert rec["id"] == "1"
     assert wa.pending_count("memory") == 1
     got = wa.get_pending("memory", rec["id"])
     assert got["payload"]["content"] == "x"
     assert wa.discard_pending("memory", rec["id"]) is True
     assert wa.pending_count("memory") == 0
     assert wa.get_pending("memory", rec["id"]) is None
+
+
+def test_pending_store_assigns_sequential_ids(hermes_home):
+    from tools import write_approval as wa
+    first = wa.stage_write("memory", {"action": "add", "target": "user", "content": "a"},
+                           summary="a", origin="foreground")
+    second = wa.stage_write("memory", {"action": "add", "target": "user", "content": "b"},
+                            summary="b", origin="foreground")
+
+    assert first["id"] == "1"
+    assert second["id"] == "2"
+    assert [r["id"] for r in wa.list_pending("memory")] == ["1", "2"]
+
+
+def test_pending_store_uses_highest_remaining_numeric_id(hermes_home):
+    from tools import write_approval as wa
+    first = wa.stage_write("memory", {"action": "add", "target": "user", "content": "a"},
+                           summary="a", origin="foreground")
+    second = wa.stage_write("memory", {"action": "add", "target": "user", "content": "b"},
+                            summary="b", origin="foreground")
+
+    assert wa.discard_pending("memory", first["id"]) is True
+    third = wa.stage_write("memory", {"action": "add", "target": "user", "content": "c"},
+                           summary="c", origin="foreground")
+
+    assert second["id"] == "2"
+    assert third["id"] == "3"
+
+
+def test_pending_store_rescans_after_raced_id_create(hermes_home, monkeypatch):
+    from tools import write_approval as wa
+
+    real_write = wa._write_pending_record
+    attempts = []
+
+    def _race_once(path, contents):
+        attempts.append(path.name)
+        if len(attempts) == 1:
+            path.write_text('{"id": "1", "created_at": 1}', encoding="utf-8")
+            (path.parent / "2.json").write_text('{"id": "2", "created_at": 2}', encoding="utf-8")
+            raise FileExistsError(path)
+        real_write(path, contents)
+
+    monkeypatch.setattr(wa, "_write_pending_record", _race_once)
+    rec = wa.stage_write("memory", {"action": "add", "target": "user", "content": "x"},
+                         summary="x", origin="foreground")
+
+    assert attempts == ["1.json", "3.json"]
+    assert rec["id"] == "3"
+    assert wa.get_pending("memory", "1")["id"] == "1"
+    assert wa.get_pending("memory", "2")["id"] == "2"
+    assert wa.get_pending("memory", "3")["payload"]["content"] == "x"
+
+
+def test_pending_store_serialization_failure_leaves_no_record(hermes_home):
+    from tools import write_approval as wa
+    rec = wa.stage_write("memory", {"action": object()},
+                         summary="x", origin="foreground")
+
+    assert rec["id"] == "1"
+    assert wa.pending_count("memory") == 0
+    pending_dir = Path(hermes_home) / "pending" / "memory"
+    assert list(pending_dir.glob("*.json")) == []
+
+
+def test_pending_store_ignores_legacy_nonnumeric_ids(hermes_home):
+    from tools import write_approval as wa
+    pending_dir = Path(hermes_home) / "pending" / "memory"
+    pending_dir.mkdir(parents=True)
+    (pending_dir / "7.json").write_text('{"id": "7", "created_at": 1}', encoding="utf-8")
+    (pending_dir / "7b787650.json").write_text(
+        '{"id": "7b787650", "created_at": 2}',
+        encoding="utf-8",
+    )
+
+    rec = wa.stage_write("memory", {"action": "add", "target": "user", "content": "x"},
+                         summary="x", origin="foreground")
+
+    assert rec["id"] == "8"
 
 
 # ---------------------------------------------------------------------------

@@ -507,13 +507,14 @@ def init_agent(
     # Pre-warm OpenRouter model metadata cache in a background thread.
     # fetch_model_metadata() is cached for 1 hour; this avoids a blocking
     # HTTP request on the first API response when pricing is estimated.
-    # Use a process-level Event so this thread is only spawned once — a new
-    # AIAgent is created for every gateway request, so without the guard
+    # Use a process-level claim helper so this thread is only spawned once —
+    # a new AIAgent is created for every gateway request, so without the guard
     # each message leaks one OS thread and the process eventually exhausts
     # the system thread limit (RuntimeError: can't start new thread).
-    if (agent.provider == "openrouter" or agent._is_openrouter_url()) and \
-            not _ra()._openrouter_prewarm_done.is_set():
-        _ra()._openrouter_prewarm_done.set()
+    if (
+        (agent.provider == "openrouter" or agent._is_openrouter_url())
+        and _ra()._claim_openrouter_prewarm()
+    ):
         threading.Thread(
             target=fetch_model_metadata,
             daemon=True,

@@ -264,7 +264,20 @@ _DB_PERSISTED_MARKER = "_db_persisted"
 # process, not once per AIAgent instantiation.  Without this, long-running
 # gateway processes leak one OS thread per incoming message and eventually
 # exhaust the system thread limit (RuntimeError: can't start new thread).
-_openrouter_prewarm_done = threading.Event()
+_openrouter_prewarm_done = False
+_openrouter_prewarm_lock = threading.Lock()
+
+
+def _claim_openrouter_prewarm() -> bool:
+    """Return True exactly once per process for OpenRouter metadata prewarm."""
+    global _openrouter_prewarm_done
+    if _openrouter_prewarm_done:
+        return False
+    with _openrouter_prewarm_lock:
+        if _openrouter_prewarm_done:
+            return False
+        _openrouter_prewarm_done = True
+        return True
 
 # =========================================================================
 # Large tool result handler — save oversized output to temp file

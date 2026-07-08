@@ -194,8 +194,6 @@ def test_new_session_queues_boundary_commit_with_snapshot(tmp_path):
     assert kwargs["reason"] == "new_session"
     # The queued path replaces the inline switch — not both.
     mm.on_session_switch.assert_not_called()
-    # Snapshot is consumed (a later /new without history must not re-send it).
-    assert cli._session_boundary_snapshot is None
 
 
 def test_new_session_without_history_switches_inline(tmp_path):

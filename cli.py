@@ -4144,9 +4144,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
-        # History snapshot staged by _launch_session_boundary_memory_flush for
-        # the /new end→switch boundary task (see new_session()).
-        self._session_boundary_snapshot: Optional[list] = None
 
     def _claim_active_session(self, surface: str = "cli", *, stderr: bool = False) -> bool:
         """Claim a global active-session slot for this CLI process."""
@@ -6977,7 +6974,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         history_snapshot: list,
         *,
         session_id: Optional[str] = None,
-    ) -> None:
+    ) -> Optional[list]:
         """Stage old-session memory extraction so /new stays responsive.
 
         The context-engine ``on_session_end`` boundary is delivered
@@ -6986,18 +6983,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         rebinds the engine to the new session.
 
         The memory-provider half (LLM-bound extraction, seconds) is NOT run
-        here. It is queued later in ``new_session()`` via
+        here. The returned snapshot is handed by ``new_session()`` to
         ``MemoryManager.commit_session_boundary_async`` as a single
         end→switch task on the manager's serialized background worker, so
         extraction can never race the provider rebinding (providers key off
         internal ``_session_id`` state — a late ``on_session_end`` after
         ``on_session_switch`` would misattribute the old transcript to the
-        new session). This method just snapshots the history for that call.
+        new session).
+
+        Returns the history snapshot to queue, or ``None`` when there is
+        nothing to extract (no agent / empty history / no memory manager).
         """
-        self._session_boundary_snapshot = None
         agent = getattr(self, "agent", None)
         if not agent or not history_snapshot:
-            return
+            return None
 
         engine = getattr(agent, "context_compressor", None)
         if engine is not None and hasattr(engine, "on_session_end"):
@@ -7009,17 +7008,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     exc_info=True,
                 )
 
-        self._session_boundary_snapshot = list(history_snapshot)
+        # No provider extraction to queue when no memory manager is
+        # configured — new_session() falls back to the inline switch path.
+        if getattr(agent, "_memory_manager", None) is None:
+            return None
+        return history_snapshot
 
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         old_session_id = self.session_id
+        _boundary_snapshot = None
         if self.agent and self.conversation_history:
-            # Trigger memory extraction on the old session without blocking
-            # session rotation. Snapshot the history and old session id first:
-            # the background thread may run after ``self.agent.session_id`` is
-            # updated to the new session below.
-            self._launch_session_boundary_memory_flush(
+            # Deliver the context-engine boundary synchronously and get back
+            # the history snapshot for the deferred provider extraction —
+            # queued below (after rotation) so /new never blocks on the
+            # LLM-bound extraction call.
+            _boundary_snapshot = self._launch_session_boundary_memory_flush(
                 list(self.conversation_history),
                 session_id=old_session_id,
             )
@@ -7124,11 +7128,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             try:
                 _mm = getattr(self.agent, "_memory_manager", None)
                 if _mm is not None:
-                    _boundary_snapshot = getattr(
-                        self, "_session_boundary_snapshot", None
-                    )
                     if _boundary_snapshot:
-                        self._session_boundary_snapshot = None
                         _mm.commit_session_boundary_async(
                             _boundary_snapshot,
                             new_session_id=self.session_id,

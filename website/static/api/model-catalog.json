@@ -227,10 +227,10 @@
           "id": "xiaomi/mimo-v2.5-pro"
         },
         {
-          "id": "tencent/hy3-preview"
+          "id": "tencent/hy3:free"
         },
         {
-          "id": "stepfun/step-3.7-flash"
+          "id": "stepfun/step-3.7-flash:free"
         },
         {
           "id": "nvidia/nemotron-3-super-120b-a12b"

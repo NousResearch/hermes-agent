@@ -191,7 +191,7 @@ class TestStatusEndpointTopology:
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
-    def test_status_includes_topology_on_loopback(self, monkeypatch):
+    def test_status_includes_full_topology_on_loopback(self, monkeypatch):
         monkeypatch.setattr(
             web_server, "_collect_profile_gateway_topology",
             lambda: {
@@ -205,16 +205,34 @@ class TestStatusEndpointTopology:
         data = resp.json()
         assert data["profiles"] == ["default", "coder"]
         assert data["gateway_mode"] == "single"
+        # The per-gateway detail (host ports) is loopback-only recon.
         assert data["gateways"] == [{"profile": "default", "ports": {}}]
 
-    def test_status_omits_topology_when_auth_gated(self, monkeypatch):
+    def test_profile_names_and_mode_public_when_auth_gated(self, monkeypatch):
+        # Profile NAMES + gateway_mode are low-sensitivity product surface: the
+        # Hermes Cloud Portal reads /api/status over the network (a gated bind)
+        # to render the profile list, so they must survive the auth gate.
+        monkeypatch.setattr(
+            web_server, "_collect_profile_gateway_topology",
+            lambda: {
+                "profiles": ["default", "coder"],
+                "gateway_mode": "multiplex",
+                "gateways": [{"profile": "default", "ports": {"webhook": 8644}}],
+            },
+        )
         monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
-        resp = self.client.get("/api/status")
-        assert resp.status_code == 200
-        data = resp.json()
-        # Topology is deployment recon — hidden on gated binds, like
-        # hermes_home / gateway_pid.
-        assert "profiles" not in data
-        assert "gateway_mode" not in data
-        assert "gateways" not in data
-        monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
+        try:
+            resp = self.client.get("/api/status")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["profiles"] == ["default", "coder"]
+            assert data["gateway_mode"] == "multiplex"
+            # But the per-gateway detail (host ports = recon) stays gated,
+            # alongside hermes_home / gateway_pid.
+            assert "gateways" not in data
+            assert "hermes_home" not in data
+            assert "gateway_pid" not in data
+        finally:
+            monkeypatch.setattr(
+                web_server.app.state, "auth_required", False, raising=False
+            )

@@ -1470,11 +1470,11 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     # Bare fenced block, no language tag (no '```bash').
     assert "```" in all_content
     assert "```bash" not in all_content
-    # Non-verbose collapses to the first line + truncation marker — the later
-    # command lines must NOT appear (this was the "huge block" regression).
-    assert "set -euo pipefail" in all_content
+    # Non-verbose collapses to the first meaningful shell line + truncation
+    # marker — boilerplate prologues and later command lines must NOT appear.
+    assert "set -euo pipefail" not in all_content
+    assert "printf 'node: '; node --version ..." in all_content
     assert "npm install -g hyperframes@latest" not in all_content
-    assert "node --version" not in all_content
     # No truncated quoted preview for the terminal command.
     assert 'terminal: "' not in all_content
 

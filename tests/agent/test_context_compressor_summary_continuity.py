@@ -85,3 +85,36 @@ def test_handoff_in_protected_head_populates_previous_summary_before_update():
     assert compressor._previous_summary == old_summary
     assert seen_turns
     assert all(old_summary not in str(msg.get("content", "")) for msg in seen_turns)
+
+
+def test_summary_boundary_with_no_new_turns_skips_summary_call():
+    """A handoff at the end of the compression window should be a cheap no-op."""
+    compressor = _compressor()
+    old_summary = "WINDOW-END-SUMMARY durable facts"
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "first resumable turn"},
+        {"role": "assistant", "content": "first resumable response"},
+        {"role": "user", "content": f"{SUMMARY_PREFIX}\n{old_summary}"},
+        {"role": "assistant", "content": "tail assistant response"},
+        {"role": "user", "content": "tail user request"},
+        {"role": "assistant", "content": "latest tail response"},
+    ]
+
+    with (
+        patch.object(compressor, "_protect_head_size", return_value=1),
+        patch.object(compressor, "_align_boundary_forward", side_effect=lambda _messages, idx: idx),
+        patch.object(compressor, "_find_tail_cut_by_tokens", return_value=4),
+        patch.object(
+            compressor,
+            "_generate_summary",
+            side_effect=AssertionError("empty summary window should not call the model"),
+        ) as mock_generate,
+    ):
+        result = compressor.compress(messages, current_tokens=90000)
+
+    assert result == messages
+    mock_generate.assert_not_called()
+    assert compressor._previous_summary == old_summary
+    assert compressor._ineffective_compression_count == 1
+    assert compressor._last_compression_savings_pct == 0.0

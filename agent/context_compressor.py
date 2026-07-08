@@ -2822,6 +2822,17 @@ This compaction should PRIORITISE preserving all information related to the focu
             # into the summarizer prompt via the iterative-update path.
             self._previous_summary = None
 
+        if not turns_to_summarize:
+            self._ineffective_compression_count += 1
+            self._last_compression_savings_pct = 0.0
+            if not self.quiet_mode:
+                logger.warning(
+                    "Compression skipped: latest handoff summary leaves no new turns "
+                    "inside the compression window. ineffective_compression_count=%d",
+                    self._ineffective_compression_count,
+                )
+            return messages
+
         if not self.quiet_mode:
             logger.info(
                 "Context compression triggered (%d tokens >= %d threshold)",

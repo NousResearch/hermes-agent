@@ -13,6 +13,7 @@ extracted functions reach back through the ``run_agent`` module via
 from __future__ import annotations
 
 import concurrent.futures
+import copy
 import json
 from pathlib import Path
 import logging
@@ -130,6 +131,36 @@ def _flush_session_db_after_tool_progress(
         agent._flush_messages_to_session_db(messages)
     except Exception as exc:
         logger.warning("Incremental tool-call persistence failed after %s: %s", stage, exc)
+
+
+def _enforce_turn_budget_and_persist_changes(
+    agent,
+    tool_messages: list[dict],
+    *,
+    effective_task_id: str,
+    config: BudgetConfig,
+) -> None:
+    before_contents = [copy.deepcopy(msg.get("content")) for msg in tool_messages]
+    enforce_turn_budget(
+        tool_messages,
+        env=get_active_env(effective_task_id),
+        config=config,
+    )
+    changed_messages = [
+        msg
+        for msg, before in zip(tool_messages, before_contents)
+        if msg.get("content") != before
+    ]
+    if not changed_messages:
+        return
+
+    try:
+        agent._rewrite_persisted_tool_results(changed_messages)
+    except Exception as exc:
+        logger.warning(
+            "Incremental tool-call persistence failed after turn budget enforcement: %s",
+            exc,
+        )
 
 
 def _ra():
@@ -1014,7 +1045,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     num_tools = len(parsed_calls)
     if finalize and num_tools > 0:
         turn_tool_msgs = messages[-num_tools:]
-        enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id), config=_tool_budget)
+        _enforce_turn_budget_and_persist_changes(
+            agent,
+            turn_tool_msgs,
+            effective_task_id=effective_task_id,
+            config=_tool_budget,
+        )
 
     # ── /steer injection ──────────────────────────────────────────────
     # Append any pending user steer text to the last tool result so the
@@ -1728,7 +1764,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     # ── Per-turn aggregate budget enforcement ─────────────────────────
     num_tools_seq = len(assistant_message.tool_calls)
     if finalize and num_tools_seq > 0:
-        enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id), config=_tool_budget)
+        _enforce_turn_budget_and_persist_changes(
+            agent,
+            messages[-num_tools_seq:],
+            effective_task_id=effective_task_id,
+            config=_tool_budget,
+        )
 
     # ── /steer injection ──────────────────────────────────────────────
     # See _execute_tool_calls_parallel for the rationale. Same hook,
@@ -1786,9 +1827,10 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
     total_tools = len(assistant_message.tool_calls)
     if total_tools > 0:
         _tool_budget = _budget_for_agent(agent)
-        enforce_turn_budget(
+        _enforce_turn_budget_and_persist_changes(
+            agent,
             messages[-total_tools:],
-            env=get_active_env(effective_task_id),
+            effective_task_id=effective_task_id,
             config=_tool_budget,
         )
         agent._apply_pending_steer_to_tool_results(messages, total_tools)

@@ -4270,6 +4270,45 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    def update_active_tool_result_contents(
+        self,
+        session_id: str,
+        updates: List[Tuple[str, str]],
+    ) -> int:
+        """Rewrite already-persisted active tool results by tool-call ID.
+
+        Incremental persistence writes each result before the next tool starts.
+        Turn-level output budgeting may subsequently replace one or more of
+        those in-memory contents with persisted-output references. Update the
+        existing rows atomically so the durable transcript mirrors the final
+        messages without appending duplicates.
+        """
+        normalized = [
+            (str(tool_call_id), self._encode_content(content))
+            for tool_call_id, content in updates
+            if tool_call_id
+        ]
+        if not normalized:
+            return 0
+
+        def _do(conn):
+            updated = 0
+            for tool_call_id, stored_content in normalized:
+                cursor = conn.execute(
+                    """UPDATE messages SET content = ?
+                       WHERE id = (
+                           SELECT id FROM messages
+                           WHERE session_id = ? AND role = 'tool'
+                             AND tool_call_id = ? AND active = 1
+                           ORDER BY id DESC LIMIT 1
+                       )""",
+                    (stored_content, session_id, tool_call_id),
+                )
+                updated += cursor.rowcount
+            return updated
+
+        return self._execute_write(_do)
+
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows for *session_id*.
 

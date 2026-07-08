@@ -29,6 +29,7 @@ import tempfile
 from unittest.mock import MagicMock, patch
 
 from agent.tool_dispatch_helpers import make_tool_result_message
+from hermes_state import SessionDB
 from run_agent import AIAgent
 
 
@@ -250,3 +251,145 @@ def test_execute_tool_calls_concurrent_flushes_each_tool_result_in_order():
     # production flush call breaks one of these assertions.
     assert flushed_tool_ids == ["c1", "c2"]
     assert flush_lengths == [1, 2]
+
+
+def _attach_real_session_db(agent, tmp_path, session_id: str) -> SessionDB:
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session(session_id=session_id, source="cli")
+    agent._session_db = db
+    agent._session_db_created = True
+    agent.session_id = session_id
+    return db
+
+
+def _assert_stored_tool_contents(db, session_id: str, expected: list[str]) -> None:
+    stored = [
+        msg for msg in db.get_messages(session_id)
+        if msg["role"] == "tool"
+    ]
+    assert [msg["content"] for msg in stored] == expected
+    assert len({msg["tool_call_id"] for msg in stored}) == len(expected)
+
+
+def test_execute_tool_calls_sequential_rewrites_budgeted_results_in_session_db(tmp_path):
+    agent = _make_agent()
+    db = _attach_real_session_db(agent, tmp_path, "sequential-budget")
+    tool_calls = [
+        _mock_tool_call(name="web_search", call_id="c1"),
+        _mock_tool_call(name="web_search", call_id="c2"),
+    ]
+    messages: list = []
+    assistant_message = SimpleNamespace(content="", tool_calls=tool_calls)
+
+    def _fake_budget(tool_messages, **kwargs):
+        tool_messages[0]["content"] = "<persisted-output>\ntrimmed c1\n</persisted-output>"
+        return tool_messages
+
+    with (
+        patch(
+            "run_agent.handle_function_call",
+            side_effect=lambda *args, tool_call_id, **kwargs: f"raw-{tool_call_id}",
+        ),
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            side_effect=lambda **kwargs: kwargs["content"],
+        ),
+        patch("agent.tool_executor.enforce_turn_budget", side_effect=_fake_budget),
+    ):
+        agent._execute_tool_calls_sequential(assistant_message, messages, "task-1")
+
+    assert messages[0]["content"].startswith("<persisted-output>")
+    _assert_stored_tool_contents(
+        db,
+        "sequential-budget",
+        ["<persisted-output>\ntrimmed c1\n</persisted-output>", "raw-c2"],
+    )
+
+
+def test_execute_tool_calls_concurrent_rewrites_budgeted_results_in_session_db(tmp_path):
+    agent = _make_agent()
+    db = _attach_real_session_db(agent, tmp_path, "concurrent-budget")
+    tool_calls = [
+        _mock_tool_call(name="web_search", call_id="c1"),
+        _mock_tool_call(name="web_search", call_id="c2"),
+    ]
+    messages: list = []
+    assistant_message = SimpleNamespace(content="", tool_calls=tool_calls)
+
+    def _fake_budget(tool_messages, **kwargs):
+        tool_messages[1]["content"] = "<persisted-output>\ntrimmed c2\n</persisted-output>"
+        return tool_messages
+
+    def _fake_invoke(function_name, function_args, effective_task_id, tool_call_id, **kwargs):
+        return f"raw-result-{tool_call_id}"
+
+    with (
+        patch.object(agent, "_invoke_tool", side_effect=_fake_invoke),
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            side_effect=lambda **kwargs: kwargs["content"],
+        ),
+        patch("agent.tool_executor.enforce_turn_budget", side_effect=_fake_budget),
+    ):
+        agent._execute_tool_calls_concurrent(assistant_message, messages, "task-1")
+
+    assert messages[1]["content"].startswith("<persisted-output>")
+    _assert_stored_tool_contents(
+        db,
+        "concurrent-budget",
+        ["raw-result-c1", "<persisted-output>\ntrimmed c2\n</persisted-output>"],
+    )
+
+
+def test_execute_tool_calls_segmented_rewrites_budgeted_results_in_session_db(tmp_path):
+    from agent.tool_executor import execute_tool_calls_segmented
+
+    agent = _make_agent()
+    db = _attach_real_session_db(agent, tmp_path, "segmented-budget")
+    c1 = _mock_tool_call(name="web_search", call_id="c1")
+    c2 = _mock_tool_call(name="web_search", call_id="c2")
+    messages: list = []
+    assistant_message = SimpleNamespace(content="", tool_calls=[c1, c2])
+
+    def _fake_budget(tool_messages, **kwargs):
+        tool_messages[0]["content"] = "<persisted-output>\ntrimmed c1\n</persisted-output>"
+        return tool_messages
+
+    def _fake_invoke(
+        function_name,
+        function_args,
+        effective_task_id,
+        tool_call_id,
+        **kwargs,
+    ):
+        return f"raw-{tool_call_id}"
+
+    with (
+        patch(
+            "run_agent.handle_function_call",
+            side_effect=lambda *args, tool_call_id, **kwargs: f"raw-{tool_call_id}",
+        ),
+        patch.object(
+            agent,
+            "_invoke_tool",
+            side_effect=_fake_invoke,
+        ),
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            side_effect=lambda **kwargs: kwargs["content"],
+        ),
+        patch("agent.tool_executor.enforce_turn_budget", side_effect=_fake_budget),
+    ):
+        execute_tool_calls_segmented(
+            agent,
+            assistant_message,
+            messages,
+            "task-1",
+            segments=[("sequential", [c1]), ("parallel", [c2])],
+        )
+
+    _assert_stored_tool_contents(
+        db,
+        "segmented-budget",
+        ["<persisted-output>\ntrimmed c1\n</persisted-output>", "raw-c2"],
+    )

@@ -659,6 +659,20 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
 
     # Create the skill directory
     skill_dir = _resolve_skill_dir(name, category)
+
+    # Direct filesystem guard: if the target directory already has a SKILL.md,
+    # refuse to create (defence-in-depth — _find_skill should normally catch
+    # this, but a misconfigured get_all_skills_dirs or a race condition
+    # between _find_skill and mkdir could let the duplicate through).
+    if (skill_dir / "SKILL.md").exists():
+        return {
+            "success": False,
+            "error": (
+                f"Skill '{name}' already exists. "
+                f"Use action='patch' to modify it."
+            ),
+        }
+
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     # Write SKILL.md atomically

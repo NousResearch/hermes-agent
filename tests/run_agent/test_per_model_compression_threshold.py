@@ -199,6 +199,7 @@ class TestContextEngineModelThresholds:
 
         engine = TestEngine()
         engine.threshold_percent = 0.50
+        engine._base_threshold_percent = 0.50
         engine.context_length = 0
         engine.model_thresholds = {}
 

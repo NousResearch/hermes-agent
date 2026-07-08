@@ -62,6 +62,7 @@ class ContextEngine(ABC):
     # historical "system + first 3 non-system messages" head shape.
 
     threshold_percent: float = 0.75
+    _base_threshold_percent: float = 0.75
     protect_first_n: int = 3
     protect_last_n: int = 6
 
@@ -216,7 +217,9 @@ class ContextEngine(ABC):
     # Engines that support per-model thresholds should read this dict
     # in their update_model() override. The base class stores it but
     # does not use it (threshold_percent is left untouched).
-    model_thresholds: dict = {}
+    # Use None as sentinel (not a mutable class-level {}) so instances
+    # don't share the same dict object.
+    model_thresholds: dict | None = None
 
     def update_model(
         self,
@@ -240,6 +243,8 @@ class ContextEngine(ABC):
         if self.model_thresholds and model:
             from agent.context_compressor import resolve_model_threshold
             self.threshold_percent = resolve_model_threshold(
-                model, self.model_thresholds, self.threshold_percent,
+                model, self.model_thresholds, self._base_threshold_percent,
             )
+        else:
+            self.threshold_percent = self._base_threshold_percent
         self.threshold_tokens = int(context_length * self.threshold_percent)

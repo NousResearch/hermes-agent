@@ -525,6 +525,54 @@ def interrupt_all(reason: str = "shutdown") -> int:
     return count
 
 
+def interrupt_for_session(
+    session_key: str = "",
+    origin_ui_session_id: str = "",
+    reason: str = "session_end",
+) -> int:
+    """Signal running async delegations owned by ONE session to stop.
+
+    A delegation's lifecycle is bound to the session that spawned it: when
+    that session ends, its in-flight background subagents must end with it —
+    a completed orphan would otherwise sit on the shared completion queue
+    with no live owner, either leaking into another chat or burning tokens
+    with no one listening (#55578).
+
+    Matches on ``origin_ui_session_id`` (the live UI session that
+    commissioned the work) and/or the durable ``session_key``; either
+    matching field claims the record. Returns how many were interrupted.
+    """
+    if not session_key and not origin_ui_session_id:
+        return 0
+    count = 0
+    with _records_lock:
+        targets = [
+            r for r in _records.values()
+            if r.get("status") == "running"
+            and (
+                (origin_ui_session_id and str(r.get("origin_ui_session_id") or "") == origin_ui_session_id)
+                or (session_key and str(r.get("session_key") or "") == session_key)
+            )
+        ]
+    for r in targets:
+        fn = r.get("interrupt_fn")
+        if callable(fn):
+            try:
+                fn()
+                count += 1
+            except Exception as exc:
+                logger.debug(
+                    "interrupt_for_session: %s interrupt failed: %s",
+                    r.get("delegation_id"), exc,
+                )
+    if count:
+        logger.info(
+            "Interrupted %d async delegation(s) for ending session (%s)",
+            count, reason,
+        )
+    return count
+
+
 def _reset_for_tests() -> None:
     """Test-only: clear all state and tear down the executor."""
     global _executor, _executor_max_workers

@@ -8939,7 +8939,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                                 from agent.redact import redact_sensitive_text
                                 output = redact_sensitive_text(output)
                                 self._console_print(_rich_text_from_ansi(output))
-                            else:
+                            elif not qcmd.get("silent_empty"):
                                 self._console_print("[dim]Command returned no output[/]")
                         except subprocess.TimeoutExpired:
                             self._console_print("[bold red]Quick command timed out (30s)[/]")

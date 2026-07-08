@@ -10013,7 +10013,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             if output:
                                 from agent.redact import redact_sensitive_text
                                 output = redact_sensitive_text(output)
-                            return output if output else "Command returned no output."
+                            if output:
+                                return output
+                            if qcmd.get("silent_empty"):
+                                return ""
+                            return "Command returned no output."
                         except asyncio.TimeoutError:
                             return "Quick command timed out (30s)."
                         except Exception as e:

@@ -1172,6 +1172,34 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(fetched_uids, [b"1002"])
         self.assertNotIn(b"999", adapter._seen_uids)
 
+    def test_fetch_skips_uid_equal_to_startup_cutoff(self):
+        """The startup cutoff is inclusive."""
+        adapter = self._make_adapter()
+        adapter._startup_seen_uid_cutoff = 1000
+        adapter._startup_seen_uidvalidity = b"123"
+
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "user@test.com"
+        raw_email["Subject"] = "Test"
+        raw_email["Message-ID"] = "<msg@test.com>"
+
+        mock_imap = MagicMock()
+        mock_imap.response.return_value = ("UIDVALIDITY", [b"123"])
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1000 1001"])
+            if command == "fetch":
+                return ("OK", [(args[0], raw_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual([msg["uid"] for msg in results], [b"1001"])
+
     def test_connect_cutoff_suppresses_startup_uid_on_next_fetch(self):
         """The startup cutoff protects the first poll even after connect trimming."""
         import asyncio
@@ -1327,6 +1355,32 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(adapter._startup_seen_uid_cutoff, 10)
         self.assertEqual(adapter._startup_seen_uidvalidity, b"123")
         self.assertEqual(adapter._seen_uids, set())
+
+    def test_establish_uid_baseline_handles_empty_inbox(self):
+        """An empty baseline leaves the startup cutoff unset."""
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.response.return_value = ("UIDVALIDITY", [b"123"])
+        mock_imap.uid.return_value = ("OK", [b""])
+
+        self.assertEqual(adapter._establish_uid_baseline(mock_imap), 0)
+        self.assertIsNone(adapter._startup_seen_uid_cutoff)
+        self.assertEqual(adapter._startup_seen_uidvalidity, b"123")
+        self.assertEqual(adapter._seen_uids, set())
+
+    def test_establish_uid_baseline_keeps_malformed_uids_in_duplicate_cache(self):
+        """Non-numeric UID tokens fall back to exact duplicate tracking."""
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.response.return_value = ("UIDVALIDITY", [b"123"])
+        mock_imap.uid.return_value = ("OK", [b"bad 10 2"])
+
+        self.assertEqual(adapter._establish_uid_baseline(mock_imap), 3)
+        self.assertEqual(adapter._startup_seen_uid_cutoff, 10)
+        self.assertEqual(adapter._startup_seen_uidvalidity, b"123")
+        self.assertEqual(adapter._seen_uids, {b"bad"})
 
     def test_fetch_no_unseen_messages(self):
         """No unseen messages returns empty list."""

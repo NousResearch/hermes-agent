@@ -491,10 +491,9 @@ class EmailAdapter(BasePlatformAdapter):
     def _trim_seen_uids(self) -> None:
         """Keep only the most recent UIDs to prevent unbounded memory growth.
 
-        IMAP UIDs are monotonically increasing integers. When the set grows
-        beyond the cap, we keep only the highest half. UIDs observed during
-        startup remain covered by ``_startup_seen_uid_cutoff`` even after they
-        are trimmed from the in-memory duplicate set.
+        IMAP UIDs are monotonically increasing integers. Startup history is
+        covered by ``_startup_seen_uid_cutoff``; this bounded set handles
+        in-process duplicate suppression after startup.
         """
         if len(self._seen_uids) <= self._seen_uids_max:
             return
@@ -785,11 +784,19 @@ class EmailAdapter(BasePlatformAdapter):
             uidvalidity = self._selected_uidvalidity(imap)
         try:
             status, data = imap.uid("search", None, "ALL")
-        except Exception:
-            logger.error("[Email] Could not establish startup UID baseline")
+        except Exception as e:
+            logger.error(
+                "[Email] Could not establish startup UID baseline: %s",
+                e,
+                exc_info=True,
+            )
             return None
         if status != "OK":
-            logger.error("[Email] Could not establish startup UID baseline")
+            logger.error(
+                "[Email] UID SEARCH ALL failed establishing baseline: %s %s",
+                status,
+                data,
+            )
             return None
 
         startup_count = 0

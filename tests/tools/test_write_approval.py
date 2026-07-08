@@ -439,3 +439,69 @@ def test_memory_invalid_params_rejected_before_staging(hermes_home):
     r = json.loads(memory_tool("add", "memory", None, store=store))
     assert r["success"] is False
     assert wa.pending_count("memory") == 0
+
+
+# ── Sequential pending IDs ─────────────────────────────────────────────
+
+
+def test_stage_write_sequential_ids_increment(hermes_home):
+    """Pending IDs should be sequential (1, 2, 3...) not random UUIDs."""
+    from tools import write_approval as wa
+
+    rec1 = wa.stage_write(
+        "memory", {"action": "add", "target": "user", "content": "a"},
+        summary="first", origin="foreground",
+    )
+    rec2 = wa.stage_write(
+        "memory", {"action": "add", "target": "user", "content": "b"},
+        summary="second", origin="foreground",
+    )
+    rec3 = wa.stage_write(
+        "memory", {"action": "add", "target": "user", "content": "c"},
+        summary="third", origin="foreground",
+    )
+    assert rec1["id"] == "1"
+    assert rec2["id"] == "2"
+    assert rec3["id"] == "3"
+
+
+def test_stage_write_sequential_ids_per_subsystem(hermes_home):
+    """Memory and skills subsystems have independent ID counters."""
+    from tools import write_approval as wa
+
+    m1 = wa.stage_write(
+        "memory", {"action": "add", "target": "user", "content": "x"},
+        summary="m1", origin="foreground",
+    )
+    s1 = wa.stage_write(
+        "skills", {"action": "create", "name": "s"},
+        summary="s1", origin="foreground",
+    )
+    m2 = wa.stage_write(
+        "memory", {"action": "add", "target": "user", "content": "y"},
+        summary="m2", origin="foreground",
+    )
+    assert m1["id"] == "1"
+    assert s1["id"] == "1"  # skills starts at 1 independently
+    assert m2["id"] == "2"  # memory continues from 2
+
+
+def test_stage_write_sequential_ids_after_clear(hermes_home):
+    """After pending records are cleared, IDs restart from 1."""
+    from tools import write_approval as wa
+
+    rec1 = wa.stage_write(
+        "memory", {"action": "add", "target": "user", "content": "z"},
+        summary="z", origin="foreground",
+    )
+    assert rec1["id"] == "1"
+
+    # Clear all pending records by discarding each one
+    for r in wa.list_pending("memory"):
+        wa.discard_pending("memory", r["id"])
+
+    rec2 = wa.stage_write(
+        "memory", {"action": "add", "target": "user", "content": "w"},
+        summary="w", origin="foreground",
+    )
+    assert rec2["id"] == "1"  # restarts from 1 after clear

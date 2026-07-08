@@ -46,7 +46,6 @@ import json
 import logging
 import os
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -129,7 +128,16 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
     logs and still returns a record (the write is simply lost, which is the
     safe failure for an approval gate — nothing is silently committed).
     """
-    pid = uuid.uuid4().hex[:8]
+        # Sequential auto-incrementing ID: count existing pending files + 1.
+    # This replaces uuid4().hex[:8] (random 8-char hex) so IDs are short,
+    # sortable, and easy to reference in approval commands (e.g. /skills approve 3).
+    # Old UUID-based IDs are untouched; they coexist harmlessly as string keys.
+    d = _pending_dir(subsystem)
+    try:
+        existing = len(list(d.glob("*.json"))) if d.exists() else 0
+    except Exception:  # pragma: no cover - disk scan failure
+        existing = 0
+    pid = str(existing + 1)
     record = {
         "id": pid,
         "subsystem": subsystem,

@@ -1496,6 +1496,24 @@ def init_agent(
         _api_retries = 3
     agent._api_max_retries = _api_retries
 
+    # Model-level streaming gate: model.streaming config disables streaming
+    # for that model regardless of platform/gateway streaming settings.
+    # Addresses #60879 (Gemini-Flash streaming error when streaming: false is set).
+    try:
+        _model_cfg = _agent_cfg.get("model", {})
+        if not isinstance(_model_cfg, dict):
+            _model_cfg = {}
+        _model_streaming = _model_cfg.get("streaming", None)
+        if _model_streaming is not None and not _model_streaming:
+            agent._disable_streaming = True
+            _ra().logger.info(
+                "Model-level streaming disabled (model.streaming=false) for %s/%s",
+                provider or "unknown",
+                model or "unknown",
+            )
+    except Exception:
+        pass  # streaming config is optional -- don't break agent init
+
     # Initialize context compressor for automatic context management
     # Compresses conversation when approaching model's context limit
     # Configuration via config.yaml (compression section)

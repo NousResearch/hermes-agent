@@ -44,7 +44,7 @@ def adapter():
     return RelayAdapter(PlatformConfig(), _desc(), transport=StubConnector(_desc()))
 
 
-def _interaction_forward(payload: dict) -> PassthroughForward:
+def _interaction_forward(payload: dict, *, profile: str | None = None) -> PassthroughForward:
     body = json.dumps(payload).encode("utf-8")
     return PassthroughForward(
         platform="discord",
@@ -53,6 +53,7 @@ def _interaction_forward(payload: dict) -> PassthroughForward:
         path="/interactions/discord/appShared",
         headers=[("content-type", "application/json")],
         body=body,
+        profile=profile,
     )
 
 
@@ -79,6 +80,39 @@ def test_passthrough_from_wire_tolerates_malformed_body():
     """A non-base64 body must not raise (the reader must never crash)."""
     fwd = _passthrough_from_wire({"platform": "x", "bodyB64": "!!!not base64!!!"})
     assert fwd.body == b""
+
+
+def test_passthrough_from_wire_stamps_routed_profile():
+    """A connector-routed profile on the wire frame lands on PassthroughForward.
+
+    Mirrors _event_from_wire's profile stamping for the ``inbound`` frame
+    (#60586) — the passthrough plane needs the same carry-through so a
+    Team-Gateway's Discord interactions route to the same profile a plain
+    message would.
+    """
+    wire = {
+        "platform": "discord",
+        "botId": "appShared",
+        "method": "POST",
+        "path": "/interactions/discord/appShared",
+        "headers": [],
+        "bodyB64": "",
+        "profile": "reviewer",
+    }
+    fwd = _passthrough_from_wire(wire)
+    assert fwd.profile == "reviewer"
+
+
+def test_passthrough_from_wire_profile_absent_is_none():
+    """No ``profile`` on the wire (single-profile gateway) → None.
+
+    Back-compat: a connector that never sets ``profile`` yields the legacy
+    behaviour, and session keys stay in the ``agent:main`` namespace.
+    """
+    fwd = _passthrough_from_wire(
+        {"platform": "discord", "botId": "appShared", "method": "POST", "path": "/x", "headers": [], "bodyB64": ""}
+    )
+    assert fwd.profile is None
 
 
 @pytest.mark.asyncio
@@ -125,6 +159,43 @@ async def test_discord_interaction_routes_through_handle_message(adapter, monkey
     assert ev.source.chat_type == "channel"
     # Scope captured so the agent's reply re-asserts scope_id for egress.
     assert adapter._scope_by_chat.get("chan-9") == "guild-7"
+    # Back-compat: no profile on the forward (single-profile gateway) → None,
+    # session keys stay in the legacy agent:main namespace.
+    assert ev.source.profile is None
+
+
+@pytest.mark.asyncio
+async def test_discord_interaction_stamps_routed_profile(adapter, monkeypatch):
+    """A connector-routed profile on the passthrough forward lands on the
+    resulting event's SessionSource, the same way it does for a plain relayed
+    message (#60586) — so a Team-Gateway's Discord slash-command/button/modal
+    routes to the same profile a plain message would, instead of always
+    falling back to agent:main."""
+    await adapter.connect()
+    stub = adapter._transport
+
+    seen = []
+
+    async def fake_handle(event):
+        seen.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+
+    fwd = _interaction_forward(
+        {
+            "id": "interaction-2",
+            "type": 2,  # APPLICATION_COMMAND
+            "channel_id": "chan-9",
+            "guild_id": "guild-7",
+            "data": {"name": "summarize"},
+            "member": {"user": {"id": "user-3", "username": "ben"}},
+        },
+        profile="reviewer",
+    )
+    await stub.push_passthrough(fwd, buffer_id=None)
+
+    assert len(seen) == 1
+    assert seen[0].source.profile == "reviewer"
 
 
 @pytest.mark.asyncio

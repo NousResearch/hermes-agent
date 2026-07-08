@@ -27,6 +27,9 @@ nodes:
   gather:
     type: agent_task
     profile: researcher
+    # Optional per-cell routing:
+    # provider: openai-codex
+    # model: gpt-5.5
     title: "Gather research sources"
     result_contract:
       sources: array

@@ -17,6 +17,9 @@ nodes:
   implement:
     type: agent_task
     profile: implementer
+    # Optional per-cell routing:
+    # provider: openai-codex
+    # model: gpt-5.5
     title: "Implement code change"
     result_contract:
       summary: string
@@ -50,6 +53,9 @@ nodes:
   review:
     type: agent_task
     profile: reviewer
+    # Optional per-cell routing:
+    # provider: openai-codex
+    # model: gpt-5.5
     title: "Review code change"
     result_contract:
       verdict: approved|changes_requested

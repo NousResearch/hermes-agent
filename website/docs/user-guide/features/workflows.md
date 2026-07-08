@@ -328,6 +328,8 @@ Creates a Kanban task and waits for it. Required fields are `profile` and `promp
 review:
   type: agent_task
   profile: reviewer
+  provider: openai-codex       # optional; omit to use profile default
+  model: gpt-5.5               # optional; omit to use profile default
   title: "Review implementation"
   skills: [github-code-review]
   workspace_kind: worktree
@@ -344,16 +346,20 @@ Supported `agent_task` fields:
 | Field | Meaning |
 |---|---|
 | `profile` | Kanban assignee profile. Required. |
+| `provider` | Optional provider override for this cell. Passed to the Kanban worker as `--provider`; omit to use the selected profile's default provider. Legacy `provider_override` is still accepted on input. |
+| `model` | Optional model override for this cell. Passed to the Kanban worker as `-m`; omit to use the selected profile's default model. Legacy `model_override` is still accepted on input. |
 | `prompt` | String/list/object rendered with safe templates, then used as the Kanban task body. Required. |
 | `result_contract` | Optional mapping of required output keys to flat types (`string`, `number`, `boolean`, `array`, `object`) or enum strings like `approved|rejected`. Dispatcher blocks the cell if the completed Kanban result does not match. |
 | `title` | Kanban task title. Defaults to `<workflow name>: <node id>`. |
 | `workspace_kind` | Passed to Kanban, e.g. `scratch` or `worktree`. Defaults to `scratch` when omitted. |
 | `workspace_path` | Optional Kanban workspace path. This field is not templated. |
 | `skills` | Skills to load for the worker. |
-| `model_override` | Optional model override stored on the Kanban task. |
+| `model_override` | Legacy alias for `model`; prefer `model` in new workflow specs. |
 | `max_retries` | Kanban task retry limit. |
 | `goal_mode` | Run the Kanban worker in goal mode. |
 | `goal_max_turns` | Goal-mode turn budget. |
+
+A workflow may mix providers/models across cells. `profile` still selects the worker identity and profile-scoped config; `provider` and `model` only override inference routing for that one worker process. Deploy validation does not check credentials because credentials are profile-local and resolved when the worker starts.
 
 When the Kanban task reaches `done`, the workflow resumes. If the task result or latest summary is valid JSON, that object becomes the node output. Plain text becomes `{"result": "..."}`. If `result_contract` is present, the dispatcher requires every listed key to be present and to match its declared type or enum before the cell succeeds. Contract failures block the workflow instead of silently routing with malformed data. If the Kanban task is blocked, the workflow execution becomes `blocked` with the block reason.
 

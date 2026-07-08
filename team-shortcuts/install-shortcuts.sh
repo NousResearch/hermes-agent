@@ -11,6 +11,7 @@
 # วิธีใช้:
 #   bash install-shortcuts.sh          # ติดตั้ง Claude Code + Codex (ไม่ต้องใช้สิทธิ์ผู้ดูแล)
 #   bash install-shortcuts.sh --cursor # ติดตั้งเพิ่มทางลัดให้ Cursor ด้วย (อาจขอรหัสผู้ดูแล 1 ครั้ง)
+#   bash install-shortcuts.sh --force  # ยอมเขียนทับไฟล์ปลายทางที่ใหม่กว่าชุดติดตั้ง
 #
 # หมายเหตุสำหรับพนักงาน:
 #   พนักงานไม่ต้องมี repo Hermes Agent ในเครื่อง ให้ใช้ install-from-github.sh แทน
@@ -20,17 +21,118 @@ set -euo pipefail
 # --- ที่อยู่มาตรฐานบนเครื่องพนักงาน (อิงโฟลเดอร์บ้าน ใช้ได้ทุกชื่อบัญชี) ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PAYLOAD="$SCRIPT_DIR/payload"
-DEST_ROOT="$HOME/ObsidianVault/HermesAgent"
+DEST_ROOT="${HERMES_SHORTCUTS_DEST:-$HOME/ObsidianVault/HermesAgent}"
 REGISTRY="$DEST_ROOT/ai-context/prompt-shortcut-registry.md"
 SKILL_SRC="$DEST_ROOT/skills/prompt-shortcuts"
 
 # --- ที่อยู่เดิมที่ไฟล์ตัวเชื่อมทุกตัวในโปรเจกต์ชี้ถึง (ใช้ทำทางลัดชดเชยให้ Cursor) ---
 OWNER_PATH="/Users/rattanasak/ObsidianVault/HermesAgent"
 
-WANT_CURSOR=0
-[ "${1:-}" = "--cursor" ] && WANT_CURSOR=1
-
 say() { printf '%s\n' "$*"; }
+
+WANT_CURSOR=0
+FORCE=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --cursor)
+      WANT_CURSOR=1
+      ;;
+    --force)
+      FORCE=1
+      ;;
+    *)
+      say "ผิดพลาด: ไม่รู้จักตัวเลือก $1"
+      say "วิธีใช้: bash install-shortcuts.sh [--cursor] [--force]"
+      exit 1
+      ;;
+  esac
+  shift
+done
+
+CONFLICTS=()
+
+add_conflict_if_newer() {
+  local src="$1"
+  local dest="$2"
+  local rel="$3"
+
+  if [ -f "$dest" ] && ! cmp -s "$src" "$dest" && [ "$dest" -nt "$src" ]; then
+    CONFLICTS+=("$rel")
+  fi
+}
+
+detect_newer_destination_conflicts() {
+  CONFLICTS=()
+
+  add_conflict_if_newer \
+    "$PAYLOAD/ai-context/prompt-shortcut-registry.md" \
+    "$REGISTRY" \
+    "ai-context/prompt-shortcut-registry.md"
+
+  while IFS= read -r -d '' src; do
+    local rel="${src#"$PAYLOAD"/}"
+    add_conflict_if_newer "$src" "$DEST_ROOT/$rel" "$rel"
+  done < <(find "$PAYLOAD/skills/prompt-shortcuts" -type f -print0)
+}
+
+shortcuts_payload_differs() {
+  if [ ! -f "$REGISTRY" ] || ! cmp -s "$PAYLOAD/ai-context/prompt-shortcut-registry.md" "$REGISTRY"; then
+    return 0
+  fi
+
+  if ! diff -qr "$PAYLOAD/skills/prompt-shortcuts" "$SKILL_SRC" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  return 1
+}
+
+prune_old_shortcuts_backups() {
+  local backups=()
+  local backup
+  while IFS= read -r backup; do
+    backups+=("$backup")
+  done < <(find "$DEST_ROOT" -maxdepth 1 -type d -name '.backup-shortcuts-*' | sort)
+
+  local count="${#backups[@]}"
+  if [ "$count" -le 5 ]; then
+    return 0
+  fi
+
+  local remove_count=$((count - 5))
+  local i
+  for ((i = 0; i < remove_count; i++)); do
+    rm -rf -- "${backups[$i]}"
+  done
+}
+
+backup_existing_shortcuts_if_needed() {
+  if [ ! -d "$SKILL_SRC" ]; then
+    return 0
+  fi
+
+  if ! shortcuts_payload_differs; then
+    return 0
+  fi
+
+  local stamp
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  local backup_dir="$DEST_ROOT/.backup-shortcuts-$stamp"
+  local suffix=1
+  while [ -e "$backup_dir" ]; do
+    backup_dir="$DEST_ROOT/.backup-shortcuts-$stamp-$suffix"
+    suffix=$((suffix + 1))
+  done
+
+  mkdir -p "$backup_dir/ai-context" "$backup_dir/skills"
+  if [ -f "$REGISTRY" ]; then
+    cp "$REGISTRY" "$backup_dir/ai-context/"
+  fi
+  rsync -a "$SKILL_SRC/" "$backup_dir/skills/prompt-shortcuts/"
+  prune_old_shortcuts_backups
+  say "      สำรองของเดิมไว้ที่ $backup_dir"
+}
 
 # --- ตรวจ payload ก่อน ---
 if [ ! -f "$PAYLOAD/ai-context/prompt-shortcut-registry.md" ]; then
@@ -41,9 +143,23 @@ if ! command -v rsync >/dev/null 2>&1; then
   say "ผิดพลาด: ไม่พบ rsync — ต้องติดตั้ง rsync ก่อนเพื่อคัดชุด Shortcut ให้ตรงกัน"
   exit 1
 fi
+detect_newer_destination_conflicts
+if [ "${#CONFLICTS[@]}" -gt 0 ] && [ "$FORCE" -eq 0 ]; then
+  say "ไฟล์ปลายทางใหม่กว่าชุดติดตั้ง — จะไม่เขียนทับ"
+  say "รายการไฟล์ที่เสี่ยงถูกทับ:"
+  for conflict in "${CONFLICTS[@]}"; do
+    say "  - $conflict"
+  done
+  say ""
+  say "ทางเลือก:"
+  say "  1. เครื่องเจ้าของระบบ: รัน team-shortcuts/sync-from-vault.sh ก่อน เพื่อดึงงานล่าสุดกลับเข้าชุดติดตั้ง"
+  say "  2. เครื่องพนักงาน: ถ้าต้องการใช้ชุดติดตั้งทับจริง ให้รันซ้ำพร้อม --force"
+  exit 2
+fi
 
 # --- 1) คัดชุด Shortcut เข้าโฟลเดอร์บ้าน ---
 say "[1/4] คัดชุด Shortcut ไป $DEST_ROOT"
+backup_existing_shortcuts_if_needed
 mkdir -p "$DEST_ROOT/ai-context" "$DEST_ROOT/skills"
 cp "$PAYLOAD/ai-context/prompt-shortcut-registry.md" "$DEST_ROOT/ai-context/"
 mkdir -p "$SKILL_SRC"

@@ -49,7 +49,7 @@ aliases:
   - ใช้ Blog Auto
   - เขียนบล็อกอัตโนมัติ
   - ทำบล็อกจากงานนี้
-  - ส่งเข้า Hi Logic Labs
+  - ส่งเข้า One Man Fleet
   - use-wow-resource
   - WOW Resource
   - wow-resource
@@ -202,7 +202,7 @@ Use Create Content
 ใช้ $prompt-shortcuts Use Viber Structure กับโปรเจกต์ Viber Code นี้
 ใช้ $prompt-shortcuts Use Viber Audit กับโปรเจกต์นี้ หรือทุกโปรเจกต์ใน Viber Project
 ใช้ $prompt-shortcuts Use Impeccable กับงาน UI นี้
-ใช้ $prompt-shortcuts Use Blog Auto เพื่อสรุปองค์ความรู้จากงานนี้ไปเป็น draft บล็อก Hi Logic Labs และส่งต่อ Content Factory แบบรออนุมัติ
+ใช้ $prompt-shortcuts Use Blog Auto เพื่อสรุปองค์ความรู้จากงานนี้ไปเป็น draft บล็อก One Man Fleet และส่งต่อ Content Factory แบบรออนุมัติ
 ใช้ $prompt-shortcuts Use WOW Resource กับโจทย์ layout / design / script / Web Engine นี้
 ใช้ $prompt-shortcuts Use Flow Guardian เพื่อบังคับ worktree/branch gate, no-write audit, approval, verify, tracking, และ handoff
 ใช้ $prompt-shortcuts Use New Chat เพื่อเริ่มแชทใหม่แบบตรวจ project/worktree/branch/dirty/VPS ก่อนตอบ
@@ -236,7 +236,7 @@ Use Create Content
 | `Use Viber Structure` | `use-viber-structure`, `Viber Structure`, `viber-structure`, `ใช้ Viber Structure`, `โครงสร้าง Viber`, `วางโครงสร้าง Viber Code`, `วางแผน Viber Code`, `Vibe Code Enterprise` | [[skills/prompt-shortcuts/references/use-viber-structure|use-viber-structure]] |
 | `Use Viber Audit` | `use-viber-audit`, `Viber Audit`, `viber-audit`, `Use Viber Standard Audit`, `Use Viber Compliance`, `ใช้ Viber Audit`, `ตรวจ Viber Standard`, `ตรวจ Viber Enterprise`, `ตรวจมาตรฐาน Viber`, `Viber Enterprise Standard` | [[skills/prompt-shortcuts/references/use-viber-audit|use-viber-audit]] |
 | `Use Impeccable` | `use-impeccable`, `Impeccable`, `ใช้ Impeccable`, `ตรวจ UI Slop`, `แก้ AI Slop` | [[skills/prompt-shortcuts/references/use-impeccable|use-impeccable]] |
-| `Use Blog Auto` | `use-blog-auto`, `Blog Auto`, `blog-auto`, `ใช้ Blog Auto`, `เขียนบล็อกอัตโนมัติ`, `ทำบล็อกจากงานนี้`, `ส่งเข้า Hi Logic Labs` | [[skills/prompt-shortcuts/references/use-blog-auto|use-blog-auto]] |
+| `Use Blog Auto` | `use-blog-auto`, `Blog Auto`, `blog-auto`, `ใช้ Blog Auto`, `เขียนบล็อกอัตโนมัติ`, `ทำบล็อกจากงานนี้`, `ส่งเข้า One Man Fleet` | [[skills/prompt-shortcuts/references/use-blog-auto|use-blog-auto]] |
 | `Use WOW Resource` | `use-wow-resource`, `WOW Resource`, `wow-resource`, `ใช้ WOW Resource`, `ใช้ WOW`, `WOW Layout`, `WOW Menu`, `WOW Script`, `WOW Design`, `WOW Web Engine` | [[skills/prompt-shortcuts/references/use-wow-resource|use-wow-resource]] |
 | `Use Flow Guardian` | `use-flow-guardian`, `Flow Guardian`, `Safe Flow`, `New Chat Gate`, `ใช้ Flow Guardian`, `ใช้ Safe Flow`, `เปิด Flow Guardian`, `ตรวจ worktree`, `กัน AI แก้งานทับกัน` | [[skills/prompt-shortcuts/references/use-flow-guardian|use-flow-guardian]] |
 | `Use New Chat` | `use-new-chat`, `Start New Chat`, `New Chat Startup`, `Initialize Hermes Agent chat`, `เริ่ม New Chat`, `เปิด New Chat`, `เริ่มแชทใหม่`, `เปิดแชทใหม่` | [[skills/prompt-shortcuts/references/use-new-chat|use-new-chat]] |
@@ -274,7 +274,7 @@ Claude Code, Gemini, Qwen, Cursor และ AI ตัวอื่นให้เ
 - [[skills/prompt-shortcuts/references/use-viber-structure|use-viber-structure]] - prompt สำหรับแปลงมาตรฐาน Viber Code / Vibe Code Enterprise เป็นโครงโปรเจกต์ เอกสาร phase/issue tracker และ quality gates
 - [[skills/prompt-shortcuts/references/use-viber-audit|use-viber-audit]] - prompt สำหรับตรวจโปรเจกต์เดียวหรือทุกโปรเจกต์เทียบ Viber Enterprise Standard พร้อม gap, คะแนน, หลักฐาน, และ tracker ระหว่างทำงาน
 - [[skills/prompt-shortcuts/references/use-impeccable|use-impeccable]] - prompt เดียวสำหรับให้ AI ใช้ Impeccable ตรวจ ติดตั้ง สแกน อธิบาย แก้ หรือวางแผนลด UI/AI slop โดยไม่แตก shortcut ย่อย
-- [[skills/prompt-shortcuts/references/use-blog-auto|use-blog-auto]] - prompt สำหรับสกัดองค์ความรู้จากงานจริงไปเป็น draft บล็อก Hi Logic Labs, ทำ privacy gate, Obsidian index, และส่งต่อ Content Factory แบบ draft-first
+- [[skills/prompt-shortcuts/references/use-blog-auto|use-blog-auto]] - prompt สำหรับสกัดองค์ความรู้จากงานจริงไปเป็น draft บล็อก One Man Fleet, ทำ privacy gate, Obsidian index, และส่งต่อ Content Factory แบบ draft-first
 - [[skills/prompt-shortcuts/references/use-wow-resource|use-wow-resource]] - prompt สำหรับให้ AI อ่าน WOW System และ Web Design Intelligence แล้วคัด resource ให้เหมาะกับโจทย์โดยไม่ copy script ตรงๆ
 - [[skills/prompt-shortcuts/references/use-flow-guardian|use-flow-guardian]] - prompt สำหรับบังคับ Home OS Agent safe flow, worktree/branch safety, no-write audit, approval, verify, tracking, และ handoff
 - [[skills/prompt-shortcuts/references/use-new-chat|use-new-chat]] - prompt สำหรับเริ่มแชทใหม่แบบต้องตรวจ project, worktree, branch, dirty status, local/VPS equality, service และ endpoint ก่อนตอบ

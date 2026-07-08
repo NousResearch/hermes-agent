@@ -555,8 +555,6 @@
   }
 }
 
-
-
 .hermes-workflows .hermes-workflows-panel {
   border: 1px solid var(--color-border);
   border-radius: var(--radius, 0.75rem);
@@ -589,14 +587,6 @@
   font-size: 0.84rem;
 }
 
-.hermes-workflows .hermes-workflows-privacy-note {
-  color: var(--color-muted-foreground);
-  font-size: 0.85rem;
-  border-left: 2px solid rgba(255, 193, 7, 0.65);
-  padding-left: 0.75rem;
-  margin: 0.5rem 0 1rem;
-}
-
 .hermes-workflows .hermes-workflows-panel {
   display: flex;
   flex-direction: column;
@@ -616,38 +606,12 @@
   flex-wrap: wrap;
 }
 
-.hermes-workflows .hermes-workflows-list,
-.hermes-workflows .hermes-workflows-executions,
 .hermes-workflows .hermes-workflows-timeline,
 .hermes-workflows .hermes-workflows-node-runs,
 .hermes-workflows .hermes-workflows-node-run-group {
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
-}
-
-.hermes-workflows .hermes-workflows-item {
-  width: 100%;
-  text-align: left;
-  border: 1px solid var(--color-border);
-  border-radius: calc(var(--radius, 0.75rem) * 0.75);
-  background: color-mix(in srgb, var(--color-card) 72%, transparent);
-  color: inherit;
-  padding: 0.65rem;
-  cursor: pointer;
-}
-
-.hermes-workflows .hermes-workflows-item:hover,
-.hermes-workflows .hermes-workflows-item.is-selected {
-  border-color: var(--color-primary);
-  background: color-mix(in srgb, var(--color-primary) 12%, var(--color-card));
-}
-
-.hermes-workflows .hermes-workflows-item-title {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.75rem;
-  font-weight: 650;
 }
 
 .hermes-workflows .hermes-workflows-meta {
@@ -677,9 +641,6 @@
 }
 
 .hermes-workflows .hermes-workflows-editor,
-.hermes-workflows .hermes-workflows-goal-input,
-.hermes-workflows .hermes-workflows-run-input,
-.hermes-workflows .hermes-workflows-refine-input,
 .hermes-workflows input,
 .hermes-workflows select {
   width: 100%;
@@ -691,31 +652,6 @@
 }
 
 .hermes-workflows .hermes-workflows-editor,
-.hermes-workflows .hermes-workflows-run-input {
-  min-height: 12rem;
-  resize: vertical;
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 0.82rem;
-  line-height: 1.45;
-}
-
-.hermes-workflows .hermes-workflows-run-input {
-  min-height: 7rem;
-}
-
-.hermes-workflows .hermes-workflows-goal-input {
-  min-height: 9rem;
-  resize: vertical;
-  font: inherit;
-  line-height: 1.45;
-}
-
-.hermes-workflows .hermes-workflows-refine-input {
-  min-height: 6rem;
-  resize: vertical;
-  font: inherit;
-  line-height: 1.45;
-}
 
 .hermes-workflows .hermes-workflows-prompt-editor {
   min-height: 220px;
@@ -767,15 +703,6 @@
   background: color-mix(in srgb, var(--color-primary) 20%, var(--color-card));
 }
 
-.hermes-workflows .hermes-workflows-draft-review {
-  gap: 0.75rem;
-}
-
-.hermes-workflows .hermes-workflows-draft-summary {
-  border-left: 3px solid var(--color-primary);
-  padding-left: 0.75rem;
-}
-
 .hermes-workflows .hermes-workflows-checklist {
   list-style: none;
   margin: 0;
@@ -794,56 +721,9 @@
 }
 
 .hermes-workflows .hermes-workflows-checklist-item.is-fail,
-.hermes-workflows .hermes-workflows-dispatcher-readiness.is-warning {
-  color: var(--color-destructive, var(--color-primary));
-}
-
-.hermes-workflows .hermes-workflows-dispatcher-readiness.is-unknown {
-  color: var(--color-muted-foreground);
-}
 
 .hermes-workflows .hermes-workflows-checklist-mark {
   font-weight: 700;
-}
-
-.hermes-workflows .hermes-workflows-draft-table-wrap {
-  overflow-x: auto;
-}
-
-.hermes-workflows .hermes-workflows-draft-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.84rem;
-}
-
-.hermes-workflows .hermes-workflows-draft-table th,
-.hermes-workflows .hermes-workflows-draft-table td {
-  border-bottom: 1px solid var(--color-border);
-  padding: 0.45rem 0.5rem;
-  text-align: left;
-  vertical-align: top;
-}
-
-.hermes-workflows .hermes-workflows-draft-table th {
-  color: var(--color-muted-foreground);
-  font-size: 0.72rem;
-  text-transform: uppercase;
-}
-
-.hermes-workflows .hermes-workflows-draft-sections {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 0.75rem;
-}
-
-.hermes-workflows .hermes-workflows-draft-section ul {
-  margin: 0.35rem 0 0;
-  padding-left: 1.1rem;
-}
-
-.hermes-workflows .hermes-workflows-refine-form {
-  border-top: 1px solid var(--color-border);
-  padding-top: 0.75rem;
 }
 
 .hermes-workflows .hermes-workflows-banner {
@@ -857,12 +737,6 @@
 .hermes-workflows .hermes-workflows-banner.is-error {
   border-color: var(--color-destructive, var(--color-primary));
   color: var(--color-destructive, var(--color-primary));
-}
-
-.hermes-workflows .hermes-workflows-graph {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
 }
 
 .hermes-workflows .hermes-workflows-node-grid {

@@ -1854,84 +1854,12 @@
       }).catch(fail);
     }
 
-    function renderDraftReview() {
-      const spec = activeSpec();
-      if (!draftResult && !spec) return null;
-      const rows = nodeSummaryRows(spec);
-      const hasDraftMetadata = !!draftResult;
-
-      function renderNotes(title, items) {
-        const values = asArray(items).filter(Boolean);
-        return h("div", { className: "hermes-workflows-draft-section" },
-          h("h3", null, title),
-          values.length ? h("ul", null, values.map(function (item, index) {
-            return h("li", { key: title + index }, safeString(item));
-          })) : h("p", { className: "hermes-workflows-muted" }, "None reported.")
-        );
-      }
-
-      return h(Card, { className: "hermes-workflows-panel hermes-workflows-draft-review" },
-        h("div", null,
-          h("h2", null, "Draft review"),
-          h("p", { className: "hermes-workflows-muted" }, "Review the workflow cells in plain language before using Advanced YAML or deploying.")
-        ),
-        draftResult && draftResult.summary ? h("p", { className: "hermes-workflows-draft-summary" }, safeString(draftResult.summary)) : null,
-        rows.length ? h("div", { className: "hermes-workflows-draft-table-wrap" },
-          h("table", { className: "hermes-workflows-draft-table" },
-            h("thead", null,
-              h("tr", null,
-                h("th", null, "Cell"),
-                h("th", null, "Type"),
-                h("th", null, "Profile"),
-                h("th", null, "Provider / model"),
-                h("th", null, "Objective"),
-                h("th", null, "Next")
-              )
-            ),
-            h("tbody", null, rows.map(function (row) {
-              return h("tr", { key: row.id },
-                h("td", null, safeString(row.id)),
-                h("td", null, safeString(row.type)),
-                h("td", null, safeString(row.profile)),
-                h("td", null, safeString(row.routing)),
-                h("td", null, safeString(row.objective)),
-                h("td", null, safeString(row.next))
-              );
-            }))
-          )
-        ) : h("p", { className: "hermes-workflows-muted" }, "No workflow cells to review yet."),
-        hasDraftMetadata ? h("div", { className: "hermes-workflows-draft-sections" },
-          renderNotes("Questions", draftResult && draftResult.questions),
-          renderNotes("Assumptions", draftResult && draftResult.assumptions),
-          renderNotes("Warnings", draftResult && draftResult.warnings),
-          renderNotes("Unsupported requests", draftResult && draftResult.unsupported_requests)
-        ) : h("p", { className: "hermes-workflows-muted" }, "No assistant draft metadata available."),
-        h("div", { className: "hermes-workflows-row" },
-          h("button", { type: "button", disabled: validating || !draftSpec, onClick: validateDefinition }, validating ? "Validating draft…" : "Validate draft"),
-          h("button", { type: "button", disabled: deploying || !draftSpec, onClick: deployDefinition, className: "hermes-workflows-primary" }, deploying ? "Deploying draft…" : "Deploy draft")
-        ),
-        h("form", { className: "hermes-workflows-stack hermes-workflows-refine-form", onSubmit: refineWorkflow },
-          h("label", null,
-            h("span", { className: "hermes-workflows-muted" }, "Refine workflow"),
-            h("textarea", {
-              className: "hermes-workflows-refine-input",
-              value: refineText,
-              onChange: function (event) { setRefineText(event.target.value); },
-              placeholder: "Example: add a human approval step before deployment.",
-              "aria-label": "Refine workflow",
-            })
-          ),
-          h("button", { type: "submit", disabled: refining, className: "hermes-workflows-primary" }, refining ? "Refining…" : "Refine workflow")
-        )
-      );
-    }
-
     function renderValidationChecklist() {
       const spec = checklistSpec();
       if (!spec) {
         return h(Card, { className: "hermes-workflows-panel hermes-workflows-validation-checklist" },
           h("h2", null, "Validation checklist"),
-          h("p", { className: "hermes-workflows-muted" }, "Validate Advanced YAML to update the checklist.")
+          h("p", { className: "hermes-workflows-muted" }, "Select or validate a workflow to see the checklist."),
         );
       }
       const implementedTriggers = implementedTriggerTypesFromCapabilities(workflowCapabilities);
@@ -1939,7 +1867,7 @@
       const items = validationChecklist(spec, workflowCapabilities);
       return h(Card, { className: "hermes-workflows-panel hermes-workflows-validation-checklist" },
         h("h2", null, "Validation checklist"),
-        h("p", { className: "hermes-workflows-muted" }, "This checklist checks implemented dashboard/dispatcher readiness, not every declared WorkflowSpec primitive."),
+        h("p", { className: "hermes-workflows-muted" }, "Checks implemented dashboard/dispatcher readiness, not every declared WorkflowSpec primitive."),
         h("ul", { className: "hermes-workflows-checklist" }, items.map(function (item) {
           return h("li", { key: item.label, className: "hermes-workflows-checklist-item " + (item.ok ? "is-ok" : "is-fail") },
             h("span", { className: "hermes-workflows-checklist-mark", "aria-hidden": "true" }, item.ok ? "✓" : "!"),
@@ -1948,27 +1876,6 @@
         })),
         h("p", { className: "hermes-workflows-muted" }, "Implemented triggers today: " + implementedTriggers.join(", ") + "."),
         h("p", { className: "hermes-workflows-muted" }, "Implemented node types today: " + implementedNodes.join(", ") + ".")
-      );
-    }
-
-    function renderDispatcherReadiness() {
-      const dispatcher = workflowStatus && workflowStatus.dispatcher ? workflowStatus.dispatcher : {};
-      const statusKnown = dispatcher.status_available !== false && typeof dispatcher.dispatch_in_gateway === "boolean";
-      const ready = statusKnown && dispatcher.dispatch_in_gateway === true;
-      const tick = dispatcher.tick_interval_seconds;
-      const className = "hermes-workflows-panel hermes-workflows-dispatcher-readiness " + (statusKnown ? (ready ? "is-ready" : "is-warning") : "is-unknown");
-      if (!statusKnown) {
-        return h(Card, { className: className },
-          h("h2", null, "Dispatcher readiness"),
-          h("p", null, "Dispatcher readiness unavailable."),
-          h("p", { className: "hermes-workflows-muted" }, "Status endpoint did not report dispatcher readiness.")
-        );
-      }
-      const warning = dispatcher.warning || "Set workflow.dispatch_in_gateway: true to let the gateway advance runs; fallback: hermes workflow tick.";
-      return h(Card, { className: className },
-        h("h2", null, "Dispatcher readiness"),
-        ready ? h("p", null, "Ready: gateway dispatcher is advancing workflow runs.") : h("p", null, safeString(warning)),
-        ready ? h("p", { className: "hermes-workflows-muted" }, "Tick interval: " + safeString(tick) + "s") : h("p", { className: "hermes-workflows-muted" }, "Enable workflow.dispatch_in_gateway or run hermes workflow tick manually.")
       );
     }
 
@@ -2000,137 +1907,8 @@
       );
     }
 
-    function renderDefinitionList() {
-      return h("div", { className: "hermes-workflows-list" },
-        definitions.length ? definitions.map(function (definition) {
-          const id = definition.workflow_id || definition.id;
-          const key = definitionSelectionKey(definition);
-          const selectedKey = definitionSelectionKey(selectedDefinition);
-          return h("button", {
-            key: key,
-            type: "button",
-            className: "hermes-workflows-item" + (key === selectedKey ? " is-selected" : ""),
-            onClick: function () {
-              setError("");
-              loadDefinition(definition.workflow_id, definition.version).catch(fail);
-            },
-          },
-            h("div", { className: "hermes-workflows-item-title" },
-              h("span", null, safeString(definition.name || id)),
-              h("span", { className: statusClass(definition.enabled) }, definition.enabled ? "enabled" : "disabled")
-            ),
-            h("div", { className: "hermes-workflows-meta" }, safeString(id) + " · v" + safeString(definition.version))
-          );
-        }) : h("p", { className: "hermes-workflows-muted" }, "No workflow definitions deployed yet.")
-      );
-    }
-
-    function renderRunInputForm() {
-      const spec = runInputSpec();
-      const fields = inputFieldsForSpec(spec);
-      const runSelectValue = selectedDefinition ? definitionSelectionKey(selectedDefinition) : "";
-      return h(Card, { className: "hermes-workflows-panel hermes-workflows-run-form" },
-        h("h2", null, "Run test"),
-        h("p", { className: "hermes-workflows-privacy-note" }, PRIVACY_NOTE),
-        h("form", { className: "hermes-workflows-stack", onSubmit: runWorkflow },
-          h("label", null,
-            h("span", { className: "hermes-workflows-muted" }, "Workflow id"),
-            definitions.length ? h("select", {
-              value: runSelectValue,
-              onChange: function (event) {
-                const selected = definitions.find(function (definition) {
-                  return definitionSelectionKey(definition) === event.target.value;
-                });
-                const id = workflowIdForDefinition(selected);
-                const version = selected && selected.version;
-                setRunWorkflowId(id);
-                loadDefinition(id, version).catch(fail);
-              },
-            }, definitions.map(function (definition) {
-              const id = definition.workflow_id || definition.id;
-              return h("option", { key: definitionSelectionKey(definition), value: definitionSelectionKey(definition) }, id + " v" + safeString(definition.version));
-            })) : h("input", {
-              value: runWorkflowId,
-              onChange: function (event) { setRunWorkflowId(event.target.value); },
-              placeholder: "workflow_id",
-            })
-          ),
-          fields.length && !showAdvancedInputJson ? fields.map(function (field) {
-            const value = inputFieldValues[field.name] === undefined ? "" : inputFieldValues[field.name];
-            const onChange = function (event) {
-              const next = Object.assign({}, inputFieldValues);
-              next[field.name] = event.target.value;
-              setInputFieldValues(next);
-            };
-            const control = field.kind === "boolean" ? h("select", {
-              value: value,
-              onChange: onChange,
-            },
-              h("option", { value: "" }, ""),
-              h("option", { value: "true" }, "true"),
-              h("option", { value: "false" }, "false")
-            ) : field.kind === "json" ? h("textarea", {
-              className: "hermes-workflows-run-input",
-              placeholder: "{} or []",
-              value: value,
-              onChange: onChange,
-            }) : h("input", {
-              type: field.kind === "number" || field.kind === "integer" ? "number" : "text",
-              step: field.kind === "number" ? "any" : field.kind === "integer" ? "1" : undefined,
-              value: value,
-              onChange: onChange,
-            });
-            return h("label", { key: field.name },
-              h("span", { className: "hermes-workflows-muted" }, field.name),
-              control
-            );
-          }) : null,
-          !fields.length && !showAdvancedInputJson ? h("p", { className: "hermes-workflows-muted" }, "No input fields detected; this test run will send an empty input object.") : null,
-          h("button", {
-            type: "button",
-            onClick: function () { setShowAdvancedInputJson(!showAdvancedInputJson); },
-          }, showAdvancedInputJson ? "Hide Advanced input JSON" : "Advanced input JSON"),
-          showAdvancedInputJson ? h("label", null,
-            h("span", { className: "hermes-workflows-muted" }, "Input JSON"),
-            h("textarea", {
-              className: "hermes-workflows-run-input",
-              value: runInputText,
-              onChange: function (event) { setRunInputText(event.target.value); },
-            })
-          ) : null,
-          h("button", { type: "submit", disabled: running, className: "hermes-workflows-primary" }, running ? "Running…" : "Run workflow")
-        )
-      );
-    }
-
-    function renderExecutions() {
-      return h("div", { className: "hermes-workflows-executions" },
-        executions.length ? executions.map(function (execution) {
-          const id = execution.execution_id;
-          return h("button", {
-            key: id,
-            type: "button",
-            className: "hermes-workflows-item" + (selectedExecution && selectedExecution.execution_id === id ? " is-selected" : ""),
-            onClick: function () {
-              setError("");
-              loadExecution(id).catch(fail);
-            },
-          },
-            h("div", { className: "hermes-workflows-item-title" },
-              h("span", null, safeString(id)),
-              h("span", { className: "hermes-workflows-badge" }, safeString(execution.status))
-            ),
-            h("div", { className: "hermes-workflows-meta" },
-              safeString(execution.workflow_id) + " · " + safeString(execution.updated_at || execution.created_at)
-            )
-          );
-        }) : h("p", { className: "hermes-workflows-muted" }, "No executions yet.")
-      );
-    }
-
     function renderTimeline() {
       return h("div", { className: "hermes-workflows-timeline" },
-        h("p", { className: "hermes-workflows-privacy-note" }, PRIVACY_NOTE),
         selectedExecution ? h("div", { className: "hermes-workflows-event" },
           h("div", { className: "hermes-workflows-item-title" },
             h("strong", null, safeString(selectedExecution.execution_id)),
@@ -2602,7 +2380,17 @@
           h("div", { className: "hermes-workflows-row", style: {marginTop: "0.3rem"} },
             h("button", { type: "button", disabled: drafting, onClick: draftFromGoal, className: "hermes-workflows-primary", style: {fontSize: "0.78rem"} }, drafting ? "Generating…" : "Generate From Prompt"),
             h("button", { type: "button", "aria-label": "Start from scratch", onClick: startBlankWorkflow, style: {fontSize: "0.78rem"} }, "Start From Scratch")
-          )
+          ),
+          spec ? h("form", { className: "hermes-workflows-stack", style: {marginTop: "0.4rem"}, onSubmit: refineWorkflow },
+            h("textarea", {
+              value: refineText,
+              onChange: function (event) { setRefineText(event.target.value); },
+              placeholder: "Refine: add a step, change routing, etc.",
+              "aria-label": "Refine workflow",
+              style: { fontSize: "0.78rem", minHeight: "40px", resize: "vertical" }
+            }),
+            h("button", { type: "submit", disabled: refining, style: {fontSize: "0.78rem"} }, refining ? "Refining…" : "Refine")
+          ) : null
         ),
         h("div", { className: "hermes-workflows-sidebar-section" + (wfCollapsed ? " hermes-workflows-sidebar-collapsible is-collapsed" : " hermes-workflows-sidebar-collapsible"), onClick: function() { toggleSection("workflows"); } },
           h("h3", null, "Workflows"),
@@ -2697,9 +2485,7 @@
     function renderBottomPanel() {
       var tabs = [
         ["checklist", "Validation"],
-        ["review", "Draft review"],
         ["timeline", "Execution"],
-        ["dispatcher", "Dispatcher"]
       ];
       return h("div", { className: "hermes-workflows-bottom-panel" + (bottomCollapsed ? " is-collapsed" : "") },
         h("div", { className: "hermes-workflows-bottom-tabs" },
@@ -2718,23 +2504,9 @@
         ),
         h("div", { className: "hermes-workflows-bottom-content" },
           bottomTab === "checklist" ? renderValidationChecklist() :
-          bottomTab === "review" ? renderDraftReview() :
           bottomTab === "timeline" ? h("div", { className: "hermes-workflows-stack" }, renderNodeRuns(), renderTimeline()) :
-          bottomTab === "dispatcher" ? h("div", { className: "hermes-workflows-stack" }, renderDispatcherReadiness(), renderRunInputForm()) :
           null
         )
-      );
-    }
-
-    function renderGraph() {
-      const spec = activeSpec();
-      return h("div", { className: "hermes-workflows-graph" },
-        h("div", null,
-          h("h2", null, "Visual workflow editor"),
-          h("p", { className: "hermes-workflows-muted" }, spec ? safeString(spec.name || spec.id || spec.workflow_id) : "Select or validate a workflow to render its nodes and edges.")
-        ),
-        spec ? renderReactFlowGraph(spec) : h("p", { className: "hermes-workflows-muted" }, "No workflow graph available yet."),
-        !ReactFlow ? h("p", { className: "hermes-workflows-muted" }, "React Flow SDK unavailable; showing the simple HTML graph fallback.") : null
       );
     }
 

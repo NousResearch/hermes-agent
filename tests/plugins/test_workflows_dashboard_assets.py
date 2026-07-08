@@ -67,8 +67,8 @@ def test_workflow_dashboard_exposes_ui_only_builder_controls() -> None:
         "Add trigger",
         "Delete",
         "Add case",
-        "Validate draft",
-        "Deploy draft",
+        "Validate",
+        "Deploy",
         "workflow-cell-type-options",
     ]
     for label in required_labels:

@@ -3205,6 +3205,11 @@ def run_conversation(
                             compression_attempts = 0
                             _retry.primary_recovery_attempted = False
                             continue
+                        # Fallback activation failed mid-retry — restore the
+                        # chain index so the retry-exhausted terminal path
+                        # (below) can retry instead of finding
+                        # _fallback_index >= len(chain).  See #60955.
+                        agent._fallback_index = 0
 
                 # ── Auth-failure provider failover ───────────────────────
                 # A 401/403 that survives the per-provider credential-refresh

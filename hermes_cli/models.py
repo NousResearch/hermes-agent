@@ -1921,7 +1921,18 @@ def detect_static_provider_for_model(
             and default_models
             and resolved_provider not in current_keys
         ):
-            return (resolved_provider, default_models[0])
+            # Route through the cost-safe default rather than picking
+            # ``default_models[0]`` directly. For metered aggregators whose
+            # curated list is ordered most-capable-first (e.g. Nous Portal),
+            # entry [0] is the priciest flagship, and typing ``/model nous``
+            # would silently escalate to it — the exact billing footgun
+            # ``_PROVIDER_SILENT_DEFAULT_OVERRIDES`` exists to prevent. For
+            # providers without an override this is unchanged (it returns
+            # ``models[0]``).
+            return (
+                resolved_provider,
+                get_default_model_for_provider(resolved_provider) or default_models[0],
+            )
 
     # Aggregators list other providers' models — never auto-switch TO them
     # If the model belongs to the current provider's catalog, don't suggest switching

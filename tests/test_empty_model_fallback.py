@@ -71,6 +71,46 @@ class TestGetDefaultModelForProvider:
             assert result == models_mod._PROVIDER_MODELS["openai-codex"][0]
 
 
+class TestDetectStaticProviderCostSafeDefault:
+    """detect_static_provider_for_model must apply the same cost-safe default
+    as get_default_model_for_provider when a bare provider name is typed as a
+    model (e.g. ``/model nous``)."""
+
+    def test_bare_nous_does_not_escalate_to_flagship(self):
+        from hermes_cli.models import (
+            _PROVIDER_MODELS,
+            get_default_model_for_provider,
+            detect_static_provider_for_model,
+        )
+
+        result = detect_static_provider_for_model("nous", "openrouter")
+        assert result is not None
+        provider, model = result
+        assert provider == "nous"
+        # Must match the cost-safe silent default, NOT the priciest catalog
+        # entry [0]. Regression: this path returned _PROVIDER_MODELS["nous"][0]
+        # directly, re-introducing the billing footgun on the interactive
+        # ``/model nous`` path.
+        assert model == get_default_model_for_provider("nous")
+        assert "opus" not in model.lower()
+        assert model != _PROVIDER_MODELS["nous"][0]
+
+    def test_provider_without_override_still_uses_first_model(self):
+        """Providers with no silent-default override are unchanged."""
+        from hermes_cli.models import (
+            _PROVIDER_MODELS,
+            _PROVIDER_SILENT_DEFAULT_OVERRIDES,
+            detect_static_provider_for_model,
+        )
+
+        for provider in ("anthropic", "xai"):
+            if provider in _PROVIDER_SILENT_DEFAULT_OVERRIDES:
+                continue
+            result = detect_static_provider_for_model(provider, "openrouter")
+            assert result is not None
+            assert result[1] == _PROVIDER_MODELS[provider][0]
+
+
 class TestGatewayEmptyModelFallback:
     """Test that _resolve_session_agent_runtime fills in empty model from provider catalog."""
 

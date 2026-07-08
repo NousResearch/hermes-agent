@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -48,6 +49,13 @@ class TestNormalizeWorkdir:
     def test_tilde_expands(self, tmp_path, monkeypatch):
         from cron.jobs import _normalize_workdir
         monkeypatch.setenv("HOME", str(tmp_path))
+        if os.name == "nt":
+            # Windows pathlib expands "~" from USERPROFILE/HOMEDRIVE+HOMEPATH,
+            # not HOME alone. Patch the platform-native home vars too so the
+            # test exercises the intended temp home on every platform.
+            monkeypatch.setenv("USERPROFILE", str(tmp_path))
+            monkeypatch.delenv("HOMEDRIVE", raising=False)
+            monkeypatch.delenv("HOMEPATH", raising=False)
         result = _normalize_workdir("~")
         assert result == str(tmp_path.resolve())
 

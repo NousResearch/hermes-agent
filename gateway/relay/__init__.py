@@ -502,8 +502,20 @@ def _resolve_relay_identity_token() -> str:
             "Accept": "application/json",
         },
     )
-    with urllib.request.urlopen(req, timeout=15.0) as resp:
-        payload = json.loads(resp.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            payload = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = (json.loads(exc.read().decode()) or {}).get("error", "")
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"IdP client_credentials HTTP {exc.code}" + (f": {detail}" if detail else "")
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"could not reach IdP: {exc.reason}") from exc
     access_token = (payload or {}).get("access_token")
     if not isinstance(access_token, str) or not access_token.strip():
         raise RuntimeError("IdP client_credentials response had no access_token")

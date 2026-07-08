@@ -2,6 +2,8 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect } from 'react'
 
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
+import { extractGeneratedArtifactTargetsFromToolPayload } from '@/lib/generated-artifacts'
+import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import {
   $previewTarget,
   $sessionPreviewRegistry,
@@ -10,8 +12,10 @@ import {
   getSessionPreviewRecord,
   progressPreviewServerRestart,
   requestPreviewReload,
+  setCurrentSessionPreviewTarget,
   setPreviewTarget
 } from '@/store/preview'
+import { recordPreviewArtifact } from '@/store/preview-status'
 import { $currentCwd } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -29,6 +33,35 @@ interface PreviewRoutingOptions {
 
 function asRecord(payload: unknown): Record<string, unknown> {
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+}
+
+function generatedToolTargets(payload: Record<string, unknown>): string[] {
+  const resultTargets = extractGeneratedArtifactTargetsFromToolPayload(payload.result)
+
+  if (resultTargets.length > 0) {
+    return resultTargets
+  }
+
+  const topLevelTargets = extractGeneratedArtifactTargetsFromToolPayload({
+    file: payload.file,
+    filepath: payload.filepath,
+    path: payload.path,
+    preview: payload.preview,
+    result_text: payload.result_text,
+    summary: payload.summary,
+    target: payload.target,
+    url: payload.url
+  })
+
+  if (topLevelTargets.length > 0) {
+    return topLevelTargets
+  }
+
+  const name = typeof payload.name === 'string' ? payload.name : ''
+
+  return name === 'write_file' || name === 'edit_file' || name === 'patch'
+    ? extractGeneratedArtifactTargetsFromToolPayload(payload.args)
+    : []
 }
 
 function activePreviewSessionId(
@@ -51,10 +84,7 @@ export function usePreviewRouting({
   const previewRegistry = useStore($sessionPreviewRegistry)
   const previewSessionId = activePreviewSessionId(activeSessionIdRef, routedSessionId, selectedStoredSessionId)
 
-  // Restore a *user-opened* preview when its session becomes active. Tool
-  // results no longer auto-register/open a preview — the inline preview card in
-  // the tool row is the only entry point, so HTML artifacts never pop the rail
-  // open on their own.
+  // Restore the session preview when its session becomes active.
   useEffect(() => {
     if (currentView !== 'chat' || !previewSessionId) {
       setPreviewTarget(null)
@@ -119,14 +149,31 @@ export function usePreviewRouting({
         return
       }
 
-      // Only refresh an already-open live preview when a file changes; never
-      // open one unprompted. (Preview links are surfaced from the tool row into
-      // the status stack — see tool-fallback.tsx.)
+      // Refresh an already-open live preview when a file changes; generated
+      // artifacts detected below may also open the preview rail for the turn.
       if ($previewTarget.get()?.kind === 'url' && gatewayEventCompletedFileDiff(event)) {
         requestPreviewReload()
       }
+
+      if (event.type === 'tool.complete') {
+        const targets = generatedToolTargets(asRecord(event.payload))
+        const target = targets[0]
+
+        if (target) {
+          const sessionId = activePreviewSessionId(activeSessionIdRef, routedSessionId, selectedStoredSessionId)
+          const cwd = $currentCwd.get() || currentCwd || ''
+
+          recordPreviewArtifact(sessionId, target, cwd)
+
+          void normalizeOrLocalPreviewTarget(target, cwd || undefined).then(preview => {
+            if (preview && (!event.session_id || event.session_id === activeSessionIdRef.current)) {
+              setCurrentSessionPreviewTarget(preview, 'tool-result', target)
+            }
+          })
+        }
+      }
     },
-    [activeSessionIdRef, baseHandleGatewayEvent]
+    [activeSessionIdRef, baseHandleGatewayEvent, currentCwd, routedSessionId, selectedStoredSessionId]
   )
 
   return { handleDesktopGatewayEvent, restartPreviewServer }

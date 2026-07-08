@@ -1,5 +1,6 @@
 import { type ToolTitleKey, translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
+import { extractGeneratedArtifactTargetsFromToolPayload } from '@/lib/generated-artifacts'
 import { summarizeShellCommand } from '@/lib/summarize-command'
 import { capitalize, normalize } from '@/lib/text'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
@@ -697,6 +698,20 @@ function durationLabel(resultRecord: Record<string, unknown>): string | undefine
 }
 
 function toolPreviewTarget(toolName: string, args: Record<string, unknown>, result: Record<string, unknown>): string {
+  const generated = extractGeneratedArtifactTargetsFromToolPayload(result)
+
+  if (generated.length > 0) {
+    return generated[0]
+  }
+
+  if (isFileEditTool(toolName)) {
+    const generatedFromArgs = extractGeneratedArtifactTargetsFromToolPayload(args)
+
+    if (generatedFromArgs.length > 0) {
+      return generatedFromArgs[0]
+    }
+  }
+
   const direct =
     firstStringField(result, ['preview', 'url', 'target']) ||
     firstStringField(args, ['preview', 'url', 'target', 'path', 'file', 'filepath']) ||

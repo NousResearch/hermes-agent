@@ -9,6 +9,7 @@ import {
   type PreviewTarget,
   registerSessionPreview
 } from '@/store/preview'
+import { $previewStatusBySession } from '@/store/preview-status'
 import { $currentCwd, $messages } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -62,6 +63,7 @@ describe('usePreviewRouting', () => {
     $currentCwd.set('/work')
     $messages.set([])
     $previewTarget.set(null)
+    $previewStatusBySession.set({})
     window.localStorage.clear()
     clearSessionPreviewRegistry()
     handleEvent = () => undefined
@@ -78,6 +80,7 @@ describe('usePreviewRouting', () => {
     cleanup()
     $messages.set([])
     $previewTarget.set(null)
+    $previewStatusBySession.set({})
     window.localStorage.clear()
     clearSessionPreviewRegistry()
     vi.restoreAllMocks()
@@ -120,7 +123,7 @@ describe('usePreviewRouting', () => {
     expect(window.hermesDesktop.normalizePreviewTarget).not.toHaveBeenCalled()
   })
 
-  it('does not auto-open a preview from tool results', async () => {
+  it('auto-opens and records generated artifacts from tool results', async () => {
     render(
       <PreviewRoutingHarness
         onEvent={handler => {
@@ -131,14 +134,35 @@ describe('usePreviewRouting', () => {
 
     act(() =>
       handleEvent({
-        payload: { inline_diff: '\u001b[38;2;218;165;32ma/preview-demo.html -> b/preview-demo.html\u001b[0m\n' },
+        payload: { result: { path: './dist/index.html' } },
         session_id: 'session-1',
         type: 'tool.complete'
       })
     )
-    act(() => handleEvent({ payload: { path: './dist/index.html' }, session_id: 'session-1', type: 'tool.complete' }))
+
+    await waitFor(() => {
+      expect($previewTarget.get()).toEqual({ ...previewTarget('./dist/index.html'), renderMode: 'preview' })
+    })
+    expect($previewStatusBySession.get()['session-1']).toMatchObject([{ cwd: '/work', target: './dist/index.html' }])
+  })
+
+  it('does not infer previews from non-artifact tool results', async () => {
+    render(
+      <PreviewRoutingHarness
+        onEvent={handler => {
+          handleEvent = handler
+        }}
+      />
+    )
+
+    act(() =>
+      handleEvent({
+        payload: { result: { url: 'https://example.com/docs' } },
+        session_id: 'session-1',
+        type: 'tool.complete'
+      })
+    )
 
     expect($previewTarget.get()).toBeNull()
-    expect(window.localStorage.getItem('hermes.desktop.sessionPreviews.v1')).toBeNull()
   })
 })

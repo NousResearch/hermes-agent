@@ -18,6 +18,7 @@ from wyoming.info import Describe, Info
 from wyoming.ping import Ping, Pong
 from wyoming.pipeline import RunPipeline
 from wyoming.satellite import RunSatellite
+from wyoming.snd import Played
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class SatelliteLink:
         on_pipeline_start: Callable[[str], Awaitable[None]],
         on_audio_chunk: Callable[[str, bytes, float, int], Awaitable[None]],
         on_played: Callable[[str], Awaitable[None]],
+        on_disconnect: Optional[Callable[[str], Awaitable[None]]] = None,
         tts_sample_rate: int = 22050,
         reconnect_max_delay: float = 60.0,
     ):
@@ -45,6 +47,7 @@ class SatelliteLink:
         self._on_pipeline_start = on_pipeline_start
         self._on_audio_chunk = on_audio_chunk
         self._on_played = on_played
+        self._on_disconnect = on_disconnect
         self._reconnect_max_delay = reconnect_max_delay
         self._client: Optional[AsyncTcpClient] = None
         self._task: Optional[asyncio.Task] = None
@@ -91,6 +94,14 @@ class SatelliteLink:
                 )
             finally:
                 await self._close_client()
+                if self._on_disconnect is not None:
+                    try:
+                        await self._on_disconnect(self.name)
+                    except Exception:
+                        logger.exception(
+                            "[voice_satellite:%s] on_disconnect callback error",
+                            self.name,
+                        )
             await asyncio.sleep(delay + random.uniform(0, delay / 2))
             delay = min(delay * 2, self._reconnect_max_delay)
 
@@ -135,7 +146,7 @@ class SatelliteLink:
             if snd_format.get("rate"):
                 self.snd_rate = int(snd_format["rate"])
             await self._on_pipeline_start(self.name)
-        elif event.type == "played":
+        elif Played.is_type(event.type):
             await self._on_played(self.name)
         # detection / streaming-started / streaming-stopped etc.: no-op in M1
 

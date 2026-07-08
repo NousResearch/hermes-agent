@@ -72,6 +72,15 @@ class FakeSatellite:
     async def send_ping(self) -> None:
         await async_write_event(Ping().event(), self._writer)
 
+    async def wake_only(self) -> None:
+        """Send just the run-pipeline (local wake) with no mic audio."""
+        await async_write_event(
+            RunPipeline(
+                start_stage=PipelineStage.ASR, end_stage=PipelineStage.TTS
+            ).event(),
+            self._writer,
+        )
+
     async def wake_and_stream(
         self, pcm: bytes, rate: int = 16000, chunk_bytes: int = 3200
     ) -> None:

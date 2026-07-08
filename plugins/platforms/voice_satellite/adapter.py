@@ -31,9 +31,12 @@ logger = logging.getLogger(__name__)
 def _import_sibling(name: str):
     """Load a module that lives next to this file.
 
-    plugins/platforms/ has no __init__.py on purpose (plugins are not
-    importable as dotted packages), so siblings load by file path — the
-    same mechanism tests/gateway/_plugin_adapter_loader.py uses.
+    The runtime plugin loader imports this plugin as a package (it ships an
+    __init__.py), but the TEST loader
+    (tests/gateway/_plugin_adapter_loader.py) loads adapter.py standalone with
+    no package context, so a relative/dotted sibling import would fail there.
+    Loading siblings by file path works under both loaders — the same
+    mechanism the test loader itself uses.
     """
     mod_key = f"hermes_voice_satellite_{name}"
     if mod_key in sys.modules:
@@ -104,11 +107,33 @@ class VoiceSatelliteAdapter(BasePlatformAdapter):
         self._endpointing = dict(extra.get("endpointing", {}))
         self._listen_timeout = float(extra.get("listen_timeout_seconds", 30.0))
         self._tts_sample_rate = int(extra.get("tts_sample_rate", 22050))
+        self._reply_timeout = float(extra.get("reply_timeout_seconds", 120.0))
         self._links: Dict[str, Any] = {}
         self._machines: Dict[str, Any] = {}
         self._transcribe_tasks: set = set()
+        # chat_ids whose turn reply was already spoken by play_tts, so the
+        # base path's follow-up send() must not re-speak the same text.
+        self._reply_spoken: set = set()
+        # per-satellite reply watchdog tasks (frees a stuck THINKING machine).
+        self._watchdogs: Dict[str, asyncio.Task] = {}
         self._audio = _import_sibling("audio")
         self._tm = _import_sibling("turn_machine")
+
+    # -- authorization: satellites are trusted by being listed in config ----
+    @property
+    def authorization_is_upstream(self) -> bool:
+        """Voice satellites are authorized UPSTREAM by operator configuration.
+
+        A satellite has no user-account identity the gateway could match against
+        a ``{PLATFORM}_ALLOWED_USERS`` allowlist: its identity IS its configured
+        name, and it only exists because the operator listed it in
+        ``config.yaml`` on a trusted LAN. Listing a satellite is the
+        authorization grant — mirroring the relay adapter's upstream-trust
+        posture (see ``BasePlatformAdapter.authorization_is_upstream`` and the
+        carve-out in ``gateway/authz_mixin.py``). Keep satellites LAN-only; they
+        are not network-exposed and carry no per-sender allowlist.
+        """
+        return True
 
     # -- auto-TTS: this surface is voice-only, always speak replies --------
     def _should_auto_tts_for_chat(self, chat_id: str) -> bool:
@@ -134,6 +159,7 @@ class VoiceSatelliteAdapter(BasePlatformAdapter):
                 on_pipeline_start=self._on_pipeline_start,
                 on_audio_chunk=self._on_audio_chunk,
                 on_played=self._on_played,
+                on_disconnect=self._on_link_disconnect,
                 tts_sample_rate=int(cfg.get("tts_sample_rate", self._tts_sample_rate)),
             )
             self._links[name] = link
@@ -147,6 +173,9 @@ class VoiceSatelliteAdapter(BasePlatformAdapter):
         for task in list(self._transcribe_tasks):
             task.cancel()
         self._transcribe_tasks.clear()
+        for name in list(self._watchdogs):
+            self._cancel_watchdog(name)
+        self._reply_spoken.clear()
         for link in self._links.values():
             await link.stop()
         self._links.clear()
@@ -166,8 +195,24 @@ class VoiceSatelliteAdapter(BasePlatformAdapter):
     # -- inbound: satellite -> agent ----------------------------------------
     async def _on_pipeline_start(self, name: str) -> None:
         machine = self._machines[name]
+        # New turn: clear any stale "already spoke" flag from a prior turn whose
+        # base follow-up send() never arrived (e.g. text-only fallback path).
+        self._reply_spoken.discard(name)
         if machine.on_pipeline_start(now=time.monotonic()):
             logger.info("[voice_satellite:%s] listening", name)
+        else:
+            # Wake fired mid-turn (THINKING/SPEAKING/...): the satellite is now
+            # streaming mic audio and will ONLY stop when it receives a
+            # transcript. Send an empty one so it returns to wake mode instead
+            # of streaming forever into a busy machine.
+            logger.info(
+                "[voice_satellite:%s] wake ignored (phase=%s)",
+                name, machine.phase.value,
+            )
+            try:
+                await self._links[name].send_transcript("")
+            except ConnectionError:
+                pass
 
     async def _on_audio_chunk(
         self, name: str, pcm: bytes, seconds: float, rate: int
@@ -202,6 +247,52 @@ class VoiceSatelliteAdapter(BasePlatformAdapter):
             await self._links[name].send_transcript("")
         except ConnectionError:
             pass
+
+    def _cancel_watchdog(self, name: str) -> None:
+        task = self._watchdogs.pop(name, None)
+        if task is not None:
+            task.cancel()
+
+    def _arm_watchdog(self, name: str) -> None:
+        """Free a machine that never reaches playback (agent turn produced no
+        reply, or the base reply path never called play_tts).
+
+        The transcript was already sent, so the satellite itself is fine and
+        back in wake mode; this only unsticks the local machine so the next
+        wake can start a turn instead of being rejected forever as THINKING.
+        """
+        self._cancel_watchdog(name)
+        task = asyncio.create_task(self._reply_watchdog(name))
+        self._watchdogs[name] = task
+        task.add_done_callback(
+            lambda t, n=name: self._watchdogs.pop(n, None) if self._watchdogs.get(n) is t else None
+        )
+
+    async def _reply_watchdog(self, name: str) -> None:
+        try:
+            await asyncio.sleep(self._reply_timeout)
+        except asyncio.CancelledError:
+            return
+        machine = self._machines.get(name)
+        if machine is not None and machine.phase is self._tm.TurnPhase.THINKING:
+            logger.warning(
+                "[voice_satellite:%s] no reply within %.0fs; freeing turn",
+                name, self._reply_timeout,
+            )
+            machine.to_idle()
+
+    async def _on_link_disconnect(self, name: str) -> None:
+        """Reset per-satellite state when the link drops mid-turn.
+
+        A dropped connection strands the machine in whatever phase it held; on
+        reconnect the satellite is back in wake mode, so the machine must be
+        idle to accept the next wake.
+        """
+        machine = self._machines.get(name)
+        if machine is not None:
+            machine.to_idle()
+        self._reply_spoken.discard(name)
+        self._cancel_watchdog(name)
 
     async def _transcribe_and_dispatch(
         self, name: str, utterance: bytes, rate: int
@@ -269,6 +360,12 @@ class VoiceSatelliteAdapter(BasePlatformAdapter):
             text=text, message_type=MessageType.VOICE, source=source
         )
         await self.handle_message(event)
+        # If the agent turn never reaches playback (no reply, or a base path
+        # that skipped play_tts), free the machine after a timeout so the next
+        # wake works. play_tts / the send() text-only fallback cancel this once
+        # the turn is genuinely resolved.
+        if machine.phase is self._tm.TurnPhase.THINKING:
+            self._arm_watchdog(name)
 
     # -- outbound: agent -> satellite ----------------------------------------
     def prepare_tts_text(self, text: str) -> str:
@@ -281,20 +378,51 @@ class VoiceSatelliteAdapter(BasePlatformAdapter):
         machine = self._machines.get(chat_id)
         if link is None or not link.connected:
             return SendResult(success=False, error=f"satellite {chat_id} not connected")
+
+        TurnPhase = self._tm.TurnPhase
+        if machine is not None and machine.phase not in (
+            TurnPhase.THINKING, TurnPhase.IDLE
+        ):
+            # Busy (listening/transcribing/already speaking): refuse WITHOUT
+            # touching the machine so the in-flight turn is left intact.
+            return SendResult(
+                success=False,
+                error=f"satellite {chat_id} busy ({machine.phase.value})",
+                retryable=True,
+            )
+
+        was_turn_reply = machine is not None and machine.phase is TurnPhase.THINKING
+        started = False
+        played = False
         try:
+            # Transcode BEFORE touching the machine: a transcode failure then
+            # leaves the machine untouched (no on_reply_started without a
+            # matching on_playback_done in finally).
             pcm = await asyncio.to_thread(
                 self._audio.transcode_to_pcm, audio_path, link.snd_rate
             )
             if machine is not None:
+                self._cancel_watchdog(chat_id)
                 machine.on_reply_started()
+                started = True
             await link.play_pcm(pcm, rate=link.snd_rate)
+            # TCP writes drain far faster than the speaker plays back. Hold the
+            # turn SPEAKING for the audio's real duration so a wake during
+            # playback is rejected — opening the mic now would capture our own
+            # TTS audio bleeding from the speaker.
+            await asyncio.sleep(min(len(pcm) / (link.snd_rate * 2), 120.0))
+            played = True
             return SendResult(success=True)
         except Exception as err:  # noqa: BLE001 - surface as failed send
             logger.warning("[voice_satellite:%s] playback failed: %s", chat_id, err)
             return SendResult(success=False, error=str(err), retryable=True)
         finally:
-            if machine is not None:
+            if started and machine is not None:
                 machine.on_playback_done()
+                if was_turn_reply and played:
+                    # This turn's reply was spoken here; the base path's
+                    # follow-up send() of the same text must not re-speak it.
+                    self._reply_spoken.add(chat_id)
 
     async def send(
         self,
@@ -303,10 +431,28 @@ class VoiceSatelliteAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        if chat_id in self._reply_spoken:
+            # Base reply path: the text portion follows a play_tts that
+            # already spoke this turn's reply.
+            self._reply_spoken.discard(chat_id)
+            return SendResult(success=True)
         machine = self._machines.get(chat_id)
         if machine is not None and machine.phase is not self._tm.TurnPhase.IDLE:
-            # Mid-turn text reply: the spoken reply arrives via play_tts;
-            # a voice-only surface has nowhere to render text.
+            if machine.phase is self._tm.TurnPhase.THINKING:
+                # Auto-TTS failed upstream and base fell back to text-only:
+                # nothing to play on a voice-only surface; end the turn so
+                # the next wake works.
+                logger.warning(
+                    "[voice_satellite:%s] text-only reply (TTS unavailable); "
+                    "turn ended without audio", chat_id,
+                )
+                self._cancel_watchdog(chat_id)
+                machine.to_idle()
+                return SendResult(success=True)
+            logger.warning(
+                "[voice_satellite:%s] dropping message during active turn "
+                "(phase=%s)", chat_id, machine.phase.value,
+            )
             return SendResult(success=True)
         # Idle announce (cron delivery, background completion): speak it.
         return await self._announce(chat_id, content)

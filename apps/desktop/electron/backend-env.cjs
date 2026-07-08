@@ -87,6 +87,7 @@ function buildDesktopBackendEnv({
   const key = pathEnvKey(currentEnv, platform)
 
   return {
+    PYTHONUTF8: '1',
     PYTHONPATH: appendUniquePathEntries([...pythonPathEntries, currentPythonPath], { delimiter }),
     [key]: buildDesktopBackendPath({
       hermesHome,

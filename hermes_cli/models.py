@@ -48,6 +48,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("google/gemini-3.1-pro-preview",          ""),
     ("google/gemini-3.5-flash",                ""),
     # xAI
+    ("x-ai/grok-4.5",                          ""),
     ("x-ai/grok-4.3",                          ""),
     # DeepSeek
     ("deepseek/deepseek-v4-pro",               ""),
@@ -122,7 +123,7 @@ _XAI_STATIC_FALLBACK: list[str] = [
 
 # Callable via xAI OAuth but omitted from models.dev and /v1/models listings.
 _XAI_CURATED_EXTRAS: list[str] = [
-    "grok-4.5",  # early access — not yet in models.dev / public listings
+    "grok-4.5",  # GA 2026-07 — kept until the models.dev disk cache refreshes
     "grok-composer-2.5-fast",
 ]
 
@@ -193,6 +194,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-3.1-pro-preview",
         "google/gemini-3.5-flash",
         # xAI
+        "x-ai/grok-4.5",
         "x-ai/grok-4.3",
         # DeepSeek
         "deepseek/deepseek-v4-pro",

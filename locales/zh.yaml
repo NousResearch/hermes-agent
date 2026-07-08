@@ -99,8 +99,8 @@ gateway:
     upload_failed:         "✗ 无法上传调试报告：{error}"
     header:                "**调试报告已上传：**"
     auto_delete:           "⏱ 粘贴内容将在 6 小时后自动删除。"
-    full_logs_hint:        "如需上传完整日志，请在 CLI 中使用 `hermes debug share`。"
-    share_hint:            "请将这些链接分享给 Hermes 团队以获得支持。"
+    full_logs_hint:        "如需上传完整日志，请在 CLI 中使用 `ht debug share`。"
+    share_hint:            "请将这些链接分享给 HT AI Agent 维护者以获得支持。"
 
   deny:
     stale:                 "❌ 命令已拒绝（批准已过期）。"
@@ -139,7 +139,7 @@ gateway:
     set:                   "⊙ 目标已设置（{budget} 轮预算）：{goal}\n我将持续工作直到目标完成、你暂停/清除它，或预算耗尽。\n控制命令：/goal status · /goal pause · /goal resume · /goal clear"
 
   help:
-    header:                "📖 **Hermes 命令**\n"
+    header:                "📖 **HT AI Agent 命令**\n"
     skill_header:          "\n⚡ **技能命令**（{count} 个活跃）："
     more_use_commands:     "\n... 还有 {count} 个。使用 `/commands` 查看完整分页列表。"
 
@@ -150,7 +150,7 @@ gateway:
   kanban:
     error_prefix:          "⚠ kanban 错误：{error}"
     subscribed_suffix:     "（已订阅 — 当 {task_id} 完成或被阻塞时将通知您）"
-    truncated_suffix:      "…（已截断；如需完整输出请在终端运行 `hermes kanban …`）"
+    truncated_suffix:      "…（已截断；如需完整输出请在终端运行 `ht kanban …`）"
     no_output:             "（无输出）"
     wake:
       completed:           "已完成"
@@ -227,7 +227,7 @@ gateway:
 
   restart:
     in_progress:           "⏳ 网关重启已在进行中……"
-    restarting:            "♻ 正在重启网关。如果 60 秒内没有收到通知，请在控制台运行 `hermes gateway restart` 重启。"
+    restarting:            "♻ 正在重启网关。如果 60 秒内没有收到通知，请在控制台运行 `ht gateway restart` 重启。"
 
   resume:
     db_unavailable:        "会话数据库不可用。"
@@ -235,7 +235,7 @@ gateway:
 Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
     matrix_no_named_sessions: "No named sessions found for this Matrix room.
 Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
-    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so HT AI Agent will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
     matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
@@ -271,7 +271,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     success:               "✅ 主频道已设置为 **{name}**（ID：{chat_id}）。\n定时任务和跨平台消息将发送到此处。"
 
   status:
-    header:                "📊 **Hermes 网关状态**"
+    header:                "📊 **HT AI Agent 网关状态**"
     matrix_scope_header:   "**Matrix scope:**"
     matrix_scope_room:     "  room: {room}"
     matrix_scope_room_id:  "  room_id: {room_id}"
@@ -316,7 +316,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     topics_user_disallowed:  "Telegram topics 已启用，但不允许用户创建 topics。\n\n打开 @BotFather → 选择您的 bot → Bot Settings → Threads Settings，然后关闭 'Disallow users to create new threads'。\n\n然后再次发送 /topic。"
     enable_failed:           "启用 Telegram topic 模式失败：{error}"
     bound_status:            "此 topic 已关联到：\n会话：{label}\nID：{session_id}\n\n使用 /new 将此 topic 替换为新会话。\n如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个 topic。"
-    thread_ready:            "Telegram 多会话 topics 已启用。\n\n此 topic 将作为独立的 Hermes 会话使用。使用 /new 替换此 topic 的当前会话。如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个 topic。"
+    thread_ready:            "Telegram 多会话 topics 已启用。\n\n此 topic 将作为独立的 HT AI Agent 会话使用。使用 /new 替换此 topic 的当前会话。如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个 topic。"
     untitled_session:        "未命名会话"
 
   undo:
@@ -325,11 +325,11 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_count:         "无效的数量「{arg}」—— 请使用 /undo 或 /undo N。"
 
   update:
-    platform_not_messaging:  "✗ /update 仅在消息平台可用。请在终端运行 `hermes update`。"
+    platform_not_messaging:  "✗ /update 仅在消息平台可用。请在终端运行 `ht update`。"
     not_git_repo:            "✗ 不是 git 仓库 — 无法更新。"
-    hermes_cmd_not_found:    "✗ 无法找到 `hermes` 命令。Hermes 正在运行，但更新命令无法在 PATH 上或通过当前 Python 解释器找到可执行文件。请尝试在终端中手动运行 `hermes update`。"
+    hermes_cmd_not_found:    "✗ 无法找到 `hermes` 命令。HT AI Agent 正在运行，但更新命令无法在 PATH 上或通过当前 Python 解释器找到可执行文件。请尝试在终端中手动运行 `ht update`。"
     start_failed:            "✗ 启动更新失败：{error}"
-    starting:                "⚕ 正在启动 Hermes 更新…… 进度将在此处显示。"
+    starting:                "⚕ 正在启动 HT AI Agent 更新…… 进度将在此处显示。"
 
   usage:
     rate_limits:              "⏱️ **速率限制：** {state}"

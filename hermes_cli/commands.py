@@ -1204,7 +1204,12 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     seen: set[str] = set()
 
     # Reserve /hermes as the catch-all top-level command.
-    entries.append(("hermes", "Talk to Hermes or run a subcommand", "[subcommand] [args]"))
+    entries.append(("ht", "Talk to HT AI Agent or run a subcommand", "[subcommand] [args]"))
+    seen.add("ht")
+    # /hermes is NOT emitted (Slack caps apps at 50 slashes; no slot to spare).
+    # Existing workspaces registered /hermes in their old app manifest and the
+    # Slack adapter still routes it; marking it seen stops the CommandDef from
+    # re-adding it here.
     seen.add("hermes")
 
     def _add(name: str, desc: str, hint: str) -> None:
@@ -1259,7 +1264,7 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     return entries
 
 
-def slack_app_manifest(request_url: str = "https://hermes-agent.local/slack/commands") -> dict[str, Any]:
+def slack_app_manifest(request_url: str = "https://ht-ai-agent.local/slack/commands") -> dict[str, Any]:
     """Generate a Slack app manifest with all gateway commands as slashes.
 
     ``request_url`` is required by Slack's manifest schema for every slash

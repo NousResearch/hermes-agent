@@ -99,8 +99,8 @@ gateway:
     upload_failed:         "✗ Не вдалося завантажити звіт налагодження: {error}"
     header:                "**Звіт налагодження завантажено:**"
     auto_delete:           "⏱ Вставки автоматично видаляться через 6 годин."
-    full_logs_hint:        "Щоб завантажити повні журнали, використайте `hermes debug share` з CLI."
-    share_hint:            "Поділіться цими посиланнями з командою Hermes для отримання підтримки."
+    full_logs_hint:        "Щоб завантажити повні журнали, використайте `ht debug share` з CLI."
+    share_hint:            "Поділіться цими посиланнями з супровідниками HT AI Agent для отримання підтримки."
 
   deny:
     stale:                 "❌ Команду відхилено (схвалення застаріло)."
@@ -139,7 +139,7 @@ gateway:
     set:                   "⊙ Ціль встановлено (бюджет {budget} ходів): {goal}\nЯ продовжуватиму працювати, доки ціль не буде досягнута, ви її не призупините/очистите, або бюджет не вичерпається.\nКерування: /goal status · /goal pause · /goal resume · /goal clear"
 
   help:
-    header:                "📖 **Команди Hermes**\n"
+    header:                "📖 **Команди HT AI Agent**\n"
     skill_header:          "\n⚡ **Команди навичок** ({count} активних):"
     more_use_commands:     "\n... і ще {count}. Використайте `/commands` для повного списку зі сторінками."
 
@@ -150,7 +150,7 @@ gateway:
   kanban:
     error_prefix:          "⚠ помилка kanban: {error}"
     subscribed_suffix:     "(підписано — ви отримаєте сповіщення, коли {task_id} завершиться або буде заблоковано)"
-    truncated_suffix:      "… (скорочено; використовуйте `hermes kanban …` у терміналі для повного виводу)"
+    truncated_suffix:      "… (скорочено; використовуйте `ht kanban …` у терміналі для повного виводу)"
     no_output:             "(немає виводу)"
     wake:
       completed:           "completed"
@@ -227,7 +227,7 @@ gateway:
 
   restart:
     in_progress:           "⏳ Перезапуск гейтвея вже виконується..."
-    restarting:            "♻ Перезапуск гейтвея. Якщо ви не отримаєте сповіщення протягом 60 секунд, перезапустіть із консолі командою `hermes gateway restart`."
+    restarting:            "♻ Перезапуск гейтвея. Якщо ви не отримаєте сповіщення протягом 60 секунд, перезапустіть із консолі командою `ht gateway restart`."
 
   resume:
     db_unavailable:        "База даних сеансів недоступна."
@@ -235,7 +235,7 @@ gateway:
 Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
     matrix_no_named_sessions: "No named sessions found for this Matrix room.
 Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
-    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so HT AI Agent will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
     matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
@@ -271,7 +271,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     success:               "✅ Головний канал встановлено на **{name}** (ID: {chat_id}).\nCron-завдання та міжплатформні повідомлення доставлятимуться сюди."
 
   status:
-    header:                "📊 **Стан Hermes Gateway**"
+    header:                "📊 **Стан HT AI Agent Gateway**"
     matrix_scope_header:   "**Matrix scope:**"
     matrix_scope_room:     "  room: {room}"
     matrix_scope_room_id:  "  room_id: {room_id}"
@@ -316,7 +316,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     topics_user_disallowed:  "Telegram topics увімкнено, але користувачам не дозволено створювати topics.\n\nВідкрийте @BotFather → виберіть свого бота → Bot Settings → Threads Settings, потім вимкніть 'Disallow users to create new threads'.\n\nПотім надішліть /topic знову."
     enable_failed:           "Не вдалося ввімкнути режим Telegram topic: {error}"
     bound_status:            "Цей topic пов'язано з:\nСесія: {label}\nID: {session_id}\n\nВикористовуйте /new, щоб замінити цей topic новою сесією.\nДля паралельної роботи відкрийте All Messages і надішліть там повідомлення, щоб створити інший topic."
-    thread_ready:            "Багатосесійні Telegram topics увімкнено.\n\nЦей topic використовуватиметься як незалежна сесія Hermes. Використовуйте /new, щоб замінити поточну сесію цього topic. Для паралельної роботи відкрийте All Messages і надішліть там повідомлення, щоб створити інший topic."
+    thread_ready:            "Багатосесійні Telegram topics увімкнено.\n\nЦей topic використовуватиметься як незалежна сесія HT AI Agent. Використовуйте /new, щоб замінити поточну сесію цього topic. Для паралельної роботи відкрийте All Messages і надішліть там повідомлення, щоб створити інший topic."
     untitled_session:        "Сесія без назви"
 
   undo:
@@ -325,11 +325,11 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_count:         "Недійсне число «{arg}» — використовуйте /undo або /undo N."
 
   update:
-    platform_not_messaging:  "✗ /update доступний лише на платформах обміну повідомленнями. Виконайте `hermes update` у терміналі."
+    platform_not_messaging:  "✗ /update доступний лише на платформах обміну повідомленнями. Виконайте `ht update` у терміналі."
     not_git_repo:            "✗ Не git-репозиторій — оновлення неможливе."
-    hermes_cmd_not_found:    "✗ Не вдалося знайти команду `hermes`. Hermes запущено, але команда оновлення не знайшла виконуваний файл у PATH або через поточний інтерпретатор Python. Спробуйте виконати `hermes update` вручну у вашому терміналі."
+    hermes_cmd_not_found:    "✗ Не вдалося знайти команду `hermes`. HT AI Agent запущено, але команда оновлення не знайшла виконуваний файл у PATH або через поточний інтерпретатор Python. Спробуйте виконати `ht update` вручну у вашому терміналі."
     start_failed:            "✗ Не вдалося запустити оновлення: {error}"
-    starting:                "⚕ Запуск оновлення Hermes… Я транслюватиму прогрес сюди."
+    starting:                "⚕ Запуск оновлення HT AI Agent… Я транслюватиму прогрес сюди."
 
   usage:
     rate_limits:              "⏱️ **Обмеження швидкості:** {state}"

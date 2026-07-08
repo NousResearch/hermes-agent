@@ -642,6 +642,7 @@ export type GatewayEvent =
   | { payload?: { no_speech_limit?: boolean; text?: string }; session_id?: string; type: 'voice.transcript' }
   | { payload?: { reason?: string }; session_id?: string; type: 'dashboard.new_session_requested' }
   | { payload: { line: string }; session_id?: string; type: 'gateway.stderr' }
+  | { payload?: { attempt?: number; delay_ms?: number }; session_id?: string; type: 'gateway.reconnecting' }
   | {
       payload?: { level?: 'info' | 'warn' | 'error'; message?: string }
       session_id?: string

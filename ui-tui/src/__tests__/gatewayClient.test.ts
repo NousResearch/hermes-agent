@@ -97,7 +97,7 @@ const { FakeWebSocket } = vi.hoisted(() => {
 
 vi.mock('undici', () => ({ WebSocket: FakeWebSocket }))
 
-import { GatewayClient } from '../gatewayClient.js'
+import { GatewayClient, RECONNECT_BASE_MS, RECONNECT_MAX_MS, WS_HEARTBEAT_DEAD_MS, WS_HEARTBEAT_INTERVAL_MS } from '../gatewayClient.js'
 
 describe('GatewayClient websocket attach mode', () => {
   const originalWebSocket = globalThis.WebSocket
@@ -492,5 +492,35 @@ describe('GatewayClient websocket attach mode', () => {
     expect(tail).not.toContain('token=secret')
 
     gw.kill()
+  })
+
+  it('auto-reconnects after a silent dead connection (issue #32997)', async () => {
+    vi.useFakeTimers()
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+    gw.start()
+    const first = FakeWebSocket.instances[0]!
+    first.open()
+    // Advance past one heartbeat tick (no inbound frames -> lastActivityAt stale).
+    await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_INTERVAL_MS)
+    // Advance past the dead window -> heartbeat forces close -> handleTransportExit -> reconnect scheduled.
+    await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_DEAD_MS)
+    // Advance past the base backoff -> start() opens a new socket.
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS)
+    expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2)
+    gw.kill()
+    vi.useRealTimers()
+  })
+
+  it('does not auto-reconnect after an intentional kill() (issue #32997)', async () => {
+    vi.useFakeTimers()
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+    gw.start()
+    FakeWebSocket.instances[0]!.open()
+    gw.kill() // sets disposed
+    await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_DEAD_MS + RECONNECT_MAX_MS + 1000)
+    expect(FakeWebSocket.instances.length).toBe(1) // no reconnect attempted
+    vi.useRealTimers()
   })
 })

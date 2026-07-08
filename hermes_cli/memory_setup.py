@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 import sys
 import shlex
-from pathlib import Path
 
 from hermes_constants import get_hermes_home
 from hermes_cli.secret_prompt import masked_secret_prompt
@@ -289,7 +288,6 @@ def cmd_setup(args) -> None:
     if not isinstance(provider_config, dict):
         provider_config = {}
 
-    env_path = get_hermes_home() / ".env"
     env_writes = {}
 
     if schema:
@@ -368,7 +366,7 @@ def cmd_setup(args) -> None:
 
     # Write secrets to .env
     if env_writes:
-        _write_env_vars(env_path, env_writes)
+        _write_env_vars(env_writes)
 
     print(f"\n  Memory provider: {name}")
     print("  Activation saved to config.yaml")
@@ -379,35 +377,37 @@ def cmd_setup(args) -> None:
     print("\n  Start a new session to activate.\n")
 
 
-def _write_env_vars(env_path: Path, env_writes: dict) -> None:
-    """Append or update env vars in .env file."""
-    env_path.parent.mkdir(parents=True, exist_ok=True)
+def _write_env_vars(env_writes: dict) -> None:
+    """Persist memory-provider env vars through the canonical ``.env`` writer.
 
-    existing_lines = []
-    if env_path.exists():
-        existing_lines = env_path.read_text(encoding="utf-8").splitlines()
+    Delegates to ``hermes_cli.config.save_env_value`` so every key flows
+    through the same input-validation gate as every other ``.env`` writer:
+    the ``_ENV_VAR_NAME_RE`` regex (no malformed identifiers), the
+    ``_ENV_VAR_NAME_DENYLIST`` (no ``LD_PRELOAD`` / ``PYTHONPATH`` /
+    ``HERMES_HOME`` / etc.), CR/LF stripping on the value, and the atomic
+    0o600-from-creation write (no TOCTOU permission window). This function
+    previously wrote via ``Path.write_text`` directly, bypassing all of
+    that: a memory-provider plugin schema declaring ``env_var: "LD_PRELOAD"``
+    would land in ``.env`` verbatim and load via the ``env_loader.py``
+    ``.env`` -> ``os.environ`` chain on the next Hermes startup, and the
+    file existed at the default umask between the write and the later
+    ``chmod`` regardless of key legitimacy.
 
-    updated_keys = set()
-    new_lines = []
-    for line in existing_lines:
-        key_match = line.split("=", 1)[0].strip() if "=" in line else ""
-        if key_match in env_writes:
-            new_lines.append(f"{key_match}={env_writes[key_match]}")
-            updated_keys.add(key_match)
-        else:
-            new_lines.append(line)
+    Validation failures (``ValueError`` from ``save_env_value`` — a
+    denylisted name or an identifier rejected by ``_ENV_VAR_NAME_RE``) are
+    surfaced and skipped rather than aborting the wizard, so a single bad
+    key from one schema field doesn't take down the rest of the batch.
+    Non-validation errors (filesystem failures, permission errors) are
+    intentionally NOT caught — those indicate the wizard cannot safely
+    persist any subsequent key either and should propagate.
+    """
+    from hermes_cli.config import save_env_value
 
     for key, val in env_writes.items():
-        if key not in updated_keys:
-            new_lines.append(f"{key}={val}")
-
-    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-    # Restrict permissions — .env holds API keys and tokens.
-    try:
-        import stat
-        env_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
-    except OSError:
-        pass  # Windows or read-only FS
+        try:
+            save_env_value(key, val)
+        except ValueError as exc:
+            print(f"  Skipping {key}: {exc}")
 
 
 # ---------------------------------------------------------------------------

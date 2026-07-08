@@ -2959,6 +2959,15 @@ DEFAULT_CONFIG = {
             # bounding CPU / memory / upstream-LLM-quota exhaustion from a
             # request flood. Set to 0 to disable the cap entirely.
             "max_concurrent_runs": 10,
+            # Experimental split-runtime support for /v1/runs. When enabled,
+            # an attached local executor on the SSE stream can execute a small
+            # allowlisted tool surface locally while the agent loop runs on the
+            # API-server host. Default off; PR 1 routes read-only file tools.
+            "split_runtime": {
+                "enabled": False,
+                "routed_toolsets": ["file"],
+                "request_timeout_seconds": 300,
+            },
         },
     },
 

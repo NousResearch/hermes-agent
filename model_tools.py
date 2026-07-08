@@ -1257,25 +1257,77 @@ def handle_function_call(
         except Exception:
             reset_current_observability_context = None
         try:
-            if function_name == "execute_code":
-                # Prefer the caller-provided list so subagents can't overwrite
-                # the parent's tool set via the process-global.
-                sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
-                def _dispatch(next_args: Dict[str, Any]) -> Any:
+            def _route_or_dispatch(
+                next_args: Dict[str, Any],
+                *,
+                sandbox_enabled: Optional[List[str]] = None,
+            ) -> Any:
+                try:
+                    from agent.split_runtime_router import (
+                        _NOT_ROUTED,
+                        _tool_error,
+                        route_tool_locally,
+                        should_route_tool_locally,
+                    )
+
+                    routed = route_tool_locally(
+                        function_name,
+                        next_args if isinstance(next_args, dict) else {},
+                        tool_call_id,
+                        task_id=task_id or "",
+                        session_id=session_id or "",
+                        turn_id=turn_id or "",
+                        api_request_id=api_request_id or "",
+                    )
+                    if routed is not _NOT_ROUTED:
+                        return routed
+                except Exception as _split_err:
+                    logger.debug("split-runtime routing error for %s: %s", function_name, _split_err)
+                    try:
+                        from agent.split_runtime_router import _tool_error, should_route_tool_locally
+
+                        if should_route_tool_locally(function_name):
+                            return _tool_error(
+                                "Split-runtime local routing failed before dispatch; refusing server-side fallback.",
+                                code="split_runtime_router_error",
+                                tool_call_id=tool_call_id,
+                            )
+                    except Exception:
+                        try:
+                            from gateway.tool_channel_state import get_current_split_runtime
+
+                            if get_current_split_runtime():
+                                return json.dumps({
+                                    "error": "Split-runtime router is unavailable; refusing server-side fallback while split runtime is active.",
+                                    "code": "split_runtime_router_unavailable",
+                                    "tool_call_id": tool_call_id or "",
+                                }, ensure_ascii=False)
+                        except Exception:
+                            pass
+
+                if function_name == "execute_code":
                     return registry.dispatch(
                         function_name, next_args,
                         task_id=task_id,
                         session_id=session_id,
                         enabled_tools=sandbox_enabled,
                     )
+                return registry.dispatch(
+                    function_name, next_args,
+                    task_id=task_id,
+                    session_id=session_id,
+                    user_task=user_task,
+                )
+
+            if function_name == "execute_code":
+                # Prefer the caller-provided list so subagents can't overwrite
+                # the parent's tool set via the process-global.
+                sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+                def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    return _route_or_dispatch(next_args, sandbox_enabled=sandbox_enabled)
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
-                    return registry.dispatch(
-                        function_name, next_args,
-                        task_id=task_id,
-                        session_id=session_id,
-                        user_task=user_task,
-                    )
+                    return _route_or_dispatch(next_args)
             from hermes_cli.middleware import run_tool_execution_middleware
 
             result = run_tool_execution_middleware(

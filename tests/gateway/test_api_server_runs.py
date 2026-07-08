@@ -9,6 +9,7 @@ Covers:
 """
 
 import asyncio
+import json
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -23,6 +24,12 @@ from gateway.platforms.api_server import (
     security_headers_middleware,
 )
 from tools import approval as approval_mod
+from gateway.tool_channel_state import (
+    clear_tool_channel_state,
+    register_tool_notify,
+    submit_tool_request,
+    unregister_tool_notify,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -30,12 +37,12 @@ from tools import approval as approval_mod
 # ---------------------------------------------------------------------------
 
 
-def _make_adapter(api_key: str = "") -> APIServerAdapter:
+def _make_adapter(api_key: str = "", extra: dict | None = None) -> APIServerAdapter:
     """Create an adapter with optional API key."""
-    extra = {}
+    cfg_extra = dict(extra or {})
     if api_key:
-        extra["key"] = api_key
-    config = PlatformConfig(enabled=True, extra=extra)
+        cfg_extra["key"] = api_key
+    config = PlatformConfig(enabled=True, extra=cfg_extra)
     adapter = APIServerAdapter(config)
     return adapter
 
@@ -49,6 +56,7 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
     app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
     app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
+    app.router.add_post("/v1/runs/{run_id}/tool_result", adapter._handle_run_tool_result)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
     return app
 
@@ -92,6 +100,17 @@ def adapter():
 @pytest.fixture
 def auth_adapter():
     return _make_adapter(api_key="sk-secret")
+
+
+@pytest.fixture
+def split_adapter():
+    return _make_adapter(extra={
+        "split_runtime": {
+            "enabled": True,
+            "routed_toolsets": ["file"],
+            "request_timeout_seconds": 1,
+        }
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -435,11 +454,268 @@ class TestRunEvents:
         assert resp.status == 404
 
     @pytest.mark.asyncio
+    async def test_events_rejects_second_consumer(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_events_conflict"
+        adapter._run_streams[run_id] = asyncio.Queue()
+        adapter._run_streams_created[run_id] = 1.0
+        adapter._run_event_consumers[run_id] = "events"
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(f"/v1/runs/{run_id}/events")
+            data = await resp.json()
+        assert resp.status == 409
+        assert data["error"]["code"] == "run_events_consumer_conflict"
+        adapter._run_streams.pop(run_id, None)
+        adapter._run_streams_created.pop(run_id, None)
+        adapter._run_event_consumers.pop(run_id, None)
+
+    @pytest.mark.asyncio
+    async def test_events_tool_executor_disabled_returns_409_and_does_not_leak_consumer(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_tool_executor_disabled"
+        adapter._run_streams[run_id] = asyncio.Queue()
+        adapter._run_streams_created[run_id] = 1.0
+        adapter._run_tool_sessions[run_id] = "disabled-tool-session"
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(f"/v1/runs/{run_id}/events?tool_executor=1")
+            data = await resp.json()
+        assert resp.status == 409
+        assert data["error"]["code"] == "split_runtime_disabled"
+        assert run_id not in adapter._run_event_consumers
+        adapter._run_streams.pop(run_id, None)
+        adapter._run_streams_created.pop(run_id, None)
+        adapter._run_tool_sessions.pop(run_id, None)
+
+    @pytest.mark.asyncio
+    async def test_events_tool_executor_round_trips_routed_read_file(self, split_adapter):
+        """A fake local executor can answer a routed read_file over /v1/runs SSE."""
+        app = _create_runs_app(split_adapter)
+        attach_ready = threading.Event()
+
+        class FakeAgent:
+            session_prompt_tokens = 0
+            session_completion_tokens = 0
+            session_total_tokens = 0
+
+            def run_conversation(self, user_message, conversation_history, task_id):
+                import model_tools
+
+                assert attach_ready.wait(timeout=3.0)
+                result = model_tools.handle_function_call(
+                    "read_file",
+                    {"path": "README.md"},
+                    task_id=task_id,
+                    tool_call_id="call_http_e2e",
+                    session_id="session-http-e2e",
+                    skip_pre_tool_call_hook=True,
+                    skip_tool_request_middleware=True,
+                )
+                return {"final_response": f"local executor returned: {result}"}
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(split_adapter, "_create_agent", return_value=FakeAgent()):
+                start_resp = await cli.post("/v1/runs", json={"input": "read local file"})
+                assert start_resp.status == 202
+                run_id = (await start_resp.json())["run_id"]
+
+                events_resp = await cli.get(
+                    f"/v1/runs/{run_id}/events?tool_executor=1",
+                    headers={"X-Hermes-Tool-Executor-Token": "executor-token"},
+                )
+                assert events_resp.status == 200
+                attach_ready.set()
+
+                request_event = None
+                for _ in range(10):
+                    raw = await asyncio.wait_for(events_resp.content.readline(), timeout=3.0)
+                    line = raw.decode().strip()
+                    if line.startswith("data: "):
+                        event = json.loads(line[6:])
+                        if event.get("event") == "tool.request":
+                            request_event = event
+                            break
+                assert request_event is not None
+                assert request_event["tool_call_id"] == "call_http_e2e"
+                assert request_event["tool_name"] == "read_file"
+                assert request_event["arguments"] == {"path": "README.md"}
+
+                result_resp = await cli.post(
+                    f"/v1/runs/{run_id}/tool_result",
+                    json={"tool_call_id": "call_http_e2e", "result": "LOCAL README CONTENT"},
+                    headers={"X-Hermes-Tool-Executor-Token": "executor-token"},
+                )
+                assert result_resp.status == 200
+
+                body = await asyncio.wait_for(events_resp.text(), timeout=3.0)
+                assert "tool.result" in body
+                assert "run.completed" in body
+                assert "LOCAL README CONTENT" in body
+
+    @pytest.mark.asyncio
     async def test_events_requires_auth(self, auth_adapter):
         app = _create_runs_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.get("/v1/runs/run_any/events")
         assert resp.status == 401
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/runs/{run_id}/tool_result — split-runtime local tool response
+# ---------------------------------------------------------------------------
+
+
+class TestRunToolResult:
+    @pytest.mark.asyncio
+    async def test_tool_result_returns_409_when_split_runtime_disabled(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_tool_disabled"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+        adapter._run_tool_sessions[run_id] = "disabled-session"
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/v1/runs/{run_id}/tool_result",
+                json={"tool_call_id": "call_disabled", "result": "ignored"},
+            )
+            data = await resp.json()
+        assert resp.status == 409
+        assert data["error"]["code"] == "split_runtime_disabled"
+
+    @pytest.mark.asyncio
+    async def test_tool_result_resolves_pending_request_and_emits_event(self, split_adapter):
+        app = _create_runs_app(split_adapter)
+        run_id = "run_tool_result"
+        session_key = "tool-session"
+        q: asyncio.Queue = asyncio.Queue()
+        split_adapter._run_statuses[run_id] = {"run_id": run_id, "status": "waiting_for_tool_result"}
+        split_adapter._run_tool_sessions[run_id] = session_key
+        split_adapter._run_streams[run_id] = q
+        try:
+            assert register_tool_notify(session_key, lambda request: None, "") is True
+            entry = submit_tool_request(session_key, {
+                "v": 1,
+                "tool_call_id": "call_1",
+                "tool_name": "read_file",
+                "arguments": {"path": "README.md"},
+            })
+            assert entry is not None
+
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    f"/v1/runs/{run_id}/tool_result",
+                    json={"tool_call_id": "call_1", "result": "local output"},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+            assert data == {
+                "object": "hermes.run.tool_result_response",
+                "run_id": run_id,
+                "tool_call_id": "call_1",
+                "status": "resolved",
+            }
+            assert entry.event.is_set()
+            assert entry.result == "local output"
+            assert split_adapter._run_statuses[run_id]["status"] == "running"
+            event = await asyncio.wait_for(q.get(), timeout=1.0)
+            assert event["event"] == "tool.result"
+            assert event["tool_call_id"] == "call_1"
+        finally:
+            unregister_tool_notify(session_key)
+            clear_tool_channel_state(session_key)
+
+    @pytest.mark.asyncio
+    async def test_tool_result_rejects_mismatched_executor_token(self, split_adapter):
+        app = _create_runs_app(split_adapter)
+        run_id = "run_tool_token_mismatch"
+        session_key = "tool-session-token"
+        split_adapter._run_statuses[run_id] = {"run_id": run_id, "status": "waiting_for_tool_result"}
+        split_adapter._run_tool_sessions[run_id] = session_key
+        try:
+            assert register_tool_notify(session_key, lambda request: None, "client-a") is True
+            entry = submit_tool_request(session_key, {"tool_call_id": "call_token"})
+            assert entry is not None
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    f"/v1/runs/{run_id}/tool_result",
+                    json={"tool_call_id": "call_token", "result": "wrong"},
+                    headers={"X-Hermes-Tool-Executor-Token": "client-b"},
+                )
+                data = await resp.json()
+        finally:
+            unregister_tool_notify(session_key)
+            clear_tool_channel_state(session_key)
+        assert resp.status == 403
+        assert data["error"]["code"] == "tool_result_executor_mismatch"
+        assert entry.result is None
+
+    @pytest.mark.asyncio
+    async def test_tool_result_accepts_matching_executor_token(self, split_adapter):
+        app = _create_runs_app(split_adapter)
+        run_id = "run_tool_token_match"
+        session_key = "tool-session-token-match"
+        split_adapter._run_statuses[run_id] = {"run_id": run_id, "status": "waiting_for_tool_result"}
+        split_adapter._run_tool_sessions[run_id] = session_key
+        try:
+            assert register_tool_notify(session_key, lambda request: None, "client-a") is True
+            entry = submit_tool_request(session_key, {"tool_call_id": "call_token_ok"})
+            assert entry is not None
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    f"/v1/runs/{run_id}/tool_result",
+                    json={"tool_call_id": "call_token_ok", "result": "right"},
+                    headers={"X-Hermes-Tool-Executor-Token": "client-a"},
+                )
+                data = await resp.json()
+        finally:
+            unregister_tool_notify(session_key)
+            clear_tool_channel_state(session_key)
+        assert resp.status == 200
+        assert data["status"] == "resolved"
+        assert entry.result == "right"
+
+    @pytest.mark.asyncio
+    async def test_tool_result_duplicate_is_idempotent(self, split_adapter):
+        app = _create_runs_app(split_adapter)
+        run_id = "run_tool_duplicate"
+        session_key = "tool-session-duplicate"
+        split_adapter._run_statuses[run_id] = {"run_id": run_id, "status": "waiting_for_tool_result"}
+        split_adapter._run_tool_sessions[run_id] = session_key
+        try:
+            assert register_tool_notify(session_key, lambda request: None, "") is True
+            entry = submit_tool_request(session_key, {"tool_call_id": "call_dup"})
+            assert entry is not None
+            async with TestClient(TestServer(app)) as cli:
+                first = await cli.post(
+                    f"/v1/runs/{run_id}/tool_result",
+                    json={"tool_call_id": "call_dup", "result": "one"},
+                )
+                second = await cli.post(
+                    f"/v1/runs/{run_id}/tool_result",
+                    json={"tool_call_id": "call_dup", "result": "two"},
+                )
+                assert first.status == 200
+                assert second.status == 200
+                second_data = await second.json()
+            assert second_data["status"] == "duplicate"
+            assert entry.result == "one"
+        finally:
+            unregister_tool_notify(session_key)
+            clear_tool_channel_state(session_key)
+
+    @pytest.mark.asyncio
+    async def test_tool_result_without_pending_request_returns_409(self, split_adapter):
+        app = _create_runs_app(split_adapter)
+        run_id = "run_tool_missing"
+        split_adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+        split_adapter._run_tool_sessions[run_id] = "missing-session"
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/v1/runs/{run_id}/tool_result",
+                json={"tool_call_id": "call_missing", "result": "late"},
+            )
+            data = await resp.json()
+        assert resp.status == 409
+        assert data["error"]["code"] == "tool_result_not_pending"
 
 
 # ---------------------------------------------------------------------------

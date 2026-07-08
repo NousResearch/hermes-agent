@@ -92,6 +92,7 @@ POST /v1/runs                    Start a run, returns run_id (202)
 GET  /v1/runs/{id}               Run status
 GET  /v1/runs/{id}/events        SSE stream of lifecycle events
 POST /v1/runs/{id}/approval      Resolve a pending approval
+POST /v1/runs/{id}/tool_result   Resolve a pending split-runtime local tool request
 POST /v1/runs/{id}/stop          Interrupt the run
 GET  /v1/capabilities            Machine-readable feature flags
 GET  /v1/models                  Lists hermes-agent
@@ -99,6 +100,8 @@ GET  /health, /health/detailed
 ```
 
 Setup, headers (`X-Hermes-Session-Id`, `X-Hermes-Session-Key`), and frontend wiring: [API Server](../user-guide/features/api-server).
+
+Split-runtime notes for `/v1/runs`: when `gateway.api_server.split_runtime.enabled` is true, an executor may attach with `GET /v1/runs/{id}/events?tool_executor=1` and answer `tool.request` events through `/tool_result`. PR1 supports one `/events` consumer per run and only routes read-only file tools. Optional executor identity uses the `X-Hermes-Tool-Executor-Token` header on both attach and result requests.
 
 ---
 

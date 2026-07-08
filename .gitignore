@@ -8,6 +8,7 @@ __pycache__/
 .venv
 .vscode/
 .env
+.op.env
 .env.local
 .env.development.local
 .env.test.local

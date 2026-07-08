@@ -334,11 +334,15 @@ def _resolve_prefill_messages_file(config: Dict[str, Any]) -> str:
     return ""
 
 
-def _parse_reasoning_config(effort: str) -> dict | None:
-    """Parse a reasoning effort level into an OpenRouter reasoning config dict."""
+def _parse_reasoning_config(effort) -> dict | None:
+    """Parse a reasoning effort level into an OpenRouter reasoning config dict.
+
+    Accepts the raw config value (string or YAML boolean — ``false``/``off``
+    parse as thinking disabled, see parse_reasoning_effort).
+    """
     from hermes_constants import parse_reasoning_effort
     result = parse_reasoning_effort(effort)
-    if effort and effort.strip() and result is None:
+    if effort and str(effort).strip() and result is None:
         logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
     return result
 
@@ -451,7 +455,9 @@ def load_cli_config() -> Dict[str, Any]:
             "resume_max_assistant_chars": 200,
             "resume_max_assistant_lines": 3,
             "resume_skip_tool_only": True,
-            "show_reasoning": False,
+            # Live reasoning display default ON — keep in sync with
+            # hermes_cli/config.py DEFAULT_CONFIG (display.show_reasoning).
+            "show_reasoning": True,
             "reasoning_full": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
@@ -623,6 +629,7 @@ def load_cli_config() -> Dict[str, Any]:
         "docker_env": "TERMINAL_DOCKER_ENV",
         "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
         "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+        "docker_network": "TERMINAL_DOCKER_NETWORK",
         "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
         "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
         "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
@@ -982,12 +989,82 @@ def _prepare_deferred_agent_startup() -> None:
             exc_info=True,
         )
 
+def _arm_exit_watchdog(timeout_s: float | None = None) -> None:
+    """Guarantee the process actually exits once shutdown has begun.
+
+    Two hang classes have kept "dead" CLI processes alive for minutes:
+
+      1. A cleanup step wedged on network I/O (memory provider
+         ``on_session_end``, MCP teardown, remote terminal cleanup).
+      2. Interpreter teardown blocked joining non-daemon threads —
+         stdlib ``ThreadPoolExecutor`` workers are joined unconditionally
+         by ``concurrent.futures``' atexit hook even after
+         ``shutdown(wait=False)``, so one tool thread wedged on a socket
+         held the process open forever (#27563 class).
+
+    The shared daemon pool (``tools.daemon_pool``) removes the main cause
+    of (2); this watchdog is the backstop for both. It arms a daemon
+    timer when ``_run_cleanup`` starts; if the process is still alive
+    after ``timeout_s`` it flushes logging/stdio and calls ``os._exit(0)``.
+    Daemon threads keep running through ``Py_FinalizeEx``'s thread joins,
+    so the timer fires even when the main thread is stuck in teardown.
+
+    Tune with ``HERMES_EXIT_WATCHDOG_S`` (seconds); ``0`` disables.
+    """
+    if timeout_s is None:
+        try:
+            timeout_s = float(os.getenv("HERMES_EXIT_WATCHDOG_S", "30"))
+        except (TypeError, ValueError):
+            timeout_s = 30.0
+    if timeout_s <= 0:
+        return
+    # Never arm under pytest: tests invoke _run_cleanup() directly and a
+    # 30s-delayed os._exit(0) would silently kill the test worker.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+
+    def _watchdog():
+        time.sleep(timeout_s)
+        # Still alive — cleanup or interpreter teardown is wedged.
+        try:
+            logger.warning(
+                "Exit watchdog fired after %.0fs — forcing process exit "
+                "(a cleanup step or non-daemon thread is wedged).",
+                timeout_s,
+            )
+        except Exception:
+            pass
+        try:
+            import logging as _lg
+            _lg.shutdown()
+        except Exception:
+            pass
+        for _stream in (sys.stdout, sys.stderr):
+            try:
+                _stream.flush()
+            except Exception:
+                pass
+        os._exit(0)
+
+    try:
+        threading.Thread(
+            target=_watchdog, daemon=True, name="exit-watchdog"
+        ).start()
+    except Exception:
+        pass  # best-effort — never block shutdown on watchdog setup
+
+
 def _run_cleanup(*, notify_session_finalize: bool = True):
     """Run resource cleanup exactly once."""
     global _cleanup_done
     if _cleanup_done:
         return
     _cleanup_done = True
+
+    # Bound total shutdown time: if cleanup (or the interpreter's
+    # thread-join teardown after it) wedges, force-exit instead of
+    # leaving a zombie CLI holding the terminal for minutes.
+    _arm_exit_watchdog()
 
     # Reset terminal input modes first, before the slower resource teardown
     # below (MCP / browser / memory shutdown can take seconds). On Ctrl+C the
@@ -3633,7 +3710,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
-        self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
+        self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", True)
         # reasoning_full: when reasoning display is on, print the post-response
         # recap box uncollapsed instead of clamping to the first 10 lines.
         self.reasoning_full = CLI_CONFIG["display"].get("reasoning_full", False)
@@ -3661,8 +3738,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
-        # show_timestamps: prefix user and assistant labels with [HH:MM]
+        # show_timestamps: prefix user and assistant labels with timestamps
         self.show_timestamps = CLI_CONFIG["display"].get("timestamps", False)
+        self.timestamp_format = CLI_CONFIG["display"].get("timestamp_format", "%H:%M")
         self.final_response_markdown = str(
             CLI_CONFIG["display"].get("final_response_markdown", "strip")
         ).strip().lower() or "strip"
@@ -5405,7 +5483,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def _format_submitted_user_message_preview(self, user_input: str) -> str:
         """Format the submitted user-message scrollback preview."""
         ts_suffix = (
-            f" [dim]{datetime.now().strftime('%H:%M')}[/]"
+            f" [dim]{datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}[/]"
             if getattr(self, "show_timestamps", False) else ""
         )
         lines = user_input.split("\n")
@@ -5706,7 +5784,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             except (ValueError, IndexError):
                 self._stream_text_ansi = ""
             if self.show_timestamps:
-                label = f"{label} {datetime.now().strftime('%H:%M')}"
+                label = f"{label} {datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}"
             w = self._scrollback_box_width()
             fill = w - 2 - HermesCLI._status_bar_display_width(label)
             _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
@@ -5760,6 +5838,33 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if self.final_response_markdown == "strip":
                 line = _strip_markdown_syntax(line)
             _emit_one(line)
+
+        # Force-flush long partial lines so a response that opens with a
+        # long paragraph paints as tokens arrive instead of staying blank
+        # until the first newline (TTFT perception fix — the reasoning box
+        # has done this at 80 chars since day one; the response box never
+        # did). Wrap at the terminal's visible width so we only ever emit
+        # text that would have line-broken at that point anyway; the
+        # remainder stays buffered as the logical line's continuation.
+        # Table-shaped partials are exempt — they need the whole block for
+        # realignment (see the table side-buffer above).
+        if (
+            self._stream_buf
+            and not self._in_stream_table
+            and not self._stream_buf.lstrip().startswith("|")
+        ):
+            wrap_w = max(40, _terminal_width_for_streaming())
+            while len(self._stream_buf) >= wrap_w:
+                cut = self._stream_buf.rfind(" ", 0, wrap_w)
+                if cut <= 0:
+                    cut = wrap_w  # single unbreakable run — hard wrap
+                chunk, self._stream_buf = (
+                    self._stream_buf[:cut],
+                    self._stream_buf[cut:].lstrip(" "),
+                )
+                if self.final_response_markdown == "strip":
+                    chunk = _strip_markdown_syntax(chunk)
+                _emit_one(chunk)
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
@@ -6745,7 +6850,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 return ""
             try:
                 from datetime import datetime
-                return f"  [{datetime.fromtimestamp(float(ts)).strftime('%H:%M')}]"
+                return f"  [{datetime.fromtimestamp(float(ts)).strftime(getattr(self, 'timestamp_format', '%H:%M'))}]"
             except (ValueError, OSError, TypeError):
                 return ""
 
@@ -7740,6 +7845,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 api_key=result.api_key or self.api_key or "",
                 model_info=mi,
                 config_context_length=getattr(self.agent, "_config_context_length", None) if self.agent else None,
+                custom_providers=getattr(self.agent, "_custom_providers", None) if self.agent else None,
             )
             if ctx:
                 _cprint(f"    Context: {ctx:,} tokens")
@@ -8048,6 +8154,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             api_key=result.api_key or self.api_key or "",
             model_info=mi,
             config_context_length=getattr(self.agent, "_config_context_length", None) if self.agent else None,
+            custom_providers=getattr(self.agent, "_custom_providers", None) if self.agent else None,
         )
         if ctx:
             _cprint(f"    Context: {ctx:,} tokens")
@@ -8640,21 +8747,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         elif canonical == "agents":
             self._handle_agents_command()
         elif canonical == "journey":
-            try:
-                import argparse
-                import shlex
-
-                from hermes_cli.journey import register_cli as _register_journey_cli
-
-                parser = argparse.ArgumentParser(prog="/journey", add_help=False)
-                _register_journey_cli(parser)
-                argv = shlex.split(cmd_original.split(None, 1)[1]) if len(cmd_original.split(None, 1)) > 1 else []
-                args = parser.parse_args(argv)
-                args.func(args)
-            except SystemExit:
-                pass
-            except Exception as exc:
-                _cprint(f"  /journey failed: {exc}")
+            self._handle_journey_command(cmd_original)
         elif canonical == "background":
             self._handle_background_command(cmd_original)
         elif canonical == "queue":
@@ -8830,7 +8923,39 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     )
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             elif base_cmd in skill_commands:
-                user_instruction = cmd_original[len(base_cmd):].strip()
+                rest = cmd_original[len(base_cmd):].strip()
+                # Stacked slash-skill invocations: `/skill-a /skill-b do XYZ`
+                # loads every leading skill (up to 5), not just the first.
+                # Inspired by Claude Code v2.1.199.
+                from agent.skill_commands import (
+                    build_stacked_skill_invocation_message,
+                    split_stacked_skill_commands,
+                )
+                extra_keys, user_instruction = split_stacked_skill_commands(rest)
+                if extra_keys:
+                    stacked_result = build_stacked_skill_invocation_message(
+                        [base_cmd, *extra_keys],
+                        user_instruction,
+                        task_id=self.session_id,
+                    )
+                    if stacked_result:
+                        msg, loaded_names, missing = stacked_result
+                        print(
+                            f"\n⚡ Loading {len(loaded_names)} stacked skills: "
+                            f"{', '.join(loaded_names)}"
+                        )
+                        if missing:
+                            ChatConsole().print(
+                                f"[yellow]Skipped missing skills: {', '.join(missing)}[/]"
+                            )
+                        if hasattr(self, '_pending_input'):
+                            self._pending_input.put(msg)
+                    else:
+                        ChatConsole().print(
+                            f"[bold red]Failed to load stacked skills for {base_cmd}[/]"
+                        )
+                    return True
+                user_instruction = rest
                 msg = build_skill_invocation_message(
                     base_cmd, user_instruction, task_id=self.session_id
                 )
@@ -9258,9 +9383,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return
 
         from hermes_cli.partial_compress import (
+            extract_compress_flags,
             parse_partial_compress_args,
             rejoin_compressed_head_and_tail,
             split_history_for_partial_compress,
+            summarize_compress_preview,
         )
 
         # Args after the command word (e.g. "/compress here 3" -> "here 3").
@@ -9270,8 +9397,41 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if len(_parts) > 1:
                 raw_args = _parts[1].strip()
 
+        # Strip --preview/--dry-run/--aggressive before positional parsing
+        # so the flags coexist with 'here [N]' / focus-topic forms.
+        raw_args, preview, aggressive = extract_compress_flags(raw_args)
         partial, keep_last, focus_topic = parse_partial_compress_args(raw_args)
         focus_topic = focus_topic or ""
+
+        if aggressive:
+            # LLM-free hard truncation is not supported: it would need its
+            # own transcript-persistence path outside the guarded
+            # _compress_context rotation machinery. Surface that instead of
+            # silently mis-parsing the flag as a focus topic.
+            print("(._.) --aggressive is not supported; use '/compress here [N]' "
+                  "to keep only recent exchanges, or /undo to drop turns.")
+            if not preview:
+                return
+
+        if preview:
+            from agent.model_metadata import estimate_request_tokens_rough
+            _sys_prompt = getattr(self.agent, "_cached_system_prompt", "") or ""
+            _tools = getattr(self.agent, "tools", None) or None
+            approx_tokens = estimate_request_tokens_rough(
+                self.conversation_history,
+                system_prompt=_sys_prompt,
+                tools=_tools,
+            )
+            report = summarize_compress_preview(
+                self.conversation_history,
+                partial,
+                keep_last,
+                focus_topic or None,
+                approx_tokens,
+            )
+            for line in report["lines"]:
+                print(f"🗜️  {line}")
+            return
 
         original_count = len(self.conversation_history)
         with self._busy_command("Compressing context..."):
@@ -9921,8 +10081,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _time.sleep(interval)
 
         # Past the cap with no terminal state = timeout (not an error).
-        print(f"  🟡 Still processing after 5 minutes — this is a timeout, not a "
-              f"failure. Check /billing or the portal shortly.")
+        print("  🟡 Still processing after 5 minutes — this is a timeout, not a "
+              "failure. Check /billing or the portal shortly.")
         self._billing_portal_hint(state)
 
     def _billing_render_charge_failed(self, state, reason):
@@ -12021,7 +12181,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         w = self._scrollback_box_width(getattr(self.console, "width", 80))
                         label = " ⚕ Hermes "
                         if self.show_timestamps:
-                            label = f"{label}{datetime.now().strftime('%H:%M')} "
+                            label = f"{label}{datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))} "
                         fill = w - 2 - HermesCLI._status_bar_display_width(label)
                         _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
                     _cprint(f"{_STREAM_PAD}{sentence.rstrip()}")
@@ -12175,8 +12335,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         if interrupt_msg:
                             # If clarify is active, the Enter handler routes
                             # input directly; this queue shouldn't have anything.
-                            # But if it does (race condition), don't interrupt.
+                            # But if it does (race condition), don't interrupt —
+                            # and don't drop the message either: park it in
+                            # _pending_input so it runs as the next turn.
                             if self._clarify_state or self._clarify_freetext:
+                                try:
+                                    self._pending_input.put(interrupt_msg)
+                                except Exception:
+                                    pass
+                                interrupt_msg = None
                                 continue
                             print("\n⚡ New message detected, interrupting...")
                             # Signal TTS to stop on interrupt
@@ -12348,6 +12515,33 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 # Add indicator that we were interrupted
                 if response and pending_message:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
+            elif interrupt_msg:
+                # We fired agent.interrupt(interrupt_msg) but the turn result
+                # doesn't acknowledge it. Two ways this happens, both racy:
+                #   1. The agent thread had already passed its last interrupt
+                #      check (or finished) when the interrupt landed — the turn
+                #      completed normally and finalize_turn() never saw the flag.
+                #   2. The 10s post-interrupt wait above expired and we
+                #      abandoned the daemon thread; `result` is still None.
+                # In both cases the user's message must NOT be dropped —
+                # re-queue it as the next turn (#interrupt-vacuumed-into-void).
+                pending_message = interrupt_msg
+                # If the interrupt landed after finalize_turn()'s
+                # clear_interrupt(), the stale flag would instantly abort the
+                # NEXT turn at its first loop check. Clear it now that we've
+                # claimed the message — but ONLY if the agent thread actually
+                # exited. If it's still alive (abandoned after the 10s wait),
+                # the flag is what makes the wedged tool eventually unwind;
+                # clearing it would un-signal that thread.
+                try:
+                    if (
+                        not agent_thread.is_alive()
+                        and self.agent
+                        and getattr(self.agent, "_interrupt_requested", False)
+                    ):
+                        self.agent.clear_interrupt()
+                except Exception:
+                    pass
 
             response_previewed = result.get("response_previewed", False) if result else False
 
@@ -12892,6 +13086,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             prewarm_picker_cache_async()
         except Exception:
             pass
+
+        # Pre-import the agent runtime off-thread during the same idle window.
+        # The first turn otherwise pays ~1.5s of module imports on the
+        # time-to-first-token critical path: `import run_agent` (~0.9s,
+        # deferred by the lazy AIAgent wrapper above) plus the OpenAI SDK
+        # (~0.6s, deferred until client construction). Python's import lock
+        # makes this safe: if the user submits before the warm finishes, the
+        # main thread simply blocks on the remaining import work instead of
+        # redoing it. Skipped when agent startup is explicitly deferred
+        # (Termux) — that path defers heavy work on purpose.
+        if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
+            def _prewarm_agent_runtime() -> None:
+                try:
+                    import run_agent  # noqa: F401  (imports model_tools + tool registry)
+                    import openai  # noqa: F401
+                except Exception:
+                    logger.debug("agent runtime pre-import failed", exc_info=True)
+
+            threading.Thread(
+                target=_prewarm_agent_runtime,
+                name="agent-runtime-prewarm",
+                daemon=True,
+            ).start()
 
         # Redaction opt-out warning (#17691): ON by default, loud when off.
         # The redactor snapshots its state at import time so any toggle now
@@ -15254,6 +15471,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         finally:
             self._should_exit = True
             self._pet_stop_anim()
+            # Immediate feedback: prompt_toolkit has just torn down the input
+            # box + status bar, so without a line here the terminal sits
+            # silent for the whole cleanup window (session flush, memory
+            # shutdown, MCP/browser/terminal teardown) and the exit looks
+            # hung. Print before any potentially-slow step.
+            try:
+                print(f"{_DIM}Shutting down… (finalizing session){_RST}", flush=True)
+            except Exception:
+                pass
             # Interrupt the agent immediately so its daemon thread stops making
             # API calls and exits promptly (agent_thread is daemon, so the
             # process will exit once the main thread finishes, but interrupting

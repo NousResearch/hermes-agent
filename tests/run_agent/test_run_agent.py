@@ -2731,7 +2731,7 @@ class TestConcurrentToolExecution:
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
 
-        with patch("agent.tool_executor.concurrent.futures.ThreadPoolExecutor", ShutdownExecutor):
+        with patch("tools.daemon_pool.DaemonThreadPoolExecutor", ShutdownExecutor):
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
         assert len(messages) == 2
@@ -2966,7 +2966,7 @@ class TestConcurrentToolExecution:
         """Agent-owned tool paths should close observer tool spans."""
         hook_calls = []
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
@@ -2990,7 +2990,7 @@ class TestConcurrentToolExecution:
     def test_invoke_tool_blocked_returns_error_and_skips_execution(self, agent, monkeypatch):
         """_invoke_tool should return error JSON when a plugin blocks the tool."""
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: "Blocked by test policy",
         )
         with patch("tools.todo_tool.todo_tool", side_effect=AssertionError("should not run")) as mock_todo:
@@ -3002,7 +3002,7 @@ class TestConcurrentToolExecution:
     def test_invoke_tool_blocked_skips_handle_function_call(self, agent, monkeypatch):
         """Blocked registry tools should not reach handle_function_call."""
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: "Blocked",
         )
         with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
@@ -3019,7 +3019,7 @@ class TestConcurrentToolExecution:
         messages = []
 
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: "Blocked by policy",
         )
         agent._checkpoint_mgr.enabled = True
@@ -3049,7 +3049,7 @@ class TestConcurrentToolExecution:
         hook_calls = []
 
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: "Blocked by policy",
         )
         monkeypatch.setattr(
@@ -3076,7 +3076,7 @@ class TestConcurrentToolExecution:
         hook_calls = []
 
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
@@ -3123,7 +3123,7 @@ class TestConcurrentToolExecution:
             lambda kind, **kwargs: [request_middleware(**kwargs)] if kind == "tool_request" else [],
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
@@ -3161,7 +3161,7 @@ class TestConcurrentToolExecution:
             lambda kind, **kwargs: [request_middleware(**kwargs)] if kind == "tool_request" else [],
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
@@ -3196,7 +3196,7 @@ class TestConcurrentToolExecution:
         """Blocked memory tool should not reset the nudge counter."""
         agent._turns_since_memory = 5
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: "Blocked",
         )
         with patch("tools.memory_tool.memory_tool", side_effect=AssertionError("should not run")):
@@ -3209,7 +3209,7 @@ class TestConcurrentToolExecution:
 
     def test_invoke_tool_memory_remove_notifies_provider_with_old_text(self, agent, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: None,
         )
         calls = []
@@ -3241,7 +3241,7 @@ class TestConcurrentToolExecution:
 
     def test_invoke_tool_memory_failed_remove_skips_provider_notification(self, agent, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: None,
         )
         notify = MagicMock(side_effect=AssertionError("should not notify"))
@@ -3281,7 +3281,7 @@ class TestConcurrentToolExecution:
         messages = []
 
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: "Blocked" if args[0] == "write_file" else None,
         )
 
@@ -3308,7 +3308,7 @@ class TestConcurrentToolExecution:
         messages = []
 
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: "Blocked" if args[0] == "patch" else None,
         )
 
@@ -3335,7 +3335,7 @@ class TestConcurrentToolExecution:
         messages = []
 
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: "Blocked" if args[0] == "terminal" else None,
         )
 
@@ -3369,7 +3369,7 @@ class TestConcurrentToolExecution:
             return "Blocked" if call_count["n"] == 1 else None
 
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             block_first_only,
         )
 
@@ -3586,8 +3586,8 @@ class TestMcpParallelToolBatch:
     def test_mcp_tools_default_sequential(self):
         """MCP tools without supports_parallel_tool_calls are sequential."""
         from run_agent import _should_parallelize_tool_batch
-        tc1 = _mock_tool_call(name="mcp_github_list_repos", arguments='{"org":"openai"}', call_id="c1")
-        tc2 = _mock_tool_call(name="mcp_github_search_code", arguments='{"q":"test"}', call_id="c2")
+        tc1 = _mock_tool_call(name="mcp__github__list_repos", arguments='{"org":"openai"}', call_id="c1")
+        tc2 = _mock_tool_call(name="mcp__github__search_code", arguments='{"q":"test"}', call_id="c2")
         assert not _should_parallelize_tool_batch([tc1, tc2])
 
     def test_mcp_tools_parallel_when_server_opted_in(self):
@@ -3596,17 +3596,17 @@ class TestMcpParallelToolBatch:
         from tools.mcp_tool import _mcp_tool_server_names, _parallel_safe_servers, _lock
         with _lock:
             _parallel_safe_servers.add("github")
-            _mcp_tool_server_names["mcp_github_list_repos"] = "github"
-            _mcp_tool_server_names["mcp_github_search_code"] = "github"
+            _mcp_tool_server_names["mcp__github__list_repos"] = "github"
+            _mcp_tool_server_names["mcp__github__search_code"] = "github"
         try:
-            tc1 = _mock_tool_call(name="mcp_github_list_repos", arguments='{"org":"openai"}', call_id="c1")
-            tc2 = _mock_tool_call(name="mcp_github_search_code", arguments='{"q":"test"}', call_id="c2")
+            tc1 = _mock_tool_call(name="mcp__github__list_repos", arguments='{"org":"openai"}', call_id="c1")
+            tc2 = _mock_tool_call(name="mcp__github__search_code", arguments='{"q":"test"}', call_id="c2")
             assert _should_parallelize_tool_batch([tc1, tc2])
         finally:
             with _lock:
                 _parallel_safe_servers.discard("github")
-                _mcp_tool_server_names.pop("mcp_github_list_repos", None)
-                _mcp_tool_server_names.pop("mcp_github_search_code", None)
+                _mcp_tool_server_names.pop("mcp__github__list_repos", None)
+                _mcp_tool_server_names.pop("mcp__github__search_code", None)
 
     def test_mixed_mcp_and_builtin_parallel(self):
         """MCP parallel tools mixed with built-in parallel-safe tools."""
@@ -3614,15 +3614,15 @@ class TestMcpParallelToolBatch:
         from tools.mcp_tool import _mcp_tool_server_names, _parallel_safe_servers, _lock
         with _lock:
             _parallel_safe_servers.add("docs")
-            _mcp_tool_server_names["mcp_docs_search"] = "docs"
+            _mcp_tool_server_names["mcp__docs__search"] = "docs"
         try:
-            tc1 = _mock_tool_call(name="mcp_docs_search", arguments='{"query":"api"}', call_id="c1")
+            tc1 = _mock_tool_call(name="mcp__docs__search", arguments='{"query":"api"}', call_id="c1")
             tc2 = _mock_tool_call(name="web_search", arguments='{"query":"test"}', call_id="c2")
             assert _should_parallelize_tool_batch([tc1, tc2])
         finally:
             with _lock:
                 _parallel_safe_servers.discard("docs")
-                _mcp_tool_server_names.pop("mcp_docs_search", None)
+                _mcp_tool_server_names.pop("mcp__docs__search", None)
 
     def test_mixed_parallel_and_serial_mcp_servers(self):
         """One parallel MCP server + one non-parallel MCP server = sequential."""
@@ -3631,17 +3631,17 @@ class TestMcpParallelToolBatch:
         with _lock:
             _parallel_safe_servers.add("docs")
             # "github" is NOT in _parallel_safe_servers
-            _mcp_tool_server_names["mcp_docs_search"] = "docs"
-            _mcp_tool_server_names["mcp_github_list_repos"] = "github"
+            _mcp_tool_server_names["mcp__docs__search"] = "docs"
+            _mcp_tool_server_names["mcp__github__list_repos"] = "github"
         try:
-            tc1 = _mock_tool_call(name="mcp_docs_search", arguments='{"query":"api"}', call_id="c1")
-            tc2 = _mock_tool_call(name="mcp_github_list_repos", arguments='{"org":"openai"}', call_id="c2")
+            tc1 = _mock_tool_call(name="mcp__docs__search", arguments='{"query":"api"}', call_id="c1")
+            tc2 = _mock_tool_call(name="mcp__github__list_repos", arguments='{"org":"openai"}', call_id="c2")
             assert not _should_parallelize_tool_batch([tc1, tc2])
         finally:
             with _lock:
                 _parallel_safe_servers.discard("docs")
-                _mcp_tool_server_names.pop("mcp_docs_search", None)
-                _mcp_tool_server_names.pop("mcp_github_list_repos", None)
+                _mcp_tool_server_names.pop("mcp__docs__search", None)
+                _mcp_tool_server_names.pop("mcp__github__list_repos", None)
 
 
 class TestHandleMaxIterations:
@@ -6998,7 +6998,7 @@ class TestInterruptVprintForceTrue:
                 if "force=True" not in stripped:
                     violations.append(f"line {i}: {stripped}")
         assert not violations, (
-            f"Interrupt _vprint calls missing force=True:\n"
+            "Interrupt _vprint calls missing force=True:\n"
             + "\n".join(violations)
         )
 

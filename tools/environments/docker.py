@@ -899,6 +899,45 @@ class DockerEnvironment(BaseEnvironment):
             existing = self._find_reusable_container(task_label, profile_name)
             if existing is not None:
                 container_id, state = existing
+                # Network-mode guard: reuse must not silently defeat an
+                # egress lockdown.  A container created before the operator
+                # set ``docker_network: false`` keeps its original bridge
+                # NetworkMode, so label-only reuse would hand the agent a
+                # networked container despite the config.  On mismatch we
+                # remove the stale container and start fresh — leaving it in
+                # place would let the next label-based reuse pick it up again.
+                # Only the lockdown direction is guarded: a ``none``-mode
+                # container under a default-network config is left alone so
+                # operators using ``docker_extra_args: ["--network=none"]``
+                # don't get their container churned on every startup.
+                mode_mismatch = False
+                actual_mode = None
+                if not network:
+                    actual_mode = self._container_network_mode(container_id)
+                    mode_mismatch = actual_mode != "none"
+                if mode_mismatch:
+                    logger.warning(
+                        "Existing container %s has NetworkMode=%s but "
+                        "docker_network=false requests an air-gapped "
+                        "container — removing it and starting fresh "
+                        "(task=%s, profile=%s).",
+                        container_id[:12], actual_mode or "unknown",
+                        task_label, profile_name,
+                    )
+                    try:
+                        subprocess.run(
+                            [self._docker_exe, "rm", "-f", container_id],
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                            check=False,
+                            stdin=subprocess.DEVNULL,
+                        )
+                    except (subprocess.TimeoutExpired, OSError) as e:
+                        logger.warning("Failed to remove mismatched container %s: %s", container_id[:12], e)
+                    existing = None
+            if existing is not None:
+                container_id, state = existing
                 self._container_id = container_id
                 if state != "running":
                     try:
@@ -1193,6 +1232,40 @@ class DockerEnvironment(BaseEnvironment):
             _storage_opt_ok = False
         logger.debug("Docker --storage-opt support: %s", _storage_opt_ok)
         return _storage_opt_ok
+
+    def _container_network_mode(self, container_id: str) -> Optional[str]:
+        """Return the container's ``HostConfig.NetworkMode`` (e.g. ``bridge``,
+        ``none``, ``host``), or ``None`` when inspection fails.
+
+        Used by the reuse path to make sure a persisted container's network
+        mode still matches the operator's ``docker_network`` setting; callers
+        treat ``None`` (unknown) as a mismatch when lockdown was requested,
+        so a failed inspect fails closed rather than open.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    self._docker_exe, "inspect",
+                    "--format", "{{.HostConfig.NetworkMode}}",
+                    container_id,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug("docker inspect NetworkMode failed: %s", e)
+            return None
+        if result.returncode != 0:
+            logger.debug(
+                "docker inspect NetworkMode returned %d: %s",
+                result.returncode, result.stderr.strip(),
+            )
+            return None
+        mode = result.stdout.strip()
+        return mode or None
 
     def _find_reusable_container(self, task_label: str, profile_label: str) -> Optional[tuple[str, str]]:
         """Look for an existing container labeled for this (task, profile).

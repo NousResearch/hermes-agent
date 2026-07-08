@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -254,8 +255,14 @@ def spawn_async_diagnostic(
         # would also reap us anyway, but defense in depth).  Without
         # start_new_session, a SIGKILL on our cgroup takes the diag down
         # before it can flush.
+        timeout_bin = shutil.which("timeout") or shutil.which("gtimeout")
+        argv = (
+            [timeout_bin, f"{timeout_seconds:.0f}", "bash", "-c", script]
+            if timeout_bin
+            else ["bash", "-c", script]
+        )
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
+            argv,
             stdout=fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

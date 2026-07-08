@@ -123,6 +123,29 @@ timeout_seconds: 120
 max_turns: 15
 ```
 
+## Pre-built Tasks
+
+HAEE ships with 10 ready-to-use tasks across 4 domains. Run immediately:
+
+```bash
+hermes evolution benchmark
+```
+
+| Task | Domain | Complexity | What It Checks |
+|------|--------|:----------:|----------------|
+| bug-fix-verify | software-dev | 5 | Tests pass + CHANGES.md updated + patch file exists |
+| code-review | software-dev | 6 | Security issues found + recommendations given |
+| deploy-verify | devops | 4 | Deploy command succeeds + health check passes |
+| data-pipeline | data-science | 5 | ETL script runs + output file exists + functions defined |
+| api-endpoint | software-dev | 5 | Tests pass + endpoint documented |
+| security-audit | security | 7 | Vulnerabilities found + remediations documented |
+| document-generation | software-dev | 4 | Docs file exists + overview + examples + API reference |
+| refactor-module | software-dev | 7 | Tests pass (no regressions) + refactor notes exist |
+| dependency-update | devops | 3 | Tests pass after update + update report exists |
+| config-migration | devops | 4 | Config validates + migration logged |
+
+Tasks use `/tmp/` paths and simple commands — no project setup needed. Edit criteria to match your project paths. Benchmark takes <1 second for all 10 tasks.
+
 ## How Failure Analysis Works
 
 When a task fails, the engine uses a **two-tier analysis**:
@@ -199,7 +222,15 @@ You don't need to run commands. HAEE watches your conversations through the auto
 5. Skills evolve recursively — each generation gets smarter
 6. For code-level issues, HAEE asks before creating a PR branch
 
-**5 failure types auto-detected**: missing verification, user correction, loop detected, missing output, silent session.
+**5 failure types auto-detected** during normal chat:
+
+| Failure Type | What It Detects | HAEE Action |
+|-------------|----------------|-------------|
+| Missing verification | Agent did work (write/patch) but didn't verify (terminal/read) | Auto-creates `verify-before-complete` skill |
+| User correction | User said "no", "wrong", "forgot", "actually..." | Auto-creates targeted troubleshooting skill |
+| Loop detected | Same tool called 3+ times consecutively | Auto-creates `detect-and-break-loops` skill |
+| Missing output | Agent did work but no files were created | Routes to PR proposer for code-level fix |
+| Silent session | No user feedback on a high-confidence cluster | Flags for verification review |
 
 ### Nudge Level
 

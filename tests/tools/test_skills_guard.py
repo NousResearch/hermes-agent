@@ -408,10 +408,12 @@ class TestFalsePositiveReductions:
         assert 1 not in env_lines
         # Bare os.environ access is still flagged.
         assert 3 in env_lines
-        # Secret-named lookups stay critical.
+        # Secret-named lookups are medium (informational): reading your own
+        # API key from the environment is the normal auth pattern — the read
+        # itself sends nothing (#60709). Exfil sinks are scored separately.
         sec = [fi for fi in findings if fi.pattern_id == "python_environ_get_secret"]
         assert sec
-        assert all(fi.severity == "critical" for fi in sec)
+        assert all(fi.severity == "medium" for fi in sec)
 
 
 # ---------------------------------------------------------------------------

@@ -42,6 +42,7 @@ const {
   readLinkTitleWindowTitle
 } = require('./link-title-window.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
+const { createLivenessStreak } = require('./liveness-streak.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPortAnnouncement } = require('./backend-ready.cjs')
 const { dashboardFallbackArgs, sourceDeclaresServe } = require('./backend-command.cjs')
@@ -946,6 +947,21 @@ function rememberLog(chunk) {
 
   scheduleDesktopLogFlush()
 }
+
+// Last-chance forensics. Electron's main process doesn't die on these by
+// default (it pre-installs its own uncaughtException listener and only warns
+// on unhandled rejections), but without our own handlers the reason lands on
+// stderr alone — lost entirely when the app is launched from Finder. Record
+// and flush synchronously so desktop.log always carries the trail.
+process.on('uncaughtException', error => {
+  rememberLog(`[main] Uncaught exception: ${(error && (error.stack || error.message)) || error}`)
+  flushDesktopLogBufferSync()
+})
+process.on('unhandledRejection', reason => {
+  const detail = reason instanceof Error ? reason.stack || reason.message : String(reason)
+  rememberLog(`[main] Unhandled rejection: ${detail}`)
+  flushDesktopLogBufferSync()
+})
 
 function openExternalUrl(rawUrl) {
   const raw = String(rawUrl || '').trim()
@@ -4937,6 +4953,20 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
     try {
       ticket = await mintGatewayWsTicket(baseUrl)
     } catch (error) {
+      // Only an actual auth rejection means the session expired. A transport
+      // failure (timeout, DNS, refused — routine over Tailscale after a wake)
+      // carries no statusCode and says nothing about the session, so surface
+      // it as a retryable connection error and let the renderer's backoff
+      // keep dialing instead of demanding a re-sign-in.
+      const status = Number(error?.statusCode)
+      if (status !== 401 && status !== 403) {
+        const err = new Error(
+          `Could not reach the remote Hermes gateway at ${baseUrl}. ` +
+            'Check that the backend is running and reachable, then retry.'
+        )
+        err.cause = error
+        throw err
+      }
       const err = new Error(
         'Your remote gateway session has expired. ' + 'Open Settings → Gateway and click "Sign in" again.'
       )
@@ -5266,6 +5296,18 @@ async function ensureBackend(profile) {
     return startHermes()
   }
 
+  // App-global remote mode: ONE shared backend serves every profile via
+  // ?profile=, so a profile without its own remote override rides the primary
+  // descriptor. Registering a pool entry here would only cache a process-less
+  // clone of it that the idle reaper "reaps" and the next call re-probes,
+  // forever ("Reaping idle profile backend" spam + a redundant liveness probe
+  // per cycle). Tag the profile so callers (fs/git REST, ?profile= injection)
+  // still know which profile this connection is serving.
+  if (globalRemoteActive() && !profileHasRemoteOverride(key)) {
+    const conn = await startHermes()
+    return { ...conn, profile: key }
+  }
+
   const existing = backendPool.get(key)
   if (existing) {
     existing.lastActiveAt = Date.now()
@@ -5344,6 +5386,9 @@ async function spawnPoolBackend(profile, entry) {
   const remote = await resolveRemoteBackend(profile)
   if (remote) {
     await waitForHermes(remote.baseUrl, remote.token)
+    // Recorded on the entry so revalidate can probe this descriptor without
+    // awaiting connectionPromise (a local spawn may be mid-flight for a while).
+    entry.remoteBaseUrl = remote.baseUrl
     return {
       ...remote,
       profile,
@@ -5803,14 +5848,16 @@ function spawnSecondaryWindow({ sessionId, watch, newSession } = {}) {
 
   wireCommonWindowHandlers(win)
 
-  win.loadURL(
-    buildSessionWindowUrl(sessionId, {
-      devServer: DEV_SERVER,
-      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
-      watch,
-      newSession
-    })
-  )
+  win
+    .loadURL(
+      buildSessionWindowUrl(sessionId, {
+        devServer: DEV_SERVER,
+        rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
+        watch,
+        newSession
+      })
+    )
+    .catch(error => rememberLog(`Session window failed to load: ${error.stack || error.message}`))
 
   return win
 }
@@ -5929,7 +5976,9 @@ function spawnPetOverlayWindow(bounds) {
     }
   })
 
-  win.loadURL(petOverlayUrl())
+  win
+    .loadURL(petOverlayUrl())
+    .catch(error => rememberLog(`Pet overlay failed to load: ${error.stack || error.message}`))
 
   return win
 }
@@ -6083,9 +6132,13 @@ function createWindow() {
   })
 
   if (DEV_SERVER) {
-    mainWindow.loadURL(DEV_SERVER)
+    mainWindow
+      .loadURL(DEV_SERVER)
+      .catch(error => rememberLog(`Renderer failed to load: ${error.stack || error.message}`))
   } else {
-    mainWindow.loadURL(pathToFileURL(resolveRendererIndex()).toString())
+    mainWindow
+      .loadURL(pathToFileURL(resolveRendererIndex()).toString())
+      .catch(error => rememberLog(`Renderer failed to load: ${error.stack || error.message}`))
   }
 
   mainWindow.webContents.once('did-finish-load', () => {
@@ -6105,7 +6158,23 @@ ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(pro
 // to confirm the cached PRIMARY backend is still reachable; if a remote one is
 // not, we drop the cache so the next getConnection() rebuilds it. Local backends
 // self-heal via their child 'exit' handler, so we never touch them here.
+//
+// A single slow /api/status — routine over Tailscale right after a wake or
+// while the remote host is loaded — must not tear down the cached connection
+// (each drop forces a full rebuild on the next reconnect tick, i.e. the
+// ready → probe-fail → restart churn). Require a streak of consecutive
+// failures before dropping, and give each probe the same headroom the
+// settings-UI auth probe gets (8s) instead of the old 2.5s hair trigger.
+const REVALIDATE_PROBE_TIMEOUT_MS = Math.max(1_000, Number(process.env.HERMES_DESKTOP_REVALIDATE_TIMEOUT_MS) || 8_000)
+const REVALIDATE_FAILURE_STREAK = Math.max(1, Number(process.env.HERMES_DESKTOP_REVALIDATE_FAILURES) || 3)
+const primaryLivenessStreak = createLivenessStreak({ threshold: REVALIDATE_FAILURE_STREAK })
+
 ipcMain.handle('hermes:connection:revalidate', async () => {
+  const [result] = await Promise.all([revalidatePrimaryConnection(), revalidatePooledRemoteBackends()])
+  return result
+})
+
+async function revalidatePrimaryConnection() {
   if (!connectionPromise) {
     return { ok: true, rebuilt: false }
   }
@@ -6125,9 +6194,22 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
 
   const base = conn.baseUrl.replace(/\/+$/, '')
   try {
-    await fetchPublicJson(`${base}/api/status`, { timeoutMs: 2_500 })
+    await fetchPublicJson(`${base}/api/status`, { timeoutMs: REVALIDATE_PROBE_TIMEOUT_MS })
+    primaryLivenessStreak.recordSuccess()
     return { ok: true, rebuilt: false }
   } catch {
+    const failure = primaryLivenessStreak.recordFailure(base)
+    if (!failure.drop) {
+      // Keep the cached connection while the streak builds; log once per
+      // streak so a flapping probe can't spam desktop.log.
+      if (failure.firstOfStreak) {
+        rememberLog(
+          `Cached remote Hermes backend failed a liveness probe (1/${failure.threshold}); ` +
+            'keeping the connection unless failures persist.'
+        )
+      }
+      return { ok: true, rebuilt: false }
+    }
     // Unreachable remote: drop the stale cache so the renderer's next reconnect
     // tick rebuilds a fresh, reachable descriptor. resetHermesConnection only
     // nulls connectionPromise for a remote (no child to SIGTERM).
@@ -6135,7 +6217,27 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
     resetHermesConnection()
     return { ok: true, rebuilt: true }
   }
-})
+}
+
+// Pooled REMOTE descriptors (entry.process === null) have no child 'exit'
+// handler to clear them when their host dies, and the renderer's 60s
+// keepalive touch defeats the idle reaper — so a dead descriptor would be
+// re-served forever. Probe each one and drop the dead ones so the next
+// ensureBackend() rebuilds fresh.
+async function revalidatePooledRemoteBackends() {
+  const remoteEntries = [...backendPool.entries()].filter(([, entry]) => !entry.process && entry.remoteBaseUrl)
+  await Promise.all(
+    remoteEntries.map(async ([profile, entry]) => {
+      const base = String(entry.remoteBaseUrl).replace(/\/+$/, '')
+      try {
+        await fetchPublicJson(`${base}/api/status`, { timeoutMs: REVALIDATE_PROBE_TIMEOUT_MS })
+      } catch {
+        rememberLog(`Pooled remote backend for profile "${profile}" failed liveness probe; dropping stale descriptor.`)
+        stopPoolBackend(profile)
+      }
+    })
+  )
+}
 ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
   touchPoolBackend(profile)
   return { ok: true }
@@ -6515,11 +6617,14 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
   const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
   const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
 
-  const primary = await ensureBackend(null)
-  const base = await fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
-    method: 'GET',
-    timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
-  }).catch(() => ({ sessions: [], total: 0, profile_totals: {} }))
+  // The primary may be an OAuth remote (token === null) — route through the
+  // authMode-aware helper so the request carries the session cookie instead
+  // of a literal "null" token header that the gateway 401s.
+  const base = await fetchJsonForProfile(null, `/api/profiles/sessions?${searchParams}`).catch(() => ({
+    sessions: [],
+    total: 0,
+    profile_totals: {}
+  }))
 
   // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
   // is correct for this page — mirrors the primary's per-profile over-fetch.

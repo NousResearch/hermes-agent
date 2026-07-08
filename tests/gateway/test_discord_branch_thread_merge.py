@@ -475,6 +475,52 @@ class TestMergeCommand:
         assert not old.exists()   # 40-day-old record purged
         assert fresh.exists()     # fresh record kept
 
+    @pytest.mark.asyncio
+    async def test_merge_is_idempotent_same_target(self, session_db):
+        """A second /merge of the SAME source into the SAME target is a no-op."""
+        runner = self._runner_with_summary(session_db, adapter=None)
+        _seed_session(session_db, "target_sess", title="Target")
+        _seed_session(session_db, "current_sess", title="Here")
+        source = SessionSource(platform=Platform.TELEGRAM, user_id="u", chat_id="c",
+                               user_name="t", chat_type="dm")
+        current = _entry(build_session_key(source), "current_sess", source)
+        runner.session_store.get_or_create_session.return_value = current
+        runner.session_store.load_transcript.return_value = [{"role": "user", "content": "x"}]
+        runner.session_store.lookup_by_session_id.return_value = None
+
+        first = await runner._handle_merge_command(_event("/merge Target", source))
+        assert "merged into" in first.lower()
+        second = await runner._handle_merge_command(_event("/merge Target", source))
+        # Second is refused; only ONE fold in the target.
+        assert "already" in second.lower()
+        target_msgs = session_db.get_messages_as_conversation("target_sess")
+        folds = [m for m in target_msgs
+                 if m.get("role") == "user"
+                 and "MERGED SESSION" in str(m.get("content", ""))]
+        assert len(folds) == 1
+
+    @pytest.mark.asyncio
+    async def test_merge_same_source_different_targets_allowed(self, session_db):
+        """Merging one source into TWO different targets is allowed (not blocked)."""
+        runner = self._runner_with_summary(session_db, adapter=None)
+        _seed_session(session_db, "target_a", title="Alpha")
+        _seed_session(session_db, "target_b", title="Beta")
+        _seed_session(session_db, "current_sess", title="Here")
+        source = SessionSource(platform=Platform.TELEGRAM, user_id="u", chat_id="c",
+                               user_name="t", chat_type="dm")
+        current = _entry(build_session_key(source), "current_sess", source)
+        runner.session_store.get_or_create_session.return_value = current
+        runner.session_store.load_transcript.return_value = [{"role": "user", "content": "x"}]
+        runner.session_store.lookup_by_session_id.return_value = None
+
+        r1 = await runner._handle_merge_command(_event("/merge Alpha", source))
+        r2 = await runner._handle_merge_command(_event("/merge Beta", source))
+        assert "merged into" in r1.lower() and "merged into" in r2.lower()
+        assert any("MERGED SESSION" in str(m.get("content", ""))
+                   for m in session_db.get_messages_as_conversation("target_a"))
+        assert any("MERGED SESSION" in str(m.get("content", ""))
+                   for m in session_db.get_messages_as_conversation("target_b"))
+
 
 class TestMergeCommandDef:
 

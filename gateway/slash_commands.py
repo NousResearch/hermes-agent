@@ -4144,6 +4144,64 @@ class GatewaySlashCommandsMixin:
         title = await self._session_db.get_session_title(target_id) or name
         return target_id, title
 
+    async def _merged_targets_for(self, source_session_id):
+        """Return the set of target session ids this source has already merged into.
+
+        Recorded in the source session's ``model_config._merged_into`` list.
+        Best-effort — returns an empty set on any read error.
+        """
+        try:
+            row = await self._session_db.get_session(source_session_id)
+        except Exception:
+            return set()
+        if not row:
+            return set()
+        mc = row.get("model_config")
+        if isinstance(mc, str) and mc:
+            try:
+                import json as _json
+                mc = _json.loads(mc)
+            except Exception:
+                return set()
+        if not isinstance(mc, dict):
+            return set()
+        merged = mc.get("_merged_into")
+        if isinstance(merged, list):
+            return {str(x) for x in merged}
+        return set()
+
+    async def _merge_already_done(self, source_session_id, target_id) -> bool:
+        """Whether this (source → target) merge has already been recorded."""
+        return str(target_id) in await self._merged_targets_for(source_session_id)
+
+    async def _record_merge_done(self, source_session_id, target_id) -> None:
+        """Append ``target_id`` to the source's ``model_config._merged_into`` list.
+
+        Idempotency ledger for /merge — read-modify-write of the source session's
+        model_config. Best-effort; never raises into the merge flow.
+        """
+        try:
+            row = await self._session_db.get_session(source_session_id)
+            mc = (row or {}).get("model_config")
+            if isinstance(mc, str) and mc:
+                import json as _json
+                try:
+                    mc = _json.loads(mc)
+                except Exception:
+                    mc = {}
+            if not isinstance(mc, dict):
+                mc = {}
+            merged = mc.get("_merged_into")
+            if not isinstance(merged, list):
+                merged = []
+            if str(target_id) not in {str(x) for x in merged}:
+                merged.append(str(target_id))
+            mc["_merged_into"] = merged
+            import json as _json
+            await self._session_db.update_session_meta(source_session_id, _json.dumps(mc))
+        except Exception as exc:
+            logger.debug("merge: could not record merge ledger: %s", exc)
+
     async def _handle_merge_command(self, event: MessageEvent) -> str:
         """Handle /merge [name] — fold a summary of THIS session into a target.
 
@@ -4229,6 +4287,17 @@ class GatewaySlashCommandsMixin:
             if not allowed:
                 return t("gateway.merge.blocked_not_owner", name=target_title)
 
+        # --- Idempotency guard (Greptile P1): refuse a duplicate fold of the
+        # SAME source into the SAME target. A retry, double-submit, or a
+        # reopened/re-invoked thread would otherwise append the branch summary
+        # to the parent twice and skew later agent behavior. We record each
+        # completed (source → target) merge in the source's model_config
+        # `_merged_into` list; a repeat (source, target) is a no-op. Merging the
+        # same source into a DIFFERENT target later is still allowed. ---
+        already = await self._merge_already_done(source_session_id, target_id)
+        if already:
+            return t("gateway.merge.already_merged", title=target_title)
+
         # --- Summarize the CURRENT session (read-only). ---
         source_history = self.session_store.load_transcript(source_session_id)
         if not source_history:
@@ -4264,6 +4333,9 @@ class GatewaySlashCommandsMixin:
         except Exception as exc:
             logger.error("merge: failed to append fold to target %s: %s", target_id, exc)
             return t("gateway.merge.fold_failed", error=exc)
+
+        # Record this (source → target) merge so a retry/reopen is a no-op.
+        await self._record_merge_done(source_session_id, target_id)
 
         # --- Layer 2: durable .md record (self-purging). ---
         record_path = self._write_merge_record(

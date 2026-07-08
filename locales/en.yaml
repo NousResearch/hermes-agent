@@ -97,6 +97,7 @@ gateway:
     not_a_branch:          "This thread wasn't created by `/branch`, so there's no parent session to merge into."
     not_found:             "No session found matching '{name}'. Use `/merge` with no name to list mergeable sessions."
     same_session:          "That's the session you're already in — pick a different target to merge into."
+    already_merged:        "This session was already merged into **{title}** — not folding it again. (Start a new exploration to merge fresh material.)"
     blocked_not_owner:     "You can only merge into sessions you own. '{name}' belongs to a different chat/owner."
     no_named_sessions:     "No titled sessions to merge into yet. Give a session a name with `/title` first."
     list_header:           "🔀 **Sessions you can merge into** — reply `/merge <number>` or `/merge <name>`:"

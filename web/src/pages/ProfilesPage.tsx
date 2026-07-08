@@ -257,6 +257,7 @@ export default function ProfilesPage() {
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [activeInfo, setActiveInfo] = useState<ActiveProfileInfo | null>(null);
   const [loading, setLoading] = useState(true);
+  const [busyGateways, setBusyGateways] = useState<Record<string, boolean>>({});
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
@@ -509,6 +510,24 @@ export default function ProfilesPage() {
       showToast(`${t.status.error}: ${e}`, "error");
     } finally {
       setSettingActive(null);
+    }
+  };
+
+  const handleToggleGateway = async (name: string, verb: "start" | "stop") => {
+    setBusyGateways((prev) => ({ ...prev, [name]: true }));
+    try {
+      if (verb === "start") {
+        await api.startGateway(name);
+      } else {
+        await api.stopGateway(name);
+      }
+      showToast(`Gateway ${verb}ed for profile '${name}'`, "success");
+      // Give the backend a second to update status, then reload
+      setTimeout(load, 1500);
+    } catch (e) {
+      showToast(`Failed to ${verb} gateway for '${name}': ${e}`, "error");
+    } finally {
+      setBusyGateways((prev) => ({ ...prev, [name]: false }));
     }
   };
 
@@ -1162,27 +1181,58 @@ export default function ProfilesPage() {
                         />
                       </div>
 
-                      <div className="flex items-center gap-1.5 text-xs">
-                        <span
-                          className={cn(
-                            "h-1.5 w-1.5 rounded-full",
-                            p.gateway_running
-                              ? "bg-success"
-                              : "bg-muted-foreground/40",
-                          )}
-                        />
+                      <div className="flex items-center justify-between text-xs pt-1">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={cn(
+                              "h-1.5 w-1.5 rounded-full",
+                              p.gateway_running
+                                ? "bg-success"
+                                : "bg-muted-foreground/40",
+                            )}
+                          />
 
-                        <span
-                          className={cn(
-                            p.gateway_running
-                              ? "text-success"
-                              : "text-muted-foreground",
+                          <span
+                            className={cn(
+                              p.gateway_running
+                                ? "text-success"
+                                : "text-muted-foreground",
+                            )}
+                          >
+                            {p.gateway_running
+                              ? L.gatewayRunning
+                              : L.gatewayStopped}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {p.gateway_running ? (
+                            <Button
+                              size="xs"
+                              outlined
+                              className="text-warning h-5 py-0 px-2 text-[10px] uppercase font-semibold"
+                              disabled={busyGateways[p.name]}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleGateway(p.name, "stop");
+                              }}
+                            >
+                              {busyGateways[p.name] ? "Stopping" : "Stop"}
+                            </Button>
+                          ) : (
+                            <Button
+                              size="xs"
+                              outlined
+                              className="text-success h-5 py-0 px-2 text-[10px] uppercase font-semibold"
+                              disabled={busyGateways[p.name]}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleGateway(p.name, "start");
+                              }}
+                            >
+                              {busyGateways[p.name] ? "Starting" : "Start"}
+                            </Button>
                           )}
-                        >
-                          {p.gateway_running
-                            ? L.gatewayRunning
-                            : L.gatewayStopped}
-                        </span>
+                        </div>
                       </div>
 
                       <div className="flex items-start gap-2 text-xs">

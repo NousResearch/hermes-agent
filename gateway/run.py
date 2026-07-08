@@ -6487,6 +6487,141 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._save_restart_failure_counts(new_counts)
 
+    def _reset_stuck_loop_counts(self, session_keys: set) -> None:
+        """Reset the stuck-loop restart COUNT for sessions that drained cleanly.
+
+        A clean drain (or a session that finished during a timed-out drain
+        window) is affirmative evidence the loop is broken, so its accumulated
+        restart-failure count must reset to 0 — otherwise a count from prior
+        genuine interruptions survives across restarts the session kept
+        finishing cleanly, and a single later interruption could tip it over
+        the threshold and falsely auto-suspend it (clearing history).
+
+        Distinct from the singular ``_clear_restart_failure_count`` (which drops
+        the WHOLE entry on a successful turn): this is set-based AND preserves
+        the *separate* replay-loop breaker's state (``replay_marks``/``armed``)
+        untouched — this fix is scoped to the stuck-loop counter, not that
+        mechanism.  An entry left with no replay state is pruned entirely.
+        """
+        if not session_keys:
+            return
+        counts = self._load_restart_failure_counts()
+        changed = False
+        for key in session_keys:
+            entry = counts.get(key)
+            if entry is None:
+                continue
+            entry["count"] = 0
+            replay_marks = entry.get("replay_marks") or []
+            if replay_marks or entry.get("armed"):
+                counts[key] = entry  # keep replay-breaker state
+            else:
+                del counts[key]  # nothing left — prune
+            changed = True
+        if changed:
+            self._save_restart_failure_counts(counts)
+
+    def _announce_and_persist_served_route(
+        self,
+        *,
+        agent,
+        session_key,
+        served_provider,
+        served_model,
+        was_reinit: bool,
+    ) -> None:
+        """Announce a model RECOVERY (return-to-primary) and persist the served
+        route, at the ONE unified recovery-announce site.
+
+        Two paths return a session to its primary model — both surface here:
+          • cache-warm restore (same agent restored at the turn prologue) →
+            recovery_via="new turn".
+          • re-init (agent cache evicted/rebuilt → a fresh agent inited on the
+            config default, no fallback state to restore) → recovery_via=
+            "re-init" (its silent snap-back was previously invisible — the fix).
+
+        The announce is keyed on the FINAL served route: we compare the session's
+        PREVIOUS served route (``last_served_identity``, persisted at the prior
+        turn's end) against THIS turn's served ``(served_provider, served_model)``
+        (post any mid-turn failover). Only a genuine model change announces; a
+        re-init that happens to serve the same model is silent. The durable sink
+        line is written gate-independently; the chat emit is gated on
+        ``model.announce_recovery``. Then we persist this turn's served route for
+        the next comparison. Identity-only (``{provider, model}``) — never a
+        secret. Best-effort: never raises into the turn.
+
+        Concurrency: the persist is routed through ``session_store.update_session``
+        so it happens UNDER the store's lock (every other write path does the
+        same); we never write ``_entries``/``_save()`` directly here.
+
+        A session with an active ``/model`` override is EXCLUDED: while a user has
+        deliberately pinned a model, route changes are user-driven (e.g. opus →
+        fable → opus via ``/model``), not system recoveries — announcing them
+        would be a false positive and pollute the durable audit sink.
+        """
+        if not (agent and session_key and served_model and served_provider):
+            return
+        try:
+            served_identity = {"provider": served_provider, "model": served_model}
+            # Read prior state under the store lock (mirrors every other reader).
+            lock = getattr(self.session_store, "_lock", None)
+            if lock is not None:
+                lock.acquire()
+            try:
+                entry = self.session_store._entries.get(session_key)
+                prev_identity = getattr(entry, "last_served_identity", None) if entry else None
+                has_model_override = bool(getattr(entry, "model_override_identity", None)) if entry else False
+            finally:
+                if lock is not None:
+                    lock.release()
+
+            if entry is None:
+                return
+            # Skip while a deliberate /model override is active — route changes
+            # are user-driven, not system recoveries (Greptile P2: no false
+            # "recovery" sink lines on a user opus→fable→opus /model dance).
+            if not has_model_override and isinstance(prev_identity, dict):
+                prev_route = (prev_identity.get("provider"), prev_identity.get("model"))
+                now_route = (served_provider, served_model)
+                # Announce only a genuine model return: the previous served model
+                # differs from this turn's, and we know what it was.
+                if prev_route != now_route and prev_route[1]:
+                    recovery_via = "new turn" if not was_reinit else "re-init"
+                    try:
+                        from agent.chat_completion_helpers import (
+                            _append_route_change,
+                            _emit_fallback_announce,
+                        )
+                        # Durable sink line always (gate-independent).
+                        _append_route_change(
+                            "recovery",
+                            prev_route[0], prev_route[1],
+                            served_provider, served_model,
+                        )
+                        announce = False
+                        try:
+                            from hermes_cli.config import read_raw_config
+                            raw = read_raw_config() or {}
+                            mcfg = raw.get("model", {}) if isinstance(raw, dict) else {}
+                            announce = bool(mcfg.get("announce_recovery", False))
+                        except Exception:
+                            pass  # config read failure → default-off (silent)
+                        _emit_fallback_announce(
+                            agent, prev_route[1], served_model, served_provider,
+                            old_provider=prev_route[0],
+                            announce_enabled=announce,
+                            record_event=False,
+                            kind="recovery",
+                            recovery_via=recovery_via,
+                        )
+                    except Exception:
+                        logger.debug("recovery announce failed", exc_info=True)
+            # Persist THIS turn's served route for the next comparison — UNDER the
+            # store lock, via update_session (never a bare _entries/_save here).
+            self.session_store.update_session(session_key, served_identity=served_identity)
+        except Exception:
+            logger.debug("served-route announce/persist failed", exc_info=True)
+
     def _suspend_stuck_loop_sessions(self) -> int:
         """Suspend sessions that have been active across too many restarts.
 
@@ -8771,6 +8906,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._running_agent_count(),
             )
 
+            # Stuck-loop accounting inputs (consumed at the counter site far
+            # below, AFTER the interrupt path has drained self._running_agents).
+            # _interrupted_keys: genuinely-interrupted sessions (timeout only),
+            # captured pre-interrupt inside the ``if timed_out:`` block.
+            # _drained_clean_keys: sessions that finished during the drain
+            # window (their counts get actively cleared — a clean completion
+            # is affirmative evidence the loop is broken).
+            _interrupted_keys: set = set()
+            _drained_clean_keys: set = set()
+
             if not timed_out:
                 # Drain completed gracefully — all running sessions finished.
                 # Clear the pre-drain resume_pending markers so sessions that
@@ -8784,6 +8929,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "clear_resume_pending after drain failed for %s: %s",
                                 _sk, _e,
                             )
+                # Every pre-drain session that is no longer running finished
+                # cleanly — clear its stuck-loop count (loop broken).  On a
+                # fully-clean drain self._running_agents is already empty, so
+                # this is effectively all of _pre_drain_keys.
+                _drained_clean_keys = {
+                    _sk for _sk in _pre_drain_keys
+                    if _sk not in self._running_agents
+                }
 
             if timed_out:
                 logger.warning(
@@ -8812,6 +8965,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # _interrupt_running_agents() does: their agent hasn't
                 # started yet, there's nothing to interrupt, and the
                 # session shouldn't carry a misleading resume flag.
+                # Capture the genuinely-interrupted set HERE, at this
+                # pre-interrupt read of ``self._running_agents`` — BEFORE
+                # ``_interrupt_running_agents()`` (below) and its drain-wait
+                # empty the dict.  The stuck-loop counter (further down, after
+                # the interrupt path has run) must consume THIS captured set,
+                # never a fresh ``self._running_agents`` read at that point:
+                # by then the interrupt has drained the dict, so a fresh read
+                # would be empty and a genuinely-stuck session would never
+                # accumulate toward suspension (silently neutering the guard).
+                # Skip pending sentinels — their agent hasn't started, so
+                # there's nothing interrupted to count.
+                _interrupted_keys = {
+                    _sk
+                    for _sk, _agent in self._running_agents.items()
+                    if _agent is not _AGENT_PENDING_SENTINEL
+                }
+                # Pre-drain sessions that are NOT in the still-running set
+                # finished during the drain window despite the overall timeout
+                # — clear their counts too (they proved they can complete).
+                _drained_clean_keys = {
+                    _sk for _sk in _pre_drain_keys
+                    if _sk not in self._running_agents
+                }
                 for _sk, _agent in list(self._running_agents.items()):
                     if _agent is _AGENT_PENDING_SENTINEL:
                         continue
@@ -8996,13 +9172,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "active sessions."
                 )
 
-            # Track sessions that were active at shutdown for stuck-loop
-            # detection (#7536).  On each restart, the counter increments
-            # for sessions that were running.  If a session hits the
-            # threshold (3 consecutive restarts while active), the next
-            # startup auto-suspends it — breaking the loop.
-            if active_agents:
-                self._increment_restart_failure_counts(set(active_agents.keys()))
+            # Stuck-loop detection (#7536): only a session that was GENUINELY
+            # INTERRUPTED counts toward auto-suspension — i.e. the drain timed
+            # out AND the session was still running at the pre-interrupt
+            # capture (_interrupted_keys, captured above before the interrupt
+            # path drained self._running_agents).  A CLEAN drain means every
+            # active session finished its turn; nothing was stuck, so it must
+            # NOT count — that was the bug that auto-suspended healthy sessions
+            # (clearing their history) after 3 clean deploy-restarts.
+            #
+            # ``active_agents`` (the drain-START snapshot) is deliberately NOT
+            # used here: it includes sessions that finished gracefully during
+            # the drain window.  Do NOT re-read self._running_agents at this
+            # point either — the interrupt path above has drained it, so a
+            # fresh read would be empty and a real stuck loop would never
+            # accumulate.
+            if timed_out:
+                if _interrupted_keys:
+                    self._increment_restart_failure_counts(_interrupted_keys)
+                # Sessions that finished during the drain window proved they
+                # can complete — clear any accumulated count (loop broken).
+                if _drained_clean_keys:
+                    self._reset_stuck_loop_counts(_drained_clean_keys)
+            else:
+                # Clean drain — nothing was stuck.  Actively clear the drained
+                # sessions' counts so a prior run of real interruptions can't
+                # accumulate across restarts the session kept finishing.
+                if _drained_clean_keys:
+                    self._reset_stuck_loop_counts(_drained_clean_keys)
 
             if self._restart_requested and self._restart_command_source is None:
                 try:
@@ -19202,6 +19399,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
             _resolved_provider = getattr(_agent, "provider", None) if _agent else None
+
+            # Unified model-recovery announce (re-init snap-back + cache-warm
+            # restore), keyed on the FINAL served route — see
+            # _announce_and_persist_served_route. Both recovery paths surface at
+            # this ONE site (the #236 inline restore announce was removed from
+            # restore_primary_runtime), distinguished by the recovery_via rider.
+            self._announce_and_persist_served_route(
+                agent=_agent,
+                session_key=session_key,
+                served_provider=_resolved_provider,
+                served_model=_resolved_model,
+                was_reinit=not reused_cached_agent,
+            )
 
             # Sync session_id immediately after run_conversation(). Compression
             # can rotate before a follow-up model call fails; the failure return

@@ -201,58 +201,47 @@ def _recovery_agent(*, primary_reasoning=("dict", "high"), on_fallback=True):
     return a, arh
 
 
-def test_recovery_writes_recovery_line_old_side_is_fallback(tmp_path, monkeypatch):
-    """CB-2: the recovery line's OLD side is the fallback route being left."""
+def test_recovery_restores_primary_route(tmp_path, monkeypatch):
+    """CB-2 (repointed): restore_primary_runtime returns the agent to its primary
+    route. The recovery ANNOUNCE + sink line MOVED to the unified gateway site
+    (gateway/run.py _run_agent_inner, keyed on the final served route) — so the
+    restore function itself is now a pure state restore that emits NOTHING.
+    Announce coverage: tests/gateway/test_reinit_recovery_announce.py.
+    """
     agent, arh = _recovery_agent(primary_reasoning=("dict", "high"))
     monkeypatch.setattr(
         arh, "build_anthropic_client", lambda *a, **k: object(), raising=False)
     assert restore_primary_runtime(agent) is True
-    lines = _sink_lines(str(tmp_path))
-    assert len(lines) == 1, lines
-    ln = lines[0]
-    assert " recovery " in ln
-    # OLD side = fallback (openai-codex/gpt-5.5), NEW side = primary (claude-app/opus).
-    old_part = ln.split(" recovery ")[1].split(" -> ")[0]
-    new_part = ln.split(" -> ")[1]
-    assert old_part.startswith("openai-codex/gpt-5.5"), old_part
-    assert new_part.startswith("claude-app/claude-opus-4-8"), new_part
-    # effort changed xhigh → high → suffix on both.
-    assert "@xhigh" in old_part
-    assert "@high" in new_part
+    # State restored to the primary.
+    assert agent.model == "claude-opus-4-8"
+    assert agent.provider == "claude-app"
+    assert agent._fallback_activated is False
+    # No inline announce/sink from the restore path anymore (INV-7).
+    assert agent._announced == [], agent._announced
+    assert _sink_lines(str(tmp_path)) == []
 
 
-def test_recovery_keyless_primary_writes_line_no_crash(tmp_path, monkeypatch):
-    """CB-3: a legacy _primary_runtime WITHOUT reasoning_config recovers, writes
-    its line, does not KeyError. The new-side effort reflects the LIVE attr
-    (unchanged, since the guarded revert did not fire)."""
+def test_recovery_keyless_primary_no_crash(tmp_path, monkeypatch):
+    """CB-3 (repointed): a legacy _primary_runtime WITHOUT reasoning_config
+    recovers and does not KeyError. Still a pure state restore (no announce)."""
     agent, arh = _recovery_agent(primary_reasoning=("missing", None))
     monkeypatch.setattr(
         arh, "build_anthropic_client", lambda *a, **k: object(), raising=False)
     # Must not raise.
     assert restore_primary_runtime(agent) is True
-    lines = _sink_lines(str(tmp_path))
-    assert len(lines) == 1, lines
-    assert " recovery openai-codex/gpt-5.5" in lines[0]
-    assert "claude-app/claude-opus-4-8" in lines[0]
+    assert agent.model == "claude-opus-4-8"
+    assert agent.provider == "claude-app"
 
 
-def test_recovery_chat_silent_unless_announce_recovery(tmp_path, monkeypatch):
-    """OQ-1/C: recovery is silent in chat by default (announce_recovery off)."""
-    agent, arh = _recovery_agent(primary_reasoning=("dict", "high"))
-    monkeypatch.setattr(
-        arh, "build_anthropic_client", lambda *a, **k: object(), raising=False)
-    restore_primary_runtime(agent)
-    assert agent._announced == [], agent._announced  # default-off → silent
-    # but the sink line was written regardless.
-    assert len(_sink_lines(str(tmp_path))) == 1
-
-
-def test_recovery_chat_announces_when_flag_on(tmp_path, monkeypatch):
-    """announce_recovery=true → recovery posts one chat line."""
+def test_recovery_restore_emits_nothing_regardless_of_flag(tmp_path, monkeypatch):
+    """INV-7: even with announce_recovery=true, restore_primary_runtime itself
+    emits nothing — the recovery announce is owned by the gateway epilogue now,
+    never the restore function (which would double-fire / key on a stale route).
+    """
     (tmp_path / "config.yaml").write_text("model:\n  announce_recovery: true\n")
     agent, arh = _recovery_agent(primary_reasoning=("dict", "high"))
     monkeypatch.setattr(
         arh, "build_anthropic_client", lambda *a, **k: object(), raising=False)
     restore_primary_runtime(agent)
-    assert len(agent._announced) == 1
-    assert "recovery" in agent._announced[0].lower()
+    assert agent._announced == [], agent._announced
+    assert _sink_lines(str(tmp_path)) == []

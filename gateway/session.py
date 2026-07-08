@@ -641,6 +641,17 @@ class SessionEntry:
     # reconstructed and would silently re-route to the config endpoint).
     model_override_identity: Optional[Dict[str, Any]] = None
 
+    # Last (provider, model) this session actually SERVED a turn on. Identity
+    # only ({provider, model}) — never api_key/base_url — mirroring
+    # model_override_identity's no-secret rule. Written at the turn epilogue
+    # from the live agent AFTER the turn served. Lets the NEXT turn's epilogue
+    # detect that a re-init'd (agent cache evicted/rebuilt) or restored agent
+    # returned to a different model than the session last served, and announce
+    # that recovery — a fresh agent has no _fallback_activated to restore from,
+    # so its silent snap-back to the config default was previously invisible.
+    # Cleared on /new, /reset, auto-reset by SessionEntry reconstruction.
+    last_served_identity: Optional[Dict[str, Any]] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -674,6 +685,7 @@ class SessionEntry:
             "reset_had_activity": self.reset_had_activity,
             "reasoning_override": self.reasoning_override,
             "model_override_identity": self.model_override_identity,
+            "last_served_identity": self.last_served_identity,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -745,6 +757,11 @@ class SessionEntry:
             model_override_identity=(
                 data.get("model_override_identity")
                 if isinstance(data.get("model_override_identity"), dict)
+                else None
+            ),
+            last_served_identity=(
+                data.get("last_served_identity")
+                if isinstance(data.get("last_served_identity"), dict)
                 else None
             ),
         )
@@ -1473,8 +1490,16 @@ class SessionStore:
         self,
         session_key: str,
         last_prompt_tokens: int = None,
+        served_identity: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Update lightweight session metadata after an interaction."""
+        """Update lightweight session metadata after an interaction.
+
+        ``served_identity`` (identity-only ``{"provider", "model"}``) records the
+        route this session actually served the turn on, for the re-init recovery
+        announce. Only overwrites when a non-empty identity is passed — a
+        telemetry-only call (e.g. compression's ``last_prompt_tokens=0``) must
+        NOT blank an existing value, mirroring the ``had_any_turn`` latch.
+        """
         with self._lock:
             self._ensure_loaded_locked()
 
@@ -1490,6 +1515,8 @@ class SessionStore:
                     # goes back to False here.
                     if last_prompt_tokens > 0:
                         entry.had_any_turn = True
+                if served_identity:
+                    entry.last_served_identity = served_identity
                 self._save()
                 self._record_gateway_session_peer(
                     entry.session_id,

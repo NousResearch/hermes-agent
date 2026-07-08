@@ -3,6 +3,7 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { arraysEqual, insertUniqueId } from '@/lib/storage'
 
+import { $gateway } from './gateway'
 import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride, togglePane } from './panes'
 
 export const SIDEBAR_DEFAULT_WIDTH = 237
@@ -298,6 +299,8 @@ export function pinSession(sessionId: string, index?: number) {
   if (!arraysEqual(prev, next)) {
     $pinnedSessionIds.set(next)
   }
+  // Sync to backend so pins survive upgrades
+  $gateway.get()?.request('session.pin', { session_id: sessionId }).catch(() => undefined)
 }
 
 export function unpinSession(sessionId: string) {
@@ -307,6 +310,8 @@ export function unpinSession(sessionId: string) {
   if (!arraysEqual(prev, next)) {
     $pinnedSessionIds.set(next)
   }
+  // Sync to backend so pins survive upgrades
+  $gateway.get()?.request('session.unpin', { session_id: sessionId }).catch(() => undefined)
 }
 
 // Replace the whole pinned order at once (drag-reorder hands back the new order

@@ -5989,6 +5989,40 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5007, str(e))
 
 
+@method("session.pin")
+def _(rid, params: dict) -> dict:
+    """Pin a session so it stays at the top of the session list."""
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5007)
+    key = session["session_key"]
+    try:
+        db.pin_session(key)
+        return _ok(rid, {"pinned": True})
+    except Exception as e:
+        return _err(rid, 5007, str(e))
+
+
+@method("session.unpin")
+def _(rid, params: dict) -> dict:
+    """Unpin a session, removing it from the pinned list."""
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5007)
+    key = session["session_key"]
+    try:
+        db.unpin_session(key)
+        return _ok(rid, {"pinned": False})
+    except Exception as e:
+        return _err(rid, 5007, str(e))
+
+
 def _main_runtime_from_agent(agent) -> dict | None:
     """Build an aux-client main_runtime override from a live agent.
 

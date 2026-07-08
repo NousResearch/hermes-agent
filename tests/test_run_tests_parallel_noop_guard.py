@@ -82,7 +82,12 @@ def _write(path: Path, body: str) -> Path:
 # ── Probe fixtures ───────────────────────────────────────────────────────────
 
 def _all_skip_file(d: Path) -> Path:
-    """A file whose every test skips (simulates a missing-dep importorskip)."""
+    """A file whose every test skips (simulates a missing-dep importorskip).
+
+    Per the A5 spec this is a SKIP-STORM → a loud ⚠, NOT a RED gate (the tests
+    exist and opted out, legit in a dep-less env). Used to prove the guard does
+    NOT false-red a skip.
+    """
     return _write(
         d / "test_all_skip.py",
         "import pytest\n\n"
@@ -90,6 +95,20 @@ def _all_skip_file(d: Path) -> Path:
         "def test_one():\n    assert True\n\n"
         "@pytest.mark.skip(reason='dep missing')\n"
         "def test_two():\n    assert True\n",
+    )
+
+
+def _silent_noop_file(d: Path) -> Path:
+    """A genuine silent no-op RED case: an explicitly-requested test file with a
+    real ``def test_`` that collects/executes ZERO because it fails to import
+    (references a missing symbol — NOT a graceful importorskip). This is the exact
+    'green because it didn't run' failure the guard exists to catch: 0 executed,
+    0 skipped, has a real test, no opt-out. It must RED.
+    """
+    return _write(
+        d / "test_broken_import.py",
+        "from hermes_this_module_does_not_exist import nope  # hard ImportError\n\n"
+        "def test_would_have_run():\n    assert nope\n",
     )
 
 
@@ -118,12 +137,13 @@ def _real_pass_file(d: Path) -> Path:
 # ── A5-A: the founding case + mutation proof ───────────────────────────────────
 
 def test_explicit_zero_collect_file_is_RED(tmp_path: Path) -> None:
-    """Explicitly-requested file whose every test skips → RED + loud banner.
+    """Explicitly-requested file that collects 0 tests with NO skip reason → RED.
 
     This is the exact silent no-op: pre-guard the file exit-5→0-coerced to a
-    pass and the run went green. Now it must exit non-zero.
+    pass and the run went green. Now it must exit non-zero. (An all-SKIP file, by
+    contrast, is a ⚠ not a RED — see test_all_skip_file_is_surfaced_not_red.)
     """
-    probe = _all_skip_file(tmp_path)
+    probe = _silent_noop_file(tmp_path)
     proc = _run_runner(str(probe))
     assert proc.returncode != 0, (
         f"zero-collect explicit file went GREEN — guard did not fire:\n{proc.stdout}"
@@ -131,24 +151,55 @@ def test_explicit_zero_collect_file_is_RED(tmp_path: Path) -> None:
     assert "collected 0 tests (no-op)" in proc.stdout, proc.stdout
 
 
+def test_all_skip_file_is_surfaced_not_red(tmp_path: Path) -> None:
+    """Spec: a skip-storm (every test skips) is a loud ⚠, NOT a RED gate — so a
+    dep-less env where an importorskip/skip fires does not false-red the suite.
+    Paired with a real-pass file so total_executed>0 (whole-suite-zero gate off).
+    """
+    skip = _all_skip_file(tmp_path)
+    real = _real_pass_file(tmp_path)
+    proc = _run_runner(str(skip), str(real))
+    assert proc.returncode == 0, (
+        f"all-skip file should be ⚠ (surfaced), not RED:\n{proc.stdout}"
+    )
+    assert "skipped every test" in proc.stdout or "skip" in proc.stdout.lower(), proc.stdout
+
+
+def _deselected_to_zero_file(d: Path) -> Path:
+    """A file with a real ``def test_`` that collects 0 under an explicit ``-k``
+    that matches nothing: pytest exits 5 (cleanly coercible to green — the exact
+    pre-guard silent no-op), so ONLY the strict-noop gate decides RED vs GREEN.
+    This isolates the gate for the mutation proof (an ImportError can't, because
+    pytest itself returns nonzero for it regardless of the guard).
+    """
+    return _write(
+        d / "test_deselect_zero.py",
+        "def test_present_but_filtered_out():\n    assert True\n",
+    )
+
+
 def test_mutation_proof_guard_off_goes_green(tmp_path: Path) -> None:
     """MUTATION PROOF (test-gate-honesty §2): flip the strict-noop gate off,
     same invocation goes GREEN — proving the gate is the load-bearing RED and
     not vacuous. --no-strict-noop is the one-line flip.
 
-    We pair the zero-collect file with a real-pass file and request BOTH
-    explicitly, so total_executed > 0 (the whole-suite-zero gate does NOT fire)
-    and the explicit-0-collect gate is the ONLY thing deciding RED vs GREEN.
-    That isolates the gate under proof.
+    Uses a file that collects 0 via an explicit ``-k`` mismatch (exit-5, cleanly
+    coercible to green) so the strict-noop gate is the ONLY thing deciding RED vs
+    GREEN. Paired with a real-pass file so total_executed>0 (whole-suite-zero gate
+    off) — isolating Gate 2 under proof.
     """
-    skip = _all_skip_file(tmp_path)
+    noop = _deselected_to_zero_file(tmp_path)
     real = _real_pass_file(tmp_path)
 
-    red = _run_runner(str(skip), str(real))
+    # -k matches the real file's tests (test_a/b/c) but NOT the noop file's
+    # test_present_but_filtered_out → real runs (total>0, Gate 1 off), noop
+    # collects 0 (exit-5) → only Gate 2 (strict-noop) decides RED vs GREEN.
+    red = _run_runner(str(noop), str(real), "-k", "test_a or test_b or test_c")
     assert red.returncode != 0, f"guard-on should be RED:\n{red.stdout}"
     assert "collected 0 tests (no-op)" in red.stdout, red.stdout
 
-    green = _run_runner(str(skip), str(real), "--no-strict-noop")
+    green = _run_runner(str(noop), str(real), "-k", "test_a or test_b or test_c",
+                        "--no-strict-noop")
     assert green.returncode == 0, (
         "guard-off (--no-strict-noop) should go GREEN, proving the strict-noop "
         f"gate is load-bearing:\n{green.stdout}"

@@ -690,6 +690,83 @@ class TestCronSchedulerBashResolution:
         # of a WinError 2 traceback.
         assert "bash not found" in source.lower()
 
+    def test_skips_wsl_launcher_stub_ahead_of_real_bash(self, tmp_path, monkeypatch):
+        """Windows ships a non-functional ``bash.exe`` launcher stub in
+        System32 that exists even when no WSL distro is installed. When it
+        precedes a real Git Bash on PATH, resolution must skip it instead
+        of picking it as "the" bash — otherwise .sh cron jobs fail with a
+        WSL "no installed distributions" error instead of running."""
+        import cron.scheduler as scheduler
+
+        monkeypatch.setattr(scheduler.sys, "platform", "win32")
+
+        system_root = tmp_path / "Windows"
+        system32 = system_root / "System32"
+        system32.mkdir(parents=True)
+        (system32 / "bash.exe").write_bytes(b"stub")  # non-functional WSL launcher
+
+        git_bin = tmp_path / "Git" / "bin"
+        git_bin.mkdir(parents=True)
+        real_bash = git_bin / "bash.exe"
+        real_bash.write_bytes(b"real")
+
+        monkeypatch.setenv("SystemRoot", str(system_root))
+        monkeypatch.setenv("PATH", os.pathsep.join([str(system32), str(git_bin)]))
+
+        assert scheduler._resolve_bash() == str(real_bash)
+
+    def test_skips_windows_apps_execution_alias(self, tmp_path, monkeypatch):
+        """The Store app-execution alias (...\\WindowsApps\\bash.exe) is the
+        same kind of non-functional stub as the System32 one and must also
+        be skipped in favor of a real bash later on PATH."""
+        import cron.scheduler as scheduler
+
+        monkeypatch.setattr(scheduler.sys, "platform", "win32")
+
+        local_appdata = tmp_path / "AppData" / "Local"
+        winapps = local_appdata / "Microsoft" / "WindowsApps"
+        winapps.mkdir(parents=True)
+        (winapps / "bash.exe").write_bytes(b"stub")
+
+        git_bin = tmp_path / "Git" / "bin"
+        git_bin.mkdir(parents=True)
+        real_bash = git_bin / "bash.exe"
+        real_bash.write_bytes(b"real")
+
+        monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
+        monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+        monkeypatch.setenv("PATH", os.pathsep.join([str(winapps), str(git_bin)]))
+
+        assert scheduler._resolve_bash() == str(real_bash)
+
+    def test_returns_none_when_only_stubs_present(self, tmp_path, monkeypatch):
+        """No real bash anywhere on PATH — only the WSL stub — must resolve
+        to None so _run_job_script surfaces the clear "bash not found"
+        error instead of silently running the broken stub."""
+        import cron.scheduler as scheduler
+
+        monkeypatch.setattr(scheduler.sys, "platform", "win32")
+
+        system_root = tmp_path / "Windows"
+        system32 = system_root / "System32"
+        system32.mkdir(parents=True)
+        (system32 / "bash.exe").write_bytes(b"stub")
+
+        monkeypatch.setenv("SystemRoot", str(system_root))
+        monkeypatch.setenv("PATH", str(system32))
+
+        assert scheduler._resolve_bash() is None
+
+    def test_posix_still_uses_shutil_which(self, tmp_path, monkeypatch):
+        """Non-Windows platforms keep the original shutil.which/`/bin/bash`
+        resolution — the stub-skipping logic is Windows-only."""
+        import cron.scheduler as scheduler
+
+        monkeypatch.setattr(scheduler.sys, "platform", "linux")
+        monkeypatch.setattr(scheduler.shutil, "which", lambda name: "/usr/bin/bash" if name == "bash" else None)
+
+        assert scheduler._resolve_bash() == "/usr/bin/bash"
+
 
 # ---------------------------------------------------------------------------
 # Node-ecosystem launcher resolution (npm / npx / node)

@@ -14,7 +14,8 @@ class TestPolicy:
         assert reset_idle_on(11, 10) is False
 
     def test_close_after_idle_timeout(self):
-        state = {"now": 1000.0, "last_activity": 100.0,
+        # now - last_activity = 1900s >= 1800s idle -> close
+        state = {"now": 2000.0, "last_activity": 100.0,
                  "idle_timeout_seconds": 1800.0, "hold_until": None}
         assert should_close_now(state) is True
 
@@ -36,6 +37,8 @@ class TestPolicy:
         assert should_close_now(state) is False
 
     def test_hold_expired_and_idle_closes(self):
-        state = {"now": 1000.0, "last_activity": 0.0,
+        # hold_until in the past (expired) -> fall back to idle rule.
+        # now - last_activity = 2000s >= 1800s idle -> close.
+        state = {"now": 2000.0, "last_activity": 0.0,
                  "idle_timeout_seconds": 1800.0, "hold_until": 500.0}
         assert should_close_now(state) is True

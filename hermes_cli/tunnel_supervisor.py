@@ -17,8 +17,10 @@ def reset_idle_on(prev_counter: int, cur_counter: int) -> bool:
     A counter that stayed flat or dropped (poll hiccup / restart) is NOT
     activity.
     """
-    # TODO(you): 1 line — strictly-increasing check.
-    raise NotImplementedError
+    # Activity = the request counter strictly increased since the last
+    # poll. A flat or dropped counter (poll hiccup / cloudflared restart)
+    # is NOT activity, so a dead tunnel can't keep itself alive.
+    return cur_counter > prev_counter
 
 
 def should_close_now(state: dict) -> bool:
@@ -34,5 +36,14 @@ def should_close_now(state: dict) -> bool:
         (fall back to the idle rule) — do NOT hard-kill just because the
         approval expired.
     """
-    # TODO(you): ~5 lines implementing the rules above.
-    raise NotImplementedError
+    # An admin-approved hold that is still in the future disables the idle
+    # timer. A hold whose deadline is in the past is treated as "no hold"
+    # (fall back to the idle rule) — we must NOT hard-kill just because the
+    # approval expired; the idle timer resumes and decides.
+    now = state["now"]
+    last_activity = state["last_activity"]
+    idle_timeout_seconds = state["idle_timeout_seconds"]
+    hold_until = state.get("hold_until")
+    if hold_until is not None and now < hold_until:
+        return False
+    return (now - last_activity) >= idle_timeout_seconds

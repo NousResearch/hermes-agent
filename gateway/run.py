@@ -16788,6 +16788,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         # Tool progress grouping: "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
+        # Whether terminal commands render as fenced code blocks on
+        # markdown-capable platforms (see supports_code_blocks gate below).
+        progress_code_blocks = bool(
+            resolve_display_setting(user_config, platform_key, "tool_progress_code_blocks", True)
+        )
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
         _generic_status_recent: List[str] = []
         _generic_status_catalog = resolve_status_phrase_catalog(user_config, platform_key)
@@ -17047,7 +17052,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 _progress_adapter = None
             if (
-                getattr(_progress_adapter, "supports_code_blocks", False)
+                progress_code_blocks
+                and getattr(_progress_adapter, "supports_code_blocks", False)
                 and tool_name == "terminal"
                 and isinstance(args, dict)
                 and isinstance(args.get("command"), str)

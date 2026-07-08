@@ -1480,6 +1480,42 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_terminal_progress_code_blocks_opt_out(monkeypatch, tmp_path):
+    """display.tool_progress_code_blocks=false keeps the compact
+    `terminal: "cmd…"` preview even when the adapter declares
+    supports_code_blocks — for surfaces where the fenced block renders as a
+    heavy rich-text bubble (e.g. Feishu posts)."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TerminalCommandAgent,
+        session_id="sess-terminal-code-block-optout",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "platforms": {"telegram": {"tool_progress_code_blocks": False}},
+            }
+        },
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=CodeBlockProgressAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent)
+    all_content += " ".join(call["content"] for call in adapter.edits)
+    # No fenced block — the compact capped preview is used instead.
+    assert "```" not in all_content
+    assert "set -euo pipefail" in all_content
+    # Preview stays capped: the tail of the multi-line command is not shown.
+    assert "npm install -g hyperframes@latest" not in all_content
+
+
+@pytest.mark.asyncio
 async def test_terminal_progress_verbose_shows_full_command(monkeypatch, tmp_path):
     """Verbose mode on a markdown-capable gateway renders the FULL multi-line
     command in a bare fenced block (no truncation, no 'bash' tag).  This is the

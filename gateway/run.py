@@ -2802,6 +2802,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
+        # Support dict input for test compatibility; convert to GatewayConfig
+        if config is not None and isinstance(config, dict):
+            config = GatewayConfig(**config)
         self.config = config or load_gateway_config()
         # Mark the process as a profile multiplexer when configured. This flips
         # agent.secret_scope.get_secret() to fail-closed on any unscoped

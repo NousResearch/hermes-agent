@@ -6,6 +6,7 @@ are profile-scoped.
 """
 import pytest
 from unittest import mock
+from pathlib import Path
 
 
 class TestBackgroundTaskProfileScope:
@@ -25,25 +26,27 @@ class TestBackgroundTaskProfileScope:
 
         import asyncio
         source = mock.MagicMock()
-        source.profile_home = "/fake/profile"
+        source.profile = "test_profile"
 
-        # Mock _profile_runtime_scope
-        from gateway.run import _profile_runtime_scope
-        with mock.patch("gateway.run._profile_runtime_scope") as mock_scope:
-            mock_scope.return_value.__enter__ = mock.MagicMock()
-            mock_scope.return_value.__exit__ = mock.MagicMock()
+        # Mock _resolve_profile_home_for_source to return a known path
+        with mock.patch.object(gw, "_resolve_profile_home_for_source", return_value=Path("/fake/profile")):
+            # Mock _profile_runtime_scope
+            from gateway.run import _profile_runtime_scope
+            with mock.patch("gateway.run._profile_runtime_scope") as mock_scope:
+                mock_scope.return_value.__enter__ = mock.MagicMock()
+                mock_scope.return_value.__exit__ = mock.MagicMock()
 
-            asyncio.run(
-                gw._run_background_task(
-                    prompt="test",
-                    source=source,
-                    task_id="test_task",
+                asyncio.run(
+                    gw._run_background_task(
+                        prompt="test",
+                        source=source,
+                        task_id="test_task",
+                    )
                 )
-            )
 
-            # _profile_runtime_scope should have been called with profile_home
-            mock_scope.assert_called_once_with("/fake/profile")
-            mock_inner.assert_called_once()
+                # _profile_runtime_scope should have been called with profile_home (Path object)
+                mock_scope.assert_called_once_with(Path("/fake/profile"))
+                mock_inner.assert_called_once()
 
     def test_background_task_calls_inner_direct_when_multiplex_disabled(self):
         """When multiplex_profiles is False, _run_background_task calls inner directly."""

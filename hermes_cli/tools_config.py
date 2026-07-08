@@ -943,6 +943,91 @@ def _clear_stale_cua_install_lock() -> None:
         logger.debug("stale cua install lock check failed: %s", e)
 
 
+def _ps_single_quote(value: str) -> str:
+    """Return a PowerShell single-quoted string literal."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _cua_driver_autostart_registered_windows() -> bool:
+    """Return whether the Windows cua-driver scheduled task is registered."""
+    if sys.platform != "win32":
+        return False
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["schtasks.exe", "/Query", "/TN", "cua-driver-serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
+def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> bool:
+    """Best-effort repair for Windows installer autostart quoting failures.
+
+    Older install.ps1 builds invoked
+    ``& C:\\Users\\Name With Spaces\\...\\cua-driver`` from an elevated
+    PowerShell command string, which PowerShell split at the first space. If
+    the installer left the scheduled task missing, retry by
+    launching the resolved binary through Start-Process's structured
+    ``-FilePath`` / ``-ArgumentList`` parameters instead of interpolating a
+    path into a command string.
+    """
+    if sys.platform != "win32":
+        return True
+    if _cua_driver_autostart_registered_windows():
+        return True
+
+    import subprocess
+
+    binary = shutil.which(driver_cmd)
+    if not binary:
+        return False
+
+    ps = shutil.which("powershell") or shutil.which("powershell.exe") or "powershell"
+    ps_cmd = (
+        f"$exe = {_ps_single_quote(binary)}; "
+        "$proc = Start-Process -FilePath $exe "
+        "-ArgumentList @('autostart','enable') "
+        "-Verb RunAs -Wait -PassThru -ErrorAction Stop; "
+        "exit $proc.ExitCode"
+    )
+
+    if verbose:
+        _print_info("    Registering cua-driver auto-start...")
+    else:
+        _print_info("    Repairing cua-driver auto-start registration...")
+
+    try:
+        result = subprocess.run(
+            [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=_cua_driver_env(),
+        )
+    except subprocess.TimeoutExpired:
+        _print_warning("    cua-driver autostart registration timed out.")
+        return False
+    except Exception as exc:
+        _print_warning(f"    cua-driver autostart registration failed: {exc}")
+        return False
+
+    if result.returncode == 0:
+        return True
+
+    tail = (result.stderr or result.stdout or "").strip().splitlines()[-3:]
+    _print_warning("    cua-driver autostart registration failed.")
+    for line in tail:
+        _print_info(f"      {line[:200]}")
+    _print_info("    From an elevated shell, run: cua-driver autostart enable")
+    return False
+
+
 def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -> bool:
     """Run the upstream cua-driver installer for this platform.
 
@@ -1100,6 +1185,12 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
                 if result.returncode != 0:
                     logger.debug("cua-driver installer output:\n%s", result.stdout)
         if result.returncode == 0 and shutil.which(driver_cmd):
+            if is_windows and not _repair_cua_driver_autostart_windows(
+                driver_cmd, verbose=verbose
+            ):
+                _print_warning(
+                    "    cua-driver installed, but auto-start was not registered."
+                )
             if verbose:
                 _print_success(f"    {driver_cmd} installed.")
                 if is_windows:

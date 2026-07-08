@@ -21,6 +21,7 @@ cleanly on missing-arch assets, and the upgrade path uses
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -421,3 +422,105 @@ class TestInstallerNoShell:
 
         assert "script" in captured
         assert not os.path.exists(captured["script"])
+
+
+class TestWindowsAutostartRepair:
+    def test_existing_task_skips_elevated_powershell_repair(self):
+        from hermes_cli import tools_config
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return SimpleNamespace(returncode=0)
+
+        with patch.object(tools_config.sys, "platform", "win32"), \
+             patch("subprocess.run", side_effect=fake_run), \
+             patch.object(tools_config.shutil, "which") as which:
+            ok = tools_config._repair_cua_driver_autostart_windows(
+                "cua-driver", verbose=False
+            )
+
+        assert ok is True
+        assert [cmd for cmd, _kwargs in calls] == [
+            ["schtasks.exe", "/Query", "/TN", "cua-driver-serve"]
+        ]
+        which.assert_not_called()
+
+    def test_windows_installer_runs_autostart_repair_after_success(self):
+        from unittest.mock import MagicMock
+        from hermes_cli import tools_config
+
+        captured = {}
+        fake_proc = MagicMock()
+        fake_proc.pid = 1
+        fake_proc.returncode = 0
+        fake_proc.communicate.return_value = ("", None)
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return fake_proc
+
+        def fake_which(name: str):
+            if name == "cua-driver":
+                return r"C:\Users\Ha Trung\AppData\Local\Programs\Cua\cua-driver\bin\cua-driver.exe"
+            return None
+
+        with patch("platform.system", return_value="Windows"), \
+             patch.object(tools_config.shutil, "which", side_effect=fake_which), \
+             patch("subprocess.Popen", side_effect=fake_popen), \
+             patch.object(tools_config, "_clear_stale_cua_install_lock"), \
+             patch.object(tools_config, "_repair_cua_driver_autostart_windows", return_value=True) as repair, \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info"), \
+             patch.object(tools_config, "_print_success"):
+            ok = tools_config._run_cua_driver_installer(label="Refreshing", verbose=False)
+
+        assert ok is True
+        assert captured["kwargs"].get("shell") is False
+        assert isinstance(captured["cmd"], list)
+        assert captured["cmd"][:4] == [
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+        ]
+        repair.assert_called_once_with("cua-driver", verbose=False)
+
+    def test_autostart_repair_quotes_username_space_path_via_file_path(self):
+        from hermes_cli import tools_config
+
+        calls = []
+        driver = (
+            r"C:\Users\Ha Trung\AppData\Local\Programs\Cua"
+            r"\cua-driver\bin\cua-driver.exe"
+        )
+
+        def fake_which(name: str):
+            if name == "cua-driver":
+                return driver
+            if name == "powershell":
+                return r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+            return None
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            if cmd[0] == "schtasks.exe":
+                return SimpleNamespace(returncode=1)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch.object(tools_config.sys, "platform", "win32"), \
+             patch.object(tools_config.shutil, "which", side_effect=fake_which), \
+             patch("subprocess.run", side_effect=fake_run), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info"):
+            ok = tools_config._repair_cua_driver_autostart_windows(
+                "cua-driver", verbose=False
+            )
+
+        assert ok is True
+        ps_calls = [cmd for cmd, _kwargs in calls if cmd[0].endswith("powershell.exe")]
+        assert len(ps_calls) == 1
+        ps_command = ps_calls[0][-1]
+        assert "-FilePath $exe" in ps_command
+        assert "-ArgumentList @('autostart','enable')" in ps_command
+        assert f"$exe = '{driver}'" in ps_command
+        assert f"& {driver}" not in ps_command

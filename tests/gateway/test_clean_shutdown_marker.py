@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
-from gateway.config import GatewayConfig, Platform
+from gateway.config import GatewayConfig, Platform, SessionResetPolicy
 from gateway.session import SessionSource, SessionStore
 
 
@@ -274,7 +274,7 @@ class TestResumePendingFreshnessGate:
         return entry
 
     def test_fresh_resume_pending_returns_same_session(self, tmp_path):
-        store = _make_store(tmp_path)
+        store = _make_store(tmp_path, policy=SessionResetPolicy(mode="both"))
         source = _make_source()
         entry = self._mark_resume_pending(store, source)
 
@@ -285,7 +285,7 @@ class TestResumePendingFreshnessGate:
 
     def test_stale_resume_pending_falls_through_to_reset(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "3600")
-        store = _make_store(tmp_path)
+        store = _make_store(tmp_path, policy=SessionResetPolicy(mode="both"))
         source = _make_source()
         entry = self._mark_resume_pending(store, source)
 
@@ -305,12 +305,29 @@ class TestResumePendingFreshnessGate:
     def test_freshness_gate_disabled_returns_stale_session(self, tmp_path, monkeypatch):
         # Opt-out: window <= 0 restores the pre-fix "always fresh" behaviour.
         monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "0")
-        store = _make_store(tmp_path)
+        store = _make_store(tmp_path, policy=SessionResetPolicy(mode="both"))
         source = _make_source()
         entry = self._mark_resume_pending(store, source)
 
         with store._lock:
             entry.last_resume_marked_at = datetime.now() - timedelta(seconds=999999)
+            entry.updated_at = datetime.now()
+            store._save()
+
+        refreshed = store.get_or_create_session(source)
+        assert refreshed.session_id == entry.session_id
+        assert refreshed.resume_pending
+
+
+    def test_mode_none_bypasses_freshness_gate(self, tmp_path, monkeypatch):
+        # Explicit no-reset policy should win over resume_pending freshness gating.
+        monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "3600")
+        store = _make_store(tmp_path, policy=SessionResetPolicy(mode="none"))
+        source = _make_source()
+        entry = self._mark_resume_pending(store, source)
+
+        with store._lock:
+            entry.last_resume_marked_at = datetime.now() - timedelta(seconds=7200)
             entry.updated_at = datetime.now()
             store._save()
 

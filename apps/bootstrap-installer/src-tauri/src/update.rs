@@ -733,13 +733,44 @@ fn update_child_env(install_root: &Path) -> Vec<(String, OsString)> {
         "HERMES_HOME".to_string(),
         hermes_home.as_os_str().to_os_string(),
     )];
-    if let Some(path) = path_with_prepended_entries(&[
-        hermes_home.join("node").join("bin"),
-        venv_bin_dir(install_root),
-    ]) {
+
+    // Prepend Hermes-managed Node dirs first, then the venv bin dir. Both must
+    // lead the PATH so a GUI-launched installer — which inherits a login-time
+    // PATH that may not include Node.js (especially on Windows, where
+    // install.ps1 drops portable Node into $HERMES_HOME/node and only updates
+    // the *User* registry PATH long after this process started) — can still
+    // resolve `node`/`npm` for the child `cmd.exe` shells npm spawns during the
+    // desktop rebuild's native postinstalls (electron, electron-winstaller,
+    // node-pty, ...).
+    let mut prepend = hermes_managed_node_dirs(&hermes_home);
+    prepend.push(venv_bin_dir(install_root));
+    if let Some(path) = path_with_prepended_entries(&prepend) {
         envs.push(("PATH".to_string(), path));
     }
     envs
+}
+
+/// Hermes-managed Node.js directories to prepend to a child PATH, in preferred
+/// lookup order.
+///
+/// `scripts/install.ps1` unpacks portable Node **directly** into
+/// `$HERMES_HOME/node` on Windows (`node.exe` at `$HERMES_HOME/node/node.exe`,
+/// no `bin/` subdir), whereas POSIX layouts use `$HERMES_HOME/node/bin`. Lead
+/// with the platform's actual location, then fall back to the other shape so a
+/// migrated/mixed install still resolves.
+///
+/// NOTE: keep this ordering in sync with `iter_hermes_node_dirs()` in
+/// hermes_constants.py and `hermesManagedNodePathEntries()` in
+/// apps/desktop/electron/main.cjs — the three are deliberately mirrored because
+/// none can import the others.
+fn hermes_managed_node_dirs(hermes_home: &Path) -> Vec<PathBuf> {
+    let bare = hermes_home.join("node");
+    let bin = hermes_home.join("node").join("bin");
+    if cfg!(target_os = "windows") {
+        vec![bare, bin]
+    } else {
+        vec![bin, bare]
+    }
 }
 
 fn venv_bin_dir(install_root: &Path) -> PathBuf {
@@ -1171,6 +1202,78 @@ mod tests {
             Some(PathBuf::from("/Applications/Hermes.app"))
         );
         assert_eq!(target_app_from_args(["--target-app", "/tmp/not-an-app"]), None);
+    }
+
+    #[test]
+    fn managed_node_dirs_lead_with_platform_native_location() {
+        // Mirrors iter_hermes_node_dirs() in hermes_constants.py and
+        // hermesManagedNodePathEntries() in apps/desktop/electron/main.cjs.
+        // install.ps1 drops portable Node at $HERMES_HOME/node on Windows
+        // (no bin/ subdir); POSIX uses $HERMES_HOME/node/bin. The child PATH
+        // must lead with the platform's real location or a GUI-launched
+        // installer (stale login PATH, no node) can't resolve `node`/`npm`
+        // for the desktop rebuild.
+        let home = Path::new("/x/hermes");
+        let bare = home.join("node");
+        let bin = home.join("node").join("bin");
+        let dirs = hermes_managed_node_dirs(home);
+
+        assert_eq!(dirs.len(), 2, "both shapes are always present for mixed/migrated installs");
+        if cfg!(target_os = "windows") {
+            assert_eq!(
+                dirs[0], bare,
+                "Windows portable Node lives in $HERMES_HOME/node, not .../node/bin"
+            );
+            assert_eq!(dirs[1], bin);
+        } else {
+            assert_eq!(
+                dirs[0], bin,
+                "POSIX Node shims live in $HERMES_HOME/node/bin"
+            );
+            assert_eq!(dirs[1], bare);
+        }
+    }
+
+    #[test]
+    fn update_child_env_prepends_managed_node_before_venv() {
+        // Regression guard for the original bug: the managed-node dir(s) must
+        // be ahead of both the venv bin dir AND the inherited PATH, so a
+        // cmd.exe subshell spawned by npm finds `node` even when the installer
+        // inherited a stale login PATH without Node.js.
+        let install_root = Path::new("/x/hermes/hermes-agent");
+        let envs = update_child_env(install_root);
+
+        let path_entry = envs
+            .iter()
+            .find(|(k, _)| k == "PATH")
+            .map(|(_, v)| v.clone())
+            .expect("update_child_env must set PATH");
+
+        let hermes_home = crate::paths::hermes_home();
+        let managed_dirs = hermes_managed_node_dirs(&hermes_home);
+        let venv_bin = venv_bin_dir(install_root);
+
+        // Split on the platform PATH separator and compare by position, which
+        // is robust to one dir being a substring of another (e.g. the managed
+        // .../node/bin dir is a prefix-suffix of paths under hermes-agent).
+        let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
+        let parts: Vec<&str> = path_entry.to_str().unwrap_or("").split(sep).collect();
+
+        let position = |needle: &Path| -> Option<usize> {
+            let n = needle.to_string_lossy();
+            parts.iter().position(|p| Path::new(p) == Path::new(n.as_ref()))
+        };
+
+        let venv_pos = position(&venv_bin)
+            .unwrap_or_else(|| panic!("venv bin {venv_bin:?} missing from PATH: {parts:?}"));
+        for dir in &managed_dirs {
+            let pos = position(dir)
+                .unwrap_or_else(|| panic!("managed node dir {dir:?} missing from PATH: {parts:?}"));
+            assert!(
+                pos < venv_pos,
+                "managed node dir {dir:?} (pos {pos}) must precede venv bin (pos {venv_pos}): {parts:?}"
+            );
+        }
     }
 
     // Helpers for the swap tests: make a throwaway dir tree we can rename.

@@ -11078,14 +11078,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     session_db=getattr(self._session_db, "_db", self._session_db),
                                 )
                                 try:
-                                    # The hygiene agent rotates the session
-                                    # forward to a continuation id that becomes
-                                    # the gateway session's live row. It must
-                                    # never finalize on close() — close() would
-                                    # end the newly rotated session the gateway
-                                    # entry now points at.
+                                    # Compact in place so the session_id stays the
+                                    # same — no rotation, no parent_session_id chain.
+                                    # _compress_context with compression_in_place=True
+                                    # rewrites the message list directly through the
+                                    # gateway's own SessionDB, so a successful compact
+                                    # is immediately visible to the gateway session entry.
                                     _hyg_agent._end_session_on_close = False
                                     _hyg_agent._print_fn = lambda *a, **kw: None
+                                    _hyg_agent.compression_in_place = True
 
                                     loop = asyncio.get_running_loop()
                                     _compressed, _ = await loop.run_in_executor(
@@ -11116,14 +11117,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                                     # Only rewrite the transcript when rotation produced
                                     # a NEW session id OR in-place compaction succeeded.
-                                    # The danger this guards against (mirrors the
-                                    # /compress fix #44794/#39704): the hygiene agent is
-                                    # built WITHOUT a session_db, so _compress_context
-                                    # cannot rotate — if it also wasn't in-place, the
-                                    # session_id is unchanged for a FAILURE reason, and an
-                                    # unconditional rewrite_transcript() would DELETE the
-                                    # original messages and replace them with only the
-                                    # compressed summary (permanent data loss, #21301).
+                                    # The hygiene agent compacts in place (compression_in_place=True),
+                                    # so _compress_context does NOT rotate session ids. When
+                                    # _last_compaction_in_place is False, in-place compaction failed
+                                    # — rewriting the transcript would replace the original messages
+                                    # with only the compressed summary (permanent data loss, #21301).
                                     if _hyg_rotated or _hyg_in_place:
                                         self.session_store.rewrite_transcript(
                                             session_entry.session_id, _compressed
@@ -11144,7 +11142,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         logger.warning(
                                             "Gateway hygiene compression for session %s "
                                             "did not rotate or compact in place "
-                                            "(no session_db on the hygiene agent) — "
+                                            "(in-place compaction failed, server may be overloaded) — "
                                             "preserving the original transcript instead "
                                             "of overwriting it with the summary (#21301).",
                                             session_entry.session_id,

@@ -1050,3 +1050,111 @@ async def test_session_hygiene_default_hard_message_limit_does_not_fire_at_12_me
     assert FakeCompressAgent.last_instance is None, (
         "Compression should NOT fire at 12 messages with default hard_limit=5000"
     )
+
+
+@pytest.mark.asyncio
+async def test_session_hygiene_rewrites_transcript_on_in_place_success(monkeypatch, tmp_path):
+    """Regression: when the hygiene agent compacts in place successfully
+    (compression_in_place=True, _last_compaction_in_place=True), the gateway
+    must rewrite the live transcript with the compacted messages. Before the
+    fix, compression_in_place was not set so _last_compaction_in_place
+    always stayed False and the transcript was preserved unchanged,
+    causing repeated no-op compressions (#60947)."""
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    class InPlaceCompressAgent:
+        last_instance = None
+
+        def __init__(self, **kwargs):
+            self.model = kwargs.get("model")
+            self.session_id = kwargs.get("session_id", "fake-session")
+            self.compression_in_place = False  # gateway sets this after __init__
+            self._last_compaction_in_place = False
+            self._print_fn = None
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+            type(self).last_instance = self
+
+        def _compress_context(self, messages, *_args, **_kwargs):
+            # Simulate successful in-place compaction:
+            # returns compacted messages, same session_id
+            self._last_compaction_in_place = True
+            return ([{"role": "assistant", "content": "compacted summary"}], None)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = InPlaceCompressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    GatewayRunner = gateway_run.GatewayRunner
+
+    adapter = HygieneCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:group:-1001:17585",
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+    )
+    runner.session_store.load_transcript.return_value = _make_history(6, content_size=400)
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = MagicMock()
+    runner._session_db._db = MagicMock()
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100,
+    )
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "795544298")
+
+    event = MessageEvent(
+        text="hello",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            thread_id="17585",
+            user_id="12345",
+        ),
+        message_id="1",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result == "ok"
+    # The gateway MUST set compression_in_place on the hygiene agent.
+    assert InPlaceCompressAgent.last_instance is not None
+    assert InPlaceCompressAgent.last_instance.compression_in_place is True, (
+        "Hygiene agent must have compression_in_place=True set by the gateway"
+    )
+    # When compaction succeeds, the transcript IS rewritten.
+    runner.session_store.rewrite_transcript.assert_called_once()

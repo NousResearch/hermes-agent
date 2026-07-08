@@ -1872,7 +1872,7 @@ _BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
 # Zen / Go re-expose dozens of upstream vendors and rotate them frequently, so
 # their stale curated entries must not pollute the top of the picker. (#49129)
 _LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset(
-    {"opencode-zen", "opencode-go"}
+    {"opencode-zen", "opencode-go", "pioneer"}
 )
 
 
@@ -2312,6 +2312,51 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     return merged
 
 
+def _pioneer_model_dedupe_key(model_id: str) -> str:
+    """Return a semantic dedupe key for Pioneer model aliases."""
+    normalized = str(model_id).strip().lower()
+    marker = "/pioneer/"
+    if marker in normalized:
+        return normalized.split(marker, 1)[1]
+    return normalized
+
+
+def _pioneer_model_priority(model_id: str) -> int:
+    """Prefer user-facing Pioneer aliases over routed internal IDs."""
+    normalized = str(model_id).strip().lower()
+    if "/pioneer/" in normalized:
+        return 1
+    return 0
+
+
+def clean_pioneer_model_ids(model_ids: list[str] | tuple[str, ...]) -> list[str]:
+    """Deduplicate Pioneer live catalogs while preserving usable model IDs.
+
+    Pioneer may return both routed IDs like ``anthropic/pioneer/gpt-5.5`` and
+    their public aliases like ``gpt-5.5``. Show one entry in the picker, and
+    prefer the shorter public alias when both are available.
+    """
+    by_key: dict[str, tuple[int, int, str]] = {}
+    ordered_keys: list[str] = []
+
+    for raw in model_ids:
+        model_id = str(raw or "").strip()
+        if not model_id:
+            continue
+        key = _pioneer_model_dedupe_key(model_id)
+        priority = _pioneer_model_priority(model_id)
+        existing = by_key.get(key)
+        if existing is None:
+            ordered_keys.append(key)
+            by_key[key] = (priority, len(model_id), model_id)
+            continue
+        existing_priority, existing_len, _existing_id = existing
+        if (priority, len(model_id)) < (existing_priority, existing_len):
+            by_key[key] = (priority, len(model_id), model_id)
+
+    return [by_key[key][2] for key in ordered_keys]
+
+
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
     """Return the best known model catalog for a provider.
 
@@ -2510,6 +2555,8 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if api_key:
                 live = _p.fetch_models(api_key=api_key, base_url=base_url or None)
                 if live:
+                    if normalized == "pioneer":
+                        live = clean_pioneer_model_ids(live)
                     # Merge static curated list with live API results so
                     # models that the live endpoint omits (stale cache,
                     # partial rollout) still appear in the picker.
@@ -2532,11 +2579,16 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                             if m.lower() not in merged_lower:
                                 merged.append(m)
                                 merged_lower.add(m.lower())
+                        if normalized == "pioneer":
+                            return clean_pioneer_model_ids(merged)
                         return merged
                     return live
             # Use profile's fallback_models if defined
             if _p.fallback_models:
-                return list(_p.fallback_models)
+                fallback = list(_p.fallback_models)
+                if normalized == "pioneer":
+                    return clean_pioneer_model_ids(fallback)
+                return fallback
     except Exception:
         pass
 
@@ -2698,7 +2750,10 @@ def cached_provider_model_ids(
         and entry["models"]
         and (now - float(entry.get("at", 0))) < ttl_seconds
     ):
-        return list(entry["models"])
+        cached_models = list(entry["models"])
+        if normalized == "pioneer":
+            cached_models = clean_pioneer_model_ids(cached_models)
+        return cached_models
 
     # Cache miss / stale / forced refresh — call the live path.
     live = provider_model_ids(normalized, force_refresh=force_refresh)
@@ -2720,7 +2775,10 @@ def cached_provider_model_ids(
         and isinstance(entry.get("models"), list)
         and entry["models"]
     ):
-        return list(entry["models"])
+        cached_models = list(entry["models"])
+        if normalized == "pioneer":
+            cached_models = clean_pioneer_model_ids(cached_models)
+        return cached_models
     return list(live or [])
 
 

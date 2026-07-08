@@ -2547,6 +2547,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     )
     from hermes_cli.models import (
         _PROVIDER_MODELS,
+        clean_pioneer_model_ids,
         fetch_api_models,
         opencode_model_api_mode,
         normalize_opencode_model_id,
@@ -2668,10 +2669,9 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                 save_env_value(base_url_env, override)
                 effective_base = override
 
-    # Model selection — resolution order:
-    #   1. models.dev registry (cached, filtered for agentic/tool-capable models)
-    #   2. Curated static fallback list (offline insurance)
-    #   3. Live /models endpoint probe (small providers without models.dev data)
+    # Model selection. Most providers use models.dev first, then a curated
+    # fallback, then a live probe for small catalogs. Pioneer is live-first so
+    # first-time setup reflects the user's account-specific model catalog.
     #
     # LM Studio: live /api/v1/models probe (no models.dev catalog).
     # Ollama Cloud: merged discovery (live API + models.dev + disk cache).
@@ -2738,17 +2738,30 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                     )
     else:
         curated = _PROVIDER_MODELS.get(provider_id, [])
+        live_first = provider_id in {"pioneer"}
 
-        # Try models.dev first — returns tool-capable models, filtered for noise
         mdev_models: list = []
-        try:
-            from agent.models_dev import list_agentic_models
+        live_models: list = []
+        if live_first:
+            api_key_for_probe = existing_key or (
+                get_env_value(key_env) if key_env else ""
+            )
+            live_models = clean_pioneer_model_ids(
+                fetch_api_models(api_key_for_probe, effective_base) or []
+            )
+        else:
+            # Try models.dev first — returns tool-capable models, filtered for noise.
+            try:
+                from agent.models_dev import list_agentic_models
 
-            mdev_models = list_agentic_models(provider_id)
-        except Exception:
-            pass
+                mdev_models = list_agentic_models(provider_id)
+            except Exception:
+                pass
 
-        if mdev_models:
+        if live_models:
+            model_list = live_models
+            print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
+        elif mdev_models:
             # Merge models.dev with curated list so newly added models
             # (not yet in models.dev) still appear in the picker.
             if curated:

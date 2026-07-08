@@ -356,6 +356,7 @@ def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
+    business_connection_id = (args.get("business_connection_id") or "").strip() or None
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
@@ -857,6 +858,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             thread_id=thread_id,
             disable_link_previews=disable_link_previews,
             force_document=force_document,
+            business_connection_id=business_connection_id,
         )
 
     # --- Discord: chunked delivery via the registry's standalone_sender_fn.
@@ -1114,7 +1116,7 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, business_connection_id=None):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -1205,6 +1207,8 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         text_kwargs = dict(thread_kwargs)
         if disable_link_previews:
             text_kwargs["disable_web_page_preview"] = True
+        if business_connection_id:
+            text_kwargs["business_connection_id"] = business_connection_id
 
         last_msg = None
         warnings = []

@@ -2239,3 +2239,22 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = None
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
+
+
+class TestQQAdapterIsReconnectParameter:
+    """Regression: #60635 - QQAdapter.connect() must accept is_reconnect parameter."""
+    
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="test", client_secret="test", **extra))
+    
+    def test_connect_accepts_is_reconnect_parameter(self):
+        """QQAdapter.connect() should accept is_reconnect parameter like other adapters."""
+        adapter = self._make_adapter()
+        # Verify the method signature includes is_reconnect
+        import inspect
+        sig = inspect.signature(adapter.connect)
+        params = list(sig.parameters.keys())
+        assert "is_reconnect" in params, f"Expected is_reconnect in {params}"
+        # Verify it defaults to False
+        assert sig.parameters["is_reconnect"].default is False

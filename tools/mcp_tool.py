@@ -628,13 +628,11 @@ def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
     rationale. Returns the (command, args) unchanged on any platform/failure
     where the wrap can't safely apply, so this can never be the reason a
     previously-working MCP server stops starting.
+
+    On POSIX, uses process groups (killpg) to terminate the child and all
+    descendants when the parent dies. On Windows, uses psutil to walk the
+    process tree and terminate descendants individually.
     """
-    if os.name != "posix":
-        # Relies on process groups (os.getpgid/os.killpg); no POSIX
-        # equivalent wired up here yet, matching the existing killpg-based
-        # orphan cleanup's platform scope (Windows falls back to plain
-        # os.kill there too).
-        return command, args
     try:
         my_pid = os.getpid()
         try:

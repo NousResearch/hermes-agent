@@ -86,6 +86,16 @@ export default defineConfig({
   build: {
     outDir: "../hermes_cli/web_dist",
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const normalized = id.split(path.sep).join("/");
+          if (normalized.includes("/node_modules/@xterm/")) {
+            return "xterm";
+          }
+        },
+      },
+    },
   },
   server: {
     proxy: {

@@ -1,9 +1,11 @@
 import {
   useCallback,
   useEffect,
+  lazy,
   useMemo,
   useRef,
   useState,
+  Suspense,
   type ComponentType,
   type FocusEvent,
   type MouseEvent,
@@ -72,25 +74,7 @@ import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
-import ConfigPage from "@/pages/ConfigPage";
-import DocsPage from "@/pages/DocsPage";
-import EnvPage from "@/pages/EnvPage";
-import FilesPage from "@/pages/FilesPage";
 import SessionsPage from "@/pages/SessionsPage";
-import LogsPage from "@/pages/LogsPage";
-import AnalyticsPage from "@/pages/AnalyticsPage";
-import ModelsPage from "@/pages/ModelsPage";
-import CronPage from "@/pages/CronPage";
-import ProfilesPage from "@/pages/ProfilesPage";
-import ProfileBuilderPage from "@/pages/ProfileBuilderPage";
-import SkillsPage from "@/pages/SkillsPage";
-import PluginsPage from "@/pages/PluginsPage";
-import McpPage from "@/pages/McpPage";
-import PairingPage from "@/pages/PairingPage";
-import ChannelsPage from "@/pages/ChannelsPage";
-import WebhooksPage from "@/pages/WebhooksPage";
-import SystemPage from "@/pages/SystemPage";
-import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -99,6 +83,7 @@ import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
+import { shouldRenderPersistentChatHost } from "@/lib/dashboard-chat-host";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
 
@@ -113,6 +98,40 @@ function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
   }
   return <Navigate to="/sessions" replace />;
 }
+
+function LoadingFallback({ label = "Loading…" }: { label?: string }) {
+  return (
+    <div
+      className="flex min-h-64 min-w-0 flex-1 items-center justify-center"
+      aria-busy="true"
+      aria-live="polite"
+    >
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Spinner />
+        <span>{label}</span>
+      </div>
+    </div>
+  );
+}
+
+const FilesPage = lazy(() => import("@/pages/FilesPage"));
+const AnalyticsPage = lazy(() => import("@/pages/AnalyticsPage"));
+const ModelsPage = lazy(() => import("@/pages/ModelsPage"));
+const LogsPage = lazy(() => import("@/pages/LogsPage"));
+const CronPage = lazy(() => import("@/pages/CronPage"));
+const SkillsPage = lazy(() => import("@/pages/SkillsPage"));
+const PluginsPage = lazy(() => import("@/pages/PluginsPage"));
+const McpPage = lazy(() => import("@/pages/McpPage"));
+const PairingPage = lazy(() => import("@/pages/PairingPage"));
+const ChannelsPage = lazy(() => import("@/pages/ChannelsPage"));
+const WebhooksPage = lazy(() => import("@/pages/WebhooksPage"));
+const SystemPage = lazy(() => import("@/pages/SystemPage"));
+const ProfilesPage = lazy(() => import("@/pages/ProfilesPage"));
+const ProfileBuilderPage = lazy(() => import("@/pages/ProfileBuilderPage"));
+const ConfigPage = lazy(() => import("@/pages/ConfigPage"));
+const EnvPage = lazy(() => import("@/pages/EnvPage"));
+const DocsPage = lazy(() => import("@/pages/DocsPage"));
+const ChatPage = lazy(() => import("@/pages/ChatPage"));
 
 const CHAT_NAV_ITEM: NavItem = {
   path: "/chat",
@@ -130,26 +149,26 @@ const CHAT_NAV_ITEM: NavItem = {
  * Routing still owns the URL so /chat deep-links, browser back/forward,
  * and nav highlight keep working.
  */
-const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
-  "/": RootRedirect,
-  "/sessions": SessionsPage,
-  "/files": FilesPage,
-  "/analytics": AnalyticsPage,
-  "/models": ModelsPage,
-  "/logs": LogsPage,
-  "/cron": CronPage,
-  "/skills": SkillsPage,
-  "/plugins": PluginsPage,
-  "/mcp": McpPage,
-  "/pairing": PairingPage,
-  "/channels": ChannelsPage,
-  "/webhooks": WebhooksPage,
-  "/system": SystemPage,
-  "/profiles": ProfilesPage,
-  "/profiles/new": ProfileBuilderPage,
-  "/config": ConfigPage,
-  "/env": EnvPage,
-  "/docs": DocsPage,
+const BUILTIN_ROUTES_CORE: Record<string, ReactNode> = {
+  "/": <RootRedirect />,
+  "/sessions": <SessionsPage />,
+  "/files": <FilesPage />,
+  "/analytics": <AnalyticsPage />,
+  "/models": <ModelsPage />,
+  "/logs": <LogsPage />,
+  "/cron": <CronPage />,
+  "/skills": <SkillsPage />,
+  "/plugins": <PluginsPage />,
+  "/mcp": <McpPage />,
+  "/pairing": <PairingPage />,
+  "/channels": <ChannelsPage />,
+  "/webhooks": <WebhooksPage />,
+  "/system": <SystemPage />,
+  "/profiles": <ProfilesPage />,
+  "/profiles/new": <ProfileBuilderPage />,
+  "/config": <ConfigPage />,
+  "/env": <EnvPage />,
+  "/docs": <DocsPage />,
 };
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
@@ -282,7 +301,7 @@ function partitionSidebarNav(
 }
 
 function buildRoutes(
-  builtinRoutes: Record<string, ComponentType>,
+  builtinRoutes: Record<string, ReactNode>,
   manifests: PluginManifest[],
 ): Array<{
   key: string;
@@ -306,7 +325,7 @@ function buildRoutes(
     element: ReactNode;
   }> = [];
 
-  for (const [path, Component] of Object.entries(builtinRoutes)) {
+  for (const [path, element] of Object.entries(builtinRoutes)) {
     const om = byOverride.get(path);
     if (om) {
       routes.push({
@@ -315,7 +334,7 @@ function buildRoutes(
         element: <PluginPage name={om.name} />,
       });
     } else {
-      routes.push({ key: `builtin:${path}`, path, element: <Component /> });
+      routes.push({ key: `builtin:${path}`, path, element });
     }
   }
 
@@ -378,6 +397,7 @@ export default function App() {
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
+  const [chatHostMounted, setChatHostMounted] = useState(isChatRoute);
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
   // page itself remains reachable by URL (it renders an explanation when
@@ -395,6 +415,14 @@ export default function App() {
       })
       .catch(() => setShowTokenAnalytics(false));
   }, []);
+
+  useEffect(() => {
+    if (isChatRoute) setChatHostMounted(true);
+  }, [isChatRoute]);
+  const shouldRenderChatHost = shouldRenderPersistentChatHost(
+    chatHostMounted,
+    isChatRoute,
+  );
 
   // A plugin can replace the built-in /chat page via `tab.override: "/chat"`
   // in its manifest.  When one does, `buildRoutes` already swaps the route
@@ -421,7 +449,7 @@ export default function App() {
   const builtinRoutes = useMemo(
     () => ({
       ...BUILTIN_ROUTES_CORE,
-      ...(embeddedChat ? { "/chat": ChatRouteSink } : {}),
+      ...(embeddedChat ? { "/chat": <ChatRouteSink /> } : {}),
     }),
     [embeddedChat],
   );
@@ -737,17 +765,19 @@ export default function App() {
                 )}
               >
                 <ProfileKeyedRoutes>
-                  <Routes>
-                    {routes.map(({ key, path, element }) => (
-                      <Route key={key} path={path} element={element} />
-                    ))}
-                    <Route
-                      path="*"
-                      element={
-                        <UnknownRouteFallback pluginsLoading={pluginsLoading} />
-                      }
-                    />
-                  </Routes>
+                  <Suspense fallback={<LoadingFallback />}>
+                    <Routes>
+                      {routes.map(({ key, path, element }) => (
+                        <Route key={key} path={path} element={element} />
+                      ))}
+                      <Route
+                        path="*"
+                        element={
+                          <UnknownRouteFallback pluginsLoading={pluginsLoading} />
+                        }
+                      />
+                    </Routes>
+                  </Suspense>
                 </ProfileKeyedRoutes>
 
                 {embeddedChat &&
@@ -765,7 +795,7 @@ export default function App() {
                         </div>
                       </div>
                     ) : null
-                  ) : (
+                  ) : shouldRenderChatHost ? (
                     <div
                       data-chat-active={isChatRoute ? "true" : "false"}
                       className={cn(
@@ -774,9 +804,17 @@ export default function App() {
                       )}
                       aria-hidden={!isChatRoute}
                     >
-                      <ChatPage isActive={isChatRoute} />
+                      <Suspense
+                        fallback={
+                          isChatRoute ? (
+                            <LoadingFallback label="Loading chat…" />
+                          ) : null
+                        }
+                      >
+                        <ChatPage isActive={isChatRoute} />
+                      </Suspense>
                     </div>
-                  ))}
+                  ) : null)}
               </div>
               <PluginSlot name="post-main" />
             </div>

@@ -1,5 +1,6 @@
 import { type RefObject, useEffect } from 'react'
 
+import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
 import { $petMotion, $petRoamDir, type PetState } from '@/store/pet'
 
 import { chooseMove, dwellMs, PAUSE_DWELL, pickStrollTarget } from './roam-behavior'
@@ -33,6 +34,8 @@ const DROP_SETTLE_MS = 90
 const ARRIVE_EPS = 1.5
 // Cap dt so a backgrounded/throttled tab can't teleport the pet on resume.
 const MAX_DT_S = 0.05
+// While paused, wake rarely to notice drags/replans without burning a 60Hz RAF.
+const PAUSE_POLL_MS = 250
 
 type Phase = 'pause' | 'walk' | 'fall' | 'jump'
 
@@ -114,6 +117,9 @@ export function usePetRoam({
     let pauseUntil = performance.now() + rand(400, 1200)
     let last = performance.now()
     let raf = 0
+    let pauseTimer = 0
+    let stopped = false
+    let pauseController: ReturnType<typeof createRendererLoopPauseController> | null = null
 
     let walkTargetX = cur.x
     let curLedge: Ledge | null = null
@@ -135,6 +141,61 @@ export function usePetRoam({
     const signal = (pose: PetState | null, dir: -1 | 0 | 1) => {
       $petMotion.set(pose)
       $petRoamDir.set(dir)
+    }
+
+    const rendererPaused = () => pauseController?.isPaused() ?? document.visibilityState === 'hidden'
+
+    const cancelRaf = () => {
+      if (raf !== 0) {
+        window.cancelAnimationFrame(raf)
+        raf = 0
+      }
+    }
+
+    const cancelPauseTimer = () => {
+      if (pauseTimer !== 0) {
+        window.clearTimeout(pauseTimer)
+        pauseTimer = 0
+      }
+    }
+
+    const clearScheduled = () => {
+      cancelRaf()
+      cancelPauseTimer()
+    }
+
+    const schedule = (now = performance.now()) => {
+      if (stopped || rendererPaused() || raf !== 0 || pauseTimer !== 0) {
+        return
+      }
+
+      if (phase === 'pause') {
+        const delay = Math.max(0, pauseUntil - now)
+
+        if (delay > 0) {
+          pauseTimer = window.setTimeout(() => {
+            pauseTimer = 0
+            step(performance.now())
+          }, Math.min(delay, PAUSE_POLL_MS))
+
+          return
+        }
+      }
+
+      raf = window.requestAnimationFrame(step)
+    }
+
+    const handleVisibilityChange = () => {
+      clearScheduled()
+      last = performance.now()
+
+      if (rendererPaused()) {
+        signal(null, 0)
+
+        return
+      }
+
+      schedule(last)
     }
 
     const beginPause = (now: number) => {
@@ -209,6 +270,15 @@ export function usePetRoam({
     }
 
     const step = (now: number) => {
+      raf = 0
+      pauseTimer = 0
+
+      if (stopped || rendererPaused()) {
+        signal(null, 0)
+
+        return
+      }
+
       const dt = Math.min(MAX_DT_S, (now - last) / 1000)
       last = now
 
@@ -223,7 +293,7 @@ export function usePetRoam({
         // Short settle so the pet falls right after you drop it, not seconds later.
         pauseUntil = now + DROP_SETTLE_MS
         signal(null, 0)
-        raf = requestAnimationFrame(step)
+        schedule(now)
 
         return
       }
@@ -300,13 +370,16 @@ export function usePetRoam({
         }
       }
 
-      raf = requestAnimationFrame(step)
+      schedule(now)
     }
 
-    raf = requestAnimationFrame(step)
+    pauseController = createRendererLoopPauseController(handleVisibilityChange)
+    schedule()
 
     return () => {
-      cancelAnimationFrame(raf)
+      stopped = true
+      clearScheduled()
+      pauseController?.dispose()
       signal(null, 0)
       // Hand the final position back to React so its `style` matches the DOM once
       // the loop stops re-asserting it.

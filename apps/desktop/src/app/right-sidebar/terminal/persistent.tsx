@@ -2,6 +2,8 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
+import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
+
 import { $terminalTakeover } from '../store'
 
 import { ensureTerminal } from './terminals'
@@ -83,8 +85,23 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
 
     let prev: Rect | null = null
     let frame = 0
+    let stopped = false
+    let pauseController: ReturnType<typeof createRendererLoopPauseController> | null = null
 
-    const tick = () => {
+    const rendererPaused = () => pauseController?.isPaused() ?? document.visibilityState === 'hidden'
+
+    const cancelFrame = () => {
+      if (frame !== 0) {
+        window.cancelAnimationFrame(frame)
+        frame = 0
+      }
+    }
+
+    const measure = (): boolean => {
+      if (rendererPaused()) {
+        return false
+      }
+
       const r = slot.getBoundingClientRect()
       // floor top/left + ceil right/bottom: overlay always covers the slot's
       // full pixel footprint, so half-pixel rects can't leak page bg through.
@@ -99,14 +116,60 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
         if (next.width > 0 && next.height > 0) {
           setReady(true)
         }
+
+        return true
       }
 
-      frame = requestAnimationFrame(tick)
+      return false
     }
 
-    tick()
+    const scheduleMeasure = () => {
+      if (stopped || rendererPaused() || frame !== 0) {
+        return
+      }
 
-    return () => cancelAnimationFrame(frame)
+      frame = window.requestAnimationFrame(() => {
+        frame = 0
+
+        if (measure()) {
+          scheduleMeasure()
+        }
+      })
+    }
+
+    const handleVisibilityChange = () => {
+      if (rendererPaused()) {
+        cancelFrame()
+
+        return
+      }
+
+      scheduleMeasure()
+    }
+
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(() => {
+            scheduleMeasure()
+          })
+
+    if (measure()) {
+      scheduleMeasure()
+    }
+    observer?.observe(slot)
+    window.addEventListener('resize', scheduleMeasure)
+    window.addEventListener('scroll', scheduleMeasure, true)
+    pauseController = createRendererLoopPauseController(handleVisibilityChange)
+
+    return () => {
+      stopped = true
+      cancelFrame()
+      observer?.disconnect()
+      window.removeEventListener('resize', scheduleMeasure)
+      window.removeEventListener('scroll', scheduleMeasure, true)
+      pauseController?.dispose()
+    }
   }, [slot])
 
   const visible = Boolean(rect && rect.width > 0 && rect.height > 0)

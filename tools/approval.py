@@ -2744,17 +2744,60 @@ def check_all_command_guards(command: str, env_type: str,
     if approval_mode == "smart":
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
         verdict = _smart_approve(command, combined_desc_for_llm)
+        # Fire the same approval hooks as the CLI/gateway surfaces so observers
+        # (nemo_relay, notifiers, audit) see smart-mode auto decisions too, not
+        # just escalations. Observers only: _fire_approval_hook swallows errors,
+        # and the verdict, return value, and approve_session ordering below are
+        # unchanged. surface="smart" and the smart_* choices are additive.
+        # Redact the payload like the gateway path: smart mode also runs in
+        # gateway sessions that forward it off-box. The raw command still runs.
+        from agent.redact import redact_sensitive_text
+        _hook_command = redact_sensitive_text(command)
+        _hook_desc = redact_sensitive_text(combined_desc_for_llm)
+        _primary_key = warnings[0][0]
+        _all_keys = [key for key, _, _ in warnings]
+        if verdict in ("approve", "deny"):
+            _fire_approval_hook(
+                "pre_approval_request",
+                command=_hook_command,
+                description=_hook_desc,
+                pattern_key=_primary_key,
+                pattern_keys=_all_keys,
+                session_key=session_key,
+                surface="smart",
+            )
         if verdict == "approve":
             # Auto-approve and grant session-level approval for these patterns
             for key, _, _ in warnings:
                 approve_session(session_key, key)
             logger.debug("Smart approval: auto-approved '%s' (%s)",
                          command[:60], combined_desc_for_llm)
+            _fire_approval_hook(
+                "post_approval_response",
+                command=_hook_command,
+                description=_hook_desc,
+                pattern_key=_primary_key,
+                pattern_keys=_all_keys,
+                session_key=session_key,
+                surface="smart",
+                choice="smart_approve",
+                decided_by="aux_llm",
+            )
             return {"approved": True, "message": None,
                     "smart_approved": True,
                     "description": combined_desc_for_llm}
         elif verdict == "deny":
-            combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
+            _fire_approval_hook(
+                "post_approval_response",
+                command=_hook_command,
+                description=_hook_desc,
+                pattern_key=_primary_key,
+                pattern_keys=_all_keys,
+                session_key=session_key,
+                surface="smart",
+                choice="smart_deny",
+                decided_by="aux_llm",
+            )
             return {
                 "approved": False,
                 "message": f"BLOCKED by smart approval: {combined_desc_for_llm}. "
@@ -3048,12 +3091,49 @@ def check_execute_code_guard(code: str, env_type: str,
     # guards (restored by context propagation) still run independently.
     if approval_mode == "smart":
         verdict = _smart_approve(command, description)
+        # Fire the same approval hooks the gateway surface fires so observers
+        # see smart-mode execute_code decisions too. Observers only:
+        # _fire_approval_hook swallows errors and the verdict/return value are
+        # unchanged. Reuse the redacted display copies (a script can embed
+        # secrets), matching the gateway path. surface="smart".
+        if verdict in ("approve", "deny"):
+            _fire_approval_hook(
+                "pre_approval_request",
+                command=display_command,
+                description=display_description,
+                pattern_key=pattern_key,
+                pattern_keys=[pattern_key],
+                session_key=session_key,
+                surface="smart",
+            )
         if verdict == "approve":
             logger.debug("Smart approval: auto-approved execute_code for session %s",
                          session_key)
+            _fire_approval_hook(
+                "post_approval_response",
+                command=display_command,
+                description=display_description,
+                pattern_key=pattern_key,
+                pattern_keys=[pattern_key],
+                session_key=session_key,
+                surface="smart",
+                choice="smart_approve",
+                decided_by="aux_llm",
+            )
             return {"approved": True, "message": None,
                     "smart_approved": True, "description": description}
         if verdict == "deny":
+            _fire_approval_hook(
+                "post_approval_response",
+                command=display_command,
+                description=display_description,
+                pattern_key=pattern_key,
+                pattern_keys=[pattern_key],
+                session_key=session_key,
+                surface="smart",
+                choice="smart_deny",
+                decided_by="aux_llm",
+            )
             return {
                 "approved": False,
                 "message": ("BLOCKED by smart approval: execute_code script "

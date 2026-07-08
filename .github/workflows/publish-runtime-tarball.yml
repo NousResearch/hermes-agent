@@ -1,0 +1,77 @@
+name: Publish runtime source tarball to COS
+
+# hc-458: publish the CN-mirror source tarball (hermes-agent-<sha>.tar.gz) that
+# the packaged desktop's `Install-RuntimeFromCos` pulls when installing in
+# mainland China (github blocked). Runs on a GH runner (github access to archive
+# the fork + the COS_* repo secrets desktop-windows/macos already use). Reuses
+# scripts/publish-runtime-tarball.sh — the same script CI/ops runs by hand.
+#
+# uv binaries are version-pinned and already on COS (uv-<triple>.zip for windows,
+# .tar.gz for mac/linux), so default no_uv=true and this only ships the per-commit
+# source tarball.
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Fork commit SHA to archive + publish
+        required: true
+      no_uv:
+        description: Skip uv binaries (already on COS)
+        type: boolean
+        default: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork at commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 0
+
+      - name: Install coscli
+        run: |
+          set -euo pipefail
+          curl -fSL --retry 5 -o /usr/local/bin/coscli \
+            https://github.com/tencentyun/coscli/releases/download/v1.0.8/coscli-v1.0.8-linux-amd64
+          chmod +x /usr/local/bin/coscli
+          coscli --version || true
+
+      - name: Configure coscli
+        env:
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${COS_SECRET_ID:-}" ] || [ -z "${COS_SECRET_KEY:-}" ]; then
+            echo "COS_SECRET_ID/COS_SECRET_KEY not set — cannot publish"; exit 1
+          fi
+          {
+            echo "cos:"
+            echo "  base:"
+            echo "    protocol: https"
+            echo "    secretid: ${COS_SECRET_ID}"
+            echo "    secretkey: ${COS_SECRET_KEY}"
+            echo "  buckets:"
+            echo "  - name: apexnodes-runtime-202606250443-1300912302"
+            echo "    alias: apexnodes-runtime"
+            echo "    region: ap-guangzhou"
+            echo "    endpoint: cos.ap-guangzhou.myqcloud.com"
+          } > "$HOME/.cos.yaml"
+
+      - name: Publish runtime source tarball
+        run: |
+          set -euo pipefail
+          UVFLAG=""
+          if [ "${{ inputs.no_uv }}" = "true" ]; then UVFLAG="--no-uv"; fi
+          bash scripts/publish-runtime-tarball.sh \
+            --commit "${{ inputs.commit }}" \
+            --bucket apexnodes-runtime-202606250443-1300912302 \
+            --region ap-guangzhou --prefix runtime \
+            $UVFLAG --upload
+
+      - name: Scrub coscli creds
+        if: always()
+        run: rm -f "$HOME/.cos.yaml"

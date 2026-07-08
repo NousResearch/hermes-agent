@@ -13,6 +13,7 @@ import sys
 import textwrap
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -170,6 +171,83 @@ class TestRunJobScript:
         success, output = _run_job_script("env_probe.py")
         assert success is True
         assert output == "ABSENT"
+
+    def test_windows_uv_venv_python_script_bypasses_launcher(self, cron_env, tmp_path, monkeypatch):
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text('print("ok")\n')
+
+        venv = tmp_path / "venv"
+        venv_scripts = venv / "Scripts"
+        site_packages = venv / "Lib" / "site-packages"
+        base = tmp_path / "base"
+        venv_scripts.mkdir(parents=True)
+        site_packages.mkdir(parents=True)
+        base.mkdir()
+        venv_python = venv_scripts / "python.exe"
+        base_python = base / "python.exe"
+        venv_python.write_text("", encoding="utf-8")
+        base_python.write_text("", encoding="utf-8")
+        (venv / "pyvenv.cfg").write_text(f"home = {base}\nuv = true\n", encoding="utf-8")
+
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+            return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+
+        monkeypatch.setattr(sched_mod.sys, "platform", "win32")
+        monkeypatch.setattr(sched_mod.sys, "executable", str(venv_python))
+        monkeypatch.setattr(sched_mod, "windows_hide_flags", lambda: 0x08000000)
+        monkeypatch.setattr(sched_mod.subprocess, "run", fake_run)
+
+        success, output = _run_job_script("probe.py")
+
+        assert success is True
+        assert output == "ok"
+        assert captured["argv"] == [str(base_python), str(script.resolve())]
+        assert captured["kwargs"]["creationflags"] == 0x08000000
+        env = captured["kwargs"]["env"]
+        assert env["VIRTUAL_ENV"] == str(venv)
+        assert str(site_packages) in env["PYTHONPATH"]
+
+    def test_windows_pythonw_script_uses_sibling_python_for_captured_output(self, cron_env, tmp_path, monkeypatch):
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text('print("ok")\n')
+
+        venv = tmp_path / "venv"
+        venv_scripts = venv / "Scripts"
+        venv_scripts.mkdir(parents=True)
+        pythonw = venv_scripts / "pythonw.exe"
+        python = venv_scripts / "python.exe"
+        pythonw.write_text("", encoding="utf-8")
+        python.write_text("", encoding="utf-8")
+
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+            return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+
+        monkeypatch.setattr(sched_mod.sys, "platform", "win32")
+        monkeypatch.setattr(sched_mod.sys, "executable", str(pythonw))
+        monkeypatch.setattr(sched_mod, "windows_hide_flags", lambda: 0x08000000)
+        monkeypatch.setattr(sched_mod.subprocess, "run", fake_run)
+
+        success, output = _run_job_script("probe.py")
+
+        assert success is True
+        assert output == "ok"
+        assert captured["argv"] == [str(python), str(script.resolve())]
+        assert captured["kwargs"]["encoding"] == "utf-8"
+        assert captured["kwargs"]["errors"] == "replace"
 
     def test_script_empty_output(self, cron_env):
         from cron.scheduler import _run_job_script

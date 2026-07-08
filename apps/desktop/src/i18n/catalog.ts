@@ -1,5 +1,6 @@
 import { ar } from './ar'
 import { en } from './en'
+import { it } from './it'
 import { ja } from './ja'
 import { ru } from './ru'
 import type { Locale, Translations } from './types'
@@ -8,6 +9,7 @@ import { zhHant } from './zh-hant'
 
 export const TRANSLATIONS: Record<Locale, Translations> = {
   en,
+  it,
   zh,
   'zh-hant': zhHant,
   ja,

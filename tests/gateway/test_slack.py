@@ -1129,7 +1129,14 @@ class TestBangPrefixCommands:
     command before downstream processing.
     """
 
-    def _make_event(self, text, thread_ts=None, channel_type="im", channel="D123"):
+    def _make_event(
+        self,
+        text,
+        thread_ts=None,
+        channel_type="im",
+        channel="D123",
+        blocks=None,
+    ):
         evt = {
             "text": text,
             "user": "U_USER",
@@ -1139,6 +1146,8 @@ class TestBangPrefixCommands:
         }
         if thread_ts:
             evt["thread_ts"] = thread_ts
+        if blocks is not None:
+            evt["blocks"] = blocks
         return evt
 
     @pytest.mark.asyncio
@@ -1174,6 +1183,15 @@ class TestBangPrefixCommands:
         assert msg_event.source.thread_id == "1111111111.000001"
 
     @pytest.mark.asyncio
+    async def test_leading_bot_mention_before_bang_command_is_stripped(self, adapter):
+        """Slack includes the addressed bot mention in app_mention text."""
+        await adapter._handle_slack_message(self._make_event("<@U_BOT> !status"))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/status"
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
     async def test_bang_unknown_token_passes_through_unchanged(self, adapter):
         """``!nice work`` is just a casual message — must NOT be rewritten."""
         await adapter._handle_slack_message(self._make_event("!nice work"))
@@ -1189,6 +1207,35 @@ class TestBangPrefixCommands:
 
         msg_event = adapter.handle_message.call_args[0][0]
         assert msg_event.text.startswith("/stop@hermes")
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_command_does_not_reappend_matching_rich_text(self, adapter):
+        """Slack's rich_text block mirrors plain text for normal messages.
+
+        ``!commands`` is rewritten to ``/commands`` before rich block extraction.
+        The dedupe check must compare against Slack's original plain text too;
+        otherwise the matching rich_text block is appended as a bogus argument
+        and downstream handlers see ``/commands\n!commands``.
+        """
+        blocks = [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [{"type": "text", "text": "!commands"}],
+                    }
+                ],
+            }
+        ]
+
+        await adapter._handle_slack_message(
+            self._make_event("!commands", blocks=blocks)
+        )
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/commands"
         assert msg_event.message_type == MessageType.COMMAND
 
     @pytest.mark.asyncio

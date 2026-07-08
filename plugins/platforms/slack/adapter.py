@@ -2620,6 +2620,25 @@ class SlackAdapter(BasePlatformAdapter):
             return
 
         original_text = event.get("text", "")
+        raw_original_text = original_text
+
+        # Slack app_mention/message events include the literal leading bot
+        # mention in text (e.g. "<@U_BOT> !status").  Strip that addressing
+        # prefix before command detection so mentioned commands behave like
+        # the same command typed directly in an addressed thread/channel.
+        team_id_for_mention = event.get("team") or event.get("team_id") or ""
+        bot_uid_for_mention = self._team_bot_user_ids.get(
+            team_id_for_mention,
+            self._bot_user_id,
+        )
+        if bot_uid_for_mention:
+            original_text = re.sub(
+                rf"^\s*<@{re.escape(bot_uid_for_mention)}>\s*",
+                "",
+                original_text,
+                count=1,
+            )
+        mention_stripped_original_text = original_text
 
         # Slack blocks native slash commands inside threads ("/queue is not
         # supported in threads. Sorry!").  As a workaround, recognise a
@@ -2659,7 +2678,12 @@ class SlackAdapter(BasePlatformAdapter):
                 # Only append if the blocks contain text not already present
                 # in the plain text field (avoids duplication).
                 stripped_blocks = blocks_text.strip()
-                if stripped_blocks and stripped_blocks not in text.strip():
+                if (
+                    stripped_blocks
+                    and stripped_blocks not in text.strip()
+                    and stripped_blocks != raw_original_text.strip()
+                    and stripped_blocks != mention_stripped_original_text.strip()
+                ):
                     logger.debug(
                         "Slack: extracted additional text from blocks "
                         "(likely quoted/forwarded content): %s",
@@ -2824,7 +2848,7 @@ class SlackAdapter(BasePlatformAdapter):
         #   3. The message is in a thread where the bot was previously @mentioned, OR
         #   4. There's an existing session for this thread (survives restarts)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-        routing_text = original_text or ""
+        routing_text = raw_original_text or ""
         is_mentioned = bool(
             (bot_uid and f"<@{bot_uid}>" in routing_text)
             or self._slack_message_matches_mention_patterns(routing_text)

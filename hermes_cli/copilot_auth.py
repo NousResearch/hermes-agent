@@ -79,9 +79,11 @@ def resolve_copilot_token() -> tuple[str, str]:
     Raises ValueError if only a classic PAT is available.
     """
     # 1. Check env vars in priority order
+    any_env_var_set = False
     for env_var in COPILOT_ENV_VARS:
         val = os.getenv(env_var, "").strip()
         if val:
+            any_env_var_set = True
             valid, msg = validate_copilot_token(val)
             if not valid:
                 logger.warning(
@@ -90,7 +92,18 @@ def resolve_copilot_token() -> tuple[str, str]:
                 continue
             return val, env_var
 
-    # 2. Fall back to gh auth token
+    # 2. Fall back to gh auth token — but ONLY when no Copilot env var was
+    #    explicitly set. When the user exported GITHUB_TOKEN (even an
+    #    unsupported classic PAT), their intent is to use *that* token, not
+    #    to silently substitute one from the gh CLI credential store.
+    #    Skipping the subprocess here also avoids a slow `gh auth token`
+    #    call (up to 5s timeout on Windows) on every cold start that scans
+    #    Copilot auth state — a measurable contributor to the ~14s
+    #    cold-start stall (#60800). The user can run `copilot login` or
+    #    set a supported token (gho_*/github_pat_*/ghu_) explicitly.
+    if any_env_var_set:
+        return "", ""
+
     token = _try_gh_cli_token()
     if token:
         valid, msg = validate_copilot_token(token)

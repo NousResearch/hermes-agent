@@ -4895,8 +4895,24 @@ def _write_memory_provider_config_values(
         save_env_value(env_key, secret)
 
 
+_MEMORY_PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+def _require_valid_memory_provider_name(name: str) -> None:
+    """Reject provider names that could traverse outside the plugin dirs.
+
+    ``name`` is interpolated into filesystem paths by ``find_provider_dir()``
+    and gates which plugin manifest's setup commands run. A strict charset
+    allowlist (no path separators, no dots) makes traversal impossible
+    regardless of how the downstream lookup evolves.
+    """
+    if not _MEMORY_PROVIDER_NAME_RE.fullmatch(name or ""):
+        raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
+
+
 @app.get("/api/memory/providers/{name}/config")
 async def get_memory_provider_config(name: str):
+    _require_valid_memory_provider_name(name)
     provider = _load_memory_provider(name)
     if provider is None:
         # Undeclared providers (e.g. builtin) have no config surface. Return an
@@ -4907,7 +4923,14 @@ async def get_memory_provider_config(name: str):
 
 @app.post("/api/memory/providers/{name}/setup")
 async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest):
+    _require_valid_memory_provider_name(name)
     provider = _load_memory_provider(name)
+    if provider is None and not _memory_provider_manifest(name):
+        # No discoverable plugin directory → nothing whose manifest could
+        # legitimately declare setup commands. Refuse before the
+        # command-running path. (provider may be None with a manifest present
+        # when its pip deps aren't installed yet — that's the setup use case.)
+        raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
     if provider is not None and body.values:
         try:
             _write_memory_provider_config_values(name, provider, body.values)
@@ -4921,6 +4944,7 @@ async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest):
 
 @app.put("/api/memory/providers/{name}/config")
 async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpdate):
+    _require_valid_memory_provider_name(name)
     provider = _load_memory_provider(name)
     if provider is None:
         raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")

@@ -522,6 +522,23 @@ class TestWebServerEndpoints:
 
         assert resp.status_code == 404
 
+    def test_memory_provider_endpoints_reject_traversal_names(self):
+        # Names with path separators / dots must never reach the filesystem
+        # lookup or the setup command path. 404 = rejected by the name guard;
+        # 405 = the router collapsed the dotted path onto a different route
+        # (equally safe — the handler never ran).
+        for bad in ("..", "..%2f..%2fetc", "a.b", "x/y", ".hidden", ""):
+            resp = self.client.get(f"/api/memory/providers/{bad}/config")
+            assert resp.status_code in (404, 405), (bad, resp.status_code)
+            resp = self.client.post(
+                f"/api/memory/providers/{bad}/setup", json={"values": {}}
+            )
+            assert resp.status_code in (404, 405), (bad, resp.status_code)
+            resp = self.client.put(
+                f"/api/memory/providers/{bad}/config", json={"values": {}}
+            )
+            assert resp.status_code in (404, 405), (bad, resp.status_code)
+
     def test_post_memory_provider_setup_persists_values_without_activation(self):
         from hermes_cli.config import load_config, load_env
 

@@ -305,6 +305,33 @@ describe('PaneShell composition', () => {
     expect($paneStates.get().files?.widthOverride).toBe(300)
   })
 
+  it('shows a wider grip-bearing reveal trigger on a collapsed left pane, and a plain narrow one on the right', () => {
+    const rendered = render(
+      <PaneShell>
+        <Pane defaultOpen={false} hoverReveal id="sidebar" side="left" width="240px">
+          sidebar
+        </Pane>
+        <PaneMain>main</PaneMain>
+        <Pane defaultOpen={false} hoverReveal id="inspector" side="right" width="320px">
+          inspector
+        </Pane>
+      </PaneShell>
+    )
+
+    const leftTrigger = rendered.container.querySelector('[data-pane-id="sidebar"] [data-pane-reveal-trigger]')
+    const rightTrigger = rendered.container.querySelector('[data-pane-id="inspector"] [data-pane-reveal-trigger]')
+
+    if (!(leftTrigger instanceof HTMLElement) || !(rightTrigger instanceof HTMLElement)) {
+      throw new Error('Expected both collapsed panes to render a reveal trigger')
+    }
+
+    expect(leftTrigger.style.width).toBe('20px')
+    expect(leftTrigger.querySelector('span')).not.toBeNull()
+
+    expect(rightTrigger.style.width).toBe('14px')
+    expect(rightTrigger.querySelector('span')).toBeNull()
+  })
+
   it('dragging a right-pane separator clamps to max width', () => {
     const rendered = render(
       <PaneShell>

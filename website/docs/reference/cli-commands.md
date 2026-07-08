@@ -671,6 +671,7 @@ hermes webhook subscribe <name> [options]
 | `--deliver-chat-id` | Target chat/channel ID for cross-platform delivery. |
 | `--secret` | Custom HMAC secret. Auto-generated if omitted. |
 | `--deliver-only` | Skip the agent — deliver the rendered `--prompt` as the literal message. Zero LLM cost, sub-second delivery. Requires `--deliver` to be a real target (not `log`). |
+| `--script` | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin; JSON stdout replaces the payload, and empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. See [Script Filters and Transforms](../user-guide/messaging/webhooks.md#script-filters-and-transforms). |
 
 Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-reloaded by the webhook adapter without a gateway restart.
 

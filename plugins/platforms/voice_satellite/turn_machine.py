@@ -50,6 +50,7 @@ class TurnMachine:
         if now - self._listen_started > self.listen_timeout_seconds:
             self.to_idle()
             return ("abort",)
+        assert self._detector is not None  # set in on_pipeline_start, which alone enters LISTENING
         utterance = self._detector.feed(pcm, seconds)
         if utterance is None:
             return None

@@ -40,6 +40,8 @@ def _import_sibling(name: str):
         return sys.modules[mod_key]
     path = Path(__file__).with_name(f"{name}.py")
     spec = importlib.util.spec_from_file_location(mod_key, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not build import spec for {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[mod_key] = module
     spec.loader.exec_module(module)

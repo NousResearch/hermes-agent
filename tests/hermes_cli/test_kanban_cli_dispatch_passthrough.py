@@ -8,6 +8,7 @@ operator footgun that only manifests in long-running setups.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -92,6 +93,32 @@ def test_cli_max_flag_overrides_config_max_spawn(isolated_kanban_home, monkeypat
     assert captured.get("max_spawn") == 2, (
         f"CLI --max=2 must override config kanban.max_spawn=10; got {captured.get('max_spawn')!r}"
     )
+
+
+def test_cli_dispatch_json_reports_respawn_guarded(
+    isolated_kanban_home, monkeypatch, capsys
+):
+    """Dry-run JSON must expose tasks parked by respawn guards.
+
+    Without this field, operators see ``spawned: []`` but not the active PR or
+    recent-success reason that explains why dispatch skipped a ready card.
+    """
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"kanban": {}})
+
+    result = kanban_db.DispatchResult()
+    result.respawn_guarded.append(("t_pr173", "active_pr"))
+    monkeypatch.setattr(kanban_db, "dispatch_once", lambda conn, **kw: result)
+
+    args = argparse.Namespace(dry_run=True, max=None, failure_limit=2, json=True)
+    assert kb_cli._cmd_dispatch(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["respawn_guarded"] == [
+        {"task_id": "t_pr173", "reason": "active_pr"}
+    ]
 
 
 def test_cli_invalid_max_in_progress_silently_disables(isolated_kanban_home, monkeypatch):

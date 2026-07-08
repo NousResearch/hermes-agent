@@ -1235,13 +1235,19 @@ class GatewayKanbanWatchersMixin:
                 results = await asyncio.to_thread(_tick_once)
                 any_spawned = False
                 for slug, res in (results or []):
-                    if res is not None and getattr(res, "spawned", None):
+                    if res is None:
+                        continue
+                    respawn_guarded = getattr(res, "respawn_guarded", []) or []
+                    if getattr(res, "spawned", None):
                         any_spawned = True
+                    if getattr(res, "spawned", None) or respawn_guarded:
                         # Quiet by default — only log when something actually
-                        # happened, so an idle gateway stays silent.
+                        # happened, including review/respawn gates that explain
+                        # why a ready task was deliberately not spawned.
                         logger.info(
                             "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
-                            "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
+                            "crashed=%d timed_out=%d promoted=%d auto_blocked=%d "
+                            "respawn_guarded=%d",
                             slug,
                             len(res.spawned),
                             res.reclaimed,
@@ -1249,7 +1255,15 @@ class GatewayKanbanWatchersMixin:
                             len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
                             res.promoted,
                             len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                            len(respawn_guarded),
                         )
+                        for tid, reason in respawn_guarded:
+                            logger.info(
+                                "kanban dispatcher [%s]: respawn_guarded task=%s reason=%s",
+                                slug,
+                                tid,
+                                reason,
+                            )
                 # Health telemetry (aggregate across boards)
                 ready_pending = await asyncio.to_thread(_ready_nonempty)
                 if ready_pending and not any_spawned:

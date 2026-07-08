@@ -365,7 +365,7 @@ Every profile that works kanban tasks automatically gets the worker lifecycle �
 1. On spawn, call `kanban_show()` to read title + body + parent handoffs + prior attempts + full comment thread.
 2. `cd $HERMES_KANBAN_WORKSPACE` (via the terminal tool) and do the work there.
 3. Call `kanban_heartbeat(note="...")` every few minutes during long operations. **If your work may run longer than 1 hour, call `kanban_heartbeat` at least once an hour** — the dispatcher reclaims tasks that have been running past `kanban.dispatch_stale_timeout_seconds` (default 4 h) with no heartbeat in the last hour, on the assumption the worker crashed without cleanup. A reclaim is benign (the task goes back to `ready` for re-dispatch without a failure-counter tick) but you lose your current run's progress.
-4. Complete with `kanban_complete(summary="...", metadata={...})`, or `kanban_block(reason="...")` if stuck.
+4. Complete with `kanban_complete(summary="...", metadata={...})`, or `kanban_block(reason="...")` if stuck. For code changes that have opened a PR but still need human eyes, prefer `kanban_comment(...)` with the review handoff, then `kanban_block(reason="review-required: ...")` so the card parks in an explicit human-review state instead of sitting in `ready` behind the `active_pr` respawn guard.
 
 That final `kanban_complete` / `kanban_block` call is part of the worker
 protocol. If the worker process exits with status 0 while the task is still
@@ -375,6 +375,13 @@ of respawning it into the same loop. This usually means the model wrote a
 plain-text answer and exited without using the Kanban tool surface.
 
 The lifecycle plus the load-bearing reference details (workspace kinds, deliverable `artifacts`, claiming created cards) ship in that system-prompt block, so every worker has them regardless of which profile it runs under — no per-profile skill setup required.
+
+If a legacy or non-compliant worker leaves a PR URL in comments and exits without
+blocking/completing, the dispatcher treats the ready card as protected by the
+`active_pr` respawn guard. Dispatch telemetry (`hermes kanban dispatch --json`,
+daemon/gateway logs, and task events) reports `respawn_guarded` with the guard
+reason so operators see that the card is waiting on review rather than silently
+idle.
 
 ### Pinning extra skills to a specific task
 

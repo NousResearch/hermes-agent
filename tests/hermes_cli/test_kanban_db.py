@@ -1703,6 +1703,30 @@ def test_has_spawnable_ready_true_when_real_profile_present(kanban_home, monkeyp
         assert kb.has_spawnable_ready(conn) is True
 
 
+def test_has_spawnable_ready_false_when_only_ready_task_has_active_pr(
+    kanban_home, monkeypatch
+):
+    """A ready task parked behind the active_pr respawn guard is not spawnable.
+
+    Gateway/daemon stuck telemetry calls ``has_spawnable_ready`` after a tick with
+    0 spawned workers. If active-PR review gates still count as spawnable, the
+    board looks broken even though dispatch correctly refused to respawn.
+    """
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="has-pr", assignee="daily")
+        kb.add_comment(
+            conn,
+            t,
+            "worker",
+            "Opened https://github.com/NousResearch/hermes-agent/pull/173",
+        )
+
+        assert kb.has_spawnable_ready(conn) is False
+
+
 def test_has_spawnable_ready_false_on_empty_queue(kanban_home):
     """Empty queue is the trivial false case — no ready tasks at all."""
     with kb.connect() as conn:

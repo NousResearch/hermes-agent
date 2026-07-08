@@ -5271,6 +5271,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._enqueue_fifo(session_key, event, adapter)
 
+    def _requeue_interrupt_depth_pending(
+        self,
+        session_key: str,
+        source,
+        *,
+        adapter: Any,
+        pending_event: Optional[MessageEvent],
+        pending_text: Optional[str],
+        event_message_id: Optional[str],
+        channel_prompt: Optional[str],
+    ) -> bool:
+        """Park the next interrupt follow-up when recursive drain hits its cap."""
+        if not adapter or not session_key:
+            return False
+
+        queued_event = pending_event
+        if queued_event is None and pending_text:
+            queued_event = MessageEvent(
+                text=pending_text,
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id=event_message_id,
+                channel_prompt=channel_prompt,
+            )
+
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        if queued_event is not None and pending_slot is not None:
+            if getattr(queued_event, "source", None) is None:
+                queued_event.source = source
+            self._enqueue_fifo(session_key, queued_event, adapter)
+            return True
+
+        if pending_text and hasattr(adapter, "queue_message"):
+            adapter.queue_message(session_key, pending_text)
+            return True
+        return False
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -19735,10 +19772,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _interrupt_depth, session_key,
                     )
                     adapter = self._adapter_for_source(source)
-                    if adapter and pending_event:
-                        merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
-                    elif adapter and hasattr(adapter, 'queue_message'):
-                        adapter.queue_message(session_key, pending)
+                    self._requeue_interrupt_depth_pending(
+                        session_key,
+                        source,
+                        adapter=adapter,
+                        pending_event=pending_event,
+                        pending_text=pending,
+                        event_message_id=event_message_id,
+                        channel_prompt=channel_prompt,
+                    )
                     return result_holder[0] or {"final_response": response, "messages": history}
 
                 was_interrupted = result.get("interrupted")

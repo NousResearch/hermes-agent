@@ -178,8 +178,8 @@ class TestFeishuFallbackThreadRouting:
 
     @pytest.mark.asyncio
     async def test_create_uses_thread_id_when_available(self):
-        """When reply_to=None and metadata has thread_id, message.create
-        should use receive_id_type='thread_id'."""
+        """When reply_to=None and metadata has thread_id, message.reply
+        with reply_in_thread=True should be used instead of message.create."""
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         # We test the _send_raw_message method directly by mocking the client
@@ -187,16 +187,16 @@ class TestFeishuFallbackThreadRouting:
 
         # Set up the real _send_raw_message logic manually
         mock_client = MagicMock()
-        mock_create_response = SimpleNamespace(
+        mock_reply_response = SimpleNamespace(
             success=lambda: True,
             data=SimpleNamespace(message_id="new_msg_1"),
         )
-        mock_client.im.v1.message.create = MagicMock(return_value=mock_create_response)
+        mock_client.im.v1.message.reply = MagicMock(return_value=mock_reply_response)
 
         # Use the real implementation path
         adapter._client = mock_client
-        adapter._build_create_message_body = FeishuAdapter._build_create_message_body
-        adapter._build_create_message_request = FeishuAdapter._build_create_message_request
+        adapter._build_reply_message_body = FeishuAdapter._build_reply_message_body
+        adapter._build_reply_message_request = FeishuAdapter._build_reply_message_request
         # _send_raw_message routes blocking SDK calls through _run_blocking
         # (adapter-owned executor). On a MagicMock(spec=...) that method is
         # auto-mocked and would swallow the real call, so wire a passthrough.
@@ -215,17 +215,15 @@ class TestFeishuFallbackThreadRouting:
             metadata={"thread_id": "omt_topic_abc"},
         )
 
-        # Verify message.create was called (not message.reply)
-        mock_client.im.v1.message.create.assert_called_once()
+        # Verify message.reply was called (not message.create)
+        mock_client.im.v1.message.reply.assert_called_once()
 
-        # The request should have receive_id_type="thread_id"
-        call_args = mock_client.im.v1.message.create.call_args[0][0]
+        # The reply request should have the thread_id as receive_id
+        call_args = mock_client.im.v1.message.reply.call_args[0][0]
         # Lark SDK builder exposes .body; the in-tree fallback exposes .request_body.
-        # The contributor's branch had the lark SDK installed, the test environment
-        # may not — handle both shapes.
         body = getattr(call_args, "body", None) or getattr(call_args, "request_body", None)
         assert body is not None, "request has neither .body nor .request_body"
-        # receive_id should be the thread_id, not the chat_id
+        # receive_id should be the thread_id
         receive_id = getattr(body, "receive_id", None)
         if receive_id is None and isinstance(body, str):
             import json as _json

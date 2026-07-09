@@ -1,5 +1,8 @@
-import pytest
+import io
+import logging
 from unittest.mock import AsyncMock
+
+import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
@@ -568,3 +571,180 @@ def test_runner_warns_when_docker_gateway_lacks_explicit_output_mount(monkeypatc
         "host-visible output mount" in record.message
         for record in caplog.records
     )
+
+
+class _FakeStderrStream:
+    def __init__(self, tty: bool, encoding: str = "utf-8"):
+        self._tty = tty
+        self.encoding = encoding
+
+    def isatty(self) -> bool:
+        return self._tty
+
+
+class _FakeStreamHandler(logging.Handler):
+    instances: list["_FakeStreamHandler"] = []
+
+    def __init__(self, stream=None):
+        super().__init__()
+        self.stream = stream
+        _FakeStreamHandler.instances.append(self)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # No-op: the tests only need to observe the configured level, not output.
+        pass
+
+
+class _CleanExitRunner:
+    def __init__(self, config):
+        self.config = config
+        self.should_exit_cleanly = True
+        self.exit_reason = None
+        self.exit_code = None
+        self.adapters = {}
+
+    async def start(self):
+        return True
+
+    async def stop(self):
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _clear_fake_handler_instances(monkeypatch):
+    """Ensure the fake handler registry is clean for each test."""
+    monkeypatch.delenv("HERMES_STDERR_LOG_LEVEL", raising=False)
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if isinstance(handler, _FakeStreamHandler):
+            root.removeHandler(handler)
+    _FakeStreamHandler.instances.clear()
+    yield
+    for handler in _FakeStreamHandler.instances[:]:
+        root.removeHandler(handler)
+    _FakeStreamHandler.instances.clear()
+
+
+def test_resolve_stderr_level_caps_macos_non_tty_at_critical(monkeypatch):
+    from gateway.run import _resolve_stderr_level
+
+    monkeypatch.setattr("gateway.run.sys.platform", "darwin")
+    assert _resolve_stderr_level(logging.WARNING, _FakeStderrStream(tty=False)) == logging.CRITICAL
+    assert _resolve_stderr_level(logging.DEBUG, _FakeStderrStream(tty=False)) == logging.CRITICAL
+
+
+def test_macos_non_tty_keeps_routine_errors_out_of_stderr_but_in_error_log(monkeypatch):
+    from gateway.run import _resolve_stderr_level
+
+    monkeypatch.setattr("gateway.run.sys.platform", "darwin")
+    stderr_stream = io.StringIO()
+    error_log_stream = io.StringIO()
+    stderr_handler = logging.StreamHandler(stderr_stream)
+    stderr_handler.setLevel(_resolve_stderr_level(logging.WARNING, stderr_stream))
+    error_log_handler = logging.StreamHandler(error_log_stream)
+    error_log_handler.setLevel(logging.WARNING)
+    test_logger = logging.Logger("test.gateway.stderr", level=logging.DEBUG)
+    test_logger.addHandler(stderr_handler)
+    test_logger.addHandler(error_log_handler)
+
+    test_logger.warning("routine warning")
+    test_logger.error("routine error")
+
+    assert stderr_stream.getvalue() == ""
+    assert "routine warning" in error_log_stream.getvalue()
+    assert "routine error" in error_log_stream.getvalue()
+
+    test_logger.critical("critical failure")
+    assert "critical failure" in stderr_stream.getvalue()
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_resolve_stderr_level_keeps_non_tty_level_outside_macos(monkeypatch, platform):
+    from gateway.run import _resolve_stderr_level
+
+    monkeypatch.setattr("gateway.run.sys.platform", platform)
+    assert _resolve_stderr_level(logging.WARNING, _FakeStderrStream(tty=False)) == logging.WARNING
+    assert _resolve_stderr_level(logging.INFO, _FakeStderrStream(tty=False)) == logging.INFO
+
+
+def test_resolve_stderr_level_keeps_tty_level():
+    from gateway.run import _resolve_stderr_level
+
+    assert _resolve_stderr_level(logging.WARNING, _FakeStderrStream(tty=True)) == logging.WARNING
+    assert _resolve_stderr_level(logging.INFO, _FakeStderrStream(tty=True)) == logging.INFO
+
+
+def test_resolve_stderr_level_env_override_names(monkeypatch):
+    from gateway.run import _resolve_stderr_level
+
+    monkeypatch.setenv("HERMES_STDERR_LOG_LEVEL", "INFO")
+    assert _resolve_stderr_level(logging.WARNING, _FakeStderrStream(tty=False)) == logging.INFO
+
+    monkeypatch.setenv("HERMES_STDERR_LOG_LEVEL", "warning")
+    assert _resolve_stderr_level(logging.WARNING, _FakeStderrStream(tty=False)) == logging.WARNING
+
+
+def test_resolve_stderr_level_env_override_numeric(monkeypatch):
+    from gateway.run import _resolve_stderr_level
+
+    monkeypatch.setenv("HERMES_STDERR_LOG_LEVEL", "25")
+    assert _resolve_stderr_level(logging.WARNING, _FakeStderrStream(tty=False)) == 25
+
+
+def test_resolve_stderr_level_invalid_env_falls_back(monkeypatch, caplog):
+    from gateway.run import _resolve_stderr_level
+
+    monkeypatch.setattr("gateway.run.sys.platform", "darwin")
+    monkeypatch.setenv("HERMES_STDERR_LOG_LEVEL", "not-a-level")
+    with caplog.at_level("WARNING"):
+        assert _resolve_stderr_level(logging.WARNING, _FakeStderrStream(tty=False)) == logging.CRITICAL
+        assert _resolve_stderr_level(logging.WARNING, _FakeStderrStream(tty=True)) == logging.WARNING
+
+    assert "Ignoring invalid HERMES_STDERR_LOG_LEVEL" in caplog.text
+
+
+def test_resolve_stderr_level_isatty_exception_treated_as_macos_non_tty(monkeypatch):
+    from gateway.run import _resolve_stderr_level
+
+    class _StreamThatBreaks:
+        def isatty(self):
+            raise RuntimeError("broken stream")
+
+    monkeypatch.setattr("gateway.run.sys.platform", "darwin")
+    assert _resolve_stderr_level(logging.WARNING, _StreamThatBreaks()) == logging.CRITICAL
+
+
+@pytest.mark.parametrize(
+    ("platform", "tty", "env_level", "expected"),
+    [
+        ("darwin", False, None, logging.CRITICAL),
+        ("darwin", True, None, logging.WARNING),
+        ("linux", False, None, logging.WARNING),
+        ("win32", False, None, logging.WARNING),
+        ("darwin", False, "INFO", logging.INFO),
+    ],
+)
+@pytest.mark.asyncio
+async def test_start_gateway_stderr_handler_level(
+    monkeypatch, tmp_path, platform, tty, env_level, expected
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    if env_level is not None:
+        monkeypatch.setenv("HERMES_STDERR_LOG_LEVEL", env_level)
+    monkeypatch.setattr("gateway.run.sys.platform", platform)
+    monkeypatch.setattr("sys.stderr", _FakeStderrStream(tty=tty))
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", lambda: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _CleanExitRunner)
+    monkeypatch.setattr("gateway.run.logging.StreamHandler", _FakeStreamHandler)
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(config=GatewayConfig(), replace=False, verbosity=0)
+
+    assert ok is True
+    assert len(_FakeStreamHandler.instances) == 1
+    assert _FakeStreamHandler.instances[0].level == expected

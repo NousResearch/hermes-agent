@@ -5,12 +5,20 @@ name: JB — Confinement du fork
 # plugins/jb_outbound/ + quelques fichiers additifs déclarés ; zéro nouveau
 # patch du cœur Hermes.
 #
+# Anti-neutralisation (revue B1) : le script ET l'allowlist qui font foi sont
+# ceux de la BASE de la PR (git show origin/$BASE:…), jamais ceux de son
+# HEAD ; et les fichiers du garde-fou eux-mêmes sont refusés en dur par le
+# script (SELF_PROTECTED). La suppression du workflow se pare via branch
+# protection : marquer ce job comme required check.
+#
 # Échappatoire : le label « jb-core-approved » sur la PR fait passer le job
-# (avec un avertissement). C'est la voie prévue pour les PR de résorption des
-# patchs cœur historiques (F2/F3).
+# (avec un avertissement). Voie prévue pour les PR de résorption des patchs
+# cœur historiques (F2/F3) et les évolutions du garde-fou. Les types
+# labeled/unlabeled déclenchent un re-run quand le label bouge (revue I1).
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -27,7 +35,7 @@ jobs:
       - name: Échappatoire — label jb-core-approved
         if: contains(github.event.pull_request.labels.*.name, 'jb-core-approved')
         run: |
-          echo "::warning::Label « jb-core-approved » présent — garde-fou de confinement contourné volontairement (patch cœur approuvé)."
+          echo "::warning::Label « jb-core-approved » présent — garde-fou de confinement contourné volontairement (patch cœur approuvé). Retirez le label si la PR continue ensuite."
 
       - name: Checkout (historique complet pour le diff de base)
         if: ${{ !contains(github.event.pull_request.labels.*.name, 'jb-core-approved') }}
@@ -35,8 +43,23 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Vérifier le périmètre du diff
+      - name: Vérifier le périmètre du diff (script + allowlist de la BASE)
         if: ${{ !contains(github.event.pull_request.labels.*.name, 'jb-core-approved') }}
+        shell: bash # bash explicite => -o pipefail : pas de fail-open si le diff échoue (revue I3)
+        env:
+          BASE: ${{ github.base_ref }}
         run: |
-          git diff --name-only "origin/${{ github.base_ref }}...HEAD" \
-            | python3 scripts/jb_guard_paths.py
+          # Le script et l'allowlist exécutés sont ceux de la BASE, pas du HEAD
+          # de la PR (revue B1) : une PR ne peut pas assouplir son propre garde.
+          git show "origin/${BASE}:scripts/jb_guard_paths.py" > /tmp/jb_guard_paths.py || {
+            echo "::error::scripts/jb_guard_paths.py absent de la base ${BASE} — bootstrap ou refonte du garde : label « jb-core-approved » requis."
+            exit 1
+          }
+          git show "origin/${BASE}:.github/jb-allowed-paths.txt" > /tmp/jb-allowed-paths.txt || {
+            echo "::error::.github/jb-allowed-paths.txt absente de la base ${BASE} — label « jb-core-approved » requis."
+            exit 1
+          }
+          # --no-renames : un rename cœur -> plugin doit lister l'ANCIEN chemin
+          # aussi, pas seulement la destination (revue I2).
+          git diff --no-renames --name-only "origin/${BASE}...HEAD" \
+            | python3 /tmp/jb_guard_paths.py --allowlist /tmp/jb-allowed-paths.txt

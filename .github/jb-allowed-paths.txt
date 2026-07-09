@@ -10,7 +10,26 @@
 # Échappatoire : poser le label « jb-core-approved » sur la PR (le job passe
 # avec un avertissement). C'est la voie prévue pour les PR de RÉSORPTION des
 # patchs cœur historiques : le garde-fou empêche d'en AJOUTER, pas de les
-# supprimer.
+# supprimer. ATTENTION : le label reste actif toute la vie de la PR (les
+# steps de contrôle sont sautées tant qu'il est posé) — le RETIRER si la PR
+# continue après le patch cœur approuvé, pour ré-armer le garde.
+#
+# AUTO-PROTECTION du garde (anti-neutralisation) : les fichiers du garde-fou
+# lui-même —
+#   .github/jb-allowed-paths.txt
+#   .github/workflows/jb-guard.yml
+#   scripts/jb_guard_paths.py
+# — sont HORS allowlist ET refusés en dur par le script (SELF_PROTECTED),
+# même si une PR tentait de les ré-allowlister ici. Le workflow exécute par
+# ailleurs le script et cette allowlist DEPUIS LA BASE de la PR, jamais
+# depuis son HEAD. Toute évolution du garde exige donc « jb-core-approved ».
+# La SUPPRESSION du workflow, elle, se pare côté réglage GitHub : marquer le
+# job « Périmètre du diff (allowlist jb) » comme required check (branch
+# protection) — un check requis qui ne se rapporte plus bloque le merge.
+#
+# Trou ASSUMÉ : tests/** autorise aussi la modification d'un test UPSTREAM
+# sans label (piste future : n'autoriser que les AJOUTS de tests via
+# git diff --name-status).
 #
 # Patchs cœur HISTORIQUES — dette à résorber (F2/F3) — ne PAS ajouter ici :
 #   gateway/run.py
@@ -23,24 +42,21 @@
 #   Dockerfile        (toléré ci-dessous le temps de la résorption)
 #   pyproject.toml    (idem)
 #
-# Syntaxe : un glob par ligne. « ** » traverse les répertoires ; « * » et
-# « ? » restent dans un segment. Lignes vides et lignes « # » ignorées.
+# Syntaxe : un glob par ligne. « ** » traverse les répertoires (« a/**/b »
+# matche aussi « a/b ») ; « * » et « ? » restent dans un segment. Lignes
+# vides et lignes « # » ignorées.
 # ============================================================================
 
 # Toute la divergence jb vit ici.
 plugins/jb_outbound/**
 
-# Nos tests jb (additifs).
+# Nos tests jb (additifs). Trou assumé : couvre aussi les tests upstream.
 tests/**
-
-# CI, allowlist elle-même, workflows.
-.github/**
 
 # Fichiers additifs déclarés (n'existent pas upstream).
 gateway/platforms/api_server.py
 tools/request_tool_connection.py
 hermes_cli/mcp_config.py
-scripts/jb_guard_paths.py
 
 # Dette tolérée le temps de la résorption (F2/F3) — voir en-tête.
 Dockerfile

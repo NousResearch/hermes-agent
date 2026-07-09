@@ -1,9 +1,7 @@
 """Tests for ${ENV_VAR} substitution in config.yaml values."""
 
-import os
 import pytest
 from hermes_cli.config import _expand_env_vars, load_config
-from unittest.mock import patch as mock_patch
 
 
 class TestExpandEnvVars:
@@ -94,6 +92,59 @@ class TestLoadConfigExpansion:
         config = load_config()
 
         assert config["model"]["api_key"] == "${NOT_SET_XYZ_123}"
+
+
+class TestLoadConfigCacheEnvStaleness:
+    """The load_config() cache must not pin expansions made against a stale
+    environment (#58514): a load before load_hermes_dotenv() runs, or an env
+    var rotated in-process, must not keep serving the old expansion."""
+
+    def test_env_var_appearing_after_first_load_invalidates_cache(self, tmp_path, monkeypatch):
+        config_yaml = "auxiliary:\n  vision:\n    api_key: ${LATE_DOTENV_KEY_58514}\n"
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(config_yaml)
+
+        monkeypatch.delenv("LATE_DOTENV_KEY_58514", raising=False)
+        monkeypatch.setitem(load_config.__globals__, "get_config_path", lambda: config_file)
+
+        # First load happens before the var exists (pre-dotenv): literal kept.
+        assert load_config()["auxiliary"]["vision"]["api_key"] == "${LATE_DOTENV_KEY_58514}"
+
+        # .env load brings the var in — same file mtime/size, env changed.
+        monkeypatch.setenv("LATE_DOTENV_KEY_58514", "nvapi-real")
+        assert load_config()["auxiliary"]["vision"]["api_key"] == "nvapi-real"
+
+    def test_env_var_rotation_invalidates_cache(self, tmp_path, monkeypatch):
+        config_yaml = "providers:\n  mistral:\n    api_key: ${ROTATED_KEY_58514}\n"
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(config_yaml)
+
+        monkeypatch.setenv("ROTATED_KEY_58514", "key-v1")
+        monkeypatch.setitem(load_config.__globals__, "get_config_path", lambda: config_file)
+
+        assert load_config()["providers"]["mistral"]["api_key"] == "key-v1"
+
+        monkeypatch.setenv("ROTATED_KEY_58514", "key-v2")
+        assert load_config()["providers"]["mistral"]["api_key"] == "key-v2"
+
+    def test_unchanged_env_still_serves_cache(self, tmp_path, monkeypatch):
+        config_yaml = "providers:\n  mistral:\n    api_key: ${STABLE_KEY_58514}\n"
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(config_yaml)
+
+        monkeypatch.setenv("STABLE_KEY_58514", "key-stable")
+        monkeypatch.setitem(load_config.__globals__, "get_config_path", lambda: config_file)
+
+        load_config()
+        # load_config_readonly() returns the cached object itself, so object
+        # identity across calls proves the cache-hit path was taken (a rebuild
+        # would produce a fresh dict).
+        readonly = load_config.__globals__["load_config_readonly"]
+        first = readonly()
+        second = readonly()
+
+        assert first is second
+        assert first["providers"]["mistral"]["api_key"] == "key-stable"
 
 
 class TestLoadCliConfigExpansion:

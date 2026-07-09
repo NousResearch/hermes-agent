@@ -1,6 +1,5 @@
 """Tests for _coalesce_session_name_args — multi-word session name merging."""
 
-import pytest
 from hermes_cli.main import _coalesce_session_name_args
 
 

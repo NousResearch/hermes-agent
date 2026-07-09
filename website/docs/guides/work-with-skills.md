@@ -135,7 +135,7 @@ skill_view("writing-plans")
 
 Plugin skills are **not** listed in the system prompt and don't appear in `skills_list`. They're opt-in — load them explicitly when you know a plugin provides one. When loaded, the agent sees a banner listing sibling skills from the same plugin.
 
-For how to ship skills in your own plugin, see [Build a Hermes Plugin → Bundle skills](/guides/build-a-hermes-plugin#bundle-skills).
+For how to ship skills in your own plugin, see [Build a Hermes Plugin → Bundle skills](/developer-guide/plugins#bundle-skills).
 
 ---
 
@@ -162,7 +162,7 @@ Manage skill config from the CLI:
 hermes skills config gif-search
 
 # View all skill config
-hermes config get skills.config
+hermes config show | grep '^skills\.config'
 ```
 
 ---

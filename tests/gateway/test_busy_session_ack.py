@@ -3,7 +3,6 @@
 Verifies that users get an immediate status response instead of total silence
 when the agent is working on a task. See PR fix for the @Lonely__MH report.
 """
-import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,9 +25,9 @@ sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
 from gateway.platforms.base import (
-    BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    Platform,
     SessionSource,
     build_session_key,
 )
@@ -68,6 +67,8 @@ def _make_runner():
     runner._busy_text_mode = "interrupt"
     runner.adapters = {}
     runner.config = MagicMock()
+    runner.config.group_sessions_per_user = True
+    runner.config.thread_sessions_per_user = False
     runner.session_store = None
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
@@ -120,6 +121,55 @@ class TestBusySessionAck:
         assert adapter._pending_messages[sk] is event
         assert sk not in runner._pending_messages
         running_agent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_telegram_grace_followups_respect_queue_fifo(self, monkeypatch):
+        """Rapid Telegram text follow-ups in queue mode must not merge."""
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        runner._queued_events = {}
+        adapter = _make_adapter()
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="user1",
+        )
+        sk = build_session_key(source)
+        runner.adapters[source.platform] = adapter
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "seconds_since_activity": 0.0,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time()
+
+        events = [
+            MessageEvent(
+                text=text,
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id=f"m-{idx}",
+            )
+            for idx, text in enumerate(("first", "second", "third"), start=1)
+        ]
+
+        for event in events:
+            result = await GatewayRunner._handle_message(runner, event)
+            assert result is None
+
+        assert adapter._pending_messages[sk].text == "first"
+        assert [event.text for event in runner._queued_events[sk]] == [
+            "second",
+            "third",
+        ]
+        agent.interrupt.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_sends_ack_when_agent_running(self):
@@ -216,8 +266,12 @@ class TestBusySessionAck:
         adapter._send_with_retry.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self):
+    async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self, monkeypatch):
         """busy_input_mode='steer' injects via agent.steer() and skips queueing."""
+        import gateway.run as _gr
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         adapter = _make_adapter()
@@ -248,6 +302,97 @@ class TestBusySessionAck:
         assert "Interrupting" not in content
 
     @pytest.mark.asyncio
+    async def test_steer_mode_can_suppress_visible_ack_without_disabling_steer(self, monkeypatch):
+        """busy_steer_ack_enabled=false keeps steering but drops the echo bubble."""
+        import gateway.run as _gr
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {"display": {"platforms": {"telegram": {"busy_steer_ack_enabled": False}}}},
+        )
+
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="also check the tests")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_called_once_with("also check the tests")
+        agent.interrupt.assert_not_called()
+        adapter._send_with_retry.assert_not_called()
+        assert sk not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_steer_ack_env_override_can_suppress_visible_ack(self, monkeypatch):
+        """Env override supports process-level suppression for gateway services."""
+        import gateway.run as _gr
+
+        monkeypatch.setenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", "false")
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {"display": {"platforms": {"telegram": {"busy_steer_ack_enabled": True}}}},
+        )
+
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="steer silently")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_called_once_with("steer silently")
+        adapter._send_with_retry.assert_not_called()
+        assert sk not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_busy_ack_debounce_skips_steer_ack_config_load(self, monkeypatch):
+        """Rapid follow-ups should not reload display config when ack is debounced."""
+        import gateway.run as _gr
+
+        def _boom():
+            raise AssertionError("config should not be loaded inside ack cooldown")
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(_gr, "_load_gateway_config", _boom)
+
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="rapid steer")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+        runner._busy_ack_ts[sk] = time.time()
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        agent.steer.assert_called_once_with("rapid steer")
+        adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_rejects(self):
         """If agent.steer() returns False, fall back to queue behavior."""
         runner, sentinel = _make_runner()
@@ -262,13 +407,14 @@ class TestBusySessionAck:
         agent.steer = MagicMock(return_value=False)  # rejected
         runner._running_agents[sk] = agent
 
-        with patch("gateway.run.merge_pending_message_event") as mock_merge:
-            await runner._handle_active_session_busy_message(event, sk)
+        await runner._handle_active_session_busy_message(event, sk)
 
         agent.steer.assert_called_once()
         agent.interrupt.assert_not_called()
-        # Fell back to queue semantics: event was merged into pending messages
-        mock_merge.assert_called_once()
+        # Fell back to queue semantics: event was stored for the next turn
+        # via the FIFO path (each follow-up its own turn — no newline-merge
+        # that would mash separate messages together, #43066).
+        assert adapter._pending_messages.get(sk) is event
 
         # Ack uses queue-mode wording (not steer, not interrupt)
         call_kwargs = adapter._send_with_retry.call_args
@@ -290,15 +436,60 @@ class TestBusySessionAck:
         # Agent is still being set up — sentinel in place
         runner._running_agents[sk] = sentinel
 
-        with patch("gateway.run.merge_pending_message_event") as mock_merge:
-            await runner._handle_active_session_busy_message(event, sk)
+        await runner._handle_active_session_busy_message(event, sk)
 
-        # Event was queued instead of steered
-        mock_merge.assert_called_once()
+        # Event was queued instead of steered (FIFO path, #43066)
+        assert adapter._pending_messages.get(sk) is event
 
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
         assert "Queued for the next turn" in content
+
+    @pytest.mark.asyncio
+    async def test_interrupt_mode_text_followups_fifo_not_merged(self):
+        """Two TEXT follow-ups during a busy turn (interrupt mode) must each
+        get their OWN next-turn slot via FIFO — NOT newline-merged into one
+        mashed-together turn (#43066 sub-bug 2). Before the fix the
+        interrupt/steer-fallback path called merge_pending_message_event
+        with merge_text=True, collapsing 'first' and 'second' into
+        'first\\nsecond' and destroying message boundaries."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        runner._queued_events = {}
+        adapter = _make_adapter()
+
+        # Both events must share the SAME platform object so they resolve to
+        # the same adapter (a fresh MagicMock per event would not).
+        shared_platform = Platform.TELEGRAM
+
+        def _evt(text):
+            src = SessionSource(
+                platform=shared_platform, chat_id="123",
+                chat_type="dm", user_id="user1",
+            )
+            return MessageEvent(text=text, message_type=MessageType.TEXT,
+                                source=src, message_id=f"m-{text[:5]}")
+
+        first = _evt("first message")
+        second = _evt("second message")
+        sk = build_session_key(first.source)
+        runner.adapters[shared_platform] = adapter
+
+        agent = MagicMock()
+        agent._active_children = []  # real list → not demoted to queue
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(first, sk)
+        runner._busy_ack_ts = {}  # avoid the 30s ack-debounce early return
+        await runner._handle_active_session_busy_message(second, sk)
+
+        # First lands in the head slot; second goes to the FIFO overflow —
+        # they are NOT merged into a single pending event.
+        head = adapter._pending_messages.get(sk)
+        assert head is first
+        assert head.text == "first message"  # not "first message\nsecond message"
+        overflow = runner._queued_events.get(sk, [])
+        assert [e.text for e in overflow] == ["second message"]
 
     @pytest.mark.asyncio
     async def test_debounce_suppresses_rapid_acks(self):
@@ -378,8 +569,15 @@ class TestBusySessionAck:
         assert adapter._send_with_retry.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_includes_status_detail(self):
+    async def test_includes_status_detail_when_opted_in(self, monkeypatch):
         """Ack message should include iteration and tool info when available."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {"display": {"platforms": {"telegram": {"busy_ack_detail": True}}}},
+        )
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
@@ -407,6 +605,37 @@ class TestBusySessionAck:
         assert "21/60" in content  # iteration
         assert "terminal" in content  # current tool
         assert "10 min" in content  # elapsed
+
+    @pytest.mark.asyncio
+    async def test_telegram_omits_status_detail_by_default(self):
+        """Telegram busy acks stay concise unless busy_ack_detail is enabled."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="yo")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 21,
+            "max_iterations": 60,
+            "current_tool": "terminal",
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "terminal",
+            "seconds_since_activity": 0.5,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 600
+        runner.adapters[event.source.platform] = adapter
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Interrupting current task" in content
+        assert "21/60" not in content
+        assert "terminal" not in content
+        assert "10 min" not in content
 
     @pytest.mark.asyncio
     async def test_draining_still_works(self):
@@ -581,3 +810,62 @@ class TestBusySessionOnboardingHint:
         assert "/busy interrupt" in content
         # Must NOT tell the user to /busy queue when they're already on queue.
         assert "/busy queue" not in content
+
+
+class TestLongRunningNotificationOwnership:
+    """The long-running heartbeat must stop once its run no longer owns the
+    session slot or the executor finished — otherwise a stale
+    'running: delegate_task' bubble outlives the run that spawned it (#12029).
+    """
+
+    def test_notification_stops_after_session_ownership_moves(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {}
+
+        original_agent = MagicMock()
+        replacement_agent = MagicMock()
+        runner._running_agents["sess"] = replacement_agent
+
+        assert runner._should_emit_long_running_notification(
+            "sess", original_agent, executor_task=None
+        ) is False
+
+    def test_notification_stops_after_executor_finishes(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        agent = MagicMock()
+        runner._running_agents = {"sess": agent}
+
+        done_task = MagicMock()
+        done_task.done.return_value = True
+
+        assert runner._should_emit_long_running_notification(
+            "sess", agent, executor_task=done_task
+        ) is False
+
+    def test_notification_stops_when_agent_is_gone(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {}
+
+        assert runner._should_emit_long_running_notification(
+            "sess", None, executor_task=None
+        ) is False
+
+    def test_notification_continues_for_live_active_run(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        agent = MagicMock()
+        runner._running_agents = {"sess": agent}
+
+        live_task = MagicMock()
+        live_task.done.return_value = False
+
+        assert runner._should_emit_long_running_notification(
+            "sess", agent, executor_task=live_task
+        ) is True

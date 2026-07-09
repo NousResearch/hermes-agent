@@ -23,6 +23,38 @@ from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 logger = logging.getLogger(__name__)
 
 
+def _classify_responses_issuer(
+    *,
+    is_xai_responses: bool = False,
+    is_github_responses: bool = False,
+    is_codex_backend: bool = False,
+    base_url: Optional[str] = None,
+) -> str:
+    """Stable identifier for the Responses endpoint that mints encrypted_content.
+
+    ``reasoning.encrypted_content`` is sealed to the endpoint that issued it:
+    replaying a Codex-minted blob against xAI (or vice versa) deterministically
+    returns HTTP 400 ``invalid_encrypted_content``. Stamping the issuer on
+    persisted reasoning items and filtering at replay time lets a single
+    conversation switch models without poisoning history with un-decryptable
+    reasoning blocks.
+    """
+    if is_xai_responses:
+        return "xai_responses"
+    if is_github_responses:
+        return "github_responses"
+    if is_codex_backend:
+        return "codex_backend"
+    if base_url:
+        return f"other:{base_url}"
+    return "other"
+
+
+# Throttle the per-process cross-issuer skip warning so we don't flood logs
+# when a long history contains many stale-issuer reasoning blocks.
+_CROSS_ISSUER_WARN_EMITTED = False
+
+
 # Matches Codex/Harmony tool-call serialization that occasionally leaks into
 # assistant-message content when the model fails to emit a structured
 # ``function_call`` item.  Accepts the common forms:
@@ -95,14 +127,21 @@ def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> Lis
     return converted
 
 
-def _summarize_user_message_for_log(content: Any) -> str:
-    """Return a short text summary of a user message for logging/trajectory.
+def _summarize_user_message_for_log(content: Any, *, sep: str = " ") -> str:
+    """Flatten message content to a plain-text summary.
 
     Multimodal messages arrive as a list of ``{type:"text"|"image_url", ...}``
-    parts from the API server.  Logging, spinner previews, and trajectory
-    files all want a plain string — this helper extracts the first chunk of
-    text and notes any attached images.  Returns an empty string for empty
-    lists and ``str(content)`` for unexpected scalar types.
+    parts from the API server.  Several consumers want a plain string:
+
+    - Logging, spinner previews, and trajectory files (the default ``sep=" "``).
+    - External memory providers, which feed the text to regexes
+      (``sanitize_context``) and text APIs — a raw list crashes the sync with
+      ``expected string or bytes-like object, got 'list'`` (use ``sep="\\n"``).
+
+    Text parts are joined with ``sep``; images become a ``[N image(s)]`` marker
+    so the turn isn't recorded as if the attachment never existed.  Returns an
+    empty string for empty lists and ``str(content)`` for unexpected scalar
+    types.
     """
     if content is None:
         return ""
@@ -125,7 +164,7 @@ def _summarize_user_message_for_log(content: Any) -> str:
                     text_bits.append(text)
             elif ptype in {"image_url", "input_image"}:
                 image_count += 1
-        summary = " ".join(text_bits).strip()
+        summary = sep.join(text_bits).strip()
         if image_count:
             note = f"[{image_count} image{'s' if image_count != 1 else ''}]"
             summary = f"{note} {summary}" if summary else note
@@ -223,6 +262,26 @@ def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[L
     return converted or None
 
 
+# Provider-executed built-in tool *declaration* types accepted on the
+# Responses ``tools`` array.  These are declared by ``type`` alone (no
+# client-side name/parameters schema) and run server-side — the provider
+# owns the implementation and reports progress via the matching ``*_call``
+# output items.  Hermes injects xAI's native ``web_search`` for the xAI
+# transport (see agent/transports/codex.py); the rest are listed so the
+# preflight validator passes them through rather than rejecting them as
+# "unsupported type".  Mirrors the ``*_call`` item-type set used in
+# _normalize_codex_response.
+_RESPONSES_BUILTIN_TOOL_TYPES = {
+    "web_search",
+    "web_search_preview",
+    "file_search",
+    "code_interpreter",
+    "image_generation",
+    "computer_use_preview",
+    "local_shell",
+}
+
+
 # ---------------------------------------------------------------------------
 # Message format conversion
 # ---------------------------------------------------------------------------
@@ -249,6 +308,7 @@ def _chat_messages_to_responses_input(
     *,
     is_xai_responses: bool = False,
     replay_encrypted_reasoning: bool = True,
+    current_issuer_kind: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
 
@@ -270,6 +330,19 @@ def _chat_messages_to_responses_input(
     ``AIAgent._disable_codex_reasoning_replay`` which both strips cached
     items from the conversation history and threads ``replay_enabled=False``
     through this converter so subsequent turns send no reasoning items.
+
+    ``current_issuer_kind`` enables a per-item cross-issuer guard. The
+    Responses API's ``encrypted_content`` blob is decryptable only by the
+    endpoint that minted it — replaying a Codex-issued blob against xAI
+    (or vice versa) always yields HTTP 400 ``invalid_encrypted_content``
+    and breaks every subsequent turn in the same session.  When this
+    argument is provided and a reasoning item carries an ``_issuer_kind``
+    stamp from a different endpoint, the item is dropped from the replayed
+    input.  Legacy items without a stamp are still replayed
+    (backwards-compatible).  The two guards compose:
+    ``replay_encrypted_reasoning=False`` is the session-wide kill switch
+    (drops ALL replay); ``current_issuer_kind`` is the per-item filter
+    that runs only when replay is still enabled.
     """
     items: List[Dict[str, Any]] = []
     seen_item_ids: set = set()
@@ -311,11 +384,40 @@ def _chat_messages_to_responses_input(
                             item_id = ri.get("id")
                             if item_id and item_id in seen_item_ids:
                                 continue
+                            # Cross-issuer guard: drop reasoning blocks that
+                            # were minted by a different Responses endpoint.
+                            # The current endpoint cannot decrypt foreign
+                            # encrypted_content and would reject the whole
+                            # request with HTTP 400 invalid_encrypted_content.
+                            # Unstamped (legacy) items pass through.
+                            item_issuer = ri.get("_issuer_kind")
+                            if (
+                                current_issuer_kind is not None
+                                and item_issuer is not None
+                                and item_issuer != current_issuer_kind
+                            ):
+                                global _CROSS_ISSUER_WARN_EMITTED
+                                if not _CROSS_ISSUER_WARN_EMITTED:
+                                    logger.warning(
+                                        "Dropping reasoning item minted by %s while "
+                                        "calling %s — encrypted_content is sealed to "
+                                        "its issuer. This happens when a session "
+                                        "switches model providers mid-conversation.",
+                                        item_issuer, current_issuer_kind,
+                                    )
+                                    _CROSS_ISSUER_WARN_EMITTED = True
+                                continue
                             # Strip the "id" field — with store=False the
                             # Responses API cannot look up items by ID and
                             # returns 404.  The encrypted_content blob is
                             # self-contained for reasoning chain continuity.
-                            replay_item = {k: v for k, v in ri.items() if k != "id"}
+                            # Also strip the internal "_issuer_kind" stamp;
+                            # it is a Hermes-side metadata key and not part
+                            # of the Responses API schema.
+                            replay_item = {
+                                k: v for k, v in ri.items()
+                                if k not in ("id", "_issuer_kind")
+                            }
                             items.append(replay_item)
                             if item_id:
                                 seen_item_ids.add(item_id)
@@ -720,7 +822,22 @@ def _preflight_codex_api_kwargs(
         for idx, tool in enumerate(tools):
             if not isinstance(tool, dict):
                 raise ValueError(f"Codex Responses tools[{idx}] must be an object.")
-            if tool.get("type") != "function":
+
+            tool_type = tool.get("type")
+
+            # Provider-executed built-in tools (xAI native web_search, code
+            # interpreter, etc.) are declared by ``type`` alone and carry no
+            # ``name``/``parameters`` schema — the provider owns the
+            # implementation.  Pass them through verbatim instead of forcing
+            # them through the function-tool validation below (which would
+            # otherwise reject them with "unsupported type").  See
+            # agent/transports/codex.py for where xAI's native web_search is
+            # injected.
+            if tool_type in _RESPONSES_BUILTIN_TOOL_TYPES:
+                normalized_tools.append(dict(tool))
+                continue
+
+            if tool_type != "function":
                 raise ValueError(f"Codex Responses tools[{idx}] has unsupported type {tool.get('type')!r}.")
 
             name = tool.get("name")
@@ -838,6 +955,26 @@ def _preflight_codex_api_kwargs(
     elif "stream" in api_kwargs:
         raise ValueError("Codex Responses stream flag is only allowed in fallback streaming requests.")
 
+    # Safety-net sanitization for xAI Responses (#28490): defense-in-depth
+    # for the same slash-enum strip that ``chat_completion_helpers`` and
+    # ``auxiliary_client`` apply at request-build time.  If a future code
+    # path forgets to sanitize before calling us, this catches the bypass
+    # so xAI doesn't 400 with ``Invalid arguments passed to the model``
+    # (HuggingFace IDs like ``Qwen/Qwen3.5-0.8B`` from MCP tool schemas).
+    #
+    # Gated on the model name pattern because native Codex (OpenAI) DOES
+    # accept slash-containing enum values — stripping them there would
+    # silently degrade tool-schema constraints.  xAI is the only
+    # Responses-API surface that rejects the shape.
+    model_name_for_provider_check = str(api_kwargs.get("model") or "").lower()
+    is_xai_model = model_name_for_provider_check.startswith(("grok-", "x-ai/grok-"))
+    if is_xai_model and normalized.get("tools"):
+        try:
+            from tools.schema_sanitizer import strip_slash_enum
+            normalized["tools"], _ = strip_slash_enum(normalized["tools"])
+        except Exception:
+            pass  # Best-effort — the caller-level sanitization should have handled it
+
     unexpected = sorted(key for key in api_kwargs if key not in allowed_keys)
     if unexpected:
         raise ValueError(
@@ -885,12 +1022,64 @@ def _extract_responses_reasoning_text(item: Any) -> str:
     return ""
 
 
+def _format_responses_error(error_obj: Any, response_status: str) -> str:
+    """Build a human-readable error string from a Responses ``response.error`` payload.
+
+    The OpenAI Responses API carries failure details under ``response.error``
+    on terminal ``response.failed`` events, in the shape
+    ``{"code": "rate_limit_exceeded", "message": "Slow down", "param": ...}``.
+    Earlier code only surfaced ``message``, which left users staring at bare
+    strings like ``"Slow down"`` while the failure mode (rate limit vs
+    context-length vs internal_error vs model-overloaded) was hidden in
+    ``code``. We now prefix ``code`` when both are present so consumers can
+    distinguish failure modes without parsing the bare message.
+
+    Falls back to ``code`` alone when ``message`` is empty, and to a stable
+    default referencing the response status when no error payload is
+    available at all. Adapted from anomalyco/opencode#28757.
+    """
+    # Pull code and message from either dict or attribute-style payloads.
+    code: Any = None
+    message: Any = None
+    if isinstance(error_obj, dict):
+        code = error_obj.get("code")
+        message = error_obj.get("message")
+    elif error_obj is not None:
+        code = getattr(error_obj, "code", None)
+        message = getattr(error_obj, "message", None)
+
+    code_str = str(code).strip() if isinstance(code, str) else (str(code).strip() if code else "")
+    message_str = str(message).strip() if isinstance(message, str) else (str(message).strip() if message else "")
+
+    if code_str and message_str:
+        return f"{code_str}: {message_str}"
+    if message_str:
+        return message_str
+    if code_str:
+        return code_str
+    if error_obj:
+        # Last-resort: stringify whatever the provider sent so it's at least
+        # visible in logs/UI rather than silently swallowed.
+        return str(error_obj)
+    return f"Responses API returned status '{response_status}'"
+
+
 # ---------------------------------------------------------------------------
 # Full response normalization
 # ---------------------------------------------------------------------------
 
-def _normalize_codex_response(response: Any) -> tuple[Any, str]:
-    """Normalize a Responses API object to an assistant_message-like object."""
+def _normalize_codex_response(
+    response: Any,
+    *,
+    issuer_kind: Optional[str] = None,
+) -> tuple[Any, str]:
+    """Normalize a Responses API object to an assistant_message-like object.
+
+    ``issuer_kind`` (when provided) is stamped onto each reasoning item the
+    response yields, so future replays can detect when the active endpoint
+    differs from the one that minted the encrypted_content blob and drop
+    the item instead of triggering HTTP 400 invalid_encrypted_content.
+    """
     output = getattr(response, "output", None)
     if not isinstance(output, list) or not output:
         # The Codex backend can return empty output when the answer was
@@ -918,10 +1107,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
 
     if response_status in {"failed", "cancelled"}:
         error_obj = getattr(response, "error", None)
-        if isinstance(error_obj, dict):
-            error_msg = error_obj.get("message") or str(error_obj)
-        else:
-            error_msg = str(error_obj) if error_obj else f"Responses API returned status '{response_status}'"
+        error_msg = _format_responses_error(error_obj, response_status)
         raise RuntimeError(error_msg)
 
     content_parts: List[str] = []
@@ -930,8 +1116,37 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
     message_items_raw: List[Dict[str, Any]] = []
     tool_calls: List[Any] = []
     has_incomplete_items = response_status in {"queued", "in_progress", "incomplete"}
+    saw_streaming_or_item_incomplete = response_status in {"queued", "in_progress"}
     saw_commentary_phase = False
     saw_final_answer_phase = False
+    saw_reasoning_item = False
+
+    # Server-side built-in tool calls (xAI's native web_search, code
+    # interpreter, etc.) are executed by the provider and reported as
+    # discrete ``*_call`` output items.  xAI's /v1/responses surface
+    # (e.g. grok-composer-2.5-fast on SuperGrok OAuth) routinely leaves
+    # these items at ``status="in_progress"`` even when the overall
+    # ``response.status == "completed"`` — the search ran to completion
+    # server-side, the per-item status simply isn't reconciled.  These
+    # are NOT a signal that the model's turn is unfinished, so they must
+    # not flip ``has_incomplete_items``.  Only the response-level status
+    # and genuine model output items (message/reasoning/function_call)
+    # govern the incomplete verdict.  Without this guard, any turn where
+    # grok-composer invokes server-side search is misclassified as
+    # ``finish_reason="incomplete"`` and burns 3 fruitless continuation
+    # retries before failing with "Codex response remained incomplete
+    # after 3 continuation attempts".  client-side function/custom tool
+    # calls keep their own in_progress handling below (they are skipped,
+    # not awaited).
+    _SERVER_SIDE_TOOL_CALL_TYPES = {
+        "web_search_call",
+        "file_search_call",
+        "code_interpreter_call",
+        "image_generation_call",
+        "computer_call",
+        "local_shell_call",
+        "mcp_call",
+    }
 
     for item in output:
         item_type = getattr(item, "type", None)
@@ -941,21 +1156,38 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
         else:
             item_status = None
 
-        if item_status in {"queued", "in_progress", "incomplete"}:
+        if (
+            item_status in {"queued", "in_progress", "incomplete"}
+            and item_type not in _SERVER_SIDE_TOOL_CALL_TYPES
+        ):
             has_incomplete_items = True
+            saw_streaming_or_item_incomplete = True
 
         if item_type == "message":
             item_phase = getattr(item, "phase", None)
             normalized_phase = None
+            is_commentary_phase = False
             if isinstance(item_phase, str):
                 normalized_phase = item_phase.strip().lower()
                 if normalized_phase in {"commentary", "analysis"}:
                     saw_commentary_phase = True
+                    is_commentary_phase = True
                 elif normalized_phase in {"final_answer", "final"}:
                     saw_final_answer_phase = True
             message_text = _extract_responses_message_text(item)
             if message_text:
-                content_parts.append(message_text)
+                # Responses ``commentary``/``analysis`` phase text is mid-turn
+                # preamble/progress narration, never the turn's final answer
+                # (Codex CLI excludes it from last-message extraction; issues
+                # #24933 / #41293).  Keep it out of assistant content so it
+                # can't be concatenated into — or leak as — the final response,
+                # but surface it through the reasoning channel so the CLI/
+                # gateway display it like thinking text.  The exact message
+                # item is still preserved below for replay/cache continuity.
+                if is_commentary_phase:
+                    reasoning_parts.append(message_text)
+                else:
+                    content_parts.append(message_text)
                 raw_message_item: Dict[str, Any] = {
                     "type": "message",
                     "role": "assistant",
@@ -969,6 +1201,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
                     raw_message_item["phase"] = normalized_phase
                 message_items_raw.append(raw_message_item)
         elif item_type == "reasoning":
+            saw_reasoning_item = True
             reasoning_text = _extract_responses_reasoning_text(item)
             if reasoning_text:
                 reasoning_parts.append(reasoning_text)
@@ -978,7 +1211,19 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
             encrypted = getattr(item, "encrypted_content", None)
             if isinstance(encrypted, str) and encrypted:
                 raw_item = {"type": "reasoning", "encrypted_content": encrypted}
+                # Stamp the issuer so future turns can detect when a
+                # model swap moved the conversation to an endpoint that
+                # cannot decrypt this blob — see _chat_messages_to_responses_input
+                # cross-issuer guard.
+                if issuer_kind:
+                    raw_item["_issuer_kind"] = issuer_kind
                 item_id = getattr(item, "id", None)
+                if isinstance(item_id, str) and item_id.startswith("rs_tmp_"):
+                    logger.debug(
+                        "Skipping transient Codex reasoning item during normalization: %s",
+                        item_id,
+                    )
+                    continue
                 if isinstance(item_id, str) and item_id:
                     raw_item["id"] = item_id
                 # Capture summary — required by the API when replaying reasoning items
@@ -1037,7 +1282,11 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
             ))
 
     final_text = "\n".join([p for p in content_parts if p]).strip()
-    if not final_text and hasattr(response, "output_text"):
+    if (
+        not final_text
+        and hasattr(response, "output_text")
+        and not (saw_commentary_phase and not saw_final_answer_phase)
+    ):
         out_text = getattr(response, "output_text", "")
         if isinstance(out_text, str):
             final_text = out_text.strip()
@@ -1087,15 +1336,17 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
         finish_reason = "tool_calls"
     elif leaked_tool_call_text:
         finish_reason = "incomplete"
-    elif has_incomplete_items or (saw_commentary_phase and not saw_final_answer_phase):
+    elif saw_streaming_or_item_incomplete:
         finish_reason = "incomplete"
-    elif reasoning_items_raw and not final_text:
-        # Response contains only reasoning (encrypted thinking state) with
-        # no visible content or tool calls.  The model is still thinking and
-        # needs another turn to produce the actual answer.  Marking this as
-        # "stop" would send it into the empty-content retry loop which burns
-        # 3 retries then fails — treat it as incomplete instead so the Codex
-        # continuation path handles it correctly.
+    elif (has_incomplete_items or saw_commentary_phase) and not saw_final_answer_phase:
+        finish_reason = "incomplete"
+    elif (reasoning_items_raw or reasoning_parts or saw_reasoning_item) and not final_text:
+        # Response contains only reasoning (encrypted thinking state and/or
+        # human-readable summary) with no visible content or tool calls. The
+        # model is still thinking and needs another turn to produce the actual
+        # answer. Marking this as "stop" would send it into the empty-content
+        # retry loop which burns retries then fails — treat it as incomplete so
+        # the Codex continuation path handles it correctly.
         finish_reason = "incomplete"
     else:
         finish_reason = "stop"

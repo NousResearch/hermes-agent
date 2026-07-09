@@ -31,7 +31,7 @@ Three distinct failure modes the user community hit during rollout:
 """
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -172,22 +172,19 @@ def test_codex_stream_truncated_no_terminal_event_raises():
 
 
 # ---------------------------------------------------------------------------
-# Fix B: surface xAI's entitlement body verbatim (no editorializing)
-#
-# The original PR #26644 appended a hint that led with "X Premium+ does NOT
-# include xAI API access — only standalone SuperGrok subscribers can use this
-# provider."  xAI announced on 2026-05-16 that X Premium subs now work in
-# Hermes (https://x.ai/news/grok-hermes), making that hint actively wrong:
-# a Premium+ user hitting a real entitlement issue (no Grok sub, wrong tier,
-# exhausted quota) would be misdirected to switch subscriptions when their
-# Premium sub is in fact valid.  We now surface xAI's own body text verbatim
-# (which already says "Manage subscriptions at https://grok.com/?_s=usage")
-# and leave the diagnosis to xAI's wording.
+# Fix B: friendly entitlement message
 # ---------------------------------------------------------------------------
 
 
-def test_summarize_api_error_surfaces_xai_entitlement_body_verbatim():
-    """xAI's OAuth 403 body must surface as-is, with no Hermes-side hint."""
+def test_summarize_api_error_decorates_xai_entitlement_403():
+    """xAI's OAuth 403 must surface the X Premium+ gotcha + neutral causes.
+
+    Wording deliberately leads with the X Premium+ gotcha because that's
+    the #1 confusing case: people see Grok in their X app, assume it
+    works here too, and hit this 403 with no idea API access is a
+    separate SKU.  Other causes (no subscription, wrong tier, exhausted
+    quota) follow.
+    """
     from run_agent import AIAgent
 
     error = RuntimeError(
@@ -197,15 +194,45 @@ def test_summarize_api_error_surfaces_xai_entitlement_body_verbatim():
         "subscriptions at https://grok.com'}"
     )
     summary = AIAgent._summarize_api_error(error)
-    # xAI's own body text must reach the user — they need it to diagnose.
+    # The original xAI text must survive — it's still useful diagnostic info.
     assert "do not have an active Grok subscription" in summary
-    # No stale claim that X Premium is incompatible with Hermes.
-    assert "X Premium+ does NOT include" not in summary
-    assert "standalone SuperGrok subscribers" not in summary
+    # The hint MUST lead with the X Premium+ gotcha (most likely cause
+    # for users who think they're subscribed).
+    assert "X Premium+ does NOT include" in summary
+    assert "standalone SuperGrok subscribers" in summary
+    # Other causes still listed.
+    assert "no Grok subscription" in summary
+    assert "tier doesn't include this model" in summary
+    assert "quota is exhausted" in summary
+    # The hint must point at the usage page where the user can verify.
+    assert "https://grok.com/?_s=usage" in summary
+    # Switching providers is still a valid escape hatch.
+    assert "/model" in summary
 
 
-def test_summarize_api_error_xai_body_message_unwrapped():
-    """SDK-style error with structured body surfaces the message cleanly."""
+def test_summarize_api_error_does_not_accuse_subscribers():
+    """Hint must not confidently say the user has no subscription.
+
+    Don Piedro reported his subscription is active. The hint must not
+    contradict him — leading with the X Premium+ gotcha gives subscribers
+    a plausible reason ("oh, I'm on Premium+ not pure SuperGrok") instead
+    of accusing them of lying about having a subscription.
+    """
+    from run_agent import AIAgent
+
+    error = RuntimeError(
+        "HTTP 403: do not have an active Grok subscription"
+    )
+    summary = AIAgent._summarize_api_error(error)
+    # MUST NOT contain language that flatly assumes the user is unsubscribed.
+    assert "lacks SuperGrok" not in summary
+    assert "you are not subscribed" not in summary.lower()
+    # MUST lead with the most-likely-but-non-accusatory cause.
+    assert "X Premium+ does NOT include" in summary
+
+
+def test_summarize_api_error_decorates_xai_body_message():
+    """SDK-style error with structured body must also get the hint."""
     from run_agent import AIAgent
 
     class _XaiErr(Exception):
@@ -222,9 +249,48 @@ def test_summarize_api_error_xai_body_message_unwrapped():
 
     summary = AIAgent._summarize_api_error(_XaiErr("403"))
     assert "HTTP 403" in summary
-    assert "do not have an active Grok subscription" in summary
-    # No editorializing on top of xAI's own wording.
-    assert "X Premium+ does NOT include" not in summary
+    assert "X Premium+ does NOT include" in summary
+
+
+def test_summarize_api_error_handles_nested_provider_message():
+    """HF router may put a structured object in error.message."""
+    from run_agent import AIAgent
+
+    class _NestedProviderErr(Exception):
+        status_code = 400
+        body = {
+            "error": {
+                "message": {
+                    "type": "Bad Request",
+                    "code": "context_length_exceeded",
+                    "message": (
+                        "This model's maximum context length is 262144 tokens. "
+                        "Please reduce the length of the messages."
+                    ),
+                    "param": None,
+                },
+                "type": "invalid_request_error",
+                "param": None,
+                "code": None,
+            }
+        }
+
+    summary = AIAgent._summarize_api_error(_NestedProviderErr("400"))
+    assert "HTTP 400" in summary
+    assert "maximum context length is 262144 tokens" in summary
+    assert "context_length_exceeded" not in summary
+
+
+def test_summarize_api_error_idempotent_for_entitlement_hint():
+    """Decorating twice must not double up the hint."""
+    from run_agent import AIAgent
+
+    raw = "HTTP 403: do not have an active Grok subscription"
+    once = AIAgent._decorate_xai_entitlement_error(raw)
+    twice = AIAgent._decorate_xai_entitlement_error(once)
+    assert once == twice
+    # Sanity: the hint did fire on the first pass.
+    assert "X Premium+ does NOT include" in once
 
 
 def test_summarize_api_error_passes_through_unrelated_errors():
@@ -500,7 +566,6 @@ def test_recover_with_credential_pool_skips_refresh_on_entitlement_403():
     the entitlement guard, recovery returns False so the error surfaces
     normally with the friendly hint from _summarize_api_error.
     """
-    from run_agent import AIAgent
     from agent.error_classifier import FailoverReason
 
     agent = _make_codex_agent()
@@ -590,7 +655,6 @@ def test_recover_with_credential_pool_skips_refresh_on_bare_403_for_xai_oauth():
 
 def test_recover_with_credential_pool_still_refreshes_genuine_auth_failure():
     """Regression guard: legitimate auth errors must still trigger refresh."""
-    from run_agent import AIAgent
     from agent.error_classifier import FailoverReason
 
     agent = _make_codex_agent()
@@ -772,7 +836,6 @@ def test_recover_with_credential_pool_refreshes_on_xai_bad_credentials_403():
     the very body that pre-fix tripped the entitlement classifier
     and short-circuited the refresh path.
     """
-    from run_agent import AIAgent
     from agent.error_classifier import FailoverReason
 
     agent = _make_codex_agent()
@@ -829,7 +892,6 @@ def test_recover_with_credential_pool_still_blocks_real_entitlement():
     survive the new disambiguator.  A real unsubscribed-account body
     has no WKE suffix and no OAuth2-validation phrase, so the
     classifier still classifies it as entitlement and short-circuits."""
-    from run_agent import AIAgent
     from agent.error_classifier import FailoverReason
 
     agent = _make_codex_agent()
@@ -914,3 +976,194 @@ def test_grok_4_still_resolves_to_256k():
         # must be "grok-4" (or a more specific variant family if one is
         # ever added).  The 256k contract must hold.
         assert DEFAULT_CONTEXT_LENGTHS[matched_key] == 256_000
+
+
+def test_grok_composer_context_length_is_200k():
+    """grok-composer-2.5-fast is OAuth-only and missing from /v1/models.
+
+    Without a specific entry it fell through to the generic ``grok`` 131k
+    catch-all.  xAI publishes a 200k usable context window for Composer 2.5
+    on Grok Build (SuperGrok / Premium+); /v1/responses additionally caps
+    the input+output budget at ~262144, but the usable context (what we
+    track) is 200k.
+    """
+    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+
+    assert DEFAULT_CONTEXT_LENGTHS["grok-composer"] == 200_000
+    slug = "grok-composer-2.5-fast"
+    matched_key = max(
+        (k for k in DEFAULT_CONTEXT_LENGTHS if k in slug.lower()),
+        key=len,
+    )
+    assert matched_key == "grok-composer", (
+        f"Expected longest-first match on grok-composer for {slug}, got {matched_key}"
+    )
+    assert DEFAULT_CONTEXT_LENGTHS[matched_key] == 200_000
+
+
+# ---------------------------------------------------------------------------
+# Cross-issuer reasoning replay guard
+#
+# When a session switches model providers mid-conversation (e.g. user runs
+# /model gpt-5.5 after several turns on grok-4.3), the persisted reasoning
+# items carry encrypted_content that only the issuing endpoint can decrypt.
+# Replaying them against the new endpoint deterministically returns HTTP 400
+# invalid_encrypted_content and breaks every subsequent turn. The cross-issuer
+# guard stamps each reasoning item with its issuer on normalize and drops
+# foreign-issuer items on replay.
+# ---------------------------------------------------------------------------
+
+
+def _stamped_assistant_msg(issuer_kind, *, text="hi", encrypted="enc_blob", rs_id="rs_001"):
+    return {
+        "role": "assistant",
+        "content": text,
+        "codex_reasoning_items": [
+            {
+                "type": "reasoning",
+                "id": rs_id,
+                "encrypted_content": encrypted,
+                "summary": [],
+                "_issuer_kind": issuer_kind,
+            }
+        ],
+    }
+
+
+def test_cross_issuer_reasoning_is_dropped_on_replay():
+    """Reasoning minted by one Responses endpoint must not be replayed to
+    another. This is the regression for the chatgpt-backend vs xAI-OAuth
+    swap that returned invalid_encrypted_content on every turn after the
+    user changed model mid-session.
+    """
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    msgs = [
+        {"role": "user", "content": "hi"},
+        _stamped_assistant_msg("xai_responses", encrypted="grok_blob"),
+        {"role": "user", "content": "next"},
+    ]
+
+    # Calling against codex_backend — the grok-issued blob must be dropped.
+    items = _chat_messages_to_responses_input(
+        msgs, current_issuer_kind="codex_backend"
+    )
+    reasoning = [it for it in items if it.get("type") == "reasoning"]
+    assert reasoning == [], (
+        "Reasoning items stamped with a foreign _issuer_kind must be dropped "
+        "before the API rejects the whole request with invalid_encrypted_content."
+    )
+
+
+def test_same_issuer_reasoning_is_still_replayed():
+    """Same-endpoint reasoning replay is the documented happy path (May 2026
+    reversal). The cross-issuer guard must not regress it.
+    """
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    msgs = [
+        {"role": "user", "content": "hi"},
+        _stamped_assistant_msg("xai_responses", encrypted="grok_blob"),
+        {"role": "user", "content": "next"},
+    ]
+
+    items = _chat_messages_to_responses_input(
+        msgs, current_issuer_kind="xai_responses"
+    )
+    reasoning = [it for it in items if it.get("type") == "reasoning"]
+    assert len(reasoning) == 1
+    assert reasoning[0]["encrypted_content"] == "grok_blob"
+    # The internal stamp must not leak to the API payload.
+    assert "_issuer_kind" not in reasoning[0]
+
+
+def test_unstamped_reasoning_is_replayed_for_backwards_compat():
+    """Reasoning items persisted before this patch don't carry _issuer_kind.
+    They must still be replayed (legacy-compatible behaviour).
+    """
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    msgs = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "hello",
+            "codex_reasoning_items": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_legacy",
+                    "encrypted_content": "legacy_blob",
+                    "summary": [],
+                }
+            ],
+        },
+        {"role": "user", "content": "next"},
+    ]
+
+    items = _chat_messages_to_responses_input(
+        msgs, current_issuer_kind="codex_backend"
+    )
+    reasoning = [it for it in items if it.get("type") == "reasoning"]
+    assert len(reasoning) == 1
+    assert reasoning[0]["encrypted_content"] == "legacy_blob"
+
+
+def test_normalize_codex_response_stamps_issuer_on_reasoning():
+    """Reasoning captured from a response must be stamped with the issuer so
+    a later replay against a different endpoint can drop it.
+    """
+    from types import SimpleNamespace
+
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    reasoning_item = SimpleNamespace(
+        type="reasoning",
+        id="rs_new",
+        encrypted_content="fresh_blob",
+        summary=[],
+    )
+    message_item = SimpleNamespace(
+        type="message",
+        role="assistant",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="ok")],
+        id="msg_1",
+    )
+    response = SimpleNamespace(output=[reasoning_item, message_item], status="completed")
+
+    msg, _ = _normalize_codex_response(response, issuer_kind="xai_responses")
+    assert msg.codex_reasoning_items and len(msg.codex_reasoning_items) == 1
+    assert msg.codex_reasoning_items[0]["_issuer_kind"] == "xai_responses"
+    assert msg.codex_reasoning_items[0]["encrypted_content"] == "fresh_blob"
+
+
+def test_transport_round_trip_drops_foreign_reasoning():
+    """Full transport flow: build_kwargs against codex_backend after grok turns
+    must produce an `input` array that contains zero foreign reasoning items.
+    """
+    from agent.transports.codex import ResponsesApiTransport
+
+    transport = ResponsesApiTransport()
+    messages = [
+        {"role": "system", "content": "you are hermes"},
+        {"role": "user", "content": "hi"},
+        _stamped_assistant_msg("xai_responses", encrypted="grok_blob"),
+        {"role": "user", "content": "엑스다임 프로젝트 파악, 스킬로 정리."},
+    ]
+
+    kwargs = transport.build_kwargs(
+        model="gpt-5.5",
+        messages=messages,
+        tools=None,
+        is_codex_backend=True,
+        is_xai_responses=False,
+        is_github_responses=False,
+        base_url="https://chatgpt.com/backend-api/codex",
+        instructions="you are hermes",
+    )
+
+    reasoning = [it for it in kwargs["input"] if it.get("type") == "reasoning"]
+    assert reasoning == [], (
+        "Cross-issuer reasoning leaked through build_kwargs — this is the "
+        "exact regression that broke session 40de1ae0 on 2026-05-25 01:09."
+    )

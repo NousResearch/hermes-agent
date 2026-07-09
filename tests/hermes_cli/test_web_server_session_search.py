@@ -3,9 +3,7 @@ import asyncio
 from hermes_cli import web_server
 
 
-
-    def get_sessions_rich_by_ids(self, session_ids):
-        return [s for s in self.sessions if s.id in session_ids]
+class _FakeSessionDB:
     """Fake backing the /api/sessions/search endpoint.
 
     The endpoint surfaces direct session-id matches first, then FTS message
@@ -15,6 +13,9 @@ from hermes_cli import web_server
     """
 
     closed = False
+
+    def get_sessions_rich_by_ids(self, session_ids):
+        return {}
 
     def search_sessions_by_id(self, query, limit=20, include_archived=True):
         assert query == "20260603"

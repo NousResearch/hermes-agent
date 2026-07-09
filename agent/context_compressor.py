@@ -214,6 +214,8 @@ _IMAGE_TOKEN_ESTIMATE = 1600
 # for tail-cut decisions.
 _IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
+_SUMMARY_FAILURE_CIRCUIT_BREAKER_THRESHOLD = 3
+_SUMMARY_FAILURE_CIRCUIT_BREAKER_SECONDS = 300
 
 # Hard ceiling for the deterministic summary-failure handoff.  The fallback is
 # only meant to preserve continuity anchors from the dropped window, not to
@@ -737,6 +739,9 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
+        self._summary_failure_count = 0
+        self._summary_failure_breaker_until = 0.0
+        self._summary_breaker_notice_emitted = False
         self._last_summary_error = None
         self._last_compress_aborted = False
         self.last_real_prompt_tokens = 0
@@ -772,6 +777,9 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0
+        self._summary_failure_count = 0
+        self._summary_failure_breaker_until = 0.0
+        self._summary_breaker_notice_emitted = False
         self._last_compress_aborted = False
         self._context_probed = False
         self._context_probe_persistable = False
@@ -785,8 +793,36 @@ class ContextCompressor(ContextEngine):
         self._session_db = session_db
         self._session_id = session_id or ""
         self._summary_failure_cooldown_until = 0.0
+        self._summary_failure_count = 0
+        self._summary_failure_breaker_until = 0.0
+        self._summary_breaker_notice_emitted = False
         self._last_summary_error = None
         self.get_active_compression_failure_cooldown()
+        self._load_compression_summary_failure_state()
+
+    def _load_compression_summary_failure_state(self) -> Optional[Dict[str, Any]]:
+        """Load the durable summary-failure breaker mirror for the bound session."""
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        if not session_db or not session_id:
+            return None
+        getter = getattr(session_db, "get_compression_summary_failure_state", None)
+        if getter is None:
+            return None
+        try:
+            state = getter(session_id)
+        except sqlite3.Error as exc:
+            logger.debug("compression summary failure state lookup failed: %s", exc)
+            return None
+        except Exception:
+            return None
+        if not state:
+            return None
+        self._summary_failure_count = int(state.get("failure_count") or 0)
+        remaining = float(state.get("breaker_remaining_seconds") or 0.0)
+        self._summary_failure_breaker_until = time.monotonic() + remaining if remaining > 0 else 0.0
+        self._summary_breaker_notice_emitted = remaining > 0
+        return state
 
     def on_session_start(self, session_id: str, **kwargs) -> None:
         """Bind session-scoped compression state for a new or resumed session."""
@@ -835,6 +871,45 @@ class ContextCompressor(ContextEngine):
             "error": self._last_summary_error,
         }
 
+    def _emit_summary_breaker_open_warning(
+        self,
+        *,
+        failure_count: int,
+        breaker_seconds: float,
+        error: Optional[str],
+    ) -> None:
+        """Log and notify once when the consecutive summary-failure breaker opens."""
+        if self._summary_breaker_notice_emitted:
+            return
+        self._summary_breaker_notice_emitted = True
+        logger.warning(
+            "Compression summary circuit breaker opened after %d consecutive failures; "
+            "auto-compression paused for %.0fs. Last error: %s",
+            failure_count,
+            breaker_seconds,
+            error or "unknown",
+        )
+        callback = getattr(self, "notice_callback", None)
+        if not callback:
+            return
+        try:
+            from agent.credits_tracker import AgentNotice
+
+            callback(
+                AgentNotice(
+                    text=(
+                        "⚠ Context summary circuit breaker opened. "
+                        f"Auto-compression paused after {failure_count} consecutive "
+                        "summary failures; use /compress to retry manually."
+                    ),
+                    level="warn",
+                    kind="ephemeral",
+                    key="compression.summary_breaker.open",
+                )
+            )
+        except Exception:
+            logger.debug("compression breaker notice callback failed", exc_info=True)
+
     def _record_compression_failure_cooldown(
         self,
         cooldown_seconds: float,
@@ -846,21 +921,62 @@ class ContextCompressor(ContextEngine):
 
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
-        if not session_db or not session_id:
+        state: Optional[Dict[str, Any]] = None
+        if session_db and session_id:
+            recorder = getattr(session_db, "record_compression_summary_failure", None)
+            if recorder is not None:
+                try:
+                    state = recorder(
+                        session_id,
+                        transient_cooldown_until=cooldown_until,
+                        error=error,
+                        breaker_threshold=_SUMMARY_FAILURE_CIRCUIT_BREAKER_THRESHOLD,
+                        breaker_cooldown_seconds=_SUMMARY_FAILURE_CIRCUIT_BREAKER_SECONDS,
+                    )
+                except sqlite3.Error as exc:
+                    logger.debug("compression summary failure persist failed: %s", exc)
+                except Exception as exc:
+                    logger.debug("compression summary failure persist failed (non-sqlite): %s", exc)
+            else:
+                recorder = getattr(session_db, "record_compression_failure_cooldown", None)
+                if recorder is not None:
+                    try:
+                        recorder(session_id, cooldown_until, error)
+                    except sqlite3.Error as exc:
+                        logger.debug("compression failure cooldown persist failed: %s", exc)
+                    except Exception as exc:
+                        logger.debug("compression failure cooldown persist failed (non-sqlite): %s", exc)
+
+        if state:
+            self._summary_failure_count = int(state.get("failure_count") or 0)
+            remaining = float(state.get("breaker_remaining_seconds") or 0.0)
+            self._summary_failure_breaker_until = time.monotonic() + remaining if remaining > 0 else 0.0
+            if state.get("breaker_opened"):
+                self._emit_summary_breaker_open_warning(
+                    failure_count=self._summary_failure_count,
+                    breaker_seconds=remaining,
+                    error=error,
+                )
             return
 
-        recorder = getattr(session_db, "record_compression_failure_cooldown", None)
-        if recorder is None:
-            return
-        try:
-            recorder(session_id, cooldown_until, error)
-        except sqlite3.Error as exc:
-            logger.debug("compression failure cooldown persist failed: %s", exc)
-        except Exception as exc:
-            logger.debug("compression failure cooldown persist failed (non-sqlite): %s", exc)
+        # Fallback for tests/plugins that host the compressor without SessionDB:
+        # keep a local mirror so the breaker still prevents same-instance loops.
+        self._summary_failure_count += 1
+        if self._summary_failure_count >= _SUMMARY_FAILURE_CIRCUIT_BREAKER_THRESHOLD:
+            self._summary_failure_breaker_until = (
+                time.monotonic() + _SUMMARY_FAILURE_CIRCUIT_BREAKER_SECONDS
+            )
+            self._emit_summary_breaker_open_warning(
+                failure_count=self._summary_failure_count,
+                breaker_seconds=_SUMMARY_FAILURE_CIRCUIT_BREAKER_SECONDS,
+                error=error,
+            )
 
     def _clear_compression_failure_cooldown(self) -> None:
         self._summary_failure_cooldown_until = 0.0
+        self._summary_failure_count = 0
+        self._summary_failure_breaker_until = 0.0
+        self._summary_breaker_notice_emitted = False
         self._last_summary_error = None
 
         session_db = getattr(self, "_session_db", None)
@@ -869,14 +985,22 @@ class ContextCompressor(ContextEngine):
             return
 
         clearer = getattr(session_db, "clear_compression_failure_cooldown", None)
-        if clearer is None:
+        if clearer is not None:
+            try:
+                clearer(session_id)
+            except sqlite3.Error as exc:
+                logger.debug("compression failure cooldown clear failed: %s", exc)
+            except Exception as exc:
+                logger.debug("compression failure cooldown clear failed (non-sqlite): %s", exc)
+        breaker_clearer = getattr(session_db, "clear_compression_summary_failures", None)
+        if breaker_clearer is None:
             return
         try:
-            clearer(session_id)
+            breaker_clearer(session_id)
         except sqlite3.Error as exc:
-            logger.debug("compression failure cooldown clear failed: %s", exc)
+            logger.debug("compression summary failure clear failed: %s", exc)
         except Exception as exc:
-            logger.debug("compression failure cooldown clear failed (non-sqlite): %s", exc)
+            logger.debug("compression summary failure clear failed (non-sqlite): %s", exc)
 
     def update_model(
         self,
@@ -944,6 +1068,9 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         self._ineffective_compression_count = 0
+        self._summary_failure_count = 0
+        self._summary_failure_breaker_until = 0.0
+        self._summary_breaker_notice_emitted = False
 
     # When the MINIMUM_CONTEXT_LENGTH floor meets/exceeds a small context
     # window, compacting at the percentage (50% → 32K of a 64K window) wastes
@@ -1132,6 +1259,10 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
         self._summary_failure_cooldown_until: float = 0.0
+        self._summary_failure_count: int = 0
+        self._summary_failure_breaker_until: float = 0.0
+        self._summary_breaker_notice_emitted: bool = False
+        self.notice_callback = None
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
         # record how many turns were unrecoverably dropped so callers
@@ -1249,6 +1380,16 @@ class ContextCompressor(ContextEngine):
                     "Compression deferred — summary LLM in cooldown for %.0fs more",
                     _cooldown_remaining,
                 )
+            return False
+        # Distinct from the transient retry cooldown: after repeated persisted
+        # summary failures, pause automatic compression long enough for the lane
+        # to surface the spiral rather than silently retrying every turn.
+        _breaker_remaining = self._summary_failure_breaker_until - time.monotonic()
+        if _breaker_remaining > 0:
+            logger.warning(
+                "Compression skipped — summary circuit breaker active for %.0fs more",
+                _breaker_remaining,
+            )
             return False
         # Anti-thrashing: back off if recent compressions were ineffective
         if self._ineffective_compression_count >= 2:

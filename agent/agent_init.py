@@ -1827,6 +1827,11 @@ def init_agent(
             max_tokens=agent.max_tokens,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
+    if hasattr(agent.context_compressor, "notice_callback"):
+        try:
+            agent.context_compressor.notice_callback = agent._emit_notice
+        except Exception:
+            pass
     if callable(_bind_session_state):
         try:
             _bind_session_state(session_db=session_db, session_id=agent.session_id)

@@ -18258,6 +18258,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return
                 if not line:
                     return
+                notice_key = str(getattr(notice, "key", "") or "")
+                if notice_key == "compression.summary_breaker.open":
+                    try:
+                        from cron.scheduler import _get_home_target_chat_id, _get_home_target_thread_id
+
+                        platform_name = source.platform.value if source.platform else ""
+                        home_chat_id = _get_home_target_chat_id(platform_name)
+                        if home_chat_id:
+                            home_thread_id = _get_home_target_thread_id(platform_name)
+                            metadata = (
+                                {"thread_id": home_thread_id}
+                                if home_thread_id
+                                else None
+                            )
+                            safe_schedule_threadsafe(
+                                _status_adapter.send(home_chat_id, line, metadata=metadata),
+                                _loop_for_step,
+                                logger=logger,
+                                log_message="compression breaker home notice scheduling error",
+                            )
+                            return
+                    except Exception:
+                        logger.debug("compression breaker home notice resolution failed", exc_info=True)
                 safe_schedule_threadsafe(
                     self._deliver_platform_notice(source, line),
                     _loop_for_step,

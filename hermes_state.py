@@ -738,8 +738,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_state TEXT,
     handoff_platform TEXT,
     handoff_error TEXT,
+    -- Compression failure state is split deliberately: cooldown/error are the
+    -- short-lived retry backoff for one failed summary call, while the summary
+    -- failure count/breaker columns are the durable per-session consecutive-
+    -- failure circuit breaker shared across compressor instances.
     compression_failure_cooldown_until REAL,
     compression_failure_error TEXT,
+    compression_summary_failure_count INTEGER NOT NULL DEFAULT 0,
+    compression_summary_failure_breaker_until REAL,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
@@ -2175,6 +2181,144 @@ class SessionDB:
         except sqlite3.Error as exc:
             logger.warning(
                 "clear_compression_failure_cooldown(%s) failed: %s",
+                session_id, exc,
+            )
+
+    def record_compression_summary_failure(
+        self,
+        session_id: str,
+        *,
+        transient_cooldown_until: float,
+        error: Optional[str] = None,
+        breaker_threshold: int = 3,
+        breaker_cooldown_seconds: float = 300.0,
+    ) -> Dict[str, Any]:
+        """Atomically increment the durable per-session summary failure streak.
+
+        This is the cross-instance circuit-breaker authority.  Compressor-local
+        counters are only mirrors; gateway resumes, background forks, and fresh
+        ``SessionDB`` / ``ContextCompressor`` instances must converge through this
+        single write path.
+        """
+        if not session_id:
+            return {
+                "failure_count": 0,
+                "breaker_until": None,
+                "breaker_remaining_seconds": 0.0,
+                "breaker_opened": False,
+                "error": error,
+            }
+
+        threshold = max(1, int(breaker_threshold or 1))
+        cooldown_seconds = max(0.0, float(breaker_cooldown_seconds or 0.0))
+        now = time.time()
+        result: Dict[str, Any] = {
+            "failure_count": 0,
+            "breaker_until": None,
+            "breaker_remaining_seconds": 0.0,
+            "breaker_opened": False,
+            "error": error,
+        }
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT compression_summary_failure_count, "
+                "compression_summary_failure_breaker_until "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return
+            old_count = int(row[0] or 0)
+            old_breaker_until = row[1]
+            old_breaker_until = float(old_breaker_until) if old_breaker_until is not None else None
+            new_count = old_count + 1
+            breaker_until = old_breaker_until
+            breaker_opened = False
+            if new_count >= threshold:
+                candidate_until = now + cooldown_seconds
+                breaker_until = max(float(breaker_until or 0.0), candidate_until)
+                breaker_opened = old_count < threshold or float(old_breaker_until or 0.0) <= now
+
+            conn.execute(
+                "UPDATE sessions SET "
+                "compression_failure_cooldown_until = ?, "
+                "compression_failure_error = ?, "
+                "compression_summary_failure_count = ?, "
+                "compression_summary_failure_breaker_until = ? "
+                "WHERE id = ?",
+                (
+                    transient_cooldown_until,
+                    error,
+                    new_count,
+                    breaker_until,
+                    session_id,
+                ),
+            )
+            result.update(
+                {
+                    "failure_count": new_count,
+                    "breaker_until": breaker_until,
+                    "breaker_remaining_seconds": max(0.0, float(breaker_until or 0.0) - now),
+                    "breaker_opened": breaker_opened,
+                    "error": error,
+                }
+            )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.Error as exc:
+            logger.warning(
+                "record_compression_summary_failure(%s) failed: %s",
+                session_id, exc,
+            )
+        return result
+
+    def get_compression_summary_failure_state(
+        self,
+        session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the persisted summary-failure streak and breaker state."""
+        if not session_id:
+            return None
+        now = time.time()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT compression_summary_failure_count, "
+                "compression_summary_failure_breaker_until, compression_failure_error "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        failure_count = int(row["compression_summary_failure_count"] or 0)
+        breaker_until = row["compression_summary_failure_breaker_until"]
+        breaker_until = float(breaker_until) if breaker_until is not None else None
+        remaining = max(0.0, float(breaker_until or 0.0) - now)
+        return {
+            "failure_count": failure_count,
+            "breaker_until": breaker_until,
+            "breaker_remaining_seconds": remaining,
+            "error": row["compression_failure_error"],
+        }
+
+    def clear_compression_summary_failures(self, session_id: str) -> None:
+        """Reset the durable consecutive summary-failure breaker for a session."""
+        if not session_id:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET compression_summary_failure_count = 0, "
+                "compression_summary_failure_breaker_until = NULL WHERE id = ?",
+                (session_id,),
+            )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.Error as exc:
+            logger.warning(
+                "clear_compression_summary_failures(%s) failed: %s",
                 session_id, exc,
             )
     # ──────────────────────────────────────────────────────────────────────

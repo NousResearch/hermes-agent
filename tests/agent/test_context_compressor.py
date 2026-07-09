@@ -2,6 +2,7 @@
 
 import pytest
 import time
+import logging
 from unittest.mock import patch, MagicMock
 
 from agent.context_compressor import (
@@ -44,6 +45,58 @@ class TestShouldCompress:
         assert compressor.should_compress(prompt_tokens=90000) is True
         assert compressor.should_compress(prompt_tokens=50000) is False
 
+    def test_active_summary_breaker_blocks_auto_compression(self, compressor):
+        compressor._summary_failure_breaker_until = time.monotonic() + 60.0
+
+        assert compressor.should_compress(prompt_tokens=90000) is False
+
+
+class TestCompressionFailureBreakerWarnings:
+    def test_breaker_open_emits_warning_and_notice_once_at_threshold(self, compressor, caplog):
+        notices = []
+        compressor.notice_callback = notices.append
+
+        with caplog.at_level(logging.WARNING, logger="agent.context_compressor"):
+            compressor._record_compression_failure_cooldown(1.0, "timeout-1")
+            compressor._record_compression_failure_cooldown(1.0, "timeout-2")
+
+        assert "summary circuit breaker opened" not in caplog.text
+        assert notices == []
+
+        with caplog.at_level(logging.WARNING, logger="agent.context_compressor"):
+            compressor._record_compression_failure_cooldown(1.0, "timeout-3")
+
+        assert "summary circuit breaker opened after 3 consecutive failures" in caplog.text
+        assert len(notices) == 1
+        assert notices[0].level == "warn"
+        assert notices[0].key == "compression.summary_breaker.open"
+        assert "Auto-compression paused" in notices[0].text
+
+        caplog.clear()
+        compressor._record_compression_failure_cooldown(1.0, "timeout-4")
+        assert "summary circuit breaker opened" not in caplog.text
+        assert len(notices) == 1
+
+    def test_persisted_breaker_open_emits_warning_and_notice(self, compressor, tmp_path, caplog):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("s1", "cli")
+        compressor.bind_session_state(db, "s1")
+        notices = []
+        compressor.notice_callback = notices.append
+
+        with caplog.at_level(logging.WARNING, logger="agent.context_compressor"):
+            compressor._record_compression_failure_cooldown(1.0, "timeout-1")
+            compressor._record_compression_failure_cooldown(1.0, "timeout-2")
+            compressor._record_compression_failure_cooldown(1.0, "timeout-3")
+
+        state = db.get_compression_summary_failure_state("s1")
+        assert state is not None
+        assert state["failure_count"] == 3
+        assert state["breaker_remaining_seconds"] > 0
+        assert "summary circuit breaker opened after 3 consecutive failures" in caplog.text
+        assert len(notices) == 1
+
+        db.close()
 
 
 class TestUpdateFromResponse:

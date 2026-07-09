@@ -5339,6 +5339,67 @@ def test_expired_compression_failure_cooldown_is_ignored(db):
     assert db.get_compression_failure_cooldown("s1") is None
 
 
+def test_compression_summary_failure_breaker_opens_at_threshold(db, monkeypatch):
+    db.create_session("s1", "cli")
+    monkeypatch.setattr(hermes_state.time, "time", lambda: 1000.0)
+
+    first = db.record_compression_summary_failure(
+        "s1",
+        transient_cooldown_until=1010.0,
+        error="timeout-1",
+        breaker_threshold=3,
+        breaker_cooldown_seconds=300.0,
+    )
+    second = db.record_compression_summary_failure(
+        "s1",
+        transient_cooldown_until=1020.0,
+        error="timeout-2",
+        breaker_threshold=3,
+        breaker_cooldown_seconds=300.0,
+    )
+    third = db.record_compression_summary_failure(
+        "s1",
+        transient_cooldown_until=1030.0,
+        error="timeout-3",
+        breaker_threshold=3,
+        breaker_cooldown_seconds=300.0,
+    )
+
+    assert first["failure_count"] == 1
+    assert first["breaker_opened"] is False
+    assert second["failure_count"] == 2
+    assert second["breaker_opened"] is False
+    assert third["failure_count"] == 3
+    assert third["breaker_opened"] is True
+    assert third["breaker_until"] == 1300.0
+
+    state = db.get_compression_summary_failure_state("s1")
+    assert state["failure_count"] == 3
+    assert state["breaker_until"] == 1300.0
+    assert state["breaker_remaining_seconds"] == 300.0
+    assert state["error"] == "timeout-3"
+
+
+def test_clear_compression_summary_failures_resets_breaker(db, monkeypatch):
+    db.create_session("s1", "cli")
+    monkeypatch.setattr(hermes_state.time, "time", lambda: 2000.0)
+
+    db.record_compression_summary_failure(
+        "s1",
+        transient_cooldown_until=2010.0,
+        error="timeout",
+        breaker_threshold=1,
+        breaker_cooldown_seconds=120.0,
+    )
+
+    db.clear_compression_summary_failures("s1")
+
+    state = db.get_compression_summary_failure_state("s1")
+    assert state["failure_count"] == 0
+    assert state["breaker_until"] is None
+    assert state["breaker_remaining_seconds"] == 0.0
+
+
 def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(db, monkeypatch):
     db.create_session("s1", "cli")
 

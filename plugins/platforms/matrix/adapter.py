@@ -2959,7 +2959,16 @@ class MatrixAdapter(BasePlatformAdapter):
             return
         body, is_dm, chat_type, thread_id, display_name, source = ctx
 
-        if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
+        # MSC2530: a top-level "filename" field marks the
+        # transport name; the body is a user-typed caption only when it differs. This is
+        # authoritative — even a caption that *looks* like a filename (e.g. "screenshot.png")
+        # is kept when the sender declared a different real filename. The old suffix
+        # heuristic remains only for legacy clients that never send "filename".
+        declared_filename = str(source_content.get("filename") or "").strip()
+        if declared_filename:
+            if body.strip() == declared_filename:
+                body = ""
+        elif msgtype == "m.image" and _looks_like_matrix_image_filename(body):
             body = ""
 
         allow_http_fallback = bool(http_url) and not is_encrypted_media

@@ -10185,6 +10185,153 @@ async def get_cron_job(job_id: str, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_get_cron_job_sync, job_id, profile)
 
 
+_CRON_OUTPUT_FILENAME_FORMAT = "%Y-%m-%d_%H-%M-%S"
+
+
+def _cron_output_runs_dir(profile: Optional[str], job_id: str) -> Path:
+    if profile:
+        try:
+            _, profile_home = _cron_profile_home(profile)
+        except Exception:
+            profile_home = get_hermes_home()
+    else:
+        profile_home = get_hermes_home()
+    return Path(profile_home) / "cron" / "output" / job_id
+
+
+def _cron_output_run_timestamp(path: Path) -> Optional[float]:
+    try:
+        naive = datetime.strptime(path.stem, _CRON_OUTPUT_FILENAME_FORMAT)
+    except ValueError:
+        return None
+    return naive.replace(tzinfo=datetime.now().astimezone().tzinfo).timestamp()
+
+
+def _cron_output_run_preview(path: Path, max_chars: int = 180) -> str:
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    preview = re.sub(r"\s+", " ", raw).strip()
+    if len(preview) <= max_chars:
+        return preview
+    return preview[: max_chars - 1].rstrip() + "…"
+
+
+def _cron_job_last_run_timestamp(job: Optional[Dict[str, Any]]) -> Optional[float]:
+    if not isinstance(job, dict):
+        return None
+    raw = job.get("last_run_at")
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _cron_output_status_label(job: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(job, dict):
+        return ""
+    status = str(job.get("last_status") or "").strip()
+    if not status:
+        return ""
+    return status.replace("_", " ").upper()
+
+
+def _list_cron_output_runs(
+    job: Optional[Dict[str, Any]],
+    canonical_job_id: str,
+    profile: Optional[str],
+    limit: int,
+) -> List[Dict[str, Any]]:
+    output_dir = _cron_output_runs_dir(profile, canonical_job_id)
+    try:
+        files = sorted(
+            (path for path in output_dir.glob("*.md") if path.is_file()),
+            key=lambda path: path.name,
+            reverse=True,
+        )
+    except OSError:
+        files = []
+
+    latest_ts = _cron_job_last_run_timestamp(job)
+    latest_status = _cron_output_status_label(job)
+    runs: List[Dict[str, Any]] = []
+
+    for index, path in enumerate(files[:limit]):
+        started_at = _cron_output_run_timestamp(path)
+        if started_at is None:
+            try:
+                started_at = path.stat().st_mtime
+            except OSError:
+                started_at = 0.0
+        preview = _cron_output_run_preview(path)
+        title = preview or "Script-only run"
+        if (
+            index == 0
+            and latest_status
+            and (latest_ts is None or abs(latest_ts - started_at) <= 120)
+        ):
+            title = f"{latest_status} · {title}"
+        runs.append(
+            {
+                "id": f"cron_output:{canonical_job_id}:{path.stem}",
+                "title": title,
+                "preview": preview or None,
+                "source": "cron_output",
+                "started_at": started_at,
+                "last_active": started_at,
+                "ended_at": started_at,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "message_count": 0,
+                "tool_call_count": 0,
+                "model": None,
+                "cwd": None,
+                "archived": False,
+                "is_active": False,
+            }
+        )
+
+    if runs:
+        return runs
+
+    if latest_ts is None:
+        return []
+
+    preview = ""
+    if isinstance(job, dict):
+        preview = str(job.get("last_error") or "").strip()
+    title = _cron_output_status_label(job) or "Script-only run"
+    if preview:
+        title = f"{title} · {preview}"
+    return [
+        {
+            "id": f"cron_output:{canonical_job_id}:latest",
+            "title": title,
+            "preview": preview or None,
+            "source": "cron_output",
+            "started_at": latest_ts,
+            "last_active": latest_ts,
+            "ended_at": latest_ts,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "message_count": 0,
+            "tool_call_count": 0,
+            "model": None,
+            "cwd": None,
+            "archived": False,
+            "is_active": False,
+        }
+    ]
+
+
 def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: int = 20):
     """Run sessions produced by a cron job, newest first.
 
@@ -10203,6 +10350,7 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
     selected = profile or _find_cron_job_profile(job_id)
     # job_id may be a human name; resolve to the canonical id used in run-session ids.
     canonical = job_id
+    job = None
     if selected:
         job = _call_cron_for_profile(selected, "get_job", job_id)
         if job and job.get("id"):
@@ -10216,6 +10364,8 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
     db = _open_session_db_for_profile(selected)
     try:
         runs = db.list_cron_job_runs(canonical, limit=limit_n, offset=0)
+        if not runs:
+            return {"runs": _list_cron_output_runs(job, canonical, selected, limit_n), "limit": limit_n}
         now = time.time()
         for s in runs:
             s["is_active"] = (

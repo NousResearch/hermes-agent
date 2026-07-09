@@ -610,6 +610,10 @@ function formatRunTime(seconds?: null | number): string {
   return Number.isNaN(date.valueOf()) ? '—' : date.toLocaleString()
 }
 
+function isSyntheticCronOutputRun(run: SessionInfo): boolean {
+  return run.source === 'cron_output'
+}
+
 // Runs are produced by the background scheduler tick (no UI signal), so poll
 // while the panel is open + on tab re-focus so a fired run shows up within a few
 // seconds instead of waiting for a reload.
@@ -679,19 +683,31 @@ function CronJobRuns({
         <div className="py-1 text-xs text-muted-foreground">{c.noRuns}</div>
       ) : (
         <div className="flex flex-col gap-px">
-          {runs.map(run => (
-            <button
-              className="row-hover flex items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-              key={run.id}
-              onClick={() => onOpenSession?.(run.id)}
-              type="button"
-            >
-              <span className="truncate text-foreground/85">{run.title?.trim() || run.preview?.trim() || run.id}</span>
-              <span className="shrink-0 text-[0.62rem] text-muted-foreground/55 tabular-nums">
-                {formatRunTime(run.last_active || run.started_at)}
-              </span>
-            </button>
-          ))}
+          {runs.map(run =>
+            isSyntheticCronOutputRun(run) ? (
+              <div
+                className="flex items-center justify-between gap-3 rounded-md px-2 py-1 text-xs"
+                key={run.id}
+              >
+                <span className="truncate text-foreground/85">{run.title?.trim() || run.preview?.trim() || run.id}</span>
+                <span className="shrink-0 text-[0.62rem] text-muted-foreground/55 tabular-nums">
+                  {formatRunTime(run.last_active || run.started_at)}
+                </span>
+              </div>
+            ) : (
+              <button
+                className="row-hover flex items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                key={run.id}
+                onClick={() => onOpenSession?.(run.id)}
+                type="button"
+              >
+                <span className="truncate text-foreground/85">{run.title?.trim() || run.preview?.trim() || run.id}</span>
+                <span className="shrink-0 text-[0.62rem] text-muted-foreground/55 tabular-nums">
+                  {formatRunTime(run.last_active || run.started_at)}
+                </span>
+              </button>
+            )
+          )}
         </div>
       )}
     </div>

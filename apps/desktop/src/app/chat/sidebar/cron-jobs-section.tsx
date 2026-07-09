@@ -56,6 +56,10 @@ function formatRunTime(seconds?: null | number): string {
   return Number.isNaN(date.valueOf()) ? '—' : fmtDayTime.format(date)
 }
 
+function isSyntheticCronOutputRun(run: SessionInfo): boolean {
+  return run.source === 'cron_output'
+}
+
 interface SidebarCronJobsSectionProps {
   jobs: CronJob[]
   label: string
@@ -311,19 +315,28 @@ function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (s
       ) : (
         <>
           {runs.map(run => (
-            <button
-              className={cn(
-                'truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
-                run.id === selectedSessionId
-                  ? 'bg-(--ui-row-active-background) text-foreground'
-                  : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
-              )}
-              key={run.id}
-              onClick={() => onOpenRun(run.id)}
-              type="button"
-            >
-              {formatRunTime(run.last_active || run.started_at)}
-            </button>
+            isSyntheticCronOutputRun(run) ? (
+              <div
+                className="truncate rounded-md px-1.5 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) tabular-nums"
+                key={run.id}
+              >
+                {formatRunTime(run.last_active || run.started_at)}
+              </div>
+            ) : (
+              <button
+                className={cn(
+                  'truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
+                  run.id === selectedSessionId
+                    ? 'bg-(--ui-row-active-background) text-foreground'
+                    : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+                )}
+                key={run.id}
+                onClick={() => onOpenRun(run.id)}
+                type="button"
+              >
+                {formatRunTime(run.last_active || run.started_at)}
+              </button>
+            )
           ))}
         </>
       )}

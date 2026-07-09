@@ -7100,3 +7100,125 @@ class TestDesktopCronTicker:
 
         with self._client():
             assert not called.wait(0.5), "ticker must not run outside the desktop app"
+
+
+class TestCronRunHistoryFallback:
+    def test_falls_back_to_output_docs_when_no_session_runs_exist(self, monkeypatch, _isolate_hermes_home):
+        import hermes_cli.web_server as ws
+        from hermes_constants import get_hermes_home
+
+        job_id = "job-script-only"
+        output_dir = get_hermes_home() / "cron" / "output" / job_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "2026-07-08_09-00-00.md").write_text("older output\n", encoding="utf-8")
+        (output_dir / "2026-07-08_09-05-00.md").write_text("latest output\n", encoding="utf-8")
+
+        class _FakeDB:
+            def list_cron_job_runs(self, canonical, limit, offset):
+                assert canonical == job_id
+                assert limit == 2
+                assert offset == 0
+                return []
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(ws, "_find_cron_job_profile", lambda _job_id: "default")
+        monkeypatch.setattr(ws, "_open_session_db_for_profile", lambda _profile: _FakeDB())
+        monkeypatch.setattr(
+            ws,
+            "_call_cron_for_profile",
+            lambda _profile, cmd, *_args, **_kwargs: {
+                "id": job_id,
+                "last_status": "ok",
+            }
+            if cmd == "get_job"
+            else None,
+        )
+
+        result = ws._list_cron_job_runs_sync(job_id, limit=2)
+
+        runs = result["runs"]
+        assert result["limit"] == 2
+        assert [run["id"] for run in runs] == [
+            f"cron_output:{job_id}:2026-07-08_09-05-00",
+            f"cron_output:{job_id}:2026-07-08_09-00-00",
+        ]
+        assert runs[0]["source"] == "cron_output"
+        assert runs[0]["title"].startswith("OK · latest output")
+        assert runs[1]["title"] == "older output"
+        assert all(run["is_active"] is False for run in runs)
+
+    def test_keeps_session_runs_when_db_history_exists(self, monkeypatch, _isolate_hermes_home):
+        import hermes_cli.web_server as ws
+        from hermes_constants import get_hermes_home
+
+        job_id = "job-with-sessions"
+        output_dir = get_hermes_home() / "cron" / "output" / job_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "2026-07-08_09-05-00.md").write_text("fallback output\n", encoding="utf-8")
+
+        class _FakeDB:
+            def list_cron_job_runs(self, canonical, limit, offset):
+                assert canonical == job_id
+                return [
+                    {
+                        "id": "cron_job-with-sessions_00000001",
+                        "source": "cron",
+                        "started_at": 123.0,
+                        "last_active": 125.0,
+                        "ended_at": 126.0,
+                        "archived": False,
+                    }
+                ]
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(ws, "_find_cron_job_profile", lambda _job_id: "default")
+        monkeypatch.setattr(ws, "_open_session_db_for_profile", lambda _profile: _FakeDB())
+        monkeypatch.setattr(
+            ws,
+            "_call_cron_for_profile",
+            lambda _profile, cmd, *_args, **_kwargs: {"id": job_id} if cmd == "get_job" else None,
+        )
+        monkeypatch.setattr(ws.time, "time", lambda: 200.0)
+
+        result = ws._list_cron_job_runs_sync(job_id, limit=5)
+
+        assert [run["id"] for run in result["runs"]] == ["cron_job-with-sessions_00000001"]
+        assert result["runs"][0]["source"] == "cron"
+        assert result["runs"][0]["is_active"] is False
+
+    def test_surfaces_latest_run_when_only_job_metadata_exists(self, monkeypatch, _isolate_hermes_home):
+        import hermes_cli.web_server as ws
+
+        job_id = "job-last-run-only"
+
+        class _FakeDB:
+            def list_cron_job_runs(self, canonical, limit, offset):
+                assert canonical == job_id
+                return []
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(ws, "_find_cron_job_profile", lambda _job_id: "default")
+        monkeypatch.setattr(ws, "_open_session_db_for_profile", lambda _profile: _FakeDB())
+        monkeypatch.setattr(
+            ws,
+            "_call_cron_for_profile",
+            lambda _profile, cmd, *_args, **_kwargs: {
+                "id": job_id,
+                "last_status": "error",
+                "last_error": "command exited 1",
+                "last_run_at": "2026-07-08T17:00:00+00:00",
+            }
+            if cmd == "get_job"
+            else None,
+        )
+
+        result = ws._list_cron_job_runs_sync(job_id, limit=5)
+
+        assert [run["id"] for run in result["runs"]] == [f"cron_output:{job_id}:latest"]
+        assert result["runs"][0]["title"] == "ERROR · command exited 1"

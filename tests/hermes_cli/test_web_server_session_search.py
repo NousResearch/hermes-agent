@@ -88,3 +88,19 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
             },
         ]
     }
+
+
+def test_desktop_session_search_offloads_db_work(monkeypatch):
+    monkeypatch.setattr("hermes_state.SessionDB", _FakeSessionDB)
+    calls = []
+
+    async def fake_to_thread(func, *args, **kwargs):
+        calls.append((func, args, kwargs))
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(web_server.asyncio, "to_thread", fake_to_thread)
+
+    response = asyncio.run(web_server.search_sessions(q="20260603", limit=2))
+
+    assert response["results"][0]["session_id"] == "20260603_090200_exact"
+    assert calls == [(web_server._search_sessions_sync, ("20260603", 2, None), {})]

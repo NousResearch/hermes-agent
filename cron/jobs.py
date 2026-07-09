@@ -600,8 +600,8 @@ def _compute_grace_seconds(schedule: dict) -> int:
             period_seconds = int((second - first).total_seconds())
             grace = period_seconds // 2
             return max(MIN_GRACE, min(grace, MAX_GRACE))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to compute grace seconds for cron expr %r: %s", schedule.get("expr"), e)
 
     return MIN_GRACE
 

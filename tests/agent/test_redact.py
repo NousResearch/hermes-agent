@@ -361,6 +361,29 @@ class TestRedactingFormatter:
         assert "abc123def456" not in result
         assert "sk-pro" in result
 
+    def test_control_characters_neutralized(self):
+        """Embedded newlines and other control chars are replaced, not passed through."""
+        formatter = RedactingFormatter("%(message)s")
+        # Interpolated value with embedded newline that forges a second log line.
+        malicious = "rm -rf /\n2026-07-09 12:00:00 ERROR gateway.run: operator approved deploy"
+        record = logging.LogRecord(
+            name="tools.approval",
+            level=logging.WARNING,
+            pathname="",
+            lineno=0,
+            msg="Hardline block: %s",
+            args=(malicious,),
+            exc_info=None,
+        )
+        result = formatter.format(record)
+        # The embedded newline must be neutralized — one physical line, not two.
+        assert "\n" not in result
+        assert "?" in result  # newline replaced with safe marker
+        # The legitimate prefix must survive.
+        assert "Hardline block:" in result
+        # result must be a single physical line (no line break).
+        assert result.count("\n") == 0
+
 
 class TestPrintenvSimulation:
     """Simulate what happens when the agent runs `env` or `printenv`."""

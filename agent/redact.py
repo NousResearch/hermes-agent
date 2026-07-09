@@ -801,11 +801,21 @@ def _has_http_method_substring(text: str) -> bool:
 
 
 class RedactingFormatter(logging.Formatter):
-    """Log formatter that redacts secrets from all log messages."""
+    """Log formatter that redacts secrets and sanitizes control characters.
+
+    Values interpolated into log messages are stripped of control characters
+    (including newlines) so that attacker-controlled data in a log argument
+    cannot forge additional log records.  This matches ``_log_safe_path`` in
+    ``gateway/platforms/base.py``.
+    """
+
+    # Control chars, DEL, NEL, LINE SEPARATOR, PARAGRAPH SEPARATOR.
+    _LOG_UNSAFE_CHARS = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
 
     def __init__(self, fmt=None, datefmt=None, style='%', **kwargs):
         super().__init__(fmt, datefmt, style, **kwargs)
 
     def format(self, record: logging.LogRecord) -> str:
         original = super().format(record)
-        return redact_sensitive_text(original)
+        redacted = redact_sensitive_text(original)
+        return self._LOG_UNSAFE_CHARS.sub("?", redacted)

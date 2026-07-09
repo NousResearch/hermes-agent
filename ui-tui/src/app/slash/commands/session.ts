@@ -32,7 +32,10 @@ const modelValueForConfigSet = (arg: string) => {
   }
 
   if (TUI_SESSION_MODEL_RE.test(trimmed)) {
-    return stripTuiSessionFlag(trimmed)
+    // Convert --tui-session → --session so the gateway's parse_model_flags()
+    // recognises the intent as session-scoped instead of persisting globally.
+    const stripped = stripTuiSessionFlag(trimmed)
+    return `${stripped} --session`.trim()
   }
 
   return trimmed

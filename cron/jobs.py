@@ -435,9 +435,34 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             "display": f"every {minutes}m"
         }
     
+    # Check for CRON_TZ= prefix for timezone-aware cron expressions.
+    # Syntax: CRON_TZ=America/Chicago 30 8 * * *
+    # The timezone is stored alongside the expression and used when computing
+    # next_run_at, so that the schedule fires at the correct wall-clock time
+    # regardless of the server's own timezone and DST transitions.
+    cron_tz = None
+    cron_expr_str = schedule
+    tz_prefix_match = re.match(r'^CRON_TZ=(\S+)\s+(.+)$', schedule, re.IGNORECASE)
+    if tz_prefix_match:
+        cron_tz = tz_prefix_match.group(1)
+        cron_expr_str = tz_prefix_match.group(2).strip()
+        # Validate timezone name early so we fail fast at job creation time.
+        try:
+            from zoneinfo import ZoneInfo
+            ZoneInfo(cron_tz)
+        except (ImportError, KeyError):
+            try:
+                import pytz
+                pytz.timezone(cron_tz)
+            except Exception:
+                raise ValueError(
+                    f"Unknown timezone '{cron_tz}' in CRON_TZ prefix. "
+                    f"Use an IANA timezone name like 'America/Chicago'."
+                )
+
     # Check for cron expression (5 or 6 space-separated fields)
     # Cron fields: minute hour day month weekday [year]
-    parts = schedule.split()
+    parts = cron_expr_str.split()
     if len(parts) >= 5 and all(
         re.match(r'^[\d\*\-,/]+$', p) for p in parts[:5]
     ):
@@ -445,14 +470,17 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             raise ValueError("Cron expressions require 'croniter' package. Install with: pip install croniter")
         # Validate cron expression
         try:
-            croniter(schedule)
+            croniter(cron_expr_str)
         except Exception as e:
-            raise ValueError(f"Invalid cron expression '{schedule}': {e}")
-        return {
+            raise ValueError(f"Invalid cron expression '{cron_expr_str}': {e}")
+        result = {
             "kind": "cron",
-            "expr": schedule,
-            "display": schedule
+            "expr": cron_expr_str,
+            "display": schedule,  # preserve original with CRON_TZ prefix if present
         }
+        if cron_tz:
+            result["tz"] = cron_tz
+        return result
     
     # ISO timestamp (contains T or looks like date)
     if 'T' in schedule or re.match(r'^\d{4}-\d{2}-\d{2}', schedule):
@@ -645,6 +673,38 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         base_time = now
         if last_run_at:
             base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
+
+        # If a CRON_TZ timezone was stored with the schedule, evaluate the
+        # cron expression in that timezone so that wall-clock times (e.g.
+        # "run at 8:30 AM America/Chicago") remain correct across DST transitions
+        # regardless of the server's own timezone.
+        cron_tz_name = schedule.get("tz")
+        if cron_tz_name:
+            tz_obj = None
+            try:
+                from zoneinfo import ZoneInfo
+                tz_obj = ZoneInfo(cron_tz_name)
+            except (ImportError, KeyError):
+                try:
+                    import pytz
+                    tz_obj = pytz.timezone(cron_tz_name)
+                except Exception:
+                    logger.warning(
+                        "CRON_TZ timezone '%s' could not be loaded; "
+                        "falling back to server-local time for job %r.",
+                        cron_tz_name, schedule.get("expr"),
+                    )
+            if tz_obj is not None:
+                # Convert base_time to the target timezone before feeding
+                # croniter, then convert the result back to UTC-aware.
+                base_local = base_time.astimezone(tz_obj)
+                cron = croniter(schedule["expr"], base_local)
+                next_local = cron.get_next(datetime)
+                # next_local may be naive (pytz) or aware (zoneinfo); normalise.
+                if next_local.tzinfo is None:
+                    next_local = tz_obj.localize(next_local)  # type: ignore[attr-defined]
+                return next_local.astimezone(now.tzinfo).isoformat()
+
         cron = croniter(schedule["expr"], base_time)
         next_run = cron.get_next(datetime)
         return next_run.isoformat()

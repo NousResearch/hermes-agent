@@ -6567,6 +6567,13 @@ def _error_fingerprint(error_text: str) -> str:
     return fp.lower().strip()
 
 
+# Empirically ~96% of "clean exit without a terminal tool call" tasks complete
+# on a later run (a goal-mode finalize nudge, or the model simply emitting the
+# tool call next time), so a protocol violation is NOT deterministic — give it a
+# bounded retry before the breaker trips instead of blocking on the first hit.
+_PROTOCOL_VIOLATION_FAILURE_LIMIT = 3
+
+
 def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
@@ -6724,11 +6731,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # ready → blocked with a ``gave_up`` event on top of the ``crashed``
     # event we already emitted.
     #
-    # Protocol-violation crashes force an immediate trip (failure_limit=1)
-    # because clean-exit-without-transition is deterministic: the next
-    # respawn will do exactly the same thing. Better to surface to a
-    # human with a clear reason than to loop ``DEFAULT_FAILURE_LIMIT``
-    # times first.
+    # Protocol-violation crashes (clean exit, no terminal tool call) get a
+    # BOUNDED retry, not an immediate trip: empirically ~96% of these tasks
+    # complete on a later run (a goal-mode finalize nudge, or the model simply
+    # emitting kanban_complete/kanban_block next time), so blocking on the first
+    # occurrence just churned them through the respawn cycle. Systemic
+    # same-error crashes still trip immediately.
     auto_blocked: list[str] = []
     if crash_details:
         # Fingerprint errors to detect systemic failures.
@@ -6742,11 +6750,20 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 not protocol_violation
                 and _fp_counts.get(fp, 0) >= 3
             )
+            # Systemic same-error crashes trip on the first hit; a protocol
+            # violation gets a bounded retry (it usually recovers); everything
+            # else uses the task's normal failure budget.
+            if is_systemic:
+                _flim = 1
+            elif protocol_violation:
+                _flim = _PROTOCOL_VIOLATION_FAILURE_LIMIT
+            else:
+                _flim = None
             tripped = _record_task_failure(
                 conn, tid,
                 error=error_text,
                 outcome="crashed",
-                failure_limit=1 if (protocol_violation or is_systemic) else None,
+                failure_limit=_flim,
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer},

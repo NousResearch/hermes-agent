@@ -19,7 +19,7 @@ import type { DashboardTheme, ThemeTypography, ThemeLayout } from "./types";
 const SYSTEM_SANS =
   'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
 const SYSTEM_MONO =
-  'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace';
+  'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace, "Noto Sans Mono"';
 
 const DEFAULT_TYPOGRAPHY: ThemeTypography = {
   fontSans: SYSTEM_SANS,

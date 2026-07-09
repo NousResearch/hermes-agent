@@ -21,6 +21,13 @@ import { BUILTIN_THEME_LIST, BUILTIN_THEMES, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAP
 import type { DesktopTheme, DesktopThemeColors } from './types'
 import { $userThemes, resolveTheme } from './user-themes'
 
+// Font with near-complete Unicode coverage loaded as a web font fallback so
+// non-Latin scripts (Vietnamese, Cyrillic, etc.) render inside monospace
+// metrics instead of falling through to a proportional system face.  See
+// #61392.
+const NOTO_SANS_MONO_FONT_URL =
+  'https://fonts.googleapis.com/css2?family=Noto+Sans+Mono:wght@400;700&display=swap'
+
 // Legacy global skin (pre per-profile themes). Still the inheritance fallback
 // for any profile without its own assignment, so single-profile users and old
 // installs are unaffected.
@@ -253,6 +260,18 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     link.dataset.hermesThemeFont = 'true'
     document.head.appendChild(link)
     INJECTED_FONT_URLS.add(typo.fontUrl)
+  }
+
+  // Load Noto Sans Mono as a fallback monospace font for scripts the theme's
+  // primary mono face doesn't cover (e.g. Vietnamese diacritics).  Loaded
+  // once per session — see #61392.
+  if (!INJECTED_FONT_URLS.has(NOTO_SANS_MONO_FONT_URL)) {
+    const link = document.createElement('link')
+    link.rel = 'stylesheet'
+    link.href = NOTO_SANS_MONO_FONT_URL
+    link.dataset.hermesThemeFont = 'true'
+    document.head.appendChild(link)
+    INJECTED_FONT_URLS.add(NOTO_SANS_MONO_FONT_URL)
   }
 }
 

@@ -639,6 +639,30 @@ Connect Hermes to [Photon](https://photon.codes/) / Spectrum (iMessage and other
 | `PHOTON_DASHBOARD_HOST` | Photon Dashboard API host (default `https://app.photon.codes`). |
 | `PHOTON_SPECTRUM_HOST` | Photon Spectrum API host (default `https://spectrum.photon.codes`). |
 
+### Blooio (iMessage)
+
+Connect Hermes to [Blooio](https://blooio.com) — a hosted iMessage API (with SMS/RCS fallback) — over its v2 REST API and inbound webhooks. Requires a public HTTPS URL. See [the Blooio messaging guide](/user-guide/messaging/blooio).
+
+| Variable | Description |
+|----------|-------------|
+| `BLOOIO_API_KEY` | Blooio API key (bearer token). Required. |
+| `BLOOIO_WEBHOOK_SECRET` | Webhook signing secret (`whsec_…`); verifies the `X-Blooio-Signature` HMAC-SHA256 header. Strongly recommended. |
+| `BLOOIO_PUBLIC_URL` | Public HTTPS base URL where Blooio can reach this Hermes instance (e.g. `https://my-tunnel.example.com`). Required for inbound webhooks and local-file attachment sending. |
+| `BLOOIO_FROM_NUMBER` | E.164 number to send from when it can't be inferred from the inbound message. Must be assigned to your API key. |
+| `BLOOIO_HOST` | Webhook bind host (default `0.0.0.0`). |
+| `BLOOIO_PORT` | Webhook listen port (default `8647`). |
+| `BLOOIO_AUTO_REGISTER_WEBHOOK` | Register `BLOOIO_PUBLIC_URL/blooio/webhook` with Blooio on connect and capture its signing secret (`true`/`false`, default `false`). |
+| `BLOOIO_ALLOWED_USERS` | Comma-separated sender phone numbers/emails allowed to DM the bot. |
+| `BLOOIO_ALLOWED_GROUPS` | Comma-separated Blooio group IDs (`grp_…`) the bot will respond in. |
+| `BLOOIO_ALLOW_ALL_USERS` | Allow any sender to trigger the bot (dev only — disables allowlist). |
+| `BLOOIO_REQUIRE_MENTION` | Ignore group-chat messages unless they match a mention wake word (`true`/`false`, default `false`). |
+| `BLOOIO_MENTION_PATTERNS` | Mention wake-word regexes for group chats (JSON list or comma/newline-separated; defaults to Hermes wake words). |
+| `BLOOIO_SEND_READ_RECEIPTS` | Send iMessage read receipts for inbound messages the agent processes (`true`/`false`, default `false`). |
+| `BLOOIO_REACTIONS` | Tapback 👀/👍/👎 on messages as processing status and route reactions on the bot's own messages back to the agent (`true`/`false`, default `false`). |
+| `BLOOIO_HOME_CHANNEL` | Default target (phone number, email, or `grp_` id) for cron / notification delivery. |
+| `BLOOIO_HOME_CHANNEL_NAME` | Human label for the home channel. |
+| `BLOOIO_API_BASE_URL` | Override the Blooio API base URL (default `https://api.blooio.com/v2/api`). |
+
 ### Microsoft Teams (adapter)
 
 The Microsoft Teams platform adapter (Bot Framework / Azure AD), distinct from the [Microsoft Graph (Teams Meetings)](#microsoft-graph-teams-meetings) integration above. See [the Teams messaging guide](/user-guide/messaging/teams).

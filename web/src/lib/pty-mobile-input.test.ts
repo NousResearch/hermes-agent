@@ -59,6 +59,15 @@ describe("normalizePtyMobileInput", () => {
     expect(result.nextLine).toBe("");
     expect(result.data).toBe("\r");
   });
+
+  it("does not collapse legitimate single-letter reduplication", () => {
+    // "a a" is a plausible thing to type; the >=2-char guard keeps the
+    // duplicate-final-word collapse from eating it inside the window.
+    const result = normalizePtyMobileInput("a a", "a", true);
+
+    expect(result.normalized).toBe(false);
+    expect(result.data).toBe("a a");
+  });
 });
 
 describe("updatePtyInputLine", () => {

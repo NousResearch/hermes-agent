@@ -79,6 +79,37 @@ describe("shouldReconnectPtyOnPageResume", () => {
       }),
     ).toBe(false);
   });
+
+  it("does not fire a redundant reconnect while a connect is in flight (wsRef not yet assigned)", () => {
+    // The async socket-open IIFE has begun but not yet assigned wsRef, so
+    // socketReadyState reads null. Without the connectInFlight guard this
+    // would return true and double-connect.
+    expect(
+      shouldReconnectPtyOnPageResume({
+        isActive: true,
+        visibilityState: "visible",
+        online: true,
+        socketReadyState: null,
+        ptyState: "connecting",
+        connectInFlight: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("still reconnects an in-flight connect when the page already believes it is closed", () => {
+    // A stuck attempt the user is actively trying to recover (manual reconnect
+    // or a closed state) must not be suppressed by the in-flight guard.
+    expect(
+      shouldReconnectPtyOnPageResume({
+        isActive: true,
+        visibilityState: "visible",
+        online: true,
+        socketReadyState: null,
+        ptyState: "closed",
+        connectInFlight: true,
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("shouldBlockPtyInput", () => {

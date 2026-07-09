@@ -1,7 +1,7 @@
 ---
 name: nika
 description: "Delegate repeatable work to Nika — a deterministic workflow runner with pre-flight checks, cost caps, and verifiable receipts."
-version: 1.0.3
+version: 1.0.4
 author: SuperNovae Studio (github.com/supernovae-st)
 license: MIT
 platforms: [linux, macos]
@@ -120,6 +120,30 @@ terminal(command="nika new flow.nika.yaml --from chain", workdir="~/project")
 narrates what it will do, the waves, the cost floor, and what it touches —
 before anything runs.
 
+The artifact you are producing looks like this (checks clean on 0.98):
+
+```yaml
+nika: v1
+workflow: daily-brief
+model: ollama/qwen3.5:4b
+tasks:
+  - id: fetch
+    invoke:
+      tool: "nika:fetch"
+      args: { url: "https://hn.algolia.com/api/v1/search?tags=front_page" }
+  - id: brief
+    depends_on: [fetch]
+    infer:
+      max_tokens: 300
+      prompt: |
+        Five bullet points, most signal first: ${{ tasks.fetch.output }}
+outputs:
+  brief: ${{ tasks.brief.output }}
+```
+
+One file, plain YAML: tasks, an explicit dependency, a bounded model step,
+a declared output. That file is what gets checked, run, diffed and reused.
+
 ## Cost Honesty
 
 - When the workflow file's own `model:` prices above the budget,
@@ -132,7 +156,8 @@ before anything runs.
   unpriced work is never blocked
 - A model absent from the catalog meters as $0 — a paid *uncataloged* model
   runs with no budget protection; prefer cataloged ids (`nika catalog`)
-- Report the cost line from the final run card back to the user verbatim
+- Report the cost line from the final run card (the summary block `nika
+  run` prints last — status, cost, trace path) back to the user verbatim
 
 ## Receipts & Verification
 

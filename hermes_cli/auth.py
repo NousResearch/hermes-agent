@@ -755,6 +755,7 @@ def _normalize_lmstudio_runtime_base_url(base_url: str) -> str:
 # Such failures are transient and re-authenticating cannot resolve them, so
 # they must be kept distinct from missing/expired-credential errors.
 CODEX_RATE_LIMITED_CODE = "codex_rate_limited"
+NOUS_OAUTH_EXHAUSTED_CODE = "nous_oauth_exhausted"
 
 
 class AuthError(RuntimeError):
@@ -785,7 +786,7 @@ def is_rate_limited_auth_error(error: Exception) -> bool:
     return (
         isinstance(error, AuthError)
         and not error.relogin_required
-        and error.code == CODEX_RATE_LIMITED_CODE
+        and error.code in {CODEX_RATE_LIMITED_CODE, NOUS_OAUTH_EXHAUSTED_CODE}
     )
 
 
@@ -5013,6 +5014,156 @@ def _quarantine_nous_pool_entries(
     return removed
 
 
+def _pool_timestamp_seconds(value: Any) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if numeric <= 0:
+            return None
+        return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            numeric = float(raw)
+        except ValueError:
+            numeric = None
+        if numeric is not None:
+            return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _pool_exhausted_ttl_seconds(error_code: Any) -> int:
+    try:
+        code = int(error_code)
+    except (TypeError, ValueError):
+        code = None
+    if code == 401:
+        return 5 * 60
+    return 60 * 60
+
+
+def _nous_pool_entry_exhausted_until(entry: Dict[str, Any]) -> Optional[float]:
+    reset_at = _pool_timestamp_seconds(entry.get("last_error_reset_at"))
+    if reset_at is not None:
+        return reset_at
+    status_at = _pool_timestamp_seconds(entry.get("last_status_at"))
+    if status_at is None:
+        return None
+    return status_at + _pool_exhausted_ttl_seconds(entry.get("last_error_code"))
+
+
+def _is_nous_device_code_pool_source(source: Any) -> bool:
+    """Match only the pool row mirrored from ``providers.nous``.
+
+    Manual device-code rows are independent accounts and cannot gate refresh
+    of the singleton provider state used by the managed Tool Gateway.
+    """
+    normalized = str(source or "").strip().lower()
+    return normalized == NOUS_DEVICE_CODE_SOURCE
+
+
+def _nous_provider_access_needs_refresh(state: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(state, dict) or not state:
+        return True
+    access_token = state.get("access_token")
+    if not isinstance(access_token, str) or not access_token.strip():
+        return True
+    return _is_expiring(state.get("expires_at"), ACCESS_TOKEN_REFRESH_SKEW_SECONDS)
+
+
+def _nous_oauth_exhaustion_cooldown_from_store(
+    auth_store: Dict[str, Any],
+    *,
+    state: Optional[Dict[str, Any]] = None,
+    now: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return active Nous device-code cooldown details when refresh would retry."""
+    provider_state = state if state is not None else _load_provider_state(auth_store, "nous")
+    if not _nous_provider_access_needs_refresh(provider_state):
+        return None
+
+    pool = auth_store.get("credential_pool")
+    if not isinstance(pool, dict):
+        return None
+    entries = pool.get("nous")
+    if not isinstance(entries, list):
+        return None
+
+    current_time = time.time() if now is None else now
+    active: list[tuple[float, Dict[str, Any]]] = []
+    for raw_entry in entries:
+        if not isinstance(raw_entry, dict):
+            continue
+        if not _is_nous_device_code_pool_source(raw_entry.get("source")):
+            continue
+        if raw_entry.get("last_status") != "exhausted":
+            continue
+        exhausted_until = _nous_pool_entry_exhausted_until(raw_entry)
+        if exhausted_until is None or exhausted_until <= current_time:
+            continue
+        active.append((exhausted_until, raw_entry))
+
+    if not active:
+        return None
+
+    retry_at, entry = min(active, key=lambda item: item[0])
+    remaining = max(1, int(retry_at - current_time + 0.999))
+    return {
+        "provider": "nous",
+        "code": NOUS_OAUTH_EXHAUSTED_CODE,
+        "retry_at": retry_at,
+        "remaining_seconds": remaining,
+        "label": entry.get("label") or entry.get("id") or "device_code",
+        "source": entry.get("source"),
+        "status_code": entry.get("last_error_code"),
+        "reason": entry.get("last_error_reason"),
+        "message": entry.get("last_error_message"),
+    }
+
+
+def get_nous_oauth_exhaustion_cooldown() -> Optional[Dict[str, Any]]:
+    """Return active Nous Portal device-code cooldown details without network IO."""
+    try:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+            return _nous_oauth_exhaustion_cooldown_from_store(auth_store)
+    except Exception:
+        return None
+
+
+def _format_duration_short(seconds: Any) -> str:
+    try:
+        remaining = max(0, int(seconds))
+    except (TypeError, ValueError):
+        return "the cooldown"
+    minutes, secs = divmod(remaining, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def format_nous_oauth_exhaustion_message(
+    cooldown: Optional[Dict[str, Any]] = None,
+) -> str:
+    """User-visible message for a Nous OAuth cooldown snapshot."""
+    details = cooldown or get_nous_oauth_exhaustion_cooldown() or {}
+    retry = _format_duration_short(details.get("remaining_seconds"))
+    return (
+        f"Nous Portal OAuth exhausted (retry in ~{retry}). "
+        "Tool gateway unavailable until token refreshes."
+    )
+
+
 def _try_import_shared_nous_state(
     *,
     timeout_seconds: float = 15.0,
@@ -5261,7 +5412,17 @@ def resolve_nous_access_token(
             merged_shared = _merge_shared_nous_oauth_state(state)
             access_token = state.get("access_token")
             refresh_token = state.get("refresh_token")
+            cooldown = _nous_oauth_exhaustion_cooldown_from_store(
+                auth_store,
+                state=state,
+            )
             if not isinstance(access_token, str) or not access_token:
+                if cooldown is not None:
+                    raise AuthError(
+                        format_nous_oauth_exhaustion_message(cooldown),
+                        provider="nous",
+                        code=NOUS_OAUTH_EXHAUSTED_CODE,
+                    )
                 raise AuthError(
                     "No access token found for Nous Portal login.",
                     provider="nous",
@@ -5272,6 +5433,13 @@ def resolve_nous_access_token(
                 if merged_shared:
                     _save_provider_state_to_source(auth_store, "nous", state, state_source_path)
                 return access_token
+
+            if cooldown is not None:
+                raise AuthError(
+                    format_nous_oauth_exhaustion_message(cooldown),
+                    provider="nous",
+                    code=NOUS_OAUTH_EXHAUSTED_CODE,
+                )
 
             if not isinstance(refresh_token, str) or not refresh_token:
                 raise AuthError(

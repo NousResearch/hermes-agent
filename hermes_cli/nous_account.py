@@ -538,7 +538,12 @@ def _select_nous_pool_entry() -> Optional[Any]:
     pool = load_pool("nous")
     if not pool or not pool.has_credentials():
         return None
-    entries = list(pool.entries())
+    peek = getattr(pool, "peek", None)
+    if callable(peek):
+        entry = peek()
+        entries = [entry] if entry is not None else []
+    else:
+        entries = list(pool.entries())
     if not entries:
         return None
 

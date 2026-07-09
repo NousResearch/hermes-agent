@@ -11,6 +11,9 @@ Tests cover:
 
 from __future__ import annotations
 
+import json
+import logging
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -98,6 +101,56 @@ class TestManagedNousToolsEnabled:
             _raise_import,
         )
         assert managed_nous_tools_enabled() is False
+
+    def test_exhausted_nous_device_code_degrades_without_account_lookup(
+        self,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {
+                "nous": {
+                    "access_token": "expired-token",
+                    "expires_at": "2020-01-01T00:00:00+00:00",
+                    "refresh_token": "refresh-token",
+                },
+            },
+            "credential_pool": {
+                "nous": [
+                    {
+                        "id": "dev001",
+                        "label": "device-code",
+                        "auth_type": "oauth",
+                        "source": "device_code",
+                        "access_token": "expired-token",
+                        "refresh_token": "refresh-token",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time(),
+                        "last_error_code": 429,
+                        "last_error_reason": "rate_limit",
+                    }
+                ]
+            },
+        }))
+
+        def _unexpected_account_lookup(*_args, **_kwargs):
+            raise AssertionError("account lookup should not run during cooldown")
+
+        monkeypatch.setattr(
+            "hermes_cli.nous_account.get_nous_portal_account_info",
+            _unexpected_account_lookup,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="tools.tool_backend_helpers"):
+            assert managed_nous_tools_enabled() is False
+
+        assert "Nous Portal OAuth exhausted" in caplog.text
+        assert "Tool gateway unavailable" in caplog.text
 
 
 class TestNousToolGatewayUnavailableMessage:

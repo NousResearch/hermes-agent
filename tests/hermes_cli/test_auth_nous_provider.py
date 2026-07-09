@@ -977,6 +977,106 @@ def test_managed_access_token_refresh_failure_quarantines_tokens(
     assert refresh_calls == ["refresh-old"]
 
 
+def test_resolve_nous_access_token_respects_device_code_exhaustion_cooldown(
+    tmp_path,
+    monkeypatch,
+):
+    from hermes_cli import auth as auth_mod
+    from agent.credential_pool import load_pool
+
+    hermes_home = tmp_path / "hermes"
+    _setup_nous_auth(
+        hermes_home,
+        access_token="access-old",
+        refresh_token="refresh-old",
+        expires_at="2020-01-01T00:00:00+00:00",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    pool = load_pool("nous")
+    assert pool.entries(), "expected providers.nous to seed credential_pool.nous"
+
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    pool_entry = payload["credential_pool"]["nous"][0]
+    pool_entry.update({
+        "last_status": "exhausted",
+        "last_status_at": time.time(),
+        "last_error_code": 429,
+        "last_error_reason": "rate_limit",
+    })
+    (hermes_home / "auth.json").write_text(json.dumps(payload))
+
+    refresh_calls: list[str] = []
+
+    def _unexpected_refresh(*, client, portal_base_url, client_id, refresh_token):
+        refresh_calls.append(refresh_token)
+        raise AssertionError("refresh should not run during cooldown")
+
+    monkeypatch.setattr(auth_mod, "_refresh_access_token", _unexpected_refresh)
+
+    with pytest.raises(AuthError) as exc:
+        auth_mod.resolve_nous_access_token()
+
+    assert exc.value.code == auth_mod.NOUS_OAUTH_EXHAUSTED_CODE
+    assert exc.value.relogin_required is False
+    assert "Nous Portal OAuth exhausted" in str(exc.value)
+    assert refresh_calls == []
+
+
+@pytest.mark.parametrize(
+    "manual_source",
+    ["manual:device_code", "manual:dashboard_device_code"],
+)
+def test_unrelated_manual_exhaustion_does_not_block_singleton_refresh(
+    tmp_path,
+    monkeypatch,
+    manual_source,
+):
+    from agent.credential_pool import load_pool
+    from hermes_cli import auth as auth_mod
+
+    hermes_home = tmp_path / "hermes"
+    _setup_nous_auth(
+        hermes_home,
+        access_token="access-old",
+        refresh_token="refresh-singleton",
+        expires_at="2020-01-01T00:00:00+00:00",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    load_pool("nous")
+
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    payload["credential_pool"]["nous"].append({
+        "id": "independent-manual-account",
+        "source": manual_source,
+        "auth_type": "oauth",
+        "access_token": "manual-access",
+        "refresh_token": "manual-refresh",
+        "last_status": "exhausted",
+        "last_status_at": time.time(),
+        "last_error_code": 429,
+    })
+    (hermes_home / "auth.json").write_text(json.dumps(payload))
+
+    refreshed_access = _invoke_jwt(seconds=3600)
+    refresh_calls = []
+
+    def _refresh(*, client, portal_base_url, client_id, refresh_token):
+        refresh_calls.append(refresh_token)
+        return {
+            "access_token": refreshed_access,
+            "refresh_token": "refresh-rotated",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+            "scope": "inference:invoke",
+        }
+
+    monkeypatch.setattr(auth_mod, "_refresh_access_token", _refresh)
+
+    assert auth_mod.resolve_nous_access_token() == refreshed_access
+    assert refresh_calls == ["refresh-singleton"]
+
+
 def test_unusable_access_token_refresh_uses_latest_rotated_refresh_token(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_nous_auth(

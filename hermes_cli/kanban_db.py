@@ -162,6 +162,42 @@ def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None
         _log.debug("kanban lifecycle hook %s failed: %s", event, exc)
 
 
+def _maybe_prune_cdp_after_transition(
+    event: str,
+    task_id: str,
+    *,
+    board: Optional[str] = None,
+    assignee: Optional[str] = None,
+    run_id: Optional[int] = None,
+) -> None:
+    """Safely prune disposable CDP tabs after a completion/block, best-effort.
+
+    Fires from the same lifecycle choke point as the plugin hooks (so it runs
+    for CLI, in-process-tool, and MCP completions alike) but is entirely
+    self-contained rather than plugin-gated, since standalone plugins are
+    opt-in via ``plugins.enabled`` and the CLI complete path skips plugin
+    discovery. Fully gated + inert by default: does nothing unless
+    ``HERMES_CDP_PRUNE_ENABLED`` is set, and only ever closes clearly
+    disposable tabs (about:blank / newtab). See :mod:`tools.cdp_prune` and
+    docs/cdp-tab-pruning.md. Any failure is swallowed — cleanup must never
+    affect a board state transition.
+    """
+    try:
+        from tools.cdp_prune import is_enabled, prune_after_transition
+
+        if not is_enabled():
+            return
+        prune_after_transition(
+            event=event,
+            task_id=task_id,
+            board=board,
+            assignee=assignee,
+            run_id=run_id,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.debug("cdp-prune after %s failed: %s", event, exc)
+
+
 # A running task's claim is valid for 15 minutes by default; after that the
 # next dispatcher tick reclaims it. Workers that outlive this window should
 # call ``heartbeat_claim(task_id)`` periodically. In practice most kanban
@@ -4167,6 +4203,13 @@ def complete_task(
         run_id=run_id,
         summary=(summary if summary is not None else result),
     )
+    _maybe_prune_cdp_after_transition(
+        "completed",
+        task_id,
+        board=get_current_board(),
+        assignee=_done_task.assignee if _done_task else None,
+        run_id=run_id,
+    )
     return True
 
 
@@ -4749,6 +4792,15 @@ def block_task(
         assignee=_blocked_task.assignee if _blocked_task else None,
         run_id=run_id,
         reason=reason,
+    )
+    # Optional, opt-in, and strictly-disposable-only (see HERMES_CDP_PRUNE_ON_BLOCK).
+    # Skipped for the dependency_wait routing above, which resumes the task.
+    _maybe_prune_cdp_after_transition(
+        "blocked",
+        task_id,
+        board=get_current_board(),
+        assignee=_blocked_task.assignee if _blocked_task else None,
+        run_id=run_id,
     )
     return True
 

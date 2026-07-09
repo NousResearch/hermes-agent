@@ -387,7 +387,12 @@ class CLIAgentSetupMixin:
                 tool_start_callback=self._on_tool_start if self._inline_diffs_enabled else None,
                 tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,
                 stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
-                tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
+                # Tool-call argument generation can pause visible output before
+                # any tool.started event fires. Keep the compact CLI activity
+                # indicator wired even when token streaming is disabled so
+                # non-streaming runs do not look stalled while tools are being
+                # prepared.
+                tool_gen_callback=self._on_tool_gen_start,
                 notice_callback=self._on_notice,
                 notice_clear_callback=self._on_notice_clear,
                 reaction_callback=self._on_reaction,

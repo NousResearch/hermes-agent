@@ -603,7 +603,9 @@ class TestFetchEndpointModelMetadataLmStudio:
             )
 
         assert mock_get.call_count == 1
-        assert mock_get.call_args[0][0] == "http://localhost:1234/api/v1/models"
+        # localhost -> 127.0.0.1: avoids the ~2s IPv6-then-fallback penalty on
+        # Windows dual-stack, matching every other local-probe sibling site.
+        assert mock_get.call_args[0][0] == "http://127.0.0.1:1234/api/v1/models"
         assert mock_get.call_args.kwargs["headers"] == {
             "Authorization": "Bearer lm-token"
         }
@@ -634,7 +636,7 @@ class TestFetchEndpointModelMetadataLmStudio:
                 force_refresh=True,
             )
 
-        assert mock_get.call_args[0][0] == "http://localhost:1234/api/v1/models"
+        assert mock_get.call_args[0][0] == "http://127.0.0.1:1234/api/v1/models"
         assert result["publisher/model-a"]["context_length"] == 65536
 
 

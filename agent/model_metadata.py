@@ -924,7 +924,7 @@ def fetch_endpoint_model_metadata(
     if is_local_endpoint(normalized):
         try:
             if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
-                server_url = _lmstudio_server_root(normalized)
+                server_url = _localhost_to_ipv4(_lmstudio_server_root(normalized))
                 response = requests.get(
                     server_url.rstrip("/") + "/api/v1/models",
                     headers=headers,

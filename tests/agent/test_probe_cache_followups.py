@@ -223,6 +223,26 @@ class TestLocalhostIPv4SiblingSites:
 
         assert client.post.call_args[0][0].startswith("http://127.0.0.1:11434")
 
+    def test_fetch_endpoint_model_metadata_lmstudio_probes_ipv4(self):
+        """fetch_endpoint_model_metadata's LM Studio branch must also rewrite
+        localhost->127.0.0.1 before probing, like every other sibling site."""
+        from agent import model_metadata
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        model_metadata._endpoint_model_metadata_cache.clear()
+        model_metadata._endpoint_model_metadata_cache_time.clear()
+
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = {"models": []}
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("agent.model_metadata.requests.get", return_value=resp) as mock_get:
+            fetch_endpoint_model_metadata("http://localhost:1234/v1")
+
+        assert mock_get.call_args[0][0].startswith("http://127.0.0.1:1234")
+
 
 class TestContextCacheKeyNormalization:
     def test_trailing_slash_variants_share_one_entry(self, tmp_path, monkeypatch):

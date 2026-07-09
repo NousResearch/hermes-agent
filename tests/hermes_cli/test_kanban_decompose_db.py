@@ -157,6 +157,8 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
             root_assignee="orch",
             children=[{"title": "task A", "assignee": "researcher"}],
             author="alice",
+            rationale="split by concern",
+            roster_snapshot=[{"name": "orch"}, {"name": "researcher"}],
         )
     assert child_ids is not None
 
@@ -165,7 +167,10 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
         events = kb.list_events(conn, tid)
 
     assert any("Decomposed into" in (c.body or "") for c in comments)
-    assert any(ev.kind == "decomposed" for ev in events)
+    decomposed = [ev for ev in events if ev.kind == "decomposed"]
+    assert decomposed and decomposed[0].payload is not None
+    assert decomposed[0].payload.get("rationale") == "split by concern"
+    assert decomposed[0].payload.get("roster_snapshot") == [{"name": "orch"}, {"name": "researcher"}]
 
 
 def test_decompose_children_inherit_dir_workspace(kanban_home):

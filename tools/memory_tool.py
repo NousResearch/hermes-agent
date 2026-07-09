@@ -431,7 +431,7 @@ class MemoryStore:
 
             # Check that replacement doesn't blow the budget
             test_entries = entries.copy()
-            test_entries[idx] = new_content
+            test_entries[idx] = test_entries[idx].replace(old_text, new_content, 1)
             new_total = len(ENTRY_DELIMITER.join(test_entries))
 
             if new_total > limit:
@@ -448,7 +448,11 @@ class MemoryStore:
                     "usage": f"{current:,}/{limit:,}",
                 })
 
-            entries[idx] = new_content
+            # Replace only the matched substring within the entry,
+            # preserving the rest of the entry content.  The previous
+            # code did `entries[idx] = new_content` which discarded
+            # everything outside the match (issue #59184).
+            entries[idx] = entries[idx].replace(old_text, new_content, 1)
             self._set_entries(target, entries)
             self.save_to_disk(target)
 

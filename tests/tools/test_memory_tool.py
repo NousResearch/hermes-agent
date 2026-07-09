@@ -319,12 +319,23 @@ class TestMemoryStoreAdd:
 
 
 class TestMemoryStoreReplace:
-    def test_replace_entry(self, store):
+    def test_replace_substring_within_entry(self, store):
+        """Replace only the matched substring, preserving the rest (issue #59184)."""
         store.add("memory", "Python 3.11 project")
-        result = store.replace("memory", "3.11", "Python 3.12 project")
+        result = store.replace("memory", "3.11", "3.12")
         assert result["success"] is True
         assert "Python 3.12 project" in store.memory_entries
-        assert "Python 3.11 project" not in store.memory_entries
+
+    def test_replace_preserves_surrounding_content(self, store):
+        """Composite entry: replacing one section must not discard others."""
+        composite = "## Hermes\nSome text\n## Search\nOld search\n## Git\nGit text"
+        store.add("memory", composite)
+        result = store.replace("memory", "## Search\nOld search", "## Search\nNew search")
+        assert result["success"] is True
+        full = "\n".join(store.memory_entries)
+        assert "## Search\nNew search" in full
+        assert "## Hermes\nSome text" in full
+        assert "## Git\nGit text" in full
 
     def test_replace_no_match(self, store):
         store.add("memory", "fact A")

@@ -76,13 +76,13 @@ def test_managed_install_refuses_and_does_not_set_pending_relaunch(capsys):
         patch("hermes_cli.config.is_managed", return_value=True),
         patch(
             "hermes_cli.config.format_managed_message",
-            return_value="Use `brew upgrade hermes-agent` to update.",
+            return_value="Use `brew upgrade ht-ai-agent` to update.",
         ),
     ):
         result = _call(self_)
 
     out = capsys.readouterr().out
-    assert "brew upgrade hermes-agent" in out
+    assert "brew upgrade ht-ai-agent" in out
     assert self_._pending_relaunch is None
     assert not result
 

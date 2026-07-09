@@ -88,7 +88,7 @@ class TestCmdUpdatePip:
         hm._cmd_update_pip(mock_args)
 
         assert mock_run.call_count == 1
-        assert mock_run.call_args.args[0] == ["/usr/bin/uv", "pip", "install", "--upgrade", "hermes-agent"]
+        assert mock_run.call_args.args[0] == ["/usr/bin/uv", "pip", "install", "--upgrade", "ht-ai-agent"]
         assert mock_run.call_args.kwargs["env"]["VIRTUAL_ENV"] == "/tmp/hermes-launcher-venv"
 
     @patch("shutil.which", return_value="/usr/bin/uv")

@@ -508,7 +508,7 @@ def is_uv_tool_install() -> bool:
     """
     def _has_uv_tool_marker(path: str) -> bool:
         norm = os.path.normpath(path).replace(os.sep, "/").lower()
-        return "/uv/tools/hermes-agent/" in norm + "/"
+        return "/uv/tools/ht-ai-agent/" in norm + "/"
 
     if _has_uv_tool_marker(sys.prefix):
         return True
@@ -524,14 +524,14 @@ def recommended_update_command_for_method(method: str) -> str:
     if method == "homebrew":
         return "brew upgrade ht-ai-agent"
     if method == "docker":
-        return "docker pull nousresearch/hermes-agent:latest"
+        return "docker pull uaixo/ht-ai-agent:latest"
     if method == "pip":
         if is_uv_tool_install():
-            return "uv tool upgrade hermes-agent"
+            return "uv tool upgrade ht-ai-agent"
         import shutil
         if shutil.which("uv"):
-            return "uv pip install --upgrade hermes-agent"
-        return "pip install --upgrade hermes-agent"
+            return "uv pip install --upgrade ht-ai-agent"
+        return "pip install --upgrade ht-ai-agent"
     return "hermes update"
 
 
@@ -606,17 +606,17 @@ def format_unsupported_install_warning(method: str) -> str:
 _DOCKER_UPDATE_MESSAGE = """\
 ✗ ``hermes update`` doesn't apply inside the Docker container.
 
-Hermes Agent runs as a published image (nousresearch/hermes-agent), not a
+HT AI Agent runs as a published image (uaixo/ht-ai-agent), not a
 git checkout — the container has no working tree to pull into.  Update by
 pulling a fresh image and restarting your container instead:
 
-  docker pull nousresearch/hermes-agent:latest
+  docker pull uaixo/ht-ai-agent:latest
   # then restart whatever started the container, e.g.:
-  docker compose up -d --force-recreate hermes-agent
+  docker compose up -d --force-recreate ht-ai-agent
   # or, for ad-hoc runs, exit the current container and `docker run` again
 
 Verify the new version after restart:
-  docker run --rm nousresearch/hermes-agent:latest --version
+  docker run --rm uaixo/ht-ai-agent:latest --version
 
 Notes:
   • If you pinned a specific tag (e.g. ``:v0.14.0``) the ``:latest`` tag

@@ -42,7 +42,7 @@ def test_cmd_update_in_docker_prints_guidance_and_exits(
     # Spot-check the key guidance — exhaustive wording is locked in by the
     # config-module test below to keep these CLI tests resilient to copy edits.
     assert "doesn't apply inside the Docker container" in out
-    assert "docker pull nousresearch/hermes-agent:latest" in out
+    assert "docker pull uaixo/ht-ai-agent:latest" in out
 
     # No git invocations — the early-return must beat every git command.
     git_calls = [c for c in mock_run.call_args_list if c.args and c.args[0] and "git" in str(c.args[0][0])]
@@ -62,7 +62,7 @@ def test_cmd_update_check_in_docker_prints_guidance_and_exits(
     assert excinfo.value.code == 1
     out = capsys.readouterr().out
     assert "doesn't apply inside the Docker container" in out
-    assert "docker pull nousresearch/hermes-agent:latest" in out
+    assert "docker pull uaixo/ht-ai-agent:latest" in out
 
     git_calls = [c for c in mock_run.call_args_list if c.args and c.args[0] and "git" in str(c.args[0][0])]
     assert git_calls == [], f"expected no git calls, got: {git_calls}"
@@ -171,7 +171,7 @@ def test_format_docker_update_message_contents():
     msg = format_docker_update_message()
 
     # Primary command — the entire reason this message exists.
-    assert "docker pull nousresearch/hermes-agent:latest" in msg
+    assert "docker pull uaixo/ht-ai-agent:latest" in msg
 
     # The four key concepts the message must cover:
     assert "restart" in msg.lower(), "must explain that a restart is required"

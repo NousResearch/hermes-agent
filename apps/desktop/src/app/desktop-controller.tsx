@@ -88,6 +88,7 @@ import {
 } from './chat/right-rail'
 import { ChatSidebar } from './chat/sidebar'
 import { CommandPalette } from './command-palette'
+import { shouldShowContextualPreviewRail } from './contextual-preview-rail'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
 import { useKeybinds } from './hooks/use-keybinds'
@@ -231,6 +232,14 @@ export function DesktopController() {
   } = useOverlayRouting()
 
   const terminalSidebarOpen = chatOpen && terminalTakeover
+  const previewTargetPresent = Boolean(previewTarget || filePreviewTarget)
+
+  const contextualPreviewRailOpen = shouldShowContextualPreviewRail({
+    currentView,
+    hasPreviewTarget: previewTargetPresent,
+    routedSessionId,
+    selectedStoredSessionId
+  })
 
   const titlebarToolGroups = useGroupRegistry<TitlebarTool>()
   const statusbarItemGroups = useGroupRegistry<StatusbarItem>()
@@ -257,8 +266,8 @@ export function DesktopController() {
   const { connectionRef, gatewayRef, requestGateway } = useGatewayRequest()
 
   useEffect(() => {
-    window.hermesDesktop?.setPreviewShortcutActive?.(Boolean(chatOpen && (filePreviewTarget || previewTarget)))
-  }, [chatOpen, filePreviewTarget, previewTarget])
+    window.hermesDesktop?.setPreviewShortcutActive?.(contextualPreviewRailOpen)
+  }, [contextualPreviewRailOpen])
 
   useEffect(() => {
     startUpdatePoller()
@@ -373,15 +382,22 @@ export function DesktopController() {
         return
       }
 
-      // Otherwise ⌘/Ctrl+W closes the active preview tab when one is open.
-      if ($filePreviewTarget.get() || $previewTarget.get()) {
+      // Otherwise ⌘/Ctrl+W closes the active preview tab only while the
+      // contextual preview rail is visible. New-chat, settings/full-screen
+      // overlays, and non-chat workspaces must not let hidden preview/editor
+      // tabs steal global window shortcuts.
+      if (contextualPreviewRailOpen && ($filePreviewTarget.get() || $previewTarget.get())) {
         event.preventDefault()
         event.stopPropagation()
         closeActiveRightRailTab()
       }
     }
 
-    const unsubscribe = window.hermesDesktop?.onClosePreviewRequested?.(closeActiveRightRailTab)
+    const unsubscribe = window.hermesDesktop?.onClosePreviewRequested?.(() => {
+      if (contextualPreviewRailOpen) {
+        closeActiveRightRailTab()
+      }
+    })
 
     window.addEventListener('keydown', onKeyDown, { capture: true })
 
@@ -389,7 +405,7 @@ export function DesktopController() {
       unsubscribe?.()
       window.removeEventListener('keydown', onKeyDown, { capture: true })
     }
-  }, [])
+  }, [contextualPreviewRailOpen])
 
   const {
     loadMoreMessagingForPlatform,
@@ -1173,7 +1189,7 @@ export function DesktopController() {
   // Other sidebars docked as real columns on the terminal's rail. Force-collapsed
   // hover-reveal overlays (narrow window) don't take a column, so they don't count.
   const railColumnOpen =
-    (chatOpen && Boolean(previewTarget || filePreviewTarget) && previewPaneOpen) ||
+    (contextualPreviewRailOpen && previewPaneOpen) ||
     (chatOpen && !narrowViewport && fileBrowserOpen) ||
     (chatOpen && Boolean(currentCwd.trim()) && !narrowViewport && reviewOpen)
 
@@ -1183,7 +1199,7 @@ export function DesktopController() {
 
   const previewPane = (
     <Pane
-      disabled={!chatOpen || (!previewTarget && !filePreviewTarget)}
+      disabled={!contextualPreviewRailOpen}
       id={PREVIEW_PANE_ID}
       key="preview"
       maxWidth={PREVIEW_RAIL_MAX_WIDTH}
@@ -1192,7 +1208,7 @@ export function DesktopController() {
       side={railSide}
       width={PREVIEW_RAIL_PANE_WIDTH}
     >
-      {chatOpen ? (
+      {contextualPreviewRailOpen ? (
         <ChatPreviewRail onRestartServer={restartPreviewServer} setTitlebarToolGroup={setTitlebarToolGroup} />
       ) : null}
     </Pane>
@@ -1288,7 +1304,7 @@ export function DesktopController() {
       mainOverlays={mainOverlays}
       onOpenSettings={openSettings}
       overlays={overlays}
-      previewPaneOpen={chatOpen && Boolean(previewTarget || filePreviewTarget)}
+      previewPaneOpen={contextualPreviewRailOpen && previewPaneOpen}
       statusbarItems={statusbarItems}
       terminalPaneOpen={terminalSidebarOpen}
       titlebarTools={titlebarToolGroups.flat.right}

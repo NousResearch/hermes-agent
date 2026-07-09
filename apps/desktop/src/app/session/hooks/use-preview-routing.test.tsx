@@ -52,17 +52,29 @@ function installLocalStorageForTest() {
   })
 }
 
-function PreviewRoutingHarness({ onEvent }: { onEvent: (handler: (event: RpcEvent) => void) => void }) {
-  const activeSessionIdRef = useRef<string | null>('session-1')
+function PreviewRoutingHarness({
+  activeSessionId = 'session-1',
+  currentView = 'chat',
+  onEvent,
+  routedSessionId = 'session-1',
+  selectedStoredSessionId = null
+}: {
+  activeSessionId?: string | null
+  currentView?: string
+  onEvent: (handler: (event: RpcEvent) => void) => void
+  routedSessionId?: string | null
+  selectedStoredSessionId?: string | null
+}) {
+  const activeSessionIdRef = useRef<string | null>(activeSessionId)
 
   const routing = usePreviewRouting({
     activeSessionIdRef,
     baseHandleGatewayEvent: vi.fn(),
     currentCwd: '/work',
-    currentView: 'chat',
+    currentView,
     requestGateway: vi.fn(),
-    routedSessionId: 'session-1',
-    selectedStoredSessionId: null
+    routedSessionId,
+    selectedStoredSessionId
   })
 
   useEffect(() => {
@@ -114,7 +126,25 @@ describe('usePreviewRouting', () => {
     })
   })
 
+  it('does not restore stale previews on the new-chat route just because a runtime id is still cached', async () => {
+    const target = previewTarget('/work/demo.html')
 
+    registerSessionPreview('session-1', target, 'tool-result')
+    render(
+      <PreviewRoutingHarness
+        activeSessionId="session-1"
+        onEvent={handler => {
+          handleEvent = handler
+        }}
+        routedSessionId={null}
+        selectedStoredSessionId={null}
+      />
+    )
+
+    await waitFor(() => {
+      expect($previewTarget.get()).toBeNull()
+    })
+  })
 
   it('restores multiple live preview tabs for the active chat session', async () => {
     const first = previewTarget('/work/first.html')

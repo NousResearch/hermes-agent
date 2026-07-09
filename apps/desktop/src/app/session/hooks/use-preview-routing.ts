@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect } from 'react'
 
+import { contextualPreviewSessionId } from '@/app/contextual-preview-rail'
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
 import {
   $previewTarget,
@@ -31,14 +32,6 @@ function asRecord(payload: unknown): Record<string, unknown> {
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
 }
 
-function activePreviewSessionId(
-  activeSessionIdRef: MutableRefObject<string | null>,
-  routedSessionId: string | null,
-  selectedStoredSessionId: string | null
-): string {
-  return selectedStoredSessionId || routedSessionId || activeSessionIdRef.current || ''
-}
-
 export function usePreviewRouting({
   activeSessionIdRef,
   baseHandleGatewayEvent,
@@ -49,7 +42,7 @@ export function usePreviewRouting({
   selectedStoredSessionId
 }: PreviewRoutingOptions) {
   const previewRegistry = useStore($sessionPreviewRegistry)
-  const previewSessionId = activePreviewSessionId(activeSessionIdRef, routedSessionId, selectedStoredSessionId)
+  const previewSessionId = contextualPreviewSessionId({ routedSessionId, selectedStoredSessionId })
 
   // Restore a *user-opened* preview when its session becomes active. Tool
   // results no longer auto-register/open a preview — the inline preview card in

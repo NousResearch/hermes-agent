@@ -386,3 +386,32 @@ async def test_dispatch_reply_context(monkeypatch: pytest.MonkeyPatch) -> None:
     assert message.reply_to_message_id == "bot-msg-123"
     assert message.reply_to_text == "DHL parcel notification"
     assert message.reply_to_is_own_message is True
+
+@pytest.mark.asyncio
+async def test_dispatch_reply_context_falls_back_to_sent_text_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+    adapter._record_sent_message_text(
+        "+155****4567", "bot-msg-blank-target", "Cached bot response text"
+    )
+
+    event = _dm_event("placeholder", msg_id="spc-reply-blank-target")
+    event["content"] = {
+        "type": "reply",
+        "content": {"type": "text", "text": "this is the reply"},
+        "targetMessageId": "bot-msg-blank-target",
+        "targetDirection": "outbound",
+        "targetText": None,
+    }
+
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    message = captured[0]
+    assert message.text == "this is the reply"
+    assert message.reply_to_message_id == "bot-msg-blank-target"
+    assert message.reply_to_text == "Cached bot response text"
+    assert message.reply_to_is_own_message is True
+

@@ -21,7 +21,12 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2, MessageQuestion } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $clarifyRequest, clearClarifyRequest } from '@/store/clarify'
+import {
+  $clarifyRequest,
+  clearClarifyRequest,
+  updateClarifyAnswerDraft,
+  updateClarifySelectedChoice
+} from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 
@@ -139,9 +144,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
   const hasChoices = choices.length > 0
 
-  const [draft, setDraft] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const [selectedChoice, setSelectedChoice] = useState<string | null>(null)
   const [otherFocused, setOtherFocused] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
@@ -151,6 +154,8 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   // a "loading question" stub is worse than a brief wait.
   const ready = Boolean(matchingRequest?.requestId)
   const loading = !ready && !submitting
+  const draft = matchingRequest?.answerDraft ?? ''
+  const selectedChoice = matchingRequest?.selectedChoice ?? null
 
   const respond = useCallback(
     async (answer: string) => {
@@ -193,9 +198,10 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
   const selectChoice = useCallback((choice: string) => {
     // Picking a choice and typing are mutually exclusive answers.
-    setDraft('')
-    setSelectedChoice(choice)
-  }, [])
+    if (matchingRequest) {
+      updateClarifySelectedChoice(matchingRequest.requestId, matchingRequest.sessionId, choice)
+    }
+  }, [matchingRequest])
 
   const submitAnswer = useCallback(() => {
     if (selectedChoice !== null) {
@@ -291,12 +297,8 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   }
 
   const onDraftChange = (value: string) => {
-    setDraft(value)
-
-    // Typing is its own answer — drop any picked choice so the two inputs can't
-    // both look selected.
-    if (value.trim()) {
-      setSelectedChoice(null)
+    if (matchingRequest) {
+      updateClarifyAnswerDraft(matchingRequest.requestId, matchingRequest.sessionId, value)
     }
   }
 
@@ -339,7 +341,9 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
                 // deselects any picked choice — a chosen option and an active
                 // Other field can never both look selected.
                 onFocus={() => {
-                  setSelectedChoice(null)
+                  if (matchingRequest) {
+                    updateClarifySelectedChoice(matchingRequest.requestId, matchingRequest.sessionId, null)
+                  }
                   setOtherFocused(true)
                 }}
                 onKeyDown={handleTextareaKey}

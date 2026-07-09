@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   $composerAttachments,
   addComposerAttachment,
+  appendSessionDraft,
   clearSessionDraft,
   type ComposerAttachment,
   removeComposerAttachment,
@@ -105,5 +106,16 @@ describe('session drafts', () => {
     taken.attachments[0]!.label = 'mutated'
 
     expect(takeSessionDraft('session-a').attachments[0]?.label).toBe('doc.pdf')
+  })
+
+  it('appends recovered text without replacing an existing draft', () => {
+    stashSessionDraft('session-a', 'existing draft', [attachment({ id: 'file:a' })])
+
+    appendSessionDraft('session-a', 'recovered clarify answer')
+
+    expect(takeSessionDraft('session-a')).toEqual({
+      attachments: [attachment({ id: 'file:a' })],
+      text: 'existing draft\n\nrecovered clarify answer'
+    })
   })
 })

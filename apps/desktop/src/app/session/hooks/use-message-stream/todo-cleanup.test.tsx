@@ -6,6 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { TodoItem } from '@/lib/todos'
+import {
+  $clarifyRequests,
+  clearClarifyRequest,
+  setClarifyRequest,
+  updateClarifyAnswerDraft
+} from '@/store/clarify'
+import { clearSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $todosBySession, clearSessionTodos, setSessionTodos } from '@/store/todos'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -54,11 +61,17 @@ const complete = () => act(() => handleEvent!({ payload: { text: 'done' }, sessi
 describe('useMessageStream turn-end todo cleanup', () => {
   beforeEach(() => {
     handleEvent = null
+    $clarifyRequests.set({})
+    clearSessionDraft(SID)
+    clearSessionDraft('session-2')
     clearSessionTodos(SID)
   })
 
   afterEach(() => {
     cleanup()
+    clearClarifyRequest()
+    clearSessionDraft(SID)
+    clearSessionDraft('session-2')
     clearSessionTodos(SID)
     vi.restoreAllMocks()
   })
@@ -89,5 +102,25 @@ describe('useMessageStream turn-end todo cleanup', () => {
     act(() => handleEvent!({ payload: { message: 'boom' }, session_id: SID, type: 'error' }))
 
     expect($todosBySession.get()[SID]).toBeUndefined()
+  })
+
+  it('recovers a background clarify draft when that turn completes before submit', async () => {
+    await mountStream()
+    setClarifyRequest({
+      choices: null,
+      question: 'Which release notes should I use?',
+      requestId: 'clarify-2',
+      sessionId: 'session-2'
+    })
+    updateClarifyAnswerDraft('clarify-2', 'session-2', 'Use the customer-facing release notes.')
+
+    act(() => handleEvent!({ payload: { text: 'done' }, session_id: 'session-2', type: 'message.complete' }))
+
+    expect(takeSessionDraft('session-2').text).toBe(
+      'Unsent answer to Hermes question:\n' +
+        'Which release notes should I use?\n\n' +
+        'Use the customer-facing release notes.'
+    )
+    expect($clarifyRequests.get()['session-2']).toBeUndefined()
   })
 })

@@ -6,6 +6,7 @@ Built on gateway startup, refreshed periodically (every 5 min), and saved to
 action="list" and for resolving human-friendly channel names to numeric IDs.
 """
 
+import inspect
 import json
 import logging
 from datetime import datetime
@@ -124,6 +125,8 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
                 platforms["discord"] = _build_discord(adapter)
             elif platform == Platform.SLACK:
                 platforms["slack"] = await _build_slack(adapter)
+            elif platform == Platform.SIGNAL:
+                platforms["signal"] = await _build_signal(adapter)
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
@@ -210,6 +213,96 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
 
     # Merge any DMs from session history
     channels.extend(_build_from_sessions("discord"))
+    return channels
+
+
+async def _build_signal(adapter) -> List[Dict[str, Any]]:
+    """Enumerate Signal groups from signal-cli and merge session-discovered DMs.
+
+    Signal groups are listable through the JSON-RPC daemon, while DMs are not
+    useful to enumerate proactively and remain session-derived. Without this,
+    group targets such as "AI Tool Discussion" disappear from
+    channel_directory.json until someone first starts a Hermes session there.
+    """
+    channels: List[Dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    rpc = getattr(adapter, "_rpc", None)
+    account = getattr(adapter, "account", None)
+    if callable(rpc):
+        groups = None
+
+        def _run_call(call_account: bool) -> Any:
+            """Try one listGroups variant and return a normalized payload or None."""
+            params = {"account": account} if call_account and account else {}
+            rpc_id = "listGroups_channel_directory"
+            if params:
+                rpc_id += "_with_account"
+            try:
+                result = rpc(
+                    "listGroups",
+                    params,
+                    rpc_id=rpc_id,
+                    log_failures=False,
+                    timeout=15.0,
+                )
+            except TypeError:
+                # Older/fake adapters in tests may not accept keyword options.
+                try:
+                    result = rpc("listGroups", params)
+                except Exception:
+                    return None
+            except Exception:
+                return None
+            return result
+
+        for try_account in (True, False):
+            if groups is not None:
+                break
+            # The configured account can be redacted/masked in debug profiles;
+            # signal-cli's default-account listGroups path remains deterministic
+            # and avoids dropping every group from channel_directory.json.
+            if try_account and (not account or "*" in str(account)):
+                continue
+            try:
+                res = _run_call(try_account)
+                groups = await res if inspect.isawaitable(res) else res
+            except Exception as e:
+                logger.debug(
+                    "Channel directory: Signal listGroups (%s) failed: %s",
+                    "with_account" if try_account else "default",
+                    e,
+                )
+                groups = None
+
+        if not isinstance(groups, list):
+            logger.debug("Channel directory: Signal listGroups did not return a list")
+
+        if isinstance(groups, list):
+            for group in groups:
+                if not isinstance(group, dict):
+                    continue
+                group_id = str(group.get("id") or "").strip()
+                if not group_id:
+                    continue
+                entry_id = f"group:{group_id}"
+                if entry_id in seen_ids:
+                    continue
+                name = str(group.get("name") or "").strip() or entry_id
+                channels.append({
+                    "id": entry_id,
+                    "name": name,
+                    "type": "group",
+                    "thread_id": None,
+                })
+                seen_ids.add(entry_id)
+
+    for entry in _build_from_sessions("signal"):
+        entry_id = entry.get("id")
+        if entry_id and entry_id not in seen_ids:
+            channels.append(entry)
+            seen_ids.add(entry_id)
+
     return channels
 
 

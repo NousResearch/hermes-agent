@@ -14,6 +14,7 @@ from gateway.channel_directory import (
     load_directory,
     _apply_channel_aliases,
     _build_from_sessions,
+    _build_signal,
     _build_slack,
 )
 
@@ -82,6 +83,48 @@ class TestBuildChannelDirectoryWrites:
             result = load_directory()
 
         assert result == previous
+
+
+class TestBuildSignalDirectory:
+    def test_lists_signal_groups_with_default_account_when_profile_account_is_masked(self):
+        calls = []
+
+        async def rpc(method, params, **kwargs):
+            calls.append((method, params))
+            return [
+                {"id": "group-a==", "name": "AI Tool Discussion"},
+                {"id": "group-b==", "name": "DroneProject"},
+            ]
+
+        adapter = SimpleNamespace(_rpc=rpc, account="+467****8867")
+
+        entries = asyncio.run(_build_signal(adapter))
+
+        assert calls == [("listGroups", {})]
+        assert entries == [
+            {"id": "group:group-a==", "name": "AI Tool Discussion", "type": "group", "thread_id": None},
+            {"id": "group:group-b==", "name": "DroneProject", "type": "group", "thread_id": None},
+        ]
+
+    def test_falls_back_to_default_list_groups_when_account_scoped_call_fails(self):
+        calls = []
+
+        async def rpc(method, params, **kwargs):
+            calls.append((method, params))
+            if params:
+                return None
+            return [{"id": "group-a==", "name": "AI Tool Discussion"}]
+
+        adapter = SimpleNamespace(_rpc=rpc, account="+15551234567")
+
+        entries = asyncio.run(_build_signal(adapter))
+
+        assert calls == [
+            ("listGroups", {"account": "+15551234567"}),
+            ("listGroups", {}),
+        ]
+        assert entries[0]["id"] == "group:group-a=="
+        assert entries[0]["name"] == "AI Tool Discussion"
 
 
 class TestResolveChannelName:

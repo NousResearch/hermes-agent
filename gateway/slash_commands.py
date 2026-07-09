@@ -19,6 +19,7 @@ import asyncio
 import dataclasses
 import hashlib
 import inspect
+import json
 import logging
 import os
 import re
@@ -85,6 +86,159 @@ def _model_switch_skew_guard() -> Optional[str]:
 
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
+
+    def _deep_research_delivery_target_for_source(self, source: SessionSource | None) -> str | None:
+        """Return an explicit `hermes send --to` target for a gateway source."""
+        if source is None or not getattr(source, "platform", None) or not getattr(source, "chat_id", None):
+            return None
+        platform = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+        chat_id = str(source.chat_id)
+        target = chat_id if chat_id.startswith(f"{platform}:") else f"{platform}:{chat_id}"
+        thread_id = getattr(source, "thread_id", None)
+        if thread_id and platform not in {"signal"}:
+            target = f"{target}:{thread_id}"
+        return target
+
+    def _parse_deep_research_worker_json(self, stdout: str) -> dict[str, Any] | None:
+        """Parse the worker's final JSON without exposing raw stdout to chat."""
+        text = (stdout or "").strip()
+        if not text:
+            return None
+        try:
+            data = json.loads(text)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            pass
+        # Be tolerant of harmless log lines before the final JSON object.
+        start = text.rfind("\n{")
+        if start >= 0:
+            try:
+                data = json.loads(text[start + 1:])
+                return data if isinstance(data, dict) else None
+            except Exception:
+                return None
+        return None
+
+    def _sanitize_deep_research_worker_result(self, data: dict[str, Any] | None, exit_code: int) -> str:
+        """User-facing summary for failures/edge states. No local paths or raw JSON."""
+        if not isinstance(data, dict):
+            return f"Deep Research worker exited with code {exit_code} before returning a status object."
+        job_id = data.get("job_id") or "unknown"
+        status = data.get("status") or ("ok" if data.get("ok") else "failed")
+        reason = data.get("error") or data.get("reason") or None
+        research_url = data.get("research_url") or None
+        artifact = data.get("artifact_filename") or None
+        lines = [f"Deep Research finished with status `{status}`.", f"Job: {job_id}"]
+        if research_url:
+            lines.append(f"Research URL: {research_url}")
+        if artifact:
+            lines.append(f"Artifact: {artifact}")
+        if reason:
+            lines.append(f"Reason: {str(reason)[:300]}")
+        return "\n".join(lines)
+
+    async def _run_deep_research_worker_detached(
+        self,
+        *,
+        cmd: list[str],
+        env: dict[str, str],
+        source: SessionSource,
+    ) -> None:
+        """Run the deterministic worker outside the agent/process-registry path."""
+        proc = None
+        stdout = ""
+        stderr = ""
+        exit_code = 1
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            out_b, err_b = await proc.communicate()
+            exit_code = int(proc.returncode or 0)
+            stdout = (out_b or b"").decode("utf-8", errors="replace")
+            stderr = (err_b or b"").decode("utf-8", errors="replace")
+        except Exception as exc:
+            stderr = str(exc)
+            exit_code = 1
+
+        data = self._parse_deep_research_worker_json(stdout)
+        delivery = data.get("delivery") if isinstance(data, dict) else None
+        delivered = bool(isinstance(data, dict) and data.get("ok") and isinstance(delivery, dict) and delivery.get("ok"))
+        duplicate = bool(isinstance(delivery, dict) and delivery.get("duplicate"))
+
+        # On normal success the worker already delivered the Markdown attachment
+        # to the explicit target. Do not send a second gateway/process completion
+        # message with raw stdout or local paths.
+        if delivered and not duplicate:
+            logger.info(
+                "Deep Research worker delivered job=%s target=%s",
+                data.get("job_id") if isinstance(data, dict) else None,
+                delivery.get("target") if isinstance(delivery, dict) else None,
+            )
+            return
+
+        message = self._sanitize_deep_research_worker_result(data, exit_code)
+        if stderr and exit_code != 0:
+            message += f"\nWorker stderr: {stderr.strip()[:300]}"
+        adapters = getattr(self, "adapters", None)
+        adapter = adapters.get(source.platform) if adapters is not None else None
+        if not adapter:
+            logger.warning("Deep Research worker finished but adapter is unavailable: %s", message)
+            return
+        metadata = {"thread_id": source.thread_id} if getattr(source, "thread_id", None) else None
+        try:
+            await adapter.send(source.chat_id, message, metadata=metadata)
+        except Exception as exc:
+            logger.warning("Deep Research worker status delivery failed: %s", exc)
+
+    async def _handle_deep_research_command(self, event: MessageEvent) -> str:
+        """Handle /deep-research as a decoupled deterministic gateway job."""
+        topic = (event.get_command_args() or "").strip()
+        if not topic:
+            return "Usage: /deep-research <topic>"
+        source = event.source
+        delivery_target = self._deep_research_delivery_target_for_source(source)
+        if not delivery_target:
+            return "Deep Research could not resolve this chat as a delivery target; please retry from the target chat."
+        try:
+            from hermes_constants import get_hermes_home
+            hermes_home = Path(get_hermes_home())
+        except Exception:
+            hermes_home = Path.home() / ".hermes"
+        worker_override = os.getenv("DEEP_RESEARCH_WORKER", "").strip()
+        worker = Path(worker_override).expanduser() if worker_override else hermes_home / "skills" / "research" / "deep-research" / "scripts" / "deep-research-worker.mjs"
+        if not worker.exists():
+            return "Deep Research worker is not installed for this Hermes profile."
+
+        cdp = os.getenv("DEEP_RESEARCH_CDP", "http://127.0.0.1:9433")
+        chrome_profile = os.getenv("DEEP_RESEARCH_CHROME_PROFILE", str(Path.home() / ".cache/hermes-playground-profile"))
+        cmd = [
+            str(worker),
+            "--topic", topic,
+            "--deliver", delivery_target,
+            "--cdp", cdp,
+            "--start-chrome",
+            "--chrome-profile", chrome_profile,
+            "--max-concurrency", os.getenv("DEEP_RESEARCH_MAX_CONCURRENCY", "4"),
+            "--queue-timeout", os.getenv("DEEP_RESEARCH_QUEUE_TIMEOUT_SECONDS", "86400"),
+            "--poll-interval", os.getenv("DEEP_RESEARCH_POLL_INTERVAL_SECONDS", "600"),
+            "--max-attempts", os.getenv("DEEP_RESEARCH_MAX_ATTEMPTS", "72"),
+            "--trigger-attempts", os.getenv("DEEP_RESEARCH_TRIGGER_ATTEMPTS", "2"),
+            "--no-export-retry-attempts", os.getenv("DEEP_RESEARCH_NO_EXPORT_RETRY_ATTEMPTS", "3"),
+        ]
+        env = os.environ.copy()
+        task = asyncio.create_task(
+            self._run_deep_research_worker_detached(cmd=cmd, env=env, source=source)
+        )
+        background_tasks = getattr(self, "_background_tasks", None)
+        if background_tasks is not None:
+            background_tasks.add(task)
+            task.add_done_callback(lambda t: background_tasks.discard(t))
+        logger.info("Deep Research gateway worker started target=%s topic_len=%d", delivery_target, len(topic))
+        return f"Deep Research started: “{topic}”\nI’ll deliver the Markdown here when the export is ready."
 
     def _typed_command_prefix_for(self, platform) -> str:
         """Return the prefix users can always type to reach Hermes commands.

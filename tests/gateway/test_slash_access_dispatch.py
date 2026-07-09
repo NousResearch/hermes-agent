@@ -35,13 +35,19 @@ def _make_source(
     user_id: str = "user1",
     chat_type: str = "dm",
     chat_id: str = "c1",
+    chat_name: str | None = None,
+    chat_id_alt: str | None = None,
+    thread_id: str | None = None,
 ) -> SessionSource:
     return SessionSource(
         platform=platform,
         user_id=user_id,
         chat_id=chat_id,
+        chat_name=chat_name,
         user_name=f"name-{user_id}",
         chat_type=chat_type,
+        chat_id_alt=chat_id_alt,
+        thread_id=thread_id,
     )
 
 
@@ -270,6 +276,352 @@ async def test_group_only_gating_leaves_dm_unrestricted():
 
 
 # ---------------------------------------------------------------------------
+# Per-channel/group hard allowlists — issue #37004
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_channel_allowlist_denies_unlisted_command_even_for_group_admin():
+    """A channel-specific allowlist is a hard cap for that group/channel.
+
+    Even if a user is an admin in the broader group scope, commands missing
+    from the channel allowlist must be rejected before privileged handlers run.
+    """
+    runner = _make_runner(
+        platform=Platform.SIGNAL,
+        platform_extra={
+            "group_allow_admin_from": ["admin-user"],
+            "channel_command_access": {
+                "group:restricted-signal-group": {
+                    "allowed_slash_commands": ["help", "status"],
+                    "deny_message": "This command is not enabled in this group.",
+                }
+            },
+        },
+    )
+    runner._handle_restart_command = AsyncMock(return_value="restart-handled")
+    source = _make_source(
+        platform=Platform.SIGNAL,
+        user_id="admin-user",
+        chat_type="group",
+        chat_id="group:restricted-signal-group",
+    )
+
+    result = await runner._handle_message(_make_event("/restart", source))
+
+    assert result == "This command is not enabled in this group."
+    assert result != "restart-handled"
+
+
+@pytest.mark.asyncio
+async def test_channel_allowlist_allows_configured_command_in_restricted_group():
+    runner = _make_runner(
+        platform=Platform.SIGNAL,
+        platform_extra={
+            "channel_command_access": {
+                "group:ops-room": {
+                    "allowed_slash_commands": ["whoami"],
+                }
+            },
+        },
+    )
+    source = _make_source(
+        platform=Platform.SIGNAL,
+        user_id="group-user",
+        chat_type="group",
+        chat_id="group:ops-room",
+    )
+
+    result = await runner._handle_message(_make_event("/whoami", source))
+
+    assert result is not None
+    assert "⛔" not in result
+    assert "Tier:" in result
+    assert "Slash commands you can run: /whoami" in result
+    assert "/help" not in result
+
+
+@pytest.mark.asyncio
+async def test_channel_allowlist_allows_configured_command_for_any_group_user():
+    """A channel allowlist grants listed commands to any user in that channel.
+
+    Broader group admin/user slash tiers must not re-deny a command that the
+    operator explicitly exposed through ``channel_command_access`` for the
+    channel. The channel allowlist is both the hard cap and the authorization
+    surface for that channel.
+    """
+    runner = _make_runner(
+        platform=Platform.SIGNAL,
+        platform_extra={
+            "group_allow_admin_from": ["admin-user"],
+            "group_user_allowed_commands": [],
+            "channel_command_access": {
+                "group:ops-room": {
+                    "allowed_slash_commands": ["restart"],
+                }
+            },
+        },
+    )
+    runner._handle_restart_command = AsyncMock(return_value="restart-handled")
+    source = _make_source(
+        platform=Platform.SIGNAL,
+        user_id="regular-group-user",
+        chat_type="group",
+        chat_id="group:ops-room",
+    )
+
+    result = await runner._handle_message(_make_event("/restart", source))
+
+    assert result == "restart-handled"
+    assert "⛔" not in (result or "")
+
+
+@pytest.mark.asyncio
+async def test_channel_allowlist_matches_signal_raw_group_id_alt():
+    """Signal sources expose both chat_id='group:<id>' and chat_id_alt='<id>'.
+
+    Operators should be able to configure the raw Signal group id from
+    signal-cli without needing to add the gateway's ``group:`` prefix.
+    """
+    runner = _make_runner(
+        platform=Platform.SIGNAL,
+        platform_extra={
+            "group_allow_admin_from": ["admin-user"],
+            "channel_command_access": {
+                "raw-signal-group-id": {
+                    "allowed_slash_commands": ["status"],
+                }
+            },
+        },
+    )
+    runner._handle_restart_command = AsyncMock(return_value="restart-handled")
+    source = _make_source(
+        platform=Platform.SIGNAL,
+        user_id="admin-user",
+        chat_type="group",
+        chat_id="group:raw-signal-group-id",
+        chat_id_alt="raw-signal-group-id",
+    )
+
+    result = await runner._handle_message(_make_event("/restart", source))
+
+    assert result is not None
+    assert "⛔" in result
+    assert "/restart is not enabled in this group/channel" in result
+
+
+@pytest.mark.asyncio
+async def test_channel_allowlist_matches_signal_group_name():
+    """Signal group allowlists should support human-readable group names.
+
+    A config key like ``DroneProject`` must match the incoming Signal
+    ``groupName`` surfaced as ``SessionSource.chat_name`` so operators do not
+    have to paste opaque Signal group ids into config.yaml.
+    """
+    runner = _make_runner(
+        platform=Platform.SIGNAL,
+        platform_extra={
+            "group_allow_admin_from": ["admin-user"],
+            "channel_command_access": {
+                "DroneProject": {
+                    "allowed_slash_commands": ["status"],
+                }
+            },
+        },
+    )
+    runner._handle_restart_command = AsyncMock(return_value="restart-handled")
+    source = _make_source(
+        platform=Platform.SIGNAL,
+        user_id="admin-user",
+        chat_type="group",
+        chat_id="group:opaque-signal-group-id",
+        chat_name="DroneProject",
+        chat_id_alt="opaque-signal-group-id",
+    )
+
+    result = await runner._handle_message(_make_event("/restart", source))
+
+    assert result is not None
+    assert "⛔" in result
+    assert "/restart is not enabled in this group/channel" in result
+    assert result != "restart-handled"
+
+
+@pytest.mark.asyncio
+async def test_channel_allowlist_only_applies_to_matching_channel():
+    runner = _make_runner(
+        platform=Platform.SIGNAL,
+        platform_extra={
+            "group_allow_admin_from": ["admin-user"],
+            "channel_command_access": {
+                "group:restricted-room": {
+                    "allowed_slash_commands": ["status"],
+                }
+            },
+        },
+    )
+    runner._handle_restart_command = AsyncMock(return_value="restart-handled")
+    source = _make_source(
+        platform=Platform.SIGNAL,
+        user_id="admin-user",
+        chat_type="group",
+        chat_id="group:other-room",
+    )
+
+    result = await runner._handle_message(_make_event("/restart", source))
+
+    assert result == "restart-handled"
+
+
+@pytest.mark.asyncio
+async def test_channel_allowlist_blocks_unlisted_skill_command(monkeypatch):
+    from agent import skill_commands
+
+    monkeypatch.setattr(
+        skill_commands,
+        "get_skill_commands",
+        lambda: {
+            "/deep-research": {
+                "name": "deep-research",
+                "description": "Deep research",
+                "skill_dir": "/tmp/deep-research",
+            },
+            "/ops-skill": {
+                "name": "ops-skill",
+                "description": "Ops skill",
+                "skill_dir": "/tmp/ops-skill",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        skill_commands,
+        "build_skill_invocation_message",
+        lambda *args, **kwargs: "[skill invocation message]",
+    )
+    runner = _make_runner(
+        platform=Platform.SIGNAL,
+        platform_extra={
+            "channel_command_access": {
+                "group:drone-room": {
+                    "allowed_slash_commands": ["deep-research"],
+                }
+            },
+        },
+    )
+    runner._draining = False
+    runner._handle_message_with_agent = AsyncMock(return_value="agent-ran")
+    source = _make_source(
+        platform=Platform.SIGNAL,
+        user_id="regular-user",
+        chat_type="group",
+        chat_id="group:drone-room",
+    )
+
+    result = await runner._handle_message(_make_event("/ops-skill rotate keys", source))
+
+    assert result is not None
+    assert "⛔" in result
+    assert "/ops-skill is not enabled in this group/channel" in result
+    runner._handle_message_with_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_channel_allowlist_allows_mention_prefixed_listed_skill_command():
+    """Mention-gated groups can invoke an allowed slash command after @bot."""
+    runner = _make_runner(
+        platform=Platform.SIGNAL,
+        platform_extra={
+            "channel_command_access": {
+                "DroneProject": {
+                    "allowed_slash_commands": ["deep-research"],
+                }
+            },
+        },
+    )
+    runner._draining = False
+    runner._handle_message_with_agent = AsyncMock(return_value="agent-ran")
+    runner._handle_deep_research_command = AsyncMock(return_value="deep-research-started")
+    source = _make_source(
+        platform=Platform.SIGNAL,
+        user_id="regular-user",
+        chat_type="group",
+        chat_id="group:opaque-signal-group-id",
+        chat_name="DroneProject",
+        chat_id_alt="opaque-signal-group-id",
+    )
+    event = _make_event("@niklas-agent /deep-research battery suppliers", source)
+
+    result = await runner._handle_message(event)
+
+    assert result == "deep-research-started"
+    runner._handle_message_with_agent.assert_not_awaited()
+    runner._handle_deep_research_command.assert_awaited_once_with(event)
+
+
+@pytest.mark.asyncio
+async def test_channel_allowlist_allows_listed_skill_command():
+    runner = _make_runner(
+        platform=Platform.SIGNAL,
+        platform_extra={
+            "channel_command_access": {
+                "group:drone-room": {
+                    "allowed_slash_commands": ["deep-research"],
+                }
+            },
+        },
+    )
+    runner._draining = False
+    runner._handle_message_with_agent = AsyncMock(return_value="agent-ran")
+    runner._handle_deep_research_command = AsyncMock(return_value="deep-research-started")
+    source = _make_source(
+        platform=Platform.SIGNAL,
+        user_id="regular-user",
+        chat_type="group",
+        chat_id="group:drone-room",
+    )
+    event = _make_event("/deep-research battery suppliers", source)
+
+    result = await runner._handle_message(event)
+
+    assert result == "deep-research-started"
+    runner._handle_message_with_agent.assert_not_awaited()
+    runner._handle_deep_research_command.assert_awaited_once_with(event)
+
+
+def test_gateway_channel_command_access_config_bridges_to_platform_extra(monkeypatch, tmp_path):
+    """config.yaml supports human-readable group names with YAML command lists."""
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "signal:\n"
+        "  enabled: true\n"
+        "gateway:\n"
+        "  channel_command_access:\n"
+        "    signal:\n"
+        "      DroneProject:\n"
+        "        allowed_slash_commands:\n"
+        "          - deep-research\n"
+        "        deny_message: This command is not enabled in this group.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("SIGNAL_HTTP_URL", raising=False)
+    monkeypatch.delenv("SIGNAL_ACCOUNT", raising=False)
+
+    config = load_gateway_config()
+
+    signal_extra = config.platforms[Platform.SIGNAL].extra
+    assert signal_extra["channel_command_access"] == {
+        "DroneProject": {
+            "allowed_slash_commands": ["deep-research"],
+            "deny_message": "This command is not enabled in this group.",
+        }
+    }
+
+
+# ---------------------------------------------------------------------------
 # Plugin-registered slash commands are gated through the same path
 # ---------------------------------------------------------------------------
 
@@ -458,6 +810,53 @@ async def test_running_agent_fastpath_status_always_works():
     result = await runner._handle_message(_make_event("/status", src))
     assert result == "status-handled"
     assert "⛔" not in (result or "")
+
+
+@pytest.mark.asyncio
+async def test_running_agent_fastpath_blocks_unlisted_skill_command(monkeypatch):
+    from agent import skill_commands
+
+    monkeypatch.setattr(
+        skill_commands,
+        "get_skill_commands",
+        lambda: {
+            "/deep-research": {
+                "name": "deep-research",
+                "description": "Deep research",
+                "skill_dir": "/tmp/deep-research",
+            },
+            "/ops-skill": {
+                "name": "ops-skill",
+                "description": "Ops skill",
+                "skill_dir": "/tmp/ops-skill",
+            },
+        },
+    )
+    runner = _make_runner(
+        platform=Platform.SIGNAL,
+        platform_extra={
+            "channel_command_access": {
+                "group:drone-room": {
+                    "allowed_slash_commands": ["deep-research"],
+                }
+            },
+        },
+    )
+    src = _make_source(
+        platform=Platform.SIGNAL,
+        user_id="regular-user",
+        chat_type="group",
+        chat_id="group:drone-room",
+    )
+    sk = build_session_key(src)
+    runner._running_agents[sk] = MagicMock()
+    runner._running_agents_ts[sk] = 0
+
+    result = await runner._handle_message(_make_event("/ops-skill rotate keys", src))
+
+    assert result is not None
+    assert "⛔" in result
+    assert "/ops-skill is not enabled in this group/channel" in result
 
 
 # ---------------------------------------------------------------------------

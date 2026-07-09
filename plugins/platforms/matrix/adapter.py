@@ -4414,13 +4414,21 @@ async def _standalone_send(
         except ImportError:
             pass
 
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            async with session.put(url, headers=headers, json=payload) as resp:
-                if resp.status not in {200, 201}:
-                    body = await resp.text()
-                    return {"error": f"Matrix API error ({resp.status}): {body}"}
-                data = await resp.json()
-        return {"success": True, "platform": "matrix", "chat_id": chat_id, "message_id": data.get("event_id")}
+        # Use asyncio.wait_for() instead of aiohttp.ClientTimeout to avoid
+        # "Timeout context manager should be used inside a task" errors when
+        # invoked via asyncio.run_coroutine_threadsafe() from cron jobs.
+        async with aiohttp.ClientSession() as session:
+            async def _do_send():
+                async with session.put(url, headers=headers, json=payload) as resp:
+                    if resp.status not in {200, 201}:
+                        body = await resp.text()
+                        return {"error": f"Matrix API error ({resp.status}): {body}"}
+                    data = await resp.json()
+                    return {"success": True, "platform": "matrix", "chat_id": chat_id, "message_id": data.get("event_id")}
+            try:
+                return await asyncio.wait_for(_do_send(), timeout=30)
+            except asyncio.TimeoutError:
+                return {"error": "Matrix API timeout (30s)"}
     except Exception as e:
         return {"error": f"Matrix send failed: {e}"}
 

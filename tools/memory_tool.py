@@ -1073,6 +1073,10 @@ MEMORY_SCHEMA = {
         "reports current/limit chars and confirms completion; one batch call finishes the "
         "update, so don't repeat it. Use the bare action/content/old_text fields only for a "
         "single lone change.\n\n"
+        "FIELD NAMES (differ from the 'patch' tool — do NOT confuse them): this tool uses "
+        "'content' for the replacement text and 'old_text' for the find-substring. The 'patch' "
+        "tool uses 'new_string' and 'old_string'. If you pass 'new_string' here, it will be "
+        "silently ignored and the call will fail because 'content' is missing.\n\n"
         "WHEN: save proactively when the user states a preference, correction, or personal "
         "detail, or you learn a stable fact about their environment, conventions, or workflow. "
         "Priority: user preferences & corrections > environment facts > procedures. The best "
@@ -1100,11 +1104,11 @@ MEMORY_SCHEMA = {
             },
             "content": {
                 "type": "string",
-                "description": "The entry content. Required for 'add' and 'replace' (single-op shape)."
+                "description": "The entry text. For 'add' this is the new entry; for 'replace' this is the REPLACEMENT text (NOT 'new_string' — that field name belongs to the 'patch' tool). Required for 'add' and 'replace' (single-op shape)."
             },
             "old_text": {
                 "type": "string",
-                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring identifying the existing entry to modify. Omit only for 'add'."
+                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring identifying the existing entry to modify. (NOT 'old_string' — that field name belongs to the 'patch' tool.) Omit only for 'add'."
             },
             "operations": {
                 "type": "array",
@@ -1117,8 +1121,8 @@ MEMORY_SCHEMA = {
                     "type": "object",
                     "properties": {
                         "action": {"type": "string", "enum": ["add", "replace", "remove"]},
-                        "content": {"type": "string", "description": "Entry content for add/replace."},
-                        "old_text": {"type": "string", "description": "Substring identifying the entry for replace/remove."},
+                        "content": {"type": "string", "description": "Entry content for add/replace. For 'replace', this is the REPLACEMENT text — not 'new_string' (that's the 'patch' tool's field name)."},
+                        "old_text": {"type": "string", "description": "Substring identifying the entry for replace/remove — not 'old_string' (that's the 'patch' tool's field name)."},
                     },
                     "required": ["action"],
                 },

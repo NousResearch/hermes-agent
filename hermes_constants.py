@@ -202,9 +202,11 @@ def maybe_migrate_home() -> bool:
 def get_hermes_home() -> Path:
     """Return the Hermes home directory (default: platform-native path).
 
-    Reads the ``HT_HOME`` env var (new name), falling back to the legacy
-    ``HERMES_HOME``, then to the platform-native default. This is the single
-    source of truth — all other copies should import this.
+    Resolves the home from the ``HERMES_HOME`` / ``HT_HOME`` env vars —
+    legacy-authoritative, so ``HERMES_HOME`` wins when both are set (see
+    :func:`ht_compat.resolve_env`) and ``HT_HOME`` applies only when the legacy
+    name is absent — then falls back to the platform-native default. This is the
+    single source of truth — all other copies should import this.
 
     When ``HERMES_HOME`` is unset but an ``active_profile`` file indicates
     a non-default profile is active, logs a loud one-shot warning to
@@ -830,10 +832,15 @@ def _norm_home_path(path: str | None) -> str:
 def _profile_home_path(env: dict[str, str] | None = None) -> str | None:
     """Return ``{HERMES_HOME}/home`` when the profile-home directory exists."""
     _env = env or {}
+    # Resolve HERMES_HOME/HT_HOME legacy-authoritatively (HERMES_* wins over a
+    # possibly-stale inherited HT_*), matching get_hermes_home()/resolve_env. A
+    # profile-dispatched child sets only HERMES_HOME explicitly while HT_HOME may
+    # be a stale value inherited from the parent's env; preferring HT_HOME here
+    # would resolve the wrong profile home (the #18594 cross-profile class).
     hermes_home = (
         get_hermes_home_override()
-        or _env.get("HT_HOME") or _env.get("HERMES_HOME")
-        or os.getenv("HT_HOME") or os.getenv("HERMES_HOME")
+        or _resolve_brand_env("HERMES_HOME", None, _env)
+        or _resolve_brand_env("HERMES_HOME", None)
     )
     if not hermes_home:
         return None
@@ -851,9 +858,11 @@ def _iter_real_home_candidates(env: dict[str, str] | None = None) -> list[str]:
     """Return likely OS-user home candidates in trust order."""
     env = env or {}
     candidates: list[str] = []
-    explicit = str(
-        env.get("HT_REAL_HOME") or env.get("HERMES_REAL_HOME")
-        or os.getenv("HT_REAL_HOME") or os.getenv("HERMES_REAL_HOME", "")
+    # Legacy-authoritative (HERMES_REAL_HOME wins over a stale inherited
+    # HT_REAL_HOME), consistent with resolve_env and apply_subprocess_home_env.
+    explicit = (
+        _resolve_brand_env("HERMES_REAL_HOME", "", env)
+        or _resolve_brand_env("HERMES_REAL_HOME", "")
     ).strip()
     if explicit:
         candidates.append(explicit)

@@ -1774,18 +1774,29 @@ class SessionStore:
                         # and return the existing entry so the transcript reloads
                         # intact, but still honour normal daily/idle reset policy.
                         #
-                        # Freshness gate (#46934): the idle/daily policy checks
-                        # ``updated_at``, which is bumped to ``now`` on every
-                        # message — so a zombie session that keeps receiving
-                        # messages never trips it and would resume stale context
-                        # forever.  ``last_resume_marked_at`` is set once when
-                        # resume was marked and never bumped per-message, so it
-                        # correctly measures how long resume has been pending.
-                        # If that exceeds the auto-continue freshness window, the
-                        # recovery turn either never ran or failed — treat the
-                        # session as a zombie and fall through to auto-reset.
+                        # ``mode == "none"`` is an explicit opt-out: the user asked
+                        # Hermes not to auto-reset the session, so resume_pending
+                        # freshness gating must not override that choice.
                         reset_reason = self._should_reset(entry, source)
                         if not reset_reason:
+                            policy = self.config.get_reset_policy(
+                                platform=source.platform,
+                                session_type=source.chat_type,
+                            )
+                            if policy.mode == "none":
+                                entry.updated_at = now
+                                self._save()
+                                return entry
+                            # Freshness gate (#46934): the idle/daily policy checks
+                            # ``updated_at``, which is bumped to ``now`` on every
+                            # message — so a zombie session that keeps receiving
+                            # messages never trips it and would resume stale context
+                            # forever.  ``last_resume_marked_at`` is set once when
+                            # resume was marked and never bumped per-message, so it
+                            # correctly measures how long resume has been pending.
+                            # If that exceeds the auto-continue freshness window, the
+                            # recovery turn either never ran or failed — treat the
+                            # session as a zombie and fall through to auto-reset.
                             _fw = auto_continue_freshness_window()
                             _ref_time = entry.last_resume_marked_at or entry.updated_at
                             if _fw > 0 and (now - _ref_time).total_seconds() > _fw:

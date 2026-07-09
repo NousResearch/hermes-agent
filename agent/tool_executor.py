@@ -92,6 +92,24 @@ def _resolve_concurrent_tool_timeout() -> float | None:
     return value
 
 
+def _debug_tool_call_args(label: str, **fields: Any) -> None:
+    try:
+        from tools.mcp_debug import (
+            debug_args_enabled,
+            debug_args_log,
+            type_shape,
+        )
+        if not debug_args_enabled():
+            return
+        if "parsed_arguments" in fields:
+            fields.setdefault("types", type_shape(fields["parsed_arguments"]))
+        if "arguments_after" in fields:
+            fields.setdefault("types", type_shape(fields["arguments_after"]))
+        debug_args_log(label, **fields)
+    except Exception:
+        pass
+
+
 def _flush_session_db_after_tool_progress(
     agent,
     messages: list,
@@ -336,6 +354,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     parsed_calls = []  # list of (tool_call, function_name, function_args, middleware_trace, block_result, blocked_by_guardrail)
     for tool_call in tool_calls:
         function_name = tool_call.function.name
+        _raw_arguments = tool_call.function.arguments
+        _debug_tool_call_args(
+            "MODEL_TOOL_CALL_RAW",
+            name=function_name,
+            raw_arguments=_raw_arguments,
+        )
 
         # Reset nudge counters
         if function_name == "memory":
@@ -349,6 +373,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             function_args = {}
         if not isinstance(function_args, dict):
             function_args = {}
+        _debug_tool_call_args(
+            "MODEL_TOOL_CALL_PARSED",
+            name=function_name,
+            parsed_arguments=function_args,
+        )
 
         # ── Tool Search unwrap ────────────────────────────────────────
         # When the model invokes the tool_call bridge, peel it open so
@@ -373,6 +402,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
                 if not _err and _underlying:
                     if _underlying in _tool_search_scoped_names(agent):
+                        _debug_tool_call_args(
+                            "HERMES_TOOL_RESOLVED",
+                            original_name=function_name,
+                            resolved_name=_underlying,
+                            arguments_before=function_args,
+                            arguments_after=_underlying_args,
+                        )
                         function_name = _underlying
                         function_args = _underlying_args
                     else:
@@ -989,6 +1025,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             break
 
         function_name = tool_call.function.name
+        _raw_arguments = tool_call.function.arguments
+        _debug_tool_call_args(
+            "MODEL_TOOL_CALL_RAW",
+            name=function_name,
+            raw_arguments=_raw_arguments,
+        )
 
         try:
             function_args = json.loads(tool_call.function.arguments)
@@ -997,6 +1039,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             function_args = {}
         if not isinstance(function_args, dict):
             function_args = {}
+        _debug_tool_call_args(
+            "MODEL_TOOL_CALL_PARSED",
+            name=function_name,
+            parsed_arguments=function_args,
+        )
 
         # Tool Search unwrap — see execute_tool_calls_concurrent for full
         # rationale, including the scope gate (the unwrap dispatches the
@@ -1008,6 +1055,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
                 if not _err and _underlying:
                     if _underlying in _tool_search_scoped_names(agent):
+                        _debug_tool_call_args(
+                            "HERMES_TOOL_RESOLVED",
+                            original_name=function_name,
+                            resolved_name=_underlying,
+                            arguments_before=function_args,
+                            arguments_after=_underlying_args,
+                        )
                         function_name = _underlying
                         function_args = _underlying_args
                     else:

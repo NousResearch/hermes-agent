@@ -755,14 +755,23 @@ def run_doctor(args):
                 pass
             try:
                 from hermes_cli.config import get_compatible_custom_providers as _compatible_custom_providers
+                from hermes_cli.models import _KNOWN_PROVIDER_NAMES as _MODEL_KNOWN_PROVIDER_NAMES
+                from hermes_cli.models import normalize_provider as _normalize_model_provider
                 from hermes_cli.providers import (
-                    normalize_provider as _normalize_catalog_provider,
                     resolve_provider_full as _resolve_provider_full,
                 )
             except Exception:
                 _compatible_custom_providers = None
-                _normalize_catalog_provider = None
+                _MODEL_KNOWN_PROVIDER_NAMES = None
+                _normalize_model_provider = None
                 _resolve_provider_full = None
+
+            if _MODEL_KNOWN_PROVIDER_NAMES is not None:
+                known_providers.update(
+                    str(name).strip().lower()
+                    for name in _MODEL_KNOWN_PROVIDER_NAMES
+                    if str(name).strip()
+                )
 
             custom_providers = []
             if _compatible_custom_providers is not None:
@@ -783,14 +792,20 @@ def run_doctor(args):
 
             valid_provider_ids = set(known_providers)
             provider_ids_to_accept = {provider} if provider else set()
-            if _normalize_catalog_provider is not None:
+            if _normalize_model_provider is not None:
                 for known_provider in known_providers:
                     try:
-                        valid_provider_ids.add(_normalize_catalog_provider(known_provider))
+                        valid_provider_ids.add(_normalize_model_provider(known_provider))
                     except Exception:
                         continue
 
             runtime_provider = provider
+            if provider and _normalize_model_provider is not None:
+                try:
+                    runtime_provider = _normalize_model_provider(provider)
+                    provider_ids_to_accept.add(runtime_provider)
+                except Exception:
+                    runtime_provider = provider
             if (
                 provider
                 and _resolve_auth_provider is not None
@@ -800,9 +815,15 @@ def run_doctor(args):
                     runtime_provider = _resolve_auth_provider(provider)
                     provider_ids_to_accept.add(runtime_provider)
                 except Exception:
-                    runtime_provider = provider
+                    pass
 
             catalog_provider = provider
+            if catalog_provider and _normalize_model_provider is not None:
+                try:
+                    catalog_provider = _normalize_model_provider(catalog_provider)
+                    provider_ids_to_accept.add(catalog_provider)
+                except Exception:
+                    catalog_provider = provider
             if (
                 provider
                 and _resolve_provider_full is not None
@@ -811,13 +832,18 @@ def run_doctor(args):
                 provider_def = _resolve_provider_full(provider, user_providers, custom_providers)
                 catalog_provider = provider_def.id if provider_def is not None else None
                 if catalog_provider is not None:
+                    if _normalize_model_provider is not None:
+                        try:
+                            catalog_provider = _normalize_model_provider(catalog_provider)
+                        except Exception:
+                            pass
                     provider_ids_to_accept.add(catalog_provider)
 
             if provider and provider != "auto":
-                if catalog_provider is None or (
-                    known_providers
-                    and not (provider_ids_to_accept & valid_provider_ids)
-                ):
+                provider_is_known = bool(provider_ids_to_accept & valid_provider_ids)
+                if catalog_provider is not None:
+                    provider_is_known = True
+                if not provider_is_known:
                     known_list = ", ".join(sorted(known_providers)) if known_providers else "(unavailable)"
                     _fail_and_issue(
                         f"model.provider '{provider_raw}' is not a recognised provider",
@@ -845,6 +871,9 @@ def run_doctor(args):
                 "lmstudio",
                 "nous",
                 "nvidia",
+                # Vertex's native model IDs are vendor-prefixed (e.g.
+                # google/gemini-3-flash-preview) by design.
+                "vertex",
             }
             provider_accepts_vendor_slug = (
                 provider_policy_id in providers_accepting_vendor_slugs

@@ -1,6 +1,7 @@
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { bracketMatching, indentOnInput, LanguageDescription } from '@codemirror/language'
 import { languages } from '@codemirror/language-data'
+import { searchKeymap } from '@codemirror/search'
 import { Compartment, EditorState } from '@codemirror/state'
 import { Decoration, drawSelection, EditorView, keymap, lineNumbers } from '@codemirror/view'
 import { type RefObject, useEffect, useRef } from 'react'
@@ -172,8 +173,9 @@ const FRAMED_THEME = EditorView.theme({
 // numbers, history, selection, bracket matching, syntax highlighting. No fold
 // gutter, autocomplete, or active-line chrome, so it reads like the preview it
 // replaces. It owns its own buffer; the parent tracks dirty via `onChange` and
-// resets by remounting. ⌘/Ctrl+S and ⌘/Ctrl+Enter save; Esc cancels; the app's
-// light/dark mode is followed live without losing the cursor.
+// resets by remounting. ⌘/Ctrl+F opens CodeMirror's native find panel,
+// ⌘/Ctrl+S and ⌘/Ctrl+Enter save; Esc cancels; the app's light/dark mode is
+// followed live without losing the cursor.
 export function CodeEditor({
   apiRef,
   className,
@@ -244,6 +246,7 @@ export function CodeEditor({
         indentOnInput(),
         bracketMatching(),
         keymap.of([
+          ...searchKeymap,
           ...defaultKeymap,
           ...historyKeymap,
           indentWithTab,

@@ -68,7 +68,7 @@ describe('ChatPreviewRail tabs', () => {
 
     expect($rightRailActiveTabId.get()).toBe('preview:https://example.com/docs')
     expect(screen.getByRole('tab', { name: 'Docs' }).getAttribute('aria-selected')).toBe('true')
-    expect((screen.getByLabelText('Preview address') as HTMLInputElement).value).toBe('https://example.com/docs')
+    expect((screen.getByLabelText('Preview URL') as HTMLInputElement).value).toBe('https://example.com/docs')
   })
 
   it('switches from a file tab back to a live preview tab', () => {
@@ -81,6 +81,6 @@ describe('ChatPreviewRail tabs', () => {
 
     expect($rightRailActiveTabId.get()).toBe('preview:https://example.com/docs')
     expect(screen.getByRole('tab', { name: 'Docs' }).getAttribute('aria-selected')).toBe('true')
-    expect((screen.getByLabelText('Preview address') as HTMLInputElement).value).toBe('https://example.com/docs')
+    expect((screen.getByLabelText('Preview URL') as HTMLInputElement).value).toBe('https://example.com/docs')
   })
 })

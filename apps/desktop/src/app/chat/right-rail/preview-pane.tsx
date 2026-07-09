@@ -6,7 +6,7 @@ import type { SetTitlebarToolGroup, TitlebarTool } from '@/app/shell/titlebar-co
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
-import { Bug, Pencil } from '@/lib/icons'
+import { Bug, ExternalLink, Pencil, RefreshCw, Search, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $previewServerRestart, failPreviewServerRestart, type PreviewTarget } from '@/store/preview'
@@ -26,11 +26,13 @@ import { PREVIEW_RATIO_PRESETS, type PreviewRatioPreset, previewWidthForRatio } 
 
 type PreviewWebview = HTMLElement & {
   closeDevTools?: () => void
+  findInPage?: (text: string, options?: { findNext?: boolean; forward?: boolean; matchCase?: boolean }) => number
   getURL?: () => string
   isDevToolsOpened?: () => boolean
   openDevTools?: () => void
   reload?: () => void
   reloadIgnoringCache?: () => void
+  stopFindInPage?: (action?: 'activateSelection' | 'clearSelection' | 'keepSelection') => void
 }
 
 type PreviewEngine = 'detecting' | 'electron-webview' | 'iframe-fallback' | 'local-file'
@@ -159,8 +161,10 @@ export function PreviewPane({
   const { t } = useI18n()
   const copy = t.preview.web
   const [consoleState] = useState(() => createPreviewConsoleState())
+  const addressInputRef = useRef<HTMLInputElement | null>(null)
   const consoleBodyRef = useRef<HTMLDivElement | null>(null)
   const consoleShouldStickRef = useRef(true)
+  const findInputRef = useRef<HTMLInputElement | null>(null)
   const hostRef = useRef<HTMLDivElement | null>(null)
   const lastReloadRequestRef = useRef(reloadRequest)
   const lastRestartEventRef = useRef('')
@@ -177,6 +181,9 @@ export function PreviewPane({
   const [debugOverlayOpen, setDebugOverlayOpen] = useState(false)
   const [devtoolsAvailable, setDevtoolsAvailable] = useState(false)
   const [devtoolsOpen, setDevtoolsOpen] = useState(false)
+  const [findOpen, setFindOpen] = useState(false)
+  const [findQuery, setFindQuery] = useState('')
+  const [findStatus, setFindStatus] = useState('')
   const [previewEngine, setPreviewEngine] = useState<PreviewEngine>('detecting')
   const [previewFrameWidth, setPreviewFrameWidth] = useState<number | null>(null)
   const [activeRatioLabel, setActiveRatioLabel] = useState<string | null>(null)
@@ -312,6 +319,74 @@ export function PreviewPane({
       consoleState.append(entry)
     },
     [consoleState]
+  )
+
+  const openPreviewExternally = useCallback(() => {
+    if (!currentUrl) {
+      return
+    }
+
+    if (window.hermesDesktop?.openExternal) {
+      void window.hermesDesktop.openExternal(currentUrl)
+
+      return
+    }
+
+    window.open(currentUrl, '_blank', 'noopener,noreferrer')
+  }, [currentUrl])
+
+  const focusAddressBar = useCallback(() => {
+    addressInputRef.current?.focus()
+    addressInputRef.current?.select()
+  }, [])
+
+  const openFindBar = useCallback(() => {
+    setFindOpen(true)
+  }, [])
+
+  const closeFindBar = useCallback(() => {
+    webviewRef.current?.stopFindInPage?.('clearSelection')
+    setFindOpen(false)
+    setFindStatus('')
+  }, [])
+
+  const runPreviewFind = useCallback((query: string, options: { findNext?: boolean; forward?: boolean } = {}) => {
+    const trimmed = query.trim()
+    const webview = webviewRef.current
+
+    if (!trimmed) {
+      webview?.stopFindInPage?.('clearSelection')
+      setFindStatus('')
+
+      return
+    }
+
+    if (webview?.findInPage) {
+      webview.findInPage(trimmed, {
+        findNext: options.findNext ?? false,
+        forward: options.forward ?? true
+      })
+      setFindStatus('Searching preview')
+
+      return
+    }
+
+    setFindStatus('Find is limited in browser iframe fallback. Open externally or use the page’s own search.')
+  }, [])
+
+  const updateFindQuery = useCallback(
+    (next: string) => {
+      setFindQuery(next)
+      runPreviewFind(next, { findNext: false, forward: true })
+    },
+    [runPreviewFind]
+  )
+
+  const moveFindMatch = useCallback(
+    (forward: boolean) => {
+      runPreviewFind(findQuery, { findNext: true, forward })
+    },
+    [findQuery, runPreviewFind]
   )
 
   const restartServer = useCallback(async () => {
@@ -455,6 +530,53 @@ export function PreviewPane({
 
     return () => window.cancelAnimationFrame(handle)
   }, [consoleOpen])
+
+  useEffect(() => {
+    if (!findOpen) {
+      return
+    }
+
+    const handle = window.requestAnimationFrame(() => {
+      findInputRef.current?.focus()
+      findInputRef.current?.select()
+    })
+
+    return () => window.cancelAnimationFrame(handle)
+  }, [findOpen])
+
+  useEffect(() => {
+    if (!isWebPreview) {
+      return
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase()
+      const modifier = event.ctrlKey || event.metaKey
+
+      if (modifier && key === 'f') {
+        event.preventDefault()
+        openFindBar()
+
+        return
+      }
+
+      if (modifier && key === 'l') {
+        event.preventDefault()
+        focusAddressBar()
+
+        return
+      }
+
+      if ((modifier && key === 'r') || event.key === 'F5') {
+        event.preventDefault()
+        reloadPreview()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [focusAddressBar, isWebPreview, openFindBar, reloadPreview])
 
   useEffect(() => {
     if (
@@ -635,6 +757,9 @@ export function PreviewPane({
     setDebugOverlayOpen(false)
     setDevtoolsAvailable(false)
     setDevtoolsOpen(false)
+    setFindOpen(false)
+    setFindQuery('')
+    setFindStatus('')
     setPreviewEngine(isWebPreview ? 'detecting' : 'local-file')
     setLoadError(null)
     consoleState.reset()
@@ -812,21 +937,63 @@ export function PreviewPane({
                 navigatePreview(addressDraft)
               }}
             >
-              <label className="sr-only" htmlFor="preview-address">
-                Preview address
+              <label className="sr-only" htmlFor="preview-url">
+                Preview URL
               </label>
               <Tip label={copy.openTarget(currentUrl)}>
                 <input
-                  aria-label="Preview address"
+                  aria-label="Preview URL"
                   className="h-6 w-full min-w-0 rounded-sm border border-transparent bg-(--ui-editor-surface-background)/55 px-2 text-xs font-medium text-foreground outline-none transition-colors placeholder:text-muted-foreground/55 hover:border-(--ui-stroke-quaternary) focus:border-(--ui-stroke-secondary) focus:bg-background"
-                  id="preview-address"
+                  id="preview-url"
                   onBlur={() => setAddressDraft(currentUrl)}
                   onChange={event => setAddressDraft(event.currentTarget.value)}
+                  placeholder="Search or enter URL"
+                  ref={addressInputRef}
                   title={previewLabel || copy.fallbackTitle}
                   value={addressDraft}
                 />
               </Tip>
             </form>
+            {isWebPreview && (
+              <div aria-label="Preview browser controls" className="pointer-events-auto flex shrink-0 items-center gap-1">
+                <Tip label="Reload preview">
+                  <button
+                    aria-label="Reload preview"
+                    className="grid size-6 place-items-center rounded-sm border border-(--ui-stroke-quaternary) text-muted-foreground/85 transition-colors hover:border-(--ui-stroke-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+                    onClick={reloadPreview}
+                    type="button"
+                  >
+                    <RefreshCw className={cn('size-3', loading && 'animate-spin')} />
+                  </button>
+                </Tip>
+                <Tip label="Open preview in browser">
+                  <button
+                    aria-label="Open preview in browser"
+                    className="grid size-6 place-items-center rounded-sm border border-(--ui-stroke-quaternary) text-muted-foreground/85 transition-colors hover:border-(--ui-stroke-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+                    onClick={openPreviewExternally}
+                    type="button"
+                  >
+                    <ExternalLink className="size-3" />
+                  </button>
+                </Tip>
+                <Tip label="Find in preview (Ctrl/⌘+F)">
+                  <button
+                    aria-label="Find in preview"
+                    aria-pressed={findOpen}
+                    className={cn(
+                      'grid size-6 place-items-center rounded-sm border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring',
+                      findOpen
+                        ? 'border-(--ui-stroke-secondary) bg-(--chrome-action-hover) text-foreground'
+                        : 'border-(--ui-stroke-quaternary) text-muted-foreground/85 hover:border-(--ui-stroke-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+                    )}
+                    onClick={openFindBar}
+                    type="button"
+                  >
+                    <Search className="size-3" />
+                  </button>
+                </Tip>
+              </div>
+            )}
             {isWebPreview && (
               <div aria-label="Preview responsive sizes" className="pointer-events-auto flex shrink-0 items-center gap-1">
                 <Tip label="Fit preview to pane">
@@ -905,6 +1072,64 @@ export function PreviewPane({
                 </Tip>
               </div>
             )}
+          </div>
+        )}
+
+        {isWebPreview && findOpen && (
+          <div
+            className="pointer-events-auto flex min-h-9 items-center gap-1.5 border-b border-border/60 bg-background/95 px-2 py-1 text-xs shadow-sm"
+            data-preview-findbar=""
+          >
+            <Search className="size-3.5 shrink-0 text-muted-foreground" />
+            <label className="sr-only" htmlFor="preview-find-input">
+              Find in preview text
+            </label>
+            <input
+              aria-label="Find in preview text"
+              className="h-6 min-w-0 flex-1 rounded-sm border border-(--ui-stroke-quaternary) bg-(--ui-editor-surface-background)/65 px-2 text-xs text-foreground outline-none placeholder:text-muted-foreground/55 focus:border-(--ui-stroke-secondary) focus:bg-background"
+              id="preview-find-input"
+              onChange={event => updateFindQuery(event.currentTarget.value)}
+              onKeyDown={event => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  moveFindMatch(!event.shiftKey)
+                } else if (event.key === 'Escape') {
+                  event.preventDefault()
+                  closeFindBar()
+                }
+              }}
+              placeholder="Find in page"
+              ref={findInputRef}
+              value={findQuery}
+            />
+            <div className="hidden shrink-0 items-center rounded border border-(--ui-stroke-quaternary) px-1.5 py-0.5 font-mono text-[0.625rem] text-muted-foreground/75 sm:flex">
+              Ctrl/⌘ F
+            </div>
+            <button
+              aria-label="Previous preview find match"
+              className="grid size-6 place-items-center rounded-sm border border-(--ui-stroke-quaternary) text-muted-foreground/85 transition-colors hover:border-(--ui-stroke-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+              onClick={() => moveFindMatch(false)}
+              type="button"
+            >
+              ↑
+            </button>
+            <button
+              aria-label="Next preview find match"
+              className="grid size-6 place-items-center rounded-sm border border-(--ui-stroke-quaternary) text-muted-foreground/85 transition-colors hover:border-(--ui-stroke-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+              onClick={() => moveFindMatch(true)}
+              type="button"
+            >
+              ↓
+            </button>
+            <button
+              aria-label="Close preview find"
+              className="grid size-6 place-items-center rounded-sm border border-(--ui-stroke-quaternary) text-muted-foreground/85 transition-colors hover:border-(--ui-stroke-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+              onClick={closeFindBar}
+              type="button"
+            >
+              <X className="size-3" />
+            </button>
+            {findStatus && <div className="min-w-0 truncate text-[0.6875rem] text-muted-foreground">{findStatus}</div>}
           </div>
         )}
 

@@ -8,6 +8,12 @@ import { PreviewPane } from './preview-pane'
 
 const ORIGINAL_INNER_WIDTH = window.innerWidth
 
+type PreviewTestWebview = HTMLElement & {
+  findInPage?: ReturnType<typeof vi.fn>
+  reload?: ReturnType<typeof vi.fn>
+  stopFindInPage?: ReturnType<typeof vi.fn>
+}
+
 describe('PreviewPane console state', () => {
   beforeEach(() => {
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
@@ -23,6 +29,7 @@ describe('PreviewPane console state', () => {
     $activeSessionId.set(null)
     $connection.set(null)
     $selectedStoredSessionId.set(null)
+    vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
 
@@ -104,7 +111,7 @@ describe('PreviewPane console state', () => {
       />
     )
 
-    const input = screen.getByLabelText('Preview address') as HTMLInputElement
+    const input = screen.getByLabelText('Preview URL') as HTMLInputElement
     const iframe = rendered.container.querySelector('iframe')
 
     fireEvent.change(input, { target: { value: 'example.org/docs' } })
@@ -112,6 +119,104 @@ describe('PreviewPane console state', () => {
 
     expect(iframe?.getAttribute('src')).toBe('https://example.org/docs')
     expect(input.value).toBe('https://example.org/docs')
+  })
+
+  it('keeps normal browser chrome in the embedded preview pane', () => {
+    render(
+      <PreviewPane
+        embedded
+        setTitlebarToolGroup={vi.fn()}
+        target={{
+          kind: 'url',
+          label: 'Preview',
+          source: 'http://localhost:5174',
+          url: 'http://localhost:5174'
+        }}
+      />
+    )
+
+    expect(screen.getByLabelText('Preview URL')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Reload preview' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Open preview in browser' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Find in preview' })).toBeTruthy()
+  })
+
+  it('opens preview find with Ctrl+F and reports iframe fallback limitations visibly', () => {
+    render(
+      <PreviewPane
+        embedded
+        setTitlebarToolGroup={vi.fn()}
+        target={{
+          kind: 'url',
+          label: 'Preview',
+          source: 'http://localhost:5174',
+          url: 'http://localhost:5174'
+        }}
+      />
+    )
+
+    fireEvent.keyDown(window, { ctrlKey: true, key: 'f' })
+
+    const findInput = screen.getByLabelText('Find in preview text') as HTMLInputElement
+
+    expect(findInput).toBeTruthy()
+
+    fireEvent.change(findInput, { target: { value: 'DROPShock' } })
+
+    expect(screen.getByText('Find is limited in browser iframe fallback. Open externally or use the page’s own search.')).toBeTruthy()
+
+    fireEvent.keyDown(findInput, { key: 'Escape' })
+
+    expect(screen.queryByLabelText('Find in preview text')).toBeNull()
+  })
+
+  it('wires browser find controls to Electron webview find APIs', () => {
+    const createdWebviews: PreviewTestWebview[] = []
+    const originalCreateElement = document.createElement.bind(document)
+
+    vi.spyOn(document, 'createElement').mockImplementation(((tagName: string, options?: ElementCreationOptions) => {
+      if (tagName.toLowerCase() !== 'webview') {
+        return originalCreateElement(tagName, options)
+      }
+
+      const webview = originalCreateElement('div') as PreviewTestWebview
+      webview.findInPage = vi.fn()
+      webview.stopFindInPage = vi.fn()
+      webview.reload = vi.fn()
+      createdWebviews.push(webview)
+
+      return webview
+    }) as typeof document.createElement)
+
+    render(
+      <PreviewPane
+        embedded
+        setTitlebarToolGroup={vi.fn()}
+        target={{
+          kind: 'url',
+          label: 'Preview',
+          source: 'https://example.com',
+          url: 'https://example.com'
+        }}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Find in preview' }))
+
+    const findInput = screen.getByLabelText('Find in preview text') as HTMLInputElement
+
+    fireEvent.change(findInput, { target: { value: 'browseros' } })
+    expect(createdWebviews[0]?.findInPage).toHaveBeenLastCalledWith('browseros', { forward: true, findNext: false })
+
+    fireEvent.keyDown(findInput, { key: 'Enter' })
+    expect(createdWebviews[0]?.findInPage).toHaveBeenLastCalledWith('browseros', { forward: true, findNext: true })
+
+    fireEvent.keyDown(findInput, { key: 'Enter', shiftKey: true })
+    expect(createdWebviews[0]?.findInPage).toHaveBeenLastCalledWith('browseros', { forward: false, findNext: true })
+
+    fireEvent.keyDown(findInput, { key: 'Escape' })
+    expect(createdWebviews[0]?.stopFindInPage).toHaveBeenCalledWith('clearSelection')
+    expect(screen.queryByLabelText('Find in preview text')).toBeNull()
   })
 
   it('offers responsive preview viewport presets without resizing the outer pane', () => {

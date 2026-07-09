@@ -1149,17 +1149,20 @@ class DiscordAdapter(BasePlatformAdapter):
                     _msg_guild = getattr(message, "guild", None)
                     _is_dm = isinstance(message.channel, discord.DMChannel) or _msg_guild is None
                     _msg_channel_ids = None
+                    _msg_category_ids = None
                     if not _is_dm:
                         _msg_channel_ids = {str(message.channel.id)}
                         _parent_id = adapter_self._get_parent_channel_id(message.channel)
                         if _parent_id:
                             _msg_channel_ids.add(_parent_id)
+                        _msg_category_ids = adapter_self._discord_category_keys_from_channel(message.channel)
                     if not self._is_allowed_user(
                         str(message.author.id),
                         message.author,
                         guild=_msg_guild,
                         is_dm=_is_dm,
                         channel_ids=_msg_channel_ids,
+                        category_ids=_msg_category_ids,
                     ):
                         self._warn_if_fail_closed_default()
                         return
@@ -3249,12 +3252,14 @@ class DiscordAdapter(BasePlatformAdapter):
         guild=None,
         is_dm: bool = False,
         channel_ids: Optional[set[str]] = None,
+        category_ids: Optional[set[str]] = None,
     ) -> bool:
         """Check if user is allowed via DISCORD_ALLOWED_USERS or DISCORD_ALLOWED_ROLES.
 
         Uses OR semantics: if the user matches EITHER allowlist, they're allowed.
         With no user/role allowlists configured, guild traffic may still pass when
-        ``channel_ids`` matches ``DISCORD_ALLOWED_CHANNELS`` — but only when the
+        ``channel_ids`` matches ``DISCORD_ALLOWED_CHANNELS`` or
+        ``category_ids`` matches ``DISCORD_ALLOWED_CATEGORIES`` — but only when the
         caller supplies the validated channel context (on_message, slash). Calls
         without channel context (e.g. voice utterances) do not get this bypass.
 
@@ -3273,6 +3278,8 @@ class DiscordAdapter(BasePlatformAdapter):
             is_dm: True if the message came from a DM channel.
             channel_ids: Resolved text-channel ids for guild traffic when an
                 upstream gate has already scoped the message to a channel.
+            category_ids: Resolved Discord category ids/names for explicit
+                category-level guild scopes.
         """
         # ``getattr`` fallbacks here guard against test fixtures that build
         # an adapter via ``object.__new__(DiscordAdapter)`` and skip __init__
@@ -3299,8 +3306,16 @@ class DiscordAdapter(BasePlatformAdapter):
             # (voice loops and other guild-scoped callers may lack channel ids).
             if (
                 not is_dm
-                and channel_ids is not None
-                and self._discord_channel_ids_allowed(channel_ids)
+                and (
+                    (
+                        channel_ids is not None
+                        and self._discord_channel_ids_allowed(channel_ids)
+                    )
+                    or (
+                        category_ids is not None
+                        and self._discord_category_ids_allowed(category_ids)
+                    )
+                )
             ):
                 return True
             return False
@@ -3422,6 +3437,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         channel_ids: set = set()
         channel_keys: set = set()
+        category_keys: set = set()
         # ── Channel scope (mirrors on_message lines 3374-3388) ──
         # DMs aren't channel-gated — DMs follow on_message's DM lockdown
         # path which has its own user-allowlist enforcement.
@@ -3447,8 +3463,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 if isinstance(chan_obj, discord.Thread)
                 else None,
             )
+            category_keys = self._discord_category_keys_from_channel(chan_obj)
 
             allowed_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
+            allowed_categories = self._discord_allowed_categories()
             if allowed_raw:
                 allowed = {c.strip() for c in allowed_raw.split(",") if c.strip()}
                 if "*" not in allowed:
@@ -3459,8 +3477,14 @@ class DiscordAdapter(BasePlatformAdapter):
                             False,
                             "channel id missing with DISCORD_ALLOWED_CHANNELS configured",
                         )
-                    if not (channel_keys & allowed):
+                    if not (channel_keys & allowed) and not (
+                        allowed_categories and category_keys & allowed_categories
+                    ):
                         return (False, "channel not in DISCORD_ALLOWED_CHANNELS")
+            elif allowed_categories and "*" not in allowed_categories and not (
+                category_keys & allowed_categories
+            ):
+                return (False, "category not in DISCORD_ALLOWED_CATEGORIES")
 
             # Ignored beats allowed: even when a thread's parent channel
             # is on the allowlist, an explicit DISCORD_IGNORED_CHANNELS
@@ -3494,6 +3518,7 @@ class DiscordAdapter(BasePlatformAdapter):
             guild=interaction_guild,
             is_dm=in_dm,
             channel_ids=channel_keys if not in_dm else None,
+            category_ids=category_keys if not in_dm else None,
         ):
             return (
                 False,
@@ -4838,6 +4863,65 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _discord_free_response_categories(self) -> set:
+        """Return Discord category IDs/names where no bot mention is required."""
+        raw = self.config.extra.get("free_response_categories")
+        if raw is None:
+            raw = os.getenv("DISCORD_FREE_RESPONSE_CATEGORIES", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
+    def _discord_allowed_categories(self) -> set:
+        """Return Discord category IDs/names where guild users may address the bot."""
+        raw = self.config.extra.get("allowed_categories")
+        if raw is None:
+            raw = os.getenv("DISCORD_ALLOWED_CATEGORIES", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
+    def _discord_category_ids_allowed(self, category_keys: set[str]) -> bool:
+        """True when *category_keys* intersect configured allowed categories."""
+        if not category_keys:
+            return False
+        allowed = self._discord_allowed_categories()
+        if not allowed:
+            return False
+        if "*" in allowed:
+            return True
+        return bool(category_keys & allowed)
+
+    def _discord_category_keys(self, message: Any) -> set[str]:
+        """Return category identifiers accepted by Discord category config gates."""
+        return self._discord_category_keys_from_channel(getattr(message, "channel", None))
+
+    def _discord_category_keys_from_channel(self, channel: Any) -> set[str]:
+        """Build Discord category config keys from a channel object.
+
+        Categories are intentionally separate from channel keys so operators can
+        configure explicit ``allowed_categories`` / ``free_response_categories``
+        gates without overloading ``allowed_channels`` with category snowflakes.
+        """
+        keys: set[str] = set()
+        category_id = getattr(channel, "category_id", None)
+        if category_id is not None:
+            keys.add(str(category_id))
+
+        category_channel = getattr(channel, "category", None)
+        category_name = str(getattr(category_channel, "name", "")).strip() if category_channel else ""
+        if category_name:
+            keys.add(category_name)
+            keys.add(f"#{category_name}")
+
+        return keys
+
     def _raw_mentioned_user_ids(self, message: Any) -> set:
         """Extract Discord user-mention IDs directly from raw message content.
 
@@ -6127,8 +6211,10 @@ class DiscordAdapter(BasePlatformAdapter):
         # Config (all settable via discord.* in config.yaml or DISCORD_* env vars):
         #   discord.require_mention: Require @mention in server channels (default: true)
         #   discord.free_response_channels: Channel IDs where bot responds without mention
+        #   discord.free_response_categories: Category IDs/names where bot responds without mention
         #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
+        #   discord.allowed_categories: If set, bot responds in channels under these categories
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
         #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
 
@@ -6168,13 +6254,22 @@ class DiscordAdapter(BasePlatformAdapter):
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
             channel_keys = self._discord_channel_keys(message, parent_channel_id)
+            category_keys = self._discord_category_keys(message)
 
-            # Check allowed channels - if set, only respond in these channels
+            # Check allowed channels/categories - if set, only respond in these scopes
             allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
-            if allowed_channels_raw:
-                allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
-                if "*" not in allowed_channels and not (channel_keys & allowed_channels):
-                    logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_keys)
+            allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
+            allowed_categories = self._discord_allowed_categories()
+            if allowed_channels or allowed_categories:
+                channel_allowed = "*" in allowed_channels or bool(channel_keys & allowed_channels)
+                category_allowed = "*" in allowed_categories or bool(category_keys & allowed_categories)
+                if not (channel_allowed or category_allowed):
+                    logger.debug(
+                        "[%s] Ignoring message outside allowed Discord channel/category: channels=%s categories=%s",
+                        self.name,
+                        channel_keys,
+                        category_keys,
+                    )
                     return
 
             # Check ignored channels - never respond even when mentioned
@@ -6185,6 +6280,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 return
 
             free_channels = self._discord_free_response_channels()
+            free_categories = self._discord_free_response_categories()
 
             require_mention = self._discord_require_mention()
             # Voice-linked text channels act as free-response while voice is active.
@@ -6195,6 +6291,8 @@ class DiscordAdapter(BasePlatformAdapter):
             is_free_channel = (
                 "*" in free_channels
                 or bool(channel_keys & free_channels)
+                or "*" in free_categories
+                or bool(category_keys & free_categories)
                 or is_voice_linked_channel
             )
 
@@ -8236,8 +8334,9 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     The DiscordAdapter reads its runtime configuration via ``os.getenv()``
     throughout the connect / handle code paths (``DISCORD_ALLOWED_USERS``,
     ``DISCORD_REQUIRE_MENTION``, ``DISCORD_FREE_RESPONSE_CHANNELS``,
-    ``DISCORD_AUTO_THREAD``, ``DISCORD_REACTIONS``,
-    ``DISCORD_IGNORED_CHANNELS``, ``DISCORD_ALLOWED_CHANNELS``,
+    ``DISCORD_FREE_RESPONSE_CATEGORIES``, ``DISCORD_AUTO_THREAD``,
+    ``DISCORD_REACTIONS``, ``DISCORD_IGNORED_CHANNELS``,
+    ``DISCORD_ALLOWED_CHANNELS``, ``DISCORD_ALLOWED_CATEGORIES``,
     ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_HISTORY_BACKFILL``,
     ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_MENTION_*``,
     ``DISCORD_REPLY_TO_MODE``, ``DISCORD_THREAD_REQUIRE_MENTION``,
@@ -8285,6 +8384,16 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         if isinstance(frc, list):
             frc = ",".join(str(v) for v in frc)
         os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
+    frc_categories = discord_cfg.get("free_response_categories")
+    if frc_categories is not None and not os.getenv("DISCORD_FREE_RESPONSE_CATEGORIES"):
+        if isinstance(frc_categories, list):
+            frc_categories = ",".join(str(v) for v in frc_categories)
+        os.environ["DISCORD_FREE_RESPONSE_CATEGORIES"] = str(frc_categories)
+    allowed_categories_cfg = discord_cfg.get("allowed_categories")
+    if allowed_categories_cfg is not None and not os.getenv("DISCORD_ALLOWED_CATEGORIES"):
+        if isinstance(allowed_categories_cfg, list):
+            allowed_categories_cfg = ",".join(str(v) for v in allowed_categories_cfg)
+        os.environ["DISCORD_ALLOWED_CATEGORIES"] = str(allowed_categories_cfg)
     if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
         os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):

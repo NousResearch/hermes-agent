@@ -180,6 +180,23 @@ describe('detectLightMode', () => {
     // Dark COLORFGBG must beat the allow-list.
     expect(detectLightMode({ COLORFGBG: '15;0', TERM_PROGRAM: 'Apple_Terminal' }, allowList)).toBe(false)
   })
+
+  it('skips COLORFGBG inside Zed terminal via TERM_PROGRAM=zed', async () => {
+    const { detectLightMode } = await importThemeWithCleanEnv()
+
+    // Zed with COLORFGBG=0;15 should fall through to dark default.
+    expect(detectLightMode({ TERM_PROGRAM: 'zed', COLORFGBG: '0;15' })).toBe(false)
+    // Non-Zed still uses COLORFGBG.
+    expect(detectLightMode({ COLORFGBG: '0;15' })).toBe(true)
+  })
+
+  it('skips COLORFGBG inside Zed terminal via ZED_TERM=true', async () => {
+    const { detectLightMode } = await importThemeWithCleanEnv()
+
+    expect(detectLightMode({ ZED_TERM: 'true', COLORFGBG: '0;15' })).toBe(false)
+    // Explicit override still wins over the Zed guard.
+    expect(detectLightMode({ ZED_TERM: 'true', COLORFGBG: '0;15', HERMES_TUI_THEME: 'light' })).toBe(true)
+  })
 })
 
 describe('fromSkin', () => {

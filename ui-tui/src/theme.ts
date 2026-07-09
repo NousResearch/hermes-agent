@@ -443,7 +443,14 @@ export function detectLightMode(
 
   const colorfgbg = (env.COLORFGBG ?? '').trim()
 
-  if (colorfgbg) {
+  // Zed inherits COLORFGBG from the launching shell, so the value
+  // reflects the parent terminal's background, not Zed's actual theme.
+  // When TERM_PROGRAM=zed or ZED_TERM is truthy, skip COLORFGBG.
+  const isZed =
+    (env.TERM_PROGRAM ?? '').toLowerCase() === 'zed' ||
+    /^(1|true|yes|on)$/i.test((env.ZED_TERM ?? '').trim())
+
+  if (colorfgbg && !isZed) {
     // Validate as a decimal integer before coercing — `Number('')` is 0,
     // so a malformed `COLORFGBG='15;'` would otherwise look like an
     // authoritative dark slot and incorrectly block the TERM_PROGRAM

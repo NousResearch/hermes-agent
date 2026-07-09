@@ -75,6 +75,50 @@ class TestLightModeDetection:
         assert cli_mod._detect_light_mode() is True
 
 
+class TestZedTerminalGuard:
+    """Zed inherits COLORFGBG from the parent shell.  When TERM_PROGRAM=zed
+    or ZED_TERM is set, COLORFGBG must be skipped so detection falls through
+    to the dark default (or explicit override).
+    """
+
+    def test_zed_term_program_skips_light_colorfgbg(self, cli_mod, monkeypatch):
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_THEME", raising=False)
+        monkeypatch.delenv("HERMES_TUI_BACKGROUND", raising=False)
+        monkeypatch.setenv("TERM_PROGRAM", "zed")
+        monkeypatch.setenv("COLORFGBG", "0;15")
+        assert cli_mod._detect_light_mode() is False
+
+    def test_zed_term_env_skips_light_colorfgbg(self, cli_mod, monkeypatch):
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_THEME", raising=False)
+        monkeypatch.delenv("HERMES_TUI_BACKGROUND", raising=False)
+        monkeypatch.setenv("ZED_TERM", "true")
+        monkeypatch.setenv("COLORFGBG", "0;15")
+        assert cli_mod._detect_light_mode() is False
+
+    def test_zed_with_explicit_override_still_wins(self, cli_mod, monkeypatch):
+        """Explicit user overrides (HERMES_TUI_THEME=light, etc.) must still
+        win even when Zed is detected — the guard only disables COLORFGBG."""
+        monkeypatch.setenv("TERM_PROGRAM", "zed")
+        monkeypatch.setenv("COLORFGBG", "0;15")
+        monkeypatch.setenv("HERMES_TUI_THEME", "light")
+        assert cli_mod._detect_light_mode() is True
+
+    def test_non_zed_colorfgbg_unchanged(self, cli_mod, monkeypatch):
+        """Without Zed markers, COLORFGBG=0;15 still detects light."""
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_THEME", raising=False)
+        monkeypatch.delenv("HERMES_TUI_BACKGROUND", raising=False)
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
+        monkeypatch.delenv("ZED_TERM", raising=False)
+        monkeypatch.setenv("COLORFGBG", "0;15")
+        assert cli_mod._detect_light_mode() is True
+
+
 class TestOsc11Probe:
     """The OSC 11 background probe must never run where its reply can leak
     into prompt_toolkit's input (a late BEL-terminated reply reads as Ctrl+G

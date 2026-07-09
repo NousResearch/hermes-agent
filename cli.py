@@ -2081,6 +2081,21 @@ _FALSE_RE = re.compile(r"^(0|false|off|no|n)$")
 _LIGHT_DEFAULT_TERM_PROGRAMS = frozenset()  # Apple_Terminal doesn't reliably indicate; require explicit
 
 
+def _is_zed_terminal() -> bool:
+    """Return True when the process runs inside Zed's integrated terminal.
+
+    Zed inherits COLORFGBG from the shell that launched it, so the value
+    reflects the *launching* terminal's background rather than Zed's actual
+    theme.  When we detect Zed, the COLORFGBG signal is unreliable and should
+    be skipped so detection falls through to OSC 11 or the dark default.
+    """
+    return (
+        (os.environ.get("TERM_PROGRAM") or "").strip().lower() == "zed"
+        or (os.environ.get("ZED_TERM") or "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+
+
 def _luminance_from_hex(hex_str: str) -> float | None:
     s = (hex_str or "").strip().lstrip("#")
     if len(s) == 3:
@@ -2201,8 +2216,10 @@ def _detect_light_mode() -> bool:
             _LIGHT_MODE_CACHE = result
             return result
         # 4. COLORFGBG (xterm/Konsole/urxvt)
+        # Skip in Zed's terminal — Zed inherits COLORFGBG from the launching
+        # shell, so the value reflects the parent terminal, not Zed's theme.
         cfgbg = (os.environ.get("COLORFGBG") or "").strip()
-        if cfgbg:
+        if cfgbg and not _is_zed_terminal():
             last = cfgbg.split(";")[-1] if ";" in cfgbg else cfgbg
             if last.isdigit():
                 bg = int(last)

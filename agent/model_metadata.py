@@ -2439,5 +2439,82 @@ def estimate_request_tokens_rough(
     if messages:
         total += estimate_messages_tokens_rough(messages)
     if tools:
-        total += (len(str(tools)) + 3) // 4
+        total += _estimate_tools_tokens_rough(tools)
     return total
+
+
+# NOTE: tool schemas can be large. Avoid repeated `str(tools)` conversions,
+# which are CPU-heavy and can stall GUI event loops under GIL pressure.
+#
+# Keyed by ``id(tools)``. A long-lived gateway/desktop backend builds many
+# transient tool lists over its lifetime, so the cache is bounded and evicts
+# oldest-first (insertion-ordered dict) once it exceeds the cap. The cap is
+# generous relative to how rarely toolsets are rebuilt within a process.
+_TOOLS_TOKENS_CACHE: dict[int, Tuple[int, str, str, int]] = {}
+_TOOLS_TOKENS_CACHE_MAX = 256
+
+
+def _tool_name_for_cache(tool: Any) -> str:
+    if not isinstance(tool, dict):
+        return ""
+    fn = tool.get("function")
+    if isinstance(fn, dict):
+        name = fn.get("name")
+        if isinstance(name, str):
+            return name
+    name = tool.get("name")
+    return name if isinstance(name, str) else ""
+
+
+def _estimate_tools_tokens_rough(tools: List[Dict[str, Any]]) -> int:
+    if not tools:
+        return 0
+
+    # Cache by list identity. Tools are rebuilt rarely (toolset changes),
+    # but token estimates are requested frequently (preflight, compaction).
+    key = id(tools)
+    n = len(tools)
+    first = _tool_name_for_cache(tools[0]) if n else ""
+    last = _tool_name_for_cache(tools[-1]) if n else ""
+
+    cached = _TOOLS_TOKENS_CACHE.get(key)
+    if cached is not None:
+        cached_n, cached_first, cached_last, cached_tokens = cached
+        if cached_n == n and cached_first == first and cached_last == last:
+            return cached_tokens
+
+    # Fast, stable rough estimate: sum lengths of the major schema fields.
+    # This avoids the pathological `str(tools)` path while still scaling with
+    # schema size (descriptions + parameters dominate).
+    total_chars = 0
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function")
+        if isinstance(fn, dict):
+            name = fn.get("name") or ""
+            desc = fn.get("description") or ""
+            params = fn.get("parameters") or {}
+        else:
+            name = tool.get("name") or ""
+            desc = tool.get("description") or ""
+            params = tool.get("parameters") or {}
+
+        if isinstance(name, str):
+            total_chars += len(name)
+        if isinstance(desc, str):
+            total_chars += len(desc)
+        # Parameters can be nested; JSON is closer to over-the-wire size than repr().
+        try:
+            total_chars += len(json.dumps(params, ensure_ascii=False, separators=(",", ":")))
+        except Exception:
+            total_chars += len(str(params))
+
+    tokens = (total_chars + 3) // 4
+    # Bound the cache: drop the oldest entry when the cap is exceeded so a
+    # long-running process can't accumulate an unbounded number of stale
+    # ``id(tools)`` entries (id values are recycled after GC anyway).
+    if len(_TOOLS_TOKENS_CACHE) >= _TOOLS_TOKENS_CACHE_MAX:
+        _TOOLS_TOKENS_CACHE.pop(next(iter(_TOOLS_TOKENS_CACHE)), None)
+    _TOOLS_TOKENS_CACHE[key] = (n, first, last, tokens)
+    return tokens

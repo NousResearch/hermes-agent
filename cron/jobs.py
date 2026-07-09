@@ -559,7 +559,7 @@ def _recoverable_oneshot_run_at(
     their requested minute still run on the next tick. Once a one-shot has
     already run, it is never eligible again.
     """
-    if schedule.get("kind") != "once":
+    if not isinstance(schedule, dict) or schedule.get("kind") != "once":
         return None
     if last_run_at:
         return None
@@ -592,16 +592,18 @@ def _compute_grace_seconds(schedule: dict) -> int:
         return max(MIN_GRACE, min(grace, MAX_GRACE))
 
     if kind == "cron" and HAS_CRONITER:
-        try:
-            now = _hermes_now()
-            cron = croniter(schedule["expr"], now)
-            first = cron.get_next(datetime)
-            second = cron.get_next(datetime)
-            period_seconds = int((second - first).total_seconds())
-            grace = period_seconds // 2
-            return max(MIN_GRACE, min(grace, MAX_GRACE))
-        except Exception:
-            pass
+        expr = schedule.get("expr")
+        if expr:
+            try:
+                now = _hermes_now()
+                cron = croniter(expr, now)
+                first = cron.get_next(datetime)
+                second = cron.get_next(datetime)
+                period_seconds = int((second - first).total_seconds())
+                grace = period_seconds // 2
+                return max(MIN_GRACE, min(grace, MAX_GRACE))
+            except Exception:
+                pass
 
     return MIN_GRACE
 
@@ -614,11 +616,19 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
     """
     now = _hermes_now()
 
-    if schedule["kind"] == "once":
+    if not isinstance(schedule, dict):
+        return None
+    kind = schedule.get("kind")
+    if kind is None:
+        return None
+
+    if kind == "once":
         return _recoverable_oneshot_run_at(schedule, now, last_run_at=last_run_at)
 
-    elif schedule["kind"] == "interval":
-        minutes = schedule["minutes"]
+    elif kind == "interval":
+        minutes = schedule.get("minutes")
+        if minutes is None:
+            return None
         if last_run_at:
             # Next run is last_run + interval
             last = _ensure_aware(datetime.fromisoformat(last_run_at))
@@ -628,14 +638,17 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
             next_run = now + timedelta(minutes=minutes)
         return next_run.isoformat()
 
-    elif schedule["kind"] == "cron":
+    elif kind == "cron":
+        expr = schedule.get("expr")
+        if not expr:
+            return None
         if not HAS_CRONITER:
             logger.warning(
                 "Cannot compute next run for cron schedule %r: 'croniter' is "
                 "not installed. croniter is a core dependency as of v0.9.x; "
                 "reinstall hermes-agent or run 'pip install croniter' in your "
                 "runtime env.",
-                schedule.get("expr"),
+                expr,
             )
             return None
         # Use last_run_at as the croniter base when available, consistent
@@ -645,7 +658,7 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         base_time = now
         if last_run_at:
             base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
-        cron = croniter(schedule["expr"], base_time)
+        cron = croniter(expr, base_time)
         next_run = cron.get_next(datetime)
         return next_run.isoformat()
 
@@ -1672,6 +1685,23 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
 
     jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
     due = []
+
+    # Normalize malformed "schedule" records (direct jobs.json edit, old writers,
+    # corruption, etc.). "schedule" must be a dict; a null/string/etc. value
+    # makes `schedule.get("kind")` or direct `schedule["kind"]` / ["expr"] /
+    # ["minutes"] later raise and abort the entire scan *before* save_jobs().
+    # Healthy jobs then lose their fast-forwarded next_run_at (exactly the
+    # failure mode of the id-less job bug fixed above). Repair early at the
+    # source so the rest of the tick can proceed and persist progress for
+    # siblings.
+    for j in jobs:
+        if not isinstance(j.get("schedule"), dict):
+            j["schedule"] = {}
+            needs_save = True
+    for rj in raw_jobs:
+        if not isinstance(rj.get("schedule"), dict):
+            rj["schedule"] = {}
+            needs_save = True
     # Resolve the one-shot running-claim stale-recovery TTL once per scan
     # (derived from HERMES_CRON_TIMEOUT). See _oneshot_run_claim_ttl_seconds.
     _run_claim_ttl = _oneshot_run_claim_ttl_seconds()

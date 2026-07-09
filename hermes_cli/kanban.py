@@ -554,6 +554,24 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="JSON dict of structured facts to store on the latest completed run.",
     )
 
+    p_amend = sub.add_parser(
+        "amend",
+        help="Edit a task's title and/or body in place (recovery for a "
+             "wrong/stale spec, e.g. a mis-pointed source URL). Works on any "
+             "live task; use --body-file for large or multi-line bodies.",
+    )
+    p_amend.add_argument("task_id")
+    p_amend.add_argument("--title", default=None, help="New task title")
+    p_amend.add_argument(
+        "--body", default=None,
+        help="New task body (markdown). For multi-line bodies use --body-file.",
+    )
+    p_amend.add_argument(
+        "--body-file", default=None,
+        help="Read the new body from a file ('-' for stdin). "
+             "Mutually exclusive with --body.",
+    )
+
     p_block = sub.add_parser("block", help="Mark one or more tasks blocked")
     p_block.add_argument("task_id")
     p_block.add_argument("reason", nargs="*", help="Reason (also appended as a comment)")
@@ -953,6 +971,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "comment":  _cmd_comment,
             "complete": _cmd_complete,
             "edit":     _cmd_edit,
+            "amend":    _cmd_amend,
             "block":    _cmd_block,
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
@@ -1933,6 +1952,45 @@ def _cmd_edit(args: argparse.Namespace) -> int:
             )
             return 1
     print(f"Edited {args.task_id}")
+    return 0
+
+
+def _cmd_amend(args: argparse.Namespace) -> int:
+    body = getattr(args, "body", None)
+    body_file = getattr(args, "body_file", None)
+    if body is not None and body_file is not None:
+        print("kanban: use only one of --body / --body-file", file=sys.stderr)
+        return 2
+    if body_file is not None:
+        try:
+            if body_file == "-":
+                body = sys.stdin.read()
+            else:
+                with open(body_file, "r", encoding="utf-8") as fh:
+                    body = fh.read()
+        except OSError as exc:
+            print(f"kanban: --body-file: {exc}", file=sys.stderr)
+            return 2
+    title = getattr(args, "title", None)
+    if title is None and body is None:
+        print(
+            "kanban: nothing to edit — pass --title and/or --body/--body-file",
+            file=sys.stderr,
+        )
+        return 2
+    with kb.connect_closing() as conn:
+        try:
+            ok = kb.edit_task_fields(conn, args.task_id, title=title, body=body)
+        except ValueError as exc:
+            print(f"kanban: {exc}", file=sys.stderr)
+            return 2
+    if not ok:
+        print(f"cannot amend {args.task_id} (unknown id)", file=sys.stderr)
+        return 1
+    changed = ", ".join(
+        name for name, val in (("title", title), ("body", body)) if val is not None
+    )
+    print(f"Amended {args.task_id} ({changed})")
     return 0
 
 

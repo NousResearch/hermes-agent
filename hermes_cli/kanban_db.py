@@ -4538,6 +4538,62 @@ def edit_completed_task_result(
     return True
 
 
+def edit_task_fields(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+) -> bool:
+    """Amend a task's authored ``title`` and/or ``body`` in place.
+
+    This is the recovery path for a task created with a wrong or stale
+    spec — e.g. an ingest task pointing at the wrong source URL. Unlike
+    :func:`edit_completed_task_result` (which backfills the *result* of a
+    *done* task), this edits the spec of a task in any live state and
+    logs an ``edited`` event so the change is auditable rather than a
+    silent out-of-band DB write.
+
+    At least one of ``title`` / ``body`` must be provided. ``title`` is
+    stripped and may not be blank; ``body`` is stored verbatim (pass an
+    empty string to clear it). Returns ``False`` for an unknown id;
+    raises ``ValueError`` for an archived task or a blank title.
+    """
+    fields: list[str] = []
+    params: list[Any] = []
+    if title is not None:
+        stripped = title.strip()
+        if not stripped:
+            raise ValueError("title cannot be blank")
+        fields.append("title")
+        params.append(stripped)
+    if body is not None:
+        fields.append("body")
+        params.append(body)
+    if not fields:
+        raise ValueError("nothing to edit: provide title and/or body")
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if not row:
+            return False
+        if row["status"] == "archived":
+            raise ValueError(f"cannot edit archived task {task_id}")
+        set_clause = ", ".join(f"{name} = ?" for name in fields)
+        conn.execute(
+            f"UPDATE tasks SET {set_clause} WHERE id = ?",
+            (*params, task_id),
+        )
+        payload: dict[str, Any] = {"fields": fields}
+        if title is not None:
+            payload["title"] = title.strip()[:200]
+        if body is not None:
+            payload["body_len"] = len(body)
+        _append_event(conn, task_id, "edited", payload)
+    return True
+
+
 def block_task(
     conn: sqlite3.Connection,
     task_id: str,

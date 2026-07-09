@@ -4790,3 +4790,70 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# edit_task_fields — amend title/body of a live task
+# ---------------------------------------------------------------------------
+
+def _events(conn, task_id):
+    return conn.execute(
+        "SELECT kind, payload FROM task_events WHERE task_id = ? ORDER BY id",
+        (task_id,),
+    ).fetchall()
+
+
+def test_edit_task_fields_updates_title_and_body(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="wrong source", body="old body")
+        ok = kb.edit_task_fields(conn, tid, title="right source", body="new body")
+        assert ok is True
+        task = kb.get_task(conn, tid)
+        assert task.title == "right source"
+        assert task.body == "new body"
+        # An auditable `edited` event is logged (not a silent DB write).
+        kinds = [r["kind"] for r in _events(conn, tid)]
+        assert kinds.count("edited") == 1
+
+
+def test_edit_task_fields_body_only_leaves_title(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="keep me", body="old")
+        assert kb.edit_task_fields(conn, tid, body="repointed") is True
+        task = kb.get_task(conn, tid)
+        assert task.title == "keep me"
+        assert task.body == "repointed"
+
+
+def test_edit_task_fields_can_clear_body(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="t", body="something")
+        assert kb.edit_task_fields(conn, tid, body="") is True
+        assert kb.get_task(conn, tid).body == ""
+
+
+def test_edit_task_fields_unknown_id_returns_false(kanban_home):
+    with kb.connect() as conn:
+        assert kb.edit_task_fields(conn, "t_ghost", title="x") is False
+
+
+def test_edit_task_fields_blank_title_raises(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="t")
+        with pytest.raises(ValueError):
+            kb.edit_task_fields(conn, tid, title="   ")
+
+
+def test_edit_task_fields_nothing_to_edit_raises(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="t")
+        with pytest.raises(ValueError):
+            kb.edit_task_fields(conn, tid)
+
+
+def test_edit_task_fields_archived_raises(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="t")
+        kb.archive_task(conn, tid)
+        with pytest.raises(ValueError):
+            kb.edit_task_fields(conn, tid, title="x")

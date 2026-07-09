@@ -23,10 +23,11 @@ _DHH = display_hermes_home()  # user-facing display path (e.g. ~/.hermes or ~/.h
 _env_path = get_env_path()
 load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".env")
 
-from hermes_cli.colors import Colors, color
+from hermes_cli.colors import Colors, color, RichColors, rich_color
 from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
+import rich
 
 
 _PROVIDER_ENV_HINTS = (
@@ -175,22 +176,22 @@ def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool
 
 
 def check_ok(text: str, detail: str = ""):
-    print(f"  {color('✓', Colors.GREEN)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
+    rich.print(f"  {rich_color('✓', RichColors.GREEN)} {text}" + (f" {rich_color(detail, RichColors.DIM)}" if detail else ""))
 
 def check_warn(text: str, detail: str = ""):
-    print(f"  {color('⚠', Colors.YELLOW)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
+    rich.print(f"  {rich_color('⚠', RichColors.YELLOW)} {text}" + (f" {rich_color(detail, RichColors.DIM)}" if detail else ""))
 
 def check_fail(text: str, detail: str = ""):
-    print(f"  {color('✗', Colors.RED)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
+    rich.print(f"  {rich_color('✗', RichColors.RED)} {text}" + (f" {rich_color(detail, RichColors.DIM)}" if detail else ""))
 
 def check_info(text: str):
-    print(f"    {color('→', Colors.CYAN)} {text}")
+    rich.print(f"    {rich_color('→', RichColors.CYAN)} {text}")
 
 
 def _section(title: str) -> None:
     """Print a doctor section banner: blank line + bold cyan ◆ title."""
-    print()
-    print(color(f"◆ {title}", Colors.CYAN, Colors.BOLD))
+    rich.print()
+    rich.print(rich_color(f"◆ {title}", RichColors.CYAN, RichColors.BOLD))
 
 
 def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None:
@@ -527,23 +528,23 @@ def run_doctor(args):
         )
         valid_ids = {a.id for a in ADVISORIES}
         if ack_target not in valid_ids:
-            print(color(
+            rich.print(rich_color(
                 f"Unknown advisory ID: {ack_target!r}. Known IDs: "
                 f"{', '.join(sorted(valid_ids)) or '(none)'}",
-                Colors.RED,
+                RichColors.RED,
             ))
             sys.exit(2)
         if ack_advisory(ack_target):
-            print(color(
+            rich.print(rich_color(
                 f"  ✓ Acknowledged advisory {ack_target}. "
                 f"It will no longer trigger startup banners.",
-                Colors.GREEN,
+                RichColors.GREEN,
             ))
         else:
-            print(color(
+            rich.print(rich_color(
                 f"  ✗ Failed to persist ack for {ack_target}. "
                 f"Check ~/.hermes/config.yaml is writable.",
-                Colors.RED,
+                RichColors.RED,
             ))
             sys.exit(1)
         return
@@ -552,10 +553,10 @@ def run_doctor(args):
     manual_issues = []  # issues that can't be auto-fixed
     fixed_count = 0
 
-    print()
-    print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
-    print(color("│                 🩺 Hermes Doctor                        │", Colors.CYAN))
-    print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+    rich.print()
+    rich.print(rich_color("┌─────────────────────────────────────────────────────────┐", RichColors.CYAN))
+    rich.print(rich_color("│                 🩺 Hermes Doctor                        │", RichColors.CYAN))
+    rich.print(rich_color("└─────────────────────────────────────────────────────────┘", RichColors.CYAN))
 
     _section("Security Advisories")
     try:
@@ -577,9 +578,9 @@ def run_doctor(args):
                 # check_fail header so it reads as a single section.
                 for line in full_remediation_text(hit):
                     if line:
-                        print(f"    {color(line, Colors.YELLOW)}")
+                        rich.print(f"    {rich_color(line, RichColors.YELLOW)}")
                     else:
-                        print()
+                        rich.print()
                 # Funnel into the action list so the summary block surfaces it
                 # for users who scroll past the section.
                 manual_issues.append(
@@ -1761,8 +1762,8 @@ def run_doctor(args):
         if not key:
             return _ConnectivityResult(
                 "OpenRouter API",
-                [(color("⚠", Colors.YELLOW), "OpenRouter API",
-                  color("(not configured)", Colors.DIM))],
+                [(rich_color("⚠", RichColors.YELLOW), "OpenRouter API",
+                  rich_color("(not configured)", RichColors.DIM))],
                 [],
             )
         try:
@@ -1775,21 +1776,21 @@ def run_doctor(args):
             if r.status_code == 200:
                 return _ConnectivityResult(
                     "OpenRouter API",
-                    [(color("✓", Colors.GREEN), "OpenRouter API", "")],
+                    [(rich_color("✓", RichColors.GREEN), "OpenRouter API", "")],
                     [],
                 )
             if r.status_code == 401:
                 return _ConnectivityResult(
                     "OpenRouter API",
-                    [(color("✗", Colors.RED), "OpenRouter API",
-                      color("(invalid API key)", Colors.DIM))],
+                    [(rich_color("✗", RichColors.RED), "OpenRouter API",
+                      rich_color("(invalid API key)", RichColors.DIM))],
                     ["Check OPENROUTER_API_KEY in .env"],
                 )
             if r.status_code == 402:
                 return _ConnectivityResult(
                     "OpenRouter API",
-                    [(color("✗", Colors.RED), "OpenRouter API",
-                      color("(out of credits — payment required)", Colors.DIM))],
+                    [(rich_color("✗", RichColors.RED), "OpenRouter API",
+                      rich_color("(out of credits — payment required)", RichColors.DIM))],
                     ["OpenRouter account has insufficient credits. "
                      "Fix: run 'hermes config set model.provider <provider>' "
                      "to switch providers, or fund your OpenRouter account "
@@ -1798,22 +1799,22 @@ def run_doctor(args):
             if r.status_code == 429:
                 return _ConnectivityResult(
                     "OpenRouter API",
-                    [(color("✗", Colors.RED), "OpenRouter API",
-                      color("(rate limited)", Colors.DIM))],
+                    [(rich_color("✗", RichColors.RED), "OpenRouter API",
+                      rich_color("(rate limited)", RichColors.DIM))],
                     ["OpenRouter rate limit hit — consider switching to "
                      "a different provider or waiting"],
                 )
             return _ConnectivityResult(
                 "OpenRouter API",
-                [(color("✗", Colors.RED), "OpenRouter API",
-                  color(f"(HTTP {r.status_code})", Colors.DIM))],
+                [(rich_color("✗", RichColors.RED), "OpenRouter API",
+                  rich_color(f"(HTTP {r.status_code})", RichColors.DIM))],
                 [],
             )
         except Exception as e:
             return _ConnectivityResult(
                 "OpenRouter API",
-                [(color("✗", Colors.RED), "OpenRouter API",
-                  color(f"({e})", Colors.DIM))],
+                [(rich_color("✗", RichColors.RED), "OpenRouter API",
+                  rich_color(f"({e})", RichColors.DIM))],
                 ["Check network connectivity"],
             )
 
@@ -1862,27 +1863,27 @@ def run_doctor(args):
             if r.status_code == 200:
                 return _ConnectivityResult(
                     "Anthropic API",
-                    [(color("✓", Colors.GREEN), "Anthropic API", "")],
+                    [(rich_color("✓", RichColors.GREEN), "Anthropic API", "")],
                     [],
                 )
             if r.status_code == 401:
                 return _ConnectivityResult(
                     "Anthropic API",
-                    [(color("✗", Colors.RED), "Anthropic API",
-                      color("(invalid API key)", Colors.DIM))],
+                    [(rich_color("✗", RichColors.RED), "Anthropic API",
+                      rich_color("(invalid API key)", RichColors.DIM))],
                     [],
                 )
             return _ConnectivityResult(
                 "Anthropic API",
-                [(color("⚠", Colors.YELLOW), "Anthropic API",
-                  color("(couldn't verify)", Colors.DIM))],
+                [(rich_color("⚠", RichColors.YELLOW), "Anthropic API",
+                  rich_color("(couldn't verify)", RichColors.DIM))],
                 [],
             )
         except Exception as e:
             return _ConnectivityResult(
                 "Anthropic API",
-                [(color("⚠", Colors.YELLOW), "Anthropic API",
-                  color(f"({e})", Colors.DIM))],
+                [(rich_color("⚠", RichColors.YELLOW), "Anthropic API",
+                  rich_color(f"({e})", RichColors.DIM))],
                 [],
             )
 
@@ -1899,8 +1900,8 @@ def run_doctor(args):
         if not supports_health_check:
             return _ConnectivityResult(
                 pname,
-                [(color("✓", Colors.GREEN), label,
-                  color("(key configured)", Colors.DIM))],
+                [(rich_color("✓", RichColors.GREEN), label,
+                  rich_color("(key configured)", RichColors.DIM))],
                 [],
             )
         try:
@@ -1947,27 +1948,27 @@ def run_doctor(args):
             if r.status_code == 200:
                 return _ConnectivityResult(
                     pname,
-                    [(color("✓", Colors.GREEN), label, "")],
+                    [(rich_color("✓", RichColors.GREEN), label, "")],
                     [],
                 )
             if r.status_code == 401:
                 return _ConnectivityResult(
                     pname,
-                    [(color("✗", Colors.RED), label,
-                      color("(invalid API key)", Colors.DIM))],
+                    [(rich_color("✗", RichColors.RED), label,
+                      rich_color("(invalid API key)", RichColors.DIM))],
                     [f"Check {env_vars[0]} in .env"],
                 )
             return _ConnectivityResult(
                 pname,
-                [(color("⚠", Colors.YELLOW), label,
-                  color(f"(HTTP {r.status_code})", Colors.DIM))],
+                [(rich_color("⚠", RichColors.YELLOW), label,
+                  rich_color(f"(HTTP {r.status_code})", RichColors.DIM))],
                 [],
             )
         except Exception as e:
             return _ConnectivityResult(
                 pname,
-                [(color("⚠", Colors.YELLOW), label,
-                  color(f"({e})", Colors.DIM))],
+                [(rich_color("⚠", RichColors.YELLOW), label,
+                  rich_color(f"({e})", RichColors.DIM))],
                 [],
             )
 
@@ -2000,24 +2001,24 @@ def run_doctor(args):
             n = len(resp.get("modelSummaries", []))
             return _ConnectivityResult(
                 "AWS Bedrock",
-                [(color("✓", Colors.GREEN), label,
-                  color(f"({auth_var}, {region}, {n} models)", Colors.DIM))],
+                [(rich_color("✓", RichColors.GREEN), label,
+                  rich_color(f"({auth_var}, {region}, {n} models)", RichColors.DIM))],
                 [],
             )
         except ImportError:
             return _ConnectivityResult(
                 "AWS Bedrock",
-                [(color("⚠", Colors.YELLOW), label,
-                  color(f"(boto3 not installed — {sys.executable} -m pip install boto3)",
-                        Colors.DIM))],
+                [(rich_color("⚠", RichColors.YELLOW), label,
+                  rich_color(f"(boto3 not installed — {sys.executable} -m pip install boto3)",
+                        RichColors.DIM))],
                 [f"Install boto3 for Bedrock: {sys.executable} -m pip install boto3"],
             )
         except Exception as e:
             err_name = type(e).__name__
             return _ConnectivityResult(
                 "AWS Bedrock",
-                [(color("⚠", Colors.YELLOW), label,
-                  color(f"({err_name}: {e})", Colors.DIM))],
+                [(rich_color("⚠", RichColors.YELLOW), label,
+                  rich_color(f"({err_name}: {e})", RichColors.DIM))],
                 [f"AWS Bedrock: {err_name} — check IAM permissions for "
                  f"bedrock:ListFoundationModels"],
             )
@@ -2057,16 +2058,16 @@ def run_doctor(args):
         except Exception as exc:
             return _ConnectivityResult(
                 "Azure Foundry (Entra ID)",
-                [(color("⚠", Colors.YELLOW), label,
-                  color(f"(adapter import failed: {exc})", Colors.DIM))],
+                [(rich_color("⚠", RichColors.YELLOW), label,
+                  rich_color(f"(adapter import failed: {exc})", RichColors.DIM))],
                 [f"Azure Foundry adapter import failed: {exc}"],
             )
 
         if not has_azure_identity_installed():
             return _ConnectivityResult(
                 "Azure Foundry (Entra ID)",
-                [(color("⚠", Colors.YELLOW), label,
-                  color("(azure-identity not installed)", Colors.DIM))],
+                [(rich_color("⚠", RichColors.YELLOW), label,
+                  rich_color("(azure-identity not installed)", RichColors.DIM))],
                 [f"Install azure-identity: {sys.executable} -m pip install azure-identity"],
             )
 
@@ -2087,8 +2088,8 @@ def run_doctor(args):
             tag = ", ".join(env_sources) if env_sources else "default credential chain"
             return _ConnectivityResult(
                 "Azure Foundry (Entra ID)",
-                [(color("✓", Colors.GREEN), label,
-                  color(f"({tag}, scope={scope})", Colors.DIM))],
+                [(rich_color("✓", RichColors.GREEN), label,
+                  rich_color(f"({tag}, scope={scope})", RichColors.DIM))],
                 [],
             )
         err = info.get("error") or "credential chain exhausted"
@@ -2098,8 +2099,8 @@ def run_doctor(args):
         )
         return _ConnectivityResult(
             "Azure Foundry (Entra ID)",
-            [(color("⚠", Colors.YELLOW), label,
-              color(f"({err})", Colors.DIM))],
+            [(rich_color("⚠", RichColors.YELLOW), label,
+              rich_color(f"({err})", RichColors.DIM))],
             [f"Azure Foundry Entra: {err}. {hint}"],
         )
 
@@ -2124,7 +2125,7 @@ def run_doctor(args):
 
     # Print a single status line so users see something happening, then
     # fan out. ``\r`` clears it once the first real result line lands.
-    print(f"  {color(f'Running {len(_probes)} connectivity checks in parallel…', Colors.DIM)}",
+    rich.print(f"  {rich_color(f'Running {len(_probes)} connectivity checks in parallel…', RichColors.DIM)}",
           end="", flush=True)
 
     # Disable boto3's EC2 instance-metadata-service probe for the duration
@@ -2153,13 +2154,13 @@ def run_doctor(args):
             os.environ["AWS_EC2_METADATA_DISABLED"] = _imds_prev
 
     # Clear the "Running …" line and print all results in submission order.
-    print("\r" + " " * 70 + "\r", end="")
+    rich.print("\r" + " " * 70 + "\r", end="")
     for _r in _results:
         for _glyph, _label, _detail in _r.lines:
             if _detail:
-                print(f"  {_glyph} {_label} {_detail}")
+                rich.print(f"  {_glyph} {_label} {_detail}")
             else:
-                print(f"  {_glyph} {_label}")
+                rich.print(f"  {_glyph} {_label}")
         _issues_to_add = list(_r.issues)
         if _issues_to_add and _has_healthy_oauth_fallback_for_apikey_provider(_r.label):
             _issues_to_add = []
@@ -2382,31 +2383,31 @@ def run_doctor(args):
     except Exception:
         pass
 
-    print()
+    rich.print()
     remaining_issues = issues + manual_issues
     if should_fix and fixed_count > 0:
-        print(color("─" * 60, Colors.GREEN))
-        print(color(f"  Fixed {fixed_count} issue(s).", Colors.GREEN, Colors.BOLD), end="")
+        rich.print(rich_color("─" * 60, RichColors.GREEN))
+        rich.print(rich_color(f"  Fixed {fixed_count} issue(s).", RichColors.GREEN, RichColors.BOLD), end="")
         if remaining_issues:
-            print(color(f" {len(remaining_issues)} issue(s) require manual intervention.", Colors.YELLOW, Colors.BOLD))
+            rich.print(rich_color(f" {len(remaining_issues)} issue(s) require manual intervention.", RichColors.YELLOW, RichColors.BOLD))
         else:
-            print()
-        print()
+            rich.print()
+        rich.print()
         if remaining_issues:
             for i, issue in enumerate(remaining_issues, 1):
-                print(f"  {i}. {issue}")
-            print()
+                rich.print(f"  {i}. {issue}")
+            rich.print()
     elif remaining_issues:
-        print(color("─" * 60, Colors.YELLOW))
-        print(color(f"  Found {len(remaining_issues)} issue(s) to address:", Colors.YELLOW, Colors.BOLD))
-        print()
+        rich.print(rich_color("─" * 60, RichColors.YELLOW))
+        rich.print(rich_color(f"  Found {len(remaining_issues)} issue(s) to address:", RichColors.YELLOW, RichColors.BOLD))
+        rich.print()
         for i, issue in enumerate(remaining_issues, 1):
-            print(f"  {i}. {issue}")
-        print()
+            rich.print(f"  {i}. {issue}")
+        rich.print()
         if not should_fix:
-            print(color("  Tip: run 'hermes doctor --fix' to auto-fix what's possible.", Colors.DIM))
+            rich.print(rich_color("  Tip: run 'hermes doctor --fix' to auto-fix what's possible.", RichColors.DIM))
     else:
-        print(color("─" * 60, Colors.GREEN))
-        print(color("  All checks passed! 🎉", Colors.GREEN, Colors.BOLD))
+        rich.print(rich_color("─" * 60, RichColors.GREEN))
+        rich.print(rich_color("  All checks passed! 🎉", RichColors.GREEN, RichColors.BOLD))
     
-    print()
+    rich.print()

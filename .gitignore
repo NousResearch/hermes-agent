@@ -64,6 +64,15 @@ ignored/
 .worktrees/
 environments/benchmarks/evals/
 
+# Layer 5 memory index (SQLite) — derived cache, rebuildable from markdown.
+# Markdown is the source of truth; this DB is never an artifact of the repo.
+# (Live path ~/.hermes/memory/ is outside this repo; this guards in-repo dev
+# runs where HERMES_HOME overlaps the checkout.)
+.hermes/memory/
+memory/
+**/memory/index.db
+*.memory-index.db
+
 # Web UI build output
 hermes_cli/web_dist/
 apps/desktop/build/

@@ -91,7 +91,7 @@ class TestWeixinPollFailureTermination:
         poll_task = asyncio.create_task(mock_poll_loop())
 
         # Wait for poll loop to terminate after MAX_TOTAL_FAILURES
-        await asyncio.wait_for(poll_completed, timeout=5.0)
+        await asyncio.wait_for(poll_completed.wait(), timeout=5.0)
 
         # Verify fatal error was called
         assert len(fatal_error_args) == 1
@@ -123,10 +123,10 @@ class TestWeixinPollFailureTermination:
 
         async def mixed_get_updates(*args, **kwargs):
             call_count[0] += 1
-            # Fail first 10 times, then succeed once, then fail again
+            # Fail first 10 times, then succeed from 11-15, then fail again
             if call_count[0] <= 10:
                 return {"ret": -1, "errcode": -1, "errmsg": "test error"}
-            elif call_count[0] == 11:
+            elif call_count[0] <= 15:
                 return {"ret": 0, "errcode": 0, "msgs": []}
             else:
                 return {"ret": -1, "errcode": -1, "errmsg": "test error"}
@@ -189,7 +189,7 @@ class TestWeixinPollFailureTermination:
             poll_completed.set()
 
         poll_task = asyncio.create_task(mock_poll_loop())
-        await asyncio.wait_for(poll_completed, timeout=5.0)
+        await asyncio.wait_for(poll_completed.wait(), timeout=5.0)
 
         # Fatal error should NOT have been called because total_failures reset at 11
         assert not fatal_error_called

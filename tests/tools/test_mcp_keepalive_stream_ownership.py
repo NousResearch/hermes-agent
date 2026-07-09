@@ -28,65 +28,15 @@ from mcp.shared.message import SessionMessage
 from mcp.shared.session import BaseSession
 from mcp.types import JSONRPCNotification, JSONRPCRequest
 
+# Import the production monkey-patch components directly. The production
+# code in mcp_tool.py patches BaseSession._receive_loop at import time,
+# so these are the authoritative implementations. Keeping a separate
+# test-local copy caused isinstance() mismatches when both modules were
+# loaded (production class vs test-local class).
+from tools.mcp_tool import _NonClosingStreamWrapper, _patched_receive_loop
+
 
 # ---------------------------------------------------------------------------
-# The monkey-patch (mirrors production code in mcp_tool.py exactly)
-# ---------------------------------------------------------------------------
-
-class _NonClosingStreamWrapper:
-    """Prevents an async context manager from being closed on exit.
-
-    Wraps a stream so that ``async with wrapped:`` is a no-op — the
-    real stream stays open even after the context manager exits.
-    """
-
-    def __init__(self, stream):
-        self._stream = stream
-
-    def __getattr__(self, name):
-        return getattr(self._stream, name)
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        return False
-
-    async def send(self, item):
-        """Delegate send() to the underlying stream."""
-        return await self._stream.send(item)
-
-
-_original_receive_loop = BaseSession._receive_loop
-
-
-async def _patched_receive_loop(self) -> None:
-    """Patched _receive_loop that does NOT close write_stream on exit.
-
-    Mirrors the production code in mcp_tool.py exactly:
-    - Wraps write_stream in _NonClosingStreamWrapper before calling original
-    - Skips wrapping if already wrapped (re-entry during reconnect)
-    - Intentionally does NOT restore the original write_stream after
-      _receive_loop exits, because the keepalive timer can fire between
-      _receive_loop exit and session teardown
-    """
-    if isinstance(self._write_stream, _NonClosingStreamWrapper):
-        # Already wrapped (e.g., re-entry during reconnect). Skip.
-        await _original_receive_loop(self)
-        return
-
-    original_write_stream = self._write_stream
-    self._write_stream = _NonClosingStreamWrapper(original_write_stream)
-    await _original_receive_loop(self)
-    # Intentionally NOT restoring original_write_stream here.
-    # The keepalive timer can fire between _receive_loop exit and
-    # session teardown; restoring the unwrapped stream would let
-    # the original async-with __aexit__ close it.
-
-
-# Apply the monkey-patch BEFORE any tests create BaseSession instances
-BaseSession._receive_loop = _patched_receive_loop
-
 
 # ---------------------------------------------------------------------------
 # Minimal request/notification types for testing BaseSession construction.
@@ -259,23 +209,22 @@ class TestReceiveLoopStreamOwnership:
         """
         session, read_stream, read_stream_writer, write_stream, write_stream_reader = _make_session()
 
-        # Manually wrap write_stream to simulate re-entry
+        # Pre-wrap write_stream to simulate re-entry. Use the production
+        # _NonClosingStreamWrapper (imported above) so the isinstance()
+        # check in _patched_receive_loop recognizes it.
         original = session._write_stream
         session._write_stream = _NonClosingStreamWrapper(original)
 
-        # Verify the re-entry guard: calling _patched_receive_loop on a
-        # session with an already-wrapped stream should call the original
-        # _receive_loop directly without double-wrapping.
-        # We can't easily test "no double-wrap" in a black-box way, but we
-        # can verify the stream is still wrapped exactly once after the call.
         await read_stream_writer.aclose()
 
         async with session:
             await asyncio.sleep(0.1)
 
         # After exit, write_stream should still be wrapped exactly once
+        # (the pre-wrap we set, NOT double-wrapped)
         assert isinstance(session._write_stream, _NonClosingStreamWrapper)
-        # The inner stream should be the original, not another wrapper
+        # The inner stream should be the original MemoryObjectSendStream,
+        # not another _NonClosingStreamWrapper (which would mean double-wrap)
         assert isinstance(session._write_stream._stream, type(original)), (
             "Inner stream should be the original MemoryObjectSendStream, "
             "not another _NonClosingStreamWrapper (double-wrap bug)"

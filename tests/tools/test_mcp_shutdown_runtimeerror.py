@@ -268,11 +268,23 @@ class TestRuntimeErrorOnShutdown:
     #
     # t.cancel() internally calls loop.call_soon(callback), which checks
     # loop.is_closed() and raises RuntimeError("Event loop is closed").
-    # asyncio.Task is a C extension type so we can't monkey-patch cancel().
-    # Instead, we test the guard by verifying that the production code
-    # has try/except RuntimeError around every t.cancel() call in the
-    # finally blocks of _wait_for_lifecycle_event and
-    # _wait_for_reconnect_or_shutdown.
+    #
+    # We use structural (source-level) tests rather than runtime tests
+    # because asyncio.Task is a C extension type — monkey-patching
+    # cancel() raises TypeError("cannot set 'cancel' attribute of
+    # immutable type '_asyncio.Task'"), and closing the real event loop
+    # mid-test produces unreliable teardown (asyncio.run() itself needs
+    # a live loop). The structural tests verify that every t.cancel()
+    # call inside a finally block is wrapped in try/except RuntimeError,
+    # which is the exact pattern needed to prevent the noisy traceback
+    # on /reload-mcp and /exit.
+    #
+    # Other .cancel() sites in mcp_tool.py (shutdown(), _run_with_timeout)
+    # are NOT vulnerable: they run on a live event loop with an active
+    # await above them, so loop.is_closed() is always False. Only the
+    # finally blocks in _wait_for_lifecycle_event and
+    # _wait_for_reconnect_or_shutdown can encounter a closed loop,
+    # because they run during asyncio.run() teardown.
 
     def test_wait_for_lifecycle_event_cancel_is_guarded(self):
         """Verify _wait_for_lifecycle_event's finally block wraps t.cancel()

@@ -1932,6 +1932,10 @@ class MCPServerTask:
                         self._reconnect_event.set()
                         break
         finally:
+            # NOTE: t.cancel() raises RuntimeError("Event loop is closed")
+            # during asyncio.run() teardown. Other .cancel() sites in this
+            # class (shutdown(), _run_with_timeout) are safe because they
+            # run on a live event loop with an active await above them.
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
                     try:
@@ -1981,6 +1985,10 @@ class MCPServerTask:
                 timeout=timeout,
             )
         finally:
+            # NOTE: t.cancel() raises RuntimeError("Event loop is closed")
+            # during asyncio.run() teardown. Other .cancel() sites in this
+            # class (shutdown(), _run_with_timeout) are safe because they
+            # run on a live event loop with an active await above them.
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
                     try:

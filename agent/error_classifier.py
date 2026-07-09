@@ -173,6 +173,10 @@ _USAGE_LIMIT_PATTERNS = [
     "quota",
     "limit exceeded",
     "key limit exceeded",
+    "session limit",
+    "session usage limit",
+    "session budget",
+    "resource exhausted",
 ]
 
 # Patterns confirming usage limit is transient (not billing)
@@ -1267,6 +1271,7 @@ def _classify_by_error_code(
             FailoverReason.rate_limit,
             retryable=True,
             should_rotate_credential=True,
+            should_fallback=True,
         )
 
     if code_lower in {

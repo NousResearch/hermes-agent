@@ -1007,6 +1007,7 @@ class TestClassifyApiError:
         )
         result = classify_api_error(e)
         assert result.reason == FailoverReason.rate_limit
+        assert result.should_fallback is True
 
     def test_error_code_model_not_found(self):
         e = MockAPIError(
@@ -1087,6 +1088,7 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.billing
         assert result.retryable is False
         assert result.should_rotate_credential is True
+        assert result.should_fallback is True
 
     def test_message_quota_with_reset_window_is_rate_limit(self):
         """'quota' + 'resets at' with no status code → rate_limit."""
@@ -1094,6 +1096,7 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.rate_limit
         assert result.retryable is True
+        assert result.should_fallback is True
 
     def test_message_limit_exceeded_with_wait_is_rate_limit(self):
         """'limit exceeded' + 'wait' with no status code → rate_limit."""
@@ -1101,6 +1104,21 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.rate_limit
         assert result.retryable is True
+        assert result.should_fallback is True
+
+    def test_message_session_limit_without_status_falls_back_as_billing(self):
+        """Autonomous workers can receive session-limit failures without HTTP metadata."""
+        e = Exception("you have reached your session usage limit for this account")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_message_resource_exhausted_without_status_falls_back(self):
+        e = Exception("RESOURCE_EXHAUSTED: weekly GPU session budget exhausted")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.should_fallback is True
 
     # ── Unknown / fallback ──
 
@@ -2046,4 +2064,3 @@ class Test408RequestTimeout:
         assert result.reason == FailoverReason.timeout
         assert result.retryable is True
         assert result.should_compress is False
-

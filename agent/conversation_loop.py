@@ -161,6 +161,21 @@ def _ra():
     return run_agent
 
 
+def _should_activate_bounded_fallback(classified, retry_count: int) -> bool:
+    """Return whether this classified failure should enter the fallback chain.
+
+    The error classifier is the source of truth for deterministic provider
+    failures that should degrade to a configured fallback model/provider.  Keep
+    the loop-level exception here narrow: transport failures get one retry
+    window before failover because many are transient socket/backend blips.
+    """
+    if classified.reason in {FailoverReason.timeout, FailoverReason.overloaded}:
+        return retry_count >= 2
+    if classified.should_compress:
+        return False
+    return bool(classified.should_fallback)
+
+
 def _nous_entitlement_message(capability: str) -> str:
     try:
         from hermes_cli.nous_account import (
@@ -3159,9 +3174,9 @@ def run_conversation(
                 )
                 if _is_zai_coding_overload:
                     max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
-                _should_fallback = (
-                    is_rate_limited
-                    or (_is_transport_failure and retry_count >= 2)
+                _should_fallback = _should_activate_bounded_fallback(
+                    classified,
+                    retry_count,
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
@@ -3173,8 +3188,12 @@ def run_conversation(
                     # etc.) is throttling OpenRouter, so always fall back to a
                     # different model regardless of pool state.
                     _is_upstream = classified.reason == FailoverReason.upstream_rate_limit
+                    _pool_recovery_reason = classified.reason in {
+                        FailoverReason.rate_limit,
+                        FailoverReason.billing,
+                    }
                     pool_may_recover = (
-                        False if _is_upstream
+                        False if _is_upstream or not _pool_recovery_reason
                         else _ra()._pool_may_recover_from_rate_limit(
                             agent._credential_pool,
                         )
@@ -3196,8 +3215,17 @@ def run_conversation(
                             agent._buffer_status(
                                 "⚠️ Provider unreachable — switching to fallback provider..."
                             )
+                        elif classified.reason == FailoverReason.model_not_found:
+                            agent._buffer_status(
+                                "⚠️ Model is unavailable — switching to fallback provider..."
+                            )
+                        elif classified.is_auth:
+                            agent._buffer_status(
+                                "🔐 Authentication failed and could not be refreshed — "
+                                "switching to fallback provider..."
+                            )
                         else:
-                            agent._buffer_status("⚠️ Rate limited — switching to fallback provider...")
+                            agent._buffer_status("⚠️ Provider rejected the request — switching to fallback provider...")
                         if agent._try_activate_fallback(reason=classified.reason):
                             active_system_prompt = _sync_failover_system_message(
                                 agent, api_messages, active_system_prompt)

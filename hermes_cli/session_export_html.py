@@ -706,7 +706,7 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
                 <div class="tool-call">
                     <div class="tool-call-header">
                         {ICON_CHEVRON_RIGHT.replace('class="', 'class="chevron ')}
-                        {ICON_WRENCH} Tool Call: {fn_name}
+                        {ICON_WRENCH} Tool Call: {_escape_html(fn_name)}
                     </div>
                     <div class="tool-call-content">
                         <pre><code>{_escape_html(args)}</code></pre>

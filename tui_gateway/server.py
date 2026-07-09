@@ -1506,22 +1506,59 @@ def _normalize_completion_path(path_part: str) -> str:
     return expanded
 
 
-def _completion_cwd(params: dict | None = None) -> str:
-    params = params or {}
-    raw = (
-        params.get("cwd")
+def _resolve_completion_cwd(params: dict) -> str:
+    """Resolve the working directory for a new session.
+
+    Precedence for a NAMED profile (app-global remote mode, where one backend
+    serves every profile): the profile's own ``terminal.cwd`` wins over the
+    client-sent cwd — UNLESS the client cwd is a deliberate workspace choice
+    rather than the desktop's inherited app-global default. The desktop seeds a
+    plain new chat's cwd from its app-global workspace (the launch profile's
+    directory), which must NOT override a named profile's configured workspace
+    (#52589). A path that differs from the launch profile's own directory is
+    treated as an explicit choice and is honored, so clicking a worktree lane
+    still opens that specific folder for the named profile.
+    """
+    profile = (params.get("profile") or "").strip() or None
+    profile_home = _profile_home(profile)
+    client_cwd = params.get("cwd")
+
+    if profile_home is not None and client_cwd:
+        profile_cwd = _profile_configured_cwd(profile_home)
+        if profile_cwd:
+            launch_cwd = _launch_configured_cwd() or os.environ.get("TERMINAL_CWD")
+            if launch_cwd:
+                client_abs = os.path.abspath(os.path.expanduser(str(client_cwd).strip()))
+                launch_abs = os.path.abspath(os.path.expanduser(str(launch_cwd).strip()))
+                # Client sent the launch profile's inherited default workspace
+                # (the desktop's app-global dir), not an explicit per-session
+                # choice → honor the named profile's terminal.cwd instead.
+                if client_abs == launch_abs:
+                    return profile_cwd
+            # else: launch profile has no configured workspace, so the client cwd
+            # is an explicit choice (e.g. a workspace lane) → fall through.
+
+    # Default chain: explicit client cwd → named profile config → launch config
+    # → env var → process cwd.
+    return (
+        client_cwd
         or _sessions.get(params.get("session_id") or "", {}).get("cwd")
         # A session bound to another profile resolves its workspace from THAT
         # profile's config before falling back to the launch profile's env var.
-        or _profile_configured_cwd(_profile_home(params.get("profile")))
-        # The launch profile's dashboard /chat attaches to the dashboard's
-        # in-memory gateway, which does NOT inherit the PTY child's bridged
-        # TERMINAL_CWD. Read the launch profile's config.yaml directly so a
-        # configured terminal.cwd wins over a stale process env / launch dir.
+        or _profile_configured_cwd(profile_home)
+        # The launch profile's dashboard /chat attaches to the dashboard
+        # process's in-memory TUI gateway, which does NOT inherit the PTY child's
+        # bridged TERMINAL_CWD. Read the launch profile's config.yaml directly so
+        # a configured terminal.cwd wins over a stale process env / launch dir.
         or _launch_configured_cwd()
         or os.environ.get("TERMINAL_CWD")
         or os.getcwd()
     )
+
+
+def _completion_cwd(params: dict | None = None) -> str:
+    params = params or {}
+    raw = _resolve_completion_cwd(params)
     try:
         resolved = os.path.abspath(os.path.expanduser(str(raw)))
         if os.path.isdir(resolved):

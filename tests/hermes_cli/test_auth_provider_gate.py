@@ -171,3 +171,94 @@ def test_env_pool_entry_counts_when_var_still_resolves(tmp_path, monkeypatch):
 
     from hermes_cli.auth import is_provider_explicitly_configured
     assert is_provider_explicitly_configured("deepseek") is True
+
+
+# ─── aws_sdk providers (Bedrock) ─────────────────────────────────────────
+#
+# Bedrock is registered with auth_type="aws_sdk" and an empty
+# api_key_env_vars tuple, so the api_key env-var loop never sees it.
+# Setting AWS_BEARER_TOKEN_BEDROCK (or an access-key pair) in .env is
+# exactly as explicit as pasting ANTHROPIC_API_KEY, and must count —
+# otherwise the desktop picker's explicit_only filter hides Bedrock even
+# though list_authenticated_providers builds a full row for it.
+#
+# Ambient AWS credential sources (SSO profiles, EC2 IMDS, container
+# credentials) must NOT count: aws_sdk detection here is env-var only,
+# never boto3's full chain.
+
+
+@pytest.fixture()
+def _clean_aws_env(monkeypatch):
+    """Strip AWS env vars so developer/CI AWS credentials don't leak in."""
+    for key in (
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_bedrock_not_explicit_without_aws_env(tmp_path, monkeypatch, _clean_aws_env):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("bedrock") is False
+
+
+def test_bedrock_bearer_token_counts_as_explicit(tmp_path, monkeypatch, _clean_aws_env):
+    """AWS_BEARER_TOKEN_BEDROCK is Bedrock-specific — the user set it for
+    exactly this provider, so it gates like a provider API key."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "ABSKexample-bearer-token-value")
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("bedrock") is True
+
+
+def test_bedrock_access_key_pair_counts_as_explicit(tmp_path, monkeypatch, _clean_aws_env):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE1234567890")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "examplesecretexamplesecretexample0000000")
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("bedrock") is True
+
+
+def test_bedrock_access_key_without_secret_is_not_explicit(tmp_path, monkeypatch, _clean_aws_env):
+    """A lone AWS_ACCESS_KEY_ID can't authenticate anything — require the pair."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE1234567890")
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("bedrock") is False
+
+
+def test_bedrock_ambient_aws_profile_is_not_explicit(tmp_path, monkeypatch, _clean_aws_env):
+    """AWS_PROFILE is ambient machine state (SSO / shared credentials file),
+    not an explicit Hermes provider choice — same principle as gh_cli-seeded
+    Copilot pool entries (#56974)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("AWS_PROFILE", "default")
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("bedrock") is False
+
+
+def test_aws_env_does_not_leak_into_other_providers(tmp_path, monkeypatch, _clean_aws_env):
+    """The aws_sdk env check must key on the provider's auth_type, not fire
+    for every provider whenever AWS credentials happen to be present."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "ABSKexample-bearer-token-value")
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("anthropic") is False

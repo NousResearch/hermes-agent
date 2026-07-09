@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import stories from '@site/src/data/userStories.json';
+import stories from '../../data/userStories.json';
 import styles from './styles.module.css';
 
 interface Story {
@@ -145,7 +145,7 @@ function sourceColor(source: string): string {
   }
 }
 
-export default function UserStoriesCollage(): JSX.Element {
+export default function UserStoriesCollage(): React.JSX.Element {
   const [activeCategory, setActiveCategory] = useState<string>('all');
   const [activeSource, setActiveSource] = useState<string>('all');
 

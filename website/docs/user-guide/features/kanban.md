@@ -705,6 +705,20 @@ hermes kanban create "nightly backup audit" \
 
 The dispatcher refuses to re-spawn a ready task when it hit a quota/auth/429 error on the previous run (`blocker_auth`), or completed a run successfully within the guard window (`recent_success`), or a recent task comment links to a GitHub PR (`active_pr`). This prevents repeat worker storms on the same bug or task while a human catches up. See the `respawn_guarded` row in the [event reference](#event-reference).
 
+### Stuck-dispatcher diagnostics, escalation, and the single-dispatcher lock
+
+If the ready queue stays non-empty for several consecutive ticks with 0 workers spawned, the gateway logs a `kanban dispatcher stuck` warning that now includes a **cause breakdown** — e.g. `causes: respawn_guarded(active_pr)=3, quota=1, spawn_exception=1` — aggregated from that tick streak's `DispatchResult`s (respawn-guard reasons, quota/rate-limit walls, concurrency caps, claim races, workspace collisions, and spawn/workspace-resolution exceptions, all of which are now also logged individually at the raise site instead of being recorded only in the DB).
+
+If the streak continues past `kanban.dispatch_stuck_escalate_after_ticks` (default 12), the gateway sends **one Telegram alert** to your [home channel](#) (`/sethome` in Telegram), then re-alerts at most once per `kanban.dispatch_stuck_realert_seconds` (default 3600) while still stuck. The escalation clears as soon as a worker spawns again.
+
+```yaml
+kanban:
+  dispatch_stuck_escalate_after_ticks: 12   # default
+  dispatch_stuck_realert_seconds: 3600      # default
+```
+
+Only one dispatcher may run against a given `kanban.db` at a time. The gateway's embedded dispatcher holds a machine-wide advisory lock for its whole process lifetime; `hermes kanban dispatch` now takes the **same lock** before running and refuses with a clear error (nonzero exit) if another dispatcher already holds it — pass `--force` to override (not recommended: two dispatchers racing the same `kanban.db` risk SQLite WAL corruption). A crashed holder's lock is released automatically by the OS the moment its process exits, so there is no manual "stale lock" cleanup step.
+
 ### Drag-to-delete and bulk delete (dashboard)
 
 The dashboard exposes a **trash drop zone** on the kanban page — drag any card into it to delete the task (cascades through `task_events`, child links, and subscriptions). A confirmation prompt protects against accidents. Bulk delete is also reachable via `DELETE /api/plugins/kanban/tasks` with a JSON body `{"ids": ["t_abc", "t_def", ...]}`.

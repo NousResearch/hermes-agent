@@ -6165,6 +6165,106 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+    claim_race: list[str] = field(default_factory=list)
+    """Task ids where an atomic claim (``claim_task`` / ``claim_review_task``)
+    returned ``None`` — another claimant (a concurrent dispatcher, or a
+    terminal pulling the same task directly) won the race between this tick
+    reading the row as unclaimed and the ``UPDATE ... WHERE status='ready'``
+    actually committing. Not an error: the task stays claimable and is
+    retried next tick. Tracked (BUILD-263) so stuck-dispatcher diagnostics
+    can distinguish "lost a claim race" from "nothing spawnable"."""
+    spawn_errors: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, error)`` pairs for exceptions raised while resolving a
+    task's workspace or invoking ``spawn_fn`` (BUILD-263). These are also
+    recorded on the task row via ``_record_spawn_failure`` (which may or may
+    not trip the auto-block circuit breaker depending on ``failure_limit``),
+    but that path does not emit a log record — callers used to have **no**
+    visibility into *why* a tick spawned nothing beyond reading task rows by
+    hand. The raise site now also logs the exception (see
+    ``_dispatch_once_locked``), so a broken venv/profile/PATH surfaces in
+    the gateway/CLI logs immediately instead of being silently swallowed."""
+    max_in_progress_deferred: int = 0
+    """Count of ready tasks deferred this tick because the board was already
+    at ``kanban.max_in_progress`` (BUILD-263). The pre-existing code path
+    returned early here with no telemetry at all — a board sitting at its
+    concurrency cap looked identical to a broken dispatcher in the "stuck"
+    diagnostics. Zero when ``max_in_progress`` is unset or headroom exists."""
+
+
+# Respawn-guard reasons that mean "a provider quota/auth wall, not a real
+# refusal" — bucketed as a flat top-level ``quota`` cause by
+# `summarize_dispatch_causes` rather than `respawn_guarded(<reason>)`, since
+# operators reach for the same remediation (wait, or fix credentials)
+# regardless of which of the two paths stamped it.
+_QUOTA_RESPAWN_GUARD_REASONS = frozenset({"blocker_auth", "rate_limit_cooldown"})
+
+
+def summarize_dispatch_causes(results: "Iterable[Optional[DispatchResult]]") -> str:
+    """Aggregate per-cause spawn-refusal counts across one or more
+    :class:`DispatchResult` objects into a compact, human-readable breakdown
+    (BUILD-263), e.g.::
+
+        "respawn_guarded(active_pr)=3, quota=1"
+
+    Used by the gateway's/CLI's "dispatcher stuck" warning and Telegram
+    escalation so an operator sees *why* zero workers spawned instead of
+    just the bare tick count. ``None`` entries in ``results`` are skipped
+    (defensive — callers that collect per-board results across a tick may
+    have a board that raised before producing a ``DispatchResult``).
+
+    Buckets, ordered by descending count (ties broken alphabetically):
+
+    * ``respawn_guarded(<reason>)`` — non-quota respawn-guard reasons
+      (``active_pr``, ``recent_success``, ``forced_skill_validation``).
+    * ``quota`` — respawn-guard reasons ``blocker_auth`` /
+      ``rate_limit_cooldown``, plus post-crash ``rate_limited`` requeues.
+      Retrying immediately won't help; the provider needs to cool down.
+    * ``concurrency_cap`` — deferred by the global ``max_in_progress`` cap.
+    * ``concurrency_cap(per_profile)`` — deferred by
+      ``max_in_progress_per_profile`` for a specific assignee.
+    * ``unassigned`` / ``nonspawnable`` — routing issues, not dispatcher bugs
+      (the latter is the expected steady-state for control-plane lanes).
+    * ``claim_race`` — lost an atomic claim to a concurrent claimant.
+    * ``workspace_collision`` — another running task already owns the
+      non-scratch workspace.
+    * ``spawn_exception`` — workspace resolution or ``spawn_fn`` raised.
+      The exception text itself is logged at the raise site (never
+      swallowed) — this bucket only counts occurrences.
+    * ``dispatch_lock_contended`` — this tick's board was already being
+      serviced by another dispatcher process (issue #35240).
+
+    Returns ``""`` when every bucket is empty (nothing to report).
+    """
+    counts: "dict[str, int]" = {}
+
+    def _bump(key: str, n: int = 1) -> None:
+        if n:
+            counts[key] = counts.get(key, 0) + n
+
+    for result in results:
+        if result is None:
+            continue
+        for _tid, reason in result.respawn_guarded:
+            if reason in _QUOTA_RESPAWN_GUARD_REASONS:
+                _bump("quota")
+            else:
+                _bump(f"respawn_guarded({reason})")
+        _bump("quota", len(result.rate_limited))
+        _bump("unassigned", len(result.skipped_unassigned))
+        _bump("nonspawnable", len(result.skipped_nonspawnable))
+        _bump("concurrency_cap", getattr(result, "max_in_progress_deferred", 0) or 0)
+        if result.skipped_per_profile_capped:
+            _bump("concurrency_cap(per_profile)", len(result.skipped_per_profile_capped))
+        _bump("claim_race", len(getattr(result, "claim_race", []) or []))
+        _bump("workspace_collision", len(result.workspace_collisions))
+        _bump("spawn_exception", len(getattr(result, "spawn_errors", []) or []))
+        if result.skipped_locked:
+            _bump("dispatch_lock_contended")
+
+    if not counts:
+        return ""
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return ", ".join(f"{cause}={n}" for cause, n in ordered)
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -7576,6 +7676,10 @@ def _dispatch_once_locked(
             "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
         ).fetchone()[0]
         if in_progress >= max_in_progress:
+            # BUILD-263: record how many ready tasks were deferred by the cap
+            # so "dispatcher stuck" diagnostics can tell "at concurrency cap"
+            # (expected, self-clearing) apart from "genuinely broken".
+            result.max_in_progress_deferred = len(ready_rows)
             return result
         # Only spawn enough to reach the cap, respecting max_spawn too.
         remaining = max_in_progress - in_progress
@@ -7773,6 +7877,12 @@ def _dispatch_once_locked(
                 continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
+            # BUILD-263: lost the atomic claim to a concurrent claimant
+            # (another dispatcher, or a terminal pulling the task directly).
+            # Not an error — the task remains claimable and is retried next
+            # tick — but stuck-dispatcher diagnostics need to see this
+            # instead of it looking identical to "nothing spawnable".
+            result.claim_race.append(row["id"])
             continue
         try:
             resolved_branch_name = None
@@ -7781,6 +7891,16 @@ def _dispatch_once_locked(
             else:
                 workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
+            # BUILD-263: this used to be recorded on the task row (via
+            # _record_spawn_failure) with no corresponding log line — a
+            # broken venv/profile/PATH silently produced "0 spawned" ticks
+            # forever with no diagnosis. Log it (not swallowed) and surface
+            # it on the DispatchResult for cause-breakdown telemetry.
+            _log.warning(
+                "kanban dispatch: workspace resolution failed for %s: %s",
+                claimed.id, exc, exc_info=True,
+            )
+            result.spawn_errors.append((claimed.id, f"workspace: {exc}"))
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
                 failure_limit=failure_limit,
@@ -7826,6 +7946,13 @@ def _dispatch_once_locked(
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )
         except Exception as exc:
+            # BUILD-263: log the spawn exception — see the matching comment
+            # on the workspace-resolution catch above for the rationale.
+            _log.warning(
+                "kanban dispatch: spawn_fn raised for %s (assignee=%s): %s",
+                claimed.id, claimed.assignee, exc, exc_info=True,
+            )
+            result.spawn_errors.append((claimed.id, str(exc)))
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
@@ -7877,6 +8004,9 @@ def _dispatch_once_locked(
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
+            # BUILD-263: see the matching comment in the ready-task loop
+            # above — lost claim race, not an error.
+            result.claim_race.append(row["id"])
             continue
         try:
             resolved_branch_name = None
@@ -7885,6 +8015,13 @@ def _dispatch_once_locked(
             else:
                 workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
+            # BUILD-263: see the matching comment in the ready-task loop
+            # above — log (not swallowed) + surface for cause telemetry.
+            _log.warning(
+                "kanban dispatch: review workspace resolution failed for %s: %s",
+                claimed.id, exc, exc_info=True,
+            )
+            result.spawn_errors.append((claimed.id, f"workspace: {exc}"))
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
                 failure_limit=failure_limit,
@@ -7919,6 +8056,12 @@ def _dispatch_once_locked(
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
         except Exception as exc:
+            # BUILD-263: see the matching comment in the ready-task loop above.
+            _log.warning(
+                "kanban dispatch: review spawn_fn raised for %s (assignee=%s): %s",
+                claimed.id, claimed.assignee, exc, exc_info=True,
+            )
+            result.spawn_errors.append((claimed.id, str(exc)))
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,

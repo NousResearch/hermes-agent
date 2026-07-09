@@ -11,6 +11,12 @@ PUREMENT INTERNE (loopback vers notre propre daemon) → non intercepté par jb_
 on génère un lien que le CLIENT cliquera lui-même, rien ne part vers un tiers.
 
 Gated sur JB_DECISION_PUSH_URL (posé par le bundle Jean-Billie) : invisible hors box (cf. check_fn).
+
+Enregistré par le plugin (``register()`` de jb_outbound → ``ctx.register_tool``) dans le toolset
+``messaging`` — un toolset REGISTRE (aucune entrée statique dans toolsets.py) : l'allowlist
+``platform_toolsets`` émise par le bundle liste « messaging » explicitement, et la résolution passe
+par ``registry.get_tool_names_for_toolset`` (toolsets.get_toolset, include_registry=True). Zéro
+patch du cœur (F2 : l'entrée historique dans ``_HERMES_CORE_TOOLS`` est résorbée).
 """
 
 from __future__ import annotations
@@ -104,18 +110,3 @@ REQUEST_TOOL_CONNECTION_SCHEMA = {
         "required": ["capability"],
     },
 }
-
-
-# --- Registry ---
-from tools.registry import registry
-
-registry.register(
-    name="request_tool_connection",
-    # Toolset déclaré dans toolsets.py (et présent dans l'allowlist de durcissement, cf. SAFE list +
-    # « messaging »). L'exposition réelle vient surtout de _HERMES_CORE_TOOLS (CLI + plateformes).
-    toolset="messaging",
-    schema=REQUEST_TOOL_CONNECTION_SCHEMA,
-    handler=lambda args, **kw: request_tool_connection(capability=args.get("capability", "")),
-    check_fn=check_request_tool_connection_requirements,
-    emoji="🔌",
-)

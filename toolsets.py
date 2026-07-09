@@ -61,9 +61,6 @@ _HERMES_CORE_TOOLS = [
     "session_search",
     # Clarifying questions
     "clarify",
-    # Demander au client de brancher un outil manquant (capacité B — box Jean-Billie,
-    # gated sur JB_DECISION_PUSH_URL via check_fn → invisible hors box).
-    "request_tool_connection",
     # Code execution + delegation
     "execute_code", "delegate_task",
     # Cronjob management

@@ -5126,6 +5126,24 @@ def block_task(
         if event_kind == "block_loop_detected":
             payload["limit"] = BLOCK_RECURRENCE_LIMIT
         _append_event(conn, task_id, event_kind, payload, run_id=run_id)
+        # BUILD-261: record the normalized failure signature for this
+        # block so the release/remediation circuit breaker
+        # (check_failure_signature_breaker) can compare it against this
+        # task's (or its remediation children's) next attempt before a
+        # future respawn. A worker's block reason is exactly the shape of
+        # a CI failure excerpt (e.g. "##[error]smoke check failed: ...").
+        # Deliberately NOT hooked into the crash/timeout/spawn-failure
+        # funnel (_record_task_failure) — that path already has its own
+        # well-tested, independently-configurable failure_limit breaker,
+        # and layering a second, lower-default-threshold breaker on the
+        # identical event stream would silently override an operator's
+        # more lenient failure_limit for any task whose infra errors
+        # happen to repeat verbatim (very common). This path — a task
+        # explicitly blocked with a human-readable reason — is where the
+        # BUILD-261 incident's failure text actually lives.
+        _record_failure_signature(
+            conn, task_id, effective_summary, run_id=run_id,
+        )
         _blocked_task = get_task(conn, task_id)
     _fire_kanban_lifecycle_hook(
         "kanban_task_blocked",
@@ -6149,6 +6167,14 @@ class DispatchResult:
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
     ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    circuit_breaker_tripped: list[tuple[str, str]] = field(default_factory=list)
+    """Tasks blocked (kind=``needs_input``) by the BUILD-261 release/
+    remediation circuit breaker, as ``(task_id, signature)`` pairs. Unlike
+    ``respawn_guarded`` (a one-tick defer) and ``auto_blocked`` (the crash/
+    timeout counter), this fires when the task's last N recorded failure
+    signatures — see :func:`check_failure_signature_breaker` — are all
+    identical, meaning retries are not converging. In ``dry_run`` mode the
+    task is reported here but NOT actually blocked."""
     workspace_collisions: list[tuple[str, str]] = field(default_factory=list)
     """Tasks skipped because another running task already owns the same
     non-scratch workspace, as ``(task_id, conflict_with_task_id)`` pairs.
@@ -6853,6 +6879,292 @@ def detect_stale_running(
     return reclaimed
 
 
+# ── Release/remediation circuit breaker (BUILD-261) ────────────────
+#
+# Incident: on 2026-07-09 a releaser kanban card kept respawning (and, in
+# the fan-out shape, spawning fresh remediation children) after every
+# attempt "succeeded" (worker completed, PR merged) yet the post-merge
+# "Master Release" workflow failed again with the byte-identical error
+# signature each time — 8 PRs merged in one day without ever fixing the
+# root cause. The existing ``consecutive_failures`` circuit breaker
+# (``DEFAULT_FAILURE_LIMIT`` / ``_record_task_failure`` below) is blind to
+# this shape: it resets to 0 on every successful completion, so a task
+# that keeps "succeeding" but reproducing the same downstream failure
+# never trips it. ``check_respawn_guard`` also doesn't help — it only
+# rate-limits how often a respawn is *attempted*, it never inspects
+# whether repeated attempts are actually converging.
+#
+# The functions in this section are a second, content-aware breaker:
+# every task run that ends in failure gets a normalized "signature"
+# recorded (see :func:`normalize_failure_signature`); before a respawn is
+# allowed, :func:`check_failure_signature_breaker` compares the most
+# recent ``threshold`` signatures (across the task and any linked
+# remediation children) and — if they're all identical — halts the saga
+# by blocking the task (kind=``needs_input``) instead of respawning it
+# again. Blocking reuses ``block_task``'s existing ``blocked`` task_event,
+# which the gateway's ``_kanban_notifier_watcher`` already delivers to any
+# subscriber (Telegram included) — no new notify channel is added.
+
+_FAILURE_SIGNATURE_EVENT_KIND = "failure_signature"
+
+# Trip threshold for check_failure_signature_breaker: how many of the most
+# recent recorded failure signatures must be identical before a respawn is
+# refused and the task is blocked for human review. Configurable via
+# ``HERMES_KANBAN_FAILURE_SIGNATURE_THRESHOLD`` (env) or the dispatcher's
+# ``kanban.failure_signature_threshold`` config key (threaded through
+# ``dispatch_once`` the same way ``kanban.failure_limit`` is).
+DEFAULT_FAILURE_SIGNATURE_REPEAT_THRESHOLD = 2
+
+# --- normalize_failure_signature helpers ---
+# A GitHub Actions error annotation line, e.g.
+#   ##[error]smoke check failed: checkout (/checkout) returned 500 ...
+_FAILURE_SIG_ERROR_MARKER = "##[error]"
+# ISO-8601 timestamps, with or without fractional seconds / trailing Z,
+# using either a literal 'T' or a space between date and time.
+_FAILURE_SIG_ISO_TS_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?"
+)
+# "run id 123", "run_id=123", "run-id: 123", "runId 123", "run-123456".
+_FAILURE_SIG_RUN_ID_RE = re.compile(
+    r"\brun[\s_-]?id\s*[:=]?\s*[0-9a-f-]+\b|\brun[\s_-]\d+\b",
+    re.IGNORECASE,
+)
+# Git SHAs (short or full) — hex-only tokens 7-40 chars long.
+_FAILURE_SIG_SHA_RE = re.compile(r"\b[0-9a-f]{7,40}\b", re.IGNORECASE)
+# Any other long bare digit run (workflow run numbers, PIDs, epoch millis,
+# etc.) that isn't meaningful to the failure's identity.
+_FAILURE_SIG_LONG_NUM_RE = re.compile(r"\b\d{6,}\b")
+_FAILURE_SIG_WS_RE = re.compile(r"\s+")
+
+
+def normalize_failure_signature(text: Optional[str]) -> str:
+    """Reduce a (possibly multi-line) failure log to a stable signature.
+
+    Used by the BUILD-261 release/remediation circuit breaker to detect
+    when repeated task attempts are failing for the identical underlying
+    reason rather than making progress.
+
+    Extraction (in order):
+      1. The first line containing a ``##[error]`` GitHub Actions error
+         annotation, truncated to start at that marker. Only the first
+         such line is used — a trailing summary line like
+         ``##[error]Process completed with exit code 1.`` on the next
+         line is discarded so it can't dilute/change the signature.
+      2. If no ``##[error]`` marker is found anywhere, the final
+         non-blank line of the text (heuristic "final error line").
+
+    Normalization (so re-runs of the identical failure produce the
+    identical signature even though timestamps/ids differ between runs):
+      * ISO-8601 timestamps -> ``<TS>``
+      * ``run id`` / ``run_id=`` / ``run-<n>`` tokens -> ``run <ID>``
+      * 7-40 char hex tokens (git SHAs) -> ``<SHA>``
+      * bare runs of 6+ digits (workflow run numbers, PIDs, epoch millis)
+        -> ``<N>``
+      * whitespace collapsed to single spaces, trimmed, lowercased
+
+    Returns ``""`` for falsy/blank input so callers can treat "no
+    signature" without a None-check, and so two failures that both lack
+    any error text never spuriously compare equal (callers must treat an
+    empty signature as "no signal", not "matches").
+    """
+    if not text:
+        return ""
+    lines = text.splitlines()
+    line = None
+    for candidate in lines:
+        if _FAILURE_SIG_ERROR_MARKER in candidate:
+            idx = candidate.find(_FAILURE_SIG_ERROR_MARKER)
+            line = candidate[idx:]
+            break
+    if line is None:
+        for candidate in reversed(lines):
+            if candidate.strip():
+                line = candidate
+                break
+    if line is None:
+        line = text
+    sig = _FAILURE_SIG_ISO_TS_RE.sub("<TS>", line)
+    sig = _FAILURE_SIG_RUN_ID_RE.sub("run <ID>", sig)
+    sig = _FAILURE_SIG_SHA_RE.sub("<SHA>", sig)
+    sig = _FAILURE_SIG_LONG_NUM_RE.sub("<N>", sig)
+    sig = _FAILURE_SIG_WS_RE.sub(" ", sig).strip()
+    return sig.lower()
+
+
+def _record_failure_signature(
+    conn: sqlite3.Connection,
+    task_id: str,
+    error_text: Optional[str],
+    *,
+    run_id: Optional[int] = None,
+) -> str:
+    """Persist the normalized failure signature for a run that just ended
+    in failure, as a ``failure_signature`` task_event.
+
+    Must be called from inside an already-open ``write_txn`` (mirrors
+    ``_append_event``). Returns the computed signature; appends nothing
+    and returns ``""`` when ``error_text`` normalizes to empty, so a
+    failure with no usable error text never contributes a stray entry
+    that could spuriously "match" another empty entry in the breaker's
+    comparison.
+    """
+    sig = normalize_failure_signature(error_text)
+    if not sig:
+        return ""
+    _append_event(
+        conn, task_id, _FAILURE_SIGNATURE_EVENT_KIND,
+        {"signature": sig, "raw_excerpt": (error_text or "")[:300]},
+        run_id=run_id,
+    )
+    return sig
+
+
+def _resolve_failure_signature_repeat_threshold(
+    threshold: Optional[int] = None,
+) -> int:
+    """Resolve the circuit breaker's identical-signature trip threshold.
+
+    Resolution order: explicit ``threshold`` argument (dispatcher passes
+    its resolved ``kanban.failure_signature_threshold`` config value) ->
+    ``HERMES_KANBAN_FAILURE_SIGNATURE_THRESHOLD`` env var ->
+    ``DEFAULT_FAILURE_SIGNATURE_REPEAT_THRESHOLD``. Values below 2 are
+    rejected and fall through to the next source — a threshold of 1 would
+    trip on the very first failure with no repetition at all, which is
+    what the existing crash/timeout breaker (``failure_limit``) already
+    covers; this breaker is specifically about *repeated identical*
+    signatures, so it needs at least 2 samples to compare.
+    """
+    if threshold is not None:
+        try:
+            parsed = int(threshold)
+        except (TypeError, ValueError):
+            parsed = -1
+        if parsed >= 2:
+            return parsed
+    raw = os.environ.get(
+        "HERMES_KANBAN_FAILURE_SIGNATURE_THRESHOLD", ""
+    ).strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = -1
+        if parsed >= 2:
+            return parsed
+    return DEFAULT_FAILURE_SIGNATURE_REPEAT_THRESHOLD
+
+
+def _recent_failure_signatures(
+    conn: sqlite3.Connection, task_id: str, limit: int,
+) -> list[dict]:
+    """Return up to ``limit`` most recent failure-signature records for
+    ``task_id`` and any of its linked remediation children, newest first.
+
+    Each record is ``{"task_id", "run_id", "signature", "created_at"}``.
+    Including linked children (``task_links``) covers the "saga" shape
+    from the BUILD-261 incident where a parent release/remediation card
+    fans out a fresh child task per remediation attempt instead of
+    looping the same ``task_id`` — each child's recorded failure counts
+    toward the parent's breaker check.
+    """
+    ids = [task_id] + child_ids(conn, task_id)
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"SELECT task_id, run_id, payload, created_at FROM task_events "
+        f"WHERE task_id IN ({placeholders}) AND kind = ? "
+        f"ORDER BY created_at DESC, id DESC LIMIT ?",
+        (*ids, _FAILURE_SIGNATURE_EVENT_KIND, limit),
+    ).fetchall()
+    out = []
+    for r in rows:
+        try:
+            payload = json.loads(r["payload"]) if r["payload"] else {}
+        except (TypeError, ValueError):
+            payload = {}
+        out.append({
+            "task_id": r["task_id"],
+            "run_id": r["run_id"],
+            "signature": payload.get("signature", ""),
+            "created_at": r["created_at"],
+        })
+    return out
+
+
+def check_failure_signature_breaker(
+    conn: sqlite3.Connection, task_id: str, *, threshold: Optional[int] = None,
+) -> Optional[dict]:
+    """Return trip details if the last ``threshold`` failure signatures for
+    ``task_id`` (and its remediation children) are identical, else
+    ``None``.
+
+    Called per ready task in ``dispatch_once`` before a respawn is
+    allowed — distinct from (and checked before) ``check_respawn_guard``,
+    which only defers a single tick. This breaker's trip is permanent
+    (the task is blocked, not just skipped) because identical repeated
+    failures mean the automated retries are not converging.
+
+    Returns ``None`` when there are fewer than ``threshold`` recorded
+    signatures, or when any window entry is empty/falsy, or when the
+    window isn't all the same signature.
+    """
+    n = _resolve_failure_signature_repeat_threshold(threshold)
+    records = _recent_failure_signatures(conn, task_id, n)
+    if len(records) < n:
+        return None
+    window = records[:n]
+    sigs = [r["signature"] for r in window]
+    if not all(sigs) or len(set(sigs)) != 1:
+        return None
+    return {
+        "signature": sigs[0],
+        "threshold": n,
+        "records": window,
+    }
+
+
+def _trip_failure_signature_breaker(
+    conn: sqlite3.Connection, task_id: str, trip: dict,
+) -> bool:
+    """Halt the saga: block ``task_id`` (kind=``needs_input``) instead of
+    letting the dispatcher respawn it again, and leave a comment with
+    both signatures + run refs for the human who has to unblock it.
+
+    Blocking goes through the normal ``block_task`` path, so it emits the
+    same ``blocked`` task_event the gateway's ``_kanban_notifier_watcher``
+    already polls and delivers to subscribers on whatever platform they're
+    on (Telegram included) — reusing the existing alert path rather than
+    inventing a new one, per the BUILD-261 spec.
+    """
+    refs = ", ".join(
+        r["task_id"] + (f"#run{r['run_id']}" if r["run_id"] else "")
+        for r in trip["records"]
+    )
+    reason = (
+        f"circuit breaker: {trip['threshold']} consecutive identical "
+        f"failure signatures — halting respawn (runs: {refs})"
+    )
+    comment = (
+        "Release/remediation circuit breaker tripped (BUILD-261).\n\n"
+        f"The last {trip['threshold']} recorded failures reduce to the "
+        f"identical signature:\n\n    {trip['signature']}\n\n"
+        f"Runs: {refs}\n\n"
+        "Respawning again would very likely reproduce the same failure "
+        "instead of converging — this is the non-convergent-saga pattern "
+        "from the 2026-07-09 incident (repeated PRs merged without fixing "
+        "the underlying failure). Blocked for human review instead of "
+        "retrying automatically."
+    )
+    blocked = block_task(
+        conn, task_id, reason=reason, summary=reason, kind="needs_input",
+    )
+    if blocked:
+        try:
+            add_comment(conn, task_id, "circuit-breaker", comment)
+        except ValueError:
+            pass
+    return blocked
+
+
 def _error_fingerprint(error_text: str) -> str:
     """Normalize an error message for grouping identical failures.
 
@@ -7523,6 +7835,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    signature_repeat_threshold: Optional[int] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -7557,6 +7870,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            signature_repeat_threshold=signature_repeat_threshold,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -7573,6 +7887,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            signature_repeat_threshold=signature_repeat_threshold,
         )
 
 
@@ -7589,6 +7904,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    signature_repeat_threshold: Optional[int] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -7818,6 +8134,25 @@ def _dispatch_once_locked(
                     (row["id"], row_assignee, current)
                 )
                 continue
+        # BUILD-261 release/remediation circuit breaker: checked BEFORE
+        # check_respawn_guard (and unlike it, this trip is permanent, not
+        # a one-tick defer). If the task's (or its remediation children's)
+        # last N recorded failures reduce to the identical signature, the
+        # automated retries are not converging — halt the saga by
+        # blocking for human review instead of respawning again.
+        breaker_trip = check_failure_signature_breaker(
+            conn, row["id"], threshold=signature_repeat_threshold,
+        )
+        if breaker_trip is not None:
+            if dry_run:
+                result.circuit_breaker_tripped.append(
+                    (row["id"], breaker_trip["signature"])
+                )
+            elif _trip_failure_signature_breaker(conn, row["id"], breaker_trip):
+                result.circuit_breaker_tripped.append(
+                    (row["id"], breaker_trip["signature"])
+                )
+            continue
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so

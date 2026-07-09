@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -4766,3 +4767,438 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# BUILD-261: release/remediation circuit breaker
+#
+# Incident: on 2026-07-09 a releaser kanban card kept "succeeding" (worker
+# completes, PR merges) while the post-merge "Master Release" workflow
+# failed with the byte-identical error signature every time — 8 PRs merged
+# in one day without ever fixing the root cause. The existing
+# consecutive_failures breaker is blind to this shape (it resets on every
+# successful completion); check_respawn_guard only rate-limits how often a
+# respawn is *attempted*, it never inspects whether attempts are
+# converging. These tests cover the new signature-based breaker.
+# ---------------------------------------------------------------------------
+
+_SMOKE_CHECK_SAMPLE = (
+    "##[error]smoke check failed: checkout (/checkout) returned 500 "
+    "for access_gate=public"
+)
+
+
+class TestNormalizeFailureSignature:
+    """Unit tests for the pure normalization function — no DB needed."""
+
+    def test_real_world_sample_is_returned_unchanged(self):
+        """The literal sample from the BUILD-261 spec has no timestamps,
+        run ids, or SHAs to strip, so normalizing it is an identity
+        transform (already lowercase, single line, no extra whitespace)."""
+        assert kb.normalize_failure_signature(_SMOKE_CHECK_SAMPLE) == (
+            _SMOKE_CHECK_SAMPLE
+        )
+
+    def test_picks_first_error_line_and_drops_the_timestamp_prefix(self):
+        raw = (
+            "2026-07-09T14:22:03.1182937Z " + _SMOKE_CHECK_SAMPLE + "\n"
+            "2026-07-09T14:22:03.1183820Z ##[error]Process completed "
+            "with exit code 1."
+        )
+        assert kb.normalize_failure_signature(raw) == _SMOKE_CHECK_SAMPLE
+
+    def test_two_ci_runs_of_the_identical_failure_produce_identical_signature(self):
+        """Different timestamps and a different trailing run-id per
+        attempt must NOT change the signature — this is exactly the
+        BUILD-261 shape (8 different PR runs, identical root cause)."""
+        run1 = (
+            "2026-07-09T14:22:03.118Z " + _SMOKE_CHECK_SAMPLE + " run_id=469\n"
+            "2026-07-09T14:22:03.119Z ##[error]Process completed with exit code 1."
+        )
+        run2 = (
+            "2026-07-09T18:05:44.221Z " + _SMOKE_CHECK_SAMPLE + " run_id=472\n"
+            "2026-07-09T18:05:44.222Z ##[error]Process completed with exit code 1."
+        )
+        sig1 = kb.normalize_failure_signature(run1)
+        sig2 = kb.normalize_failure_signature(run2)
+        assert sig1 == sig2
+        assert "run <id>" in sig1
+        assert "469" not in sig1 and "472" not in sig1
+
+    def test_strips_git_sha(self):
+        sig = kb.normalize_failure_signature(
+            "build failed at commit abc1234def5678901234567890abcdef12345678"
+        )
+        assert "<sha>" in sig
+        assert "abc1234" not in sig
+
+    def test_strips_long_run_number(self):
+        sig = kb.normalize_failure_signature("workflow run 28920835437 failed")
+        assert "28920835437" not in sig
+
+    def test_falls_back_to_final_line_without_error_marker(self):
+        sig = kb.normalize_failure_signature(
+            "some\nmultiline\nlog\nfinal failure: disk full"
+        )
+        assert sig == "final failure: disk full"
+
+    def test_collapses_whitespace(self):
+        sig = kb.normalize_failure_signature("##[error]   too    many   spaces  ")
+        assert sig == "##[error] too many spaces"
+
+    def test_empty_and_none_input_return_empty_string(self):
+        assert kb.normalize_failure_signature("") == ""
+        assert kb.normalize_failure_signature(None) == ""
+
+    def test_distinct_failures_produce_distinct_signatures(self):
+        a = kb.normalize_failure_signature(_SMOKE_CHECK_SAMPLE)
+        b = kb.normalize_failure_signature(
+            "##[error]payments check failed: charge (/charge) returned 503"
+        )
+        assert a != b
+
+
+def _record_signature_failure(conn, task_id, error):
+    """Test helper: persist one failure_signature event directly, exactly
+    as ``block_task``'s worker-self-report path does (the BUILD-261
+    recording hook — see ``test_block_task_*`` below for the full
+    integration through ``block_task`` itself). Deliberately bypasses the
+    crash/timeout/spawn-failure funnel (``_record_task_failure``): that
+    funnel has its own independently-configurable ``failure_limit``
+    breaker and is NOT hooked into signature recording (see
+    ``test_record_task_failure_does_not_emit_failure_signature_event``)."""
+    with kb.write_txn(conn):
+        kb._record_failure_signature(conn, task_id, error)
+
+
+def test_failure_signature_breaker_trips_at_2_identical(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="release-saga", assignee="alice")
+        _record_signature_failure(conn, t, _SMOKE_CHECK_SAMPLE)
+        _record_signature_failure(conn, t, _SMOKE_CHECK_SAMPLE)
+        trip = kb.check_failure_signature_breaker(conn, t)
+    assert trip is not None
+    assert trip["threshold"] == 2
+    assert trip["signature"] == _SMOKE_CHECK_SAMPLE
+    assert len(trip["records"]) == 2
+
+
+def test_failure_signature_breaker_no_trip_on_distinct_signatures(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="flaky", assignee="alice")
+        _record_signature_failure(conn, t, _SMOKE_CHECK_SAMPLE)
+        _record_signature_failure(
+            conn, t,
+            "##[error]payments check failed: charge (/charge) returned 503",
+        )
+        trip = kb.check_failure_signature_breaker(conn, t)
+    assert trip is None
+
+
+def test_failure_signature_breaker_no_trip_with_only_one_failure(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="single-failure", assignee="alice")
+        _record_signature_failure(conn, t, _SMOKE_CHECK_SAMPLE)
+        trip = kb.check_failure_signature_breaker(conn, t)
+    assert trip is None
+
+
+def test_failure_signature_breaker_no_trip_with_no_failures(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="fresh", assignee="alice")
+        trip = kb.check_failure_signature_breaker(conn, t)
+    assert trip is None
+
+
+def test_failure_signature_breaker_only_considers_most_recent_window(kanban_home):
+    """Two identical signatures earlier in history followed by a distinct
+    most-recent failure must NOT trip — only the last N (default 2)
+    matter, so a task that starts failing differently after two identical
+    attempts is not stuck fighting stale history."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="recovering", assignee="alice")
+        _record_signature_failure(conn, t, _SMOKE_CHECK_SAMPLE)
+        _record_signature_failure(conn, t, _SMOKE_CHECK_SAMPLE)
+        _record_signature_failure(
+            conn, t,
+            "##[error]payments check failed: charge (/charge) returned 503",
+        )
+        trip = kb.check_failure_signature_breaker(conn, t)
+    assert trip is None
+
+
+def test_failure_signature_breaker_respects_explicit_threshold(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="strict-threshold", assignee="alice")
+        _record_signature_failure(conn, t, _SMOKE_CHECK_SAMPLE)
+        _record_signature_failure(conn, t, _SMOKE_CHECK_SAMPLE)
+        # Only 2 identical recorded so far; threshold=3 requires a third.
+        assert kb.check_failure_signature_breaker(conn, t, threshold=3) is None
+        _record_signature_failure(conn, t, _SMOKE_CHECK_SAMPLE)
+        trip = kb.check_failure_signature_breaker(conn, t, threshold=3)
+    assert trip is not None
+    assert trip["threshold"] == 3
+
+
+def test_failure_signature_breaker_considers_linked_remediation_children(
+    kanban_home,
+):
+    """A parent 'saga' task whose remediation children each fail with the
+    identical signature must trip on the PARENT id, even though the
+    parent itself never directly recorded 2 failures — this is the
+    task_links fan-out shape from the BUILD-261 incident (a fresh child
+    task per remediation attempt instead of looping one task_id)."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="release-saga", assignee="alice")
+        child1 = kb.create_task(conn, title="remediate-1", assignee="alice")
+        child2 = kb.create_task(conn, title="remediate-2", assignee="alice")
+        kb.link_tasks(conn, parent, child1)
+        kb.link_tasks(conn, parent, child2)
+        _record_signature_failure(conn, child1, _SMOKE_CHECK_SAMPLE)
+        _record_signature_failure(conn, child2, _SMOKE_CHECK_SAMPLE)
+        trip = kb.check_failure_signature_breaker(conn, parent)
+    assert trip is not None
+    seen_task_ids = {r["task_id"] for r in trip["records"]}
+    assert seen_task_ids == {child1, child2}
+
+
+def test_failure_signature_breaker_children_with_distinct_signatures_no_trip(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="release-saga-2", assignee="alice")
+        child1 = kb.create_task(conn, title="remediate-a", assignee="alice")
+        child2 = kb.create_task(conn, title="remediate-b", assignee="alice")
+        kb.link_tasks(conn, parent, child1)
+        kb.link_tasks(conn, parent, child2)
+        _record_signature_failure(conn, child1, _SMOKE_CHECK_SAMPLE)
+        _record_signature_failure(
+            conn, child2,
+            "##[error]payments check failed: charge (/charge) returned 503",
+        )
+        trip = kb.check_failure_signature_breaker(conn, parent)
+    assert trip is None
+
+
+def test_resolve_failure_signature_repeat_threshold_default(monkeypatch):
+    monkeypatch.delenv("HERMES_KANBAN_FAILURE_SIGNATURE_THRESHOLD", raising=False)
+    assert (
+        kb._resolve_failure_signature_repeat_threshold()
+        == kb.DEFAULT_FAILURE_SIGNATURE_REPEAT_THRESHOLD
+        == 2
+    )
+
+
+def test_resolve_failure_signature_repeat_threshold_env_override(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_FAILURE_SIGNATURE_THRESHOLD", "5")
+    assert kb._resolve_failure_signature_repeat_threshold() == 5
+
+
+def test_resolve_failure_signature_repeat_threshold_rejects_below_2(monkeypatch):
+    """A threshold of 1 (or 0/negative) would trip on the very first
+    failure — no repetition at all — so it's rejected in favour of the
+    default, matching the crash/timeout breaker's own ``failure_limit``
+    for single-occurrence trips instead."""
+    monkeypatch.setenv("HERMES_KANBAN_FAILURE_SIGNATURE_THRESHOLD", "1")
+    assert (
+        kb._resolve_failure_signature_repeat_threshold()
+        == kb.DEFAULT_FAILURE_SIGNATURE_REPEAT_THRESHOLD
+    )
+
+
+def test_resolve_failure_signature_repeat_threshold_explicit_arg_wins(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_FAILURE_SIGNATURE_THRESHOLD", "5")
+    assert kb._resolve_failure_signature_repeat_threshold(3) == 3
+
+
+def test_dispatch_once_trips_circuit_breaker_blocks_and_comments(
+    kanban_home, all_assignees_spawnable
+):
+    """When a ready task's last 2 recorded failures are identical,
+    dispatch_once must refuse to respawn it (spawn_fn never called) and
+    instead block it (kind=needs_input) with a comment explaining the
+    trip, including both signatures + run refs.
+
+    Blocking goes through the same ``block_task`` path/``blocked`` event
+    that ``tests/gateway/test_kanban_notifier.py`` already proves gets
+    delivered to Telegram subscribers (see
+    ``_create_blocked_subscription`` there) — this test asserts the DB
+    side effects (status/comment) that trigger that existing, already-
+    tested delivery path rather than re-mocking the notifier here.
+    """
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+        return 12345
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="release-saga", assignee="alice")
+        _record_signature_failure(conn, t, _SMOKE_CHECK_SAMPLE)
+        _record_signature_failure(conn, t, _SMOKE_CHECK_SAMPLE)
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+        task = kb.get_task(conn, t)
+        comments = kb.list_comments(conn, t)
+        events = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
+            (t,),
+        ).fetchall()
+
+    assert spawned_ids == [], "circuit breaker must prevent respawn"
+    assert (t, _SMOKE_CHECK_SAMPLE) in res.circuit_breaker_tripped
+    assert task.status == "blocked"
+    assert task.block_kind == "needs_input"
+    assert len(comments) == 1
+    assert "circuit breaker" in comments[0].body.lower()
+    assert _SMOKE_CHECK_SAMPLE in comments[0].body
+    # The blocked event is what the existing gateway notifier watches
+    # (TERMINAL_KINDS in gateway/kanban_watchers.py) — no new notify
+    # channel was added, this just confirms the trip reaches it.
+    assert "blocked" in [e["kind"] for e in events]
+
+
+def test_dispatch_once_does_not_trip_breaker_on_distinct_signatures(
+    kanban_home, all_assignees_spawnable
+):
+    """Two distinct failure signatures must NOT trip the breaker — the
+    task respawns normally."""
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+        return 12345
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="flaky", assignee="alice")
+        _record_signature_failure(conn, t, _SMOKE_CHECK_SAMPLE)
+        _record_signature_failure(
+            conn, t,
+            "##[error]payments check failed: charge (/charge) returned 503",
+        )
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, t)
+
+    assert spawned_ids == [t]
+    assert res.circuit_breaker_tripped == []
+    assert task.status == "running"
+
+
+def test_dispatch_once_honours_signature_repeat_threshold_kwarg(
+    kanban_home, all_assignees_spawnable
+):
+    """The dispatcher-config threshold (threaded through dispatch_once as
+    ``signature_repeat_threshold``, mirroring ``failure_limit``) must be
+    honoured: 2 identical failures must NOT trip when the configured
+    threshold is 3."""
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+        return 12345
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="lenient-threshold", assignee="alice")
+        _record_signature_failure(conn, t, _SMOKE_CHECK_SAMPLE)
+        _record_signature_failure(conn, t, _SMOKE_CHECK_SAMPLE)
+
+        res = kb.dispatch_once(
+            conn, spawn_fn=fake_spawn, signature_repeat_threshold=3,
+        )
+        task = kb.get_task(conn, t)
+
+    assert res.circuit_breaker_tripped == []
+    assert spawned_ids == [t]
+    assert task.status == "running"
+
+
+def test_block_task_needs_input_persists_failure_signature_event(kanban_home):
+    """``block_task`` (the worker-self-report path: a worker discovers it
+    cannot proceed and calls ``kanban_block`` with a reason) must append a
+    ``failure_signature`` event carrying the normalized signature — this
+    is the "record ... in the task's events" half of BUILD-261."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="single", assignee="alice")
+        assert kb.block_task(
+            conn, t, reason=_SMOKE_CHECK_SAMPLE, kind="needs_input",
+        )
+        rows = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? "
+            "AND kind = 'failure_signature'",
+            (t,),
+        ).fetchall()
+    assert len(rows) == 1
+    payload = json.loads(rows[0]["payload"])
+    assert payload["signature"] == _SMOKE_CHECK_SAMPLE
+
+
+def test_block_task_dependency_wait_does_not_persist_failure_signature(
+    kanban_home,
+):
+    """A ``dependency`` block is healthy backpressure on an unfinished
+    parent, not a failure — it must NOT contribute to the circuit
+    breaker's history."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        child = kb.create_task(
+            conn, title="child", assignee="alice", parents=[parent],
+        )
+        kb.block_task(
+            conn, child, reason=_SMOKE_CHECK_SAMPLE, kind="dependency",
+        )
+        rows = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? "
+            "AND kind = 'failure_signature'",
+            (child,),
+        ).fetchall()
+    assert rows == []
+
+
+def test_block_task_with_no_usable_reason_text_records_nothing(kanban_home):
+    """A block with no usable reason/summary text must not append a
+    stray empty-signature event — two such tasks must never spuriously
+    "match" each other in the breaker's comparison."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="no-reason-text", assignee="alice")
+        kb.block_task(conn, t, kind="needs_input")
+        rows = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? "
+            "AND kind = 'failure_signature'",
+            (t,),
+        ).fetchall()
+    assert rows == []
+
+
+def test_record_task_failure_does_not_emit_failure_signature_event(kanban_home):
+    """Regression guard: the crash/timeout/spawn-failure funnel
+    (``_record_task_failure``) must NOT auto-record a failure_signature.
+
+    That funnel already has its own independently-configurable
+    ``failure_limit`` breaker (``consecutive_failures`` /
+    ``DEFAULT_FAILURE_LIMIT``); layering the signature breaker's lower
+    default threshold onto the identical event stream would silently
+    override an operator's more lenient ``failure_limit`` for any task
+    whose infra errors happen to repeat verbatim byte-for-byte (common
+    for e.g. "no PATH" / workspace-resolution errors) — exactly the
+    regression this test guards against reintroducing.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="crash-path", assignee="alice")
+        kb._record_task_failure(
+            conn, t, error=_SMOKE_CHECK_SAMPLE, outcome="crashed",
+            release_claim=False, end_run=False, failure_limit=100,
+        )
+        kb._record_task_failure(
+            conn, t, error=_SMOKE_CHECK_SAMPLE, outcome="crashed",
+            release_claim=False, end_run=False, failure_limit=100,
+        )
+        rows = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? "
+            "AND kind = 'failure_signature'",
+            (t,),
+        ).fetchall()
+        trip = kb.check_failure_signature_breaker(conn, t)
+    assert rows == []
+    assert trip is None

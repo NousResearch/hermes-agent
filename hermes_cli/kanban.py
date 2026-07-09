@@ -2291,11 +2291,19 @@ def _cmd_dispatch_run(args: argparse.Namespace) -> int:
         max_spawn = cli_max if cli_max is not None else _coerce_positive_int(
             _kanban_cfg.get("max_spawn")
         )
+        # BUILD-261 release/remediation circuit breaker threshold. None
+        # falls through to dispatch_once's own env-var/default resolution
+        # (kb._resolve_failure_signature_repeat_threshold), which also
+        # rejects values below 2.
+        signature_repeat_threshold = _coerce_positive_int(
+            _kanban_cfg.get("failure_signature_threshold")
+        )
     except Exception:
         default_assignee = None
         max_in_progress_per_profile = None
         max_in_progress = None
         max_spawn = getattr(args, "max", None)
+        signature_repeat_threshold = None
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
             conn,
@@ -2305,6 +2313,7 @@ def _cmd_dispatch_run(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            signature_repeat_threshold=signature_repeat_threshold,
         )
     if getattr(args, "json", False):
         print(json.dumps({

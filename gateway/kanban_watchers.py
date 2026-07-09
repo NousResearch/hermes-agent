@@ -1096,6 +1096,43 @@ class GatewayKanbanWatchersMixin:
             )
             failure_limit = _kb.DEFAULT_FAILURE_LIMIT
 
+        # Read kanban.failure_signature_threshold — BUILD-261 release/
+        # remediation circuit breaker. How many consecutive IDENTICAL
+        # failure signatures (see kanban_db.normalize_failure_signature)
+        # must be seen before a respawn is refused and the task is
+        # blocked for human review instead. Distinct from failure_limit
+        # above: that counts ANY non-success outcome regardless of
+        # content and resets on a successful completion; this counts
+        # repeated identical failure *content* across attempts, so a
+        # saga that keeps "succeeding" but reproducing the same
+        # underlying failure still gets caught.
+        raw_sig_threshold = kanban_cfg.get(
+            "failure_signature_threshold",
+            _kb.DEFAULT_FAILURE_SIGNATURE_REPEAT_THRESHOLD,
+        )
+        try:
+            signature_repeat_threshold = int(raw_sig_threshold)
+        except (TypeError, ValueError):
+            logger.warning(
+                "kanban dispatcher: invalid "
+                "kanban.failure_signature_threshold=%r; using default %d",
+                raw_sig_threshold,
+                _kb.DEFAULT_FAILURE_SIGNATURE_REPEAT_THRESHOLD,
+            )
+            signature_repeat_threshold = (
+                _kb.DEFAULT_FAILURE_SIGNATURE_REPEAT_THRESHOLD
+            )
+        if signature_repeat_threshold < 2:
+            logger.warning(
+                "kanban dispatcher: kanban.failure_signature_threshold=%r "
+                "is below 2; using default %d",
+                raw_sig_threshold,
+                _kb.DEFAULT_FAILURE_SIGNATURE_REPEAT_THRESHOLD,
+            )
+            signature_repeat_threshold = (
+                _kb.DEFAULT_FAILURE_SIGNATURE_REPEAT_THRESHOLD
+            )
+
         # Read stale_timeout_seconds — 0 disables stale detection.
         raw_stale = kanban_cfg.get("dispatch_stale_timeout_seconds", 0)
         try:
@@ -1267,6 +1304,7 @@ class GatewayKanbanWatchersMixin:
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
+                    signature_repeat_threshold=signature_repeat_threshold,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):

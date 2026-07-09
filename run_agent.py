@@ -1693,14 +1693,16 @@ class AIAgent:
         self._flush_messages_to_session_db(messages, conversation_history)
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
-        """Remove private empty-response retry/failure scaffolding from transcript tails.
+        """Remove private retry/failure scaffolding from transcript tails.
 
         Also rewinds past any trailing tool-result / assistant(tool_calls) pair
         that the failed iteration left hanging. Without this, the tail ends at
         a raw ``tool`` message and the next user turn lands as
         ``...tool, user, user`` — a protocol-invalid sequence that most
         providers silently reject (returns empty content), causing the
-        empty-retry loop to fire forever. (issue number to be backfilled once filed)
+        empty-retry loop to fire forever. Clarify-choice guard nudges are also
+        ephemeral retry scaffolding; they must not be persisted if a guarded
+        retry is interrupted before the normal success/block cleanup path runs.
         """
         # Pass 1: strip the flagged scaffolding messages themselves.
         dropped_scaffolding = False
@@ -1710,6 +1712,7 @@ class AIAgent:
             and (
                 messages[-1].get("_empty_recovery_synthetic")
                 or messages[-1].get("_empty_terminal_sentinel")
+                or messages[-1].get("_clarify_choice_guard_synthetic")
             )
         ):
             messages.pop()

@@ -89,6 +89,7 @@ CONFIG_TIMEOUT_MS = 10_000
 QR_TIMEOUT_MS = 35_000
 
 MAX_CONSECUTIVE_FAILURES = 3
+MAX_TOTAL_FAILURES = 30  # Upper bound for cumulative poll failures before declaring the bridge down
 RETRY_DELAY_SECONDS = 2
 BACKOFF_DELAY_SECONDS = 30
 SESSION_EXPIRED_ERRCODE = -14
@@ -1339,6 +1340,7 @@ class WeixinAdapter(BasePlatformAdapter):
         sync_buf = _load_sync_buf(self._hermes_home, self._account_id)
         timeout_ms = LONG_POLL_TIMEOUT_MS
         consecutive_failures = 0
+        total_failures = 0
 
         while self._running:
             try:
@@ -1361,8 +1363,22 @@ class WeixinAdapter(BasePlatformAdapter):
                         logger.error("[%s] Session expired; pausing for 10 minutes", self.name)
                         await asyncio.sleep(600)
                         consecutive_failures = 0
+                        total_failures = 0  # Reset on successful session refresh
                         continue
                     consecutive_failures += 1
+                    total_failures += 1
+                    if total_failures >= MAX_TOTAL_FAILURES:
+                        logger.error(
+                            "[%s] Bridge appears to be down after %d cumulative failures; marking fatal",
+                            self.name,
+                            total_failures,
+                        )
+                        self._set_fatal_error(
+                            "weixin_bridge_down",
+                            f"Poll failed {total_failures} times consecutively",
+                            retryable=True,
+                        )
+                        break
                     logger.warning(
                         "[%s] getUpdates failed ret=%s errcode=%s errmsg=%s (%d/%d)",
                         self.name,
@@ -1378,6 +1394,7 @@ class WeixinAdapter(BasePlatformAdapter):
                     continue
 
                 consecutive_failures = 0
+                total_failures = 0  # Reset on successful poll
                 new_sync_buf = str(response.get("get_updates_buf") or "")
                 if new_sync_buf:
                     sync_buf = new_sync_buf
@@ -1389,6 +1406,19 @@ class WeixinAdapter(BasePlatformAdapter):
                 break
             except Exception as exc:
                 consecutive_failures += 1
+                total_failures += 1
+                if total_failures >= MAX_TOTAL_FAILURES:
+                    logger.error(
+                        "[%s] Bridge appears to be down after %d cumulative failures; marking fatal",
+                        self.name,
+                        total_failures,
+                    )
+                    self._set_fatal_error(
+                        "weixin_bridge_down",
+                        f"Poll failed {total_failures} times consecutively",
+                        retryable=True,
+                    )
+                    break
                 logger.error("[%s] poll error (%d/%d): %s", self.name, consecutive_failures, MAX_CONSECUTIVE_FAILURES, exc)
                 await asyncio.sleep(BACKOFF_DELAY_SECONDS if consecutive_failures >= MAX_CONSECUTIVE_FAILURES else RETRY_DELAY_SECONDS)
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:

@@ -76,6 +76,15 @@ export function shouldTreatInputAsMobileReplacement(
 }
 
 export function updatePtyInputLine(currentLine: string, data: string): string {
+  // Escape sequences (arrow keys, home/end, function keys, paste guards)
+  // move the cursor or edit the line in ways this flat tracker cannot
+  // model — and the per-char loop below would append their printable
+  // payload (e.g. the "[D" of a left-arrow) as if it were typed text.
+  // Reset instead: an unknown cursor position must disarm replacement
+  // normalization until the user starts a fresh, cleanly-tracked line.
+  if (data.includes("\x1b")) {
+    return "";
+  }
   let next = currentLine;
   for (const ch of chars(data)) {
     if (ch === "\r" || ch === "\n") {

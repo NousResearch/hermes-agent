@@ -1472,6 +1472,31 @@ class SessionStore:
                         "Session DB expiry_finalized write failed for %s: %s",
                         entry.session_id, exc,
                     )
+            # #61220: also write end_reason='session_reset' to state.db so
+            # the recovery query in find_latest_gateway_session_for_peer
+            # (hermes_state.py:1977) does NOT treat the expired session as
+            # recoverable. Without this, the next inbound message silently
+            # reopens the session with full conversation history instead
+            # of starting fresh at history=0.
+            #
+            # The reopen_session() call is needed before end_session()
+            # because end_session is a no-op when ended_at IS NOT NULL
+            # (first end_reason wins) and the session may have already
+            # been ended with 'agent_close' by the agent cleanup.
+            try:
+                self._db.reopen_session(entry.session_id)
+            except Exception as exc:
+                logger.debug(
+                    "Session DB reopen_session for expiry-finalize failed for %s: %s",
+                    entry.session_id, exc,
+                )
+            try:
+                self._db.end_session(entry.session_id, "session_reset")
+            except Exception as exc:
+                logger.debug(
+                    "Session DB end_session(session_reset) for expiry-finalize failed for %s: %s",
+                    entry.session_id, exc,
+                )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.

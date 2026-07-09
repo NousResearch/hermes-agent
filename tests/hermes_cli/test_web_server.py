@@ -1561,6 +1561,18 @@ class TestWebServerEndpoints:
         # The handler streams the bytes back and removes the temp file.
         assert not audio_file.exists()
 
+    def test_read_unlink_and_encode_audio_removes_temp_file(self, tmp_path):
+        import base64
+        import hermes_cli.web_server as web_server
+
+        audio_file = tmp_path / "speech.mp3"
+        audio_file.write_bytes(b"ID3fake-audio-bytes")
+
+        encoded = web_server._read_unlink_and_encode_audio(str(audio_file))
+
+        assert encoded == base64.b64encode(b"ID3fake-audio-bytes").decode("ascii")
+        assert not audio_file.exists()
+
     def test_speak_text_requires_nonempty_text(self):
         resp = self.client.post("/api/audio/speak", json={"text": "   "})
         assert resp.status_code == 400

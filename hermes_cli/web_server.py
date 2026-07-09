@@ -3663,6 +3663,19 @@ def _voice_list_error_logged_once(signature: Optional[str]) -> bool:
     return True
 
 
+def _read_unlink_and_encode_audio(file_path: str) -> str:
+    """Read a generated audio file, base64-encode it, then remove it."""
+    try:
+        with open(file_path, "rb") as fh:
+            audio_bytes = fh.read()
+    finally:
+        try:
+            os.unlink(file_path)
+        except OSError:
+            pass
+    return base64.b64encode(audio_bytes).decode("ascii")
+
+
 @app.get("/api/audio/elevenlabs/voices")
 async def get_elevenlabs_voices():
     """Return ElevenLabs voices when an API key is configured.
@@ -3777,17 +3790,15 @@ async def speak_text(payload: TTSSpeakRequest):
     }.get(ext, "audio/mpeg")
 
     try:
-        with open(file_path, "rb") as fh:
-            audio_bytes = fh.read()
+        loop = asyncio.get_running_loop()
+        encoded = await loop.run_in_executor(
+            None,
+            _read_unlink_and_encode_audio,
+            file_path,
+        )
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Could not read audio: {exc}")
-    finally:
-        try:
-            os.unlink(file_path)
-        except OSError:
-            pass
 
-    encoded = base64.b64encode(audio_bytes).decode("ascii")
     return {
         "ok": True,
         "data_url": f"data:{mime_type};base64,{encoded}",

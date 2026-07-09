@@ -687,7 +687,12 @@ class GatewayStreamConsumer:
                     _hold_fn = getattr(self.adapter, "should_hold_streaming_for_rich", None)
                     if _hold_fn is not None:
                         try:
-                            if _hold_fn(self._accumulated):
+                            # Strict `is True` (not truthy): a bare MagicMock()
+                            # test adapter auto-vivifies this attribute as a
+                            # callable returning a truthy Mock, which would
+                            # otherwise falsely suppress streaming in every test
+                            # using an unspec'd mock adapter.
+                            if _hold_fn(self._accumulated) is True:
                                 self._rich_hold = True
                         except Exception:
                             pass

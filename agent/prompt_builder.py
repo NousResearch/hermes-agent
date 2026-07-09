@@ -1948,6 +1948,7 @@ def build_context_files_prompt(
     cwd: Optional[str] = None,
     skip_soul: bool = False,
     context_length: Optional[int] = None,
+    allow_dynamic_cap: bool = True,
 ) -> str:
     """Discover and load context files for the system prompt.
 
@@ -1961,8 +1962,9 @@ def build_context_files_prompt(
 
     Each context source is capped before injection. The cap defaults to the
     model's context window (scaled — see ``_dynamic_context_file_max_chars``)
-    when *context_length* is provided, falling back to 20,000 chars otherwise.
-    An explicit ``context_file_max_chars`` in config.yaml always wins.
+    when *context_length* is provided and *allow_dynamic_cap* is true, falling
+    back to 20,000 chars otherwise. An explicit ``context_file_max_chars`` in
+    config.yaml always wins.
 
     When *skip_soul* is True, SOUL.md is not included here (it was already
     loaded via ``load_soul_md()`` for the identity slot).
@@ -1971,21 +1973,22 @@ def build_context_files_prompt(
         cwd = os.getcwd()
 
     cwd_path = Path(cwd).resolve()
+    cap_context_length = context_length if allow_dynamic_cap else None
     sections = []
 
     # Priority-based project context: first match wins
     project_context = (
-        _load_hermes_md(cwd_path, context_length)
-        or _load_agents_md(cwd_path, context_length)
-        or _load_claude_md(cwd_path, context_length)
-        or _load_cursorrules(cwd_path, context_length)
+        _load_hermes_md(cwd_path, cap_context_length)
+        or _load_agents_md(cwd_path, cap_context_length)
+        or _load_claude_md(cwd_path, cap_context_length)
+        or _load_cursorrules(cwd_path, cap_context_length)
     )
     if project_context:
         sections.append(project_context)
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:
-        soul_content = load_soul_md(context_length)
+        soul_content = load_soul_md(cap_context_length)
         if soul_content:
             sections.append(soul_content)
 

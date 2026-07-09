@@ -27,12 +27,18 @@ def _make_agent(**overrides):
     return SimpleNamespace(**base)
 
 
-def _captured_context_cwd(agent):
-    """The cwd build_system_prompt_parts hands to build_context_files_prompt."""
+def _captured_context_file_args(agent):
+    """Arguments system-prompt assembly passes to context-file discovery."""
     captured = {}
 
-    def fake_context_files(cwd=None, skip_soul=False, context_length=None):
+    def fake_context_files(
+        cwd=None,
+        skip_soul=False,
+        context_length=None,
+        allow_dynamic_cap=True,
+    ):
         captured["cwd"] = cwd
+        captured["allow_dynamic_cap"] = allow_dynamic_cap
         return ""
 
     with (
@@ -42,7 +48,7 @@ def _captured_context_cwd(agent):
         patch("run_agent.build_context_files_prompt", side_effect=fake_context_files),
     ):
         build_system_prompt_parts(agent)
-    return captured["cwd"]
+    return captured
 
 
 class TestContextFileCwd:
@@ -50,11 +56,30 @@ class TestContextFileCwd:
         # Unset → None, so discovery falls back to the launch dir inside
         # build_context_files_prompt (the local-CLI #19242 contract).
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
-        assert _captured_context_cwd(_make_agent()) is None
+        assert _captured_context_file_args(_make_agent())["cwd"] is None
 
     def test_configured_dir_when_terminal_cwd_set(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
-        assert _captured_context_cwd(_make_agent()) == tmp_path
+        assert _captured_context_file_args(_make_agent())["cwd"] == tmp_path
+
+
+class TestContextFileCapBySurface:
+    def test_gateway_platform_uses_fixed_cap(self):
+        captured = _captured_context_file_args(_make_agent(platform="telegram"))
+        assert captured["allow_dynamic_cap"] is False
+
+    def test_plugin_gateway_platform_uses_fixed_cap(self):
+        captured = _captured_context_file_args(_make_agent(platform="custom_chat"))
+        assert captured["allow_dynamic_cap"] is False
+
+    def test_deliberate_large_context_surfaces_keep_dynamic_cap(self):
+        for platform in ("cli", "tui", "desktop", "acp", "cron"):
+            captured = _captured_context_file_args(_make_agent(platform=platform))
+            assert captured["allow_dynamic_cap"] is True
+
+    def test_unspecified_surface_preserves_dynamic_cap(self):
+        captured = _captured_context_file_args(_make_agent(platform=""))
+        assert captured["allow_dynamic_cap"] is True
 
 
 def _stable_prompt(agent):

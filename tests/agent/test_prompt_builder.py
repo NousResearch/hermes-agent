@@ -274,6 +274,18 @@ class TestDynamicContextFileCap:
         assert "truncated" in small.lower()
         assert big == content
 
+    def test_dynamic_cap_can_be_disabled_for_compact_surfaces(self, tmp_path):
+        (tmp_path / "AGENTS.md").write_text("z" * 30_000)
+
+        result = build_context_files_prompt(
+            cwd=str(tmp_path),
+            context_length=200_000,
+            allow_dynamic_cap=False,
+        )
+
+        assert "truncated AGENTS.md" in result
+        assert "read_file" in result
+
     def test_marker_points_to_read_path(self):
         content = "h" * 50_000
         result = _truncate_content(

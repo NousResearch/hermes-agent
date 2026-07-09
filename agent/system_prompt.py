@@ -48,6 +48,26 @@ from agent.runtime_cwd import resolve_context_cwd
 from utils import is_truthy_value
 
 
+_DYNAMIC_CONTEXT_FILE_CAP_PLATFORMS = frozenset({
+    "acp",
+    "cli",
+    "cron",
+    "desktop",
+    "tui",
+})
+
+
+def _allow_dynamic_context_file_cap(platform_key: str) -> bool:
+    """Keep large project docs for coding surfaces, not chat gateways.
+
+    An empty platform preserves the historical generic-agent behavior. Named
+    gateway platforms, including plugin platforms, stay at the fixed default
+    unless the user explicitly configures ``context_file_max_chars``.
+    """
+
+    return not platform_key or platform_key in _DYNAMIC_CONTEXT_FILE_CAP_PLATFORMS
+
+
 def _ra():
     """Lazy reference to the ``run_agent`` module.
 
@@ -164,6 +184,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # patch ``run_agent.get_toolset_for_tool`` and similar helpers, so
     # we resolve through ``_ra()`` to honor those patches.
     _r = _ra()
+    platform_key = (agent.platform or "").lower().strip()
+    allow_dynamic_context_cap = _allow_dynamic_context_file_cap(platform_key)
 
     # Resolve the model's context window once so context-file caps can scale
     # to it (dynamic cap — see prompt_builder._dynamic_context_file_max_chars).
@@ -184,7 +206,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # cwd project instructions disabled.
     _soul_loaded = False
     if agent.load_soul_identity or not agent.skip_context_files:
-        _soul_content = _r.load_soul_md(_ctx_len)
+        _soul_content = _r.load_soul_md(
+            _ctx_len if allow_dynamic_context_cap else None
+        )
         if _soul_content:
             stable_parts.append(_soul_content)
             _soul_loaded = True
@@ -413,7 +437,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             f"after explicit direction."
         )
 
-    platform_key = (agent.platform or "").lower().strip()
     # Resolve the built-in/plugin default hint for this platform, then apply
     # any per-platform override from config (platform_hints.<platform>).
     _default_hint = ""
@@ -450,7 +473,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # daemon, which is why the gateway sets TERMINAL_CWD.
         context_files_prompt = _r.build_context_files_prompt(
             cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
-            context_length=_ctx_len)
+            context_length=_ctx_len,
+            allow_dynamic_cap=allow_dynamic_context_cap,
+        )
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 

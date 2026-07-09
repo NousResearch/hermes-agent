@@ -156,7 +156,7 @@ _MARKDOWN_HINT_RE = re.compile(
     re.MULTILINE,
 )
 # Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
+# Feishu post-type 'md' elements do not render tables, so we convert to Card 2.0.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
@@ -4522,16 +4522,172 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Feishu post-type 'md' elements do not render markdown tables.
+        # When a table is detected, convert it to an Interactive Card (v2)
+        # with native table components so it renders properly in Feishu.
         if _MARKDOWN_TABLE_RE.search(content):
+            card = self._build_table_card_payload(content)
+            if card:
+                return "interactive", json.dumps(card, ensure_ascii=False)
+            # Fallback: plain text if conversion fails
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
+
+    @staticmethod
+    def _parse_md_table(table_text: str):
+        """Parse a GFM markdown table into (headers, rows)."""
+        lines = table_text.strip().split("\n")
+        if len(lines) < 2:
+            return None, []
+        headers = [cell.strip() for cell in lines[0].strip("|").split("|")]
+        rows = []
+        for line in lines[2:]:
+            stripped = line.strip()
+            if not stripped.startswith("|"):
+                break
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            while len(cells) < len(headers):
+                cells.append("")
+            rows.append(cells[:len(headers)])
+        return headers, rows
+
+    @staticmethod
+    def _build_table_element(headers, rows):
+        """Build a Feishu Card v2 table element from parsed headers/rows.
+
+        Ref: https://open.feishu.cn/document/feishu-cards/card-json-v2-components/content-components/table
+
+        CardKit v2 table structure:
+        {
+          "tag": "table",
+          "columns": [
+            {"name": "col_0", "display_name": "Header1", "data_type": "text"},
+            ...
+          ],
+          "rows": [
+            {"col_0": "data1", "col_1": "data2"},
+            ...
+          ]
+        }
+        """
+        import re as _re
+
+        def _strip_md_bold(text):
+            if not text:
+                return text or " "
+            text = _re.sub(r'\*\*', '', text)
+            text = _re.sub(r'__', '', text)
+            return text.strip() or " "
+
+        # Build columns definition with name, display_name, data_type
+        columns = []
+        for i, h in enumerate(headers):
+            col_name = f"col_{i}"
+            columns.append({
+                "name": col_name,
+                "display_name": _strip_md_bold(h),
+                "data_type": "text",
+                "width": "auto",
+            })
+
+        # Build rows as objects mapping col_name -> cell_value (NOT arrays!)
+        data_rows = []
+        for row in rows:
+            row_obj = {}
+            for i, cell in enumerate(row):
+                if i < len(headers):
+                    col_name = f"col_{i}"
+                    row_obj[col_name] = _strip_md_bold(cell) or " "
+            data_rows.append(row_obj)
+
+        return {
+            "tag": "table",
+            "columns": columns,
+            "rows": data_rows,
+            "header_style": {
+                "bold": True,
+                "text_align": "left",
+                "text_size": "normal",
+                "background_style": "none",
+                "text_color": "default",
+                "lines": 1,
+            },
+        }
+
+    def _build_table_card_payload(self, content: str) -> dict | None:
+        """Convert content containing markdown table(s) to a Feishu Card v2 payload.
+
+        Handles mixed content (text + table + text) by splitting into segments
+        and rendering each appropriately within the card elements list.
+        """
+        try:
+            segments = self._split_content_with_tables(content)
+            if not segments:
+                return None
+
+            has_table = any(seg["type"] == "table" for seg in segments)
+            if not has_table:
+                return None
+
+            elements = []
+            for seg in segments:
+                if seg["type"] == "table":
+                    headers, rows = self._parse_md_table(seg["content"])
+                    if headers:
+                        elements.append(self._build_table_element(headers, rows))
+                    else:
+                        # Fallback: render as markdown code block
+                        elements.append({
+                            "tag": "markdown",
+                            "content": f"```\n{seg['content']}\n```",
+                        })
+                else:
+                    content_text = seg["content"].strip()
+                    if content_text:
+                        elements.append({
+                            "tag": "markdown",
+                            "content": content_text,
+                        })
+
+            if not elements:
+                return None
+
+            # Card v2 requires schema + body wrapper
+            return {
+                "schema": "2.0",
+                "config": {"wide_screen_mode": True},
+                "body": {"elements": elements},
+            }
+        except Exception as exc:
+            logger.warning("[Feishu] Failed to build table card: %s", exc)
+            return None
+
+    @staticmethod
+    def _split_content_with_tables(content: str) -> list[dict]:
+        """Split content into alternating text/table segments."""
+        import re as _re
+        table_pattern = _re.compile(
+            r"^(\|.+\|\n\|[-|:\s]+\|\n(?:\|.+\|\n?)*)",
+            _re.MULTILINE,
+        )
+        segments = []
+        last_end = 0
+        for match in table_pattern.finditer(content):
+            if match.start() > last_end:
+                text_before = content[last_end:match.start()].strip()
+                if text_before:
+                    segments.append({"type": "text", "content": text_before})
+            segments.append({"type": "table", "content": match.group(0).strip()})
+            last_end = match.end()
+        if last_end < len(content):
+            text_after = content[last_end:].strip()
+            if text_after:
+                segments.append({"type": "text", "content": text_after})
+        return segments
 
     async def _send_uploaded_file_message(
         self,

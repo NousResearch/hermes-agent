@@ -351,6 +351,12 @@ def _sanitize_node(node: Any, path: str) -> Any:
         elif len(valid) != len(out["required"]):
             out["required"] = valid
 
+    # ``required: null`` is invalid JSON Schema (must be an array or absent)
+    # and causes HTTP 400 on strict OpenAI-compatible backends (#60752).
+    # Normalise to absent — an omitted ``required`` is universally accepted.
+    if out.get("required") is None:
+        out.pop("required", None)
+
     return out
 
 

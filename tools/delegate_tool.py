@@ -3293,7 +3293,6 @@ def delegate_task(
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
             max_async_children=_get_max_async_children(),
-            parent_session_id=getattr(parent_agent, "session_id", None),
             parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
             child_session_ids=_child_session_ids,
         )

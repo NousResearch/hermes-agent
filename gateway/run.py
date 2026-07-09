@@ -16922,10 +16922,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Prefers the profile the source was routed to (``source.profile`` — set
         by the /p/<profile>/ URL prefix or a per-credential adapter), falling
         back to the active profile (the multiplexer's own home).
+
+        A routed profile whose directory does not exist must not scope the turn
+        into a missing HERMES_HOME. ``get_profile_dir`` returns a path for a
+        valid-but-absent profile name, so missing routed profiles need an
+        explicit existence check before falling back to active/default.
         """
-        from hermes_cli.profiles import get_active_profile_name, get_profile_dir
+        from hermes_cli.profiles import (
+            get_active_profile_name,
+            get_profile_dir,
+            profile_exists,
+        )
         try:
-            name = (source.profile or "").strip() or get_active_profile_name() or "default"
+            routed = (source.profile or "").strip()
+            if routed and not profile_exists(routed):
+                logger.warning(
+                    "Routed profile %r has no profile directory; falling back "
+                    "to the active/default home.",
+                    routed,
+                )
+                routed = ""
+            name = routed or get_active_profile_name() or "default"
             return get_profile_dir(name)
         except Exception:
             from hermes_constants import get_hermes_home

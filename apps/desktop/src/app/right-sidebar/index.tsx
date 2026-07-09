@@ -33,7 +33,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
   // The file tree is simply "browse the session's working directory". If the
   // session has a cwd — a repo, a sibling worktree, or any folder — show it. A
   // bare/detached chat (resolveNewSessionCwd → '') has none, so it shows the
-  // empty hint instead of whatever dir Hermes happens to run from.
+  // empty hint instead of whatever dir IX Agency happens to run from.
   const hasWorkspace = Boolean(currentCwd)
 
   const {

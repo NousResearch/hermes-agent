@@ -21,6 +21,7 @@ import {
 
 import { appViewForPath, isOverlayView } from '../routes'
 
+import { IxVpnTitlebarPill } from './ix-vpn-titlebar'
 import { titlebarButtonClass } from './titlebar'
 
 export interface TitlebarTool {
@@ -187,6 +188,9 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         aria-label={t.shell.appControls}
         className="fixed right-(--titlebar-tools-right) top-(--titlebar-controls-top) z-70 flex flex-row items-center justify-end gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
       >
+        {/* Company VPN pill — pinned top-right on every view; also owns the
+            login-triggered auto-connect watcher. */}
+        <IxVpnTitlebarPill />
         {visibleSystemToolsBeforeSettings.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}

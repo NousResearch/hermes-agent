@@ -136,7 +136,11 @@ export function AppShell({
   // to keep the formula generic for any pane-tool count.
   const SYSTEM_TOOL_COUNT = 4
   const paneToolCount = titlebarTools?.filter(tool => !tool.hidden).length ?? 0
-  const systemToolsWidth = `calc(${SYSTEM_TOOL_COUNT} * (var(--titlebar-control-size) + 0.25rem))`
+  // The IX VPN pill (status dot + "VPN on/off" label) renders ahead of the
+  // system cluster in TitlebarControls; reserve its footprint so the titlebar
+  // drag band never overlaps it (drag regions win hit-testing over DOM).
+  const IX_VPN_PILL_WIDTH = '4.5rem'
+  const systemToolsWidth = `calc(${SYSTEM_TOOL_COUNT} * (var(--titlebar-control-size) + 0.25rem) + ${IX_VPN_PILL_WIDTH})`
 
   const fileBrowserWidth =
     fileBrowserWidthOverride !== undefined ? `${fileBrowserWidthOverride}px` : FILE_BROWSER_DEFAULT_WIDTH

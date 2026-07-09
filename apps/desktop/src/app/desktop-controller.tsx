@@ -131,6 +131,7 @@ const AgentsView = lazy(async () => ({ default: (await import('./agents')).Agent
 const ArtifactsView = lazy(async () => ({ default: (await import('./artifacts')).ArtifactsView }))
 const CommandCenterView = lazy(async () => ({ default: (await import('./command-center')).CommandCenterView }))
 const CronView = lazy(async () => ({ default: (await import('./cron')).CronView }))
+const IxAgencyView = lazy(async () => ({ default: (await import('./ix-agency')).IxAgencyView }))
 const StarmapView = lazy(async () => ({ default: (await import('./starmap')).StarmapView }))
 const MessagingView = lazy(async () => ({ default: (await import('./messaging')).MessagingView }))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
@@ -1336,6 +1337,14 @@ export function DesktopController() {
               </Suspense>
             }
             path="artifacts"
+          />
+          <Route
+            element={
+              <Suspense fallback={null}>
+                <IxAgencyView />
+              </Suspense>
+            }
+            path="ix-agency"
           />
           <Route element={null} path="cron" />
           <Route element={null} path="profiles" />

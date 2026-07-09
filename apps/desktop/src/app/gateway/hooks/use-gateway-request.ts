@@ -98,7 +98,7 @@ export function useGatewayRequest() {
       const gateway = gatewayRef.current
 
       if (!gateway) {
-        throw new Error('Hermes gateway unavailable')
+        throw new Error('IX Agency gateway unavailable')
       }
 
       try {

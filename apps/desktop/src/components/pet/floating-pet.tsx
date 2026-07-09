@@ -288,7 +288,7 @@ export function FloatingPet() {
     const rect = el.getBoundingClientRect()
 
     // Shift-click pops the pet out into a free-floating desktop overlay (it can
-    // leave the window and stays visible while Hermes is minimized) instead of
+    // leave the window and stays visible while IX Agency is minimized) instead of
     // starting an in-window drag. Primary window only — the overlay is anchored
     // to it.
     if (e.shiftKey && !isSecondaryWindow()) {

@@ -52,7 +52,7 @@ function PermissionRow({ granted, label, hint }: { granted: boolean | null; labe
  *
  * cua-driver runs on macOS, Windows, and Linux, but readiness differs: macOS
  * needs two TCC grants (Accessibility + Screen Recording) that attach to
- * cua-driver's own `com.trycua.driver` identity — not Hermes — and are
+ * cua-driver's own `com.trycua.driver` identity — not IX Agency — and are
  * requested via `cua-driver permissions grant` (dialog attributed to
  * CuaDriver). Windows/Linux have no TCC toggles, so readiness is driver health
  * from `cua-driver doctor`. The backend folds both into one `ready` signal.
@@ -170,7 +170,7 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
         <div className="min-w-0">
           {status.can_grant ? (
             <p className="text-[0.72rem] text-muted-foreground">
-              Grants attach to CuaDriver&apos;s own identity (com.trycua.driver), not Hermes — so the dialog is
+              Grants attach to CuaDriver&apos;s own identity (com.trycua.driver), not IX Agency — so the dialog is
               attributed to the process that drives your Mac.
             </p>
           ) : (

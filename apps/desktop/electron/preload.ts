@@ -243,5 +243,52 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   themes: {
     fetchMarketplace: id => ipcRenderer.invoke('hermes:vscode-theme:fetch', id),
     searchMarketplace: query => ipcRenderer.invoke('hermes:vscode-theme:search', query)
+  },
+  // IX Agency: locally-persisted settings (portal/gateway/VPN profile), the
+  // WireGuard VPN control, and the admin-mcp gateway MCP directory.
+  ixAgency: {
+    getSettings: () => ipcRenderer.invoke('hermes:ix-agency:settings:get'),
+    saveSettings: payload => ipcRenderer.invoke('hermes:ix-agency:settings:save', payload),
+    pickVpnConf: () => ipcRenderer.invoke('hermes:ix-agency:vpn:pick-conf'),
+    importVpnConf: () => ipcRenderer.invoke('hermes:ix-agency:vpn:import-conf'),
+    vpnStatus: () => ipcRenderer.invoke('hermes:ix-agency:vpn:status'),
+    vpnConnect: () => ipcRenderer.invoke('hermes:ix-agency:vpn:connect'),
+    vpnDisconnect: () => ipcRenderer.invoke('hermes:ix-agency:vpn:disconnect'),
+    // Status lamps (VPN deep check + admin-mcp) and the update poller.
+    statusSummary: refresh => ipcRenderer.invoke('hermes:ix-agency:status:summary', { refresh }),
+    updateCheck: () => ipcRenderer.invoke('hermes:ix-agency:update:check'),
+    updateApply: () => ipcRenderer.invoke('hermes:ix-agency:update:apply'),
+    // Cognito S2S + local Hermes first-run init.
+    hermesStatus: () => ipcRenderer.invoke('hermes:ix-agency:hermes:status'),
+    cognitoValidate: payload => ipcRenderer.invoke('hermes:ix-agency:cognito:validate', payload),
+    hermesInit: () => ipcRenderer.invoke('hermes:ix-agency:hermes:init'),
+    listMcpTiles: () => ipcRenderer.invoke('hermes:ix-agency:mcp:list'),
+    // User-level SKILL.md drafts (~/.hermes/skills/ix-user/) + publish to the
+    // portal's global Skills.md API.
+    skillsList: () => ipcRenderer.invoke('hermes:ix-agency:skills:list'),
+    skillsSave: payload => ipcRenderer.invoke('hermes:ix-agency:skills:save', payload),
+    skillsDelete: id => ipcRenderer.invoke('hermes:ix-agency:skills:delete', { id }),
+    skillsPublish: id => ipcRenderer.invoke('hermes:ix-agency:skills:publish', { id }),
+    // Login enforcement: probes the portal OTP session (main process, using
+    // the persist:ix-agency-portal session cookies).
+    authStatus: force => ipcRenderer.invoke('hermes:ix-agency:auth:status', { force }),
+    // Native OTP login — email a code, verify it; cookies land in the same
+    // portal session partition the probe checks. No webview involved.
+    authSendOtp: email => ipcRenderer.invoke('hermes:ix-agency:auth:send-otp', { email }),
+    authVerifyOtp: payload => ipcRenderer.invoke('hermes:ix-agency:auth:verify-otp', payload),
+    // Native chat: LiteLLM + admin-mcp tool loop in the main process. The
+    // write gate's Confirm/Cancel travels ONLY over chatConfirm — no other
+    // surface (and never the model) can approve a write.
+    chatModels: () => ipcRenderer.invoke('hermes:ix-agency:chat:models'),
+    chatList: () => ipcRenderer.invoke('hermes:ix-agency:chat:list'),
+    chatGet: conversationId => ipcRenderer.invoke('hermes:ix-agency:chat:get', conversationId),
+    chatSend: payload => ipcRenderer.invoke('hermes:ix-agency:chat:send', payload),
+    chatConfirm: payload => ipcRenderer.invoke('hermes:ix-agency:chat:confirm', payload),
+    onChatEvent: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:ix-agency:chat:event', listener)
+
+      return () => ipcRenderer.removeListener('hermes:ix-agency:chat:event', listener)
+    }
   }
 })

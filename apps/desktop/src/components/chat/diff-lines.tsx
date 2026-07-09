@@ -90,7 +90,7 @@ function stripDiffMarker(line: string): string {
 }
 
 // Git-style unified diffs arrive with a file-header preamble — `diff --git`,
-// `index …`, `--- a/path`, `+++ b/path`, and Hermes' own `a/path → b/path`
+// `index …`, `--- a/path`, `+++ b/path`, and IX Agency' own `a/path → b/path`
 // arrow line. That preamble just repeats the path (which the tool row already
 // shows) and reads especially badly for absolute paths (`a//Users/…`). Strip
 // the leading header zone up to the first hunk.

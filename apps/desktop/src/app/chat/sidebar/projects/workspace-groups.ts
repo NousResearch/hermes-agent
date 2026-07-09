@@ -134,7 +134,7 @@ export function sortWorktreeGroups(groups: SidebarSessionGroup[]): SidebarSessio
 
 /**
  * VISUAL enhancer only: inject empty lanes from a live `git worktree list` so a
- * repo shows its branches/worktrees even when they have no Hermes sessions yet.
+ * repo shows its branches/worktrees even when they have no IX Agency sessions yet.
  * The repo's real session lanes already come fully built from the backend
  * (`projects.project_sessions`); this never adds or moves session rows, and it
  * degrades to a no-op on remote backends (where the Electron probe returns

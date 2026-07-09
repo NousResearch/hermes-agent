@@ -18,7 +18,7 @@ describe('desktop i18n runtime translator', () => {
   it('translates string paths for the active runtime locale', () => {
     setRuntimeI18nLocale('zh')
 
-    expect(translateNow('boot.ready')).toBe('Hermes 桌面版已就绪')
+    expect(translateNow('boot.ready')).toBe('IX Agency 桌面版已就绪')
     expect(translateNow('notifications.voice.noSpeechDetected')).toBe('没有检测到语音')
     expect(translateNow('composer.lookupNoMatches')).toBe('没有匹配项。')
     expect(translateNow('assistant.tool.statusRecovered')).toBe('已恢复')

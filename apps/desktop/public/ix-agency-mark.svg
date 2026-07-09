@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="IX Agency logomark">
+  <!-- IX monogram: "I" bar + crossing "X" strokes echoing the Intelliverse X mark.
+       Palette sampled from intelli-verse-x.ai: cyan #0D96EA / #38BDF8 -> navy #1E3E8F. -->
+  <defs>
+    <linearGradient id="ixm-i" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#1E3E8F"/>
+    </linearGradient>
+    <linearGradient id="ixm-x" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0D96EA"/>
+      <stop offset="1" stop-color="#1E3E8F"/>
+    </linearGradient>
+  </defs>
+  <!-- I -->
+  <rect x="14" y="26" width="18" height="76" rx="9" fill="url(#ixm-i)"/>
+  <!-- X: continuous stroke (over) -->
+  <path d="M50 28 L110 100" stroke="url(#ixm-x)" stroke-width="18" stroke-linecap="round" fill="none"/>
+  <!-- X: split stroke (under), gap at the crossing -->
+  <path d="M50 100 L69.8 76.3" stroke="#38BDF8" stroke-width="18" stroke-linecap="round" fill="none"/>
+  <path d="M90.2 51.7 L110 28" stroke="#38BDF8" stroke-width="18" stroke-linecap="round" fill="none"/>
+</svg>

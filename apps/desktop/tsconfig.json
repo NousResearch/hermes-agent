@@ -14,6 +14,10 @@
     "moduleResolution": "Bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
+    // The renderer is bundled by Vite straight from the .ts sources; without
+    // noEmit, `tsc -b` (run by `npm run build`) spews .js twins next to every
+    // src/ file, which vitest then picks up as stale duplicate test suites.
+    "noEmit": true,
     "jsx": "react-jsx",
     "paths": {
       "@/*": ["./src/*"],

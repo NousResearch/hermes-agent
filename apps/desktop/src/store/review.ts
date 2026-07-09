@@ -18,7 +18,7 @@ import { $workspaceChangeTick } from './workspace-events'
 // session's cwd is the repo; the pane reads git as the source of truth, the
 // same bounded "re-probe on structural edges" model as the coding rail.
 //
-// Scope is always "uncommitted" — Hermes' flow is agent edits you review BEFORE
+// Scope is always "uncommitted" — IX Agency' flow is agent edits you review BEFORE
 // committing, so branch/last-turn scopes are almost always empty here (unlike
 // Codex, which commits per turn). We show the one view that's always populated.
 

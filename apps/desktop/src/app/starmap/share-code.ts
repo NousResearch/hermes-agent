@@ -12,7 +12,7 @@ import type { StarmapEdge, StarmapGraph, StarmapNode } from '@/types/hermes'
 // text almost free. A 60-skill map is a few hundred chars.
 
 const VERSION = 3
-const PREFIX = 'HML' // "Hermes Memory Loadout" — namespaces our codes like WoW's leading bytes.
+const PREFIX = 'HML' // "IX Agency Memory Loadout" — namespaces our codes like WoW's leading bytes.
 const MAX_LABEL = 64 // trim runaway memory titles so one card can't bloat the code.
 
 const trim = (s: string): string => (s.length > MAX_LABEL ? s.slice(0, MAX_LABEL) : s)

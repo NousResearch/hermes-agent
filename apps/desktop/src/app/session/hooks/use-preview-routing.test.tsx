@@ -139,6 +139,10 @@ describe('usePreviewRouting', () => {
     act(() => handleEvent({ payload: { path: './dist/index.html' }, session_id: 'session-1', type: 'tool.complete' }))
 
     expect($previewTarget.get()).toBeNull()
-    expect(window.localStorage.getItem('hermes.desktop.sessionPreviews.v1')).toBeNull()
+
+    // The registry store eagerly persists its (empty) state on subscription,
+    // so the key may exist — what matters is that no preview was recorded.
+    const persisted = window.localStorage.getItem('hermes.desktop.sessionPreviews.v1')
+    expect(JSON.parse(persisted ?? '{}')).toEqual({})
   })
 })

@@ -48,7 +48,7 @@ export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: Us
   }, [followUpPlaceholders, newSessionPlaceholders, sessionId])
 
   // When the transport is disabled it's because the gateway isn't open.
-  // Distinguish a cold start ("Starting Hermes...") from a dropped connection
+  // Distinguish a cold start ("Starting IX Agency...") from a dropped connection
   // we're trying to restore. During reconnect, keep the textbox editable so a
   // flaky network doesn't block drafting; only submit/backend actions stay
   // disabled until the gateway is open again.

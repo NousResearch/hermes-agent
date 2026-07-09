@@ -28,7 +28,7 @@ const nousTint = (pct: number) => `color-mix(in srgb, ${NOUS_BLUE} ${pct}%, #FFF
 const nousTintTransparent = (pct: number) => `color-mix(in srgb, ${NOUS_BLUE} ${pct}%, transparent)`
 
 /**
- * Nous — canonical Hermes desktop identity. The palette keeps the current
+ * Nous — canonical IX Agency desktop identity. The palette keeps the current
  * glass geometry neutral, then lets the old bb/gui blue and psyche cream
  * return as accent seeds.
  */

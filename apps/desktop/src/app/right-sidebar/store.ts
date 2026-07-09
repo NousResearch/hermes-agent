@@ -16,8 +16,8 @@ export const setTerminalTakeover = (active: boolean) => $terminalTakeover.set(ac
 export const $terminalInjection = atom<null | string>(null)
 
 /** Open the terminal pane and run a command in it. Used to disconnect external
- *  (CLI-managed) providers, which Hermes can't clear via the API — the user
- *  sees exactly what runs instead of Hermes silently deleting their creds. */
+ *  (CLI-managed) providers, which IX Agency can't clear via the API — the user
+ *  sees exactly what runs instead of IX Agency silently deleting their creds. */
 export const runInTerminal = (command: string) => {
   const trimmed = command.trim()
 

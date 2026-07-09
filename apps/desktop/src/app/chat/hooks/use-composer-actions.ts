@@ -83,7 +83,7 @@ export const HERMES_PATHS_MIME = 'application/x-hermes-paths'
 
 /**
  * Eagerly resolve files from a drop event into [File?, path, isDirectory?]
- * triples. Internal Hermes sources (e.g. the project tree) ride on a custom
+ * triples. Internal IX Agency sources (e.g. the project tree) ride on a custom
  * MIME and produce path-only entries; OS drops produce File-bearing entries.
  *
  * Must be called synchronously from inside the drop handler — `DataTransfer`

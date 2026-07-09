@@ -92,7 +92,7 @@ function RevealLabel({ axis, revealStore }: { axis: TimeAxis; revealStore: Writa
   )
 }
 
-// A tilted, top-down star map of what Hermes has learned. Time is RADIAL: oldest
+// A tilted, top-down star map of what IX Agency has learned. Time is RADIAL: oldest
 // at the core, newest on the outer rings. This component owns the refs, effects
 // and pointer wiring; layout lives in simulation.ts and painting in render.ts.
 export function StarMap({

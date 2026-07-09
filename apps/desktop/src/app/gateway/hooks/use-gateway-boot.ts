@@ -99,7 +99,7 @@ export function useGatewayBoot({
     // --- Reconnect-after-sleep machinery -------------------------------------
     // macOS sleep silently drops the renderer's WebSocket. The backend Python
     // process keeps running, but nothing re-opened the socket on wake, so the
-    // composer stayed disabled forever on "Starting Hermes...". Once the
+    // composer stayed disabled forever on "Starting IX Agency...". Once the
     // initial boot succeeds we treat any non-open state as recoverable and
     // reconnect with backoff, and we nudge a reconnect on the OS/browser
     // signals that fire around wake (power resume, network online, the window
@@ -141,7 +141,7 @@ export function useGatewayBoot({
         // remote backend can become unreachable, but it has no child process
         // whose 'exit' would clear the main process's cached descriptor — without
         // this the renderer re-dials the same dead endpoint forever and stays on
-        // "Starting Hermes…". The probe is a no-op for a healthy or local backend.
+        // "Starting IX Agency…". The probe is a no-op for a healthy or local backend.
         await desktop.revalidateConnection?.().catch(() => undefined)
 
         const conn = await desktop.getConnection($activeGatewayProfile.get())
@@ -154,7 +154,7 @@ export function useGatewayBoot({
         // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
         // with a short TTL, so the ticket baked into the cached conn.wsUrl is
         // dead on every reconnect after the initial boot — reusing it surfaces
-        // as an opaque "Could not connect to Hermes gateway". resolveGatewayWsUrl
+        // as an opaque "Could not connect to IX Agency gateway". resolveGatewayWsUrl
         // mints a fresh ticket (or throws a reauth error in OAuth mode rather
         // than connecting with a stale one). For local/token gateways the URL
         // carries a long-lived token and the re-mint is a cheap no-op.

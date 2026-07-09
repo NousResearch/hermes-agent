@@ -11,10 +11,14 @@
     "noUncheckedIndexedAccess": false,
     "exactOptionalPropertyTypes": false,
     "ignoreDeprecations": "6.0",
+    // Composite projects must emit; the parent config sets noEmit for the
+    // Vite-bundled renderer, so switch it back on here.
+    "noEmit": false,
     "composite": true,
     "declaration": true,
     "outDir": "build/electron-types"
   },
   "include": ["electron"],
+  "files": ["src/app/ix-agency/data/mcp-tiles.json", "src/app/ix-agency/data/skills.json"],
   "exclude": ["src"]
 }

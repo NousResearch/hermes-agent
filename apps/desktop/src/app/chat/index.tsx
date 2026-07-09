@@ -362,7 +362,7 @@ export function ChatView({
       }
 
       if (!gateway) {
-        throw new Error('Hermes gateway unavailable')
+        throw new Error('IX Agency gateway unavailable')
       }
 
       return gateway.request<ModelOptionsResponse>('model.options', {

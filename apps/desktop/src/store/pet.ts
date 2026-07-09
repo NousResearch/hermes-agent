@@ -32,7 +32,7 @@ export interface PetInfo {
   // would animate into the transparent padding of ragged sheets (blank flash).
   framesByState?: Record<string, number>
   // Concrete Codex row counts (e.g. running-right may have 8 frames even though
-  // the Hermes "run" activity state uses the in-place running row).
+  // the IX Agency "run" activity state uses the in-place running row).
   framesByRow?: Record<string, number>
   loopMs?: number
   scale?: number

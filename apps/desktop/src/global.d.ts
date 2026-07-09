@@ -200,8 +200,224 @@ declare global {
         // returns the most-installed themes.
         searchMarketplace: (query: string) => Promise<DesktopMarketplaceSearchItem[]>
       }
+      // IX Agency: locally-persisted settings (portal/gateway/VPN profile),
+      // the WireGuard VPN control, and the admin-mcp MCP directory.
+      ixAgency?: {
+        getSettings: () => Promise<IxAgencyRendererSettings>
+        saveSettings: (payload: IxAgencySettingsInput) => Promise<IxAgencyRendererSettings>
+        pickVpnConf: () => Promise<{ canceled: boolean; path: null | string }>
+        importVpnConf: () => Promise<{ imported: boolean; detail: string }>
+        vpnStatus: () => Promise<IxAgencyVpnStatus>
+        vpnConnect: () => Promise<IxAgencyVpnStatus>
+        vpnDisconnect: () => Promise<IxAgencyVpnStatus>
+        // Status lamps + update poller (fed by main-process pollers).
+        statusSummary: (refresh?: boolean) => Promise<IxStatusSummary>
+        updateCheck: () => Promise<IxUpdateStatus>
+        updateApply: () => Promise<{ opened: boolean; detail: string }>
+        // Cognito S2S + local Hermes first-run init.
+        hermesStatus: () => Promise<IxHermesStatus>
+        cognitoValidate: (payload: {
+          clientId?: string
+          clientSecret?: string
+        }) => Promise<{ ok: boolean; detail: string }>
+        hermesInit: () => Promise<{ ok: boolean; log: string }>
+        listMcpTiles: () => Promise<{ detail: string; tiles: IxAgencyMcpTile[] }>
+        // User-level SKILL.md drafts + publish to the portal's global catalog.
+        skillsList: () => Promise<{ skills: IxAgencyUserSkill[]; templates: IxAgencySkillTemplate[] }>
+        skillsSave: (payload: {
+          content: string
+          description?: string
+          id?: null | string
+          title: string
+        }) => Promise<IxAgencyUserSkill>
+        skillsDelete: (id: string) => Promise<{ deleted: boolean }>
+        skillsPublish: (id: string) => Promise<IxAgencyUserSkill>
+        // Login enforcement: main-process probe of the portal OTP session.
+        authStatus: (force?: boolean) => Promise<{ authenticated: boolean; detail: string; portalUrl: string }>
+        // Native OTP login (no webview): request an emailed code, verify it.
+        authSendOtp: (email: string) => Promise<{ challenge: string; expiresAt: number; devCode?: string }>
+        authVerifyOtp: (payload: {
+          challenge: string
+          code: string
+          email: string
+        }) => Promise<{ authenticated: boolean; detail: string }>
+        // Native chat: LiteLLM streaming + admin-mcp tool loop in the main
+        // process. chatConfirm is the ONLY write-approval channel.
+        chatModels: () => Promise<{ models: { id: string; label: string }[]; defaultModel: string }>
+        chatList: () => Promise<IxChatConversationMeta[]>
+        chatGet: (conversationId: string) => Promise<IxChatConversationDetail | null>
+        chatSend: (payload: IxChatSendInput) => Promise<{ conversationId: string }>
+        chatConfirm: (payload: {
+          conversationId: string
+          nonce: string
+          approve: boolean
+        }) => Promise<{ ok: boolean; state: 'approved' | 'denied' }>
+        onChatEvent: (callback: (event: IxChatRendererEvent) => void) => () => void
+      }
     }
   }
+}
+
+export interface IxAgencyRendererSettings {
+  portalUrl: string
+  gatewayUrl: string
+  // The raw bearer token never crosses back into the renderer.
+  gatewayTokenSet: boolean
+  vpnConfPath: string
+  // Whether a usa-vpn.conf has been imported into the keychain (contents
+  // never cross back into the renderer).
+  vpnConfImported: boolean
+  vpnExitIp: string
+  litellmUrl: string
+  // The raw LiteLLM key never crosses back into the renderer.
+  litellmKeySet: boolean
+  customChatModels: string
+  updateManifestUrl: string
+  cognitoOauth2Url: string
+  cognitoClientId: string
+  cognitoClientSecretSet: boolean
+  cognitoScope: string
+  hermesInitialized: boolean
+}
+
+export interface IxAgencySettingsInput {
+  portalUrl?: string
+  gatewayUrl?: string
+  gatewayToken?: string
+  vpnConfPath?: string
+  vpnExitIp?: string
+  litellmUrl?: string
+  litellmKey?: string
+  customChatModels?: string
+  updateManifestUrl?: string
+  cognitoOauth2Url?: string
+  cognitoClientId?: string
+  cognitoClientSecret?: string
+  cognitoScope?: string
+}
+
+export interface IxVpnDeepStatus {
+  state: 'connected' | 'connecting' | 'degraded' | 'disconnected' | 'error' | 'unavailable'
+  tunnelUp: boolean
+  handshakeAgeSecs: null | number
+  egressIp: null | string
+  expectedExitIp: string
+  detail: string
+}
+
+export interface IxMcpLampStatus {
+  state: 'green' | 'grey' | 'red'
+  reachable: boolean
+  authenticated: boolean
+  toolCount: number
+  detail: string
+}
+
+export interface IxUpdateStatus {
+  updateAvailable: boolean
+  currentVersion: string
+  latestVersion: string
+  url: string
+  notes: string
+  detail: string
+}
+
+export interface IxStatusSummary {
+  vpn: IxVpnDeepStatus | null
+  mcp: IxMcpLampStatus | null
+  update: IxUpdateStatus | null
+}
+
+export interface IxHermesStatus {
+  initialized: boolean
+  configPath: string
+  configExists: boolean
+  hasCognitoCreds: boolean
+  installerAvailable: boolean
+  detail: string
+}
+
+export interface IxChatConversationMeta {
+  id: string
+  title: string
+  model: string
+  updatedAt: number
+}
+
+export interface IxChatDisplayItem {
+  kind: 'assistant' | 'confirm' | 'tool' | 'user'
+  text?: string
+  name?: string
+  argsSummary?: string
+  result?: string
+  status?: 'approved' | 'error' | 'gated' | 'ok'
+  nonce?: string
+  state?: 'approved' | 'denied' | 'pending'
+  at: number
+}
+
+export interface IxChatConversationDetail {
+  id: string
+  title: string
+  model: string
+  skills: string[]
+  display: IxChatDisplayItem[]
+}
+
+export interface IxChatSendInput {
+  conversationId?: null | string
+  text: string
+  model?: string
+  skills?: { name: string; content: string }[]
+}
+
+export interface IxChatRendererEvent {
+  conversationId: string
+  type: 'confirmation-required' | 'done' | 'error' | 'step' | 'text-delta' | 'tool-call' | 'tool-result'
+  delta?: string
+  step?: number
+  nonce?: string
+  tool?: string
+  name?: string
+  argsSummary?: string
+  status?: 'approved' | 'error' | 'gated' | 'ok'
+  result?: string
+  message?: string
+}
+
+export interface IxAgencyVpnStatus {
+  state: 'connected' | 'connecting' | 'disconnected' | 'unavailable' | 'unknown'
+  detail: string
+  interfaceName?: string
+}
+
+export interface IxAgencyMcpTile {
+  id: string
+  label: string
+  blurb?: string
+  group?: string
+  mcpUrl: string
+  domain: string
+  mcpAuthHint?: string
+  hasDefaultToken?: boolean
+}
+
+/** User-level SKILL.md draft under ~/.hermes/skills/ix-user/<id>/. */
+export interface IxAgencyUserSkill {
+  id: string
+  title: string
+  description: string
+  content: string
+  updatedAt: number
+  /** adminSkill.<slug> portal document id once published globally. */
+  publishedId: null | string
+}
+
+export interface IxAgencySkillTemplate {
+  id: string
+  title: string
+  description: string
+  content: string
 }
 
 export interface DesktopMarketplaceSearchItem {

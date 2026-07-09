@@ -1,7 +1,7 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useEffect, useState } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { Thread } from '.'
 
@@ -397,10 +397,18 @@ describe('assistant-ui streaming renderer', () => {
     resizeObservers.clear()
   })
 
+  // Without explicit cleanup the mounted Thread keeps scheduling settle-loop
+  // timers (rAF is stubbed to setTimeout) past the end of the file, which then
+  // fire after jsdom teardown and surface as unhandled "window is not defined"
+  // errors in later test files.
+  afterEach(() => {
+    cleanup()
+  })
+
   it('renders assistant text incrementally before completion', async () => {
     const { container } = render(<StreamingHarness />)
 
-    expect(screen.getByRole('status', { name: 'Hermes is loading a response' })).toBeTruthy()
+    expect(screen.getByRole('status', { name: 'IX Agency is loading a response' })).toBeTruthy()
 
     await wait(80)
 
@@ -408,7 +416,7 @@ describe('assistant-ui streaming renderer', () => {
       expect(container.textContent).toContain('first chunk')
     })
     expect(container.textContent).not.toContain('second chunk')
-    expect(screen.queryByRole('status', { name: 'Hermes is loading a response' })).toBeNull()
+    expect(screen.queryByRole('status', { name: 'IX Agency is loading a response' })).toBeNull()
 
     await wait(500)
 

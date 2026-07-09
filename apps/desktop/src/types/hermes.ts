@@ -48,7 +48,7 @@ export interface OAuthProviderStatus {
 export interface OAuthProvider {
   cli_command: string
   /** Shell command that clears an external provider's credentials, run in the
-   *  embedded terminal. Null when Hermes doesn't know how to remove it. */
+   *  embedded terminal. Null when IX Agency doesn't know how to remove it. */
   disconnect_command?: null | string
   disconnect_hint?: null | string
   disconnectable?: boolean
@@ -651,7 +651,7 @@ export interface SkillInfo {
   name: string
   /** Total observed activity (use + view + patch). Absent on older backends. */
   usage?: number
-  /** 'agent' = learned/local (editable), 'bundled' = ships with Hermes, 'hub' = installed. */
+  /** 'agent' = learned/local (editable), 'bundled' = ships with IX Agency, 'hub' = installed. */
   provenance?: 'agent' | 'bundled' | 'hub'
 }
 
@@ -717,7 +717,7 @@ export interface ToolsetModelsResponse {
  *  cua-driver runs on macOS, Windows, and Linux. `ready` is the single OS-aware
  *  readiness signal: on macOS both TCC grants (Accessibility + Screen
  *  Recording, which attach to cua-driver's own `com.trycua.driver` identity,
- *  not Hermes); elsewhere, driver health from `cua-driver doctor`. `null`
+ *  not IX Agency); elsewhere, driver health from `cua-driver doctor`. `null`
  *  means unknown (binary missing / probe failed). */
 export interface ComputerUsePermissionSource {
   attribution?: string

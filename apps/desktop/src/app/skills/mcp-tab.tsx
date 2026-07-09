@@ -65,7 +65,7 @@ const wrapDoc = (entries: McpServers) => pretty({ mcpServers: entries })
 const isServerShape = (value: Record<string, unknown>) =>
   typeof value.command === 'string' || typeof value.url === 'string'
 
-// Cursor/Claude write `type`; Hermes reads `transport`. Normalize on the way
+// Cursor/Claude write `type`; IX Agency reads `transport`. Normalize on the way
 // in so pasted configs behave identically under the CLI/TUI loader.
 function normalizeEntry(entry: Record<string, unknown>): Record<string, unknown> {
   if (typeof entry.type === 'string' && entry.transport === undefined) {

@@ -10,7 +10,7 @@ import { Panel, PanelEmpty } from '../overlays/panel'
 
 import { StarMap } from './star-map'
 
-// Star map overlay: a top-down map of what Hermes has learned for a profile,
+// Star map overlay: a top-down map of what IX Agency has learned for a profile,
 // over a radial time axis. Data is fetched on demand into the $starmap* atoms;
 // the map itself lives in ./star-map. The chrome is owned by the map itself
 // (timeline scrubber + legend float over the canvas), so there's no panel

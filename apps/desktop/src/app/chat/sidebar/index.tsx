@@ -95,7 +95,7 @@ import {
   setCurrentCwd
 } from '@/store/session'
 
-import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
+import { type AppView, ARTIFACTS_ROUTE, IX_AGENCY_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
 import type { SidebarNavItem } from '../../types'
 
 import { countLabel } from './chrome'
@@ -144,7 +144,13 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     route: SKILLS_ROUTE
   },
   { id: 'messaging', label: '', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
-  { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
+  { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE },
+  {
+    id: 'ix-agency',
+    label: 'IX Agency',
+    icon: props => <Codicon name="organization" {...props} />,
+    route: IX_AGENCY_ROUTE
+  }
 ]
 
 // Two modes via the `compact` height variant (styles.css):
@@ -656,7 +662,7 @@ export function ChatSidebar({
   const [scopedRepoWorktrees] = useRepoWorktreeMap(scopedRepoPaths, inEnteredProject)
 
   // Re-probe worktree lanes on out-of-band git changes the renderer can't see.
-  // A turn can `git worktree add/remove` in the terminal (e.g. you ask Hermes to
+  // A turn can `git worktree add/remove` in the terminal (e.g. you ask IX Agency to
   // "remove that worktree"), and the window never blurs during an in-app chat,
   // so nothing would otherwise re-run the visual probe. Re-sync when a working
   // session settles (its turn finished) or the window refocuses (an external
@@ -1053,7 +1059,8 @@ export function ChatSidebar({
                 const active =
                   (item.id === 'skills' && currentView === 'skills') ||
                   (item.id === 'messaging' && currentView === 'messaging') ||
-                  (item.id === 'artifacts' && currentView === 'artifacts')
+                  (item.id === 'artifacts' && currentView === 'artifacts') ||
+                  (item.id === 'ix-agency' && currentView === 'ix-agency')
 
                 const isNewSession = item.id === 'new-session'
 

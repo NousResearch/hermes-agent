@@ -99,6 +99,42 @@ def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Pa
         assert kb.get_task(conn, child).status == "blocked"
 
 
+def test_review_required_reblock_stays_sticky_and_out_of_triage(kanban_home: Path) -> None:
+    """A second canonical review-required handoff must still park the same
+    card in ``blocked`` so review routing can service it; triage would make it
+    an auto-decompose candidate again."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="needs review twice")
+        kb.claim_task(conn, tid)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        kb.block_task(
+            conn, tid,
+            reason="review-required: first pass",
+            kind="needs_input",
+            expected_run_id=task.current_run_id,
+        )
+        assert kb.unblock_task(conn, tid)
+        assert kb.claim_task(conn, tid) is not None
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        kb.block_task(
+            conn, tid,
+            reason="review-required: second pass",
+            kind="needs_input",
+            expected_run_id=task.current_run_id,
+        )
+
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.block_recurrences == 2
+        assert kb.recompute_ready(conn) == 0
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+
+
 # ---------------------------------------------------------------------------
 # Circuit-breaker blocks still auto-recover (preserve #40c1decb3 intent)
 # ---------------------------------------------------------------------------

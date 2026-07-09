@@ -91,6 +91,25 @@ def test_same_cause_reblock_routes_to_triage(kanban_home: Path) -> None:
         assert t.block_recurrences == 2
 
 
+def test_same_cause_review_required_reblock_stays_blocked(kanban_home: Path) -> None:
+    """Review-required rework is a governed handoff, not a triage loop."""
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="review-required: needs human eyes", kind="needs_input")
+        kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        kb.block_task(conn, tid, reason="review-required: still needs human eyes", kind="needs_input")
+        t = kb.get_task(conn, tid)
+        assert t is not None
+        assert t.status == "blocked"
+        assert t.block_recurrences == 2
+        blocked_events = [e for e in kb.list_events(conn, tid) if e.kind == "blocked"]
+        assert blocked_events, "expected a blocked event for review-required handoff"
+        payload = blocked_events[-1].payload or {}
+        assert payload.get("recurrences") == 2
+        assert not [e for e in kb.list_events(conn, tid) if e.kind == "block_loop_detected"]
+
+
 def test_untyped_block_loop_also_protected(kanban_home: Path) -> None:
     """Legacy un-typed blocks (kind=None) still trip the breaker."""
     with kb.connect_closing() as conn:

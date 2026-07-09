@@ -132,9 +132,15 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # spirit (default 2) but counts a different signal: manual unblock recurrences,
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
+REVIEW_REQUIRED_REASON_PREFIX = "review-required:"
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
+
+
+def _is_review_required_reason(reason: Optional[str]) -> bool:
+    """Return True when ``reason`` is the canonical review handoff marker."""
+    return bool(reason and reason.lstrip().lower().startswith(REVIEW_REQUIRED_REASON_PREFIX))
 
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
@@ -4562,9 +4568,11 @@ def block_task(
       "Type 1"). Lands in ``blocked`` for a human. BUT: each time such a task
       is re-blocked for the SAME kind after having been unblocked, the
       unblock-loop counter (``block_recurrences``) increments. When it reaches
-      :data:`BLOCK_RECURRENCE_LIMIT`, the task is routed to ``triage`` instead
-      of ``blocked`` — breaking the cron-unblock ↔ worker-re-block loop and
-      forcing a human-in-the-loop triage decision.
+      :data:`BLOCK_RECURRENCE_LIMIT`, the task is usually routed to ``triage``
+      instead of ``blocked`` — breaking the cron-unblock ↔ worker-re-block loop
+      and forcing a human-in-the-loop triage decision. Canonical
+      ``review-required:`` handoffs are the carve-out: they stay ``blocked`` so
+      the review lane can service the same card.
 
     * ``transient`` — treated like a generic block for routing, but a worker
       can use it to signal "this might clear on its own"; it still participates
@@ -4649,7 +4657,7 @@ def block_task(
         same_cause = prev_kind == kind
         recurrences = prev_recurrences + 1 if same_cause else 1
 
-        if recurrences >= BLOCK_RECURRENCE_LIMIT:
+        if recurrences >= BLOCK_RECURRENCE_LIMIT and not _is_review_required_reason(reason):
             # Loop detected — stop letting the unblocker spin this task. Route
             # to triage for a human-in-the-loop decision instead of blocked.
             cur = conn.execute(

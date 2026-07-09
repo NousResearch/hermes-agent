@@ -124,6 +124,33 @@ def _export_port_health_grace_timeout(config: dict[str, Any]) -> None:
     os.environ.setdefault(_PORT_HEALTH_GRACE_ENV, repr(seconds))
 
 
+def _format_exception_chain(exc: BaseException, max_links: int = 5) -> str:
+    """Render *exc* plus its ``__cause__``/``__context__`` chain as one line.
+
+    Upstream wrappers hide the real failure behind a generic re-raise:
+    hindsight_api's ``LocalSTEmbeddings.initialize()`` catches the actual
+    error and re-raises "sentence-transformers is required ... pip install
+    sentence-transformers" even when the package IS installed and the real
+    problem is a dependency conflict underneath it (#60783: a forced
+    huggingface-hub downgrade — the chained exception held the actual
+    "huggingface-hub>=1.5.0,<2.0 is required ... found huggingface-hub==1.2.3"
+    while the surfaced message sent users reinstalling the wrong package).
+    ``str(exc)`` drops that chain; walking the links keeps the diagnosis in
+    the reason Hermes reports.
+    """
+    parts: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen and len(parts) < max_links:
+        seen.add(id(current))
+        message = str(current).strip()
+        parts.append(
+            f"{type(current).__name__}: {message}" if message else type(current).__name__
+        )
+        current = current.__cause__ or current.__context__
+    return " <- caused by: ".join(parts)
+
+
 def _check_local_runtime() -> tuple[bool, str | None]:
     """Return whether local embedded Hindsight imports cleanly.
 
@@ -131,13 +158,17 @@ def _check_local_runtime() -> tuple[bool, str | None]:
     error from NumPy before the daemon starts. Treat that as "unavailable"
     so Hermes can degrade gracefully instead of repeatedly trying to start
     a broken local memory backend.
+
+    The returned reason includes the exception's cause/context chain, not
+    just the top message — see :func:`_format_exception_chain` (#60783).
     """
     try:
         importlib.import_module("hindsight")
         importlib.import_module("hindsight_embed.daemon_embed_manager")
         return True, None
     except Exception as exc:
-        return False, str(exc)
+        logger.debug("Hindsight local runtime import failed", exc_info=True)
+        return False, _format_exception_chain(exc)
 
 
 def _ensure_cloud_client_dependency() -> None:

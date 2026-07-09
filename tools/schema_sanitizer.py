@@ -84,6 +84,19 @@ def _sanitize_single_tool(tool: dict) -> dict:
             top["type"] = "object"
         if "properties" not in top or not isinstance(top.get("properties"), dict):
             top["properties"] = {}
+        # Normalize ``required: None`` to ``required: []`` (#60752).
+        # Strict OpenAI-compatible backends reject ``required: null`` with
+        # HTTP 400 ("None is not of type 'array'"). The schema_sanitizer
+        # is the universal compatibility shim, so every backend-path
+        # benefits from this normalization rather than chasing each
+        # schema-emission site separately. ``None`` collapses to the
+        # empty-required list (which is what a no-required-fields tool
+        # should advertise anyway). Already-valid lists are untouched
+        # by the second-order test below.
+        if "required" in top and top["required"] is None:
+            top["required"] = []
+
+
     # Final pass: collapse nullable anyOf/oneOf unions that the recursive
     # sanitizer above leaves intact (it only handles the array-form
     # ``type: [X, "null"]``). Keep the ``nullable: true`` hint so runtime

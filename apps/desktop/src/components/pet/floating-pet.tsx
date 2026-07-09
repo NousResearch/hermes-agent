@@ -461,6 +461,8 @@ export function FloatingPet() {
                 popOutPet({ height: rect.height, width: rect.width, x: rect.left, y: rect.top })
               }
             }}
+            onPointerDown={e => e.stopPropagation()}
+            onPointerUp={e => e.stopPropagation()}
             style={{
               alignItems: 'center',
               background: 'var(--ui-bg-elevated)',
@@ -487,6 +489,8 @@ export function FloatingPet() {
               e.stopPropagation()
               void setPetEnabled(requestGateway, false, { noneAvailable: '', fallback: '' })
             }}
+            onPointerDown={e => e.stopPropagation()}
+            onPointerUp={e => e.stopPropagation()}
             style={{
               alignItems: 'center',
               background: 'var(--ui-bg-elevated)',

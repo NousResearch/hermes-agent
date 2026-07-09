@@ -504,7 +504,7 @@ class TestDetectLocalServerTypeAuth:
             result = detect_local_server_type("http://localhost:1234/api/v1")
 
         assert result == "lm-studio"
-        assert client_mock.get.call_args_list[0].args[0] == "http://localhost:1234/api/v1/models"
+        assert client_mock.get.call_args_list[0].args[0] == "http://127.0.0.1:1234/api/v1/models"
 
 
 class TestDetectLocalServerTypeLocalhostIPv4:

@@ -48,7 +48,8 @@ const buildCtx = (rpcResult: CreditsViewResponse) => {
     guardedErr,
     sid: 'sid-abc',
     stale: () => false,
-    transcript: { page: vi.fn(), panel: vi.fn(), sys }
+    transcript: { page: vi.fn(), panel: vi.fn(), sys },
+    ui: { locale: 'en' }
   }
 
   // Run the command, then await the rpc promise so the .then() handler has

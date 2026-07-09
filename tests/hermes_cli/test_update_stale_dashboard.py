@@ -104,6 +104,25 @@ class TestFindStaleDashboardPids:
             )
             assert _find_stale_dashboard_pids() == [12345]
 
+    def test_matches_dashboard_with_global_profile_flag(self):
+        """Systemd dashboard units launch as ``hermes ... -p default dashboard``.
+
+        The stale-dashboard sweep must catch global Hermes flags that appear
+        between the entrypoint and the ``dashboard`` subcommand; otherwise an
+        update leaves the old backend process alive.
+        """
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=_ps_line(
+                    12345,
+                    "/usr/local/lib/hermes-agent/venv/bin/python3 -m "
+                    "hermes_cli.main -p default dashboard --port 9119",
+                ) + "\n",
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == [12345]
+
     def test_multiple_matches(self):
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(

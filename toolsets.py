@@ -256,6 +256,17 @@ TOOLSETS = {
         "includes": []
     },
 
+    "k8s": {
+        "description": (
+            "Kubernetes pod exec tool — run commands inside a pod for "
+            "debugging and diagnostics. Gated on ``kubectl`` being on "
+            "``$PATH`` (automatic if you have the Kubernetes CLI installed). "
+            "Enable with ``hermes tools enable k8s``."
+        ),
+        "tools": ["pod_exec"],
+        "includes": [],
+    },
+
     "kanban": {
         "description": (
             "Kanban multi-agent coordination — only active when the agent "

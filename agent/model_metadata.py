@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -2337,10 +2338,20 @@ def estimate_tokens_rough(text: str) -> int:
     Uses ceiling division so short texts (1-3 chars) never estimate as
     0 tokens, which would cause the compressor and pre-flight checks to
     systematically undercount when many short tool results are present.
+    East Asian wide/fullwidth glyphs count more conservatively because they
+    often tokenize closer to one token per visible character than ASCII.
     """
     if not text:
         return 0
-    return (len(text) + 3) // 4
+    return (_estimate_token_chars(str(text)) + 3) // 4
+
+
+def _estimate_token_chars(text: str) -> int:
+    """Return weighted chars for rough token estimates."""
+    total = 0
+    for ch in text:
+        total += 4 if unicodedata.east_asian_width(ch) in {"F", "W"} else 1
+    return total
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
@@ -2393,7 +2404,7 @@ def _estimate_message_chars(msg: Dict[str, Any]) -> int:
     their raw chars here would massively overestimate token usage.
     """
     if not isinstance(msg, dict):
-        return len(str(msg))
+        return _estimate_token_chars(str(msg))
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():
         if k == "_anthropic_content_blocks":
@@ -2416,7 +2427,7 @@ def _estimate_message_chars(msg: Dict[str, Any]) -> int:
                 shadow[k] = v
         else:
             shadow[k] = v
-    return len(str(shadow))
+    return _estimate_token_chars(str(shadow))
 
 
 def estimate_request_tokens_rough(
@@ -2435,9 +2446,9 @@ def estimate_request_tokens_rough(
     """
     total = 0
     if system_prompt:
-        total += (len(system_prompt) + 3) // 4
+        total += estimate_tokens_rough(system_prompt)
     if messages:
         total += estimate_messages_tokens_rough(messages)
     if tools:
-        total += (len(str(tools)) + 3) // 4
+        total += estimate_tokens_rough(str(tools))
     return total

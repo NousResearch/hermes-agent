@@ -56,10 +56,10 @@ class TestEstimateTokensRough:
         long = estimate_tokens_rough("hello world " * 100)
         assert long > short
 
-    def test_unicode_multibyte(self):
-        """Unicode chars are still 1 Python char each — 4 chars/token holds."""
-        text = "你好世界"  # 4 CJK characters
-        assert estimate_tokens_rough(text) == 1
+    def test_east_asian_wide_and_fullwidth_are_conservative(self):
+        assert estimate_tokens_rough("ABC123") == 2
+        assert estimate_tokens_rough("ＡＢＣ１２３") == 6
+        assert estimate_tokens_rough("你好世界") == 4
 
 
 class TestEstimateMessagesTokensRough:
@@ -83,6 +83,12 @@ class TestEstimateMessagesTokensRough:
         n = sum(len(str(m)) for m in msgs)
         expected = (n + 3) // 4
         assert result == expected
+
+    def test_fullwidth_message_content_counts_more_than_ascii(self):
+        ascii_msg = [{"role": "user", "content": "ABC123"}]
+        fullwidth_msg = [{"role": "user", "content": "ＡＢＣ１２３"}]
+
+        assert estimate_messages_tokens_rough(fullwidth_msg) > estimate_messages_tokens_rough(ascii_msg)
 
     def test_tool_call_message(self):
         """Tool call messages with no 'content' key still contribute tokens."""

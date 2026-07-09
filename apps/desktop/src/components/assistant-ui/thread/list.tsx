@@ -8,6 +8,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState
 } from 'react'
@@ -53,7 +54,7 @@ interface ThreadMessageListProps {
 // Group each user message with the assistant turn(s) that follow it so the
 // human bubble can `position: sticky` against the scroller across its whole
 // turn (see StickyHumanMessageContainer in thread.tsx).
-function buildGroups(signature: string): MessageGroup[] {
+export function buildGroups(signature: string): MessageGroup[] {
   if (!signature) {
     return []
   }
@@ -103,7 +104,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   )
 
   const { t } = useI18n()
-  const groups = buildGroups(messageSignature)
+  const groups = useMemo(() => buildGroups(messageSignature), [messageSignature])
   const renderEmpty = groups.length === 0 && Boolean(emptyPlaceholder)
 
   // use-stick-to-bottom owns scrollTop (single writer): follow while locked,

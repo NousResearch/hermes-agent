@@ -702,6 +702,19 @@ def _build_child_system_prompt(
         "response is returned to the parent agent as a summary, and overlong "
         "summaries crowd out the parent's context window."
     )
+    parts.append(
+        "\n## Delivery Discipline\n"
+        "Your real result must go through the `delegate_tool_reply` tool. "
+        "When your deliverable is ready, call `delegate_tool_reply` with the "
+        "full text as `content`. Do NOT rely on a trailing prose message as "
+        "your result — a short closing comment (e.g. about cleanup) can be "
+        "mistaken for your deliverable and the real content lost. You may "
+        "call `delegate_tool_reply` more than once: chunks are concatenated "
+        "in order, so a large deliverable can be split across calls. After "
+        "calling it you may still run cleanup tools (it does not stop you). "
+        "Your final plain-text reply is only used as a fallback if you "
+        "never call `delegate_tool_reply`."
+    )
     if role == "orchestrator":
         child_note = (
             "Your own children MUST be leaves (cannot delegate further) "
@@ -1141,6 +1154,17 @@ def _build_child_agent(
     if effective_role == "orchestrator" and "delegation" not in child_toolsets:
         child_toolsets.append("delegation")
 
+    # Give the child an explicit delivery channel. The `delegation_reply`
+    # toolset (delegate_tool_reply) is NOT in _HERMES_CORE_TOOLS and NOT in
+    # CONFIGURABLE_TOOLSETS, so ordinary conversations never see it — only
+    # subagents spawned here get the schema. This lets the child hand back
+    # its deliverable through a tool call instead of relying on the trailing
+    # final_response prose, which a cleanup tool call can clobber (see
+    # tools/delegate_tool_reply.py). Unconditional on role: both leaf and
+    # orchestrator subagents produce deliverables that must reach the parent.
+    if "delegation_reply" not in child_toolsets:
+        child_toolsets.append("delegation_reply")
+
     workspace_hint = _resolve_workspace_hint(parent_agent)
     child_prompt = _build_child_system_prompt(
         goal,
@@ -1564,6 +1588,108 @@ def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
     except Exception as exc:
         logger.debug("Failed to spill subagent summary to file: %s", exc)
         return None
+
+
+# Marker the context compressor appends when it truncates tool_call args
+# (see context_compressor._truncate_tool_call_args_json). Used to detect
+# truncated delegate_tool_reply args and prefer the spill file.
+_REPLY_TRUNCATED_MARKER = "...[truncated]"
+
+
+def _extract_reply_deliverable(messages: list) -> Optional[str]:
+    """Assemble the subagent's deliverable from ``delegate_tool_reply`` calls.
+
+    Scans ``result["messages"]`` (the child's conversation history returned by
+    ``run_conversation``) for ``delegate_tool_reply`` tool calls and returns the
+    concatenated deliverable, or ``None`` if the child never called the tool
+    (caller falls back to ``final_response``).
+
+    Extraction priority, per call (in order of appearance):
+
+    1. **Spill file** — the tool result carries ``{"path": "<abs>"}`` written
+       by the handler. The spill holds the *complete* content and is immune to
+       context-compression truncation of the args. This is the authoritative
+       source when present.
+    2. **Args ``content``** — the in-memory tool-call arguments. Intact for
+       calls inside the protected tail (most recent); may be truncated
+       (``...[truncated]`` marker) for older calls after compression. Used
+       when no spill path resolves.
+
+    All calls' content is concatenated in order (multi-call chunking). If a
+    call's args are truncated and the spill file is unreadable, the truncated
+    head is still included with a marker so the parent sees *something* rather
+    than a silent gap.
+    """
+    if not isinstance(messages, list) or not messages:
+        return None
+
+    # Build tool_call_id -> tool result content (JSON string) for spill-path lookup.
+    result_by_id: Dict[str, str] = {}
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "tool":
+            continue
+        tc_id = msg.get("tool_call_id")
+        if isinstance(tc_id, str) and tc_id:
+            result_by_id[tc_id] = _stringify_tool_content(msg.get("content", ""))
+
+    chunks: list[str] = []
+    found = False
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function", {})
+            if fn.get("name") != "delegate_tool_reply":
+                continue
+            found = True
+            raw_args = fn.get("arguments", "")
+            content_arg = ""
+            try:
+                parsed = json.loads(raw_args) if raw_args else {}
+                if isinstance(parsed, dict):
+                    content_arg = parsed.get("content", "")
+                    if not isinstance(content_arg, str):
+                        content_arg = str(content_arg) if content_arg is not None else ""
+            except (ValueError, TypeError):
+                content_arg = ""
+
+            # Prefer the spill file (complete, compression-immune).
+            tc_id = tc.get("id")
+            spill_content = None
+            if isinstance(tc_id, str) and tc_id in result_by_id:
+                try:
+                    res_obj = json.loads(result_by_id[tc_id])
+                    if isinstance(res_obj, dict):
+                        spill_path = res_obj.get("path")
+                        if isinstance(spill_path, str) and spill_path:
+                            from pathlib import Path
+                            p = Path(spill_path)
+                            if p.exists():
+                                spill_content = p.read_text(encoding="utf-8")
+                except (ValueError, TypeError, OSError):
+                    spill_content = None
+
+            if spill_content is not None:
+                chunks.append(spill_content)
+            elif content_arg:
+                if content_arg.endswith(_REPLY_TRUNCATED_MARKER):
+                    chunks.append(
+                        content_arg
+                        + f"\n[NOTE: this chunk was truncated by context "
+                        f"compression; spill file unreadable]"
+                    )
+                else:
+                    chunks.append(content_arg)
+
+    if not found:
+        return None
+    return "\n\n".join(chunks) if chunks else ""
 
 
 def _trim_summary_with_footer(
@@ -2034,7 +2160,15 @@ def _run_single_child(
 
         duration = round(time.monotonic() - child_start, 2)
 
-        summary = result.get("final_response") or ""
+        # Prefer the explicit deliverable channel: if the child called
+        # delegate_tool_reply, its content is the authoritative result and
+        # replaces final_response. Falls back to final_response when the child
+        # never used the tool (strictly not-worse-than-status-quo).
+        _reply_deliverable = _extract_reply_deliverable(result.get("messages") or [])
+        if _reply_deliverable is not None:
+            summary = _reply_deliverable
+        else:
+            summary = result.get("final_response") or ""
         completed = result.get("completed", False)
         interrupted = result.get("interrupted", False)
         api_calls = result.get("api_calls", 0)

@@ -248,6 +248,24 @@ TOOLSETS = {
         "includes": []
     },
 
+    # Subagent delivery channel — NOT in _HERMES_CORE_TOOLS and NOT in
+    # CONFIGURABLE_TOOLSETS, so it never appears in `hermes tools` / `/tools`
+    # and ordinary conversations never see the schema. _build_child_agent in
+    # delegate_tool.py adds this toolset to every spawned child, giving the
+    # subagent an explicit tool (delegate_tool_reply) to hand back its
+    # deliverable. See tools/delegate_tool_reply.py for the rationale.
+    "delegation_reply": {
+        "description": (
+            "Subagent delivery channel (not user-configurable). Only present "
+            "on agents spawned by delegate_task. Lets a subagent hand back "
+            "its final result via the delegate_tool_reply tool instead of a "
+            "trailing prose comment, so cleanup calls don't clobber the real "
+            "deliverable."
+        ),
+        "tools": ["delegate_tool_reply"],
+        "includes": [],
+    },
+
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 

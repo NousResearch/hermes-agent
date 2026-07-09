@@ -807,6 +807,19 @@ def recover_with_credential_pool(
         return False, has_retried_429
 
     if effective_reason == FailoverReason.rate_limit:
+        # Attribute the 429 to a model-specific quota bucket when the
+        # response's unified-budget headers show the shared budget is still
+        # free (e.g. the separate Fable/Mythos quota tripping while Opus
+        # budget remains).  The pool then cools only (credential, model)
+        # instead of parking the whole credential (issue #61451).
+        from agent.credential_pool import is_model_scoped_429_context
+
+        rate_limited_model = (getattr(agent, "model", "") or "").strip() or None
+        model_scoped = (
+            current_provider == "anthropic"
+            and rate_limited_model is not None
+            and is_model_scoped_429_context(error_context)
+        )
         # If current credential is already marked exhausted, skip retry and
         # rotate immediately. This prevents the "cancel-between-429s" trap
         # where has_retried_429 (a local var) gets reset on each new prompt,
@@ -819,7 +832,12 @@ def recover_with_credential_pool(
                 current_last_status,
             )
             rotate_status = status_code if status_code is not None else 429
-            next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+            next_entry = pool.mark_exhausted_and_rotate(
+                status_code=rotate_status,
+                error_context=error_context,
+                model=rate_limited_model,
+                model_scoped=model_scoped,
+            )
             if next_entry is not None:
                 _ra().logger.info(
                     "Credential %s (rate limit, pre-exhausted) — rotated to pool entry %s",
@@ -843,7 +861,12 @@ def recover_with_credential_pool(
         if not has_retried_429 and not usage_limit_reached:
             return False, True
         rotate_status = status_code if status_code is not None else 429
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = pool.mark_exhausted_and_rotate(
+            status_code=rotate_status,
+            error_context=error_context,
+            model=rate_limited_model,
+            model_scoped=model_scoped,
+        )
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (rate limit) — rotated to pool entry %s",
@@ -3033,6 +3056,14 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
         ratelimit_reset = headers.get("x-ratelimit-reset")
         if ratelimit_reset and "reset_at" not in context:
             context["reset_at"] = ratelimit_reset
+        # Anthropic unified-budget utilization headers let the credential
+        # pool tell a model-scoped 429 (e.g. the separate Fable/Mythos
+        # quota) apart from a credential-wide one (issue #61451).
+        from agent.credential_pool import extract_unified_utilizations
+
+        utilizations = extract_unified_utilizations(headers)
+        if utilizations:
+            context["anthropic_unified_utilizations"] = utilizations
 
     if "message" not in context:
         raw_message = str(error).strip()

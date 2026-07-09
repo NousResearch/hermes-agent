@@ -257,6 +257,81 @@ def _exhausted_ttl(error_code: Optional[int]) -> int:
     return EXHAUSTED_TTL_DEFAULT_SECONDS
 
 
+ANTHROPIC_UNIFIED_UTILIZATION_HEADERS = (
+    "anthropic-ratelimit-unified-5h-utilization",
+    "anthropic-ratelimit-unified-7d-utilization",
+)
+
+# A unified budget is considered "still free" below this utilization. Slightly
+# under 1.0 so rounding in the reported values can't flip the classification.
+_MODEL_SCOPED_429_UTILIZATION_CEILING = 0.98
+
+
+def _parse_utilization_value(raw: Any) -> Optional[float]:
+    """Parse a utilization header value; tolerates percent-style values."""
+    if raw in (None, ""):
+        return None
+    try:
+        parsed = float(str(raw).strip().rstrip("%"))
+    except ValueError:
+        return None
+    if parsed > 1.0:
+        parsed /= 100.0
+    return parsed
+
+
+def extract_unified_utilizations(headers: Any) -> List[float]:
+    """Pull Anthropic unified-budget utilization values from response headers."""
+    values: List[float] = []
+    if not headers:
+        return values
+    for name in ANTHROPIC_UNIFIED_UTILIZATION_HEADERS:
+        try:
+            raw = headers.get(name)
+        except Exception:
+            return []
+        parsed = _parse_utilization_value(raw)
+        if parsed is not None:
+            values.append(parsed)
+    return values
+
+
+def is_model_scoped_429(headers: Any) -> bool:
+    """Heuristic: does this 429 belong to a model-specific quota bucket?
+
+    Anthropic subscription (OAuth) responses carry unified-budget
+    utilization headers.  When a 429 arrives while every reported unified
+    budget is still clearly below its ceiling, the limit that tripped must
+    be a narrower, model-scoped bucket (e.g. the separate Fable/Mythos
+    quota).  Cooling the whole credential for that bucket's reset window
+    would block models whose shared budget is still free (issue #61451).
+
+    Returns False when headers are missing or unparseable so callers keep
+    the existing credential-wide behavior.
+    """
+    values = extract_unified_utilizations(headers)
+    if not values:
+        return False
+    return all(value < _MODEL_SCOPED_429_UTILIZATION_CEILING for value in values)
+
+
+def is_model_scoped_429_context(error_context: Optional[Dict[str, Any]]) -> bool:
+    """Same heuristic as :func:`is_model_scoped_429` for pre-extracted contexts.
+
+    Expects ``error_context["anthropic_unified_utilizations"]`` as produced by
+    ``extract_api_error_context`` in ``agent_runtime_helpers``.
+    """
+    if not isinstance(error_context, dict):
+        return False
+    values = error_context.get("anthropic_unified_utilizations")
+    if not isinstance(values, (list, tuple)) or not values:
+        return False
+    try:
+        return all(float(value) < _MODEL_SCOPED_429_UTILIZATION_CEILING for value in values)
+    except (TypeError, ValueError):
+        return False
+
+
 def _parse_absolute_timestamp(value: Any) -> Optional[float]:
     """Best-effort parse for provider reset timestamps.
 
@@ -514,6 +589,12 @@ class CredentialPool:
         self._lock = threading.Lock()
         self._active_leases: Dict[str, int] = {}
         self._max_concurrent = DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL
+        # Model-scoped 429 cooldowns: (entry_id, model) -> epoch seconds when
+        # the cooldown lifts.  Deliberately in-memory only (no PooledCredential
+        # schema change): these windows are short-lived relative to the
+        # process, and losing them on restart only costs one extra 429 before
+        # the cooldown is re-learned (issue #61451).
+        self._model_cooldowns: Dict[Tuple[str, str], float] = {}
 
     def has_credentials(self) -> bool:
         return bool(self._entries)
@@ -1366,12 +1447,20 @@ class CredentialPool:
         with self._lock:
             return self._select_unlocked()
 
-    def _available_entries(self, *, clear_expired: bool = False, refresh: bool = False) -> List[PooledCredential]:
+    def _available_entries(
+        self,
+        *,
+        clear_expired: bool = False,
+        refresh: bool = False,
+        model: Optional[str] = None,
+    ) -> List[PooledCredential]:
         """Return entries not currently in exhaustion cooldown.
 
         When *clear_expired* is True, entries whose cooldown has elapsed are
         reset to STATUS_OK and persisted.  When *refresh* is True, entries
         that need a token refresh are refreshed (skipped on failure).
+        When *model* is given, entries with an active model-scoped 429
+        cooldown for that model are skipped as well.
         """
         now = time.time()
         cleared_any = False
@@ -1473,6 +1562,12 @@ class CredentialPool:
                 if refreshed is None:
                     continue
                 entry = refreshed
+            if model:
+                cooldown_until = self._model_cooldowns.get((entry.id, model))
+                if cooldown_until is not None:
+                    if now < cooldown_until:
+                        continue
+                    self._model_cooldowns.pop((entry.id, model), None)
             available.append(entry)
         if entries_to_prune:
             pruned_ids = set(entries_to_prune)
@@ -1481,8 +1576,8 @@ class CredentialPool:
             self._persist(removed_ids=entries_to_prune)
         return available
 
-    def _select_unlocked(self) -> Optional[PooledCredential]:
-        available = self._available_entries(clear_expired=True, refresh=True)
+    def _select_unlocked(self, model: Optional[str] = None) -> Optional[PooledCredential]:
+        available = self._available_entries(clear_expired=True, refresh=True, model=model)
         if not available:
             self._current_id = None
             logger.info("credential pool: no available entries (all exhausted or empty)")
@@ -1527,7 +1622,21 @@ class CredentialPool:
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
         api_key_hint: Optional[str] = None,
+        model: Optional[str] = None,
+        model_scoped: bool = False,
     ) -> Optional[PooledCredential]:
+        """Mark the failing credential and rotate to the next usable one.
+
+        When *model_scoped* is True (and *model* is given, for a 429), the
+        failure is attributed to a model-specific quota bucket rather than
+        the credential as a whole: only the ``(credential, model)`` pair is
+        cooled down, and the entry stays available for every other model.
+        This prevents a Fable/Mythos-scoped 429 — whose reset window can be
+        days out — from parking the whole credential and blocking models
+        whose shared budget is still free (issue #61451).  Callers decide
+        attribution (they hold the response headers); default behavior is
+        unchanged.
+        """
         with self._lock:
             entry = None
             if api_key_hint:
@@ -1540,10 +1649,32 @@ class CredentialPool:
                     None,
                 )
             if entry is None:
-                entry = self.current() or self._select_unlocked()
+                entry = self.current() or self._select_unlocked(model=model)
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
+            if model_scoped and model and status_code == 429:
+                normalized_error = _normalize_error_context(error_context)
+                cooldown_until = normalized_error.get("reset_at")
+                if cooldown_until is None:
+                    cooldown_until = time.time() + _exhausted_ttl(429)
+                self._model_cooldowns[(entry.id, model)] = float(cooldown_until)
+                logger.info(
+                    "credential pool: %s hit a model-scoped 429 for %s — "
+                    "cooling only that model until %s; credential stays "
+                    "available for other models",
+                    _label,
+                    model,
+                    datetime.fromtimestamp(
+                        float(cooldown_until), tz=timezone.utc
+                    ).isoformat(timespec="seconds"),
+                )
+                self._current_id = None
+                next_entry = self._select_unlocked(model=model)
+                if next_entry:
+                    _next_label = next_entry.label or next_entry.id[:8]
+                    logger.info("credential pool: rotated to %s", _next_label)
+                return next_entry
             self._mark_exhausted(entry, status_code, error_context)
             # Re-read the updated entry to log the correct terminal state.
             updated_entry = next(
@@ -1561,7 +1692,7 @@ class CredentialPool:
                     _label, status_code,
                 )
             self._current_id = None
-            next_entry = self._select_unlocked()
+            next_entry = self._select_unlocked(model=model)
             if next_entry:
                 _next_label = next_entry.label or next_entry.id[:8]
                 logger.info("credential pool: rotated to %s", _next_label)

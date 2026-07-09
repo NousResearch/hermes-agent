@@ -3321,13 +3321,24 @@ def _recoverable_pool_provider(
     return None
 
 
-def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "") -> bool:
+def _recover_provider_pool(
+    provider: str,
+    exc: Exception,
+    *,
+    failed_api_key: str = "",
+    model: str = "",
+) -> bool:
     """Try same-provider credential-pool recovery for auxiliary calls.
 
     ``failed_api_key`` is the API key that was actually used for the failing
     request.  Passing it lets mark_exhausted_and_rotate identify the correct
     pool entry even when another process has already rotated the pool (which
     would leave current() as None, causing the wrong entry to be marked).
+
+    ``model`` is the model of the failing request.  For Anthropic 429s whose
+    unified-budget headers show the shared budget is still free, it lets the
+    pool cool only the (credential, model) pair instead of the whole
+    credential (issue #61451).
     """
     normalized = _normalize_aux_provider(provider)
     try:
@@ -3359,10 +3370,24 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
 
     if _is_payment_error(exc) or _is_rate_limit_error(exc):
         fallback_status = 402 if _is_payment_error(exc) else 429
+        rate_limited_model = (model or "").strip() or None
+        model_scoped = False
+        if (
+            normalized == "anthropic"
+            and rate_limited_model is not None
+            and _is_rate_limit_error(exc)
+            and not _is_payment_error(exc)
+        ):
+            from agent.credential_pool import is_model_scoped_429
+
+            headers = getattr(getattr(exc, "response", None), "headers", None)
+            model_scoped = is_model_scoped_429(headers)
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else fallback_status,
             error_context=error_context,
             api_key_hint=hint,
+            model=rate_limited_model,
+            model_scoped=model_scoped,
         )
         if next_entry is not None:
             _evict_cached_clients(normalized)
@@ -6791,7 +6816,7 @@ def call_llm(
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
                     recovery_err = retry_err
-            if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
+            if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key, model=str(final_model or "")):
                 logger.info(
                     "Auxiliary %s: recovered %s via credential-pool rotation after %s",
                     task or "call", pool_provider, type(recovery_err).__name__,
@@ -7334,7 +7359,7 @@ async def async_call_llm(
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
                     recovery_err = retry_err
-            if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
+            if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key, model=str(final_model or "")):
                 logger.info(
                     "Auxiliary %s (async): recovered %s via credential-pool rotation after %s",
                     task or "call", pool_provider, type(recovery_err).__name__,

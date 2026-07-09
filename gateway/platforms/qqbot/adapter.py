@@ -278,7 +278,7 @@ class QQAdapter(BasePlatformAdapter):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Authenticate, obtain gateway URL, and open the WebSocket."""
         if not AIOHTTP_AVAILABLE:
             message = "QQ startup failed: aiohttp not installed"
@@ -735,10 +735,11 @@ class QQAdapter(BasePlatformAdapter):
             "op": 2,
             "d": {
                 "token": f"QQBot {token}",
-                "intents": (1 << 25)
-                           | (1 << 30)
-                           | (1 << 12)
-                           | (1 << 26),  # C2C_GROUP_AT_MESSAGES + PUBLIC_GUILD_MESSAGES + DIRECT_MESSAGE + INTERACTION
+                "intents": (1 << 24)  # GROUP_MESSAGE
+                           | (1 << 25)  # GROUP_AT_MESSAGE
+                           | (1 << 30)  # PUBLIC_GUILD_MESSAGES
+                           | (1 << 12)  # DIRECT_MESSAGE
+                           | (1 << 26),  # INTERACTION
                 "shard": [0, 1],
                 "properties": {
                     "$os": "macOS",

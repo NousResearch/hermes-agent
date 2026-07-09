@@ -502,6 +502,15 @@ class CLICommandsMixin:
         self.new_session()
         _cprint(f"{_DIM}Session reset. New tool configuration is active.{_RST}")
 
+    def _handle_whoami_command(self):
+        """Handle /whoami — show slash command access info."""
+        from hermes_cli.commands import COMMAND_REGISTRY
+        print()
+        print("  CLI session — all slash commands are available locally:")
+        for cmd in sorted(COMMAND_REGISTRY, key=lambda c: c.name):
+            print(f"    /{cmd.name:<20} {cmd.description}")
+        print()
+
     def _handle_profile_command(self):
         """Display active profile name and home directory."""
         from hermes_constants import display_hermes_home

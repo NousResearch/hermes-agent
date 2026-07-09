@@ -3167,6 +3167,7 @@
         err ? h("div", { className: "p-4 text-sm text-destructive" }, err) :
         data ? h(TaskDetail, {
           data, editing, setEditing,
+          eventTick: props.eventTick,
           renderMarkdown: props.renderMarkdown,
           allTasks: props.allTasks,
           assignees: props.assignees || [],
@@ -3467,7 +3468,7 @@
           );
         }),
       ),
-      h(WorkerLogSection, { taskId: t.id, boardSlug: props.boardSlug }),
+      h(WorkerLogSection, { taskId: t.id, boardSlug: props.boardSlug, eventTick: props.eventTick }),
       h(RunHistorySection, { runs: props.data.runs || [] }),
     );
   }
@@ -3548,30 +3549,55 @@
     const { t } = useI18n();
     const [state, setState] = useState({ loading: false, data: null, err: null });
     const load = useCallback(function () {
-      setState({ loading: true, data: null, err: null });
+      // Keep the current content visible while a refresh is in flight so live
+      // re-fetches don't blink the log back to a spinner on every event; the
+      // spinner only shows on the first load, when there's nothing yet.
+      setState(function (prev) { return { loading: true, data: prev.data, err: null }; });
       SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/log?tail=100000`, props.boardSlug))
         .then(function (d) { setState({ loading: false, data: d, err: null }); })
-        .catch(function (e) { setState({ loading: false, data: null, err: String(e.message || e) }); });
+        .catch(function (e) {
+          // Preserve stale content on a failed refresh rather than wiping it.
+          setState(function (prev) { return { loading: false, data: prev.data, err: String(e.message || e) }; });
+        });
     }, [props.taskId, props.boardSlug]);
 
-    // Auto-load when the section mounts; the user opened the drawer so the
-    // cost is one small HTTP round-trip.
-    useEffect(function () { load(); }, [load]);
+    // Auto-load on mount and re-fetch on every live task event so the log
+    // tracks the worker as it writes. eventTick bumps on each WS event for
+    // this task; load identity is stable (deps are taskId/boardSlug).
+    useEffect(function () { load(); }, [load, props.eventTick]);
+
+    // Pin the log to the bottom so the newest line stays visible as content
+    // grows. stickRef tracks whether the user is at the bottom; if they
+    // scroll up to read earlier output we stop yanking them back down.
+    const logRef = useRef(null);
+    const stickRef = useRef(true);
+    const onLogScroll = useCallback(function () {
+      const el = logRef.current;
+      if (!el) return;
+      stickRef.current = el.scrollHeight - el.clientHeight - el.scrollTop < 40;
+    }, []);
+    useEffect(function () {
+      const el = logRef.current;
+      if (el && stickRef.current) el.scrollTop = el.scrollHeight;
+    }, [state.data && state.data.content]);
 
     const data = state.data;
     let body;
-    if (state.loading) {
+    if (state.loading && !data) {
       body = h("div", { className: "text-xs text-muted-foreground" },
         tx(t, "loadingLog", "Loading log…"));
-    } else if (state.err) {
+    } else if (state.err && !data) {
       body = h("div", { className: "text-xs text-destructive" }, state.err);
     } else if (!data || !data.exists) {
       body = h("div", { className: "text-xs text-muted-foreground italic" },
         tx(t, "noWorkerLog",
           "— no worker log yet (task hasn't spawned or log was rotated away) —"));
     } else {
-      body = h("pre", { className: "hermes-kanban-pre hermes-kanban-log" },
-        data.content || "(empty)");
+      body = h("pre", {
+        className: "hermes-kanban-pre hermes-kanban-log",
+        ref: logRef,
+        onScroll: onLogScroll,
+      }, data.content || "(empty)");
     }
 
     return h("div", { className: "hermes-kanban-section" },

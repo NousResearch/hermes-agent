@@ -2265,3 +2265,37 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+
+def test_dashboard_worker_log_auto_scrolls_to_bottom():
+    """Worker log must pin to the newest line as content grows, unless the
+    user has scrolled up to read earlier output (stick-to-bottom guard)."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    # The pre carries a ref and a scroll handler that tracks pinned state.
+    assert "ref: logRef" in js
+    assert "onScroll: onLogScroll" in js
+    # Effect scrolls to the bottom when the log content changes.
+    assert "el.scrollTop = el.scrollHeight" in js
+    assert "}, [state.data && state.data.content]);" in js
+    # Stick-to-bottom guard: only auto-scroll when the user is at the bottom.
+    assert "stickRef.current = el.scrollHeight - el.clientHeight - el.scrollTop < 40" in js
+    assert "if (el && stickRef.current)" in js
+
+
+def test_dashboard_worker_log_refetches_on_live_events():
+    """The log must re-fetch on each live task event (eventTick) and refresh
+    silently — keeping the current content instead of blinking a spinner."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    # eventTick is threaded down to the log section and drives re-fetch.
+    assert "h(WorkerLogSection, { taskId: t.id, boardSlug: props.boardSlug, eventTick: props.eventTick })" in js
+    assert "}, [load, props.eventTick]);" in js
+    # Background refresh keeps prior content (no blink to "Loading…" / no wipe).
+    assert "return { loading: true, data: prev.data, err: null };" in js
+    assert "return { loading: false, data: prev.data, err: String(e.message || e) };" in js
+    # Spinner/error only when there is nothing to show yet.
+    assert "if (state.loading && !data)" in js
+    assert "} else if (state.err && !data)" in js

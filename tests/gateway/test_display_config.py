@@ -46,6 +46,13 @@ class TestResolveDisplaySetting:
         # Email defaults to tier_minimal → "off"
         assert resolve_display_setting(config, "email", "tool_progress") == "off"
 
+    def test_matrix_default_tool_progress_off(self):
+        """Matrix defaults tool_progress off to avoid permanent timeline spam."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {}
+        assert resolve_display_setting(config, "matrix", "tool_progress") == "off"
+
     def test_global_default_for_unknown_platform(self):
         """Unknown platforms get the global defaults."""
         from gateway.display_config import resolve_display_setting
@@ -240,11 +247,17 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "discord", "tool_progress") == "all"
 
     def test_medium_tier_platforms(self):
-        """Mattermost, Matrix, Feishu, WhatsApp default to 'new' tool progress."""
+        """Mattermost, Feishu, WhatsApp default to 'new' tool progress."""
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("mattermost", "matrix", "feishu", "whatsapp"):
+        for plat in ("mattermost", "feishu", "whatsapp"):
             assert resolve_display_setting({}, plat, "tool_progress") == "new", plat
+
+    def test_matrix_defaults_tool_progress_off(self):
+        """Matrix quiet default (permanent timeline noise otherwise)."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "matrix", "tool_progress") == "off"
 
     def test_slack_defaults_tool_progress_off(self):
         """Slack defaults to quiet tool progress (permanent chat noise otherwise)."""

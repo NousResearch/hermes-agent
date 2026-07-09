@@ -159,11 +159,15 @@ async def test_model_global_persists_when_config_has_proper_dict_model(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_model_no_flag_persists_by_default(tmp_path, monkeypatch):
-    """A plain ``/model X`` (no --global) now persists to config.yaml.
+async def test_model_no_flag_is_session_scoped_by_default_on_messaging_platforms(tmp_path, monkeypatch):
+    """A plain ``/model X`` (no --global) on messaging platforms (Telegram, Discord, Slack, etc.)
+    defaults to session-scoped, not persisted to config.yaml.
 
-    This is the user-facing fix: switching models in one session survives
-    into the next without re-typing the switch every time.
+    This prevents accidental global config changes when users pick models via
+    platform menus, which cannot send --global/--session flags. The in-memory
+    session override IS applied (the switch worked), but config.yaml is untouched.
+
+    See #61458 for context.
     """
     cfg_path = _setup_isolated_home(
         tmp_path,
@@ -171,14 +175,22 @@ async def test_model_no_flag_persists_by_default(tmp_path, monkeypatch):
         {"default": "old-model", "provider": "openai-codex"},
     )
 
-    result = await _make_runner()._handle_model_command(
+    runner = _make_runner()
+    result = await runner._handle_model_command(
         _make_event("/model gpt-5.5")
     )
 
     assert result is not None
     assert "gpt-5.5" in result
+    # The session override IS applied (proves the path didn't no-op).
+    assert runner._session_model_overrides, "session override should be set"
+    assert any(
+        ov.get("model") == "gpt-5.5"
+        for ov in runner._session_model_overrides.values()
+    )
+    # But config.yaml is untouched — session-scoped by default on messaging platforms.
     written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    assert written["model"]["default"] == "gpt-5.5"
+    assert written["model"]["default"] == "old-model"
 
 
 @pytest.mark.asyncio

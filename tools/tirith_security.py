@@ -97,6 +97,35 @@ _resolved_path: str | None | bool = None
 _INSTALL_FAILED = False  # sentinel: distinct from "not yet tried"
 _install_failure_reason: str = ""  # reason tag when _resolved_path is _INSTALL_FAILED
 
+# Circuit breaker: after _CRASH_LIMIT consecutive spawn/execution failures,
+# disable tirith for the rest of the process to prevent agent hangs (#41400).
+# Reset on successful execution (see _record_tirith_crash / check_command_security).
+#
+# Thread safety: _crash_count and _circuit_open are module-level globals
+# mutated without a lock. check_command_security can be called from
+# concurrent agent threads (gateway multi-session). The race is benign —
+# at worst two threads both increment past _CRASH_LIMIT and both set
+# _circuit_open = True, opening the breaker one call early. No data
+# corruption or security bypass is possible. This intentionally matches
+# the lock-free style of error counters in mcp_tool.py rather than the
+# locked _warn_once pattern, because the worst case is harmless.
+_CRASH_LIMIT = 3
+_crash_count: int = 0
+_circuit_open: bool = False
+
+
+def _record_tirith_crash() -> None:
+    """Increment the crash counter and open the circuit breaker if needed."""
+    global _crash_count, _circuit_open
+    _crash_count += 1
+    if _crash_count >= _CRASH_LIMIT:
+        _circuit_open = True
+        logger.warning(
+            "tirith circuit breaker opened after %d consecutive failures; "
+            "disabling for the rest of the process",
+            _crash_count,
+        )
+
 # Background install thread coordination
 _install_lock = threading.Lock()
 _install_thread: threading.Thread | None = None
@@ -288,6 +317,7 @@ def _verify_cosign(checksums_path: str, sig_path: str, cert_path: str) -> bool |
             capture_output=True,
             text=True,
             timeout=15,
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode == 0:
             logger.info("cosign provenance verification passed")
@@ -371,7 +401,11 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
     archive_name = f"tirith-{target}.tar.gz"
     base_url = f"https://github.com/{_REPO}/releases/latest/download"
 
-    tmpdir = tempfile.mkdtemp(prefix="tirith-install-")
+    try:
+        tmpdir = tempfile.mkdtemp(prefix="tirith-install-")
+    except OSError as exc:
+        log("tirith install failed: cannot create temp dir: %s", exc)
+        return None, "no_space"
     try:
         archive_path = os.path.join(tmpdir, archive_name)
         checksums_path = os.path.join(tmpdir, "checksums.txt")
@@ -703,10 +737,20 @@ def check_command_security(command: str) -> dict:
     Returns:
         {"action": "allow"|"warn"|"block", "findings": [...], "summary": str}
     """
+    global _crash_count, _circuit_open
+
     cfg = _load_security_config()
 
     if not cfg["tirith_enabled"]:
         return {"action": "allow", "findings": [], "summary": ""}
+
+    # Circuit breaker: if tirith has crashed _CRASH_LIMIT times in a row,
+    # stop trying for the rest of the process.  Without this, a corrupted
+    # or missing binary causes every tool call to hit the same spawn failure
+    # → fail-open → agent retry loop, hanging the user for 20+ minutes
+    # (issue #41400).
+    if _circuit_open:
+        return {"action": "allow", "findings": [], "summary": "tirith disabled (circuit breaker)"}
 
     # Unsupported platform (Windows etc.) — tirith has no binary here and
     # never will. Skip the resolver entirely so we don't even try to spawn.
@@ -734,6 +778,7 @@ def check_command_security(command: str) -> dict:
             capture_output=True,
             text=True,
             timeout=timeout,
+            stdin=subprocess.DEVNULL,
         )
     except OSError as exc:
         # Covers FileNotFoundError, PermissionError, exec format error.
@@ -744,6 +789,7 @@ def check_command_security(command: str) -> dict:
         # install marked failed for the day).
         spawn_key = f"tirith_spawn_failed:{type(exc).__name__}:{getattr(exc, 'errno', '')}"
         _warn_once(spawn_key, "tirith spawn failed: %s", exc)
+        _record_tirith_crash()
         if fail_open:
             return {"action": "allow", "findings": [], "summary": f"tirith unavailable: {exc}"}
         return {"action": "block", "findings": [], "summary": f"tirith spawn failed (fail-closed): {exc}"}
@@ -753,6 +799,7 @@ def check_command_security(command: str) -> dict:
             "tirith timed out after %ds",
             timeout,
         )
+        _record_tirith_crash()
         if fail_open:
             return {"action": "allow", "findings": [], "summary": f"tirith timed out ({timeout}s)"}
         return {"action": "block", "findings": [], "summary": "tirith timed out (fail-closed)"}
@@ -761,13 +808,17 @@ def check_command_security(command: str) -> dict:
     exit_code = result.returncode
     if exit_code == 0:
         action = "allow"
+        # Successful execution — reset circuit breaker
+        _crash_count = 0
     elif exit_code == 1:
         action = "block"
     elif exit_code == 2:
         action = "warn"
     else:
-        # Unknown exit code — respect fail_open
+        # Unknown exit code (includes signal-killed processes like -11/SIGSEGV)
+        # — respect fail_open
         logger.warning("tirith returned unexpected exit code %d", exit_code)
+        _record_tirith_crash()
         if fail_open:
             return {"action": "allow", "findings": [], "summary": f"tirith exit code {exit_code} (fail-open)"}
         return {"action": "block", "findings": [], "summary": f"tirith exit code {exit_code} (fail-closed)"}

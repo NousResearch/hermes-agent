@@ -6,14 +6,17 @@ Used by AIAgent._execute_tool_calls for CLI feedback.
 
 import logging
 import os
+import re
 import sys
 import threading
 import time
 from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
+from typing import Any
 
 from utils import safe_json_loads
+from agent.redact import redact_sensitive_text
 from agent.tool_result_classification import file_mutation_result_landed
 
 # ANSI escape codes for coloring tool failure indicators
@@ -168,6 +171,244 @@ def _oneline(text: str) -> str:
     return " ".join(text.split())
 
 
+def _truncate_preview(text: str, max_len: int | None) -> str:
+    if max_len and max_len > 0 and len(text) > max_len:
+        if max_len <= 3:
+            return "." * max_len
+        return text[:max_len - 3] + "..."
+    return text
+
+
+_SHELL_SILENT_HEADS = {"cd", "pushd", "popd", "export", "set", "unset", "source", ".", "true", "false", ":"}
+_SHELL_PIPE_TAIL_HEADS = {"head", "tail", "wc", "sort", "uniq"}
+
+
+def _shell_basename(head: str) -> str:
+    return head.rsplit("/", 1)[-1] if head else ""
+
+
+def _split_shell_words(segment: str) -> list[str]:
+    words: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+
+    for i, ch in enumerate(segment):
+        if quote:
+            buf.append(ch)
+            if ch == quote and (i == 0 or segment[i - 1] != "\\"):
+                quote = None
+            continue
+
+        if ch in {"'", '"'}:
+            quote = ch
+            buf.append(ch)
+            continue
+
+        if ch.isspace():
+            if buf:
+                words.append("".join(buf))
+                buf = []
+            continue
+
+        buf.append(ch)
+
+    if buf:
+        words.append("".join(buf))
+
+    return words
+
+
+def _strip_shell_pipe_tail(segment: str) -> str:
+    words = _split_shell_words(segment)
+    out: list[str] = []
+
+    for i, word in enumerate(words):
+        if word == "|" and _shell_basename(words[i + 1] if i + 1 < len(words) else "") in _SHELL_PIPE_TAIL_HEADS:
+            break
+        out.append(word)
+
+    return " ".join(out).strip()
+
+
+def _split_shell_compound(command: str) -> list[str]:
+    segments: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    i = 0
+
+    while i < len(command):
+        ch = command[i]
+
+        if quote:
+            buf.append(ch)
+            if ch == quote and (i == 0 or command[i - 1] != "\\"):
+                quote = None
+            i += 1
+            continue
+
+        if ch in {"'", '"'}:
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+
+        op_len = 2 if command.startswith("&&", i) or command.startswith("||", i) else 1 if ch in {";", "\n"} else 0
+        if op_len:
+            segment = _strip_shell_pipe_tail("".join(buf).strip())
+            if segment:
+                segments.append(segment)
+            buf = []
+            i += op_len
+            continue
+
+        buf.append(ch)
+        i += 1
+
+    segment = _strip_shell_pipe_tail("".join(buf).strip())
+    if segment:
+        segments.append(segment)
+
+    return segments
+
+
+def _shell_head_word(segment: str) -> str:
+    words = _split_shell_words(segment)
+    index = 0
+    while index < len(words) and re.match(r"^[A-Za-z_]\w*=", words[index]):
+        index += 1
+    return _shell_basename(words[index] if index < len(words) else "")
+
+
+def _clean_shell_segment(segment: str) -> str:
+    words = _split_shell_words(segment)
+    out: list[str] = []
+    i = 0
+    while i < len(words):
+        word = words[i]
+        if re.match(r"^\d*(?:>>?|<)$", word):
+            i += 2
+            continue
+        if re.match(r"^\d*(?:>&|<&)\d+$", word) or re.match(r"^\d*>&\d+$", word):
+            i += 1
+            continue
+        out.append(word)
+        i += 1
+    return " ".join(out).strip()
+
+
+def _is_shell_boundary_echo(segment: str) -> bool:
+    words = _split_shell_words(segment)
+    if _shell_basename(words[0] if words else "") != "echo":
+        return False
+    rest = " ".join(words[1:])
+    return bool(re.search(r"-{2,}|_exit=|(?:^|\s|=)\$[?{]|PIPESTATUS", rest))
+
+
+def summarize_shell_command(command: str) -> str:
+    """Compact shell wrapper/plumbing for display while preserving raw command elsewhere."""
+    original = _oneline(command)
+    if not original:
+        return ""
+
+    segments = _split_shell_compound(original)
+    if len(segments) <= 1:
+        return _clean_shell_segment(segments[0] if segments else original) or original
+
+    core: list[str] = []
+    for segment in segments:
+        cleaned = _clean_shell_segment(segment)
+        head = _shell_head_word(cleaned)
+        if cleaned and head not in _SHELL_SILENT_HEADS and not _is_shell_boundary_echo(cleaned):
+            core.append(cleaned)
+
+    if not core:
+        return original
+    if len(core) == 1:
+        return core[0]
+
+    count = len(core) - 1
+    return f"{core[0]} + {count} {'command' if count == 1 else 'commands'}"
+
+
+def _read_file_line_label(args: dict) -> str:
+    offset = args.get("offset")
+    limit = args.get("limit")
+    if not isinstance(offset, int) or offset <= 0:
+        return ""
+    if not isinstance(limit, int) or limit <= 1:
+        return f"L{offset}"
+    return f"L{offset}-{offset + limit - 1}"
+
+
+def redact_browser_typed_text_for_display(value: Any, typed_text: Any) -> Any:
+    """Apply secret redaction to browser_type text in display-facing payloads.
+
+    Backends sometimes echo the attempted input in error strings or fallback
+    metadata.  When the raw typed value contains a recognizable secret (API
+    key, token, JWT, etc.) the redacted form differs from the raw value, so we
+    replace every occurrence of the raw value with its redacted form before a
+    browser_type result reaches logs, callbacks, the model, or chat history.
+
+    Normal typed text (search queries, addresses, form fields) matches no
+    secret pattern, so it passes through unchanged and stays readable.
+
+    Redaction is forced here regardless of the global ``security.redact_secrets``
+    preference: a typed credential leaking into chat history is a security
+    boundary, not mere log hygiene.
+    """
+    if typed_text is None:
+        return value
+    needle = str(typed_text)
+    if needle == "":
+        return value
+    redacted = redact_sensitive_text(needle, force=True)
+    if redacted == needle:
+        # Nothing secret-looking in the typed text; leave payload untouched.
+        return value
+    if isinstance(value, str):
+        return value.replace(needle, redacted)
+    if isinstance(value, dict):
+        return {
+            key: redact_browser_typed_text_for_display(item, typed_text)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_browser_typed_text_for_display(item, typed_text) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_browser_typed_text_for_display(item, typed_text) for item in value)
+    return value
+
+
+def redact_tool_args_for_display(tool_name: str, args: dict | None) -> dict | None:
+    """Return a copy of tool args safe for logs/progress UI.
+
+    For ``browser_type`` the ``text`` argument is run through the same
+    secret-pattern redactor used for logs.  Recognizable credentials (API
+    keys, tokens) are masked before the value reaches tool progress
+    notifications; normal typed text is left intact for debuggability.
+    """
+    if not isinstance(args, dict):
+        return args
+    if tool_name == "browser_type" and isinstance(args.get("text"), str):
+        safe_args = dict(args)
+        safe_args["text"] = redact_sensitive_text(args["text"], force=True)
+        return safe_args
+    return args
+
+
+def _delegate_task_goal_parts(tasks: Any, *, per_goal_len: int) -> tuple[int, list[str]]:
+    if not isinstance(tasks, list):
+        return 0, []
+    goals: list[str] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        raw_goal = task.get("goal")
+        goal = "?" if raw_goal is None else _oneline(str(raw_goal))
+        goals.append(_truncate_preview(goal or "?", per_goal_len))
+    return len(goals), goals
+
+
 def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
     """Build a short preview of a tool call's primary argument for display.
 
@@ -178,18 +419,35 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         max_len = _tool_preview_max_len
     if not args:
         return None
+    args = redact_tool_args_for_display(tool_name, args) or args
     primary_args = {
         "terminal": "command", "web_search": "query", "web_extract": "urls",
         "read_file": "path", "write_file": "path", "patch": "path",
         "search_files": "pattern", "browser_navigate": "url",
         "browser_click": "ref", "browser_type": "text",
         "image_generate": "prompt", "text_to_speech": "text",
-        "vision_analyze": "question", "mixture_of_agents": "user_prompt",
+        "vision_analyze": "question",
         "skill_view": "name", "skills_list": "category",
         "cronjob": "action",
         "execute_code": "code", "delegate_task": "goal",
         "clarify": "question", "skill_manage": "name",
     }
+
+    # delegate_task: show goal (single) or individual task goals (batch)
+    if tool_name == "delegate_task":
+        tasks = args.get("tasks")
+        if tasks and isinstance(tasks, list):
+            task_count, goals = _delegate_task_goal_parts(tasks, per_goal_len=40)
+            preview = (
+                f"{task_count} tasks: " + " | ".join(goals)
+                if goals else f"{len(tasks)} parallel tasks"
+            )
+            return _truncate_preview(preview, max_len)
+        goal = args.get("goal", "")
+        if goal is None:
+            return None
+        preview = _oneline(str(goal))
+        return _truncate_preview(preview, max_len) if preview else None
 
     if tool_name == "process":
         action = args.get("action", "")
@@ -214,6 +472,23 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
             return f"updating {len(todos_arg)} task(s)"
         else:
             return f"planning {len(todos_arg)} task(s)"
+
+    if tool_name in {"terminal", "execute_code"}:
+        key = "code" if tool_name == "execute_code" else "command"
+        command = args.get(key)
+        if command is None:
+            return None
+        preview = summarize_shell_command(str(command))
+        return _truncate_preview(preview, max_len) if preview else None
+
+    if tool_name == "read_file":
+        path = args.get("path") or args.get("file") or args.get("filepath")
+        if path is None:
+            return None
+        label = Path(str(path).replace("\\", "/")).name or str(path)
+        line_label = _read_file_line_label(args)
+        preview = f"{label} {line_label}".strip()
+        return _truncate_preview(preview, max_len) if preview else None
 
     if tool_name == "session_search":
         query = _oneline(args.get("query", ""))
@@ -240,6 +515,16 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
             msg = msg[:17] + "..."
         return f"to {target}: \"{msg}\""
 
+    if tool_name == "skill_view":
+        name = _oneline(str(args.get("name") or ""))
+        file_path = args.get("file_path")
+        if file_path:
+            file_path = _oneline(str(file_path))
+            preview = f"{name} → {file_path}" if name else file_path
+        else:
+            preview = name
+        return _truncate_preview(preview, max_len) if preview else None
+
     key = primary_args.get(tool_name)
     if not key:
         for fallback_key in ("query", "text", "command", "path", "name", "prompt", "code", "goal"):
@@ -260,6 +545,122 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     if max_len > 0 and len(preview) > max_len:
         preview = preview[:max_len - 3] + "..."
     return preview
+
+
+# =========================================================================
+# Friendly tool labels (human-phrased verbs for built-in tools)
+#
+# Turns "web_search <query>" into "Searching the web for <query>" — the
+# ChatGPT-style "Searching…/Reading…" surface.  Curated and built-in only:
+# we know each core tool's semantics, so the verb is fixed, not computed.
+# Custom/plugin/MCP tools have no entry and fall back to the raw preview.
+# =========================================================================
+
+# Each entry maps a built-in tool name to its present-participle verb phrase.
+# A trailing space-then-preview is appended by build_tool_label() when the
+# tool's argument preview is available (e.g. "Reading docs/api.md").
+_TOOL_VERBS: dict[str, str] = {
+    "web_search": "Searching the web",
+    "web_extract": "Reading",
+    "browser_navigate": "Browsing",
+    "browser_click": "Clicking",
+    "browser_type": "Typing",
+    "read_file": "Reading",
+    "write_file": "Writing",
+    "patch": "Editing",
+    "search_files": "Searching files",
+    "terminal": "Running",
+    "execute_code": "Running code",
+    "image_generate": "Generating image",
+    "video_generate": "Generating video",
+    "text_to_speech": "Generating speech",
+    "vision_analyze": "Looking at the image",
+    "session_search": "Searching past sessions",
+    "skill_view": "Reading skill",
+    "skills_list": "Listing skills",
+    "skill_manage": "Updating skill",
+    "delegate_task": "Delegating",
+    "cronjob": "Scheduling",
+    "clarify": "Asking",
+    "memory": "Updating memory",
+    "todo": "Updating tasks",
+}
+
+# Verbs that read better without the raw argument preview appended.
+_TOOL_VERBS_NO_PREVIEW: frozenset[str] = frozenset({
+    "skills_list",
+    "session_search",
+})
+
+# Verbs that take a "for" connector before the preview (search-style phrasing):
+# "Searching the web for <query>" reads better than "Searching the web <query>".
+_TOOL_VERBS_FOR_CONNECTOR: frozenset[str] = frozenset({
+    "web_search",
+    "search_files",
+})
+
+_friendly_tool_labels: bool = True
+
+
+def set_friendly_tool_labels(enabled: bool) -> None:
+    """Toggle friendly human-phrased tool labels (display.friendly_tool_labels)."""
+    global _friendly_tool_labels
+    _friendly_tool_labels = bool(enabled)
+
+
+def get_friendly_tool_labels() -> bool:
+    """Return whether friendly tool labels are enabled."""
+    return _friendly_tool_labels
+
+
+def get_tool_verb(tool_name: str) -> str | None:
+    """Return the friendly verb for a built-in tool, or None.
+
+    Returns None when friendly labels are disabled or the tool has no curated
+    verb (custom/plugin/MCP tools).  Callers that already hold a computed
+    argument preview can compose ``f"{verb} {preview}"`` themselves; use
+    :func:`tool_verb_connector` to pick the right joiner.
+    """
+    if not _friendly_tool_labels:
+        return None
+    return _TOOL_VERBS.get(tool_name)
+
+
+def tool_verb_connector(tool_name: str) -> str:
+    """Return the connector between a verb and its preview (" for " or " ")."""
+    return " for " if tool_name in _TOOL_VERBS_FOR_CONNECTOR else " "
+
+
+def verb_drops_preview(tool_name: str) -> bool:
+    """Whether the verb should render alone, without the argument preview."""
+    return tool_name in _TOOL_VERBS_NO_PREVIEW
+
+
+def build_tool_label(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
+    """Build a human-phrased status label for a tool call.
+
+    For built-in tools with a known verb (``web_search`` -> "Searching the
+    web for ..."), returns the verb optionally followed by the argument
+    preview.  For everything else (custom/plugin/MCP tools, or when friendly
+    labels are disabled) returns the raw preview, so callers can use this as a
+    drop-in replacement for :func:`build_tool_preview`.
+    """
+    if not _friendly_tool_labels:
+        return build_tool_preview(tool_name, args, max_len=max_len)
+
+    verb = _TOOL_VERBS.get(tool_name)
+    if not verb:
+        return build_tool_preview(tool_name, args, max_len=max_len)
+
+    if tool_name in _TOOL_VERBS_NO_PREVIEW:
+        return verb
+
+    preview = build_tool_preview(tool_name, args, max_len=max_len)
+    if not preview:
+        return verb
+    if tool_name in _TOOL_VERBS_FOR_CONNECTOR:
+        return f"{verb} for {preview}"
+    return f"{verb} {preview}"
 
 
 # =========================================================================
@@ -868,6 +1269,7 @@ def get_cute_tool_message(
     When *result* is provided the line is checked for failure indicators.
     Failed tool calls get a red prefix and an informational suffix.
     """
+    args = redact_tool_args_for_display(tool_name, args) or args
     dur = f"{duration:.1f}s"
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
     skin_prefix = get_skin_tool_prefix()
@@ -905,7 +1307,7 @@ def get_cute_tool_message(
             return _wrap(f"┊ 📄 fetch     {_trunc(domain, 35)}{extra}  {dur}")
         return _wrap(f"┊ 📄 fetch     pages  {dur}")
     if tool_name == "terminal":
-        return _wrap(f"┊ 💻 $         {_trunc(args.get('command', ''), 42)}  {dur}")
+        return _wrap(f"┊ 💻 $         {_trunc(build_tool_preview(tool_name, args) or args.get('command', ''), 42)}  {dur}")
     if tool_name == "process":
         action = args.get("action", "?")
         sid = args.get("session_id", "")[:12]
@@ -913,7 +1315,7 @@ def get_cute_tool_message(
                   "wait": f"wait {sid}", "kill": f"kill {sid}", "write": f"write {sid}", "submit": f"submit {sid}"}
         return _wrap(f"┊ ⚙️  proc      {labels.get(action, f'{action} {sid}')}  {dur}")
     if tool_name == "read_file":
-        return _wrap(f"┊ 📖 read      {_path(args.get('path', ''))}  {dur}")
+        return _wrap(f"┊ 📖 read      {_trunc(build_tool_preview(tool_name, args) or args.get('path', ''), 42)}  {dur}")
     if tool_name == "write_file":
         return _wrap(f"┊ ✍️  write     {_path(args.get('path', ''))}  {dur}")
     if tool_name == "patch":
@@ -992,15 +1394,17 @@ def get_cute_tool_message(
     if tool_name == "skills_list":
         return _wrap(f"┊ 📚 skills    list {args.get('category', 'all')}  {dur}")
     if tool_name == "skill_view":
-        return _wrap(f"┊ 📚 skill     {_trunc(args.get('name', ''), 30)}  {dur}")
+        label = args.get("name", "")
+        file_path = args.get("file_path")
+        if file_path:
+            label = f"{label} → {file_path}" if label else str(file_path)
+        return _wrap(f"┊ 📚 skill     {_trunc(label, 44)}  {dur}")
     if tool_name == "image_generate":
         return _wrap(f"┊ 🎨 create    {_trunc(args.get('prompt', ''), 35)}  {dur}")
     if tool_name == "text_to_speech":
         return _wrap(f"┊ 🔊 speak     {_trunc(args.get('text', ''), 30)}  {dur}")
     if tool_name == "vision_analyze":
         return _wrap(f"┊ 👁️  vision    {_trunc(args.get('question', ''), 30)}  {dur}")
-    if tool_name == "mixture_of_agents":
-        return _wrap(f"┊ 🧠 reason    {_trunc(args.get('user_prompt', ''), 30)}  {dur}")
     if tool_name == "send_message":
         return _wrap(f"┊ 📨 send      {args.get('target', '?')}: \"{_trunc(args.get('message', ''), 25)}\"  {dur}")
     if tool_name == "cronjob":
@@ -1019,7 +1423,10 @@ def get_cute_tool_message(
     if tool_name == "delegate_task":
         tasks = args.get("tasks")
         if tasks and isinstance(tasks, list):
-            return _wrap(f"┊ 🔀 delegate  {len(tasks)} parallel tasks  {dur}")
+            task_count, goals = _delegate_task_goal_parts(tasks, per_goal_len=30)
+            detail = " | ".join(goals) if goals else "parallel"
+            count_label = task_count or len(tasks)
+            return _wrap(f"┊ 🔀 delegate  {count_label}x: {_trunc(detail, 35)}  {dur}")
         return _wrap(f"┊ 🔀 delegate  {_trunc(args.get('goal', ''), 35)}  {dur}")
 
     preview = build_tool_preview(tool_name, args) or ""

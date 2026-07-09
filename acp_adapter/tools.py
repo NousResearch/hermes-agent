@@ -74,7 +74,7 @@ _POLISHED_TOOLS = {
     "kanban_create", "kanban_show", "kanban_comment", "kanban_complete",
     "kanban_block", "kanban_link", "kanban_heartbeat",
     "yb_query_group_info", "yb_query_group_members", "yb_search_sticker",
-    "yb_send_dm", "yb_send_sticker", "mixture_of_agents",
+    "yb_send_dm", "yb_send_sticker",
 }
 
 
@@ -617,7 +617,7 @@ def _format_session_search_result(result: Optional[str]) -> Optional[str]:
         return None
     mode = data.get("mode") or "search"
     query = data.get("query")
-    lines = ["Recent sessions" if mode == "recent" else f"Session search results" + (f" for `{query}`" if query else "")]
+    lines = ["Recent sessions" if mode == "recent" else "Session search results" + (f" for `{query}`" if query else "")]
     if not results:
         lines.append(str(data.get("message") or "No matching sessions found."))
         return "\n".join(lines)

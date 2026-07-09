@@ -79,7 +79,10 @@ from typing import Dict, Any, List, Optional, Set, Tuple
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled
-from agent.skill_utils import EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS
+from agent.skill_utils import (
+    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS,
+    is_skill_support_path as _is_skill_support_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +92,22 @@ logger = logging.getLogger(__name__)
 # skills all coexist here without polluting the git repo.
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
+_SKILLS_DIR_AT_IMPORT = SKILLS_DIR
+
+
+def _skills_dir() -> Path:
+    """Return the active profile's skills directory at call time.
+
+    Some long-lived runtimes import this module before the active profile has
+    set HERMES_HOME. Keep the legacy SKILLS_DIR module attribute for tests and
+    external patchers, but when it has not been patched, resolve from the live
+    profile-scoped HERMES_HOME on every call.
+    """
+    configured = Path(SKILLS_DIR)
+    if configured != _SKILLS_DIR_AT_IMPORT:
+        return configured
+    return get_hermes_home() / "skills"
+
 
 # Anthropic-recommended limits for progressive disclosure efficiency
 MAX_NAME_LENGTH = 64
@@ -146,6 +165,8 @@ def load_env() -> Dict[str, str]:
         for line in f:
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
+                if line.startswith("export "):
+                    line = line[7:]
                 key, _, value = line.partition("=")
                 env_vars[key.strip()] = value.strip().strip("\"'")
     return env_vars
@@ -496,9 +517,9 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     For paths like: ~/.hermes/skills/mlops/axolotl/SKILL.md -> "mlops"
     Also works for external skill dirs configured via skills.external_dirs.
     """
-    # Try the module-level SKILLS_DIR first (respects monkeypatching in tests),
+    # Try the active profile skills dir first (respects monkeypatching in tests),
     # then fall back to external dirs from config.
-    dirs_to_check = [SKILLS_DIR]
+    dirs_to_check = [_skills_dir()]
     try:
         from agent.skill_utils import get_external_skills_dirs
         dirs_to_check.extend(get_external_skills_dirs())
@@ -583,11 +604,15 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         config = load_config()
         skills_cfg = config.get("skills", {})
         resolved_platform = platform or os.getenv("HERMES_PLATFORM") or _get_session_platform()
+        global_disabled = skills_cfg.get("disabled", [])
         if resolved_platform:
             platform_disabled = cfg_get(skills_cfg, "platform_disabled", resolved_platform)
             if platform_disabled is not None:
-                return name in platform_disabled
-        return name in skills_cfg.get("disabled", [])
+                # A globally-disabled skill stays disabled on every platform;
+                # the platform list adds to it rather than replacing it. Keep
+                # in sync with agent.skill_utils.get_disabled_skill_names.
+                return name in platform_disabled or name in global_disabled
+        return name in global_disabled
     except Exception:
         return False
 
@@ -613,8 +638,9 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     # Scan local dir first, then external dirs (local takes precedence)
     dirs_to_scan = []
-    if SKILLS_DIR.exists():
-        dirs_to_scan.append(SKILLS_DIR)
+    active_skills_dir = _skills_dir()
+    if active_skills_dir.exists():
+        dirs_to_scan.append(active_skills_dir)
     dirs_to_scan.extend(get_external_skills_dirs())
 
     for scan_dir in dirs_to_scan:
@@ -692,8 +718,9 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         JSON string with minimal skill info: name, description, category
     """
     try:
-        if not SKILLS_DIR.exists():
-            SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+        active_skills_dir = _skills_dir()
+        if not active_skills_dir.exists():
+            active_skills_dir.mkdir(parents=True, exist_ok=True)
             return json.dumps(
                 {
                     "success": True,
@@ -975,8 +1002,9 @@ def skill_view(
 
         # Build list of all skill directories to search
         all_dirs = []
-        if SKILLS_DIR.exists():
-            all_dirs.append(SKILLS_DIR)
+        active_skills_dir = _skills_dir()
+        if active_skills_dir.exists():
+            all_dirs.append(active_skills_dir)
         all_dirs.extend(get_external_skills_dirs())
 
         if not all_dirs:
@@ -1016,9 +1044,15 @@ def skill_view(
             # Strategy 1: direct path (e.g., "mlops/axolotl" or bare "axolotl"
             # at the top of the dir).
             direct_path = search_dir / name
-            if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
+            if (
+                not _is_skill_support_path(direct_path)
+                and direct_path.is_dir()
+                and (direct_path / "SKILL.md").exists()
+            ):
                 _record(direct_path, direct_path / "SKILL.md")
-            elif direct_path.with_suffix(".md").exists():
+            elif direct_path.with_suffix(".md").exists() and not _is_skill_support_path(
+                direct_path.with_suffix(".md")
+            ):
                 _record(None, direct_path.with_suffix(".md"))
 
             # Strategy 1b: categorized form for plugin namespace fall-through
@@ -1026,20 +1060,44 @@ def skill_view(
             # tries the on-disk path "myplugin/explore").
             if local_category_name:
                 categorized_path = search_dir / local_category_name
-                if categorized_path.is_dir() and (categorized_path / "SKILL.md").exists():
+                if (
+                    not _is_skill_support_path(categorized_path)
+                    and categorized_path.is_dir()
+                    and (categorized_path / "SKILL.md").exists()
+                ):
                     _record(categorized_path, categorized_path / "SKILL.md")
-                elif categorized_path.with_suffix(".md").exists():
+                elif categorized_path.with_suffix(
+                    ".md"
+                ).exists() and not _is_skill_support_path(
+                    categorized_path.with_suffix(".md")
+                ):
                     _record(None, categorized_path.with_suffix(".md"))
 
             # Strategy 2: recursive by directory name (catches nested skills
-            # like "foundations/runtime/explore-codebase" called by bare name).
+            # like "foundations/runtime/explore-codebase" called by bare name),
+            # plus frontmatter `name:` lookup. `skills_list()` exposes the
+            # frontmatter name, so `skill_view(name)` must accept it too even
+            # when the on-disk directory is a shorter category/alias.
             for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
                 if found_skill_md.parent.name == name:
                     _record(found_skill_md.parent, found_skill_md)
+                    continue
+                try:
+                    fm_content = found_skill_md.read_text(encoding="utf-8")
+                    fm, _ = _parse_frontmatter(fm_content)
+                except Exception:
+                    fm = {}
+                if fm.get("name") == name:
+                    _record(found_skill_md.parent, found_skill_md)
 
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.
+            # Exclude skill support docs: references/templates/assets/scripts
+            # are loaded through skill_view(skill, file_path=...) and must not
+            # shadow or collide with real skills that share the same basename.
             for found_md in search_dir.rglob(f"{name}.md"):
-                if found_md.name != "SKILL.md":
+                if found_md.name != "SKILL.md" and not _is_skill_support_path(
+                    found_md
+                ):
                     _record(None, found_md)
 
         if len(candidates) > 1:
@@ -1096,7 +1154,7 @@ def skill_view(
         # Security: warn if skill is loaded from outside trusted directories
         # (local skills dir + configured external_dirs are all trusted)
         _outside_skills_dir = True
-        _trusted_dirs = [SKILLS_DIR.resolve()]
+        _trusted_dirs = [active_skills_dir.resolve()]
         try:
             _trusted_dirs.extend(d.resolve() for d in all_dirs[1:])
         except Exception:
@@ -1242,6 +1300,17 @@ def skill_view(
                     ensure_ascii=False,
                 )
 
+            try:
+                from tools.skill_manager_tool import mark_background_review_skill_read
+
+                mark_background_review_skill_read(target_file)
+            except Exception:
+                logger.debug(
+                    "Could not record background-review skill read for %s",
+                    target_file,
+                    exc_info=True,
+                )
+
             return json.dumps(
                 {
                     "success": True,
@@ -1325,7 +1394,7 @@ def skill_view(
             linked_files["scripts"] = script_files
 
         try:
-            rel_path = str(skill_md.relative_to(SKILLS_DIR))
+            rel_path = str(skill_md.relative_to(active_skills_dir))
         except ValueError:
             # External skill — use path relative to the skill's own parent dir
             rel_path = str(skill_md.relative_to(skill_md.parent.parent)) if skill_md.parent.parent else skill_md.name
@@ -1444,6 +1513,17 @@ def skill_view(
 
         if capture_result["gateway_setup_hint"]:
             result["gateway_setup_hint"] = capture_result["gateway_setup_hint"]
+
+        try:
+            from tools.skill_manager_tool import mark_background_review_skill_read
+
+            mark_background_review_skill_read(skill_md)
+        except Exception:
+            logger.debug(
+                "Could not record background-review skill read for %s",
+                skill_md,
+                exc_info=True,
+            )
 
         if setup_needed:
             missing_items = [

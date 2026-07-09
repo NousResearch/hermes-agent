@@ -249,7 +249,8 @@ def get_language() -> str:
     return DEFAULT_LANGUAGE
 
 
-def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
+def t(key: str, lang: str | None = None, default: str | None = None,
+       **format_kwargs: Any) -> str:
     """Translate a dotted key to the active language.
 
     Parameters
@@ -258,6 +259,10 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
         Dotted path into the catalog, e.g. ``"approval.choose_long"``.
     lang
         Explicit language override.  Takes precedence over env + config.
+    default
+        Value returned when the key is absent in both the target language
+        and English.  Defaults to ``None``, in which case the bare key is
+        returned (preserving the original "never crash" behaviour).
     **format_kwargs
         ``str.format`` substitution arguments (``t("gateway.drain", count=3)``
         expects a catalog entry with a ``{count}`` placeholder).
@@ -265,7 +270,8 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     Returns
     -------
     The translated string, or the English fallback if the key is missing in
-    the target language, or the bare key if English is also missing.
+    the target language, or ``default`` (or the bare key) if English is also
+    missing.
     """
     target = _normalize_lang(lang) if lang else get_language()
     catalog = _load_catalog(target)
@@ -276,6 +282,9 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
         value = _load_catalog(DEFAULT_LANGUAGE).get(key)
 
     if value is None:
+        if default is not None:
+            # Caller-supplied fallback (e.g. the original English description).
+            return default
         # Last-ditch: return the key itself.  A broken catalog should not
         # crash anything; it just looks ugly until someone fixes it.
         logger.debug("i18n miss: key=%r lang=%r", key, target)

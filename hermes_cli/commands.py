@@ -522,7 +522,15 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
 
     Plugin-registered slash commands that require arguments are **excluded**
     because plugins may not provide a no-arg usage fallback.
+
+    Command descriptions are localized for the Telegram menu via the i18n
+    catalog (key ``telegram_menu.<command_name>``), falling back to the
+    English ``CommandDef.description`` when no translation is configured or
+    the active language is English.  This keeps the rest of the registry
+    (CLI help, Discord, Slack, web) untouched.
     """
+    from agent.i18n import t
+
     overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
@@ -533,12 +541,15 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
         # the menu hurts discoverability (issue #24312).
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
-            result.append((tg_name, cmd.description))
+            desc = t(f"telegram_menu.{cmd.name}", default=cmd.description)
+            result.append((tg_name, desc))
     for name, description, args_hint in _iter_plugin_command_entries():
         if _requires_argument(args_hint):
             continue
         tg_name = _sanitize_telegram_name(name)
         if tg_name:
+            # Plugin commands carry no registry name to key i18n on, so they
+            # keep their own (English) description — only built-ins localize.
             result.append((tg_name, description))
     return result
 

@@ -117,8 +117,13 @@ _ENDPOINT_MODEL_CACHE_TTL = 300
 # Entries expire after _ENDPOINT_PROBE_TTL_SECONDS so a server swap on the
 # same port (stop Ollama, start LM Studio) is eventually re-detected instead
 # of being pinned to the stale type for the whole process lifetime.
-# Values are (server_type, monotonic_timestamp).
+# Values are (server_type_or_None, monotonic_timestamp). Failed probes are
+# cached too (as None) with a much shorter TTL: an offline/unknown endpoint
+# must not re-run the full probe waterfall on every context lookup (it is
+# consulted from hot paths like get_model_context_length), but a server that
+# comes up moments later should still be detected promptly.
 _ENDPOINT_PROBE_TTL_SECONDS = 3600.0
+_ENDPOINT_PROBE_NEGATIVE_TTL_SECONDS = 30.0
 _endpoint_probe_path_cache: Dict[str, tuple] = {}
 
 
@@ -696,8 +701,10 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     lmstudio_url = _lmstudio_server_root(normalized)
 
     cached = _endpoint_probe_path_cache.get(server_url)
-    if cached is not None and (time.monotonic() - cached[1]) < _ENDPOINT_PROBE_TTL_SECONDS:
-        return cached[0]
+    if cached is not None:
+        ttl = _ENDPOINT_PROBE_TTL_SECONDS if cached[0] is not None else _ENDPOINT_PROBE_NEGATIVE_TTL_SECONDS
+        if (time.monotonic() - cached[1]) < ttl:
+            return cached[0]
 
     headers = _auth_headers(api_key)
 
@@ -749,8 +756,9 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     except Exception:
         pass
 
-    if result is not None:
-        _endpoint_probe_path_cache[server_url] = (result, time.monotonic())
+    # Cache failures too (short TTL, see above) so offline endpoints don't pay
+    # the probe waterfall on every call from the context-length hot path.
+    _endpoint_probe_path_cache[server_url] = (result, time.monotonic())
     return result
 
 
@@ -1757,15 +1765,38 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                 resp = client.get(f"{lmstudio_url}/api/v1/models")
                 if resp.status_code == 200:
                     data = resp.json()
-                    for m in data.get("models", []):
-                        if _model_id_matches(m.get("key", ""), model) or _model_id_matches(m.get("id", ""), model):
-                            # Prefer loaded instance context (actual runtime value)
-                            for inst in m.get("loaded_instances", []):
-                                cfg = inst.get("config", {})
-                                ctx = cfg.get("context_length")
-                                if ctx and isinstance(ctx, (int, float)):
-                                    return int(ctx)
-                            break
+                    models_list = data.get("models", [])
+                    # Exact key/id match first — alias matching strips the
+                    # publisher namespace and "-mtp", so a bare configured name
+                    # can match several entries and list order would pick the
+                    # winner (adopting the wrong model's context).
+                    wanted = str(model or "").strip().lower()
+                    matched = next(
+                        (
+                            m
+                            for m in models_list
+                            if wanted
+                            and wanted in {str(m.get("key", "")).strip().lower(), str(m.get("id", "")).strip().lower()}
+                        ),
+                        None,
+                    )
+                    if matched is None:
+                        matched = next(
+                            (
+                                m
+                                for m in models_list
+                                if _model_id_matches(m.get("key", ""), model)
+                                or _model_id_matches(m.get("id", ""), model)
+                            ),
+                            None,
+                        )
+                    if matched is not None:
+                        # Prefer loaded instance context (actual runtime value)
+                        for inst in matched.get("loaded_instances", []):
+                            cfg = inst.get("config", {})
+                            ctx = cfg.get("context_length")
+                            if ctx and isinstance(ctx, (int, float)):
+                                return int(ctx)
 
             # LM Studio / vLLM / llama.cpp: try /v1/models/{model}
             resp = client.get(f"{server_url}/v1/models/{model}")
@@ -1781,12 +1812,17 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
             resp = client.get(f"{server_url}/v1/models")
             if resp.status_code == 200:
                 data = resp.json()
-                models_list = data.get("data", [])
-                for m in models_list:
-                    if _model_id_matches(m.get("id", ""), model):
-                        ctx = m.get("max_model_len") or m.get("context_length") or m.get("max_tokens")
-                        if ctx and isinstance(ctx, (int, float)):
-                            return int(ctx)
+                openai_models = data.get("data", [])
+                wanted = str(model or "").strip().lower()
+                # Exact id match first; fall back to alias matching only when
+                # nothing matches exactly (see the namespace-collision note above).
+                candidates = [m for m in openai_models if str(m.get("id", "")).strip().lower() == wanted] or [
+                    m for m in openai_models if _model_id_matches(m.get("id", ""), model)
+                ]
+                for m in candidates:
+                    ctx = m.get("max_model_len") or m.get("context_length") or m.get("max_tokens")
+                    if ctx and isinstance(ctx, (int, float)):
+                        return int(ctx)
     except Exception:
         pass
 

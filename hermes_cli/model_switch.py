@@ -1552,11 +1552,17 @@ def list_authenticated_providers(
                 from hermes_cli.auth import AuthError
                 from hermes_cli.models import fetch_lmstudio_models
 
-                return fetch_lmstudio_models(
+                native_models = fetch_lmstudio_models(
                     api_key=api_key,
                     base_url=api_url,
                     timeout=1.5,
                 )
+                # The hint is a heuristic (":1234" / a name marker). An empty
+                # native catalog usually means the server isn't LM Studio at
+                # all (vLLM/llama.cpp on the same port), so fall through to the
+                # OpenAI-compatible /v1/models rather than showing nothing.
+                if native_models:
+                    return native_models
             except AuthError:
                 return []
             except Exception:

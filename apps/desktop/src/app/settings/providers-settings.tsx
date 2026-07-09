@@ -299,8 +299,10 @@ function NoProviderKeys() {
   )
 }
 
+// `||` (not `??`): an empty-string api_url/base_url must not shadow the
+// lmstudio.base_url fallback, or a known LM Studio endpoint vanishes from the list.
 const endpointUrlFor = (provider: ModelOptionProvider) =>
-  (provider.api_url ?? provider.base_url ?? provider.lmstudio?.base_url ?? '').trim()
+  (provider.api_url || provider.base_url || provider.lmstudio?.base_url || '').trim()
 
 const isLocalEndpointProvider = (provider: ModelOptionProvider) => {
   const slug = provider.slug.toLowerCase()
@@ -326,6 +328,10 @@ const endpointMatches = (endpoint: LocalEndpointOption, q: string) =>
 
 function useLocalEndpointOptions(): LocalEndpointOption[] {
   const [endpoints, setEndpoints] = useState<LocalEndpointOption[]>([])
+  // Re-read when the manual onboarding flow this list launches finishes —
+  // same staleness guarantee the OAuth cards get from their [onboardingActive]
+  // dep — so the "current" badge, counts, and new endpoints refresh.
+  const onboardingActive = useStore($desktopOnboarding).manual
 
   useEffect(() => {
     let cancelled = false
@@ -372,7 +378,7 @@ function useLocalEndpointOptions(): LocalEndpointOption[] {
       })
 
     return () => void (cancelled = true)
-  }, [])
+  }, [onboardingActive])
 
   return endpoints
 }

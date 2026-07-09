@@ -1,6 +1,7 @@
 """Tests for provider-aware `/model` validation in hermes_cli.models."""
 
 import json
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 from hermes_cli.models import (
@@ -13,6 +14,7 @@ from hermes_cli.models import (
     fetch_lmstudio_models,
     github_model_reasoning_efforts,
     normalize_copilot_model_id,
+    normalize_lmstudio_unload_policy,
     normalize_opencode_model_id,
     normalize_provider,
     opencode_model_api_mode,
@@ -1024,6 +1026,262 @@ class TestEnsureLmStudioModelLoaded:
             {"model": "qwen/qwen3.6-35b-a3b", "echo_load_config": True},
             {"model": "old/model", "echo_load_config": True, "context_length": 128000},
         ]
+
+    def test_small_max_context_model_stays_loaded_at_its_max(self):
+        # target_context_length is capped at the model's max_context_length, so
+        # a model already loaded at its own max is a no-op — never unloaded.
+        calls = []
+        initial = [
+            {
+                "key": "small/tiny-model",
+                "type": "llm",
+                "max_context_length": 8192,
+                "loaded_instances": [
+                    {"id": "tiny-instance", "config": {"context_length": 8192}}
+                ],
+            }
+        ]
+
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            self._fake_urlopen([initial], [], calls),
+        ):
+            result = ensure_lmstudio_model_loaded(
+                "small/tiny-model",
+                "http://localhost:1234/v1",
+                api_key=None,
+                target_context_length=64000,
+            )
+
+        assert result == 8192
+        assert [call[0].rsplit("/", 1)[-1] for call in calls] == ["models"]
+
+    def test_small_max_context_model_loads_at_capped_context(self):
+        # An unloaded small model loads once at saved settings and is accepted
+        # at its own max — no forced 64K reload that LM Studio would reject.
+        calls = []
+        initial = [
+            {"key": "small/tiny-model", "type": "llm", "max_context_length": 8192}
+        ]
+        load_responses = [{"load_config": {"context_length": 8192}}]
+
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            self._fake_urlopen([initial], load_responses, calls),
+        ):
+            result = ensure_lmstudio_model_loaded(
+                "small/tiny-model",
+                "http://localhost:1234/v1",
+                api_key=None,
+                target_context_length=64000,
+            )
+
+        assert result == 8192
+        assert [call[0].rsplit("/", 1)[-1] for call in calls] == ["models", "load"]
+
+    def test_bare_previous_model_matches_namespaced_catalog_entry(self):
+        # previous_model "llama-3-8b" (bare) must unload catalog "meta/llama-3-8b"
+        # even though the slug does not repeat the publisher prefix.
+        calls = []
+        initial = [
+            {"key": "next/local-model", "type": "llm"},
+            {
+                "key": "meta/llama-3-8b",
+                "type": "llm",
+                "loaded_instances": [
+                    {"id": "llama-instance", "config": {"context_length": 128000}}
+                ],
+            },
+        ]
+        load_responses = [{"load_config": {"context_length": 128000}}]
+
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            self._fake_urlopen([initial], load_responses, calls),
+        ):
+            result = ensure_lmstudio_model_loaded(
+                "next/local-model",
+                "http://localhost:1234/v1",
+                api_key=None,
+                target_context_length=64000,
+                previous_model="llama-3-8b",
+            )
+
+        assert result == 128000
+        assert [call[0].rsplit("/", 1)[-1] for call in calls] == ["models", "unload", "load"]
+        assert calls[1][1] == {"instance_id": "llama-instance"}
+
+    def test_ambiguous_previous_model_basename_unloads_nothing(self):
+        # Two publishers share the basename and neither embeds its namespace —
+        # evicting either could be wrong, so both stay resident.
+        calls = []
+        initial = [
+            {"key": "next/local-model", "type": "llm"},
+            {
+                "key": "team-a/coder",
+                "type": "llm",
+                "loaded_instances": [
+                    {"id": "a-instance", "config": {"context_length": 128000}}
+                ],
+            },
+            {
+                "key": "team-b/coder",
+                "type": "llm",
+                "loaded_instances": [
+                    {"id": "b-instance", "config": {"context_length": 128000}}
+                ],
+            },
+        ]
+        load_responses = [{"load_config": {"context_length": 128000}}]
+
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            self._fake_urlopen([initial], load_responses, calls),
+        ):
+            result = ensure_lmstudio_model_loaded(
+                "next/local-model",
+                "http://localhost:1234/v1",
+                api_key=None,
+                target_context_length=64000,
+                previous_model="coder",
+            )
+
+        assert result == 128000
+        assert [call[0].rsplit("/", 1)[-1] for call in calls] == ["models", "load"]
+
+    def test_switching_to_mtp_sibling_unloads_base_model(self):
+        # The previous model aliases into the target's name (its -mtp sibling),
+        # but the previous id names the base entry precisely — so it is unloaded.
+        calls = []
+        initial = [
+            {"key": "qwen/qwen3.6-35b-a3b-mtp", "type": "llm"},
+            {
+                "key": "qwen/qwen3.6-35b-a3b",
+                "type": "llm",
+                "loaded_instances": [
+                    {"id": "base-instance", "config": {"context_length": 128000}}
+                ],
+            },
+        ]
+        load_responses = [{"load_config": {"context_length": 128000}}]
+
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            self._fake_urlopen([initial], load_responses, calls),
+        ):
+            result = ensure_lmstudio_model_loaded(
+                "qwen/qwen3.6-35b-a3b-mtp",
+                "http://localhost:1234/v1",
+                api_key=None,
+                target_context_length=64000,
+                previous_model="qwen/qwen3.6-35b-a3b",
+            )
+
+        assert result == 128000
+        assert [call[0].rsplit("/", 1)[-1] for call in calls] == ["models", "unload", "load"]
+        assert calls[1][1] == {"instance_id": "base-instance"}
+
+    def test_unload_404_treated_as_already_unloaded(self):
+        # The previous instance vanished between fetch and unload (user closed
+        # it in the LM Studio UI) — the switch must proceed, not abort.
+        calls = []
+        initial = [
+            {"key": "qwen/qwen3.6-35b-a3b", "type": "llm"},
+            {
+                "key": "old/model",
+                "type": "llm",
+                "loaded_instances": [
+                    {"id": "old-instance", "config": {"context_length": 128000}}
+                ],
+            },
+        ]
+
+        def fake_urlopen(request, timeout=0):
+            url = request.full_url
+            body = getattr(request, "data", None)
+            payload = json.loads(body.decode("utf-8")) if body else None
+            calls.append((url, payload, timeout))
+            if url.endswith("/api/v1/models"):
+                return self._Resp(self._models_payload(initial))
+            if url.endswith("/api/v1/models/unload"):
+                raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+            if url.endswith("/api/v1/models/load"):
+                return self._Resp(json.dumps({"load_config": {"context_length": 128000}}).encode("utf-8"))
+            raise AssertionError(f"unexpected LM Studio URL: {url}")
+
+        with patch("hermes_cli.models.urllib.request.urlopen", fake_urlopen):
+            result = ensure_lmstudio_model_loaded(
+                "qwen/qwen3.6-35b-a3b",
+                "http://localhost:1234/v1",
+                api_key=None,
+                target_context_length=64000,
+                previous_model="old/model",
+            )
+
+        assert result == 128000
+        assert [call[0].rsplit("/", 1)[-1] for call in calls] == ["models", "unload", "load"]
+
+    def test_soft_load_failure_reports_none_not_requested_context(self):
+        # LM Studio replies 200 with no load_config (e.g. out of VRAM) and the
+        # refresh shows nothing loaded — the requested context must not be
+        # reported as if it were live.
+        calls = []
+        initial = [{"key": "qwen/qwen3.6-35b-a3b", "type": "llm"}]
+        load_responses = [{}]
+
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            self._fake_urlopen([initial, initial], load_responses, calls),
+        ):
+            result = ensure_lmstudio_model_loaded(
+                "qwen/qwen3.6-35b-a3b",
+                "http://localhost:1234/v1",
+                api_key=None,
+                target_context_length=64000,
+            )
+
+        assert result is None
+
+    def test_exact_catalog_key_beats_mtp_alias_ordering(self):
+        # Both siblings are downloaded and the -mtp variant is listed first; a
+        # precisely configured base name must select the base entry.
+        calls = []
+        initial = [
+            {
+                "key": "qwen/qwen3.6-35b-a3b-mtp",
+                "type": "llm",
+                "loaded_instances": [
+                    {"id": "mtp-instance", "config": {"context_length": 128000}}
+                ],
+            },
+            {"key": "qwen/qwen3.6-35b-a3b", "type": "llm"},
+        ]
+        load_responses = [{"load_config": {"context_length": 128000}}]
+
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            self._fake_urlopen([initial], load_responses, calls),
+        ):
+            result = ensure_lmstudio_model_loaded(
+                "qwen/qwen3.6-35b-a3b",
+                "http://localhost:1234/v1",
+                api_key=None,
+                target_context_length=64000,
+            )
+
+        assert result == 128000
+        load_payloads = [payload for url, payload, _ in calls if url.endswith("/api/v1/models/load")]
+        assert load_payloads == [{"model": "qwen/qwen3.6-35b-a3b", "echo_load_config": True}]
+
+
+class TestNormalizeLmstudioUnloadPolicy:
+    def test_disable_spellings_map_to_never(self):
+        for value in ("never", "off", "no", "none", "false", "disabled", "disable", "0", "keep", False):
+            assert normalize_lmstudio_unload_policy(value) == "never", value
+
+    def test_enable_and_unknown_spellings_map_to_always(self):
+        for value in ("always", "", None, "auto", "on", "yes", "true", "1", "bogus-value", True):
+            assert normalize_lmstudio_unload_policy(value) == "always", value
 
 
 # -- validate — format checks -----------------------------------------------

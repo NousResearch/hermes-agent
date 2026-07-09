@@ -89,12 +89,10 @@ class TestCmdUpdateNpmLockfileCache:
     def test_npm_lockfile_changed_matching(self, tmp_path, monkeypatch):
         from hermes_cli import main as hm
 
-        content = b'{"lockfileVersion": 3}'
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        (tmp_path / "package-lock.json").write_bytes(content)
+        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
         (tmp_path / "node_modules").mkdir()
-        digest = hashlib.sha256(content).hexdigest()
-        self._cache_file(tmp_path, tmp_path).write_text(digest)
+        self._cache_file(tmp_path, tmp_path).write_text(hm._npm_manifests_digest())
 
         assert hm._npm_lockfile_changed(tmp_path) is False
 
@@ -123,14 +121,80 @@ class TestCmdUpdateNpmLockfileCache:
     def test_record_npm_lockfile_hash(self, tmp_path, monkeypatch):
         from hermes_cli import main as hm
 
-        content = b'{"lockfileVersion": 3}'
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        (tmp_path / "package-lock.json").write_bytes(content)
+        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
 
         hm._record_npm_lockfile_hash(tmp_path)
 
-        expected = hashlib.sha256(content).hexdigest()
-        assert self._cache_file(tmp_path, tmp_path).read_text() == expected
+        assert (
+            self._cache_file(tmp_path, tmp_path).read_text()
+            == hm._npm_manifests_digest()
+        )
+
+    def test_package_json_only_edit_defeats_skip(self, tmp_path, monkeypatch):
+        """Reviewer scenario (#61580): dev edits package.json WITHOUT running
+        npm — lockfile unchanged. `hermes update` must still install (the
+        npm-install fallback is what syncs node_modules in that state)."""
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
+        (tmp_path / "package.json").write_text('{"dependencies": {}}')
+        (tmp_path / "node_modules").mkdir()
+        hm._record_npm_lockfile_hash(tmp_path)
+        assert hm._npm_lockfile_changed(tmp_path) is False
+
+        (tmp_path / "package.json").write_text(
+            '{"dependencies": {"left-pad": "^1.0.0"}}'
+        )
+        assert hm._npm_lockfile_changed(tmp_path) is True
+
+    def test_workspace_package_json_edit_defeats_skip(self, tmp_path, monkeypatch):
+        """The manifest list comes from the root package.json `workspaces`
+        globs (npm's source of truth), so ANY workspace (desktop included)
+        defeats the skip, not a hardcoded set."""
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
+        (tmp_path / "package.json").write_text(
+            '{"workspaces": ["apps/*", "ui-tui"]}'
+        )
+        (tmp_path / "ui-tui").mkdir()
+        (tmp_path / "ui-tui" / "package.json").write_text("{}")
+        (tmp_path / "apps" / "desktop").mkdir(parents=True)
+        (tmp_path / "apps" / "desktop" / "package.json").write_text("{}")
+        (tmp_path / "node_modules").mkdir()
+        hm._record_npm_lockfile_hash(tmp_path)
+        assert hm._npm_lockfile_changed(tmp_path) is False
+
+        # A glob-matched workspace (desktop) defeats the skip…
+        (tmp_path / "apps" / "desktop" / "package.json").write_text(
+            '{"name": "desktop"}'
+        )
+        assert hm._npm_lockfile_changed(tmp_path) is True
+
+        # …and so does a literal-listed one.
+        hm._record_npm_lockfile_hash(tmp_path)
+        assert hm._npm_lockfile_changed(tmp_path) is False
+        (tmp_path / "ui-tui" / "package.json").write_text('{"name": "x"}')
+        assert hm._npm_lockfile_changed(tmp_path) is True
+
+    def test_new_workspace_added_defeats_skip(self, tmp_path, monkeypatch):
+        """Adding a whole new workspace dir under an existing glob changes
+        the manifest set itself — must also defeat the skip."""
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
+        (tmp_path / "package.json").write_text('{"workspaces": ["apps/*"]}')
+        (tmp_path / "node_modules").mkdir()
+        hm._record_npm_lockfile_hash(tmp_path)
+        assert hm._npm_lockfile_changed(tmp_path) is False
+
+        (tmp_path / "apps" / "newtool").mkdir(parents=True)
+        (tmp_path / "apps" / "newtool" / "package.json").write_text("{}")
+        assert hm._npm_lockfile_changed(tmp_path) is True
 
     def test_npm_lockfile_changed_cache_read_error(self, tmp_path, monkeypatch):
         from hermes_cli import main as hm

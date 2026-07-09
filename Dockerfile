@@ -335,6 +335,26 @@ ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
 RUN mkdir -p /opt/data
 VOLUME [ "/opt/data" ]
 
+# ---------- cloudflared (hermes tunnel) ----------
+# `hermes tunnel` spawns cloudflared to expose user-built local services to
+# the internet on per-user noit2.com subdomains via a Cloudflare named tunnel.
+# Installed late in the layer stack so adding it doesn't invalidate the cache
+# of the heavy hermes/python/web layers above. Pinned to a single release for
+# reproducible builds; cloudflared does not publish release checksums, so we
+# verify the install functionally with `cloudflared --version` (integrity in
+# transit is covered by HTTPS/TLS) rather than sha256.
+ARG CLOUDFLARED_VERSION=2026.7.0
+RUN set -eu; \
+    case "${TARGETARCH:-amd64}" in \
+        amd64) cf_arch="amd64" ;; \
+        arm64) cf_arch="arm64" ;; \
+        *) echo "Unsupported TARGETARCH=${TARGETARCH} for cloudflared" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL --retry 3 -o /usr/local/bin/cloudflared \
+        "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-${cf_arch}"; \
+    chmod +x /usr/local/bin/cloudflared; \
+    cloudflared --version
+
 # s6-overlay's /init is PID 1. It sets up the supervision tree, runs
 # /etc/cont-init.d/* (our stage2 hook), starts s6-rc services
 # declared in /etc/s6-overlay/s6-rc.d/, then exec's its remaining

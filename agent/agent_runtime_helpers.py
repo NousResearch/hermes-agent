@@ -2238,6 +2238,23 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 ),
                 next_args,
             )
+    elif function_name == "browser_action_request":
+        def _execute(next_args: dict) -> Any:
+            from tools.browser_action_tool import browser_action_request as _browser_action_request
+            return _finish_agent_tool(
+                _browser_action_request(
+                    action_type=next_args.get("action_type") or next_args.get("type", ""),
+                    target=next_args.get("target"),
+                    url=next_args.get("url"),
+                    value=next_args.get("value") or next_args.get("text"),
+                    direction=next_args.get("direction"),
+                    request_id=next_args.get("request_id") or next_args.get("requestId"),
+                    wait_for_result=next_args.get("wait_for_result", True),
+                    timeout=next_args.get("timeout", 300),
+                    callback=getattr(agent, "browser_action_callback", None),
+                ),
+                next_args,
+            )
     elif function_name == "delegate_task":
         def _execute(next_args: dict) -> Any:
             return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)

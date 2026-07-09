@@ -180,6 +180,12 @@ TOOLSETS = {
         ],
         "includes": []
     },
+
+    "browser_action": {
+        "description": "Remote browser-extension action request bridge for TUI/desktop sessions",
+        "tools": ["browser_action_request"],
+        "includes": []
+    },
     
     "cronjob": {
         "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",

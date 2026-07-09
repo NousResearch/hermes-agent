@@ -1061,6 +1061,12 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     platforms and the SSE/API stream fixed in #50767). Reuse the shared gateway
     seam so all approval transports redact consistently."""
     payload = dict(data or {})
+    # tools.approval's internal queue is FIFO and approval.respond does not
+    # require a request id, but downstream presentation adapters (including the
+    # Mini App Desktop-parity bridge) need a stable non-empty id to render a
+    # clickable card instead of dropping the event as malformed.
+    if not str(payload.get("id") or payload.get("approval_id") or "").strip():
+        payload["id"] = f"approval-{uuid.uuid4().hex[:12]}"
     if "command" in payload:
         from gateway.run import _redact_approval_command
 
@@ -1391,6 +1397,230 @@ def _sess(params, rid):
         return (None, err)
     _start_agent_build(params.get("session_id") or "", s)
     return (s, _wait_agent(s, rid))
+
+
+_BROWSER_ACTION_TYPES = frozenset(
+    {"getSnapshot", "screenshot", "scroll", "click", "typeText", "select", "openUrl"}
+)
+_BROWSER_MUTATING_ACTIONS = frozenset({"click", "typeText", "select", "openUrl"})
+_BROWSER_ACTION_PENDING_TTL_SECONDS = 5 * 60
+_BROWSER_ACTION_MAX_PENDING = 20
+_BROWSER_ACTION_MAX_STORED = 50
+_BROWSER_RESTRICTED_URL_TOKENS = frozenset(
+    {
+        "bank",
+        "banking",
+        "checkout",
+        "payment",
+        "password",
+        "passwd",
+        "wallet",
+        "crypto",
+        "coinbase",
+        "metamask",
+        "health",
+        "medical",
+        "tax",
+        "irs",
+        "cra",
+    }
+)
+
+
+def _clean_browser_action_string(value: Any, limit: int = 500) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def _browser_action_safe_url(value: Any) -> tuple[str, str | None]:
+    raw = _clean_browser_action_string(value, 2_000)
+    if not raw:
+        return "", None
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(raw)
+    except Exception:
+        return "", "restricted_url"
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return "", "restricted_url"
+    lowered = raw.lower()
+    if any(token in lowered for token in _BROWSER_RESTRICTED_URL_TOKENS):
+        return "", "restricted_url"
+    return f"{parsed.scheme}://{parsed.netloc}/", None
+
+
+def _normalize_browser_action_target(value: Any) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    target = {}
+    for key in ("ref", "selector", "text", "role", "name"):
+        cleaned = _clean_browser_action_string(value.get(key), 240)
+        if cleaned:
+            target[key] = cleaned
+    return target or None
+
+
+def _normalize_browser_action_request(action: Any) -> tuple[dict | None, str | None]:
+    if not isinstance(action, dict):
+        return None, "invalid_action"
+    action_type = _clean_browser_action_string(action.get("type"), 80)
+    if action_type not in _BROWSER_ACTION_TYPES:
+        return None, "unsupported_action"
+    safe_url, url_error = _browser_action_safe_url(action.get("url") or action.get("href"))
+    if url_error:
+        return None, url_error
+    target = _normalize_browser_action_target(action.get("target"))
+    if action_type in {"click", "typeText", "select"} and not target:
+        return None, "missing_target"
+    if action_type == "openUrl" and not safe_url:
+        return None, "restricted_url"
+
+    normalized = {
+        "requestId": _clean_browser_action_string(
+            action.get("requestId") or action.get("request_id"), 120
+        ),
+        "type": action_type,
+        "url": safe_url,
+        "target": target,
+        "value": _clean_browser_action_string(action.get("value") or action.get("text"), 2_000),
+        "direction": _clean_browser_action_string(action.get("direction") or "down", 20),
+        "mutatesPage": action_type in _BROWSER_MUTATING_ACTIONS,
+        "requiresApproval": action_type in _BROWSER_MUTATING_ACTIONS,
+    }
+    return {k: v for k, v in normalized.items() if v not in ("", None)}, None
+
+
+def _summarize_browser_action_result(result: Any) -> dict:
+    if not isinstance(result, dict):
+        return {"ok": False, "reason": "invalid_result"}
+    summary = {
+        "ok": bool(result.get("ok")),
+        "reason": _clean_browser_action_string(result.get("reason") or result.get("error"), 240),
+        "actionType": _clean_browser_action_string(result.get("actionType"), 80),
+        "mimeType": _clean_browser_action_string(result.get("mimeType"), 120),
+        "hasDataUrl": bool(result.get("dataUrl")),
+    }
+    return {k: v for k, v in summary.items() if v not in ("", None)}
+
+
+def _browser_action_status_for_result(result: dict) -> str:
+    if result.get("ok") is True:
+        return "completed"
+    reason = _clean_browser_action_string(result.get("reason"), 120)
+    if reason == "denied_by_user":
+        return "denied"
+    if reason in {"blocked", "restricted_url", "unsupported_action", "missing_target"}:
+        return "blocked"
+    return "failed"
+
+
+def _prune_browser_action_requests(session: dict, now: float | None = None) -> dict:
+    """Expire stale browser-action requests and cap retained lifecycle records."""
+    requests = session.setdefault("browser_action_requests", {})
+    now = time.time() if now is None else now
+    for request_id, record in list(requests.items()):
+        if not isinstance(record, dict):
+            requests.pop(request_id, None)
+            continue
+        if record.get("status") == "requested":
+            created_at = float(record.get("created_at") or 0)
+            if created_at and now - created_at > _BROWSER_ACTION_PENDING_TTL_SECONDS:
+                result = {"ok": False, "reason": "expired"}
+                record.update({"status": "expired", "result": result, "expired_at": now})
+                session.setdefault("browser_action_results", {})[request_id] = result
+
+    if len(requests) > _BROWSER_ACTION_MAX_STORED:
+        removable = sorted(
+            (
+                (rid, record)
+                for rid, record in requests.items()
+                if record.get("status") != "requested"
+            ),
+            key=lambda item: float(
+                item[1].get("completed_at") or item[1].get("expired_at") or item[1].get("created_at") or 0
+            ),
+        )
+        for request_id, _record in removable[: max(0, len(requests) - _BROWSER_ACTION_MAX_STORED)]:
+            requests.pop(request_id, None)
+    return requests
+
+
+def _find_browser_action_request(request_id: str) -> tuple[str, dict, dict] | None:
+    for session_id, candidate in _sessions.items():
+        requests = _prune_browser_action_requests(candidate)
+        record = requests.get(request_id)
+        if record is not None:
+            return session_id, candidate, record
+    return None
+
+
+def _browser_action_request_tool_callback(
+    sid: str,
+    *,
+    action: dict,
+    wait_for_result: bool = True,
+    timeout: float = 300,
+) -> str:
+    """Bridge the model-facing browser_action_request tool to browser.action RPCs."""
+    request_id = _clean_browser_action_string(action.get("requestId") or action.get("request_id"), 120) or uuid.uuid4().hex
+    rpc = handle_request(
+        {
+            "id": f"browser-action-tool-{request_id}",
+            "method": "browser.action.request",
+            "params": {"session_id": sid, "request_id": request_id, "action": action},
+        }
+    )
+    if not isinstance(rpc, dict) or rpc.get("error"):
+        error_obj = rpc.get("error") if isinstance(rpc, dict) else None
+        error_message = error_obj.get("message") if isinstance(error_obj, dict) else None
+        return json.dumps(
+            {
+                "ok": False,
+                "status": "failed",
+                "request_id": request_id,
+                "reason": error_message or "browser action request failed",
+            },
+            ensure_ascii=False,
+        )
+
+    result = rpc.get("result") or {}
+    request_id = str(result.get("request_id") or request_id)
+    if not wait_for_result:
+        return json.dumps({"ok": True, **result}, ensure_ascii=False)
+
+    try:
+        deadline = time.time() + min(max(float(timeout or 300), 1.0), 300.0)
+    except (TypeError, ValueError):
+        deadline = time.time() + 300.0
+
+    while time.time() < deadline:
+        session = _sessions.get(sid)
+        if session is None:
+            break
+        record = _prune_browser_action_requests(session).get(request_id)
+        if isinstance(record, dict):
+            status = str(record.get("status") or "")
+            if status and status != "requested":
+                return json.dumps(
+                    {
+                        "ok": status == "completed",
+                        "status": status,
+                        "request_id": request_id,
+                        "result": record.get("result") or {},
+                    },
+                    ensure_ascii=False,
+                )
+        time.sleep(0.1)
+
+    return json.dumps(
+        {
+            "ok": False,
+            "status": "timeout",
+            "request_id": request_id,
+            "reason": "browser action result timed out",
+        },
+        ensure_ascii=False,
+    )
 
 
 def _normalize_completion_path(path_part: str) -> str:
@@ -2477,7 +2707,7 @@ def _load_enabled_toolsets() -> list[str] | None:
                 # the focus-mode coding posture returns before the fallback path
                 # that normally adds it — without this the desktop loses the
                 # project tools exactly when sitting in a repo (see below).
-                return sorted({*selection, "project"})
+                return sorted({*selection, "project", "browser_action"})
         except Exception:
             pass
 
@@ -2594,7 +2824,7 @@ def _load_enabled_toolsets() -> list[str] | None:
         # surface them. This resolver runs ONLY in the desktop/TUI gateway, so
         # folding in the `project` toolset here is the gate that exposes them on
         # exactly the surface that can follow a project move.
-        return sorted(enabled | {"project"})
+        return sorted(enabled | {"project", "browser_action"})
     except Exception:
         if fallback_notice is not None:
             print(
@@ -3731,6 +3961,15 @@ def _agent_cbs(sid: str) -> dict:
             sid,
             {k: v for k, v in (("start", start), ("count", count)) if v is not None},
             timeout=30,
+        ),
+        # browser_action_request tool: request/result bridge to the connected
+        # browser extension. The gateway emits browser.action.requested; the
+        # extension acknowledges through browser.action.result.
+        "browser_action_callback": lambda action, wait_for_result=True, timeout=300: _browser_action_request_tool_callback(
+            sid,
+            action=action,
+            wait_for_result=wait_for_result,
+            timeout=timeout,
         ),
     }
 
@@ -8193,6 +8432,72 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "queued" if accepted else "rejected", "text": text})
 
 
+@method("browser.action.request")
+def _(rid, params: dict) -> dict:
+    """Emit a browser action request event to the client owning the session.
+
+    This is intentionally a request/approval channel only: the gateway validates
+    and normalizes the action, then asks the browser extension UI to decide. It
+    never executes page actions itself and never bypasses extension approval.
+    """
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    action, reason = _normalize_browser_action_request(params.get("action") or params)
+    if reason or action is None:
+        return _err(rid, 4002, reason or "invalid_action")
+    request_id = _clean_browser_action_string(
+        params.get("request_id") or params.get("requestId") or action.get("requestId"),
+        120,
+    ) or uuid.uuid4().hex
+    action = {**action, "requestId": request_id}
+    pending = _prune_browser_action_requests(session)
+    existing = pending.get(request_id)
+    if isinstance(existing, dict) and existing.get("status") == "requested":
+        return _err(rid, 4002, "request_id already pending")
+    pending_count = sum(1 for record in pending.values() if record.get("status") == "requested")
+    if pending_count >= _BROWSER_ACTION_MAX_PENDING:
+        return _err(rid, 4290, "too many pending browser action requests")
+    pending[request_id] = {
+        "action": action,
+        "created_at": time.time(),
+        "status": "requested",
+    }
+    _emit("browser.action.requested", str(params.get("session_id") or ""), {"request_id": request_id, "action": action})
+    return _ok(rid, {"status": "requested", "request_id": request_id, "action": action})
+
+
+@method("browser.action.result")
+def _(rid, params: dict) -> dict:
+    """Record an extension-supplied browser action result acknowledgement."""
+    request_id = _clean_browser_action_string(params.get("request_id") or params.get("requestId"), 120)
+    if not request_id:
+        return _err(rid, 4002, "request_id is required")
+    session_id = str(params.get("session_id") or "").strip()
+    found = None
+    if session_id:
+        session = _sessions.get(session_id)
+        if session is not None:
+            requests = _prune_browser_action_requests(session)
+            record = requests.get(request_id)
+            if record is not None:
+                found = (session_id, session, record)
+    else:
+        found = _find_browser_action_request(request_id)
+    if found is None:
+        return _err(rid, 4001, "browser action request not found")
+    session_id, session, record = found
+
+    result = _summarize_browser_action_result(params.get("result"))
+    if record.get("status") != "requested":
+        return _err(rid, 4002, f"browser action request is {record.get('status') or 'closed'}")
+    status = _browser_action_status_for_result(result)
+    record.update({"status": status, "result": result, "completed_at": time.time()})
+    session.setdefault("browser_action_results", {})[request_id] = result
+    _emit("browser.action.result", session_id, {"request_id": request_id, "result": result})
+    return _ok(rid, {"ok": True, "request_id": request_id, "result": result})
+
+
 @method("terminal.resize")
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
@@ -11685,6 +11990,11 @@ def _(rid, params: dict) -> dict:
         lower = arg.strip().lower()
         if not arg.strip() or lower == "status":
             return _ok(rid, {"type": "exec", "output": mgr.status_line()})
+        if lower == "show":
+            return _ok(
+                rid,
+                {"type": "exec", "output": f"{mgr.status_line()}\n{mgr.render_contract()}"},
+            )
         if lower == "pause":
             state = mgr.pause(reason="user-paused")
             out = "No goal set." if state is None else f"⏸ Goal paused: {state.goal}"
@@ -11703,6 +12013,34 @@ def _(rid, params: dict) -> dict:
                     ),
                 },
             )
+        if lower == "wait" or lower.startswith("wait "):
+            wait_arg = arg.strip()[len("wait"):].strip()
+            if not wait_arg:
+                return _ok(rid, {"type": "exec", "output": "Usage: /goal wait <pid> [reason]"})
+            wtokens = wait_arg.split(None, 1)
+            try:
+                pid = int(wtokens[0])
+            except ValueError:
+                return _ok(
+                    rid,
+                    {"type": "exec", "output": "/goal wait: <pid> must be an integer process id."},
+                )
+            reason = wtokens[1].strip() if len(wtokens) > 1 else ""
+            try:
+                mgr.wait_on(pid, reason=reason)
+            except (RuntimeError, ValueError) as exc:
+                return _ok(rid, {"type": "exec", "output": f"/goal wait: {exc}"})
+            rtxt = f" ({reason})" if reason else ""
+            return _ok(
+                rid,
+                {"type": "exec", "output": f"⏳ Goal parked on pid {pid}{rtxt}. Loop pauses until it exits."},
+            )
+        if lower == "unwait":
+            if mgr.stop_waiting():
+                out = "▶ Wait barrier cleared — goal loop resumes."
+            else:
+                out = "No wait barrier set."
+            return _ok(rid, {"type": "exec", "output": out})
         if lower in {"clear", "stop", "done"}:
             had = mgr.has_goal()
             mgr.clear()
@@ -11714,9 +12052,37 @@ def _(rid, params: dict) -> dict:
                 },
             )
 
+        contract = None
+        goal_text = arg
+        draft_requested = lower.startswith("draft")
+        if draft_requested:
+            objective = arg.strip()[len("draft"):].strip()
+            if not objective:
+                return _ok(
+                    rid,
+                    {"type": "exec", "output": "Usage: /goal draft <objective in plain language>"},
+                )
+            try:
+                from hermes_cli.goals import draft_contract
+
+                contract = draft_contract(objective)
+            except Exception:
+                contract = None
+            goal_text = objective
+        else:
+            try:
+                from hermes_cli.goals import parse_contract
+
+                headline, parsed = parse_contract(arg)
+                goal_text = headline or arg
+                contract = parsed if not parsed.is_empty() else None
+            except Exception:
+                contract = None
+                goal_text = arg
+
         # Otherwise — treat the remaining text as the new goal.
         try:
-            state = mgr.set(arg)
+            state = mgr.set(goal_text, contract=contract)
         except ValueError as exc:
             return _err(rid, 4004, f"invalid goal: {exc}")
 
@@ -11725,6 +12091,10 @@ def _(rid, params: dict) -> dict:
             "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
             "Controls: /goal status · /goal pause · /goal resume · /goal clear"
         )
+        if state.has_contract():
+            notice = f"{notice}\nCompletion contract:\n{state.contract.render_block()}"
+        elif draft_requested:
+            notice = f"{notice}\n(Couldn't draft a contract — running as a free-form goal.)"
         # Send the goal text as the kickoff prompt. The TUI client sees
         # {type: send, notice, message} → renders `notice` as a sys line,
         # then submits `message` as a user turn. The post-turn judge

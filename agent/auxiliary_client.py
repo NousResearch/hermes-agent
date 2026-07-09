@@ -680,6 +680,13 @@ def _to_openai_base_url(base_url: str) -> str:
             rewritten = url[: -len("/anthropic")] + "/paas/v4"
             logger.debug("Auxiliary client: rewrote ZAI base URL %s → %s", url, rewritten)
             return rewritten
+        # Don't rewrite sub-application Anthropic paths (#61256).
+        # Providers like Bailian expose Anthropic endpoints under sub-paths
+        # (e.g. /apps/anthropic) where the OpenAI endpoint is at the same
+        # level (/apps/v1), not at the stripped root (/v1).
+        path = urlparse(url).path
+        if path.count('/') > 2 and not path.startswith('/v1/'):
+            return url
         rewritten = url[: -len("/anthropic")] + "/v1"
         logger.debug("Auxiliary client: rewrote base URL %s → %s", url, rewritten)
         return rewritten

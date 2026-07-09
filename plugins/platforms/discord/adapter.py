@@ -2762,8 +2762,15 @@ class DiscordAdapter(BasePlatformAdapter):
         mixers = getattr(self, "_voice_mixers", None)
         return bool(mixers) and mixers.get(guild_id) is not None
 
-    async def join_voice_channel(self, channel) -> bool:
-        """Join a Discord voice channel. Returns True on success."""
+    async def join_voice_channel(self, channel, *, text_channel_id: int = None, source: dict = None) -> bool:
+        """Join a Discord voice channel. Returns True on success.
+
+        When ``text_channel_id`` is provided, the binding is stored so
+        voice transcriptions are routed to the correct text channel
+        (``_voice_text_channels``) without requiring `/voice join`.
+        This supports automatic/programmatic voice joins where the
+        command flow that normally establishes the binding is absent.
+        """
         if not self._client or not DISCORD_AVAILABLE:
             return False
         guild_id = channel.guild.id
@@ -2782,6 +2789,13 @@ class DiscordAdapter(BasePlatformAdapter):
             vc = await channel.connect()
             self._voice_clients[guild_id] = vc
             self._reset_voice_timeout(guild_id)
+
+            # Store text-channel binding for automatic/programmatic joins
+            # so voice transcriptions can be routed without /voice join.
+            if text_channel_id is not None:
+                self._voice_text_channels[guild_id] = text_channel_id
+            if source is not None:
+                self._voice_sources[guild_id] = source
 
             # Start voice receiver (Phase 2: listen to users)
             try:

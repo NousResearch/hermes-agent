@@ -104,6 +104,16 @@ _REFERENCE_SYSTEM_PROMPT = (
     "you should not try to or apologize for being unable to. A separate "
     "aggregator/orchestrator model holds those capabilities and will take the "
     "actual actions.\n\n"
+    "CRITICAL: You must NEVER claim or imply that you have executed a command, "
+    "downloaded a file, accessed a URL, or performed any action. You can only "
+    "analyze and advise based on the conversation context. Examples of what to "
+    "avoid:\n"
+    "- Bad: \"I ran curl and got 404.\"\n"
+    "- Bad: \"I downloaded the file successfully.\"\n"
+    "- Bad: \"I checked the repository and found...\"\n"
+    "- Good: \"Based on the error pattern, a curl request to that URL would likely return 404.\"\n"
+    "- Good: \"The conversation suggests downloading this file may help.\"\n"
+    "- Good: \"From the context, checking the repository would reveal...\"\n\n"
     "The conversation below is the current state of a task handled by that "
     "acting agent. Your job is to give your most intelligent analysis of that "
     "state: understand the goal, reason about the problem, and advise on what "
@@ -114,7 +124,8 @@ _REFERENCE_SYSTEM_PROMPT = (
     "asking for access.\n\n"
     "Respond with your advice directly — no preamble, no disclaimers about "
     "tools or access. Your response is private guidance handed to the "
-    "aggregator, not an answer shown to the user."
+    "aggregator, not an answer shown to the user. NEVER claim to have executed "
+    "anything."
 )
 
 

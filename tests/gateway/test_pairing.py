@@ -81,11 +81,19 @@ class TestProfileScopedDiscovery:
         global_dir = tmp_path / "global-pairing"
         global_dir.mkdir(parents=True)
 
+        # PairingStore.__init__ resolves the profile dir via a *function-local*
+        # ``from hermes_constants import get_hermes_home``, so the patch must
+        # target ``hermes_constants.get_hermes_home`` (the source module) — not
+        # ``gateway.pairing.get_hermes_home`` (the module-global binding, which
+        # the local re-import bypasses). Patching the wrong target would leave
+        # ``self._dir`` rooted at the real HERMES_HOME.
         with patch("gateway.pairing.PAIRING_DIR", global_dir), patch(
-            "gateway.pairing.get_hermes_home", return_value=home
+            "hermes_constants.get_hermes_home", return_value=home
         ):
             store = PairingStore(profile="alice")
-            # Store lives under the profile dir, provably distinct from PAIRING_DIR.
+            # Store lives under the mocked home's profile dir — provably scoped
+            # there, and distinct from the module-global PAIRING_DIR.
+            assert store._dir == home / "profiles" / "alice" / "pairing"
             assert store._dir != global_dir
             with store._lock:
                 store._approve_user("telegram", "tg-456", "Bob")

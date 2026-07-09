@@ -6,7 +6,7 @@
  * the renderer.
  *
  * Wired from electron/main.ts:
- *   import { runBootstrap }from './bootstrap-runner.ts'
+ *   import { runBootstrap }from './bootstrap-runner'
  *   const result = await runBootstrap({
  *     installStamp,        // INSTALL_STAMP from main.ts (may be null in dev)
  *     activeRoot,          // ACTIVE_HERMES_ROOT

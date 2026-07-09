@@ -151,6 +151,7 @@ FEISHU_CONNECTION_MODE=websocket
 
 # Optional but strongly recommended
 FEISHU_ALLOWED_USERS=ou_xxx,ou_yyy
+FEISHU_GROUP_ALLOWED_CHATS=oc_xxx
 FEISHU_HOME_CHANNEL=oc_xxx
 ```
 
@@ -185,6 +186,13 @@ For production use, set an allowlist of Feishu Open IDs:
 
 ```bash
 FEISHU_ALLOWED_USERS=ou_xxx,ou_yyy
+```
+
+To allow everyone in a specific group chat without granting DM access or access
+from other groups, allow the group chat ID instead:
+
+```bash
+FEISHU_GROUP_ALLOWED_CHATS=oc_xxx,oc_yyy
 ```
 
 If you leave the allowlist empty, anyone who can reach the bot may be able to use it. In group chats, the allowlist is checked against the sender's open_id before the message is processed.
@@ -545,6 +553,7 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | `FEISHU_DOMAIN` | — | `feishu` | `feishu` (China) or `lark` (international) |
 | `FEISHU_CONNECTION_MODE` | — | `websocket` | `websocket` or `webhook` |
 | `FEISHU_ALLOWED_USERS` | — | _(empty)_ | Comma-separated open_id list for user allowlist |
+| `FEISHU_GROUP_ALLOWED_CHATS` | — | _(empty)_ | Comma-separated group chat IDs whose members may use Hermes only inside those groups |
 | `FEISHU_ALLOW_BOTS` | — | `none` | Accept messages from other bots: `none`, `mentions`, or `all` |
 | `FEISHU_REQUIRE_MENTION` | — | `true` | Whether group messages must @mention the bot |
 | `FEISHU_HOME_CHANNEL` | — | — | Chat ID for cron/notification output |

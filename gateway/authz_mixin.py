@@ -330,6 +330,7 @@ class GatewayAuthorizationMixin:
             chat_allowlist_env = {
                 Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
                 Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+                Platform.FEISHU: "FEISHU_GROUP_ALLOWED_CHATS",
             }.get(source.platform, "")
             if chat_allowlist_env:
                 raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
@@ -388,6 +389,7 @@ class GatewayAuthorizationMixin:
         platform_group_chat_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
             Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+            Platform.FEISHU: "FEISHU_GROUP_ALLOWED_CHATS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -697,6 +699,7 @@ class GatewayAuthorizationMixin:
                     "TELEGRAM_GROUP_ALLOWED_CHATS",
                 ),
                 Platform.QQBOT: ("QQ_GROUP_ALLOWED_USERS",),
+                Platform.FEISHU: ("FEISHU_GROUP_ALLOWED_CHATS",),
             }
             if os.getenv(platform_env_map.get(platform, ""), "").strip():
                 return "ignore"

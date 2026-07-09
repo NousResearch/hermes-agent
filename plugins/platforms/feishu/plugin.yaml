@@ -30,6 +30,10 @@ optional_env:
     description: "Comma-separated Feishu user IDs allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"
     password: false
+  - name: FEISHU_GROUP_ALLOWED_CHATS
+    description: "Comma-separated Feishu group chat IDs whose members may talk to the bot in those groups only"
+    prompt: "Allowed group chats (comma-separated chat IDs)"
+    password: false
   - name: FEISHU_ALLOW_ALL_USERS
     description: "Allow any Feishu user to trigger the bot (dev only)"
     prompt: "Allow all users? (true/false)"

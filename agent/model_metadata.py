@@ -289,11 +289,13 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Premium+); /v1/responses additionally enforces a ~262144 input+output
     # budget, but the usable context (what we track here) is 200k.
     "grok-composer": 200000,    # grok-composer-2.5-fast (Grok Build CLI)
+    "grok-build-latest": 500000,  # alias of grok-4.5 (early access)
     "grok-build": 256000,       # grok-build-0.1
     "grok-code-fast": 256000,   # grok-code-fast-1
     "grok-2-vision": 8192,      # grok-2-vision, -1212, -latest
     "grok-4-fast": 2000000,     # grok-4-fast-(non-)reasoning, also matches -reasoning
     "grok-4.20": 2000000,       # grok-4.20-0309-(non-)reasoning, -multi-agent-0309
+    "grok-4.5": 500000,         # grok-4.5, grok-4.5-latest — 500K context per docs.x.ai
     "grok-4.3": 1000000,        # grok-4.3, grok-4.3-latest — 1M context per docs.x.ai
     "grok-4": 256000,           # grok-4, grok-4-0709
     "grok-3": 131072,           # grok-3, grok-3-mini, grok-3-fast, grok-3-mini-fast
@@ -305,6 +307,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     # OpenRouter live metadata reports 262144 (256 × 1024); align the
     # static fallback so cache and offline both agree (issue #22268).
     "hy3-preview": 262144,
+    # Tencent — Hy3 (GA successor to Hy3 Preview), same 256K window.
+    "hy3": 262144,
     # Nemotron — NVIDIA's open-weights series (128K context across all sizes)
     "nemotron": 131072,
     # Arcee
@@ -345,6 +349,11 @@ _GROK_EFFORT_CAPABLE_PREFIXES = (
     "grok-3-mini",
     "grok-4.20-multi-agent",
     "grok-4.3",
+    # grok-4.5: verified live against /v1/responses 2026-07-08 — accepts
+    # effort low/medium/high (default: high when omitted) but REJECTS
+    # "none" ("This model does not support `reasoning_effort` value `none`"),
+    # unlike grok-4.3. models.dev agrees: effort values [low, medium, high].
+    "grok-4.5",
 )
 
 
@@ -2188,21 +2197,29 @@ def get_model_context_length(
         ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if ctx is not None:
             return ctx
-    # 5e. Ollama native /api/show probe — runs for ANY provider with a
-    # base_url, not just ollama-cloud.  Ollama-compatible servers expose
+    # 5e. Ollama native /api/show probe — runs for providers whose base_url
+    # is NOT a known non-Ollama provider.  Ollama-compatible servers expose
     # this endpoint regardless of hostname (local Ollama, Ollama Cloud,
     # custom Ollama hosting).  The OpenAI-compat /v1/models endpoint
     # correctly omits context_length per the OpenAI schema, but /api/show
     # returns the authoritative GGUF model_info.context_length.
-    # For non-Ollama servers (OpenAI, Anthropic, etc.), the POST returns
-    # 404/405 quickly.  Results are cached, so the hit is per-model+URL,
-    # once per hour.
+    # Known hosted providers (OpenRouter, Anthropic, OpenAI, …) are skipped:
+    # they are definitively not Ollama, the POST always 404s, and the result
+    # is never cached for them — so every fresh process used to pay a
+    # ~300ms blocking HTTP round-trip on the first-turn critical path
+    # (measured against openrouter.ai; worse on slow DNS).
     if base_url:
-        ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
-        if ctx is not None:
-            if not _skip_persistent_context_cache(base_url, provider):
-                save_context_length(model, base_url, ctx)
-            return ctx
+        _inferred_for_probe = _infer_provider_from_url(base_url)
+        _skip_ollama_probe = (
+            _inferred_for_probe is not None
+            and "ollama" not in _inferred_for_probe
+        )
+        if not _skip_ollama_probe:
+            ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
+            if ctx is not None:
+                if not _skip_persistent_context_cache(base_url, provider):
+                    save_context_length(model, base_url, ctx)
+                return ctx
     # 5f. OpenRouter live /models metadata — authoritative for OpenRouter-routed
     # models. OpenRouter's catalog carries per-model context_length (e.g.
     # anthropic/claude-fable-5 -> 1M) and refreshes as new slugs ship, so it

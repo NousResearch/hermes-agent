@@ -445,6 +445,44 @@ class TestMcpTest:
         assert "Connected" in out
         assert "Tools discovered: 2" in out
 
+    def test_probe_uses_configured_connect_timeout(self, monkeypatch):
+        """OAuth-capable probes must not hard-code a short 30s timeout."""
+        import asyncio
+        from hermes_cli import mcp_config
+        import tools.mcp_tool as mcp_tool
+
+        captured = {}
+
+        class FakeServer:
+            _tools = []
+
+            async def shutdown(self):
+                captured["shutdown"] = True
+
+        async def fake_connect(name, config):
+            return FakeServer()
+
+        def fake_run_on_mcp_loop(coro, timeout):
+            captured["outer_timeout"] = timeout
+            return asyncio.run(coro)
+
+        async def fake_wait_for(awaitable, timeout):
+            captured["inner_timeout"] = timeout
+            return await awaitable
+
+        monkeypatch.setattr(mcp_tool, "_ensure_mcp_loop", lambda: None)
+        monkeypatch.setattr(mcp_tool, "_stop_mcp_loop_if_idle", lambda: None)
+        monkeypatch.setattr(mcp_tool, "_connect_server", fake_connect)
+        monkeypatch.setattr(mcp_tool, "_run_on_mcp_loop", fake_run_on_mcp_loop)
+        monkeypatch.setattr(mcp_config.asyncio, "wait_for", fake_wait_for)
+
+        assert mcp_config._probe_single_server(
+            "supabase", {"connect_timeout": 300}
+        ) == []
+        assert captured["inner_timeout"] == 300.0
+        assert captured["outer_timeout"] == 310.0
+        assert captured["shutdown"] is True
+
 
 # ---------------------------------------------------------------------------
 # Tests: env var interpolation
@@ -738,6 +776,8 @@ class TestConfigHelpers:
 
         assert _env_key_for_server("ink") == "MCP_INK_API_KEY"
         assert _env_key_for_server("my-server") == "MCP_MY_SERVER_API_KEY"
+        assert _env_key_for_server("my.server") == "MCP_MY_SERVER_API_KEY"
+        assert _env_key_for_server("github/mcp") == "MCP_GITHUB_MCP_API_KEY"
 
 
 # ---------------------------------------------------------------------------
@@ -830,7 +870,9 @@ class TestMcpLogin:
         # Probe returns tools even though auth never completed.
         monkeypatch.setattr(
             "hermes_cli.mcp_config._probe_single_server",
-            lambda name, cfg: [("search_files", "d"), ("read_file_content", "d")],
+            lambda name, cfg, connect_timeout=30: [
+                ("search_files", "d"), ("read_file_content", "d"),
+            ],
         )
         # No token file is created → _oauth_tokens_present() returns False.
         from hermes_cli.mcp_config import cmd_mcp_login
@@ -852,7 +894,10 @@ class TestMcpLogin:
         # cmd_mcp_login wipes tokens before probing, then the real OAuth flow
         # writes a fresh token during the probe. Simulate that: the mocked
         # probe drops a token file, mirroring a successful authorization.
-        def mock_probe(name, cfg):
+        seen = {}
+
+        def mock_probe(name, cfg, connect_timeout=30):
+            seen["connect_timeout"] = connect_timeout
             token_dir.mkdir(exist_ok=True)
             (token_dir / "realserver.json").write_text('{"access_token": "x"}')
             return [("a", "d"), ("b", "d"), ("c", "d")]
@@ -868,6 +913,9 @@ class TestMcpLogin:
 
         assert "Authenticated — 3 tool(s) available" in out
         assert "no OAuth token" not in out
+        # The login path must grant a human enough time to finish the browser
+        # OAuth round-trip — far longer than the 30s probe default.
+        assert seen["connect_timeout"] >= 180
 
 
 # ---------------------------------------------------------------------------

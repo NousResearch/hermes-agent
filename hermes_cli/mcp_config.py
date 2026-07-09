@@ -152,7 +152,8 @@ def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
 
 def _env_key_for_server(name: str) -> str:
     """Convert server name to an env-var key like ``MCP_MYSERVER_API_KEY``."""
-    return f"MCP_{name.upper().replace('-', '_')}_API_KEY"
+    suffix = re.sub(r"[^A-Za-z0-9_]", "_", name.upper()).strip("_")
+    return f"MCP_{suffix}_API_KEY"
 
 
 def _strip_bearer_prefix(token: str) -> str:
@@ -247,7 +248,7 @@ def _resolve_mcp_server_config(config: dict) -> dict:
 
 
 def _probe_single_server(
-    name: str, config: dict, connect_timeout: float = 30, *, details: Optional[dict] = None
+    name: str, config: dict, connect_timeout: Optional[float] = None, *, details: Optional[dict] = None
 ) -> List[Tuple[str, str]]:
     """Temporarily connect to one MCP server, list its tools, disconnect.
 
@@ -271,9 +272,14 @@ def _probe_single_server(
     )
 
     config = _resolve_mcp_server_config(config)
+    if connect_timeout is None:
+        raw_timeout = config.get("connect_timeout", 30)
+        try:
+            connect_timeout = max(1.0, float(raw_timeout))
+        except (TypeError, ValueError):
+            connect_timeout = 30.0
 
     _ensure_mcp_loop()
-
     tools_found: List[Tuple[str, str]] = []
 
     async def _probe():
@@ -392,6 +398,7 @@ def cmd_mcp_add(args):
     auth_type = getattr(args, "auth", None)
     preset_name = getattr(args, "preset", None)
     raw_env = getattr(args, "env", None)
+    raw_connect_timeout = getattr(args, "connect_timeout", None)
 
     server_config: Dict[str, Any] = {}
     try:
@@ -437,6 +444,8 @@ def cmd_mcp_add(args):
             server_config["args"] = cmd_args
         if explicit_env:
             server_config["env"] = explicit_env
+    if raw_connect_timeout is not None:
+        server_config["connect_timeout"] = raw_connect_timeout
 
     issues = validate_mcp_server_entry(name, server_config)
     if issues:
@@ -776,8 +785,21 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
     _info(f"Starting OAuth flow for '{name}'...")
 
     # Probe triggers the OAuth flow (browser redirect + callback capture).
+    # Honor the server's configured connect_timeout so a human has enough
+    # time to complete the browser sign-in; the 30s default is too tight for
+    # an interactive OAuth round-trip. Floor at 315s — the OAuth callback
+    # window (300s in mcp_oauth) plus headroom — matching the GUI re-auth
+    # path in web_server.py so CLI and dashboard behave identically.
     try:
-        tools = _probe_single_server(name, server_config)
+        _login_connect_timeout = server_config.get("connect_timeout")
+        try:
+            _login_connect_timeout = float(_login_connect_timeout)
+        except (TypeError, ValueError):
+            _login_connect_timeout = 0.0
+        _login_connect_timeout = max(_login_connect_timeout, 315.0)
+        tools = _probe_single_server(
+            name, server_config, connect_timeout=_login_connect_timeout
+        )
         # A clean probe is NOT proof of authentication. Some MCP servers
         # (notably Google's official Drive server) serve initialize +
         # tools/list WITHOUT auth, so the probe lists tools even when the

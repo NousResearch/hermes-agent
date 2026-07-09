@@ -193,8 +193,10 @@ _HISTORICAL_SUMMARY_PREFIXES = (
 _MIN_SUMMARY_TOKENS = 2000
 # Proportion of compressed content to allocate for summary
 _SUMMARY_RATIO = 0.20
-# Absolute ceiling for summary tokens (even on very large context windows)
-_SUMMARY_TOKENS_CEILING = 12_000
+# Absolute ceiling for summary tokens (even on very large context windows).
+# Summaries must stay within a 1K-10K token envelope — anything larger is
+# itself a context-pressure source and slows every compaction.
+_SUMMARY_TOKENS_CEILING = 10_000
 
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
@@ -226,6 +228,16 @@ _AUTO_FOCUS_MAX_CHARS = 700
 # high for small/light tails, but using all 20 as a hard floor here would bring
 # back the old large-tool-output case where nothing can be compacted.
 _MAX_TAIL_MESSAGE_FLOOR = 8
+
+# Models with context windows below this get their compression threshold
+# floored at ``_SMALL_CTX_THRESHOLD_PERCENT`` (raise-only — an explicitly
+# higher user/model threshold always wins).  At the default 50% trigger a
+# 128K-262K model compacts with only ~64-131K consumed; the incompressible
+# floor (system prompt + tool schemas + protected tail + rolling summary)
+# eats most of the reclaimed headroom, so compaction re-fires every 1-2
+# turns and the session spends most of its wall-clock summarizing.
+_SMALL_CTX_WINDOW_LIMIT = 512_000
+_SMALL_CTX_THRESHOLD_PERCENT = 0.75
 
 
 _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
@@ -298,13 +310,59 @@ def _content_length_for_budget(raw_content: Any) -> int:
     return total
 
 
+def _serialized_length_for_budget(value: Any) -> int:
+    """Return a stable char-length for non-content replay/metadata fields."""
+    if value is None or value == "":
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    try:
+        return len(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str))
+    except (TypeError, ValueError):
+        return len(str(value))
+
+
+# Provider replay/metadata fields that ride the wire on every request but are
+# invisible to ``msg["content"]``/``msg["tool_calls"]`` accounting.  Codex
+# Responses sessions in particular carry ``codex_reasoning_items`` blobs of
+# ``encrypted_content`` that can dominate the serialized session (a measured
+# 214-turn session held ~115K tokens / 27% of its payload there — #55572).
+_REPLAY_BUDGET_KEYS = (
+    "reasoning",
+    "reasoning_content",
+    "reasoning_details",
+    "codex_reasoning_items",
+    "codex_message_items",
+)
+
+
 def _estimate_msg_budget_tokens(msg: dict) -> int:
-    """Token estimate for one message in the tail-protection budget walks."""
+    """Token estimate for one message in the tail-protection budget walks.
+
+    Counts the message content plus the **full** ``tool_call`` envelope —
+    ``id``, ``type``, ``function.name`` and JSON structure — not just
+    ``function.arguments``.  Counting only the arguments string undercounted
+    assistant turns that fan out into parallel tool calls by 2-15x (a
+    4-tool-call turn measures ~73 vs ~1,090 real tokens), so the protected
+    tail overshot ``tail_token_budget`` and compression became ineffective.
+    See issue #28053.
+
+    Also counts provider replay fields (``codex_reasoning_items`` etc. —
+    see ``_REPLAY_BUDGET_KEYS``).  The preflight "should I compress?"
+    estimator sees the full message shape, so the tail walk must use the
+    same size class; otherwise an assistant message with tiny visible
+    content but large hidden replay blobs is protected as if it were small,
+    the post-compression session stays near the context limit, and
+    compaction re-fires continuously (#55572).  Accounting-only: replay
+    fields are never mutated or pruned here.
+    """
     content_len = _content_length_for_budget(msg.get("content") or "")
     tokens = content_len // _CHARS_PER_TOKEN + 10
     for tc in msg.get("tool_calls") or []:
         if isinstance(tc, dict):
             tokens += len(str(tc)) // _CHARS_PER_TOKEN
+    for key in _REPLAY_BUDGET_KEYS:
+        tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
     return tokens
 
 
@@ -839,6 +897,18 @@ class ContextCompressor(ContextEngine):
         self.api_mode = api_mode
         self.default_headers = default_headers if isinstance(default_headers, dict) and default_headers else None
         self.context_length = context_length
+        # Re-apply the small-context threshold floor for the NEW window,
+        # starting from the originally-configured percent (not the possibly
+        # floored live value) so a small -> large switch drops back to the
+        # configured threshold and a large -> small switch gains the floor.
+        # Guard with getattr: compressors unpickled/constructed before this
+        # attribute existed fall back to the live value.
+        _configured_pct = getattr(
+            self, "_configured_threshold_percent", self.threshold_percent,
+        )
+        self.threshold_percent = self._effective_threshold_percent(
+            context_length, _configured_pct,
+        )
         # max_tokens=None here means "caller didn't specify" → keep the existing
         # output reservation. A switch that genuinely changes the output budget
         # passes the new value explicitly. (#43547)
@@ -894,6 +964,23 @@ class ContextCompressor(ContextEngine):
         except (TypeError, ValueError):
             return None
         return ivalue if ivalue > 0 else None
+
+    @staticmethod
+    def _effective_threshold_percent(
+        context_length: int, threshold_percent: float,
+    ) -> float:
+        """Apply the small-context threshold floor (raise-only).
+
+        Models under ``_SMALL_CTX_WINDOW_LIMIT`` (512K) trigger at no less
+        than ``_SMALL_CTX_THRESHOLD_PERCENT`` (75%) of the window.  An
+        explicitly higher threshold (user config or per-model autoraise,
+        e.g. Codex gpt-5.5's 85%) always wins; only lower values are raised.
+        Large-context models keep the configured value — at 512K+ the default
+        50% trigger already leaves ample post-compaction headroom.
+        """
+        if context_length and context_length < _SMALL_CTX_WINDOW_LIMIT:
+            return max(threshold_percent, _SMALL_CTX_THRESHOLD_PERCENT)
+        return threshold_percent
 
     @staticmethod
     def _compute_threshold_tokens(
@@ -973,6 +1060,18 @@ class ContextCompressor(ContextEngine):
             config_context_length=config_context_length,
             provider=provider,
         )
+        # Small-context threshold floor: models under 512K trigger at >=75%
+        # so compaction doesn't fire with half the window still free (the
+        # incompressible floor makes 50%-triggered compaction thrash on
+        # 128K-262K models). Raise-only; must run AFTER context_length is
+        # resolved and BEFORE threshold_tokens is derived. The pre-floor
+        # value is kept so update_model() can re-derive for a new window
+        # (switching small -> large must drop back to the configured value).
+        self._configured_threshold_percent = self.threshold_percent
+        self.threshold_percent = self._effective_threshold_percent(
+            self.context_length, self.threshold_percent,
+        )
+        threshold_percent = self.threshold_percent
         # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
         # the percentage would suggest a lower value.  This prevents premature
         # compression on large-context models at 50% while keeping the % sane
@@ -1341,11 +1440,26 @@ class ContextCompressor(ContextEngine):
         (API keys, tokens, passwords) from leaking into the summary that
         gets sent to the auxiliary model and persisted across compactions.
         """
+        # Lazy import (matches title_generator.py) — agent_runtime_helpers
+        # pulls in heavy transitive imports we don't want at module load.
+        from agent.agent_runtime_helpers import strip_think_blocks
+
         parts = []
         for msg in turns:
             role = msg.get("role", "unknown")
             content = redact_sensitive_text(msg.get("content") or "")
             content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
+            # Strip inline reasoning blocks (<think>, <reasoning>, etc.) from
+            # assistant content before it reaches the summarizer. Reasoning
+            # traces are transient scratch work — feeding them to the aux
+            # model wastes summarizer context and risks scratch-work
+            # conclusions being preserved as facts in the summary. The native
+            # ``reasoning`` message field is already excluded (only
+            # ``content`` is serialized); this closes the inline-tag path
+            # used when native thinking is disabled or the provider inlines
+            # traces into content.
+            if role == "assistant" and content:
+                content = strip_think_blocks(None, content)
 
             # Tool results: keep enough content for the summarizer
             if role == "tool":
@@ -1812,7 +1926,15 @@ This compaction should PRIORITISE preserving all information related to the focu
                     "default_headers": self.default_headers,
                 },
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": int(summary_budget * 1.3),
+                # NO max_tokens: the output cap must never truncate a summary.
+                # ``summary_budget`` is prompt-level guidance only ("Target ~N
+                # tokens" above). Most OpenAI-compatible wires already omit the
+                # param (see _build_call_kwargs), but the Anthropic Messages
+                # wire and NVIDIA NIM forward it — a hard cap there cut
+                # summaries mid-section (thinking models burn the cap on
+                # reasoning first), producing truncated/thinking-only
+                # summaries and compaction loops. Omitting lets the adapter
+                # fall back to the model's native output ceiling.
                 # timeout resolved from auxiliary.compression.timeout config by call_llm
             }
             if self.summary_model:
@@ -1852,6 +1974,16 @@ This compaction should PRIORITISE preserving all information related to the focu
                     f"(provider={self.provider or 'auto'} "
                     f"model={self.summary_model or self.model})"
                 )
+            # Strip reasoning blocks the summarizer model may have emitted
+            # (<think>...</think> etc. from thinking models like MiniMax,
+            # DeepSeek, QwQ). Without this the trace is stored in
+            # _previous_summary, injected into the conversation, AND fed back
+            # into every subsequent iterative-update prompt — compounding
+            # token bloat across compactions. Mirrors title_generator.py.
+            from agent.agent_runtime_helpers import strip_think_blocks
+            stripped = strip_think_blocks(None, content).strip()
+            if stripped:
+                content = stripped
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
             summary = redact_sensitive_text(content.strip())
@@ -2556,14 +2688,7 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
-            raw_content = msg.get("content") or ""
-            content_len = _content_length_for_budget(raw_content)
-            msg_tokens = content_len // _CHARS_PER_TOKEN + 10  # +10 for role/metadata
-            # Include tool call arguments in estimate
-            for tc in msg.get("tool_calls") or []:
-                if isinstance(tc, dict):
-                    args = tc.get("function", {}).get("arguments", "")
-                    msg_tokens += len(args) // _CHARS_PER_TOKEN
+            msg_tokens = _estimate_msg_budget_tokens(msg)
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
                 break

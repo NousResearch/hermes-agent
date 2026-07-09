@@ -15,9 +15,8 @@
  * running chat session adopts the change on the next `/new` or page reload;
  * we surface that hint rather than forcing a reload here.
  *
- * Profile scoping: `/api/config` is profile-scoped by `fetchJSON` via the
- * global management profile — the same scope the sidebar's `/api/model/info`
- * badge reads from — so this writes the profile the sidebar is showing.
+ * Profile scoping: the sidebar passes the chat profile explicitly, so this
+ * reads/writes the same config the chat PTY was launched from.
  */
 
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
@@ -36,6 +35,8 @@ interface ReasoningPickerProps {
   /** Current model string from config — re-reads the saved effort when it
    *  changes (a different model may have been selected). */
   currentModel: string;
+  /** Profile whose config should be read/written. */
+  profile?: string;
   /** Bumped after the model picker saves, to re-read config in lockstep. */
   refreshKey?: number;
   /** Called after a successful change so the sidebar can show an "apply on
@@ -45,6 +46,7 @@ interface ReasoningPickerProps {
 
 export function ReasoningPicker({
   currentModel,
+  profile,
   refreshKey = 0,
   onChanged,
 }: ReasoningPickerProps) {
@@ -55,11 +57,11 @@ export function ReasoningPicker({
   const lastFetchKeyRef = useRef("");
 
   useEffect(() => {
-    const fetchKey = `${currentModel}:${refreshKey}`;
+    const fetchKey = `${profile ?? ""}:${currentModel}:${refreshKey}`;
     if (fetchKey === lastFetchKeyRef.current) return;
     lastFetchKeyRef.current = fetchKey;
     void api
-      .getConfig()
+      .getConfig(profile)
       .then((cfg) => {
         const agent = (cfg?.agent as Record<string, unknown> | undefined) ?? {};
         setEffort(normalizeEffort(agent.reasoning_effort));
@@ -69,7 +71,7 @@ export function ReasoningPicker({
         // Best-effort: keep the last known value rather than blanking it.
         setLoaded(true);
       });
-  }, [currentModel, refreshKey]);
+  }, [currentModel, profile, refreshKey]);
 
   const onSelect = useCallback(
     (next: string) => {
@@ -81,7 +83,7 @@ export function ReasoningPicker({
       // pattern — so we never clobber sibling keys. `saveConfig` PUTs the full
       // object the agent boots from.
       void api
-        .getConfig()
+        .getConfig(profile)
         .then((cfg) => {
           const base = (cfg ?? {}) as Record<string, unknown>;
           const agent =
@@ -89,7 +91,7 @@ export function ReasoningPicker({
               ? { ...(base.agent as Record<string, unknown>) }
               : {};
           agent.reasoning_effort = next;
-          return api.saveConfig({ ...base, agent });
+          return api.saveConfig({ ...base, agent }, profile);
         })
         .then(() => {
           onChanged?.(next);
@@ -99,7 +101,7 @@ export function ReasoningPicker({
         })
         .finally(() => setSaving(false));
     },
-    [effort, onChanged],
+    [effort, onChanged, profile],
   );
 
   return (

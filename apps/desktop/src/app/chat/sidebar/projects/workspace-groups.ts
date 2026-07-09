@@ -1,5 +1,6 @@
 import type { HermesGitWorktree } from '@/global'
 import type { ProjectInfo, SessionInfo } from '@/hermes'
+import { normalize } from '@/lib/text'
 
 // Session grouping is now computed authoritatively on the backend
 // (`tui_gateway/project_tree.py`, exposed via `projects.tree` /
@@ -191,7 +192,7 @@ export function mergeRepoWorktreeGroups(
       return branchForPath !== group.label ? { ...group, label: branchForPath } : group
     }
 
-    const livePath = livePathByBranch.get(group.label.trim().toLowerCase())
+    const livePath = livePathByBranch.get(normalize(group.label))
 
     if (livePath && normalizePath(livePath) !== normalizePath(group.path)) {
       return { ...group, id: livePath, path: livePath }

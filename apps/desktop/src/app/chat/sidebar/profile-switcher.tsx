@@ -22,16 +22,21 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import { CodeEditor } from '@/components/chat/code-editor'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ColorSwatches } from '@/components/ui/color-swatches'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { getProfileSoul, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
+import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
   $profileColors,
@@ -56,6 +61,11 @@ import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
 import { PROFILES_ROUTE } from '../../routes'
 
 const RAIL_GAP = 4 // px — matches gap-1 between squares.
+
+// Past this many profiles the strip of colored squares stops scaling (tiny
+// drag targets, endless horizontal scroll), so the rail collapses to a compact
+// select. Drag-reorder and long-press-recolor live only on the squares path.
+const PROFILE_DROPDOWN_THRESHOLD = 13
 
 // easeOutBack — a little overshoot so squares spring into their new slot rather
 // than sliding in flat. Neighbors reflow on RAIL_TRANSITION; the dragged square
@@ -100,7 +110,12 @@ export function ProfileRail() {
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingRename, setPendingRename] = useState<null | ProfileInfo>(null)
   const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
+  const [pendingSoul, setPendingSoul] = useState<null | string>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Too many profiles for the square strip → collapse to the select. Declared
+  // ahead of the wheel effect, which re-binds when the strip mounts/unmounts.
+  const condensed = profiles.length > PROFILE_DROPDOWN_THRESHOLD
 
   // A plain mouse wheel only emits deltaY; map it to horizontal scroll so the
   // rail is navigable without a trackpad. Trackpad x-scroll (deltaX) passes
@@ -125,7 +140,8 @@ export function ProfileRail() {
     el.addEventListener('wheel', onWheel, { passive: false })
 
     return () => el.removeEventListener('wheel', onWheel)
-  }, [])
+    // `condensed` swaps the strip out for the dropdown (ref goes null/back).
+  }, [condensed])
 
   const isAll = scope === ALL_PROFILES
   const activeKey = normalizeProfileKey(gatewayProfile)
@@ -228,51 +244,58 @@ export function ProfileRail() {
         />
       )}
 
-      <div
-        className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-        ref={scrollRef}
-      >
-        {multiProfile && (
-          <DndContext
-            collisionDetection={closestCenter}
-            modifiers={[stepThroughCells]}
-            onDragEnd={handleDragEnd}
-            onDragOver={handleDragOver}
-            onDragStart={handleDragStart}
-            sensors={sensors}
-          >
-            <SortableContext items={named.map(profile => profile.name)} strategy={horizontalListSortingStrategy}>
-              {/* relative → the strip is the dragged square's offsetParent, so the
-                  clamp modifier bounds drags to the occupied cells (not the +). */}
-              <div className="relative flex items-center gap-1">
-                {named.map(profile => (
-                  <ProfileSquare
-                    active={!isAll && normalizeProfileKey(profile.name) === activeKey}
-                    color={resolveProfileColor(profile.name, colors)}
-                    key={profile.name}
-                    label={profile.name}
-                    onDelete={() => setPendingDelete(profile)}
-                    onRecolor={color => setProfileColor(profile.name, color)}
-                    onRename={() => setPendingRename(profile)}
-                    onSelect={() => selectProfile(profile.name)}
-                  />
-                ))}
-              </div>
-            </SortableContext>
-          </DndContext>
-        )}
+      {condensed ? (
+        // Condensed path: one compact dropdown instead of N squares. No drag
+        // reorder, no long-press recolor, no per-square context menu — Manage
+        // covers rename/delete at this scale.
+        <div className="flex min-w-0 flex-1 items-center gap-1">
+          <ProfileDropdown
+            activeKey={isAll ? null : activeKey}
+            colors={colors}
+            onSelect={selectProfile}
+            profiles={named}
+          />
+          <AddProfileButton label={p.newProfile} onClick={() => setCreateOpen(true)} />
+        </div>
+      ) : (
+        <div
+          className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          ref={scrollRef}
+        >
+          {multiProfile && (
+            <DndContext
+              collisionDetection={closestCenter}
+              modifiers={[stepThroughCells]}
+              onDragEnd={handleDragEnd}
+              onDragOver={handleDragOver}
+              onDragStart={handleDragStart}
+              sensors={sensors}
+            >
+              <SortableContext items={named.map(profile => profile.name)} strategy={horizontalListSortingStrategy}>
+                {/* relative → the strip is the dragged square's offsetParent, so the
+                    clamp modifier bounds drags to the occupied cells (not the +). */}
+                <div className="relative flex items-center gap-1">
+                  {named.map(profile => (
+                    <ProfileSquare
+                      active={!isAll && normalizeProfileKey(profile.name) === activeKey}
+                      color={resolveProfileColor(profile.name, colors)}
+                      key={profile.name}
+                      label={profile.name}
+                      onDelete={() => setPendingDelete(profile)}
+                      onEditSoul={() => setPendingSoul(profile.name)}
+                      onRecolor={color => setProfileColor(profile.name, color)}
+                      onRename={() => setPendingRename(profile)}
+                      onSelect={() => selectProfile(profile.name)}
+                    />
+                  ))}
+                </div>
+              </SortableContext>
+            </DndContext>
+          )}
 
-        <Tip label={p.newProfile}>
-          <button
-            aria-label={p.newProfile}
-            className="grid size-5 shrink-0 place-items-center rounded-[3px] text-(--ui-text-tertiary) opacity-55 transition hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100"
-            onClick={() => setCreateOpen(true)}
-            type="button"
-          >
-            <Codicon name="add" size="0.75rem" />
-          </button>
-        </Tip>
-      </div>
+          <AddProfileButton label={p.newProfile} onClick={() => setCreateOpen(true)} />
+        </div>
+      )}
 
       {/* Always reachable, even with only the default profile: the manage
           overlay is the only place to edit a profile's SOUL.md, and a
@@ -305,7 +328,151 @@ export function ProfileRail() {
         open={pendingDelete !== null}
         profile={pendingDelete}
       />
+
+      <EditSoulDialog onClose={() => setPendingSoul(null)} profileName={pendingSoul} />
     </div>
+  )
+}
+
+// Right-click → Edit SOUL.md for a sidebar profile — the same in-app markdown
+// editor as the memory-graph node edit, so a profile's persona is editable
+// without opening the Manage overlay.
+function EditSoulDialog({ onClose, profileName }: { onClose: () => void; profileName: null | string }) {
+  const { t } = useI18n()
+  const p = t.profiles
+  const [content, setContent] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!profileName) {
+      return
+    }
+
+    let cancelled = false
+    setLoading(true)
+    setContent('')
+
+    getProfileSoul(profileName)
+      .then(soul => !cancelled && setContent(soul.content))
+      .catch(err => !cancelled && notifyError(err, p.failedLoadSoul))
+      .finally(() => !cancelled && setLoading(false))
+
+    return () => void (cancelled = true)
+  }, [p, profileName])
+
+  const save = async () => {
+    if (!profileName) {
+      return
+    }
+
+    setSaving(true)
+
+    try {
+      await updateProfileSoul(profileName, content)
+      notify({ kind: 'success', title: p.soulSaved, message: profileName })
+      onClose()
+    } catch (err) {
+      notifyError(err, p.failedSaveSoul)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog onOpenChange={open => !open && !saving && onClose()} open={profileName !== null}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{profileName} · SOUL.md</DialogTitle>
+        </DialogHeader>
+        <div className="h-80">
+          {!loading && profileName && (
+            <CodeEditor
+              filePath="SOUL.md"
+              framed
+              initialValue={content}
+              key={profileName}
+              onCancel={() => !saving && onClose()}
+              onChange={setContent}
+              onSave={() => void save()}
+            />
+          )}
+        </div>
+        <DialogFooter>
+          <Button disabled={saving} onClick={onClose} type="button" variant="ghost">
+            {t.common.cancel}
+          </Button>
+          <Button disabled={saving || loading} onClick={() => void save()}>
+            {saving ? p.saving : p.saveSoul}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// The "+" create button, shared by both rail render paths.
+function AddProfileButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <Tip label={label}>
+      <button
+        aria-label={label}
+        className="grid size-5 shrink-0 place-items-center rounded-[3px] text-(--ui-text-tertiary) opacity-55 transition hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100"
+        onClick={onClick}
+        type="button"
+      >
+        <Codicon name="add" size="0.75rem" />
+      </button>
+    </Tip>
+  )
+}
+
+// The condensed rail: every named profile in one compact select. The trigger
+// shows the active profile (tinted initial + name); on default/all scope it
+// falls back to the placeholder since the left toggle pill carries that state.
+function ProfileDropdown({
+  activeKey,
+  colors,
+  onSelect,
+  profiles
+}: {
+  activeKey: null | string
+  colors: Record<string, string>
+  onSelect: (name: string) => void
+  profiles: ProfileInfo[]
+}) {
+  const { t } = useI18n()
+  const p = t.profiles
+
+  const value = activeKey ? (profiles.find(profile => normalizeProfileKey(profile.name) === activeKey)?.name ?? '') : ''
+
+  return (
+    <Select onValueChange={name => name && onSelect(name)} value={value}>
+      <SelectTrigger aria-label={p.title} className="min-w-0 flex-1" size="xs">
+        <SelectValue placeholder={p.title} />
+      </SelectTrigger>
+      <SelectContent collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }} side="top">
+        {profiles.map(profile => {
+          const color = resolveProfileColor(profile.name, colors)
+          const hue = color ?? 'var(--ui-text-quaternary)'
+
+          return (
+            <SelectItem key={profile.name} value={profile.name}>
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span
+                  aria-hidden="true"
+                  className="grid size-4 shrink-0 place-items-center rounded-[3px] text-[0.5rem] font-semibold uppercase leading-none"
+                  style={{ backgroundColor: profileColorSoft(hue, 22), color: color ?? undefined }}
+                >
+                  {profile.name.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+                </span>
+                <span className="truncate">{profile.name}</span>
+              </span>
+            </SelectItem>
+          )
+        })}
+      </SelectContent>
+    </Select>
   )
 }
 
@@ -345,6 +512,7 @@ interface ProfileSquareProps {
   onSelect: () => void
   onRecolor: (color: null | string) => void
   onRename: () => void
+  onEditSoul: () => void
   onDelete: () => void
 }
 
@@ -359,7 +527,16 @@ const LONG_PRESS_MS = 450
 // right-click to rename/delete. The button carries both the tooltip and
 // context-menu triggers via nested asChild Slots, so a single element keeps the
 // dnd listeners, hover tip, and right-click menu.
-function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, onSelect }: ProfileSquareProps) {
+function ProfileSquare({
+  active,
+  color,
+  label,
+  onDelete,
+  onEditSoul,
+  onRecolor,
+  onRename,
+  onSelect
+}: ProfileSquareProps) {
   const { t } = useI18n()
   const p = t.profiles
   const hue = color ?? 'var(--ui-text-quaternary)'
@@ -483,8 +660,12 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
             <span>{p.color}</span>
           </ContextMenuItem>
           <ContextMenuItem onSelect={onRename}>
+            <Codicon name="text-size" size="0.875rem" />
+            <span>{p.renameMenu}</span>
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={onEditSoul}>
             <Codicon name="edit" size="0.875rem" />
-            <span>{p.rename}</span>
+            <span>{p.editSoul}</span>
           </ContextMenuItem>
           <ContextMenuItem
             className="text-destructive focus:text-destructive"

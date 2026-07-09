@@ -89,6 +89,11 @@ declare global {
         pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
       }
+      zoom?: {
+        get: () => Promise<{ level: number; percent: number }>
+        setPercent: (percent: number) => void
+        onChanged: (callback: (payload: { level: number; percent: number }) => void) => () => void
+      }
       revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
       readDir: (path: string) => Promise<HermesReadDirResult>
@@ -454,7 +459,7 @@ export interface DesktopBootProgress {
 }
 
 // First-launch install ("bootstrap") event types -- emitted by
-// electron/bootstrap-runner.cjs and observed by the renderer install overlay.
+// electron/bootstrap-runner.ts and observed by the renderer install overlay.
 // Mirrors the event shapes emitted by runBootstrap()'s onEvent callback.
 
 export interface DesktopBootstrapStageDescriptor {

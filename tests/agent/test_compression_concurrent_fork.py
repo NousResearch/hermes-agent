@@ -202,6 +202,40 @@ def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
     agent.context_compressor.compress.assert_not_called()
 
 
+def test_compression_restores_user_turn_when_compressor_drops_all_users(tmp_path: Path) -> None:
+    """Provider chat templates need at least one user message after compaction.
+
+    A plugin or future compressor can legally return a compacted context made
+    only of assistant/tool summary rows.  Before the guard in
+    ``compress_context``, that transcript went straight into the next API call;
+    LM Studio / llama.cpp Jinja templates then failed with "No user query found
+    in messages."  Preserve the last real user turn from the pre-compression
+    transcript instead of inventing a new active request.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "NO_USER_AFTER_COMPRESS"
+    db.create_session(parent_sid, source="cli")
+
+    agent = _build_agent_with_db(db, parent_sid)
+    agent.context_compressor.compress.side_effect = lambda *_a, **_kw: [
+        {
+            "role": "assistant",
+            "content": "[CONTEXT COMPACTION] earlier work was summarized",
+        }
+    ]
+    messages = [
+        {"role": "user", "content": "first request"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "please continue from here"},
+        {"role": "assistant", "content": "working"},
+    ]
+
+    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    user_messages = [msg for msg in compressed if msg.get("role") == "user"]
+    assert user_messages == [{"role": "user", "content": "please continue from here"}]
+
+
 def test_lock_refresh_keeps_owner_live_past_initial_ttl(tmp_path: Path, monkeypatch) -> None:
     """The owning compression call must keep its lease alive while it runs."""
     real_try_acquire = SessionDB.try_acquire_compression_lock

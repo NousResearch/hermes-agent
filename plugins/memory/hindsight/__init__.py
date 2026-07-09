@@ -539,6 +539,16 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
             _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
         )
+
+    configured_env = config.get("embedded_api_env") or config.get("hindsight_api_env") or {}
+    if isinstance(configured_env, dict):
+        for key, value in configured_env.items():
+            key = str(key)
+            if not (key.startswith("HINDSIGHT_API_") or key.startswith("HINDSIGHT_EMBED_")):
+                continue
+            if value is None or value == "":
+                continue
+            env_values[key] = str(value)
     return env_values
 
 
@@ -552,7 +562,15 @@ def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: st
     """Write the profile-scoped env file that standalone hindsight-embed uses."""
     profile_env = _embedded_profile_env_path(config)
     profile_env.parent.mkdir(parents=True, exist_ok=True)
-    env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
+    existing = {
+        key: value
+        for key, value in _load_simple_env(profile_env).items()
+        if key.startswith("HINDSIGHT_API_") or key.startswith("HINDSIGHT_EMBED_")
+    }
+    env_values = {
+        **existing,
+        **_build_embedded_profile_env(config, llm_api_key=llm_api_key),
+    }
     profile_env.write_text(
         "".join(f"{key}={value}\n" for key, value in env_values.items()),
         encoding="utf-8",
@@ -1421,7 +1439,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     profile_env = _embedded_profile_env_path(self._config)
                     expected_env = _build_embedded_profile_env(self._config)
                     saved = _load_simple_env(profile_env)
-                    config_changed = saved != expected_env
+                    config_changed = any(saved.get(key) != value for key, value in expected_env.items())
 
                     if config_changed:
                         profile_env = _materialize_embedded_profile_env(self._config)

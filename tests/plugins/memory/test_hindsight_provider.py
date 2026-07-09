@@ -23,6 +23,7 @@ from plugins.memory.hindsight import (
     RETAIN_SCHEMA,
     _load_config,
     _build_embedded_profile_env,
+    _materialize_embedded_profile_env,
     _normalize_observation_scopes,
     _normalize_retain_tags,
     _resolve_bank_id_template,
@@ -416,6 +417,121 @@ class TestConfig:
         })
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
+
+    @pytest.mark.parametrize("config_key", ["embedded_api_env", "hindsight_api_env"])
+    def test_embedded_profile_env_passes_through_only_safe_nonempty_overrides(
+        self, config_key
+    ):
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            config_key: {
+                "HINDSIGHT_API_EMBEDDINGS_PROVIDER": "local",
+                "HINDSIGHT_EMBED_VECTOR_SIZE": 1024,
+                "HINDSIGHT_API_EMPTY": "",
+                "HINDSIGHT_EMBED_NONE": None,
+                "UNRELATED_SETTING": "ignored",
+            },
+        })
+
+        assert env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] == "local"
+        assert env["HINDSIGHT_EMBED_VECTOR_SIZE"] == "1024"
+        assert "HINDSIGHT_API_EMPTY" not in env
+        assert "HINDSIGHT_EMBED_NONE" not in env
+        assert "UNRELATED_SETTING" not in env
+
+    def test_materialize_embedded_profile_env_preserves_safe_keys_and_overrides_stale_values(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        profile_env = tmp_path / ".hindsight" / "profiles" / "hermes.env"
+        profile_env.parent.mkdir(parents=True)
+        profile_env.write_text(
+            "HINDSIGHT_API_EMBEDDINGS_PROVIDER=stale\n"
+            "HINDSIGHT_API_RERANKER_PROVIDER=local\n"
+            "HINDSIGHT_EMBED_CUSTOM_FLAG=kept\n"
+            "UNRELATED_SETTING=discarded\n",
+            encoding="utf-8",
+        )
+
+        _materialize_embedded_profile_env({
+            "profile": "hermes",
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "embedded_api_env": {
+                "HINDSIGHT_API_EMBEDDINGS_PROVIDER": "configured",
+            },
+        })
+
+        materialized = dict(
+            line.split("=", 1)
+            for line in profile_env.read_text(encoding="utf-8").splitlines()
+        )
+        assert materialized["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] == "configured"
+        assert materialized["HINDSIGHT_API_RERANKER_PROVIDER"] == "local"
+        assert materialized["HINDSIGHT_EMBED_CUSTOM_FLAG"] == "kept"
+        assert "UNRELATED_SETTING" not in materialized
+
+    def test_preserved_extra_profile_env_does_not_restart_embedded_daemon(
+        self, tmp_path, monkeypatch
+    ):
+        config = {
+            "mode": "local_embedded",
+            "profile": "hermes",
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        }
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr("plugins.memory.hindsight._load_config", lambda: config)
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+        monkeypatch.setattr("plugins.memory.hindsight.os.geteuid", lambda: 1000)
+        monkeypatch.setattr("importlib.metadata.version", lambda _name: "999.0")
+
+        profile_env = tmp_path / ".hindsight" / "profiles" / "hermes.env"
+        profile_env.parent.mkdir(parents=True)
+        expected = _build_embedded_profile_env(config)
+        profile_env.write_text(
+            "".join(f"{key}={value}\n" for key, value in expected.items())
+            + "HINDSIGHT_API_RERANKER_PROVIDER=local\n",
+            encoding="utf-8",
+        )
+
+        manager = SimpleNamespace(
+            is_running=MagicMock(return_value=True),
+            stop=MagicMock(),
+        )
+        client = SimpleNamespace(
+            _manager=manager,
+            _ensure_started=MagicMock(),
+        )
+        daemon_manager = SimpleNamespace(console=None)
+        monkeypatch.setitem(
+            sys.modules,
+            "hindsight_embed",
+            SimpleNamespace(daemon_embed_manager=daemon_manager),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "hindsight_embed.daemon_embed_manager",
+            daemon_manager,
+        )
+
+        class ImmediateThread:
+            def __init__(self, *, target, **_kwargs):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        monkeypatch.setattr("plugins.memory.hindsight.threading.Thread", ImmediateThread)
+
+        provider = HindsightMemoryProvider()
+        monkeypatch.setattr(provider, "_get_client", lambda: client)
+        provider.initialize("session")
+
+        manager.stop.assert_not_called()
+        client._ensure_started.assert_called_once_with()
 
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}

@@ -514,7 +514,8 @@ def _op_whoami(
         env["OP_SERVICE_ACCOUNT_TOKEN"] = token_value
     try:
         res = subprocess.run(
-            cmd, env=env, capture_output=True, text=True, timeout=10
+            cmd, env=env, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=10
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

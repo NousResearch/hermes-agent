@@ -59,6 +59,7 @@ DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 DEFAULT_X_SEARCH_MODEL = "grok-4.20-reasoning"
 DEFAULT_X_SEARCH_TIMEOUT_SECONDS = 180
 DEFAULT_X_SEARCH_RETRIES = 2
+X_SEARCH_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
 MAX_HANDLES = 10
 
 
@@ -78,6 +79,22 @@ def _load_x_search_config() -> Dict[str, Any]:
 def _get_x_search_model() -> str:
     cfg = _load_x_search_config()
     return (str(cfg.get("model") or "").strip() or DEFAULT_X_SEARCH_MODEL)
+
+
+def _get_x_search_reasoning_effort() -> Optional[str]:
+    cfg = _load_x_search_config()
+    raw_value = cfg.get("reasoning_effort")
+    if raw_value is None or not str(raw_value).strip():
+        return None
+
+    effort = str(raw_value).strip().lower()
+    if effort not in X_SEARCH_REASONING_EFFORTS:
+        allowed = ", ".join(X_SEARCH_REASONING_EFFORTS)
+        raise ValueError(
+            f"x_search.reasoning_effort must be one of: {allowed} "
+            f"(got {raw_value!r})"
+        )
+    return effort
 
 
 def _get_x_search_timeout_seconds() -> int:
@@ -299,6 +316,11 @@ def x_search_tool(
         except ValueError as exc:
             return tool_error(str(exc))
 
+        try:
+            reasoning_effort = _get_x_search_reasoning_effort()
+        except ValueError as exc:
+            return tool_error(str(exc))
+
         tool_def: Dict[str, Any] = {"type": "x_search"}
         if allowed:
             tool_def["allowed_x_handles"] = allowed
@@ -324,6 +346,8 @@ def x_search_tool(
             "tools": [tool_def],
             "store": False,
         }
+        if reasoning_effort:
+            payload["reasoning"] = {"effort": reasoning_effort}
 
         timeout_seconds = _get_x_search_timeout_seconds()
         max_retries = _get_x_search_retries()

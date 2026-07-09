@@ -3135,6 +3135,9 @@ DEFAULT_CONFIG = {
         # the recommended default; any Grok model with x_search tool
         # access works.
         "model": "grok-4.20-reasoning",
+        # Optional reasoning effort sent to xAI Responses API models that
+        # support it. Leave null to preserve the selected model's default.
+        "reasoning_effort": None,
         # Request timeout in seconds (minimum 30). x_search can take
         # 60-120s for complex queries — the default is generous.
         "timeout_seconds": 180,

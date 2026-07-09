@@ -50,6 +50,10 @@ x_search:
   # x_search 工具访问权限的 Grok 模型均可使用。
   model: grok-4.20-reasoning
 
+  # 可选推理强度：low、medium、high 或 xhigh。省略时使用所选模型的默认值。
+  # xhigh 仅适用于明确支持它的模型，例如 grok-4.20-multi-agent。
+  reasoning_effort: low
+
   # 请求超时时间（秒）。复杂查询的 x_search 可能需要 60–120 秒，
   # 默认值较为宽松。最小值：30。
   timeout_seconds: 180
@@ -58,6 +62,9 @@ x_search:
   # 每次重试按指数退避（1.5 倍尝试秒数，上限 5 秒）。
   retries: 2
 ```
+
+`reasoning_effort` 会以 `reasoning: {effort: ...}` 的形式发送到 xAI
+Responses API。不支持可配置推理的模型应留空。无效值会在发起 API 请求前失败。
 
 ## 工具参数
 

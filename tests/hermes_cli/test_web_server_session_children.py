@@ -28,10 +28,6 @@ class _FakeSessionDB:
                 "stale_count": 1,
             },
             "other": [],
-            "ordered_children": [
-                {"id": "focused", "child_kind": "focused_continuation"},
-                {"id": "audit", "child_kind": "delegate_subagent_completed"},
-            ],
         }
 
     def close(self):
@@ -59,4 +55,3 @@ def test_session_children_endpoint_returns_grouped_children(monkeypatch):
     assert [row["id"] for row in response["focused"]] == ["focused"]
     assert [row["id"] for row in response["subagents"]["completed"]] == ["audit"]
     assert response["subagents"]["stale_count"] == 1
-    assert [row["id"] for row in response["ordered_children"]] == ["focused", "audit"]

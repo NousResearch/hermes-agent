@@ -513,6 +513,23 @@ function ChildSessionsBlock({
 
   if (visibleCount === 0) return null;
 
+  const primaryGroups: Array<{
+    title: string;
+    description?: string;
+    rows: SessionInfo[];
+    icon: typeof Terminal;
+  }> = [
+    {
+      title: "Focused continuations",
+      description: "User-intended continuations are always shown before read-only delegate subagents.",
+      rows: grouped.focused,
+      icon: GitBranch,
+    },
+    { title: "Branches", rows: grouped.branches, icon: GitBranch },
+    { title: "Interactive promoted children", rows: grouped.interactive, icon: MessageSquare },
+    { title: "Compression continuations", rows: grouped.compression, icon: Archive },
+  ];
+
   return (
     <div className="mb-4 space-y-4 rounded border border-border bg-midground/20 p-3">
       <div className="flex items-center gap-2 text-sm font-medium">
@@ -520,31 +537,16 @@ function ChildSessionsBlock({
         <span>Continuations and child sessions</span>
       </div>
 
-      <ChildSessionGroup
-        title="Focused continuations"
-        description="User-intended continuations are always shown before read-only delegate subagents."
-        rows={grouped.focused}
-        icon={GitBranch}
-        onResume={onResume}
-      />
-      <ChildSessionGroup
-        title="Branches"
-        rows={grouped.branches}
-        icon={GitBranch}
-        onResume={onResume}
-      />
-      <ChildSessionGroup
-        title="Interactive promoted children"
-        rows={grouped.interactive}
-        icon={MessageSquare}
-        onResume={onResume}
-      />
-      <ChildSessionGroup
-        title="Compression continuations"
-        rows={grouped.compression}
-        icon={Archive}
-        onResume={onResume}
-      />
+      {primaryGroups.map((group) => (
+        <ChildSessionGroup
+          key={group.title}
+          title={group.title}
+          description={group.description}
+          rows={group.rows}
+          icon={group.icon}
+          onResume={onResume}
+        />
+      ))}
 
       {subagentCount > 0 && (
         <details className="rounded border border-border/70 bg-background/60 p-2" open={activeSubagents.length > 0}>
@@ -619,6 +621,8 @@ function SessionRow({
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(session.title ?? "");
   const [renameSaving, setRenameSaving] = useState(false);
+  const childParentId = session._lineage_root_id ?? session.id;
+  const childrenRequestRef = useRef<string | null>(null);
   const { t } = useI18n();
   const navigate = useNavigate();
 
@@ -639,16 +643,29 @@ function SessionRow({
   }, [isExpanded, session.id, messages]);
 
   useEffect(() => {
-    if (isExpanded && childGroups === null && !childrenLoading) {
+    if (isExpanded && childrenRequestRef.current !== childParentId && !childrenLoading) {
+      let cancelled = false;
+      childrenRequestRef.current = childParentId;
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setChildrenLoading(true);
+      setChildGroups(null);
+      setChildrenError(null);
       api
-        .getSessionChildren(session.id)
-        .then(setChildGroups)
-        .catch((err) => setChildrenError(String(err)))
-        .finally(() => setChildrenLoading(false));
+        .getSessionChildren(childParentId)
+        .then((groups) => {
+          if (!cancelled) setChildGroups(groups);
+        })
+        .catch((err) => {
+          if (!cancelled) setChildrenError(String(err));
+        })
+        .finally(() => {
+          if (!cancelled) setChildrenLoading(false);
+        });
+      return () => {
+        cancelled = true;
+      };
     }
-  }, [isExpanded, session.id, childGroups, childrenLoading]);
+  }, [isExpanded, childParentId, childrenLoading]);
 
   const sourceInfo = (session.source
     ? SOURCE_CONFIG[session.source]

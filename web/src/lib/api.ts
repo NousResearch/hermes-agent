@@ -1820,8 +1820,8 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
+  _lineage_root_id?: string | null;
   child_kind?: SessionChildKind;
-  child_priority?: number;
 }
 
 export type SessionChildKind =
@@ -1847,7 +1847,6 @@ export interface SessionChildrenResponse {
     stale_count: number;
   };
   other: SessionInfo[];
-  ordered_children: SessionInfo[];
 }
 
 export interface SessionLatestDescendantResponse {

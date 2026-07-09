@@ -30,7 +30,7 @@ describe("api.getSessionChildren", () => {
       interactive: [],
       compression: [],
       subagents: { active: [], completed: [], stale: [], stale_count: 0 },
-      ordered_children: [],
+      other: [],
     });
     vi.stubGlobal("fetch", fetchMock);
 

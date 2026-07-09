@@ -10869,12 +10869,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if _was_auto_reset:
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
+            prev_sid = getattr(session_entry, 'previous_session_id', None)
+            sid_hint = f" Previous session ID: {prev_sid}." if prev_sid else ""
             if reset_reason == "suspended":
-                context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
+                context_note = f"[System note: The user's previous session was stopped and suspended.{sid_hint} Use session_search(session_id='{prev_sid}') to review the last conversation, then resume naturally without re-introducing yourself.]" if prev_sid else "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
             elif reset_reason == "daily":
-                context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
+                context_note = f"[System note: The user's session was automatically reset by the daily schedule.{sid_hint} Use session_search(session_id='{prev_sid}') to review the last conversation, then resume naturally without re-introducing yourself.]" if prev_sid else "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
             else:
-                context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
+                context_note = f"[System note: The user's previous session expired due to inactivity.{sid_hint} Use session_search(session_id='{prev_sid}') to review the last conversation, then resume naturally without re-introducing yourself.]" if prev_sid else "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
             context_prompt = context_note + "\n\n" + context_prompt
 
             # Send a user-facing notification explaining the reset, unless:

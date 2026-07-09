@@ -1336,8 +1336,42 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     _apply_runtime_ws_overrides()
     try:
         ws_client.start()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning(
+            "[Feishu] WebSocket client exited with error (will trigger reconnect): %s",
+            exc,
+        )
+        adapter._set_fatal_error(
+            "feishu_ws_disconnect", str(exc), retryable=True
+        )
+        loop = getattr(adapter, "_loop", None)
+        if loop is not None and not loop.is_closed():
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    adapter._notify_fatal_error(), loop
+                )
+            except Exception:
+                pass
+    else:
+        # Normal exit — if adapter is still supposed to be running,
+        # this is an unexpected disconnect (e.g. server-side close).
+        if getattr(adapter, "_running", False):
+            logger.warning(
+                "[Feishu] WebSocket client exited unexpectedly (will trigger reconnect)"
+            )
+            adapter._set_fatal_error(
+                "feishu_ws_disconnect",
+                "WebSocket client exited unexpectedly",
+                retryable=True,
+            )
+            loop = getattr(adapter, "_loop", None)
+            if loop is not None and not loop.is_closed():
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        adapter._notify_fatal_error(), loop
+                    )
+                except Exception:
+                    pass
     finally:
         ws_client_module.websockets.connect = original_connect
         if original_configure is not None:

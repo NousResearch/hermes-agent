@@ -675,6 +675,10 @@ class SessionEntry:
     was_auto_reset: bool = False
     auto_reset_reason: Optional[str] = None  # "idle" or "daily"
     reset_had_activity: bool = False  # whether the expired session had any messages
+    # Set when a session was auto-reset from a previous one.  When non-None,
+    # the agent is instructed to recover context from this session before
+    # responding, preventing the "amnesia" experience on messaging platforms.
+    previous_session_id: Optional[str] = None
 
     # Set by reset_session() when the user explicitly sends /new or /reset.
     # Consumed once by _handle_message_with_agent to trigger topic/channel
@@ -1841,6 +1845,7 @@ class SessionStore:
                 was_auto_reset=was_auto_reset,
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
+                previous_session_id=db_end_session_id if was_auto_reset else None,
             )
 
             self._entries[session_key] = entry

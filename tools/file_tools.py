@@ -443,14 +443,19 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
 
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd paths that can hang reads."""
-    normalized = os.path.normpath(_expand_tilde(path))
-    if normalized in _BLOCKED_DEVICE_PATHS:
+    expanded = _expand_tilde(path)
+    normalized = os.path.normpath(expanded)
+    normalized_posix = posixpath.normpath(expanded.replace("\\", "/"))
+    candidates = (normalized, normalized_posix)
+    if any(candidate in _BLOCKED_DEVICE_PATHS for candidate in candidates):
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
-    if normalized.startswith("/proc/") and normalized.endswith(
-        ("/fd/0", "/fd/1", "/fd/2")
+    if any(
+        candidate.startswith("/proc/") and candidate.endswith(("/fd/0", "/fd/1", "/fd/2"))
+        for candidate in candidates
     ):
         return True
+
     # /proc/*/environ, /proc/*/cmdline, /proc/*/maps (and the maps variants
     # smaps, smaps_rollup, numa_maps) can leak secrets, command-line args, and
     # memory layout (ASLR bypass) from the host process (issue #4427).
@@ -460,22 +465,24 @@ def _is_blocked_device_path(path: str) -> bool:
     # load addresses — an ASLR oracle on par with maps. /proc/*/pagemap exposes
     # virtual->physical translation. Both are blocked alongside the maps family.
     # endswith matches both /proc/<pid>/X and /proc/<pid>/task/<tid>/X.
-    if normalized.startswith("/proc/") and normalized.endswith(
-        (
-            "/environ",
-            "/cmdline",
-            "/maps",
-            "/smaps",
-            "/smaps_rollup",
-            "/numa_maps",
-            "/mem",
-            "/auxv",
-            "/pagemap",
+    if any(
+        candidate.startswith("/proc/") and candidate.endswith(
+            (
+                "/environ",
+                "/cmdline",
+                "/maps",
+                "/smaps",
+                "/smaps_rollup",
+                "/numa_maps",
+                "/mem",
+                "/auxv",
+                "/pagemap",
+            )
         )
+        for candidate in candidates
     ):
         return True
     return False
-
 
 def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> bool:
     """Return True if the path would hang the process (infinite output or blocking input).
@@ -485,7 +492,7 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     the final resolved path so aliases to devices cannot bypass the guard.
     """
     expanded = _expand_tilde(filepath)
-    if base_dir is not None and not os.path.isabs(expanded):
+    if base_dir is not None and not os.path.isabs(expanded) and not posixpath.isabs(expanded):
         expanded = os.path.join(os.fspath(base_dir), expanded)
     normalized = os.path.normpath(expanded)
     if _is_blocked_device_path(normalized):
@@ -498,7 +505,7 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
             target = os.readlink(current)
         except OSError:
             break
-        if not os.path.isabs(target):
+        if not os.path.isabs(target) and not posixpath.isabs(target):
             target = os.path.join(os.path.dirname(current), target)
         target = os.path.normpath(target)
         if _is_blocked_device_path(target):
@@ -655,14 +662,27 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     except (OSError, ValueError):
         resolved = filepath
     normalized = os.path.normpath(_expand_tilde(filepath))
+    # Preserve POSIX-style absolute inputs before Windows Path resolution turns
+    # ``/etc/passwd`` into ``C:\\etc\\passwd``. The file tools can receive POSIX
+    # paths from Git Bash, containers, V4A patch headers, and tests even when
+    # the host process is Windows.
+    normalized_posix = posixpath.normpath(_expand_tilde(filepath).replace("\\", "/"))
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
     for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
+        if (
+            resolved.startswith(prefix)
+            or normalized.startswith(prefix)
+            or normalized_posix.startswith(prefix)
+        ):
             return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
+    if (
+        resolved in _SENSITIVE_EXACT_PATHS
+        or normalized in _SENSITIVE_EXACT_PATHS
+        or normalized_posix in _SENSITIVE_EXACT_PATHS
+    ):
         return _err
     # Prevent agents from modifying the Hermes config file directly.
     # approvals.mode and other security settings live here; a malicious or

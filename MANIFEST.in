@@ -11,3 +11,5 @@ recursive-include plugins plugin.yaml plugin.yml
 recursive-include gateway/assets *
 global-exclude __pycache__
 global-exclude *.py[cod]
+# Bundled plugin docs used by plugin-packaged skills/references.
+recursive-include plugins README.md *.md

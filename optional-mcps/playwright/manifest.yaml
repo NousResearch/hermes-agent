@@ -1,0 +1,49 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: playwright
+description: Drive browser automation through Microsoft's Playwright MCP server.
+source: https://github.com/microsoft/playwright-mcp
+
+# Official npm package from Microsoft. Pin the version observed during catalog
+# review instead of floating @latest; users can refresh through a future manifest
+# update after review.
+transport:
+  type: stdio
+  command: npx
+  args:
+    - -y
+    - "@playwright/mcp@0.0.77"
+    # Safer Hermes/Codex default: do not persist browser profile state or reuse
+    # logged-in cookies between agent runs. Users who need a persistent profile
+    # can remove this and set --user-data-dir after considering the risk.
+    - --isolated
+    # Works in WSL/headless service contexts. Users doing visual/manual browser
+    # debugging can remove this for headed mode if a display is available.
+    - --headless
+  version: "0.0.77"
+
+# Browser automation itself is powerful but the MCP server needs no API key.
+auth:
+  type: none
+
+# Tool selection at install time:
+# Playwright MCP exposes a browser/page automation surface whose exact tools can
+# shift by package version/capabilities. Leave default_enabled unset so Hermes
+# probes the server and lets the operator prune tools during install.
+
+post_install: |
+  This catalog entry launches Microsoft's official Playwright MCP server with
+  isolated, headless browser sessions by default. That avoids persisting cookies
+  and works in WSL/service contexts.
+
+  Browser automation can still read pages, click controls, submit forms, and
+  interact with live accounts if you navigate there. Do not use it for password,
+  payment, or permission prompts without explicit operator intent.
+
+  For headed debugging or persistent login state, edit mcp_servers.playwright
+  in ~/.hermes/config.yaml deliberately, for example by removing --headless or
+  replacing --isolated with a dedicated --user-data-dir path.
+
+  Start a new Hermes session to load the Playwright MCP tools.

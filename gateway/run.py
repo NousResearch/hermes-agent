@@ -12807,6 +12807,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
             if hasattr(adapter, "_voice_sources"):
                 adapter._voice_sources[guild_id] = event.source.to_dict()
+            voice_channel_prompts = getattr(adapter, "_voice_channel_prompts", None)
+            if isinstance(voice_channel_prompts, dict):
+                if event.channel_prompt:
+                    voice_channel_prompts[guild_id] = event.channel_prompt
+                else:
+                    voice_channel_prompts.pop(guild_id, None)
             self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "all"
             self._save_voice_modes()
             self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
@@ -12833,6 +12839,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await adapter.leave_voice_channel(guild_id)
         except Exception as e:
             logger.warning("Error leaving voice channel: %s", e)
+        voice_channel_prompts = getattr(adapter, "_voice_channel_prompts", None)
+        if isinstance(voice_channel_prompts, dict):
+            voice_channel_prompts.pop(guild_id, None)
         # Always clean up state even if leave raised an exception
         self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "off"
         self._save_voice_modes()
@@ -12850,6 +12859,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._save_voice_modes()
         adapter = self.adapters.get(Platform.DISCORD)
         self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
+        voice_channel_prompts = getattr(adapter, "_voice_channel_prompts", None)
+        if isinstance(voice_channel_prompts, dict):
+            for gid, text_ch_id in list(getattr(adapter, "_voice_text_channels", {}).items()):
+                if str(text_ch_id) == str(chat_id):
+                    voice_channel_prompts.pop(gid, None)
 
     def _is_duplicate_voice_transcript(self, guild_id: int, user_id: int, transcript: str) -> bool:
         """Suppress repeated STT outputs for the same recent utterance.
@@ -12947,7 +12961,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
-        # Build a synthetic MessageEvent and feed through the normal pipeline
+        # Build a synthetic MessageEvent and feed through the normal pipeline.
+        # Voice turns are bound to the text channel that issued /voice join, so
+        # carry over the same per-channel prompt used by normal Discord text
+        # messages.  Without this, Drive Mode/channel guardrails configured via
+        # discord.channel_prompts are silently bypassed for spoken input.
+        channel_prompt: str | None = None
+        voice_prompts = getattr(adapter, "_voice_channel_prompts", None)
+        if isinstance(voice_prompts, dict):
+            stored_prompt = voice_prompts.get(guild_id)
+            if isinstance(stored_prompt, str):
+                channel_prompt = stored_prompt
+        channel_prompt_resolver = getattr(adapter, "_resolve_channel_prompt", None)
+        if channel_prompt is None and callable(channel_prompt_resolver):
+            try:
+                channel_id = str(getattr(source, "thread_id", None) or getattr(source, "chat_id", None) or text_ch_id)
+                parent_id = getattr(source, "parent_chat_id", None)
+                resolved_prompt = channel_prompt_resolver(
+                    channel_id,
+                    str(parent_id) if parent_id else None,
+                )
+                if isinstance(resolved_prompt, str):
+                    channel_prompt = resolved_prompt
+            except Exception:
+                logger.debug("Failed to resolve Discord voice channel prompt", exc_info=True)
+
         # Use SimpleNamespace as raw_message so _get_guild_id() can extract
         # guild_id and _send_voice_reply() plays audio in the voice channel.
         from types import SimpleNamespace
@@ -12956,6 +12994,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             text=transcript,
             message_type=MessageType.VOICE,
             raw_message=SimpleNamespace(guild_id=guild_id, guild=None),
+            channel_prompt=channel_prompt,
         )
 
         await adapter.handle_message(event)

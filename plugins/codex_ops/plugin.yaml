@@ -1,0 +1,13 @@
+name: codex-ops
+version: "0.1.0"
+description: "Hermes-native Codex operations: local run ledger, terminal output compaction, and danger-full-access guardrails."
+author: "NousResearch"
+kind: standalone
+hooks:
+  - pre_tool_call
+  - post_tool_call
+  - transform_terminal_output
+platforms:
+  - linux
+  - macos
+  - windows

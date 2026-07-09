@@ -1939,6 +1939,7 @@ AUTHOR_MAP = {
     "sebastianlutycz@users.noreply.github.com": "sebastianlutycz",  # PR #39140 salvage (descendant CTE); bare noreply (no NNN+ prefix) needs explicit mapping
     "wafy.081107@gmail.com": "mahdiwafy",  # PR #60347 salvage (session messages pagination)
     "codeforgenet@icloud.com": "CodeForgeNet",  # PR #47437 salvage (compact_rows blob skip)
+    "i@dex.moe": "dexhunter",  # PR #60339 salvage (skills snapshot manifest speedup)
 }
 
 

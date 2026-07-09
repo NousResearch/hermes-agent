@@ -15331,6 +15331,12 @@ async def pty_ws(ws: WebSocket) -> None:
 
     # --- spawn PTY ------------------------------------------------------
     resume = ws.query_params.get("resume") or None
+    # The frontend's explicit session/profile selection, captured before the
+    # active-session-file fallback below can rewrite ``resume``.  This is the
+    # PTY's identity for keep-alive keying (#61284): a per-tab attach token is
+    # NOT enough — switching sessions reuses the token but must not reuse the
+    # previous session's live PTY.
+    raw_resume = resume
     profile = ws.query_params.get("profile") or None
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
@@ -15373,6 +15379,15 @@ async def pty_ws(ws: WebSocket) -> None:
 
 
     attach_token = ws.query_params.get("attach") or None
+    # Key keep-alive PTYs on the selected session + profile as well as the tab
+    # token, so switching sessions spawns/reattaches the right PTY instead of
+    # replaying the previously-attached one (#61284).  NUL-joined so no query
+    # value can collide across fields.
+    registry_key = (
+        None
+        if attach_token is None
+        else "\0".join((attach_token, raw_resume or "", profile or ""))
+    )
 
     def _spawn():
         return PtyBridge.spawn(argv, cwd=cwd, env=env)
@@ -15395,7 +15410,7 @@ async def pty_ws(ws: WebSocket) -> None:
     # Keep-alive path: the PTY outlives this socket; reattach by token.
     try:
         session, _created = await PTY_REGISTRY.attach_or_spawn(
-            attach_token, spawn=_spawn
+            registry_key, spawn=_spawn
         )
     except PtyUnavailableError as exc:
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
@@ -15443,7 +15458,7 @@ async def pty_ws(ws: WebSocket) -> None:
     finally:
         # Detach only — the PTY keeps running for a reattach; the registry
         # reaper closes it after the TTL (or immediately on process exit).
-        PTY_REGISTRY.detach(attach_token, ws)
+        PTY_REGISTRY.detach(registry_key, ws)
 
 
 # ---------------------------------------------------------------------------

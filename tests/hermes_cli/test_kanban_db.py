@@ -1893,8 +1893,8 @@ def test_respawn_guard_stale_success_not_guarded(kanban_home):
     assert reason is None
 
 
-def test_respawn_guard_active_pr_in_comment(kanban_home):
-    """A GitHub PR URL in a recent comment triggers active_pr."""
+def test_respawn_guard_pr_comment_not_guarded(kanban_home):
+    """GitHub PR URLs in comments are diagnostic only, not scheduler state."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="has-pr", assignee="alice")
         kb.add_comment(
@@ -1902,14 +1902,14 @@ def test_respawn_guard_active_pr_in_comment(kanban_home):
             "PR created: https://github.com/totemx-AI/subsidysmart/pull/42",
         )
         reason = kb.check_respawn_guard(conn, t)
-    assert reason == "active_pr"
+    assert reason is None
 
 
-def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
-    """A GitHub PR URL in a comment older than the PR window does not block."""
+def test_respawn_guard_historical_pr_comment_not_guarded(kanban_home):
+    """Historical PR comments must not strand ready releaser/verifier tasks."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="old-pr", assignee="alice")
-        old_ts = int(time.time()) - kb._RESPAWN_GUARD_PR_WINDOW - 60
+        old_ts = int(time.time()) - 86400 - 60
         conn.execute(
             "INSERT INTO task_comments (task_id, author, body, created_at) "
             "VALUES (?, 'worker', "
@@ -1991,10 +1991,10 @@ def test_dispatch_respawn_guard_skips_recent_success(
         assert kb.get_task(conn, t).status == "ready"  # not blocked, just skipped
 
 
-def test_dispatch_respawn_guard_skips_active_pr(
+def test_dispatch_respawn_guard_spawns_despite_pr_comment(
     kanban_home, all_assignees_spawnable
 ):
-    """dispatch_once skips (but does not block) a task with an active PR comment."""
+    """dispatch_once does not infer active work from prose PR URLs."""
     spawned_ids = []
 
     def fake_spawn(task, workspace):
@@ -2008,11 +2008,9 @@ def test_dispatch_respawn_guard_skips_active_pr(
         )
         res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
 
-    assert (t, "active_pr") in res.respawn_guarded
-    assert t not in spawned_ids
+    assert t in spawned_ids
+    assert not res.respawn_guarded
     assert t not in res.auto_blocked
-    with kb.connect() as conn:
-        assert kb.get_task(conn, t).status == "ready"
 
 
 def test_dispatch_respawn_guard_dry_run_no_auto_block(

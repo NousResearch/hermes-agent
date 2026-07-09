@@ -1093,23 +1093,52 @@ class AIAgent:
     def _is_provider_stream_parse_error(self, error: BaseException) -> bool:
         """Return True for malformed provider streaming data from SDK parsers.
 
-        Some Anthropic-compatible streaming providers can send a malformed
-        event-stream frame.  The Anthropic SDK surfaces that as a plain
-        ``ValueError`` such as ``expected ident at line 1 column 149``.  That
-        is provider wire-format trouble, not local request validation, so it
-        should follow the same retry path as a truncated JSON body.
+        Covers two SDK paths:
+
+        1. Anthropic: malformed event-stream frame surfaced as
+           ValueError, e.g. expected ident at line 1 column 149.
+
+        2. OpenAI/chat_completions: corrupted SSE chunk surfaced as
+           openai.APIError without status_code, containing parse or
+           truncation error messages.  These are semantically identical
+           to Anthropic stream-parse failures and should follow the same
+           retry path rather than being treated as fatal.  (#60029)
         """
-        if getattr(self, "api_mode", None) != "anthropic_messages":
-            return False
-        if not isinstance(error, ValueError):
-            return False
-        if isinstance(error, (UnicodeEncodeError, json.JSONDecodeError)):
-            return False
-        message = str(error).strip().lower()
-        return "expected ident at line" in message
+        api_mode = getattr(self, "api_mode", None)
+        if api_mode == "anthropic_messages":
+            if not isinstance(error, ValueError):
+                return False
+            if isinstance(error, (UnicodeEncodeError, json.JSONDecodeError)):
+                return False
+            message = str(error).strip().lower()
+            return "expected ident at line" in message
+
+        if api_mode == "chat_completions":
+            # OpenAI SDK surfaces SSE parse errors as APIError without
+            # status_code (distinguishing from HTTP APIStatusError).
+            try:
+                from openai import APIError
+            except ImportError:
+                return False
+            if not isinstance(error, APIError):
+                return False
+            if getattr(error, "status_code", None):
+                return False  # HTTP error, not a stream parse error
+            message = str(error).strip().lower()
+            _STREAM_PARSE_PHRASES = (
+                "failed to parse json",
+                "invalid json",
+                "malformed",
+                "truncated frame",
+                "invalid utf-8",
+                "expected ident at line",
+            )
+            return any(p in message for p in _STREAM_PARSE_PHRASES)
+
+        return False
 
     def _log_stream_retry(
-        self,
+            self,
         *,
         kind: str,
         error: BaseException,

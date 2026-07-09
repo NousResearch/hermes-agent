@@ -52,7 +52,7 @@ def _make_agent(monkeypatch, base_url, api_mode="chat_completions"):
 
 def _inject(agent, api_kwargs):
     """Mirror the injection block in agent/conversation_loop.py."""
-    if getattr(agent, "_is_user_initiated_turn", False) and agent._is_copilot_url():
+    if getattr(agent, "_is_user_initiated_turn", False) and getattr(agent, "_is_copilot_url", lambda: False)():
         _xh = dict(api_kwargs.get("extra_headers") or {})
         _xh["x-initiator"] = "user"
         api_kwargs["extra_headers"] = _xh
@@ -129,6 +129,18 @@ class TestFlagFlipOnInjection:
         kwargs = _inject(agent, {})
         assert "extra_headers" not in kwargs
         # Flag unchanged — non-Copilot path doesn't touch it
+        assert agent._is_user_initiated_turn is True
+
+    def test_missing_is_copilot_url_does_not_crash(self):
+        """Guard against intermittent missing _is_copilot_url (#59845)."""
+        # Simulate a partially-initialized agent (module-reload / wrapper)
+        # that has _is_user_initiated_turn but not _is_copilot_url.
+        class PartialAgent:
+            _is_user_initiated_turn = True
+        agent = PartialAgent()
+        kwargs = _inject(agent, {})
+        assert "extra_headers" not in kwargs
+        # Flag unchanged — guard falls through cleanly
         assert agent._is_user_initiated_turn is True
 
 

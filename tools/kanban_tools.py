@@ -696,22 +696,22 @@ def _handle_block(args: dict, **kw) -> str:
         # kanban_block(reason="anything") to escape the loop instead.
         # Restrict goal_mode tasks to the kinds that represent a genuine
         # external blocker the worker cannot resolve itself; `capability`
-        # and `transient` (or an unset kind) route back through
-        # kanban_complete, which the judge now gates.
+        # and `transient` route back through kanban_complete, which the
+        # judge now gates. An omitted (None) kind defaults to "needs_input"
+        # since the tool schema marks kind as optional (#59764).
         task = kb.get_task(conn, tid)
-        if (
-            task
-            and task.goal_mode
-            and kind not in _GOAL_MODE_BLOCK_ALLOWED_KINDS
-        ):
-            conn.close()
-            return tool_error(
-                f"goal_mode tasks can only block with kind in "
-                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). "
-                f"If the task is actually finished or cannot proceed for "
-                f"another reason, call kanban_complete instead — the "
-                f"completion judge will evaluate it."
-            )
+        if task and task.goal_mode:
+            if kind is None:
+                kind = "needs_input"
+            if kind not in _GOAL_MODE_BLOCK_ALLOWED_KINDS:
+                conn.close()
+                return tool_error(
+                    f"goal_mode tasks can only block with kind in "
+                    f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). "
+                    f"If the task is actually finished or cannot proceed for "
+                    f"another reason, call kanban_complete instead — the "
+                    f"completion judge will evaluate it."
+                )
         try:
             ok = kb.block_task(
                 conn, tid,
@@ -1322,7 +1322,10 @@ KANBAN_BLOCK_SCHEMA = {
                 "description": (
                     "Why you're blocked. 'dependency' waits in todo and "
                     "resumes automatically; the others surface to a human. "
-                    "Omit only if none apply."
+                    "Omit only if none apply. "
+                    "On goal_mode tasks only 'dependency' and 'needs_input' "
+                    "are accepted — the completion judge gates all other exits "
+                    "(omit to default to 'needs_input')."
                 ),
             },
             "board": _board_schema_prop(),

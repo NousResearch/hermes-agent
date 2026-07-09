@@ -329,6 +329,15 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             )
 
     if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
+        # The user set an explicit personality via /personality or the
+        # caller passed an ephemeral override.  Use it even when a stored
+        # prompt would otherwise match — the user's explicit intent wins
+        # over prefix-cache reuse.  Caching will miss for this turn, but
+        # that is the expected trade-off for a deliberate personality switch
+        # (#58774).
+        if getattr(agent, "ephemeral_system_prompt", None):
+            agent._cached_system_prompt = agent.ephemeral_system_prompt
+            return
         # Continuing session — reuse the exact system prompt from the
         # previous turn so the Anthropic cache prefix matches.
         agent._cached_system_prompt = stored_prompt
@@ -1166,7 +1175,7 @@ def run_conversation(
                 # Copilot x-initiator: the first API call of a user turn is
                 # marked "user" so Copilot bills a premium request; tool-loop
                 # follow-ups keep the default "agent" header (#3040).
-                if getattr(agent, "_is_user_initiated_turn", False) and agent._is_copilot_url():
+                if getattr(agent, "_is_user_initiated_turn", False) and getattr(agent, "_is_copilot_url", lambda: False)():
                     _xh = dict(api_kwargs.get("extra_headers") or {})
                     _xh["x-initiator"] = "user"
                     api_kwargs["extra_headers"] = _xh

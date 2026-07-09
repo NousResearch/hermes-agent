@@ -1118,7 +1118,7 @@ class TestExplicitProviderRouting:
         assert mock_openai.call_args.kwargs["base_url"] == OPENROUTER_BASE_URL
 
     def test_try_openrouter_pool_exhausted_no_env_marks_unhealthy(self, monkeypatch):
-        """Pool exhausted AND no env var → final failure marks provider unhealthy."""
+        """Pool exhausted AND no env var -> final failure marks provider unhealthy."""
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)), \
              patch("agent.auxiliary_client._mark_provider_unhealthy") as mock_mark, \
@@ -1128,7 +1128,8 @@ class TestExplicitProviderRouting:
         assert client is None
         assert model is None
         mock_openai.assert_not_called()
-        mock_mark.assert_called_once_with("openrouter", ttl=60)
+        # Permanently unavailable (no key) -> default TTL, not ttl=60
+        mock_mark.assert_called_once_with("openrouter")
 
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""

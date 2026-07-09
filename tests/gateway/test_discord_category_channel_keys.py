@@ -62,7 +62,7 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 from gateway.config import PlatformConfig  # noqa: E402
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter, _apply_yaml_config  # noqa: E402
 
 
 class FakeCategory:
@@ -85,6 +85,18 @@ class DiscordCategoryChannelGateTests(TestCase):
     def tearDown(self):
         os.environ.pop("DISCORD_ALLOWED_CATEGORIES", None)
         os.environ.pop("DISCORD_FREE_RESPONSE_CATEGORIES", None)
+
+    def test_yaml_config_maps_category_gates_to_env(self):
+        _apply_yaml_config(
+            {},
+            {
+                "allowed_categories": [500, 600],
+                "free_response_categories": [700, 800],
+            },
+        )
+
+        self.assertEqual("500,600", os.environ["DISCORD_ALLOWED_CATEGORIES"])
+        self.assertEqual("700,800", os.environ["DISCORD_FREE_RESPONSE_CATEGORIES"])
 
     def test_channel_keys_do_not_overload_category_ids(self):
         keys = self.adapter._discord_channel_keys_from_channel(FakeTextChannel())

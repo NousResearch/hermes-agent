@@ -1974,7 +1974,7 @@ Setting `approvals.mode: off` disables all safety checks for terminal commands. 
 
 ### Deny rules
 
-`approvals.deny` is a list of glob patterns that block matching terminal commands unconditionally — even under `--yolo`, `/yolo`, or `mode: off`. It's the user-editable counterpart to the built-in hardline blocklist:
+`approvals.deny` is the historical command-deny list: glob patterns that block matching terminal commands unconditionally — even under `--yolo`, `/yolo`, or `mode: off`.
 
 ```yaml
 approvals:
@@ -1983,7 +1983,20 @@ approvals:
     - "*curl*|*sh*"
 ```
 
-Patterns are case-insensitive fnmatch globs and must be quoted in YAML (a bare leading `*` is a parse error). See [Security — User-Defined Deny Rules](/user-guide/security#user-defined-deny-rules-approvalsdeny) for details.
+`permissions.deny` is the broader deny-policy namespace. `permissions.deny.commands` is an alias for command-deny rules, and `permissions.deny.paths` blocks matching paths from file tools (`read_file`, `write_file`, `patch`, and `search_files`) before content is read or written:
+
+```yaml
+permissions:
+  deny:
+    paths:
+      - "~/.ssh/**"
+      - "~/.aws/**"
+      - "C:/Users/*/obsidian/Private/**"
+    commands:
+      - "git push --force*"
+```
+
+Patterns are case-insensitive fnmatch globs and must be quoted in YAML (a bare leading `*` is a parse error). See [Security — User-Defined Deny Rules](/user-guide/security#user-defined-deny-rules-approvalsdeny--permissionsdeny) for details.
 
 ## Checkpoints
 

@@ -523,23 +523,27 @@ def detect_hardline_command(command: str) -> tuple:
 
 
 def _match_user_deny_rule(command: str) -> str | None:
-    """Return the matching ``approvals.deny`` glob, or None.
+    """Return the matching user-defined command deny glob, or None.
 
-    ``approvals.deny`` in config.yaml is a user-defined list of fnmatch
-    globs that block a command unconditionally — like the hardline floor,
-    a deny match fires BEFORE the yolo / mode=off bypass. It is the
-    user-editable counterpart to the code-shipped hardline blocklist:
-    "never let the agent run this, even under yolo".
+    ``approvals.deny`` is the historical terminal-command deny list.
+    ``permissions.deny.commands`` is a forward-compatible alias in the broader
+    deny-policy namespace. Both block unconditionally — like the hardline floor,
+    a deny match fires BEFORE the yolo / mode=off bypass.
 
     Matching is case-insensitive and runs over the same normalized /
     deobfuscated command variants the dangerous-pattern detector uses, so
     quoting tricks (``r\\m``, ``git st""atus``) can't sidestep a rule any
-    more easily than they sidestep detection. Empty/absent list = no-op.
+    more easily than they sidestep detection. Empty/absent lists = no-op.
     """
     try:
-        deny_patterns = _get_approval_config().get("deny") or []
+        deny_patterns = list(_get_approval_config().get("deny") or [])
     except Exception:
         return None
+    try:
+        from agent.deny_policy import permissions_deny_commands
+        deny_patterns.extend(permissions_deny_commands())
+    except Exception:
+        pass
     if not deny_patterns:
         return None
     globs = [p.strip() for p in deny_patterns
@@ -555,16 +559,16 @@ def _match_user_deny_rule(command: str) -> str | None:
 
 
 def _user_deny_block_result(pattern: str) -> dict:
-    """Build the standard block result for an ``approvals.deny`` match."""
+    """Build the standard block result for a user-defined command deny match."""
     return {
         "approved": False,
         "user_deny": True,
         "message": (
             f"BLOCKED: this command matches the user-defined deny rule "
-            f"'{pattern}' (approvals.deny in config.yaml). It cannot be "
-            "executed via the agent — not even with --yolo, /yolo, or "
-            "approvals.mode=off. Do NOT retry or rephrase this command; "
-            "the user has explicitly forbidden it."
+            f"'{pattern}' (approvals.deny / permissions.deny.commands in "
+            "config.yaml). It cannot be executed via the agent — not even "
+            "with --yolo, /yolo, or approvals.mode=off. Do NOT retry or "
+            "rephrase this command; the user has explicitly forbidden it."
         ),
     }
 

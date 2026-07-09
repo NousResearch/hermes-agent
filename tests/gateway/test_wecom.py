@@ -983,3 +983,64 @@ class TestTextBatchFlushRace:
         assert adapter._pending_text_batches.get(key) is None, (
             "active task must pop the event after processing"
         )
+
+
+class TestGuessFilename:
+    """Tests for _guess_filename method, especially percent-encoding handling."""
+
+    def test_guess_filename_decodes_percent_encoding_from_content_disposition(self):
+        """When content-disposition contains a percent-encoded filename, it must be decoded."""
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        # The issue example: Chinese filename percent-encoded exceeds Windows MAX_PATH
+        content_disposition = 'attachment; filename="%E3%80%90%E5%AF%B9%E5%86%85%E3%80%91XX%E7%A7%91%E6%8A%80-%E5%B0%8F%E7%BA%A2%E4%B9%A6%E4%BD%9C%E5%93%81%E5%AE%9E%E6%97%B6%E9%87%87%E9%9B%86%E5%AE%9E%E6%96%BD%E6%96%B9%E6%A1%88.md"'
+        result = WeComAdapter._guess_filename("", content_disposition, "")
+
+        # Should decode to Chinese characters (much shorter than the percent-encoded form)
+        assert "【对内】" in result
+        assert result.endswith(".md")
+        # The decoded filename should be ~30 chars, not ~210
+        assert len(result) < 50
+
+    def test_guess_filename_decodes_percent_encoding_from_url_path(self):
+        """When filename comes from URL path, it must also be decoded."""
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        # Percent-encoded URL path
+        url = "https://example.com/documents/%E6%96%87%E6%A1%A3.txt"
+        result = WeComAdapter._guess_filename(url, None, "text/plain")
+
+        # Should decode to Chinese characters
+        assert result == "文档.txt"
+
+    def test_guess_filename_handles_regular_ascii_filename(self):
+        """ASCII filenames should pass through unchanged."""
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        content_disposition = 'attachment; filename="report.pdf"'
+        result = WeComAdapter._guess_filename("", content_disposition, "")
+
+        assert result == "report.pdf"
+
+    def test_guess_filename_handles_empty_filename(self):
+        """When no filename is available, fall back to 'document' with extension."""
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        # No content-disposition, no useful URL path
+        url = "https://example.com/download"
+        result = WeComAdapter._guess_filename(url, None, "application/pdf")
+
+        # Should add extension based on content-type
+        assert result.endswith(".pdf")
+
+    def test_guess_filename_handles_double_percent_encoding(self):
+        """Doubly percent-encoded filenames should be decoded once."""
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        # Some servers double-encode: %25XX
+        content_disposition = 'attachment; filename="test%2520file.txt"'
+        result = WeComAdapter._guess_filename("", content_disposition, "")
+
+        # Should decode to "test%20file.txt" (not "test file.txt")
+        # unquote() only decodes once, which is the correct behavior
+        assert result == "test%20file.txt"

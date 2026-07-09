@@ -2137,7 +2137,7 @@ async function checkUpdates() {
     const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
       git(['rev-parse', 'HEAD']),
       runGit(['ls-remote', OFFICIAL_REPO_HTTPS_URL, `refs/heads/${branch}`], { cwd: updateRoot }),
-      git(['status', '--porcelain']),
+      git(['status', '--porcelain', '--untracked-files=no']),
       git(['rev-parse', '--abbrev-ref', 'HEAD'])
     ])
 
@@ -2186,7 +2186,7 @@ async function checkUpdates() {
   const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr, mergeBaseStr] = await Promise.all([
     git(['rev-parse', 'HEAD']),
     git(['rev-parse', `origin/${branch}`]),
-    git(['status', '--porcelain']),
+    git(['status', '--porcelain', '--untracked-files=no']),
     git(['rev-parse', '--abbrev-ref', 'HEAD']),
     git(['rev-parse', '--is-shallow-repository']),
     // merge-base exits non-zero with empty stdout when HEAD shares no common

@@ -414,17 +414,22 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
 # Status
 # ---------------------------------------------------------------------------
 
-def cmd_status(args) -> None:
-    """Show current memory provider config."""
+def build_provider_status_lines(args=None) -> list[str]:
+    """Render the legacy memory-provider status block as plain lines.
+
+    Kept as a reusable builder so the unified ``hermes memory status``
+    dashboard (in main.py) can fold this in without losing any information.
+    Returns lines (no trailing newline).
+    """
     from hermes_cli.config import load_config
 
     config = load_config()
     mem_config = config.get("memory", {})
     provider_name = mem_config.get("provider", "")
 
-    print("\nMemory status\n" + "─" * 40)
-    print("  Built-in:  always active")
-    print(f"  Provider:  {provider_name or '(none — built-in only)'}")
+    lines = []
+    lines.append("  Built-in:  always active")
+    lines.append(f"  Provider:  {provider_name or '(none — built-in only)'}")
 
     providers = _get_available_providers()
     provider = None
@@ -445,21 +450,21 @@ def cmd_status(args) -> None:
                     display_config["status_config_error"] = str(e)
 
         if display_config:
-            print(f"\n  {provider_name} config:")
+            lines.append(f"  {provider_name} config:")
             for key, val in display_config.items():
-                print(f"    {key}: {val}")
+                lines.append(f"    {key}: {val}")
 
         if provider:
-            print("\n  Plugin:    installed ✓")
+            lines.append("  Plugin:    installed ✓")
             if provider.is_available():
-                print("  Status:    available ✓")
+                lines.append("  Status:    available ✓")
             else:
-                print("  Status:    not available ✗")
+                lines.append("  Status:    not available ✗")
                 schema = provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
                 # Check all fields that have env_var (both secret and non-secret)
                 required_fields = [f for f in schema if f.get("env_var")]
                 if required_fields:
-                    print("  Missing:")
+                    lines.append("  Missing:")
                     for f in required_fields:
                         env_var = f.get("env_var", "")
                         url = f.get("url", "")
@@ -468,23 +473,27 @@ def cmd_status(args) -> None:
                         line = f"    {mark} {env_var}"
                         if url and not is_set:
                             line += f"  → {url}"
-                        print(line)
+                        lines.append(line)
         else:
-            print("\n  Plugin:    NOT installed ✗")
-            print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
+            lines.append("  Plugin:    NOT installed ✗")
+            lines.append(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
 
     if providers:
-        print("\n  Installed plugins:")
+        lines.append("  Installed plugins:")
         for pname, desc, _ in providers:
             active = " ← active" if pname == provider_name else ""
-            print(f"    • {pname}  ({desc}){active}")
+            lines.append(f"    • {pname}  ({desc}){active}")
 
+    return lines
+
+
+def cmd_status(args) -> None:
+    """Show current memory provider config (legacy entry point)."""
+    print("\nMemory status\n" + "─" * 40)
+    for line in build_provider_status_lines(args):
+        print(line)
     print()
 
-
-# ---------------------------------------------------------------------------
-# Router
-# ---------------------------------------------------------------------------
 
 def memory_command(args) -> None:
     """Route memory subcommands."""

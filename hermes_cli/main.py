@@ -12685,10 +12685,414 @@ def cmd_memory(args):
             "\n  Memory reset complete. New sessions will start with a blank slate."
         )
         print(f"  Files were in: {display_hermes_home()}/memories/\n")
+    elif sub == "search":
+        _cmd_memory_search(args)
+    elif sub == "decision":
+        _cmd_memory_decision(args)
+    elif sub == "project":
+        _cmd_memory_project(args)
+    elif sub == "status":
+        _cmd_memory_status(args)
     else:
         from hermes_cli.memory_setup import memory_command
 
         memory_command(args)
+
+
+def _cmd_memory_search(args):
+    """Handle ``hermes memory search <query>`` (Phase 1).
+
+    Builds the Memory Router, classifies + routes the query, and prints
+    results. Deterministic and additive; does not touch existing memory
+    files. The index is a regenerable cache built on demand if missing.
+    """
+    from hermes_cli.memory_router import MemoryRouter, format_results
+    from hermes_cli.memory_index.indexer import MemoryIndex
+
+    query_parts = list(getattr(args, "query", []) or [])
+    query_opt = getattr(args, "query_opt", None)
+    if query_opt:
+        query_parts.append(query_opt)
+    query = " ".join(query_parts).strip()
+    if not query:
+        print("Usage: hermes memory search <query> [--limit N] [--json]")
+        return
+
+    limit = getattr(args, "limit", 10) or 10
+    intent_hint = getattr(args, "intent_hint", None)
+
+    router = MemoryRouter()
+    # Lazily build the index on first search if it does not yet exist, so the
+    # CLI works out-of-the-box without a separate build step. Deterministic.
+    try:
+        index = MemoryIndex()
+        if not index.available():
+            index.build()
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"  (index unavailable, searching identity only: {exc})")
+
+    result = router.search(query, intent_hint=intent_hint, limit=limit)
+
+    if getattr(args, "json_output", False):
+        import json as _json
+
+        payload = {
+            "query": query,
+            "intent": str(result.intent),
+            "capability": result.capability,
+            "ok": result.ok,
+            "results": format_results(result.results or []),
+        }
+        print(_json.dumps(payload, indent=2, default=str))
+        return
+
+    print(f"\n  Memory search: {query!r}")
+    print(f"  intent={result.intent} capability={result.capability} ok={result.ok}")
+    results = result.results or []
+    if not results:
+        print("  No results.\n")
+        return
+    print(f"  {len(results)} result(s):\n")
+    for r in results:
+        prov = r if hasattr(r, "source_file") else None
+        if prov is None:
+            continue
+        snippet = (prov.snippet or prov.content or "")[:200]
+        print(f"  ◆ {prov.source_file}")
+        print(f"    layer={prov.memory_layer} method={prov.retrieval_method} "
+              f"ts={prov.timestamp}")
+        if snippet:
+            print(f"    “{snippet}”")
+    print()
+
+
+def _cmd_memory_decision(args):
+    """Handle ``hermes memory decision [list|get|search|project|accept|draft]``.
+
+    Layer 4 ADR access through the MemoryAPI facade. Reads (list/get/search/
+    project) surface ONLY accepted ADRs — the trust boundary. ``accept`` and
+    ``draft`` are the human-gated / Hermes-autonomous writes respectively.
+    """
+    from hermes_cli.memory_api import MemoryAPI
+
+    api = MemoryAPI()
+    cmd = getattr(args, "decision_command", None)
+
+    if cmd in (None, "list"):
+        project = getattr(args, "project", None)
+        limit = getattr(args, "limit", 20)
+        recs = api.decision(project=project)[:limit]
+        _print_decisions(recs, args)
+        return
+
+    if cmd == "get":
+        recs = api.decision(id=args.decision_id)
+        if not recs:
+            print(f"  No accepted decision for id={args.decision_id!r}\n")
+            return
+        _print_decisions(recs, args)
+        return
+
+    if cmd == "search":
+        parts = list(getattr(args, "topic", []) or [])
+        if getattr(args, "topic_opt", None):
+            parts.append(args.topic_opt)
+        topic = " ".join(parts).strip()
+        recs = api.decision(topic=topic, project=getattr(args, "project", None))
+        _print_decisions(recs, args)
+        return
+
+    if cmd == "project":
+        recs = api.decision(project=args.project)
+        _print_decisions(recs, args)
+        return
+
+    if cmd == "accept":
+        rec = api.accept_decision(
+            args.decision_id,
+            approved_by=args.by,
+            supersedes=list(getattr(args, "supersedes", []) or []),
+            status=getattr(args, "status", "accepted"),
+        )
+        print(f"  ✓ Accepted {rec.id} (status={rec.status}, by={rec.approved_by})\n")
+        return
+
+    if cmd == "draft":
+        tags = [t.strip() for t in (getattr(args, "tags", "") or "").split(",") if t.strip()]
+        rec = api.draft_decision(
+            args.title,
+            context=args.context,
+            decision=args.decision,
+            alternatives=getattr(args, "alternatives", ""),
+            reasoning=getattr(args, "reasoning", ""),
+            consequences=getattr(args, "consequences", ""),
+            project=getattr(args, "project", "_system"),
+            proposed_by=getattr(args, "proposed_by", "hermes"),
+            tags=tags or None,
+        )
+        print(f"  • Drafted {rec.id} (status={rec.status}, proposed_by={rec.proposed_by})\n")
+        print("    Not authoritative until accepted: hermes memory decision accept "
+              f"{rec.id} --by <you>\n")
+        return
+
+    print("  Unknown decision subcommand.\n")
+
+
+def _print_decisions(recs, args):
+    if getattr(args, "json_output", False):
+        import json as _json
+
+        print(_json.dumps(
+            [r.__dict__ if hasattr(r, "__dict__") else r for r in recs],
+            indent=2, default=str,
+        ))
+        return
+    if not recs:
+        print("  No accepted decisions.\n")
+        return
+    print(f"  {len(recs)} decision(s):\n")
+    for r in recs:
+        print(f"  ◆ {r.id}  [{r.status}]")
+        print(f"    {r.title}")
+        if getattr(r, "project", ""):
+            print(f"    project={r.project}")
+        if getattr(r, "decision", ""):
+            print(f"    decision: {r.decision}")
+        if getattr(r, "supersedes", []):
+            print(f"    supersedes: {', '.join(r.supersedes)}")
+        if getattr(r, "superseded_by", []):
+            print(f"    superseded_by: {', '.join(r.superseded_by)}")
+        print()
+
+
+def _cmd_memory_project(args):
+    """Handle ``hermes memory project [show|status|next|set]`` (Layer 2).
+
+    Reads surface only EXISTING L2; nothing fabricates project state from
+    history. ``set`` is the ONLY write path and requires --by (human
+    authority). Hermes never triggers a write here.
+    """
+    from hermes_cli.memory_api import MemoryAPI
+
+    api = MemoryAPI()
+    cmd = getattr(args, "project_command", None)
+    project_arg = getattr(args, "project", None)
+
+    if cmd in (None, "show"):
+        ps = api.project(project_arg)
+        if ps is None:
+            key = project_arg or api._resolve_current_project()
+            print(f"  No L2 project state for {key or '<unresolved>'}.")
+            print("  Create with: hermes memory project set <project> --status active --by <you>\n")
+            return
+        _print_project(ps, args)
+        return
+
+    if cmd == "status":
+        ps = api.project(project_arg)
+        if ps is None:
+            key = project_arg or api._resolve_current_project()
+            print(f"  No L2 project state for {key or '<unresolved>'}.\n")
+            return
+        print(f"  {ps.project}: status={ps.status} (updated_by={ps.updated_by or '?'} @ {ps.updated_at or '?'})\n")
+        return
+
+    if cmd == "next":
+        ps = api.project(project_arg)
+        if ps is None:
+            key = project_arg or api._resolve_current_project()
+            print(f"  No L2 project state for {key or '<unresolved>'}.\n")
+            return
+        if not ps.next_actions:
+            print(f"  No next actions for {ps.project}.\n")
+            return
+        print(f"  Next actions for {ps.project}:\n")
+        for i, a in enumerate(ps.next_actions, 1):
+            blk = f"  (blocked_by: {', '.join(a.blocked_by)})" if a.blocked_by else ""
+            print(f"    {i}. {a.what}  [owner: {a.owner}]{blk}")
+        print()
+        return
+
+    if cmd == "set":
+        from hermes_cli.memory_api import NextAction, ProjectState
+        owners = [o.strip() for o in (getattr(args, "owners", "") or "").split(",") if o.strip()]
+        goals = [g.strip() for g in (getattr(args, "goals", "") or "").split(",") if g.strip()]
+        blockers = [b.strip() for b in (getattr(args, "blockers", "") or "").split(",") if b.strip()]
+        links_adr = [x.strip() for x in (getattr(args, "links_adr", "") or "").split(",") if x.strip()]
+        # Parse --next "what|owner" pairs.
+        next_actions = []
+        for spec in [n.strip() for n in (getattr(args, "next", "") or "").split(",") if n.strip()]:
+            what, _, owner = spec.partition("|")
+            next_actions.append(NextAction(what=what.strip(), owner=(owner.strip() or "unassigned")))
+        # Start from existing state (so unset fields are preserved), then apply.
+        base = api.project(args.project)
+        if base is None:
+            base = ProjectState(project=_slug_safe(args.project), title=getattr(args, "title") or args.project)
+        if getattr(args, "title", None):
+            base.title = args.title
+        if getattr(args, "status", None):
+            base.status = args.status
+        if owners:
+            base.owners = owners
+        if goals:
+            base.goals = goals
+        if blockers:
+            base.blockers = blockers
+        if next_actions:
+            base.next_actions = next_actions
+        if links_adr:
+            base.links = {**base.links, "adrs": links_adr}
+        if getattr(args, "narrative", ""):
+            base.narrative = args.narrative
+        if getattr(args, "last_verified", ""):
+            base.last_verified = args.last_verified
+        if getattr(args, "verified_by", ""):
+            base.verified_by = args.verified_by
+        saved = api.set_project(base, updated_by=args.updated_by)
+        print(f"  ✓ Saved L2 project state for {saved.project} (status={saved.status}, by={saved.updated_by})\n")
+        return
+
+    print("  Unknown project subcommand.\n")
+
+
+def _slug_safe(project: str) -> str:
+    import re
+
+    return re.sub(r"[^a-z0-9]+", "-", project.lower()).strip("-") or "_system"
+
+
+def _print_project(ps, args):
+    if getattr(args, "json_output", False):
+        import json as _json
+
+        print(_json.dumps(ps.__dict__, indent=2, default=str))
+        return
+    print(f"  Project: {ps.project}")
+    if ps.title and ps.title != ps.project:
+        print(f"  Title:   {ps.title}")
+    print(f"  Status:  {ps.status or '(unset)'}")
+    if ps.owners:
+        print(f"  Owners:  {', '.join(ps.owners)}")
+    if ps.goals:
+        print(f"  Goals:   {', '.join(ps.goals)}")
+    if ps.blockers:
+        print(f"  Blockers: {', '.join(ps.blockers)}")
+    if ps.next_actions:
+        print("  Next actions:")
+        for i, a in enumerate(ps.next_actions, 1):
+            blk = f"  (blocked_by: {', '.join(a.blocked_by)})" if a.blocked_by else ""
+            print(f"    {i}. {a.what}  [owner: {a.owner}]{blk}")
+    if ps.open_questions:
+        print(f"  Open questions: {', '.join(ps.open_questions)}")
+    if ps.links:
+        print(f"  Links: {ps.links}")
+    if ps.last_verified:
+        print(f"  Last verified: {ps.last_verified} by {ps.verified_by}")
+    if ps.narrative:
+        print(f"\n  {ps.narrative}")
+    print()
+
+
+def _cmd_memory_status(args):
+    """Handle ``hermes memory status`` — unified memory health dashboard (Phase 1.5).
+
+    Folds together the legacy provider-readiness report and the new
+    architecture report. Non-destructive: reads only.
+
+    Sections:
+      * Provider (legacy): active provider, config, plugin availability + readiness
+      * Router: registered capabilities, intents served, last-route fallback
+      * Memory layers: L1 always; L5 when index healthy; L2/L3/L4/L7 not yet wired
+      * Layer 5 index health: exists / opens / readable / status
+      * Index contents: document count + FTS5 availability
+      * Optional backends: Holographic plugin presence + numpy
+    """
+    from hermes_cli.memory_index.indexer import MemoryIndex
+    from hermes_cli.config import load_config, cfg_get
+    from hermes_cli.memory_router.router import MemoryRouter
+    from hermes_cli.memory_setup import build_provider_status_lines
+
+    router = MemoryRouter()
+    caps = router.registry.list()
+    index = MemoryIndex()
+    health = index.index_health()
+    doc_count = index.document_count()
+    fts5 = index.fts5_available()
+
+    def fmt_line(label, value, note=""):
+        extra = f"  {note}" if note else ""
+        print(f"    {label:<18} {value}{extra}")
+
+    # ---- Provider (legacy readiness, preserved verbatim) -----------------
+    print("\n  Memory provider")
+    for line in build_provider_status_lines(args):
+        print(line)
+
+    # ---- Router ----------------------------------------------------------
+    print("\n  Router")
+    fmt_line("registered", f"{len(caps)} capability(ies)")
+    for c in caps:
+        intent_str = ",".join(i.name for i in c.intents)
+        mark = "✓" if c.available else "✗"
+        print(f"    - {c.name} [{mark}] intents: {intent_str}")
+    fb = sum(1 for r in router.last_routes if r.fallback_used)
+    fmt_line("last_routes", f"{len(router.last_routes)} (fallback={fb})")
+
+    # ---- Memory layers ---------------------------------------------------
+    print("\n  Memory layers")
+    print("    ◆ L1 identity      ✓ active   (MEMORY.md / USER.md / IDENTITY.md / SOUL.md)")
+    if health["status"] == "ok":
+        print("    ◆ L5 index         ✓ active")
+    else:
+        print(f"    ◆ L5 index         … {health['status']}  (run `hermes memory search` to build)")
+    for name, note in (
+        ("L2 project", "planned (Phase 2)"),
+        ("L3 archive", "active (incremental indexing via on_session_end)"),
+        ("L4 decisions/ADR", "planned (Phase 4)"),
+        ("L7 relationships", "optional (Graphiti/Holographic, not wired)"),
+    ):
+        print(f"    ◇ {name:<18} … {note}")
+
+    # ---- Layer 5 index health -------------------------------------------
+    print("\n  Layer 5 index health")
+    fmt_line("db_path", health["db_path"])
+    fmt_line("db_exists", health["db_exists"])
+    fmt_line("opens", health["opens"])
+    fmt_line("base_readable", health["base_table_readable"])
+    fmt_line("status", health["status"])
+
+    # ---- Index contents --------------------------------------------------
+    print("\n  Index contents")
+    fmt_line("indexed_docs", doc_count)
+    fmt_line("fts5_available", fts5, "fallback: sqlite-like LIKE scan")
+
+    # ---- L3 conversation archive lifecycle (Phase 3) ---------------------
+    stats = index.archive_stats()
+    print("\n  L3 conversation archive")
+    print(f"    Indexed sessions: {stats['indexed_sessions']}")
+    print(f"    Pending:          {stats['pending']}")
+    print(f"    Failed:           {stats['failed']}")
+    print(f"    Last refresh:     {stats['last_refresh'] or '—'}")
+    if stats["last_error"]:
+        print(f"    Last error:       {stats['last_error']}")
+
+    # ---- Optional backends ----------------------------------------------
+    cfg = load_config()
+    provider = cfg_get(cfg, "memory", "provider") or "(none — built-in only)"
+    holo_dir = (get_hermes_home() / "hermes-agent" / "plugins" / "memory" / "holographic")
+    if not holo_dir.exists():
+        holo_dir = Path(__file__).resolve().parents[1] / "plugins" / "memory" / "holographic"
+    holo_present = holo_dir.exists()
+    try:
+        import importlib.util
+
+        numpy_present = importlib.util.find_spec("numpy") is not None
+    except Exception:
+        numpy_present = False
+    print("\n  Optional backends")
+    fmt_line("Holographic", "present" if holo_present else "absent",
+             f"optional, never required; numpy={'yes' if numpy_present else 'no'}")
+    print()
 
 
 def cmd_acp(args):

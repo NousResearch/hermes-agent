@@ -215,8 +215,9 @@ def test_observed_group_context_uses_shared_source_and_prompt_for_later_mentions
 
         assert event.source.chat_id == "-100"
         assert event.source.chat_type == "group"
-        assert event.source.user_id is None
-        assert event.source.user_name is None
+        # Triggered messages preserve user_id/user_name for auth checks
+        assert event.source.user_id == "222"
+        assert event.source.user_name == "Bob Example"
         assert event.text == "[Bob Example|222]\nwhat did Alice say?"
         assert "Existing topic prompt" in event.channel_prompt
         assert "observed Telegram group context" in event.channel_prompt
@@ -343,7 +344,8 @@ def test_observed_group_context_preserves_slash_command_text_for_dispatch():
 
     assert attributed.text == "/new@hermes_bot"
     assert attributed.get_command() == "new"
-    assert attributed.source.user_id is None
+    # Triggered messages preserve user_id for auth checks
+    assert attributed.source.user_id == "111"
     assert "observed Telegram group context" in attributed.channel_prompt
 
 
@@ -1080,7 +1082,8 @@ def test_triggered_location_message_uses_shared_session_in_observe_mode():
 
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.call_args[0][0]
-        assert event.source.user_id is None
+        # Triggered messages preserve user_id for auth checks
+        assert event.source.user_id == "111"
         assert "[Alice Example|111]" in event.text
 
     asyncio.run(_run())
@@ -1135,7 +1138,8 @@ def test_triggered_voice_message_uses_shared_session_in_observe_mode():
 
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.call_args[0][0]
-        assert event.source.user_id is None
+        # Triggered messages preserve user_id for auth checks
+        assert event.source.user_id == "111"
         assert "[Alice Example|111]" in event.text
 
     asyncio.run(_run())

@@ -7107,7 +7107,11 @@ class TelegramAdapter(BasePlatformAdapter):
         allowed = self._telegram_observe_allowed_chats()
         if not allowed or chat_id_str not in allowed:
             return event
-        shared_source = self._telegram_group_observe_shared_source(event.source)
+        shared_source = dataclasses.replace(
+            self._telegram_group_observe_shared_source(event.source),
+            user_id=event.source.user_id,
+            user_name=event.source.user_name,
+        )
         observe_prompt = self._telegram_group_observe_channel_prompt()
         channel_prompt = f"{event.channel_prompt}\n\n{observe_prompt}" if event.channel_prompt else observe_prompt
         if event.message_type == MessageType.COMMAND:

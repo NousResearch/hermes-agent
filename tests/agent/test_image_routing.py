@@ -537,8 +537,10 @@ class TestExtractImageRefs:
         assert urls == []
 
     def test_finds_home_relative_path(self, tmp_path: Path, monkeypatch):
-        # Simulate ~/foo.png by pointing HOME at tmp_path and creating the file
+        # Simulate ~/foo.png by pointing HOME at tmp_path and creating the file.
+        # Windows expanduser() prefers USERPROFILE over HOME; POSIX uses HOME.
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         img = tmp_path / "foo.png"
         img.write_bytes(_png_bytes())
         paths, urls = extract_image_refs("see ~/foo.png please")
@@ -637,6 +639,56 @@ class TestExtractImageRefs:
         body = f"see {img}"
         paths, urls = extract_image_refs(body)
         assert paths == [str(img)]
+
+    def test_mixed_separator_duplicates_collapse(self, tmp_path: Path):
+        # On Windows the same file cited with ``\`` and ``/`` separators must
+        # dedupe to a single attachment (paths are normalized before dedupe).
+        # On POSIX both spellings are identical, so this degrades to the
+        # plain dedupe case.
+        img = tmp_path / "one.png"
+        img.write_bytes(_png_bytes())
+        native = str(img)
+        forward = native.replace("\\", "/")
+        body = f"see {native} and also {forward}"
+        paths, urls = extract_image_refs(body)
+        assert paths == [native]
+        assert urls == []
+
+
+class TestLocalImagePathRegexWindowsShapes:
+    """Pattern-level coverage for Windows path shapes (#34632 parity with
+    gateway's ``extract_local_files``). Runs on every platform — no file on
+    disk is needed to assert what the regex does and doesn't match."""
+
+    def _matches(self, text: str) -> list:
+        from agent.image_routing import _LOCAL_IMAGE_PATH_RE
+        return [m.group(0) for m in _LOCAL_IMAGE_PATH_RE.finditer(text)]
+
+    def test_backslash_drive_path_matches(self):
+        assert self._matches(r"see C:\Users\kotsu\shot.png ok") == [r"C:\Users\kotsu\shot.png"]
+
+    def test_forward_slash_drive_path_matches(self):
+        assert self._matches("see C:/Users/kotsu/shot.png ok") == ["C:/Users/kotsu/shot.png"]
+
+    def test_lowercase_drive_letter_matches(self):
+        assert self._matches(r"see d:\pics\a.jpeg ok") == [r"d:\pics\a.jpeg"]
+
+    def test_drive_root_file_matches(self):
+        assert self._matches(r"at D:\report.png end") == [r"D:\report.png"]
+
+    def test_relative_windows_path_ignored(self):
+        # No drive letter, no leading separator → not an absolute path.
+        assert self._matches(r"see Users\kotsu\shot.png ok") == []
+
+    def test_drive_letter_without_separator_ignored(self):
+        assert self._matches("see C:file.png ok") == []
+
+    def test_unix_shapes_still_match(self):
+        assert self._matches("see /tmp/a.png and ~/b.jpg ok") == ["/tmp/a.png", "~/b.jpg"]
+
+    def test_url_path_portion_still_ignored(self):
+        # The lookbehind must keep rejecting the path-portion of URLs.
+        assert self._matches("https://example.com/some/dir/image.png") == []
 
 
 # ─── build_native_content_parts with URLs ────────────────────────────────────

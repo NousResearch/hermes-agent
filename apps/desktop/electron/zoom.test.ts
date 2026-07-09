@@ -7,7 +7,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { clampZoomLevel, percentToZoomLevel, ZOOM_STORAGE_KEY, zoomLevelToPercent } from './zoom'
+import {
+  clampZoomLevel,
+  installZoomReassertOnWindowEvents,
+  percentToZoomLevel,
+  ZOOM_REASSERT_WINDOW_EVENTS,
+  ZOOM_STORAGE_KEY,
+  zoomLevelToPercent
+} from './zoom'
 
 test('storage key stays stable so persisted zoom survives upgrades', () => {
   assert.equal(ZOOM_STORAGE_KEY, 'hermes:desktop:zoomLevel')
@@ -52,4 +59,41 @@ test('conversion is monotonic across the preset range', () => {
 test('extreme percentages clamp to the level bounds', () => {
   assert.equal(percentToZoomLevel(1), -9)
   assert.equal(percentToZoomLevel(1_000_000), 9)
+})
+
+test('installZoomReassertOnWindowEvents wires show and restore', () => {
+  const handlers = new Map()
+  const win = {
+    isDestroyed: () => false,
+    on(event, listener) {
+      handlers.set(event, listener)
+    }
+  }
+  let calls = 0
+  installZoomReassertOnWindowEvents(win, () => {
+    calls += 1
+  })
+
+  assert.deepEqual([...handlers.keys()], [...ZOOM_REASSERT_WINDOW_EVENTS])
+  handlers.get('show')()
+  handlers.get('restore')()
+  assert.equal(calls, 2)
+})
+
+test('installZoomReassertOnWindowEvents skips destroyed windows', () => {
+  const handlers = new Map()
+  let destroyed = false
+  const win = {
+    isDestroyed: () => destroyed,
+    on(event, listener) {
+      handlers.set(event, listener)
+    }
+  }
+  let calls = 0
+  installZoomReassertOnWindowEvents(win, () => {
+    calls += 1
+  })
+  destroyed = true
+  handlers.get('show')()
+  assert.equal(calls, 0)
 })

@@ -160,6 +160,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
   const forceFreshPtyRef = useRef(false);
+  // Tracks the previous ?resume= query param so the PTY WS effect can detect
+  // when the user picks a different session from the sidebar / Sessions page.
+  // When the target changes, force a fresh PTY spawn so _resolve_chat_argv
+  // injects the correct HERMES_TUI_RESUME into the child environment;
+  // without this the keep-alive PTY (same ?attach= token) is reattached
+  // as-is with stale env vars and loads the wrong session's history.
+  const prevResumeParamRef = useRef<string | null>(null);
   // NS-504: when the agent process exits cleanly (the user typed `/exit`, or
   // started a new session that ended the current PTY child), the PTY socket
   // closes with a normal code. Before this fix the terminal just printed
@@ -684,8 +691,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let unmounting = false;
     let onDataDisposable: { dispose(): void } | null = null;
     let onResizeDisposable: { dispose(): void } | null = null;
-    const forceFresh = forceFreshPtyRef.current;
+    let forceFresh = forceFreshPtyRef.current;
     forceFreshPtyRef.current = false;
+    // When the ?resume= target changes (user picks a different session from the
+    // sidebar or the Sessions page), force a fresh PTY spawn so the backend
+    // injects HERMES_TUI_RESUME into the child process environment. Without this
+    // the keep-alive PTY (same ?attach= token) is reattached as-is with stale
+    // env vars and continues showing the previous session instead of loading
+    // the newly selected session's history.
+    const resumeChanged = resumeParam !== prevResumeParamRef.current;
+    if (resumeChanged && !forceFresh) {
+      forceFresh = true;
+    }
+    prevResumeParamRef.current = resumeParam;
     const scheduleReconnect = (code: number) => {
       if (reconnectTimerRef.current) {
         return;

@@ -535,8 +535,14 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     to retry, so a lingering failure streak is history, not a signal.
     (``complete_task`` resets the counter, but a manual done — e.g. a
     dashboard drag — ends no run and used to leave the flag stuck.)
+
+    A fresh attempt in flight (``running``) is also exempt: retrying a
+    task should clear the stale failure banner until this attempt also
+    resolves. Otherwise a card that's actively trying again still shows
+    "failed Nx", which reads as a current failure. It re-fires if the new
+    run fails too (status leaves ``running`` with a recorded outcome).
     """
-    if _task_field(task, "status") in ("done", "archived"):
+    if _task_field(task, "status") in ("done", "archived", "running"):
         return []
     threshold = _positive_int(cfg.get(
         "failure_threshold",
@@ -662,8 +668,13 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
     history, and a manual done (dashboard drag) appends no ``completed``
     run to break the crash streak, so the flag was permanent (#kanban
     desktop dogfood). Done means done.
+
+    ``running`` is exempt too: a fresh attempt is in flight, and its
+    in-flight run (no outcome yet) doesn't break the trailing crash scan,
+    so a retried card kept showing "crashed Nx" over an active run. The
+    banner re-fires if the new attempt also crashes.
     """
-    if _task_field(task, "status") in ("done", "archived"):
+    if _task_field(task, "status") in ("done", "archived", "running"):
         return []
     failure_threshold = int(cfg.get(
         "failure_threshold",

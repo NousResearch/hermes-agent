@@ -1290,6 +1290,31 @@ class TestChatCompletionsEndpoint:
                 assert " about it..." in body
 
     @pytest.mark.asyncio
+    async def test_stream_falls_back_to_final_response_without_deltas(self, adapter):
+        """If the agent does not emit token deltas, stream final_response before DONE."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                return (
+                    {"final_response": "Fallback text", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 3, "total_tokens": 13},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert "Fallback text" in body
+                assert "[DONE]" in body
+
+    @pytest.mark.asyncio
     async def test_stream_includes_tool_progress(self, adapter):
         """tool_start_callback fires → progress appears as custom SSE event, not in delta.content."""
         import asyncio
@@ -1444,11 +1469,11 @@ class TestChatCompletionsEndpoint:
                 assert resp.status == 200
                 body = await resp.text()
 
-            # Walk the SSE body and collect *(status, toolCallId)* pairs
+            # Walk the SSE body and collect *(status, toolCallId, output)* tuples
             # per event so the assertions verify per-event correlation —
             # an event missing ``toolCallId`` would not pass even if a
             # different event happens to carry the right id.
-            pairs: list[tuple[str | None, str | None]] = []
+            pairs: list[tuple[str | None, str | None, str | None]] = []
             lines = body.splitlines()
             for i, line in enumerate(lines):
                 if line.strip() != "event: hermes.tool.progress":
@@ -1459,7 +1484,11 @@ class TestChatCompletionsEndpoint:
                             payload = _json.loads(follow[len("data: "):])
                         except _json.JSONDecodeError:
                             break
-                        pairs.append((payload.get("status"), payload.get("toolCallId")))
+                        pairs.append((
+                            payload.get("status"),
+                            payload.get("toolCallId"),
+                            payload.get("output"),
+                        ))
                         break
 
             # Each tool start must emit exactly one event (no duplicate
@@ -1467,8 +1496,8 @@ class TestChatCompletionsEndpoint:
             # same toolCallId on every event — not just somewhere in the
             # aggregate.
             assert len(pairs) == 2, f"expected 2 events (running+completed), got {pairs}"
-            assert pairs[0] == ("running", "call_terminal_1"), pairs
-            assert pairs[1] == ("completed", "call_terminal_1"), pairs
+            assert pairs[0] == ("running", "call_terminal_1", None), pairs
+            assert pairs[1] == ("completed", "call_terminal_1", "ok"), pairs
 
     @pytest.mark.asyncio
     async def test_stream_tool_lifecycle_skips_internal_and_orphan_completes(self, adapter):
@@ -3596,8 +3625,41 @@ class TestSessionIdHeader:
             assert call_kwargs["user_message"] == "new question"
 
     @pytest.mark.asyncio
-    async def test_db_failure_falls_back_to_empty_history(self, auth_adapter):
-        """If SessionDB raises, history falls back to empty and request still succeeds."""
+    async def test_provided_session_id_with_empty_db_uses_request_history(self, auth_adapter):
+        """A new keyed session should keep client history until DB transcript state exists."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = []
+        auth_adapter._session_db = mock_db
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Hermes-Session-Id": "new-keyed-session", "Authorization": "Bearer sk-secret"},
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [
+                            {"role": "user", "content": "old msg from client"},
+                            {"role": "assistant", "content": "old reply from client"},
+                            {"role": "user", "content": "new question"},
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["conversation_history"] == [
+                {"role": "user", "content": "old msg from client"},
+                {"role": "assistant", "content": "old reply from client"},
+            ]
+            assert call_kwargs["user_message"] == "new question"
+
+    @pytest.mark.asyncio
+    async def test_db_failure_falls_back_to_request_history(self, auth_adapter):
+        """If SessionDB raises, request history is retained and request still succeeds."""
         mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
         # Simulate DB failure: _session_db is None and SessionDB() constructor raises
         auth_adapter._session_db = None
@@ -3610,12 +3672,23 @@ class TestSessionIdHeader:
                 resp = await cli.post(
                     "/v1/chat/completions",
                     headers={"X-Hermes-Session-Id": "some-session", "Authorization": "Bearer sk-secret"},
-                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Hi"}]},
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [
+                            {"role": "user", "content": "old msg from client"},
+                            {"role": "assistant", "content": "old reply from client"},
+                            {"role": "user", "content": "new question"},
+                        ],
+                    },
                 )
 
             assert resp.status == 200
             call_kwargs = mock_run.call_args.kwargs
-            assert call_kwargs["conversation_history"] == []
+            assert call_kwargs["conversation_history"] == [
+                {"role": "user", "content": "old msg from client"},
+                {"role": "assistant", "content": "old reply from client"},
+            ]
+            assert call_kwargs["user_message"] == "new question"
             assert call_kwargs["session_id"] == "some-session"
 
 

@@ -9,6 +9,7 @@ Covers:
 """
 
 import asyncio
+import json
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -305,6 +306,55 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_events_stream_includes_tool_completed_output_preview(self, adapter):
+        """Completed tool events should include a bounded result preview."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            def _create_agent(**kwargs):
+                mock_agent = MagicMock()
+
+                def _run_conversation(user_message=None, conversation_history=None, task_id=None):
+                    start_cb = kwargs.get("tool_start_callback")
+                    complete_cb = kwargs.get("tool_complete_callback")
+                    if start_cb:
+                        start_cb("call_terminal_1", "terminal", {"command": "printf ok"})
+                    if complete_cb:
+                        complete_cb(
+                            "call_terminal_1",
+                            "terminal",
+                            {"command": "printf ok"},
+                            {"output": "RUN_TOOL_PREVIEW_OK", "exit_code": 0},
+                        )
+                    return {"final_response": "done"}
+
+                mock_agent.run_conversation.side_effect = _run_conversation
+                mock_agent.session_prompt_tokens = 4
+                mock_agent.session_completion_tokens = 2
+                mock_agent.session_total_tokens = 6
+                return mock_agent
+
+            with patch.object(adapter, "_create_agent", side_effect=_create_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                data = await resp.json()
+                run_id = data["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                body = await events_resp.text()
+
+        events = [
+            json.loads(line[len("data: "):])
+            for line in body.splitlines()
+            if line.startswith("data: ")
+        ]
+        completed_tools = [event for event in events if event.get("event") == "tool.completed"]
+        assert len(completed_tools) == 1
+        assert completed_tools[0]["tool_call_id"] == "call_terminal_1"
+        assert "RUN_TOOL_PREVIEW_OK" in completed_tools[0]["output"]
+        assert completed_tools[0]["error"] is False
+        assert [event.get("event") for event in events].count("tool.started") == 1
 
 
     @pytest.mark.asyncio

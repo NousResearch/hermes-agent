@@ -108,10 +108,12 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # unblocks → worker re-blocks → cron unblocks … forever.
 #
 #   * ``dependency``   — can't proceed until another task finishes. Routed to
-#                        ``todo`` (NOT ``blocked``) so the existing
-#                        parent-gating / ``recompute_ready`` machinery promotes
-#                        it automatically once parents are done. No human, no
-#                        cron, no retry storm.
+#                        ``todo`` (NOT ``blocked``) only when an encoded unmet
+#                        parent exists, so the existing parent-gating /
+#                        ``recompute_ready`` machinery promotes it automatically
+#                        once parents are done. Malformed dependency waits with
+#                        no unmet parent route to ``triage`` instead of becoming
+#                        immediately eligible again. No cron retry storm.
 #   * ``needs_input``  — needs a human decision/answer it cannot derive.
 #   * ``capability``   — hit a hard wall (no access, missing creds, an action no
 #                        AI agent can perform). Genuinely human-only.
@@ -4823,10 +4825,18 @@ def block_task(
         # here (rather than ``blocked``) is what keeps a cron from ever seeing
         # a dependency-wait as something to "unblock".
         if kind == "dependency":
+            has_unmet_parent = conn.execute(
+                "SELECT 1 FROM task_links l "
+                "JOIN tasks p ON p.id = l.parent_id "
+                "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') "
+                "LIMIT 1",
+                (task_id,),
+            ).fetchone() is not None
+            target_status = "todo" if has_unmet_parent else "triage"
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status        = 'todo',
+                   SET status        = ?,
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
@@ -4834,8 +4844,8 @@ def block_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
-                (kind, task_id) if expected_run_id is None
-                else (kind, task_id, int(expected_run_id)),
+                (target_status, kind, task_id) if expected_run_id is None
+                else (target_status, kind, task_id, int(expected_run_id)),
             )
             if cur.rowcount != 1:
                 return False
@@ -4848,11 +4858,24 @@ def block_task(
                 run_id = _synthesize_ended_run(
                     conn, task_id, outcome="blocked", summary=reason,
                 )
-            _append_event(
-                conn, task_id, "dependency_wait",
-                {"reason": reason, "kind": kind}, run_id=run_id,
-            )
-            routed_to = "todo"
+            if has_unmet_parent:
+                _append_event(
+                    conn, task_id, "dependency_wait",
+                    {"reason": reason, "kind": kind}, run_id=run_id,
+                )
+                routed_to = "todo"
+            else:
+                # A dependency block without an encoded unmet parent has no
+                # parent-gate for recompute_ready() to wait on. Leaving it in
+                # todo would make it immediately eligible again, recreating the
+                # promotion/re-block loop. Route the malformed wait to triage
+                # so an operator/decomposer can add the missing parent edge or
+                # choose the correct non-dependency block kind.
+                _append_event(
+                    conn, task_id, "dependency_wait_unresolved",
+                    {"reason": reason, "kind": kind}, run_id=run_id,
+                )
+                routed_to = "triage"
             _blocked_task = get_task(conn, task_id)
             _fire_kanban_lifecycle_hook(
                 "kanban_task_blocked",

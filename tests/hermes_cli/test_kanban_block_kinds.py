@@ -5,8 +5,10 @@ task, a cron unblocks it, the worker re-blocks for the same reason, repeat
 forever. The fix gives ``block_task`` a typed ``kind`` and a persistent
 ``block_recurrences`` counter:
 
-* ``dependency`` blocks route to ``todo`` (parent-gated, auto-resumed) and
-  never enter the human ``blocked`` bucket a cron would keep unblocking.
+* ``dependency`` blocks with encoded unmet parents route to ``todo``
+  (parent-gated, auto-resumed) and never enter the human ``blocked`` bucket a
+  cron would keep unblocking. Malformed dependency blocks with no unmet parent
+  route to ``triage`` instead of becoming immediately eligible again.
 * ``needs_input`` / ``capability`` / un-typed blocks land in ``blocked``;
   each same-cause re-block after an unblock increments ``block_recurrences``,
   and at ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
@@ -136,13 +138,55 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
 
 
 def test_dependency_block_routes_to_todo(kanban_home: Path) -> None:
-    """Dependency waits never enter the human 'blocked' bucket."""
+    """Dependency waits with an encoded unmet parent stay out of the human bucket."""
     with kb.connect_closing() as conn:
+        parent = kb.create_task(conn, title="parent")
         tid = _running_task(conn)
+        kb.link_tasks(conn, parent_id=parent, child_id=tid)
         assert kb.block_task(conn, tid, reason="need X first", kind="dependency")
         t = kb.get_task(conn, tid)
         assert t.status == "todo"
         assert t.block_kind == "dependency"
+
+
+def test_dependency_block_with_unmet_parent_stays_todo_and_dispatch_does_not_spawn(
+    kanban_home: Path, all_assignees_spawnable
+) -> None:
+    """An encoded dependency wait is parent-gated until the parent is terminal."""
+    with kb.connect_closing() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = _running_task(conn, title="child")
+        kb.link_tasks(conn, parent_id=parent, child_id=child)
+
+        assert kb.block_task(conn, child, reason="wait for parent", kind="dependency")
+        assert kb.get_task(conn, child).status == "todo"
+
+        spawned: list[str] = []
+
+        def _spawn(task, workspace):
+            spawned.append(task.id)
+            return None
+
+        result = kb.dispatch_once(conn, spawn_fn=_spawn)
+
+        assert child not in [task_id for task_id, *_ in result.spawned]
+        assert child not in spawned
+        assert kb.get_task(conn, child).status == "todo"
+
+
+def test_dependency_block_without_unmet_parent_routes_to_triage(kanban_home: Path) -> None:
+    """A dependency block with no encoded unmet parent is malformed, not ready."""
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+
+        assert kb.block_task(conn, tid, reason="missing prerequisite edge", kind="dependency")
+
+        t = kb.get_task(conn, tid)
+        assert t.status == "triage"
+        assert t.block_kind == "dependency"
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "dependency_wait_unresolved"]
+        assert events
+        assert events[-1].payload["reason"] == "missing prerequisite edge"
 
 
 def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:

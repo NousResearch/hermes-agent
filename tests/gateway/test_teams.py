@@ -618,6 +618,7 @@ class TestTeamsMessageHandling:
         tenant_id="tenant-789",
         activity_id="activity-001",
         attachments=None,
+        entities=None,
     ):
         activity = MagicMock()
         activity.text = text
@@ -632,12 +633,24 @@ class TestTeamsMessageHandling:
         activity.conversation.name = "Test Chat"
         activity.conversation.tenant_id = tenant_id
         activity.attachments = attachments or []
+        activity.entities = entities or []
         return activity
 
     def _make_ctx(self, activity):
         ctx = MagicMock()
         ctx.activity = activity
         return ctx
+
+    def _bot_mention_entity(self):
+        return {
+            "type": "mention",
+            "mentioned": {"id": "bot-id", "name": "Hermes"},
+        }
+
+    def _ready_app(self, adapter):
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter._app.send = AsyncMock(return_value=SimpleNamespace(id="sent-mode-reply"))
 
     @pytest.mark.anyio
     async def test_personal_message_creates_dm_event(self):
@@ -664,11 +677,16 @@ class TestTeamsMessageHandling:
         adapter._app.id = "bot-id"
         adapter.handle_message = AsyncMock()
 
-        activity = self._make_activity(conversation_type="groupChat")
+        activity = self._make_activity(
+            text="<at>Hermes</at> hello group",
+            conversation_type="groupChat",
+            entities=[self._bot_mention_entity()],
+        )
         await adapter._on_message(self._make_ctx(activity))
 
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "group"
+        assert event.text == "hello group"
 
     @pytest.mark.anyio
     async def test_channel_message_creates_channel_event(self):
@@ -679,11 +697,249 @@ class TestTeamsMessageHandling:
         adapter._app.id = "bot-id"
         adapter.handle_message = AsyncMock()
 
-        activity = self._make_activity(conversation_type="channel")
+        activity = self._make_activity(
+            text="<at>Hermes</at> hello channel",
+            conversation_type="channel",
+            entities=[self._bot_mention_entity()],
+        )
         await adapter._on_message(self._make_ctx(activity))
 
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "channel"
+        assert event.text == "hello channel"
+
+    @pytest.mark.anyio
+    async def test_group_message_without_mention_is_ignored_by_default(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="ambient group chatter",
+            conversation_type="groupChat",
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_channel_message_without_mention_is_ignored_by_default(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="ambient channel chatter",
+            conversation_type="channel",
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_group_message_without_mention_allowed_when_respond_all_configured(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+            respond_to_all_messages=True,
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="ambient group chatter",
+            conversation_type="groupChat",
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.text == "ambient group chatter"
+        assert event.source.chat_type == "group"
+
+    @pytest.mark.anyio
+    async def test_channel_message_without_mention_allowed_when_respond_all_env_set(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_RESPOND_TO_ALL_MESSAGES", "true")
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="ambient channel chatter",
+            conversation_type="channel",
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.text == "ambient channel chatter"
+        assert event.source.chat_type == "channel"
+
+    @pytest.mark.anyio
+    async def test_other_user_mention_does_not_wake_bot(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="<at>Ada</at> can you check this?",
+            conversation_type="channel",
+            entities=[
+                {
+                    "type": "mention",
+                    "mentioned": {"id": "other-user-id", "name": "Ada"},
+                }
+            ],
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_mode_command_allows_authorized_user_to_enable_respond_all(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+            mode_allowed_users="aad-456",
+        ))
+        self._ready_app(adapter)
+        adapter.handle_message = AsyncMock()
+
+        command_activity = self._make_activity(
+            text="<at>Hermes</at> /teams-mode all",
+            conversation_type="channel",
+            entities=[self._bot_mention_entity()],
+        )
+        await adapter._on_message(self._make_ctx(command_activity))
+
+        adapter.handle_message.assert_not_awaited()
+        adapter._app.send.assert_awaited_once()
+        assert adapter._conversation_responds_to_all(command_activity.conversation.id) is True
+
+        ambient_activity = self._make_activity(
+            text="ambient channel chatter",
+            conversation_type="channel",
+            activity_id="activity-002",
+        )
+        await adapter._on_message(self._make_ctx(ambient_activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.text == "ambient channel chatter"
+        assert event.source.chat_type == "channel"
+
+    @pytest.mark.anyio
+    async def test_mode_command_can_disable_respond_all_for_conversation(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+            respond_to_all_messages=True,
+            mode_allowed_users="aad-456",
+        ))
+        self._ready_app(adapter)
+        adapter.handle_message = AsyncMock()
+
+        command_activity = self._make_activity(
+            text="<at>Hermes</at> /teams-mode mentions",
+            conversation_type="groupChat",
+            entities=[self._bot_mention_entity()],
+        )
+        await adapter._on_message(self._make_ctx(command_activity))
+
+        assert adapter._conversation_responds_to_all(command_activity.conversation.id) is False
+        ambient_activity = self._make_activity(
+            text="ambient group chatter",
+            conversation_type="groupChat",
+            activity_id="activity-002",
+        )
+        await adapter._on_message(self._make_ctx(ambient_activity))
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_mode_command_rejects_unauthorized_user(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+            mode_allowed_users="aad-authorized",
+        ))
+        self._ready_app(adapter)
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="<at>Hermes</at> /teams-mode all",
+            conversation_type="channel",
+            entities=[self._bot_mention_entity()],
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_not_awaited()
+        adapter._app.send.assert_awaited_once()
+        sent_text = adapter._app.send.call_args[0][1]
+        assert "Only Teams mode admins" in sent_text
+        assert adapter._conversation_responds_to_all(activity.conversation.id) is False
+
+    @pytest.mark.anyio
+    async def test_unmentioned_mode_command_is_consumed_in_shared_space(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+            respond_to_all_messages=True,
+            mode_allowed_users="aad-456",
+        ))
+        self._ready_app(adapter)
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="/teams-mode status",
+            conversation_type="channel",
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_not_awaited()
+        adapter._app.send.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_mode_command_persists_conversation_override(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+            mode_allowed_users="aad-456",
+        ))
+        self._ready_app(adapter)
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="<at>Hermes</at> /teams-mode all",
+            conversation_type="channel",
+            entities=[self._bot_mention_entity()],
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        restored = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+        ))
+        assert restored._conversation_responds_to_all(activity.conversation.id) is True
 
     @pytest.mark.anyio
     async def test_user_id_uses_aad_object_id(self):
@@ -757,7 +1013,10 @@ class TestTeamsAttachmentClassification:
 
     def _make_adapter(self):
         adapter = TeamsAdapter(_make_config(
-            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+            respond_to_all_messages=True,
         ))
         adapter._app = MagicMock()
         adapter._app.id = "bot-id"

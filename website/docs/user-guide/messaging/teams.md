@@ -22,6 +22,19 @@ Need meeting summaries from Microsoft Graph events rather than normal bot conver
 
 Teams delivers @mentions as regular messages with `<at>BotName</at>` tags, which Hermes strips automatically before processing.
 
+If your Teams app has resource-specific consent (RSC) permissions that make Teams deliver every group-chat or channel message to the bot, Hermes still ignores unmentioned group/channel messages by default. Set `TEAMS_RESPOND_TO_ALL_MESSAGES=true` or `platforms.teams.extra.respond_to_all_messages: true` only when you intentionally want the bot to process every message in shared spaces by default.
+
+Mode admins can also change the behavior for the current Teams conversation from inside Teams:
+
+```text
+@Hermes /teams-mode status
+@Hermes /teams-mode all
+@Hermes /teams-mode mentions
+@Hermes /teams-mode default
+```
+
+`all` makes Hermes process every delivered message in that conversation, `mentions` requires @mentions again, and `default` clears the conversation override so it follows `TEAMS_RESPOND_TO_ALL_MESSAGES` or `respond_to_all_messages`. Group-chat and channel mode commands must mention the bot; unmentioned command-like messages are consumed in shared spaces so they do not reach the agent as normal prompts. Hermes stores these overrides under `HERMES_HOME/state/teams_response_modes.json`.
+
 ---
 
 For source or local installs, include the Teams extra so the bundled adapter can
@@ -146,6 +159,9 @@ Open the printed link in your browser — it opens directly in the Teams client.
 | `TEAMS_HOME_CHANNEL` | Conversation ID for cron/proactive message delivery |
 | `TEAMS_HOME_CHANNEL_NAME` | Display name for the home channel |
 | `TEAMS_PORT` | Webhook port (default: `3978`) |
+| `TEAMS_RESPOND_TO_ALL_MESSAGES` | Set `true` to process every group-chat/channel message delivered by Teams; default requires @mention outside DMs |
+| `TEAMS_MODE_ALLOWED_USERS` | Comma-separated AAD object IDs allowed to run `/teams-mode`; defaults to `TEAMS_ALLOWED_USERS` |
+| `TEAMS_RESPONSE_MODE_STATE_FILE` | Optional path for persisted per-conversation `/teams-mode` overrides |
 
 ### config.yaml
 
@@ -160,6 +176,8 @@ platforms:
       client_secret: "your-secret"
       tenant_id: "your-tenant-id"
       port: 3978
+      respond_to_all_messages: false
+      mode_allowed_users: "aad-object-id-1,aad-object-id-2"
 ```
 
 ---
@@ -198,7 +216,7 @@ platforms:
       graph_ingest_attachments: false
 ```
 
-To use channel or group-chat Graph media fallback, configure the Teams app manifest with `webApplicationInfo` and `authorization.permissions.resourceSpecific` entries for `ChannelMessage.Read.Group` and/or `ChatMessage.Read.Chat`. The Entra app ID can be the same as the bot ID. Microsoft documents this manifest shape in [Receive all messages for bots and agents](https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/channel-messages-for-bots-and-agents).
+To use channel or group-chat Graph media fallback, configure the Teams app manifest with `webApplicationInfo` and `authorization.permissions.resourceSpecific` entries for `ChannelMessage.Read.Group` and/or `ChatMessage.Read.Chat`. The Entra app ID can be the same as the bot ID. Microsoft documents this manifest shape in [Receive all messages for bots and agents](https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/channel-messages-for-bots-and-agents). Those permissions can make Teams deliver every message to the bot; Hermes still requires an @mention outside DMs unless you set `respond_to_all_messages` or enable `respond-all` with `/teams-mode all` in that conversation.
 
 For Graph authentication, Hermes uses `MSGRAPH_TENANT_ID`, `MSGRAPH_CLIENT_ID`, and `MSGRAPH_CLIENT_SECRET` when present. If those are not set, it falls back to the Teams bot credentials. Reading SharePoint or OneDrive file bytes through Graph Drive content can require app-level file permissions such as `Files.Read.All` or `Sites.Read.All`, depending on your tenant policy; see Microsoft's [Download driveItem content](https://learn.microsoft.com/en-us/graph/api/driveitem-get-content) permissions table.
 

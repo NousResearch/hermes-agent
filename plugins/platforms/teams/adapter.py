@@ -18,6 +18,8 @@ Configuration in config.yaml:
           client_secret: "your-secret"      # or TEAMS_CLIENT_SECRET env var
           tenant_id: "your-tenant-id"       # or TEAMS_TENANT_ID env var
           port: 3978                        # or TEAMS_PORT env var
+          respond_to_all_messages: false     # or TEAMS_RESPOND_TO_ALL_MESSAGES env var
+          mode_allowed_users: "aad-id-1,aad-id-2" # or TEAMS_MODE_ALLOWED_USERS env var
 """
 
 from __future__ import annotations
@@ -718,6 +720,18 @@ class TeamsAdapter(BasePlatformAdapter):
             or os.getenv("TEAMS_GRAPH_INGEST_ATTACHMENTS", ""),
             default=True,
         )
+        self._default_respond_to_all_messages = _parse_bool(
+            extra.get("respond_to_all_messages")
+            or os.getenv("TEAMS_RESPOND_TO_ALL_MESSAGES", ""),
+            default=False,
+        )
+        self._respond_to_all_messages = self._default_respond_to_all_messages
+        self._mode_allowed_users = self._parse_allowed_users(
+            extra.get("mode_allowed_users")
+            or os.getenv("TEAMS_MODE_ALLOWED_USERS", "")
+            or os.getenv("TEAMS_ALLOWED_USERS", "")
+        )
+        self._response_mode_state = self._load_response_mode_state()
         self._graph_ingest_client: Any | None = None
         self._graph_ingest_warning_logged = False
 
@@ -1227,6 +1241,7 @@ class TeamsAdapter(BasePlatformAdapter):
         text = ""
         if hasattr(activity, "text") and activity.text:
             text = activity.text
+        mentioned = self._is_bot_mentioned(activity, text)
         # Strip <at>BotName</at> HTML tags that Teams prepends for @mentions
         if "<at>" in text:
             import re
@@ -1243,6 +1258,33 @@ class TeamsAdapter(BasePlatformAdapter):
             chat_type = "channel"
         else:
             chat_type = "dm"
+
+        responds_to_all = self._conversation_responds_to_all(conv.id)
+        if await self._maybe_handle_response_mode_command(
+            text=text,
+            chat_id=conv.id,
+            chat_type=chat_type,
+            activity=activity,
+            mentioned=mentioned,
+            reply_to=msg_id,
+        ):
+            return
+
+        # Teams can deliver every channel/group-chat message when the app has
+        # RSC all-message permissions. Keep DMs conversational, but require an
+        # explicit mention in shared spaces unless the operator opts into the
+        # all-message behavior.
+        if (
+            chat_type in {"group", "channel"}
+            and not responds_to_all
+            and not mentioned
+        ):
+            logger.debug(
+                "[teams] Ignoring unmentioned %s message because "
+                "TEAMS_RESPOND_TO_ALL_MESSAGES is not enabled",
+                chat_type,
+            )
+            return
 
         # Build source
         from_account = activity.from_
@@ -1374,6 +1416,192 @@ class TeamsAdapter(BasePlatformAdapter):
             message_id=msg_id,
         )
         await self.handle_message(event)
+
+    def _conversation_responds_to_all(self, chat_id: str) -> bool:
+        modes = self._response_mode_state.get("conversation_modes", {})
+        if isinstance(modes, dict):
+            entry = modes.get(str(chat_id))
+            if isinstance(entry, dict) and "respond_to_all_messages" in entry:
+                return bool(entry.get("respond_to_all_messages"))
+        return self._default_respond_to_all_messages
+
+    def _conversation_mode_source(self, chat_id: str) -> str:
+        modes = self._response_mode_state.get("conversation_modes", {})
+        if isinstance(modes, dict) and str(chat_id) in modes:
+            return "conversation override"
+        if self._default_respond_to_all_messages:
+            return "config/env default"
+        return "default"
+
+    def _response_mode_state_path(self):
+        override = os.getenv("TEAMS_RESPONSE_MODE_STATE_FILE", "").strip()
+        if override:
+            from pathlib import Path
+
+            return Path(override).expanduser()
+        from hermes_constants import get_hermes_home
+
+        return get_hermes_home() / "state" / "teams_response_modes.json"
+
+    def _load_response_mode_state(self) -> dict[str, Any]:
+        path = self._response_mode_state_path()
+        try:
+            if not path.exists():
+                return {"version": 1, "conversation_modes": {}}
+            data = json.loads(path.read_text(encoding="utf-8") or "{}")
+            if not isinstance(data, dict):
+                return {"version": 1, "conversation_modes": {}}
+            modes = data.get("conversation_modes")
+            if not isinstance(modes, dict):
+                data["conversation_modes"] = {}
+            data.setdefault("version", 1)
+            return data
+        except Exception as exc:
+            logger.warning("[teams] Failed to load response mode state: %s", exc)
+            return {"version": 1, "conversation_modes": {}}
+
+    def _save_response_mode_state(self) -> None:
+        path = self._response_mode_state_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(self._response_mode_state, indent=2, sort_keys=True)
+            path.write_text(payload + "\n", encoding="utf-8")
+        except Exception as exc:
+            logger.warning("[teams] Failed to save response mode state: %s", exc)
+
+    @staticmethod
+    def _parse_allowed_users(raw: Any) -> set[str]:
+        if isinstance(raw, (list, tuple, set)):
+            return {str(item).strip() for item in raw if str(item).strip()}
+        if isinstance(raw, str):
+            return {item.strip() for item in raw.split(",") if item.strip()}
+        return set()
+
+    def _is_mode_admin(self, activity: Any) -> bool:
+        from_account = activity.from_
+        user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
+        user_id = str(user_id or "").strip()
+        return bool(user_id and ("*" in self._mode_allowed_users or user_id in self._mode_allowed_users))
+
+    def _parse_response_mode_command(self, text: str) -> str | None:
+        normalized = " ".join((text or "").strip().split()).lower()
+        if not normalized:
+            return None
+        command_prefixes = ("/teams-mode", "teams mode", "teams-mode")
+        args: str | None = None
+        for prefix in command_prefixes:
+            if normalized == prefix:
+                args = ""
+                break
+            if normalized.startswith(prefix + " "):
+                args = normalized[len(prefix):].strip()
+                break
+        if args is None:
+            return None
+        if not args or args in {"status", "show", "current"}:
+            return "status"
+        if args in {"all", "on", "respond-all", "respond_all", "respond to all", "listen-all", "listen_all"}:
+            return "all"
+        if args in {"mentions", "mention", "mentions-only", "mention-only", "mentions_only", "off"}:
+            return "mentions"
+        if args in {"default", "reset", "clear"}:
+            return "default"
+        return "help"
+
+    async def _maybe_handle_response_mode_command(
+        self,
+        *,
+        text: str,
+        chat_id: str,
+        chat_type: str,
+        activity: Any,
+        mentioned: bool,
+        reply_to: str | None,
+    ) -> bool:
+        command = self._parse_response_mode_command(text)
+        if command is None:
+            return False
+
+        # Shared-space mode changes should be deliberate. If all-message mode is
+        # on and someone types a command-looking phrase without mentioning the
+        # bot, consume it so it does not become agent input.
+        if chat_type in {"group", "channel"} and not mentioned:
+            return True
+
+        if not self._is_mode_admin(activity):
+            await self.send(
+                chat_id,
+                "Only Teams mode admins can change the response mode. Configure `TEAMS_MODE_ALLOWED_USERS` or `mode_allowed_users` with the authorized AAD object IDs.",
+                reply_to=reply_to,
+            )
+            return True
+
+        if command == "all":
+            modes = self._response_mode_state.setdefault("conversation_modes", {})
+            modes[str(chat_id)] = {"respond_to_all_messages": True}
+            self._save_response_mode_state()
+            await self.send(
+                chat_id,
+                "Teams response mode for this conversation is now `respond-all`.",
+                reply_to=reply_to,
+            )
+            return True
+        if command == "mentions":
+            modes = self._response_mode_state.setdefault("conversation_modes", {})
+            modes[str(chat_id)] = {"respond_to_all_messages": False}
+            self._save_response_mode_state()
+            await self.send(
+                chat_id,
+                "Teams response mode for this conversation is now `mentions-only`.",
+                reply_to=reply_to,
+            )
+            return True
+        if command == "default":
+            modes = self._response_mode_state.setdefault("conversation_modes", {})
+            if isinstance(modes, dict):
+                modes.pop(str(chat_id), None)
+            self._save_response_mode_state()
+            current = "respond-all" if self._conversation_responds_to_all(chat_id) else "mentions-only"
+            await self.send(
+                chat_id,
+                f"Teams response mode for this conversation now follows the default: `{current}`.",
+                reply_to=reply_to,
+            )
+            return True
+        if command == "status":
+            current = "respond-all" if self._conversation_responds_to_all(chat_id) else "mentions-only"
+            await self.send(
+                chat_id,
+                f"Teams response mode for this conversation is `{current}` ({self._conversation_mode_source(chat_id)}).",
+                reply_to=reply_to,
+            )
+            return True
+
+        await self.send(
+            chat_id,
+            "Use `/teams-mode mentions`, `/teams-mode all`, `/teams-mode status`, or `/teams-mode default`.",
+            reply_to=reply_to,
+        )
+        return True
+
+    def _is_bot_mentioned(self, activity: Any, text: str) -> bool:
+        """Return True when the incoming Teams activity explicitly mentions this bot."""
+        bot_id = self._client_id or (self._app.id if self._app else "")
+        entities = getattr(activity, "entities", None) or []
+        saw_mention_entity = False
+        for entity in entities:
+            if self._object_field(entity, "type") != "mention":
+                continue
+            saw_mention_entity = True
+            mentioned = self._object_field(entity, "mentioned") or {}
+            mentioned_id = self._string_value(self._object_field(mentioned, "id"))
+            if bot_id and mentioned_id == bot_id:
+                return True
+        if saw_mention_entity:
+            return False
+        if "<at>" in (text or "").lower():
+            return True
+        return False
 
     async def _send_card(self, chat_id: str, card: "AdaptiveCard") -> "Any":
         """Send an AdaptiveCard, using a stored ConversationReference when available."""

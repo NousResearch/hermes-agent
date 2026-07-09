@@ -14,6 +14,7 @@ Key design decisions:
 - Session source tagging ('cli', 'telegram', 'discord', etc.) for filtering
 """
 
+import asyncio
 import json
 import logging
 import random
@@ -121,7 +122,12 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 19
+
+# Cap on user-controlled FTS5 query input before regex/sanitizer processing.
+# Search queries do not need to be arbitrarily large, and bounding them keeps
+# sanitizer/runtime behavior predictable under adversarial input.
+MAX_FTS5_QUERY_CHARS = 2_048
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -196,6 +202,61 @@ def get_last_init_error() -> Optional[str]:
     successfully (or hasn't been attempted).
     """
     return _last_init_error
+
+
+# Distinctive opening shared by both background-review harness prompts
+# (_SKILL_REVIEW_PROMPT and _MEMORY_REVIEW_PROMPT in agent/background_review.py).
+# Matched case-sensitively against the leading content of a user/system message.
+_REVIEW_HARNESS_PREFIXES = (
+    "Review the conversation above and update the skill library",
+    "Review the conversation above and consider saving to memory",
+)
+
+
+def _is_background_review_harness_message(msg: Dict[str, Any]) -> bool:
+    """True when ``msg`` is a persisted background-review harness prompt.
+
+    These are user/system turns the forked skill/memory review agent wrote into
+    a real session in older builds (before the ``_persist_disabled`` isolation
+    fix). They instruct the agent to act as the curator under a hard tool
+    restriction, so replaying them as live history hijacks the session.
+    """
+    if not isinstance(msg, dict):
+        return False
+    if msg.get("role") not in {"user", "system"}:
+        return False
+    content = msg.get("content")
+    if not isinstance(content, str):
+        return False
+    head = content.lstrip()
+    return any(head.startswith(p) for p in _REVIEW_HARNESS_PREFIXES)
+
+
+def _strip_background_review_harness(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Drop background-review harness messages and the curator-mode assistant
+    reply that immediately followed each one.
+
+    Walk the list once; when a harness user/system message is found, skip it and
+    also skip the next message if it is the assistant turn that answered it.
+    Everything else passes through untouched and in order.
+    """
+    if not messages:
+        return messages
+    out: List[Dict[str, Any]] = []
+    skip_next_assistant = False
+    for msg in messages:
+        if _is_background_review_harness_message(msg):
+            skip_next_assistant = True
+            continue
+        if skip_next_assistant:
+            skip_next_assistant = False
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                # The curator-mode reply to the harness prompt — drop it.
+                continue
+        out.append(msg)
+    return out
 
 
 def format_session_db_unavailable(prefix: str = "Session database not available") -> str:
@@ -644,6 +705,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     chat_id TEXT,
     chat_type TEXT,
     thread_id TEXT,
+    display_name TEXT,
+    origin_json TEXT,
+    expiry_finalized INTEGER DEFAULT 0,
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
@@ -674,6 +738,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_state TEXT,
     handoff_platform TEXT,
     handoff_error TEXT,
+    compression_failure_cooldown_until REAL,
+    compression_failure_error TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
@@ -706,6 +772,14 @@ CREATE TABLE IF NOT EXISTS state_meta (
     value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS gateway_routing (
+    scope TEXT NOT NULL DEFAULT '',
+    session_key TEXT NOT NULL,
+    entry_json TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (scope, session_key)
+);
+
 CREATE TABLE IF NOT EXISTS compression_locks (
     session_id TEXT PRIMARY KEY,
     holder TEXT NOT NULL,
@@ -728,10 +802,14 @@ CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(ex
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_active_null
+    ON messages(active) WHERE active IS NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key
     ON sessions(session_key, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
     ON sessions(source, user_id, chat_id, chat_type, thread_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
+    ON sessions(handoff_state, started_at);
 """
 
 FTS_SQL = """
@@ -812,6 +890,16 @@ class SessionDB:
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
     # Attempt a PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
+    # Merge fragmented FTS5 segments every N successful writes. The message
+    # triggers append one segment per insert; left unmaintained these grow
+    # into tens of thousands of segments, so every MATCH must scan them all
+    # and every insert pays a growing automerge cost — which lengthens the
+    # write-lock hold time and starves competing writers (gateway + cron
+    # processes share one state.db), surfacing as "database is locked".
+    # 'optimize' is a no-op once the index is already merged, so an idle DB
+    # pays almost nothing; the cadence is deliberately coarse so the one-off
+    # merge cost is amortised far below the checkpoint cadence.
+    _OPTIMIZE_EVERY_N_WRITES = 1000
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
         self.db_path = db_path or DEFAULT_DB_PATH
@@ -1080,10 +1168,12 @@ class SessionDB:
                         except Exception:
                             pass
                         raise
-                # Success — periodic best-effort checkpoint.
+                # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
                     self._try_wal_checkpoint()
+                if self._write_count % self._OPTIMIZE_EVERY_N_WRITES == 0:
+                    self._try_optimize_fts()
                 return result
             except sqlite3.OperationalError as exc:
                 err_msg = str(exc).lower()
@@ -1131,6 +1221,22 @@ class SessionDB:
                         "WAL checkpoint: %d/%d pages checkpointed",
                         result[2], result[1],
                     )
+        except Exception:
+            pass  # Best effort — never fatal.
+
+    def _try_optimize_fts(self) -> None:
+        """Best-effort FTS5 segment merge. Never raises.
+
+        Runs on the ``_OPTIMIZE_EVERY_N_WRITES`` cadence from the write hot
+        path (off the lock — ``optimize_fts`` re-acquires ``self._lock``
+        itself, mirroring ``_try_wal_checkpoint``). ``read_only`` connections
+        never reach the write path, so this is implicitly skipped for them.
+        Once the index is merged the 'optimize' command is close to free, so
+        the steady-state cost is negligible; the expensive case is only the
+        first merge of a long-neglected index.
+        """
+        try:
+            self.optimize_fts()
         except Exception:
             pass  # Best effort — never fatal.
 
@@ -1277,6 +1383,23 @@ class SessionDB:
         # column (idx_messages_session_active) — same ordering constraint.
         cursor.executescript(DEFERRED_INDEX_SQL)
 
+        # Heal NULL ``active`` rows unconditionally on every startup.
+        # On real-world DBs the reconciler-added ``active`` column can lack
+        # its NOT NULL DEFAULT 1 (older reconciler builds reconstructed the
+        # type without the default — see #51646: PRAGMA shows
+        # (17,'active','INTEGER',0,None,0) in the wild), so INSERTs that
+        # omitted the column wrote NULL and the ``WHERE active = 1``
+        # transcript loaders hid the whole history.  The INSERTs now set
+        # active=1 explicitly; this idempotent repair un-hides rows written
+        # before the fix.  It was previously gated at ``current_version <
+        # 12`` which never re-ran for already-v12+ databases.
+        try:
+            cursor.execute(
+                "UPDATE messages SET active = 1 WHERE active IS NULL"
+            )
+        except sqlite3.OperationalError:
+            pass
+
         fts5_available = self._sqlite_supports_fts5(cursor)
         fts_migrations_complete = True
         if not fts5_available:
@@ -1391,18 +1514,6 @@ class SessionDB:
                         fts_migrations_complete = False
                 else:
                     fts_migrations_complete = False
-            if current_version < 12:
-                # v12: messages.active flag for rewind/undo soft-deletion.
-                # The declarative reconcile_columns() above adds the
-                # column itself; this UPDATE is belt-and-suspenders to
-                # ensure any rows that pre-existed the ADD COLUMN have
-                # active=1 rather than NULL.
-                try:
-                    cursor.execute(
-                        "UPDATE messages SET active = 1 WHERE active IS NULL"
-                    )
-                except sqlite3.OperationalError:
-                    pass
             if current_version < 16:
                 # v16: tag delegate subagent rows so pickers stay clean after
                 # parent deletes that used to orphan them (parent_session_id → NULL).
@@ -1429,6 +1540,19 @@ class SessionDB:
                     )
                 except sqlite3.OperationalError:
                     pass
+            if current_version < 18:
+                # v18: gateway metadata consolidation (#9006). Backfill
+                # display_name / origin_json / expiry_finalized from
+                # sessions.json so pre-migration gateway sessions are
+                # discoverable from state.db without the JSON index.
+                try:
+                    self._backfill_gateway_metadata_from_sessions_json(cursor)
+                except Exception as exc:
+                    # Backfill is best-effort: sessions.json may be absent,
+                    # corrupted, or partially stale. Missing metadata simply
+                    # means consumers fall back to sessions.json for those
+                    # rows until the gateway rewrites them.
+                    logger.debug("v18 gateway metadata backfill skipped: %s", exc)
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -1486,14 +1610,41 @@ class SessionDB:
         parent_session_id: str = None,
         cwd: str = None,
     ) -> None:
-        """Shared INSERT OR IGNORE for session rows."""
+        """Insert a session row, enriching NULL metadata on conflict.
+
+        The gateway's ``get_or_create_session`` creates a bare row (source +
+        user_id) *before* the agent exists; the agent's later
+        ``create_session`` then carries the real ``model`` / ``model_config`` /
+        ``system_prompt``. A plain ``INSERT OR IGNORE`` silently dropped that
+        enrichment, leaving gateway sessions with NULL model/billing metadata.
+        The ``ON CONFLICT`` upsert backfills those fields via ``COALESCE`` —
+        only filling columns that are still NULL, never overwriting values an
+        earlier writer already set (so a later bare call with source="unknown"
+        can't clobber a real source/model).
+
+        ``chat_id``/``thread_id`` record the messaging origin (the chat/room and
+        thread the session was started in) so that gateway ``/resume`` can prove
+        a persisted, now-inactive row belongs to the caller's chat/thread before
+        switching to it (IDOR scoping — without them the ``sessions`` table has
+        no chat/thread to compare).
+        """
         def _do(conn):
             conn.execute(
-                """INSERT OR IGNORE INTO sessions (
+                """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
                    model, model_config, system_prompt, parent_session_id, cwd, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       model = COALESCE(sessions.model, excluded.model),
+                       model_config = COALESCE(sessions.model_config, excluded.model_config),
+                       system_prompt = COALESCE(sessions.system_prompt, excluded.system_prompt),
+                       session_key = COALESCE(sessions.session_key, excluded.session_key),
+                       chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
+                       chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
+                       thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
+                       parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
+                       cwd = COALESCE(sessions.cwd, excluded.cwd)""",
                 (
                     session_id,
                     source,
@@ -1527,8 +1678,17 @@ class SessionDB:
         chat_id: str = None,
         chat_type: str = None,
         thread_id: str = None,
+        display_name: str = None,
+        origin_json: str = None,
     ) -> None:
-        """Persist the gateway routing peer for an existing session row."""
+        """Persist the gateway routing peer for an existing session row.
+
+        ``display_name`` / ``origin_json`` carry the gateway's presentation
+        and full origin metadata (#9006) so consumers (mcp_serve, mirror,
+        channel directory) can read routing data from state.db instead of
+        sessions.json.  They are COALESCE'd only in the sense that ``None``
+        leaves the existing value untouched.
+        """
         if not session_id or not session_key:
             return
 
@@ -1536,7 +1696,9 @@ class SessionDB:
             conn.execute(
                 """UPDATE sessions
                    SET session_key = ?, source = ?, user_id = ?, chat_id = ?,
-                       chat_type = ?, thread_id = ?
+                       chat_type = ?, thread_id = ?,
+                       display_name = COALESCE(?, display_name),
+                       origin_json = COALESCE(?, origin_json)
                    WHERE id = ?""",
                 (
                     session_key,
@@ -1545,11 +1707,244 @@ class SessionDB:
                     chat_id,
                     chat_type,
                     thread_id,
+                    display_name,
+                    origin_json,
                     session_id,
                 ),
             )
 
         self._execute_write(_do)
+
+    def set_expiry_finalized(self, session_id: str, finalized: bool = True) -> None:
+        """Mark a gateway session's expiry-finalization flag in state.db.
+
+        Mirrors ``SessionEntry.expiry_finalized`` (sessions.json) so the flag
+        survives even if the JSON index is pruned or lost (#9006).
+        """
+        if not session_id:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET expiry_finalized = ? WHERE id = ?",
+                (1 if finalized else 0, session_id),
+            )
+
+        self._execute_write(_do)
+
+    # ── Gateway routing index (replaces sessions.json, #9006 follow-up) ────
+
+    def save_gateway_routing_entry(
+        self, session_key: str, entry_json: str, *, scope: str = ""
+    ) -> None:
+        """Upsert one gateway routing entry (session_key -> SessionEntry JSON).
+
+        The gateway_routing table is the durable replacement for
+        sessions.json: one row per routing key, holding the full serialized
+        ``SessionEntry`` so the gateway can rehydrate exactly what it wrote.
+
+        ``scope`` namespaces the index the way separate sessions.json files
+        did (one per sessions_dir) — callers pass their sessions_dir path so
+        two stores with different directories never share routing state.
+        """
+        if not session_key or not entry_json:
+            return
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(scope, session_key) DO UPDATE SET
+                       entry_json = excluded.entry_json,
+                       updated_at = excluded.updated_at""",
+                (scope, session_key, entry_json, time.time()),
+            )
+
+        self._execute_write(_do)
+
+    def replace_gateway_routing_entries(
+        self, entries: Dict[str, str], *, scope: str = ""
+    ) -> None:
+        """Atomically replace the routing index for *scope* with *entries*.
+
+        Mirrors the sessions.json full-rewrite semantics: keys absent from
+        *entries* are removed (pruned/reset sessions disappear from the
+        index).  Runs as a single write transaction.  Other scopes are
+        untouched.
+        """
+        now = time.time()
+
+        def _do(conn):
+            conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
+            if entries:
+                conn.executemany(
+                    "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    [(scope, k, v, now) for k, v in entries.items() if k and v],
+                )
+
+        self._execute_write(_do)
+
+    def load_gateway_routing_entries(self, *, scope: str = "") -> Dict[str, str]:
+        """Load routing entries for *scope* as {session_key: entry_json}."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT session_key, entry_json FROM gateway_routing WHERE scope = ?",
+                (scope,),
+            ).fetchall()
+        return {r["session_key"]: r["entry_json"] for r in rows}
+
+    def delete_gateway_routing_entries(
+        self, session_keys: List[str], *, scope: str = ""
+    ) -> None:
+        """Remove routing entries for the given session keys in *scope*."""
+        if not session_keys:
+            return
+
+        def _do(conn):
+            conn.executemany(
+                "DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?",
+                [(scope, k) for k in session_keys],
+            )
+
+        self._execute_write(_do)
+
+    def list_gateway_sessions(
+        self,
+        *,
+        platform: Optional[str] = None,
+        active_only: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """List gateway sessions (rows with a session_key) from state.db.
+
+        Returns the newest row per session_key — the same shape consumers got
+        from sessions.json: one live mapping per routing key.  ``platform``
+        filters on ``source``; ``active_only`` restricts to sessions that
+        have not ended.
+        """
+        query = """
+            SELECT sessions.*,
+                   COALESCE(
+                       (SELECT MAX(m.timestamp) FROM messages m
+                        WHERE m.session_id = sessions.id),
+                       sessions.started_at
+                   ) AS last_active
+            FROM sessions
+            WHERE session_key IS NOT NULL
+              AND started_at = (
+                  SELECT MAX(s2.started_at) FROM sessions s2
+                  WHERE s2.session_key = sessions.session_key
+              )
+        """
+        params: list = []
+        if platform:
+            query += " AND LOWER(source) = LOWER(?)"
+            params.append(platform)
+        if active_only:
+            query += " AND ended_at IS NULL"
+        query += " ORDER BY last_active DESC"
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def find_session_by_origin(
+        self,
+        *,
+        platform: str,
+        chat_id: str,
+        thread_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Find the most recent live session_id for a platform + chat origin.
+
+        Equivalent of gateway/mirror's sessions.json scan: matches on
+        source + chat_id (+ thread_id when provided).  When ``user_id`` is
+        provided, exact sender matches are preferred; if multiple distinct
+        users share the chat and none matches, returns None rather than
+        contaminating another participant's session.
+        """
+        if not platform or chat_id in (None, ""):
+            return None
+        query = """
+            SELECT id, user_id, started_at FROM sessions
+            WHERE LOWER(source) = LOWER(?)
+              AND session_key IS NOT NULL
+              AND chat_id = ?
+              AND ended_at IS NULL
+        """
+        params: list = [platform, str(chat_id)]
+        if thread_id is not None:
+            query += " AND COALESCE(thread_id, '') = ?"
+            params.append(str(thread_id))
+        query += " ORDER BY started_at DESC"
+        with self._lock:
+            rows = [dict(r) for r in self._conn.execute(query, params).fetchall()]
+        if not rows:
+            return None
+        if user_id:
+            exact = [r for r in rows if str(r.get("user_id") or "") == str(user_id)]
+            if exact:
+                return str(exact[0]["id"])
+            if len(rows) > 1:
+                return None
+        elif len(rows) > 1:
+            distinct_users = {
+                str(r.get("user_id") or "").strip()
+                for r in rows
+                if str(r.get("user_id") or "").strip()
+            }
+            if len(distinct_users) > 1:
+                return None
+        return str(rows[0]["id"])
+
+    def _backfill_gateway_metadata_from_sessions_json(
+        self, cursor: sqlite3.Cursor
+    ) -> None:
+        """One-time v18 backfill of gateway metadata from sessions.json.
+
+        Existing gateway sessions predate the display_name / origin_json /
+        expiry_finalized columns; copy what sessions.json knows so consumers
+        can switch to state.db without losing pre-migration sessions.
+        Only fills NULL columns — never overwrites data written by newer code.
+        """
+        sessions_file = get_hermes_home() / "sessions" / "sessions.json"
+        if not sessions_file.exists():
+            return
+        with open(sessions_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return
+        for key, entry in data.items():
+            if str(key).startswith("_") or not isinstance(entry, dict):
+                continue
+            session_id = entry.get("session_id")
+            if not session_id:
+                continue
+            origin = entry.get("origin")
+            cursor.execute(
+                """UPDATE sessions
+                   SET session_key = COALESCE(session_key, ?),
+                       chat_id = COALESCE(chat_id, ?),
+                       chat_type = COALESCE(chat_type, ?),
+                       thread_id = COALESCE(thread_id, ?),
+                       display_name = COALESCE(display_name, ?),
+                       origin_json = COALESCE(origin_json, ?),
+                       expiry_finalized = CASE
+                           WHEN COALESCE(expiry_finalized, 0) = 0 AND ? = 1 THEN 1
+                           ELSE expiry_finalized
+                       END
+                   WHERE id = ?""",
+                (
+                    entry.get("session_key") or key,
+                    (origin or {}).get("chat_id") if isinstance(origin, dict) else None,
+                    entry.get("chat_type"),
+                    (origin or {}).get("thread_id") if isinstance(origin, dict) else None,
+                    entry.get("display_name"),
+                    json.dumps(origin) if isinstance(origin, dict) else None,
+                    1 if entry.get("expiry_finalized") or entry.get("memory_flushed") else 0,
+                    str(session_id),
+                ),
+            )
 
     def find_latest_gateway_session_for_peer(
         self,
@@ -1700,6 +2095,88 @@ class SessionDB:
                 )
 
         self._execute_write(_do)
+
+    def record_compression_failure_cooldown(
+        self,
+        session_id: str,
+        cooldown_until: float,
+        error: Optional[str] = None,
+    ) -> None:
+        """Persist the active compression-failure cooldown for a session."""
+        if not session_id:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET compression_failure_cooldown_until = ?, "
+                "compression_failure_error = ? WHERE id = ?",
+                (cooldown_until, error, session_id),
+            )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.Error as exc:
+            logger.warning(
+                "record_compression_failure_cooldown(%s) failed: %s",
+                session_id, exc,
+            )
+
+    def get_compression_failure_cooldown(
+        self,
+        session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the active compression-failure cooldown for ``session_id``."""
+        if not session_id:
+            return None
+        now = time.time()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT compression_failure_cooldown_until, compression_failure_error "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        cooldown_until = (
+            row["compression_failure_cooldown_until"]
+            if isinstance(row, sqlite3.Row)
+            else row[0]
+        )
+        if cooldown_until is None:
+            return None
+        cooldown_until = float(cooldown_until)
+        if cooldown_until <= now:
+            return None
+        error = (
+            row["compression_failure_error"]
+            if isinstance(row, sqlite3.Row)
+            else row[1]
+        )
+        return {
+            "cooldown_until": cooldown_until,
+            "remaining_seconds": cooldown_until - now,
+            "error": error,
+        }
+
+    def clear_compression_failure_cooldown(self, session_id: str) -> None:
+        """Clear any persisted compression-failure cooldown for a session."""
+        if not session_id:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET compression_failure_cooldown_until = NULL, "
+                "compression_failure_error = NULL WHERE id = ?",
+                (session_id,),
+            )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.Error as exc:
+            logger.warning(
+                "clear_compression_failure_cooldown(%s) failed: %s",
+                session_id, exc,
+            )
     # ──────────────────────────────────────────────────────────────────────
     # Compression locks
     # ──────────────────────────────────────────────────────────────────────
@@ -1721,6 +2198,35 @@ class SessionDB:
     # the compress() call plus the rotation. ``holder`` identifies the
     # current owner (pid:tid:nonce) for diagnostics; the lock is recovered
     # via ``expires_at`` if the holder process crashed without releasing.
+    def refresh_compression_lock(
+        self,
+        session_id: str,
+        holder: str,
+        ttl_seconds: float = 300.0,
+    ) -> bool:
+        """Extend the compression lock lease if ``holder`` still owns it."""
+        if not session_id or not holder:
+            return False
+        now = time.time()
+        expires_at = now + ttl_seconds
+
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE compression_locks SET expires_at = ? "
+                "WHERE session_id = ? AND holder = ? AND expires_at >= ?",
+                (expires_at, session_id, holder, now),
+            )
+            return cur.rowcount > 0
+
+        try:
+            return bool(self._execute_write(_do))
+        except sqlite3.Error as exc:
+            logger.warning(
+                "refresh_compression_lock(%s) failed: %s",
+                session_id, exc,
+            )
+            return False
+
     def try_acquire_compression_lock(
         self,
         session_id: str,
@@ -2441,6 +2947,28 @@ class SessionDB:
             current = child_id
         return current
 
+    # Columns excluded from compact_rows projections: only the payload-heavy
+    # blob no list consumer renders. Everything else — including gateway
+    # routing fields and desktop sidebar fields like git_branch — stays, and
+    # the projection is derived from SCHEMA_SQL so columns added later via
+    # declarative reconciliation are included automatically instead of
+    # silently dropping out of list rows.
+    _SESSION_COMPACT_EXCLUDED = frozenset({"system_prompt"})
+    _session_compact_cols_sql: Optional[str] = None
+
+    @classmethod
+    def _compact_session_cols(cls) -> str:
+        """SELECT list for compact_rows: every ``sessions`` column declared in
+        SCHEMA_SQL except the ``system_prompt`` blob, aliased with the ``s``
+        prefix used by list_sessions_rich/_get_session_rich_row queries."""
+        if cls._session_compact_cols_sql is None:
+            declared = cls._parse_schema_columns(SCHEMA_SQL)["sessions"]
+            cls._session_compact_cols_sql = ", ".join(
+                f"s.{name}" for name in declared
+                if name not in cls._SESSION_COMPACT_EXCLUDED
+            )
+        return cls._session_compact_cols_sql
+
     def distinct_session_cwds(self, include_archived: bool = False) -> List[Dict[str, Any]]:
         """Distinct non-empty session cwds with usage stats, for repo discovery.
 
@@ -2481,6 +3009,8 @@ class SessionDB:
         include_archived: bool = False,
         archived_only: bool = False,
         id_query: str = None,
+        search_query: str = None,
+        compact_rows: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -2508,6 +3038,18 @@ class SessionDB:
         surfaces in the correct slot. Ordering is computed at SQL level via
         a recursive CTE that walks compression-continuation edges, so LIMIT
         and OFFSET still apply efficiently.
+
+        ``search_query`` matches case-insensitive substrings against each
+        surfaced row's title and id (and, like ``id_query``, every title/id in
+        its forward compression chain). A punctuation-stripped variant is also
+        matched so e.g. ``an94`` finds ``AN-94``. Only honored in the
+        ``order_by_last_active`` path.
+
+        Pass ``compact_rows=True`` for dashboard and picker callers that only
+        need lightweight metadata. This omits the ``system_prompt`` blob from
+        the SELECT so SQLite never copies it out of the B-tree page — a
+        significant I/O saving on large databases where the blob routinely
+        runs to tens of kilobytes per row.
         """
         where_clauses = []
         params = []
@@ -2560,6 +3102,7 @@ class SessionDB:
         # order_by_last_active path (which builds the chain CTE); other callers
         # pass id_query=None.
         id_needle = (id_query or "").strip().lower()
+        search_needle = (search_query or "").strip().lower()
         if order_by_last_active:
             # Compute effective_last_active by walking each surfaced session's
             # compression-continuation chain forward in SQL and taking the MAX
@@ -2576,26 +3119,55 @@ class SessionDB:
             # the timestamp test and hijack resume/list projection.
             outer_where = where_sql
             id_params: List[Any] = []
+            filter_clauses: List[str] = []
+
+            def _like_pattern(needle: str) -> str:
+                escaped = (
+                    needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                )
+                return f"%{escaped}%"
+
             if id_needle:
                 # Admit a surfaced row if its own id or any id in its forward
                 # compression chain matches the needle. LIKE with a leading
                 # wildcard can't use an index, but the chain membership and
                 # the small result set keep this bounded — far cheaper than
                 # fetching every session and scanning in Python.
-                id_clause = (
+                filter_clauses.append(
                     "EXISTS (SELECT 1 FROM chain cq"
                     "        WHERE cq.root_id = s.id"
                     "          AND LOWER(cq.cur_id) LIKE ? ESCAPE '\\')"
                 )
-                like_pattern = (
-                    "%"
-                    + id_needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                    + "%"
+                id_params.append(_like_pattern(id_needle))
+            if search_needle:
+                # Same chain-membership trick as id_query, but matching either
+                # the title or the id of any session in the chain. The compact
+                # (punctuation-stripped) variant lets `an94` match `AN-94`.
+                compact_needle = re.sub(r"[\W_]+", "", search_needle)
+                compact_sql = (
+                    "REPLACE(REPLACE(REPLACE(REPLACE(LOWER(COALESCE({0}, '')),"
+                    " '-', ''), '_', ''), '.', ''), ' ', '')"
                 )
-                id_params = [like_pattern]
+                search_clause = (
+                    "EXISTS (SELECT 1 FROM chain cq"
+                    " JOIN sessions cs ON cs.id = cq.cur_id"
+                    " WHERE cq.root_id = s.id"
+                    " AND (LOWER(COALESCE(cs.title, '')) LIKE ? ESCAPE '\\'"
+                    " OR LOWER(cq.cur_id) LIKE ? ESCAPE '\\'"
+                )
+                id_params.extend([_like_pattern(search_needle)] * 2)
+                if compact_needle:
+                    search_clause += (
+                        f" OR {compact_sql.format('cs.title')} LIKE ? ESCAPE '\\'"
+                    )
+                    id_params.append(_like_pattern(compact_needle))
+                filter_clauses.append(search_clause + "))")
+            if filter_clauses:
+                combined = " AND ".join(filter_clauses)
                 outer_where = (
-                    f"{where_sql} AND {id_clause}" if where_sql else f"WHERE {id_clause}"
+                    f"{where_sql} AND {combined}" if where_sql else f"WHERE {combined}"
                 )
+            _sel = self._compact_session_cols() if compact_rows else "s.*"
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (
                     SELECT s.id, s.id FROM sessions s {where_sql}
@@ -2619,7 +3191,7 @@ class SessionDB:
                     FROM chain
                     GROUP BY root_id
                 )
-                SELECT s.*,
+                SELECT {_sel},
                     COALESCE(
                         (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                          FROM messages m
@@ -2642,8 +3214,9 @@ class SessionDB:
             # only applies to the outer select.
             params = params + params + id_params + [limit, offset]
         else:
+            _sel = self._compact_session_cols() if compact_rows else "s.*"
             query = f"""
-                SELECT s.*,
+                SELECT {_sel},
                     COALESCE(
                         (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                          FROM messages m
@@ -2694,7 +3267,7 @@ class SessionDB:
                 if tip_id == s["id"]:
                     projected.append(s)
                     continue
-                tip_row = self._get_session_rich_row(tip_id)
+                tip_row = self._get_session_rich_row(tip_id, compact_rows=compact_rows)
                 if not tip_row:
                     projected.append(s)
                     continue
@@ -2780,13 +3353,17 @@ class SessionDB:
             runs.append(s)
         return runs
 
-    def _get_session_rich_row(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def _get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
         """Fetch a single session with the same enriched columns as
         ``list_sessions_rich`` (preview + last_active). Returns None if the
         session doesn't exist.
+
+        Pass ``compact_rows=True`` to omit the ``system_prompt`` blob (see
+        ``list_sessions_rich`` for details).
         """
-        query = """
-            SELECT s.*,
+        _sel = self._compact_session_cols() if compact_rows else "s.*"
+        query = f"""
+            SELECT {_sel},
                 COALESCE(
                     (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                      FROM messages m
@@ -2930,8 +3507,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, active)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -2949,6 +3526,7 @@ class SessionDB:
                     codex_message_items_json,
                     platform_message_id,
                     1 if observed else 0,
+                    1,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -3021,8 +3599,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, active)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3040,6 +3618,7 @@ class SessionDB:
                     codex_message_items_json,
                     platform_msg_id,
                     1 if msg.get("observed") else 0,
+                    1,
                 ),
             )
             inserted += 1
@@ -3050,21 +3629,39 @@ class SessionDB:
             now_ts = max(now_ts + 1e-6, message_timestamp + 1e-6)
         return inserted, tool_calls_total
 
-    def replace_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
-        """Atomically replace every message for a session.
+    def replace_messages(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        active_only: bool = False,
+    ) -> None:
+        """Atomically replace the stored messages for a session.
 
         Used by transcript-rewrite flows such as /retry, /undo, and /compress.
         The delete + reinsert sequence must commit as one transaction so a
         mid-rewrite failure does not leave SQLite with a partial transcript.
 
-        DESTRUCTIVE: the prior rows are DELETEd (and drop out of the FTS index).
-        For compaction that must preserve the pre-compaction transcript under
-        the same id, use :meth:`archive_and_compact` instead.
+        DESTRUCTIVE by default: every row for the session is DELETEd (and drops
+        out of the FTS index). For compaction that must preserve the
+        pre-compaction transcript under the same id, use
+        :meth:`archive_and_compact` instead.
+
+        Pass ``active_only=True`` to replace ONLY the live (``active = 1``) rows,
+        leaving soft-archived rows (``active = 0`` — e.g. the ``compacted = 1``
+        turns that :meth:`archive_and_compact` keeps on disk for #38763
+        durability, or rewind/undo rows) untouched. Callers that share a session
+        id with an agent already running in-place compaction must use this so a
+        full-history rewrite doesn't wipe the rows the agent deliberately
+        archived. ``message_count``/``tool_call_count`` then track the live set,
+        matching :meth:`archive_and_compact`.
         """
+
+        active_clause = " AND active = 1" if active_only else ""
 
         def _do(conn):
             conn.execute(
-                "DELETE FROM messages WHERE session_id = ?", (session_id,)
+                f"DELETE FROM messages WHERE session_id = ?{active_clause}",
+                (session_id,),
             )
             conn.execute(
                 "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
@@ -3079,6 +3676,20 @@ class SessionDB:
             )
 
         self._execute_write(_do)
+
+    def has_archived_messages(self, session_id: str) -> bool:
+        """Return True if the session has any soft-archived (``active = 0``) rows.
+
+        Used by callers (e.g. the ACP adapter's ``_persist``) that must decide
+        whether a full-history :meth:`replace_messages` would destroy durable
+        compaction-archived turns. Cheap existence probe — does not load rows.
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT 1 FROM messages WHERE session_id = ? AND active = 0 LIMIT 1",
+                (session_id,),
+            )
+            return cursor.fetchone() is not None
 
     def archive_and_compact(
         self, session_id: str, compacted_messages: List[Dict[str, Any]]
@@ -3134,7 +3745,11 @@ class SessionDB:
 
 
     def get_messages(
-        self, session_id: str, include_inactive: bool = False
+        self,
+        session_id: str,
+        include_inactive: bool = False,
+        limit: Optional[int] = None,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """Load messages for a session in insertion order.
 
@@ -3145,14 +3760,25 @@ class SessionDB:
 
         Ordered by AUTOINCREMENT id (true insertion order) rather than
         timestamp — see c03acca50 for the WSL2 clock-regression rationale.
+
+        When ``limit`` is provided, returns at most ``limit`` messages
+        starting from ``offset`` (0-based, in insertion order). Enables
+        pagination for the API endpoint to avoid loading entire transcripts.
+        ``offset`` alone (without ``limit``) also pages — SQLite requires a
+        LIMIT clause for OFFSET, so it's emitted as ``LIMIT -1`` (unbounded).
         """
         active_clause = "" if include_inactive else " AND active = 1"
+        sql = (
+            "SELECT * FROM messages WHERE session_id = ?"
+            f"{active_clause} ORDER BY id"
+        )
+        params: list = [session_id]
+        if limit is not None or offset:
+            # SQLite's OFFSET requires LIMIT; -1 means "no limit".
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([-1 if limit is None else limit, offset])
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT * FROM messages WHERE session_id = ?"
-                f"{active_clause} ORDER BY id",
-                (session_id,),
-            )
+            cursor = self._conn.execute(sql, params)
             rows = cursor.fetchall()
         result = []
         for row in rows:
@@ -3481,7 +4107,15 @@ class SessionDB:
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
                 f"FROM messages WHERE session_id IN ({placeholders})"
-                f"{active_clause} ORDER BY timestamp, id",
+                # Order by AUTOINCREMENT id (true insertion order), NOT timestamp:
+                # append_message stamps rows with time.time(), which is not
+                # monotonic (WSL2, NTP steps, VM/laptop sleep resume). A later
+                # row can carry an earlier timestamp than its predecessor, and
+                # ORDER BY timestamp would then sort an assistant tool_calls row
+                # after its tool response, breaking tool-call/response adjacency
+                # and triggering an HTTP 400 on replay. This matches get_messages
+                # — see c03acca50 for the original fix.
+                f"{active_clause} ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
 
@@ -3543,6 +4177,17 @@ class SessionDB:
             if include_ancestors and self._is_duplicate_replayed_user_message(messages, msg):
                 continue
             messages.append(msg)
+        # DEFENSE-IN-DEPTH against background-review session pollution: a forked
+        # skill/memory review that (in older builds, before the _persist_disabled
+        # fix) shared the parent's session_id wrote its harness turn into this
+        # real session. The harness is a user/system message instructing the
+        # agent to "Review the conversation above and update the skill library /
+        # save to memory" under a hard tool restriction; re-loading it as live
+        # history makes the agent adopt the curator role and refuse the user's
+        # actual task. Strip any such harness message AND the curator-mode
+        # assistant reply immediately following it, so a polluted session
+        # resumes clean even if stray rows exist.
+        messages = _strip_background_review_harness(messages)
         return messages
 
     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
@@ -3771,15 +4416,36 @@ class SessionDB:
           matches them as exact phrases instead of splitting on the
           hyphen/dot (e.g. ``chat-send``, ``P2.2``, ``my-app.config.ts``)
         """
+        # Cap user-controlled FTS input before any regex processing. Search
+        # queries do not need to be arbitrarily large, and bounding them keeps
+        # sanitizer/runtime behavior predictable under adversarial input.
+        query = query[:MAX_FTS5_QUERY_CHARS]
+
         # Step 1: Extract balanced double-quoted phrases and protect them
-        # from further processing via numbered placeholders.
+        # from further processing via numbered placeholders. Do this with a
+        # single linear scan rather than a regex so pathological quote runs
+        # cannot induce backtracking.
         _quoted_parts: list = []
+        pieces: list[str] = []
+        i = 0
+        while i < len(query):
+            ch = query[i]
+            if ch != '"':
+                pieces.append(ch)
+                i += 1
+                continue
+            end = query.find('"', i + 1)
+            if end == -1:
+                # Unmatched quote: replace with whitespace like the old
+                # sanitizer's special-char stripping step.
+                pieces.append(" ")
+                i += 1
+                continue
+            _quoted_parts.append(query[i:end + 1])
+            pieces.append(f"\x00Q{len(_quoted_parts) - 1}\x00")
+            i = end + 1
 
-        def _preserve_quoted(m: re.Match) -> str:
-            _quoted_parts.append(m.group(0))
-            return f"\x00Q{len(_quoted_parts) - 1}\x00"
-
-        sanitized = re.sub(r'"[^"]*"', _preserve_quoted, query)
+        sanitized = "".join(pieces)
 
         # Step 2: Strip remaining (unmatched) FTS5-special characters.  ``:`` is
         # FTS5's column-filter operator (``col:term``); since the FTS table has a
@@ -4342,6 +5008,64 @@ class SessionDB:
     # Export and cleanup
     # =========================================================================
 
+    def _is_branch_child_row(self, session: Dict[str, Any]) -> bool:
+        raw = session.get("model_config")
+        if not raw:
+            return False
+        try:
+            cfg = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, json.JSONDecodeError):
+            return False
+        return isinstance(cfg, dict) and cfg.get("_branched_from") is not None
+
+    def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
+        parent_id = child.get("parent_session_id")
+        if not parent_id or self._is_branch_child_row(child):
+            return False
+        parent = self.get_session(parent_id)
+        return bool(parent and parent.get("end_reason") == "compression")
+
+    def get_compression_lineage(self, session_id: str) -> List[str]:
+        """Return compression ancestors through tip in chronological order."""
+        session = self.get_session(session_id)
+        if not session or self._is_branch_child_row(session):
+            return [session_id] if session else []
+
+        root = session
+        while self._is_compression_child_row(root):
+            parent = self.get_session(root["parent_session_id"])
+            if not parent:
+                break
+            root = parent
+
+        lineage = [root["id"]]
+        current = root
+        while current.get("end_reason") == "compression":
+            with self._lock:
+                rows = self._conn.execute(
+                    """
+                    SELECT * FROM sessions
+                    WHERE parent_session_id = ?
+                    ORDER BY started_at ASC
+                    """,
+                    (current["id"],),
+                ).fetchall()
+            next_child = None
+            for row in rows:
+                candidate = dict(row)
+                if not self._is_branch_child_row(candidate):
+                    next_child = candidate
+                    break
+            if not next_child:
+                break
+            lineage.append(next_child["id"])
+            current = next_child
+            if current["id"] == session_id:
+                # Continue to include later compression tips only when the
+                # requested session itself was compacted.
+                continue
+        return lineage if session_id in lineage else [session_id]
+
     def export_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Export a single session with all its messages as a dict."""
         session = self.get_session(session_id)
@@ -4349,6 +5073,26 @@ class SessionDB:
             return None
         messages = self.get_messages(session_id)
         return {**session, "messages": messages}
+
+    def export_session_lineage(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Export a compression lineage as one logical session dict."""
+        lineage_ids = self.get_compression_lineage(session_id)
+        if not lineage_ids:
+            return None
+        segments = []
+        for sid in lineage_ids:
+            segment = self.export_session(sid)
+            if segment:
+                segments.append(segment)
+        if not segments:
+            return None
+        base = dict(segments[-1])
+        total_messages = sum(len(seg.get("messages") or []) for seg in segments)
+        base["segments"] = segments
+        base["lineage_session_ids"] = [seg["id"] for seg in segments]
+        base["message_count"] = total_messages
+        base["messages"] = [msg for seg in segments for msg in (seg.get("messages") or [])]
+        return base
 
     def export_all(self, source: str = None) -> List[Dict[str, Any]]:
         """
@@ -4659,13 +5403,211 @@ class SessionDB:
             self._remove_session_files(sessions_dir, sid)
         return count
 
+    @staticmethod
+    def _prune_filter_where(
+        *,
+        started_before: Optional[float] = None,
+        started_after: Optional[float] = None,
+        source: Optional[str] = None,
+        title_like: Optional[str] = None,
+        end_reason: Optional[str] = None,
+        cwd_prefix: Optional[str] = None,
+        min_messages: Optional[int] = None,
+        max_messages: Optional[int] = None,
+        archived: Optional[bool] = None,
+        model_like: Optional[str] = None,
+        provider: Optional[str] = None,
+        user_id: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        chat_type: Optional[str] = None,
+        branch_like: Optional[str] = None,
+        min_tokens: Optional[int] = None,
+        max_tokens: Optional[int] = None,
+        min_cost: Optional[float] = None,
+        max_cost: Optional[float] = None,
+        min_tool_calls: Optional[int] = None,
+        max_tool_calls: Optional[int] = None,
+    ) -> Tuple[str, list]:
+        """Build the shared WHERE clause for bulk prune/archive selection.
+
+        All filters AND together. Only ended sessions are ever candidates
+        (``ended_at IS NOT NULL``) so a live session is never selected.
+        ``archived`` is a tri-state: ``None`` = both, ``True`` = only
+        archived rows, ``False`` = only unarchived rows.
+
+        String matching conventions: ``model_like`` / ``branch_like`` /
+        ``title_like`` are case-insensitive substring matches (model slugs
+        and branch names vary in prefix format); ``provider`` / ``user_id``
+        / ``chat_id`` / ``chat_type`` / ``source`` / ``end_reason`` are
+        exact (case-insensitive for provider). Token bounds apply to
+        ``input_tokens + output_tokens``; cost bounds apply to
+        ``COALESCE(actual_cost_usd, estimated_cost_usd)``.
+
+        The clause references the ``s`` table alias — callers must select
+        ``FROM sessions s``.
+        """
+        clauses = ["s.ended_at IS NOT NULL"]
+        params: list = []
+        if started_before is not None:
+            clauses.append("s.started_at < ?")
+            params.append(started_before)
+        if started_after is not None:
+            clauses.append("s.started_at >= ?")
+            params.append(started_after)
+        if source:
+            clauses.append("s.source = ?")
+            params.append(source)
+        if title_like:
+            clauses.append("LOWER(COALESCE(s.title, '')) LIKE ?")
+            params.append(f"%{title_like.lower()}%")
+        if end_reason:
+            clauses.append("s.end_reason = ?")
+            params.append(end_reason)
+        if cwd_prefix:
+            clause, clause_params = _cwd_prefix_clause(cwd_prefix)
+            clauses.append(clause)
+            params.extend(clause_params)
+        if min_messages is not None:
+            clauses.append("s.message_count >= ?")
+            params.append(min_messages)
+        if max_messages is not None:
+            clauses.append("s.message_count <= ?")
+            params.append(max_messages)
+        if model_like:
+            clauses.append("LOWER(COALESCE(s.model, '')) LIKE ?")
+            params.append(f"%{model_like.lower()}%")
+        if provider:
+            clauses.append("LOWER(COALESCE(s.billing_provider, '')) = ?")
+            params.append(provider.lower())
+        if user_id:
+            clauses.append("s.user_id = ?")
+            params.append(user_id)
+        if chat_id:
+            clauses.append("s.chat_id = ?")
+            params.append(chat_id)
+        if chat_type:
+            clauses.append("s.chat_type = ?")
+            params.append(chat_type)
+        if branch_like:
+            clauses.append("LOWER(COALESCE(s.git_branch, '')) LIKE ?")
+            params.append(f"%{branch_like.lower()}%")
+        if min_tokens is not None:
+            clauses.append(
+                "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0)) >= ?"
+            )
+            params.append(min_tokens)
+        if max_tokens is not None:
+            clauses.append(
+                "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0)) <= ?"
+            )
+            params.append(max_tokens)
+        if min_cost is not None:
+            clauses.append(
+                "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0) >= ?"
+            )
+            params.append(min_cost)
+        if max_cost is not None:
+            clauses.append(
+                "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0) <= ?"
+            )
+            params.append(max_cost)
+        if min_tool_calls is not None:
+            clauses.append("COALESCE(s.tool_call_count, 0) >= ?")
+            params.append(min_tool_calls)
+        if max_tool_calls is not None:
+            clauses.append("COALESCE(s.tool_call_count, 0) <= ?")
+            params.append(max_tool_calls)
+        if archived is True:
+            clauses.append("s.archived = 1")
+        elif archived is False:
+            clauses.append("s.archived = 0")
+        return " AND ".join(clauses), params
+
+    def list_prune_candidates(
+        self,
+        older_than_days: Optional[float] = None,
+        source: str = None,
+        **filters,
+    ) -> List[Dict[str, Any]]:
+        """Return the sessions a matching :meth:`prune_sessions` /
+        :meth:`archive_sessions` call would touch, without modifying anything.
+
+        Backs ``--dry-run`` and pre-confirmation counts. Accepts the same
+        keyword filters as :meth:`_prune_filter_where` (unknown names raise
+        ``TypeError`` there). Rows are ordered oldest-first and carry
+        ``id, source, title, model, started_at, ended_at, message_count,
+        archived``.
+        """
+        if filters.get("started_before") is None and older_than_days is not None:
+            filters["started_before"] = time.time() - (older_than_days * 86400)
+        where, params = self._prune_filter_where(source=source, **filters)
+        with self._lock:
+            cursor = self._conn.execute(
+                f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
+                           s.ended_at, s.message_count, s.archived
+                    FROM sessions s WHERE {where}
+                    ORDER BY s.started_at ASC""",
+                params,
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def archive_sessions(
+        self,
+        older_than_days: Optional[float] = None,
+        source: str = None,
+        **filters,
+    ) -> int:
+        """Bulk-archive (soft-hide) every session matching the filters.
+
+        Same filter surface as :meth:`prune_sessions`, but instead of deleting
+        rows it flips ``archived = 1`` via :meth:`set_session_archived` so
+        each match's compression lineage is archived as a unit (an unarchived
+        compression root would otherwise resurrect the conversation in
+        Desktop's projected list). Nothing is deleted; messages and transcript
+        files are untouched. Returns the number of sessions matched.
+
+        ``archived`` defaults to ``False`` here (only select rows not yet
+        archived) so repeat runs are idempotent no-ops.
+        """
+        filters.setdefault("archived", False)
+        rows = self.list_prune_candidates(
+            older_than_days=older_than_days, source=source, **filters
+        )
+        for row in rows:
+            self.set_session_archived(row["id"], True)
+        return len(rows)
+
     def prune_sessions(
         self,
-        older_than_days: int = 90,
+        older_than_days: Optional[float] = 90,
         source: str = None,
         sessions_dir: Optional[Path] = None,
+        **filters,
     ) -> int:
-        """Delete sessions older than N days. Returns count of deleted sessions.
+        """Delete sessions matching the filters. Returns count deleted.
+
+        Default behavior (no keyword filters) is unchanged: delete ended
+        sessions older than ``older_than_days`` days, optionally restricted
+        to ``source``. Additional keyword filters AND together — the full
+        set is defined by :meth:`_prune_filter_where`:
+
+        * ``started_before`` / ``started_after`` — epoch bounds on
+          ``started_at``. ``started_before`` overrides ``older_than_days``;
+          pass ``older_than_days=None`` for no upper age bound (e.g. when
+          only pruning a recent window via ``started_after``).
+        * ``title_like`` / ``model_like`` / ``branch_like`` —
+          case-insensitive substring matches.
+        * ``end_reason`` / ``provider`` / ``user_id`` / ``chat_id`` /
+          ``chat_type`` — exact matches (provider case-insensitive, against
+          ``billing_provider``).
+        * ``cwd_prefix`` — session cwd equals or is under this path.
+        * ``min_messages`` / ``max_messages`` — bounds on message_count.
+        * ``min_tokens`` / ``max_tokens`` — bounds on input+output tokens.
+        * ``min_cost`` / ``max_cost`` — bounds on USD cost
+          (actual, falling back to estimated).
+        * ``min_tool_calls`` / ``max_tool_calls`` — bounds on tool_call_count.
+        * ``archived`` — tri-state: None = both (default), True = only
+          archived, False = only unarchived.
 
         Only prunes ended sessions (not active ones).  Child sessions outside
         the prune window are orphaned (parent_session_id set to NULL) rather
@@ -4674,21 +5616,15 @@ class SessionDB:
         ``request_dump_*``) for every pruned session, outside the DB
         transaction.
         """
-        cutoff = time.time() - (older_than_days * 86400)
+        if filters.get("started_before") is None and older_than_days is not None:
+            filters["started_before"] = time.time() - (older_than_days * 86400)
+        where, where_params = self._prune_filter_where(source=source, **filters)
         removed_ids: list[str] = []
 
         def _do(conn):
-            if source:
-                cursor = conn.execute(
-                    """SELECT id FROM sessions
-                       WHERE started_at < ? AND ended_at IS NOT NULL AND source = ?""",
-                    (cutoff, source),
-                )
-            else:
-                cursor = conn.execute(
-                    "SELECT id FROM sessions WHERE started_at < ? AND ended_at IS NOT NULL",
-                    (cutoff,),
-                )
+            cursor = conn.execute(
+                f"SELECT s.id FROM sessions s WHERE {where}", where_params
+            )
             session_ids = {row["id"] for row in cursor.fetchall()}
 
             if not session_ids:
@@ -5504,3 +6440,20 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
+
+
+class AsyncSessionDB:
+    """Async door onto SessionDB: offloads each call via asyncio.to_thread so a blocking SQLite call never freezes the event loop. Generic forwarder — the audit confirms no method returns a live cursor/generator."""
+
+    def __init__(self, db: "SessionDB") -> None:
+        self._db = db
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._db, name)
+        if not callable(attr):
+            return attr
+
+        async def _offloaded(*args, **kwargs):
+            return await asyncio.to_thread(attr, *args, **kwargs)
+
+        return _offloaded

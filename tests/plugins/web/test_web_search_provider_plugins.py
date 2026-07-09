@@ -2,8 +2,8 @@
 
 Covers:
 
-- All eight bundled plugins (brave-free, ddgs, searxng, exa, parallel,
-  tavily, firecrawl, xai) instantiate and self-report the expected
+- All bundled web plugins (brave-free, ddgs, searxng, exa, parallel,
+  tavily, firecrawl, xai, oxylabs) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The web_search_registry resolves an active provider in the documented
@@ -45,6 +45,8 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
         "XAI_API_KEY",
+        "OXYLABS_AI_STUDIO_API_KEY",
+        "OXYLABS_AI_STUDIO_API_URL",
     ):
         monkeypatch.delenv(k, raising=False)
 
@@ -68,9 +70,9 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All eight bundled web plugins discover and register correctly."""
+    """All bundled web plugins discover and register correctly."""
 
-    def test_all_seven_plugins_present_in_registry(self) -> None:
+    def test_all_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
@@ -99,8 +101,7 @@ class TestBundledPluginsRegister:
             ("firecrawl", True, True),
             # xai: search-only via Grok's agentic web_search tool.
             ("xai", True, False),
-            # oxylabs: search + extract via AI Studio (crawl also supported,
-            # not tracked in this test's 3-tuple after the recent refactor).
+            # oxylabs: search + extract via AI Studio.
             ("oxylabs", True, True),
         ],
     )
@@ -248,6 +249,16 @@ class TestIsAvailable:
         assert p is not None
         assert p.is_available() is False  # no XAI_API_KEY, no auth.json
         monkeypatch.setenv("XAI_API_KEY", "real")
+        assert p.is_available() is True
+
+    def test_oxylabs_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("oxylabs")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("OXYLABS_AI_STUDIO_API_KEY", "real")
         assert p.is_available() is True
 
 

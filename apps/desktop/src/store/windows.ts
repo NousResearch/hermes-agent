@@ -1,7 +1,7 @@
 import { notifyError } from './notifications'
 
 // Window flag set by the Electron main process when it opens a standalone
-// session window (see electron/main.cjs buildSessionWindowUrl). It rides in the
+// session window (see electron/main.ts buildSessionWindowUrl). It rides in the
 // query string BEFORE the HashRouter '#', so we read it from location.search,
 // never from the router. A "secondary" window renders a single chat without the
 // global session sidebar or the install / onboarding overlays.

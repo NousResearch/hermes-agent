@@ -49,13 +49,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from typing import Any, Dict, List, Optional
 
 import httpx
 
-from agent.web_search_provider import WebSearchProvider
+from agent.web_search_provider import WebSearchProvider, get_provider_env
 from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
@@ -82,7 +81,7 @@ _EXTRACT_TIMEOUT_SECONDS = 60.0   # per-URL guard around submit + poll
 
 def _read_api_key() -> str:
     """Return the configured API key, or raise ``ValueError`` if unset."""
-    api_key = os.getenv(_API_KEY_ENV, "").strip()
+    api_key = get_provider_env(_API_KEY_ENV)
     if not api_key:
         raise ValueError(
             f"{_API_KEY_ENV} environment variable not set. "
@@ -93,7 +92,7 @@ def _read_api_key() -> str:
 
 def _base_url() -> str:
     """Return the API base URL, honoring the optional env override."""
-    return (os.getenv(_API_URL_ENV, "").strip() or _DEFAULT_BASE_URL).rstrip("/")
+    return (get_provider_env(_API_URL_ENV) or _DEFAULT_BASE_URL).rstrip("/")
 
 
 def _request_headers(api_key: str) -> Dict[str, str]:
@@ -161,7 +160,7 @@ class OxylabsWebSearchProvider(WebSearchProvider):
 
     def is_available(self) -> bool:
         """Return True when ``OXYLABS_AI_STUDIO_API_KEY`` is set."""
-        return bool(os.getenv(_API_KEY_ENV, "").strip())
+        return bool(get_provider_env(_API_KEY_ENV))
 
     def supports_search(self) -> bool:
         return True

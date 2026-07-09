@@ -40,6 +40,34 @@ import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
 
+// Stable per-browser token identifying THIS chat tab's keep-alive PTY session.
+// Sent as ?attach=; lets a refresh/disconnect reattach to the same live process
+// instead of spawning a fresh one. Per-localStorage, so other devices can't grab it.
+// ``rotate`` mints a new token — used when the user explicitly starts a fresh
+// session so the old keep-alive PTY is NOT reattached (the registry reaps it).
+const PTY_ATTACH_TOKEN_KEY = "hermes.pty.token.chat";
+function ptyAttachToken(rotate = false): string {
+  let t = "";
+  if (!rotate) {
+    try {
+      t = window.localStorage.getItem(PTY_ATTACH_TOKEN_KEY) ?? "";
+    } catch {
+      /* private mode / storage blocked */
+    }
+  }
+  if (!t) {
+    const a = new Uint8Array(16);
+    crypto.getRandomValues(a);
+    t = Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
+    try {
+      window.localStorage.setItem(PTY_ATTACH_TOKEN_KEY, t);
+    } catch {
+      /* ignore */
+    }
+  }
+  return t;
+}
+
 // Channel id ties this chat tab's PTY child (publisher) to its sidebar
 // (subscriber).  Generated once per mount so a tab refresh starts a fresh
 // channel — the previous PTY child terminates with the old WS, and its
@@ -58,14 +86,19 @@ function generateChannelId(scope?: string): string {
 // with cream foreground — we intentionally don't pick monokai or a loud
 // theme, because the TUI's skin engine already paints the content; the
 // terminal chrome just needs to sit quietly inside the dashboard.
-// `background` is omitted here — it's supplied dynamically from the active
-// theme's `terminalBackground` field so users can control it via YAML themes.
-const TERMINAL_THEME_STATIC = {
-  foreground: "#f0e6d2",
-  cursor: "#f0e6d2",
-  cursorAccent: "#0d2626",
-  selectionBackground: "#f0e6d244",
-};
+const DEFAULT_TERMINAL_BACKGROUND = "#000000";
+const DEFAULT_TERMINAL_FOREGROUND = "#f0e6d2";
+
+function buildTerminalTheme(background: string, foreground: string) {
+  return {
+    background,
+    foreground,
+    cursor: foreground,
+    cursorAccent: background,
+    selectionBackground:
+      foreground.length === 7 ? `${foreground}44` : foreground,
+  };
+}
 
 /**
  * CSS width for xterm font tiers.
@@ -193,10 +226,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   );
 
   const { theme } = useTheme();
-  const terminalBg = theme.terminalBackground ?? "#000000";
+  const terminalBg = theme.terminalBackground ?? DEFAULT_TERMINAL_BACKGROUND;
+  const terminalFg = theme.terminalForeground ?? DEFAULT_TERMINAL_FOREGROUND;
   const terminalTheme = useMemo(
-    () => ({ ...TERMINAL_THEME_STATIC, background: terminalBg }),
-    [terminalBg],
+    () => buildTerminalTheme(terminalBg, terminalFg),
+    [terminalBg, terminalFg],
   );
 
   // The dashboard keeps ChatPage mounted persistently so the PTY survives tab
@@ -258,7 +292,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let cancelled = false;
 
     api
-      .getSessionLatestDescendant(resumeParam)
+      .getSessionLatestDescendant(resumeParam, scopedProfile)
       .then((res) => {
         if (cancelled || !res.session_id || res.session_id === resumeParam) {
           return;
@@ -275,7 +309,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [resumeParam, searchParams, setSearchParams]);
+  }, [resumeParam, scopedProfile, searchParams, setSearchParams]);
 
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 1023px)");
@@ -673,6 +707,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const params: Record<string, string> = { channel };
       if (resumeParam) params.resume = resumeParam;
       if (forceFresh) params.fresh = "1";
+      // Keep-alive identity: reattach to this tab's living PTY across
+      // refresh/transient drops. A forced-fresh start rotates the token so
+      // the previous keep-alive PTY is not reattached (registry reaps it).
+      params.attach = ptyAttachToken(forceFresh);
       // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
       // selected profile, so the conversation runs with that profile's model,
       // skills, memory, and sessions (see web_server._resolve_chat_argv).
@@ -687,6 +725,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       reconnectAttemptRef.current = 0;
       setBanner(null);
       setSessionEnded(false);
+      // Connected — cancel any pending reconnect from a prior transient drop.
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
       // Send the initial RESIZE immediately so Ink has *a* size to lay
       // out against on its first paint.  The double-rAF block above will
       // follow up with the authoritative measurement — at worst Ink
@@ -769,7 +812,21 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // Server already wrote an ANSI error frame.
         return;
       }
+      // Keep-alive close-code contract (web_server.pty_ws + pty_session):
+      //   4410 = the agent PROCESS exited (real end) → restart affordance.
+      //   4409 = superseded by a newer tab attaching the same token → stay quiet.
+      if (ev.code === 4410) {
+        term.write(`\r\n\x1b[90m[session ended]\x1b[0m\r\n`);
+        setSessionEnded(true);
+        return;
+      }
+      if (ev.code === 4409) {
+        return;
+      }
       if (!ev.wasClean || ev.code === 1001 || ev.code === 1006) {
+        // Transient transport drop (refresh, sleep/wake, signal loss).
+        // Reconnect with backoff; the same ?attach= token reattaches to
+        // the still-living PTY, so the conversation continues in place.
         scheduleReconnect(ev.code);
         return;
       }
@@ -848,6 +905,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         clearTimeout(copyResetRef.current);
         copyResetRef.current = null;
       }
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
     };
   }, [channel, clearReconnectTimer, resumeParam, scopedProfile, reconnectNonce]);
 
@@ -897,12 +958,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [isActive]);
 
   // Keep the live xterm theme in sync when the active theme's terminal
-  // background changes (e.g. user switches to a custom YAML theme mid-session).
+  // colors change (e.g. user switches to a custom YAML theme mid-session).
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    term.options.theme = { ...TERMINAL_THEME_STATIC, background: terminalBg };
-  }, [terminalBg]);
+    term.options.theme = terminalTheme;
+  }, [terminalTheme]);
 
   // Layout:
   //   outer flex column — sits inside the dashboard's content area
@@ -932,7 +993,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             onClick={closeMobilePanel}
             className={cn(
               "fixed inset-0 z-[55] p-0 block",
-              "bg-black/60 backdrop-blur-sm",
+              "bg-black/60",
             )}
           />
         )}
@@ -944,7 +1005,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           className={cn(
             "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
             "border-l border-current/20 text-midground",
-            "bg-background-base/95 backdrop-blur-sm",
+            "bg-background-base/95",
             "transition-transform duration-200 ease-out",
             "[background:var(--component-sidebar-background)]",
             "[clip-path:var(--component-sidebar-clip-path)]",
@@ -962,7 +1023,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             <Typography
               mondwest
               className="text-display font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
-              style={{ mixBlendMode: "plus-lighter" }}
             >
               {t.app.modelToolsSheetTitle}
               <br />
@@ -1037,7 +1097,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               Offer an in-place restart so the user never has to refresh the
               whole page to get a working chat back. */}
           {sessionEnded && (
-            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/60 backdrop-blur-sm">
+            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/60">
               <div className="text-sm tracking-wide text-white/80">
                 Session ended.
               </div>
@@ -1060,13 +1120,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "absolute z-10",
               "normal-case tracking-normal font-normal",
               "rounded border border-current/30",
-              "bg-black/20 backdrop-blur-sm",
+              "bg-black/20",
               "opacity-70 hover:opacity-100 hover:border-current/60",
               "transition-opacity duration-150",
               "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
               "lg:bottom-4 lg:right-4",
             )}
-            style={{ color: TERMINAL_THEME_STATIC.foreground }}
+            style={{ color: terminalFg }}
           >
             <span className="inline-flex items-center gap-1.5">
               <Copy className="h-3 w-3 shrink-0" />

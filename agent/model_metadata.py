@@ -111,10 +111,15 @@ _MODEL_CACHE_TTL = 3600
 _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
-# Process-lifetime cache: after the first successful probe we remember the
+# Bounded-lifetime cache: after the first successful probe we remember the
 # server type so subsequent refreshes skip the full waterfall (no more 404
 # spam every 5 minutes on non-matching endpoints like /api/v1/models on vllm).
-_endpoint_probe_path_cache: Dict[str, str] = {}
+# Entries expire after _ENDPOINT_PROBE_TTL_SECONDS so a server swap on the
+# same port (stop Ollama, start LM Studio) is eventually re-detected instead
+# of being pinned to the stale type for the whole process lifetime.
+# Values are (server_type, monotonic_timestamp).
+_ENDPOINT_PROBE_TTL_SECONDS = 3600.0
+_endpoint_probe_path_cache: Dict[str, tuple] = {}
 
 
 def _get_model_metadata_cache_path() -> Path:
@@ -637,21 +642,26 @@ def is_local_endpoint(base_url: str) -> bool:
 
 
 def _localhost_to_ipv4(url: str) -> str:
-    """Rewrite a ``localhost`` host to ``127.0.0.1`` in a probe URL.
+    """Rewrite a ``localhost`` HOST to ``127.0.0.1`` in a probe URL.
 
     On Windows dual-stack machines, httpx resolves ``localhost`` to ``::1``
     first and pays a ~2s IPv6 connect timeout before falling back to IPv4
     when the local server only listens on IPv4 (LM Studio, Ollama defaults).
-    Probing the IPv4 loopback directly skips that penalty. Non-localhost
-    URLs pass through unchanged.
+    Probing the IPv4 loopback directly skips that penalty.
+
+    Only the URL's own host component is rewritten (anchored at the scheme),
+    so a non-localhost URL whose path or query merely embeds the substring
+    ``http://localhost...`` (e.g. ``?upstream=http://localhost:11434``)
+    passes through untouched.
     """
     if not url:
         return url
-    url = url.replace("://localhost:", "://127.0.0.1:")
-    url = url.replace("://localhost/", "://127.0.0.1/")
-    if url.endswith("://localhost"):
-        url = url[:-len("localhost")] + "127.0.0.1"
-    return url
+    return re.sub(
+        r"^(https?://)localhost(?=[:/]|$)",
+        r"\g<1>127.0.0.1",
+        url,
+        count=1,
+    )
 
 
 def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
@@ -678,8 +688,8 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     lmstudio_url = _lmstudio_server_root(normalized)
 
     cached = _endpoint_probe_path_cache.get(server_url)
-    if cached is not None:
-        return cached
+    if cached is not None and (time.monotonic() - cached[1]) < _ENDPOINT_PROBE_TTL_SECONDS:
+        return cached[0]
 
     headers = _auth_headers(api_key)
 
@@ -732,7 +742,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
         pass
 
     if result is not None:
-        _endpoint_probe_path_cache[server_url] = result
+        _endpoint_probe_path_cache[server_url] = (result, time.monotonic())
     return result
 
 
@@ -1106,9 +1116,15 @@ def get_cached_context_length(model: str, base_url: str) -> Optional[int]:
     if hit is not None:
         return hit
     # Legacy rows written before key normalization may carry a trailing
-    # slash — honor them rather than re-probing.
-    if base_url and base_url != base_url.rstrip("/"):
-        return cache.get(f"{model}@{base_url}")
+    # slash — honor them rather than re-probing. Checked regardless of the
+    # caller's slash form: the row's shape and the caller's shape can differ
+    # in either direction (old slashed row + new normalized config, or the
+    # reverse), so probe the literal form and the slashed canonical form.
+    for legacy_key in (f"{model}@{base_url}", f"{key}/"):
+        if legacy_key != key:
+            hit = cache.get(legacy_key)
+            if hit is not None:
+                return hit
     return None
 
 
@@ -1116,12 +1132,21 @@ def _invalidate_cached_context_length(model: str, base_url: str) -> None:
     """Drop a stale cache entry so it gets re-resolved on the next lookup."""
     key = _context_cache_key(model, base_url)
     cache = _load_context_cache()
-    # Also clear any legacy un-normalized row for the same pair.
-    legacy_key = f"{model}@{base_url}"
-    if key not in cache and legacy_key not in cache:
+    # Invalidation must also drop the in-memory TTL probe entries for this
+    # pair — otherwise the next resolution inside the TTL window reuses the
+    # very value we just declared stale and re-persists it.
+    bare = _strip_provider_prefix(model)
+    stripped = (base_url or "").rstrip("/")
+    _LOCAL_CTX_PROBE_CACHE.pop((bare, stripped), None)
+    _LOCAL_CTX_PROBE_CACHE.pop(("ollama_show", bare, stripped), None)
+    # Clear every key shape for this pair: canonical, the caller's literal
+    # form, and the slashed legacy form — same set get_cached_context_length
+    # consults, so a lookup can never resurrect a row invalidation missed.
+    stale_keys = {key, f"{model}@{base_url}", f"{key}/"}
+    if not any(k in cache for k in stale_keys):
         return
-    cache.pop(key, None)
-    cache.pop(legacy_key, None)
+    for k in stale_keys:
+        cache.pop(k, None)
     path = _get_context_cache_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

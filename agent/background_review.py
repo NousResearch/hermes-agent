@@ -817,7 +817,10 @@ def _run_review_in_thread(
                 review_whitelist,
                 deny_msg_fmt=(
                     "Background review denied non-whitelisted tool: "
-                    "{tool_name}. Only memory/skill tools are allowed."
+                    '"{tool_name}". Review mode only permits memory and '
+                    "skill management tools. Use `skill_view` to read a "
+                    "skill, `skill_manage` to modify one, `skills_list` "
+                    "to discover skills, and `memory` for notes."
                 ),
             )
             try:
@@ -839,8 +842,11 @@ def _run_review_in_thread(
                     user_message=(
                         prompt
                         + "\n\nYou can only call memory and skill "
-                        "management tools. Other tools will be denied "
-                        "at runtime — do not attempt them."
+                        "management tools. Use `skill_view` to read a "
+                        "skill, `skill_manage` to modify one, "
+                        "`skills_list` to discover skills, and `memory` "
+                        "for notes. Other tools will be denied at "
+                        "runtime — do not attempt them."
                     ),
                     conversation_history=_review_history,
                 )

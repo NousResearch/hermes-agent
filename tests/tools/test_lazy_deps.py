@@ -103,6 +103,14 @@ class TestAllowlist:
     def test_feature_install_command_unknown(self):
         assert ld.feature_install_command("not.real") is None
 
+    def test_discord_lazy_deps_pin_patched_pynacl_without_voice_extra(self):
+        specs = ld.LAZY_DEPS["platform.discord"]
+        assert "discord.py[voice]==2.7.1" not in specs
+        assert "discord.py==2.7.1" in specs
+        assert "davey==0.1.5" in specs
+        assert "PyNaCl==1.6.2" in specs
+        assert "aiohttp==3.14.1" in specs
+
 
 # ---------------------------------------------------------------------------
 # allow_lazy_installs gating

@@ -13161,7 +13161,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if "pynacl" in err_lower or "nacl" in err_lower or "davey" in err_lower:
                 return (
                     "Voice dependencies are missing (PyNaCl / davey). "
-                    f"Install with: `{sys.executable} -m pip install PyNaCl`"
+                    f"Install with: `{sys.executable} -m pip install "
+                    'discord.py==2.7.1 davey==0.1.5 PyNaCl==1.6.2 aiohttp==3.14.1`'
                 )
             return f"Failed to join voice channel: {e}"
 

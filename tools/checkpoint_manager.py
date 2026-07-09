@@ -341,10 +341,17 @@ def _run_git(
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
         if not ok and result.returncode not in allowed_returncodes:
-            logger.error(
-                "Git command failed: %s (rc=%d) stderr=%s",
-                " ".join(cmd), result.returncode, stderr,
-            )
+            # A concurrent `git gc` (routine at 150 exp/hr — many checkpoints per
+            # turn) is rejected by git's own gc.pid lock. The OTHER gc is running
+            # and will pack the repo, so this is an expected race, not a failure
+            # worth an ERROR (which would only bury real ones).
+            if "gc is already running" in stderr:
+                logger.debug("Git gc skipped — another gc holds the lock: %s", " ".join(cmd))
+            else:
+                logger.error(
+                    "Git command failed: %s (rc=%d) stderr=%s",
+                    " ".join(cmd), result.returncode, stderr,
+                )
         return ok, stdout, stderr
     except subprocess.TimeoutExpired:
         msg = f"git timed out after {timeout}s: {' '.join(cmd)}"
@@ -1112,7 +1119,12 @@ class CheckpointManager:
             store, working_dir,
         )
         _run_git(
-            ["gc", "--prune=now", "--quiet"],
+            # grace-window prune, NOT now: ~20 concurrent sessions write this store;
+            # prune=now deletes objects a mid-gc ref still needs, and the resulting
+            # dangling ref aborts every later gc with rc=128 (2026-07-03:
+            # refs/hermes/e9afff2c... -> missing object, store uncollected until
+            # hand-repaired). A window keeps just-written objects safe.
+            ["gc", "--prune=2.hours.ago", "--quiet"],
             store, working_dir, timeout=_GIT_TIMEOUT * 3,
         )
         _repair_bare_repo_dirs(store)
@@ -1200,7 +1212,12 @@ class CheckpointManager:
             store, str(store.parent),
         )
         _run_git(
-            ["gc", "--prune=now", "--quiet"],
+            # grace-window prune, NOT now: ~20 concurrent sessions write this store;
+            # prune=now deletes objects a mid-gc ref still needs, and the resulting
+            # dangling ref aborts every later gc with rc=128 (2026-07-03:
+            # refs/hermes/e9afff2c... -> missing object, store uncollected until
+            # hand-repaired). A window keeps just-written objects safe.
+            ["gc", "--prune=2.hours.ago", "--quiet"],
             store, str(store.parent), timeout=_GIT_TIMEOUT * 3,
         )
         _repair_bare_repo_dirs(store)
@@ -1412,7 +1429,12 @@ def prune_checkpoints(
             store, str(base),
         )
         _run_git(
-            ["gc", "--prune=now", "--quiet"],
+            # grace-window prune, NOT now: ~20 concurrent sessions write this store;
+            # prune=now deletes objects a mid-gc ref still needs, and the resulting
+            # dangling ref aborts every later gc with rc=128 (2026-07-03:
+            # refs/hermes/e9afff2c... -> missing object, store uncollected until
+            # hand-repaired). A window keeps just-written objects safe.
+            ["gc", "--prune=2.hours.ago", "--quiet"],
             store, str(base), timeout=_GIT_TIMEOUT * 3,
         )
         _repair_bare_repo_dirs(store)
@@ -1484,7 +1506,12 @@ def prune_checkpoints(
                 store, str(base),
             )
             _run_git(
-                ["gc", "--prune=now", "--quiet"],
+                # grace-window prune, NOT now: ~20 concurrent sessions write this store;
+            # prune=now deletes objects a mid-gc ref still needs, and the resulting
+            # dangling ref aborts every later gc with rc=128 (2026-07-03:
+            # refs/hermes/e9afff2c... -> missing object, store uncollected until
+            # hand-repaired). A window keeps just-written objects safe.
+            ["gc", "--prune=2.hours.ago", "--quiet"],
                 store, str(base), timeout=_GIT_TIMEOUT * 3,
             )
             _repair_bare_repo_dirs(store)

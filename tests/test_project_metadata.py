@@ -26,6 +26,33 @@ def _load_package_data():
     return tool["setuptools"]["package-data"]
 
 
+def _load_py_modules():
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject_path.open("rb") as handle:
+        return tomllib.load(handle)["tool"]["setuptools"]["py-modules"]
+
+
+def test_ht_compat_top_level_module_is_packaged():
+    """``ht_compat`` must be declared in ``py-modules``.
+
+    It is a top-level module imported by ``hermes_constants``, which is in turn
+    imported almost everywhere. setuptools' editable install (``pip install
+    -e .``, used to build the Docker image) and the wheel only expose modules
+    listed in ``py-modules`` — an undeclared top-level module is not importable
+    outside the source CWD. If ht_compat is dropped from the list,
+    ``import hermes_constants`` fails container-wide even though source-tree
+    test runs (which have the repo root on ``sys.path``) still pass. Regression
+    guard for that split failure mode.
+    """
+    py_modules = _load_py_modules()
+    assert "hermes_constants" in py_modules
+    assert "ht_compat" in py_modules, (
+        "ht_compat is imported by the packaged hermes_constants module but is "
+        "not declared in [tool.setuptools] py-modules, so the wheel/editable "
+        "install omits it and imports break in the Docker image."
+    )
+
+
 def test_matrix_extra_not_in_all():
     """The [matrix] extra pulls `mautrix[encryption]` -> `python-olm`,
     which has Linux-only wheels and no native build path on Windows or

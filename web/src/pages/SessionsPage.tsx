@@ -1184,18 +1184,32 @@ export default function SessionsPage() {
     : null;
 
   // Build snippet map from search results (session_id → snippet)
-  const snippetMap = new Map<string, string>();
-  if (searchResults) {
-    for (const r of searchResults) {
-      snippetMap.set(r.session_id, r.snippet);
-    }
+const snippetMap = new Map<string, string>();
+if (searchResults) {
+  for (const r of searchResults) {
+    snippetMap.set(r.session_id, r.snippet);
   }
+}
 
-  // When searching, filter sessions to those with FTS matches;
-  // when not searching, show all sessions
-  const filtered = searchResults
-    ? sessions.filter((s) => snippetMap.has(s.id))
-    : sessions;
+const searchResultSessions: SessionInfo[] | null = searchResults
+  ? searchResults.map((r) => ({
+      id: r.session_id,
+      source: r.source,
+      model: r.model,
+      title: r.title ?? null,
+      started_at: r.started_at ?? r.session_started ?? 0,
+      ended_at: r.ended_at ?? null,
+      last_active: r.last_active ?? r.session_started ?? 0,
+      is_active: r.is_active ?? false,
+      message_count: r.message_count ?? 0,
+      tool_call_count: r.tool_call_count ?? 0,
+      input_tokens: r.input_tokens ?? 0,
+      output_tokens: r.output_tokens ?? 0,
+      preview: r.preview ?? null,
+    }))
+  : null;
+
+const filtered = searchResultSessions ?? sessions;
 
   const platformEntries = status
     ? Object.entries(status.gateway_platforms ?? {})

@@ -223,4 +223,92 @@ def test_force_close_tcp_sockets_descends_httpcore_1_connection_wrapper():
     assert sock.shutdown_calls == 1
     # #29507: close() must NOT be called from this helper — the owning
     # httpx worker thread releases the FD, not us.
-    assert sock.close_calls == 0
+
+
+def test_opencode_go_disables_keepalive_pooling():
+    """opencode-go / opencode-zen must build its httpx client with
+    keepalive_expiry=0.0 so every request opens a fresh connection.
+
+    Regression guard for #61461: opencode-go sits behind a reverse proxy
+    that drops idle connections at ~30s; httpx's keepalive pool then reuses
+    those dead connections and the next request hangs until the proxy's
+    timeout fires (~30s). Disabling pooling forces the cold (~3s) path.
+    Other providers keep the 20s idle reaper (CLOSE-WAIT prevention).
+    """
+    calls: list = []
+
+    def _fake_build_keepalive(base_url="", *, verify=True, keepalive_expiry=20.0):
+        calls.append({"base_url": base_url, "keepalive_expiry": keepalive_expiry})
+        # Return a throwaway stand-in so create_openai_client can attach it.
+        return SimpleNamespace(close=lambda: None)
+
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://opencode.ai/zen/go/v1",
+        model="deepseek-v4-flash",
+        provider="opencode-go",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._client_kwargs = {
+        "api_key": "test-key-value",
+        "base_url": "https://opencode.ai/zen/go/v1",
+    }
+
+    constructed: list = []
+    fake_openai = _make_fake_openai_factory(constructed)
+
+    with patch.object(
+        agent, "_build_keepalive_http_client", side_effect=_fake_build_keepalive
+    ):
+        with patch("run_agent.OpenAI", fake_openai):
+            agent._create_openai_client(
+                agent._client_kwargs, reason="test", shared=True
+            )
+
+    assert len(calls) == 1, f"expected 1 keepalive build, got {len(calls)}"
+    assert calls[0]["keepalive_expiry"] == 0.0, (
+        f"opencode-go must disable keepalive pooling (keepalive_expiry=0.0), "
+        f"got {calls[0]['keepalive_expiry']}"
+    )
+
+
+def test_other_providers_keep_keepalive_reaper():
+    """Non-opencode providers keep the 20s idle reaper (default)."""
+    calls: list = []
+
+    def _fake_build_keepalive(base_url="", *, verify=True, keepalive_expiry=20.0):
+        calls.append({"base_url": base_url, "keepalive_expiry": keepalive_expiry})
+        return SimpleNamespace(close=lambda: None)
+
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+        model="test/model",
+        provider="openrouter",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._client_kwargs = {
+        "api_key": "test-key-value",
+        "base_url": "https://openrouter.ai/api/v1",
+    }
+
+    constructed: list = []
+    fake_openai = _make_fake_openai_factory(constructed)
+
+    with patch.object(
+        agent, "_build_keepalive_http_client", side_effect=_fake_build_keepalive
+    ):
+        with patch("run_agent.OpenAI", fake_openai):
+            agent._create_openai_client(
+                agent._client_kwargs, reason="test", shared=True
+            )
+
+    assert len(calls) == 1
+    assert calls[0]["keepalive_expiry"] == 20.0, (
+        f"non-opencode provider should keep keepalive_expiry=20.0, "
+        f"got {calls[0]['keepalive_expiry']}"
+    )

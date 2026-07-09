@@ -1709,8 +1709,23 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
     # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
     if "http_client" not in client_kwargs:
+        # Flat-namespace resellers (opencode-go / opencode-zen) sit behind a
+        # reverse proxy (Cloudflare / OpenResty) that drops idle connections
+        # at ~30s. httpx's keepalive pool then reuses those dead connections,
+        # and the next request hangs until the proxy's timeout fires
+        # (~30s) instead of the cold path's ~3s. Disable pooling for these
+        # providers so every request opens a fresh connection — see issue
+        # #61461 (opencode-go + deepseek-v4-flash hangs). Local/other
+        # providers keep the 20s idle reaper that prevents CLOSE-WAIT buildup.
+        _keepalive_expiry = (
+            0.0
+            if agent.provider in {"opencode-go", "opencode-zen"}
+            else 20.0
+        )
         keepalive_http = agent._build_keepalive_http_client(
-            client_kwargs.get("base_url", ""), verify=httpx_verify,
+            client_kwargs.get("base_url", ""),
+            verify=httpx_verify,
+            keepalive_expiry=_keepalive_expiry,
         )
         if keepalive_http is not None:
             client_kwargs["http_client"] = keepalive_http

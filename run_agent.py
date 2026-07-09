@@ -3915,7 +3915,12 @@ class AIAgent:
         return False
 
     @staticmethod
-    def _build_keepalive_http_client(base_url: str = "", *, verify: Any = True) -> Any:
+    def _build_keepalive_http_client(
+        base_url: str = "",
+        *,
+        verify: Any = True,
+        keepalive_expiry: float = 20.0,
+    ) -> Any:
         """Build an httpx.Client with proactive idle-connection reaping.
 
         Previously this method injected a custom ``httpx.HTTPTransport``
@@ -3929,11 +3934,17 @@ class AIAgent:
         and SSE encoding.
 
         The fix moves connection lifecycle management from the socket layer
-        to the HTTP pool layer: ``keepalive_expiry=20.0`` tells httpx to
+        to the HTTP pool layer: ``keepalive_expiry`` tells httpx to
         close idle pooled connections *before* a reverse proxy's typical
         30–60 s timeout drops them, preventing CLOSE-WAIT accumulation
         without modifying socket options.  The default httpx transport
         preserves OS TCP defaults (including ``TCP_NODELAY``).
+
+        ``keepalive_expiry=0.0`` disables connection reuse entirely — every
+        request opens a fresh connection.  Callers pass this for providers
+        whose upstream proxy drops idle connections so aggressively that
+        pooled reuse reliably hits a dead connection (see issue #61461,
+        opencode-go).  Non-zero (default 20.0) keeps the proactive reaper.
 
         ``verify`` carries per-provider ``ssl_ca_cert`` / ``ssl_verify`` and
         ``HERMES_CA_BUNDLE`` settings.  It is passed on the client AND on
@@ -3947,13 +3958,15 @@ class AIAgent:
             # HTTP_PROXY / HTTPS_PROXY / NO_PROXY correctly.
             _proxy = _get_proxy_for_base_url(base_url)
 
-            # Proactive pool reaping: close idle connections at 20 s,
+            # Proactive pool reaping: close idle connections at keepalive_expiry,
             # before reverse proxies (30–60 s typical) send FIN and
-            # cause CLOSE-WAIT accumulation.
+            # cause CLOSE-WAIT accumulation. 0.0 = disable reuse (fresh
+            # connection per request) for providers whose proxy drops idle
+            # connections so fast that pooling hits dead ones (issue #61461).
             _limits = _httpx.Limits(
                 max_keepalive_connections=20,
                 max_connections=100,
-                keepalive_expiry=20.0,
+                keepalive_expiry=keepalive_expiry,
             )
 
             # Timeouts: generous read=None for SSE streaming endpoints.

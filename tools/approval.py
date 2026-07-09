@@ -883,7 +883,7 @@ def _inline_simple_var_assignments(command: str) -> str:
     assign_re = re.compile(
         r'(?:^|[;&|\n]\s*)(?:export\s+|local\s+|declare\s+(?:-[A-Za-z]+\s+)?)?'
         r'([A-Za-z_][A-Za-z0-9_]*)='
-        r'''("[^"]*"|'[^']*'|[^\s;&|]+)'''
+        r'''("[^"]*"|'[^']*'|[^\s;&|]*)'''
     )
     for m in assign_re.finditer(command):
         name, value = m.group(1), m.group(2)

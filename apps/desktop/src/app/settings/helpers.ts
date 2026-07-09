@@ -1,7 +1,7 @@
 import { asText } from '@/lib/text'
-import type { HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
+import type { ConfigFieldSchema, HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
 
-import { BUILTIN_PERSONALITIES, ENUM_OPTIONS, PROVIDER_GROUPS } from './constants'
+import { BUILTIN_PERSONALITIES, ENUM_OPTIONS, PROVIDER_GROUPS, SECTIONS } from './constants'
 
 // Canonical implementations live in @/lib/text; re-exported here so the many
 // settings/capabilities call sites keep their import path.
@@ -95,6 +95,40 @@ export function getNested(obj: HermesConfigRecord, path: string): unknown {
   }
 
   return cur
+}
+
+export function inferFieldSchema(value: unknown): ConfigFieldSchema {
+  if (typeof value === 'boolean') {
+    return { type: 'boolean' }
+  }
+
+  if (typeof value === 'number') {
+    return { type: 'number' }
+  }
+
+  if (Array.isArray(value)) {
+    return { type: 'list' }
+  }
+
+  return { type: 'string' }
+}
+
+// Backend schema omits some declared keys (e.g. memory.provider); config presence is the availability signal.
+export function sectionFieldEntries(
+  schema: Record<string, ConfigFieldSchema>,
+  config: HermesConfigRecord
+): Map<string, [string, ConfigFieldSchema][]> {
+  return new Map(
+    SECTIONS.map(s => [
+      s.id,
+      s.keys.flatMap(k => {
+        const value = getNested(config, k)
+        const field = schema[k] ?? (value === undefined ? undefined : inferFieldSchema(value))
+
+        return field ? [[k, field] as [string, ConfigFieldSchema]] : []
+      })
+    ])
+  )
 }
 
 export function setNested(obj: HermesConfigRecord, path: string, value: unknown): HermesConfigRecord {

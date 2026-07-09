@@ -148,7 +148,7 @@
   },
   "build": {
     "electronVersion": "40.10.2",
-    "appId": "com.nousresearch.hermes",
+    "appId": "io.github.uaixo.ht-ai-agent",
     "productName": "Hermes",
     "executableName": "Hermes",
     "protocols": [

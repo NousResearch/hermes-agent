@@ -58,18 +58,20 @@ Cursor, Claude Code, Codex, and Goose.
 Two integration paths, both configured in `config.example.yaml`:
 
 1. Native `web` toolset — set `web.backend: firecrawl` in
-   `~/.hermes/config.yaml` plus `FIRECRAWL_API_KEY` in `~/.hermes/.env`
-   (the org's shared cloud key). The bundled `plugins/web/firecrawl`
-   plugin routes `web_search` / `web_extract` through it.
+   `~/.hermes/config.yaml` plus `FIRECRAWL_API_URL` / `FIRECRAWL_API_KEY`
+   in `~/.hermes/.env`. The bundled `plugins/web/firecrawl` plugin routes
+   `web_search` / `web_extract` through it.
 2. MCP — the `firecrawl` entry under `mcp_servers` runs the MIT-licensed
    `firecrawl-mcp` server for crawl/deep-research tools (26 tools verified).
 
-The org currently uses Firecrawl **cloud** (`api.firecrawl.dev`) — no
-self-hosted instance is deployed (verified 2026-07-09 against the cluster
-and `intelli-verse-kube-infra`). Both the plugin and the MCP server also
-honor `FIRECRAWL_API_URL` for a self-hosted instance, so if one is deployed
-later (suggested host `firecrawl.intelli-verse-x.ai`), setting that one env
-var flips all research traffic to it with no other changes.
+The org runs a **self-hosted** Firecrawl on EKS at
+`https://firecrawl.intelli-verse-x.ai` (v2.10.19, `aicart` namespace,
+deployed + e2e verified 2026-07-09 — scrape and MCP handshake both return
+markdown; manifests in `intelli-verse-kube-infra/firecrawl/`). The instance
+is unauthenticated, so `FIRECRAWL_API_KEY` can be any non-empty value.
+Search is backed by the in-cluster SearXNG. To use Firecrawl cloud instead,
+drop `FIRECRAWL_API_URL` and set a real `fc-` key — both the plugin and the
+MCP server honor whichever is configured.
 
 Do not fork Firecrawl's core into this repo: it is AGPL-3.0. Run it as a
 separate service and talk to it over the API, which keeps this fork's

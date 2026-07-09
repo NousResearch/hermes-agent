@@ -12,12 +12,12 @@
 # Web research through Firecrawl
 # -----------------------------------------------------------------------------
 # Pins both web_search and web_extract to the Firecrawl provider (the bundled
-# plugins/web/firecrawl plugin). The org currently uses Firecrawl CLOUD with
-# the shared fc- key (FIRECRAWL_API_KEY in ~/.hermes/.env — same key the rest
-# of the org tooling uses). No self-hosted instance is deployed yet (verified
-# 2026-07-09: no firecrawl ingress/service in intelli-verse-kube-infra); when
-# one lands, set FIRECRAWL_API_URL in ~/.hermes/.env and the same plugin and
-# MCP server route to it instead — no config change needed here.
+# plugins/web/firecrawl plugin). The org runs a SELF-HOSTED Firecrawl on EKS
+# (https://firecrawl.intelli-verse-x.ai, deployed + e2e verified 2026-07-09).
+# Set FIRECRAWL_API_URL in ~/.hermes/.env (see .env.example) and both the
+# plugin and the MCP server route to it; the instance is unauthenticated so
+# FIRECRAWL_API_KEY can be any non-empty value (e.g. "self-hosted"). To fall
+# back to Firecrawl cloud, drop FIRECRAWL_API_URL and use a real fc- key.
 web:
   backend: firecrawl
 
@@ -34,10 +34,10 @@ mcp_servers:
     command: npx
     args: ["-y", "firecrawl-mcp"]
     env:
-      # Cloud (current org default):
-      FIRECRAWL_API_KEY: "${FIRECRAWL_API_KEY}"
-      # Self-hosted (once deployed — key then optional):
-      # FIRECRAWL_API_URL: "https://firecrawl.intelli-verse-x.ai"
+      # Self-hosted instance on EKS (current org default):
+      FIRECRAWL_API_URL: "https://firecrawl.intelli-verse-x.ai"
+      FIRECRAWL_API_KEY: "${FIRECRAWL_API_KEY}"  # any non-empty value, e.g. self-hosted
+      # Cloud fallback: remove FIRECRAWL_API_URL and set a real fc- key.
 
 # -----------------------------------------------------------------------------
 # Dashboard behind the company VPN (remote IX Agency backends)

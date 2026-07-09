@@ -14,7 +14,7 @@ import {
 } from '@icons-pack/react-simple-icons'
 import type { ComponentType, SVGProps } from 'react'
 
-import { Globe, Link as LinkIcon, MessageSquareText } from '@/lib/icons'
+import { Globe, Link as LinkIcon, MessageSquareText, NotebookTabs } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 // We render simpleicons.org brand glyphs for platforms whose owners publish a
@@ -45,6 +45,7 @@ const PLATFORM_ICONS: Record<string, PlatformIconSpec> = {
   whatsapp: { Icon: SiWhatsapp, color: '#25D366', kind: 'brand' },
   bluebubbles: { Icon: SiApple, color: '#0BD318', kind: 'brand' },
   homeassistant: { Icon: SiHomeassistant, color: '#18BCF2', kind: 'brand' },
+  kindle: { Icon: NotebookTabs, color: '#6B6455', kind: 'generic' },
   email: { Icon: SiGmail, color: '#EA4335', kind: 'brand' },
   sms: { Icon: MessageSquareText, color: '#F43F5E', kind: 'generic' },
   webhook: { Icon: LinkIcon, color: '#71717A', kind: 'generic' },

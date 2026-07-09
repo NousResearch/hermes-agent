@@ -200,6 +200,9 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # installed on demand like every other messaging platform; also exposed
     # as the `teams` extra in pyproject for packagers / explicit installs.
     "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"),  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525
+    # Wyoming voice-satellite platform ("Hey Hermes" hardware satellites).
+    # wyoming is a zero-dependency MIT package (event framing only).
+    "platform.voice_satellite": ("wyoming==1.10.0",),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),

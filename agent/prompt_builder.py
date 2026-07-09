@@ -321,7 +321,7 @@ TASK_COMPLETION_GUIDANCE = (
     "# Finishing the job\n"
     "When the user asks you to build, run, or verify something, the deliverable is "
     "a working artifact backed by real tool output — not a description of one. "
-    "Do not stop after writing a stub, a plan, or a single command. Keep working "
+    "Do not stop after writing a stub or a single command. Keep working "
     "until you have actually exercised the code or produced the requested result, "
     "then report what real execution returned.\n"
     "If a tool, install, or network call fails and blocks the real path, say so "

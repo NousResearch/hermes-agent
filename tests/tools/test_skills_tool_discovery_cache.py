@@ -40,13 +40,21 @@ def _write_skill(root, category, name, description="a skill"):
     return d
 
 
-def test_cache_hit_serves_same_result_without_rescan(tmp_path):
+def test_cache_hit_serves_copies_not_cache_objects(tmp_path):
+    """Callers mutate the returned dicts (web_server annotates
+    s['enabled']/s['usage']) — the cache must hand out per-call copies."""
     _write_skill(tmp_path, "cat-a", "skill-one")
     first = st._find_all_skills()
     assert [s["name"] for s in first] == ["skill-one"]
 
+    # Mutate what the first caller got; the next (cached) call must be clean.
+    first[0]["enabled"] = False
+    first.append({"name": "junk"})
+
     second = st._find_all_skills()
-    assert second is first  # cache hit returns the SAME object, no rescan
+    assert [s["name"] for s in second] == ["skill-one"]
+    assert "enabled" not in second[0], "cache poisoned by caller mutation"
+    assert second is not first
 
 
 def test_nested_category_skill_add_invalidates(tmp_path):

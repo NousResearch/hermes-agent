@@ -63,6 +63,19 @@ def resolve_active_host() -> str:
     if explicit:
         return explicit
 
+    # Respect defaultHost from honcho.json when no profile override is set.
+    # This keeps setup-generated configs (e.g. host block "local") in sync with
+    # the host key the rest of the plugin resolves.
+    try:
+        path = resolve_config_path()
+        if path.exists():
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            default_host = raw.get("defaultHost", "").strip()
+            if default_host:
+                return default_host
+    except Exception:
+        pass
+
     try:
         from hermes_cli.profiles import get_active_profile_name
         profile = get_active_profile_name()
@@ -477,7 +490,9 @@ class HonchoClientConfig:
         )
 
         base_url = (
-            raw.get("baseUrl")
+            host_block.get("baseUrl")
+            or host_block.get("base_url")
+            or raw.get("baseUrl")
             or raw.get("base_url")
             or os.environ.get("HONCHO_BASE_URL", "").strip()
             or None

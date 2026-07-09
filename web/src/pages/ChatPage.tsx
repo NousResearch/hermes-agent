@@ -940,6 +940,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
       const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
       onDataDisposable = term.onData((data) => {
+        // Mouse reports (scroll wheel etc.) are not typed input — swallow
+        // them before the blocked-input check so scrolling a disconnected
+        // terminal doesn't trip the "reconnecting" notice.
+        if (SGR_MOUSE_RE.test(data)) {
+          return;
+        }
+
         if (
           ws.readyState !== WebSocket.OPEN ||
           shouldBlockPtyInput(ptyStateRef.current)
@@ -950,10 +957,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               `\r\n\x1b[33m[${PTY_RECONNECT_INPUT_MESSAGE}]\x1b[0m\r\n`,
             );
           }
-          return;
-        }
-
-        if (SGR_MOUSE_RE.test(data)) {
           return;
         }
 

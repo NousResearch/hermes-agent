@@ -1182,6 +1182,162 @@ def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
     return _normalize_job_record(name_matches[0])
 
 
+def sync_jobs_provider_snapshots() -> Dict[str, Any]:
+    """Re-snap the ``provider_snapshot`` / ``model_snapshot`` of every unpinned
+    job to the current global runtime/provider resolution (#61404).
+
+    Background:
+
+      When the user changes the global provider/model default, every agent cron
+      job that pins neither provider nor model gets swept up by the
+      ``provider_snapshot`` drift guard at fire time — the guard sees the new
+      global default and raises ``Skipped to prevent unintended spend`` per
+      schedule tick. The user previously had to re-pin each job manually, which
+      scales linearly with the size of the cron fleet (the reporter called out
+      30+ jobs, ~15 minutes per global switch).
+
+    Behavior:
+
+      - Walks every persisted job and, for each one whose ``provider`` AND
+        ``model`` are both unpinned (the drift guard's condition), refreshes
+        the stored snapshots from the *current* runtime resolution so the
+        existing jobs run on the new defaults on the next tick.
+      - Jobs that already pin provider or model are left untouched.  A
+        downstream provider change must not silently widen the spend surface;
+        the user is responsible for those (and ``cronjob action=update``
+        already re-snaps new snapshots whenever inference fields change).
+      - ``no_agent`` / no-inference jobs carry no snapshots by design, so this
+        helper skips them.
+      - Jobs that have no snapshot *yet* (e.g. persisted before the snapshot
+        machinery landed, or whose original resolution failed and load_job()
+        on-disk record omits it) get a fresh one here — that's the actual fix
+        the user wants, not only refresh-after-existing-snapshot.
+
+    Returns:
+
+      A small run-report the caller can present to the user or the gateway
+      transport:
+
+        {
+          "updated":  [job_id, ...],   # jobs whose snapshot endpoint shifted
+          "left":     int,             # jobs already on the right snapshot
+          "skipped":  int,             # jobs whose provider/model is pinned
+          "no_agent": int,             # jobs whose no_agent flag short-circuits
+          "errors":   [(job_id, str), ...],
+        }
+
+    Locks under the same jobs-store lock as ``update_job`` so this never
+    races with a real cron tick or an in-flight ``update_job`` call.
+    """
+    synced_ids: List[str] = []
+    skipped_pinned = 0
+    skipped_no_agent = 0
+    left_unchanged = 0
+    errors: List[tuple[str, str]] = []
+
+    # Resolve runtime + default model snapshot *once* per call. Subsequent
+    # jobs in the same loop all see the same target value, which is the
+    # whole point — a single provider switch becomes a single resolution
+    # surface instead of one per job (which would race differently across
+    # long-running multi-job batches).
+    try:
+        target_provider, target_model = _compute_provider_model_snapshots(
+            provider=None,
+            model=None,
+            base_url=None,
+            no_agent=False,
+        )
+    except Exception as exc:
+        # Resolution failures are not consequence-free: the job store still
+        # has stale snapshots from the previous default, and re-snapping to
+        # None would @@step past the guard@@ for every job. Surface the
+        # error so the caller (CLI / gateway action) can abort rather than
+        # silently bumping every job into "no snapshot" mode.
+        raise RuntimeError(
+            f"Cannot sync cron job provider snapshots: resolving the current "
+            f"global default failed ({exc!r}). Refusing to mutate the job store; "
+            "fix the misconfigured provider/model and retry."
+        ) from exc
+
+    with _jobs_lock():
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            job_id = job.get("id", "")
+            if not job_id:
+                continue
+
+            # ``no_agent`` is mutually exclusive with the drift guard by
+            # design — there's no provider to pin against — so leave those
+            # records alone and never write a snapshot for them.
+            if job.get("no_agent"):
+                skipped_no_agent += 1
+                continue
+
+            # Skip jobs where the USER explicitly pinned provider or model.
+            # The drift guard only fires for unpinned jobs in the first place,
+            # and overriding a deliberate pin would widen the spend surface
+            # past what the user asked for.
+            if (
+                _normalize_job_optional_text(job.get("provider")) is not None
+                or _normalize_job_optional_text(job.get("model")) is not None
+            ):
+                skipped_pinned += 1
+                continue
+
+            # Re-snap only when the value actually moved. Without this guard
+            # every call would still bump next_run_at / schedule_display
+            # timestamps via the save_jobs path, creating log churn and
+            # re-firing of "job updated" webhooks on every sync.
+            existing_provider_snap = job.get("provider_snapshot")
+            existing_model_snap = job.get("model_snapshot")
+            provider_moved = (
+                target_provider is not None
+                and existing_provider_snap != target_provider
+            )
+            model_moved = (
+                target_model is not None
+                and existing_model_snap != target_model
+            )
+            if not provider_moved and not model_moved:
+                left_unchanged += 1
+                continue
+
+            # Copy the record once; only mutate the axes that moved (so a
+            # None target never silently wipes a previously recorded snapshot
+            # when the resolver itself is empty/absent).
+            updated: Dict[str, Any] = dict(job)
+            if provider_moved:
+                updated["provider_snapshot"] = target_provider
+            if model_moved:
+                updated["model_snapshot"] = target_model
+
+            jobs[i] = updated
+            synced_ids.append(job_id)
+
+        if synced_ids:
+            # Wrap the per-job save_jobs in a single transactional call by
+            # mutating the in-memory list and persisting once.  jobs.lock
+            # already serializes this against concurrent update_job() calls,
+            # so partial failure mid-batch would leave the store in an
+            # inconsistent state — instead, validate before saving.
+            try:
+                save_jobs(jobs)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Cron sync aborted while persisting snapshot refresh "
+                    f"for {len(synced_ids)} job(s). ({exc!r}). No changes "
+                    "were committed — the store is unchanged."
+                ) from exc
+
+    return {
+        "updated": synced_ids,
+        "left": left_unchanged,
+        "skipped": skipped_pinned,
+        "no_agent": skipped_no_agent,
+        "errors": errors,
+    }
+
+
 def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     """List all jobs, optionally including disabled ones."""
     jobs = [_normalize_job_record(j) for j in load_jobs()]

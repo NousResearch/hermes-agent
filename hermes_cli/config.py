@@ -1044,6 +1044,11 @@ DEFAULT_CONFIG = {
         # (docker/modal/ssh — they have their own probe).  Set False to
         # disable entirely.
         "environment_probe": True,
+        # Inject current datetime into the system prompt's environment-hints
+        # block so agents always know what day/time it is.  Eliminates
+        # temporal ambiguity across sessions, overnight cycles, and holiday
+        # weekends.  Default True.  Set False to disable.
+        "show_datetime": True,
         # Embedder-supplied environment description appended to the system
         # prompt's environment-hints block. Lets a host that wraps Hermes
         # (sandbox runner, managed platform) explain the runtime environment

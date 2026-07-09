@@ -1613,6 +1613,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             api_messages.append(api_msg)
 
         effective_system = agent._cached_system_prompt or ""
+        # Inject current time — per-turn temporal anchor.
+        try:
+            from hermes_time import current_time_line
+            effective_system = effective_system + "\n" + current_time_line() if effective_system else current_time_line()
+        except Exception:
+            pass
         if agent.ephemeral_system_prompt:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
         if effective_system:

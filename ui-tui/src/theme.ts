@@ -355,6 +355,13 @@ const FALSE_RE = /^(?:0|false|no|off)$/
 // so dark Apple Terminal profiles that advertise a dark background stay dark.
 const LIGHT_DEFAULT_TERM_PROGRAMS = new Set<string>(['Apple_Terminal'])
 
+function isZedTerminal(env: NodeJS.ProcessEnv): boolean {
+  const termProgram = (env.TERM_PROGRAM ?? '').trim().toLowerCase()
+  const zedTerm = (env.ZED_TERM ?? '').trim().toLowerCase()
+
+  return termProgram === 'zed' || ['1', 'true', 'yes', 'on'].includes(zedTerm)
+}
+
 // Best-effort RGB → luminance check.  Currently only accepts a 3- or
 // 6-digit hex value (with or without a leading `#`); the env var name
 // `HERMES_TUI_BACKGROUND` is intentionally generic so a future OSC11
@@ -443,7 +450,7 @@ export function detectLightMode(
 
   const colorfgbg = (env.COLORFGBG ?? '').trim()
 
-  if (colorfgbg) {
+  if (colorfgbg && !isZedTerminal(env)) {
     // Validate as a decimal integer before coercing — `Number('')` is 0,
     // so a malformed `COLORFGBG='15;'` would otherwise look like an
     // authoritative dark slot and incorrectly block the TERM_PROGRAM

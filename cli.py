@@ -2202,7 +2202,7 @@ def _detect_light_mode() -> bool:
             return result
         # 4. COLORFGBG (xterm/Konsole/urxvt)
         cfgbg = (os.environ.get("COLORFGBG") or "").strip()
-        if cfgbg:
+        if cfgbg and not _is_zed_terminal():
             last = cfgbg.split(";")[-1] if ";" in cfgbg else cfgbg
             if last.isdigit():
                 bg = int(last)
@@ -2229,6 +2229,12 @@ def _detect_light_mode() -> bool:
         result = False
     _LIGHT_MODE_CACHE = result
     return result
+
+
+def _is_zed_terminal() -> bool:
+    term_program = (os.environ.get("TERM_PROGRAM") or "").strip().lower()
+    zed_term = (os.environ.get("ZED_TERM") or "").strip().lower()
+    return term_program == "zed" or zed_term in {"1", "true", "yes", "on"}
 
 
 # Light-mode equivalents of skin colors that are unreadable on cream

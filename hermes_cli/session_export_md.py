@@ -195,7 +195,10 @@ def _safe_id_component(session_id: str) -> str:
     component don't collide. Clean IDs pass through unchanged.
     """
     raw = str(session_id or "").strip()
-    sanitized = re.sub(r"[^\w-]", "_", raw).strip("._")
+    # Match the documented class exactly. ``\w`` is Unicode-aware in Python, so
+    # ``[^\w-]`` would let Unicode letters/digits (including homoglyphs) survive
+    # into the filename; an explicit ASCII class strips them.
+    sanitized = re.sub(r"[^A-Za-z0-9_-]", "_", raw).strip("._")
     sanitized = sanitized[:96] or "session"
     if raw and sanitized == raw:
         return sanitized

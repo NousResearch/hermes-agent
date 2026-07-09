@@ -3322,6 +3322,9 @@ def register(ctx) -> None:
         # Chat caps text messages at 4096 chars; we leave margin to fit
         # the "Hermes is thinking..." marker patches and edit overhead.
         max_message_length=4000,
+        media_capabilities=frozenset(
+            {"image_file", "document", "voice", "video", "animation"}
+        ),
         emoji="💬",
         allow_update_command=True,
         platform_hint=(

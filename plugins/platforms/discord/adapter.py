@@ -8402,6 +8402,9 @@ def register(ctx) -> None:
         standalone_sender_fn=_standalone_send,
         # Discord hard limit per message
         max_message_length=2000,
+        media_capabilities=frozenset(
+            {"image_file", "document", "voice", "video", "animation"}
+        ),
         # Display
         emoji="🎮",
         allow_update_command=True,

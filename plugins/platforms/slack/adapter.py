@@ -4568,6 +4568,7 @@ def register(ctx) -> None:
         # Slack API allows 40,000 chars; leave margin (matches the legacy
         # SlackAdapter.MAX_MESSAGE_LENGTH).
         max_message_length=39000,
+        media_capabilities=frozenset({"image_file", "document", "voice", "video"}),
         # Display
         emoji="💼",
         allow_update_command=True,

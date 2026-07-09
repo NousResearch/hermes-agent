@@ -1636,6 +1636,7 @@ def register(ctx) -> None:
         allow_all_env="LINE_ALLOW_ALL_USERS",
         # LINE per-bubble cap is 5000; smart-chunker uses 4500.
         max_message_length=LINE_SAFE_BUBBLE_CHARS,
+        media_capabilities=frozenset({"image_file", "voice", "video"}),
         emoji="💚",
         pii_safe=False,
         allow_update_command=True,

@@ -1275,6 +1275,7 @@ def register(ctx) -> None:
         # but 4000 is the readable threshold the adapter has used since
         # day one).
         max_message_length=MAX_POST_LENGTH,
+        media_capabilities=frozenset({"image_file", "document", "voice", "video"}),
         # Display
         emoji="💬",
         allow_update_command=True,

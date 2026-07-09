@@ -24,8 +24,8 @@ the per-instance capability methods on ``BasePlatformAdapter``):
   Telegram yes; Signal/SMS no -> consumer degrades to one-message-per-segment).
 - ``supports_threads``   -> ``create_handoff_thread`` capability flag.
 - ``markdown_dialect``   -> presentation hint (e.g. "markdown_v2", "discord").
-- ``emoji`` / ``platform_hint`` / ``pii_safe`` -> ``PlatformEntry`` fields of the
-  same name.
+- ``emoji`` / ``platform_hint`` / ``pii_safe`` / ``media_capabilities`` ->
+  ``PlatformEntry`` fields of the same name.
 """
 
 from __future__ import annotations
@@ -58,6 +58,7 @@ class CapabilityDescriptor:
     emoji: str = "\U0001f50c"  # 🔌 default (matches PlatformEntry default)
     platform_hint: str = ""
     pii_safe: bool = False
+    media_capabilities: tuple[str, ...] = ()
 
     def to_json(self) -> str:
         """Serialize to a compact, stable JSON string for the handshake frame."""
@@ -74,6 +75,8 @@ class CapabilityDescriptor:
         raw = json.loads(data)
         known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
         filtered = {k: v for k, v in raw.items() if k in known}
+        if "media_capabilities" in filtered:
+            filtered["media_capabilities"] = tuple(filtered["media_capabilities"])
         return cls(**filtered)
 
     @classmethod
@@ -115,4 +118,7 @@ class CapabilityDescriptor:
             emoji=getattr(entry, "emoji", "\U0001f50c"),
             platform_hint=getattr(entry, "platform_hint", ""),
             pii_safe=getattr(entry, "pii_safe", False),
+            media_capabilities=tuple(
+                sorted(getattr(entry, "media_capabilities", frozenset()))
+            ),
         )

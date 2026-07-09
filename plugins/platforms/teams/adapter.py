@@ -1438,6 +1438,7 @@ def register(ctx) -> None:
         allow_all_env="TEAMS_ALLOW_ALL_USERS",
         # Teams supports up to ~28 KB per message
         max_message_length=28000,
+        media_capabilities=frozenset({"image_file", "document", "voice", "video"}),
         # Display
         emoji="💼",
         allow_update_command=True,

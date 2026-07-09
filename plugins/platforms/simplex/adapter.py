@@ -1295,6 +1295,7 @@ def register(ctx) -> None:
         allowed_users_env="SIMPLEX_ALLOWED_USERS",
         allow_all_env="SIMPLEX_ALLOW_ALL_USERS",
         max_message_length=MAX_MESSAGE_LENGTH,
+        media_capabilities=frozenset({"image_file", "document", "voice", "video"}),
         emoji="🔒",
         # SimpleX uses opaque contact IDs only — no phone numbers or email
         # addresses to redact.

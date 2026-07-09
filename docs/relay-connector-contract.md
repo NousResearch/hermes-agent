@@ -51,6 +51,7 @@ JSON object. Source of truth: `gateway/relay/descriptor.py`.
 | `emoji` | string | no | Display emoji (default 🔌). |
 | `platform_hint` | string | no | System-prompt platform hint. |
 | `pii_safe` | bool | no | Redact PII in session descriptions. |
+| `media_capabilities` | array of string | no | Media kinds (subset of `voice`, `video`, `document`, `image_file`, `animation`) the adapter natively sends, vs. falling back to a text-notice. |
 
 Most fields are a projection of the gateway's existing `PlatformEntry`; the
 runtime-only fields (`len_unit`, `supports_*`, `markdown_dialect`) come from the

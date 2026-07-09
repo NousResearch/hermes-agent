@@ -4621,17 +4621,18 @@ class FeishuAdapter(BasePlatformAdapter):
             return await self._run_blocking(self._client.im.v1.message.reply, request)
 
         # For topic/thread messages that fell back from reply→create, use
-        # thread_id as receive_id so the message lands in the topic instead of
-        # the main chat.
+        # ReplyMessage with reply_in_thread. CreateMessage does not accept
+        # receive_id_type=thread_id — Feishu returns 99992402 (#61000).
         _thread_id = (metadata or {}).get("thread_id")
         if _thread_id:
-            body = self._build_create_message_body(
-                receive_id=_thread_id,
-                msg_type=msg_type,
+            body = self._build_reply_message_body(
                 content=payload,
+                msg_type=msg_type,
+                reply_in_thread=True,
                 uuid_value=str(uuid.uuid4()),
             )
-            request = self._build_create_message_request("thread_id", body)
+            request = self._build_reply_message_request(_thread_id, body)
+            return await self._run_blocking(self._client.im.v1.message.reply, request)
         else:
             receive_id = chat_id
             receive_id_type = "chat_id"

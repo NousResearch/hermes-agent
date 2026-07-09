@@ -77,9 +77,27 @@ def _warn_if_gateway_not_running() -> None:
     mean jobs won't fire — the warning would be a false alarm. Stay quiet for
     any non-builtin provider; the gateway-process heuristic only speaks to the
     built-in ticker's trigger.
+
+    The null provider (cron.provider: none, #56103) is the exception among
+    non-builtin providers: jobs will NEVER fire on this instance, by design.
+    Someone creating a job right here deserves to know that — same
+    silent-never-fires failure mode as #51038, so warn just as loudly.
     """
     try:
-        if _active_cron_provider_name() != "builtin":
+        provider = _active_cron_provider_name()
+        if provider == "none":
+            print(color(
+                "  ⚠  Cron scheduler is disabled on this instance "
+                "(cron.provider: none) — jobs won't fire here.",
+                Colors.YELLOW,
+            ))
+            print(color(
+                "     They will only fire on an instance that runs a scheduler "
+                "AND shares this job store (e.g. the active gateway of an HA pair).",
+                Colors.DIM,
+            ))
+            return
+        if provider != "builtin":
             return
 
         from hermes_cli.gateway import find_gateway_pids
@@ -185,6 +203,18 @@ def cron_list(show_all: bool = False):
 
 def cron_tick():
     """Run due jobs once and exit."""
+    # `tick` is a deliberate manual override: it executes due jobs even when
+    # the scheduler is disabled (cron.provider: none, #56103) — like `cron
+    # run`, an explicit human action is not the automatic trigger the null
+    # provider exists to suppress. But say so, so an operator poking a
+    # "disabled" standby is not surprised that jobs fire.
+    if _active_cron_provider_name() == "none":
+        print(color(
+            "  ⚠  Cron scheduler is disabled on this instance (cron.provider: "
+            "none) — 'hermes cron tick' is a manual override and will still "
+            "execute due jobs now.",
+            Colors.YELLOW,
+        ))
     from cron.scheduler import tick
     tick(verbose=True)
 
@@ -197,6 +227,28 @@ def cron_status():
     print()
 
     provider = _active_cron_provider_name()
+    if provider == "none":
+        # The null provider (cron.provider: none, #56103) never ticks by
+        # design — e.g. the standby half of an active/standby HA pair. The
+        # green "jobs fire via the managed scheduler" line below would be a
+        # lie, and the ticker-heartbeat heuristics would cry wolf; say plainly
+        # that nothing fires here.
+        print(color(
+            "⚠ Cron scheduler is DISABLED on this instance (cron.provider: "
+            "none) — jobs will NOT fire here.",
+            Colors.YELLOW,
+        ))
+        print(color(
+            "  Jobs can still be created, edited, and run manually "
+            "(hermes cron run <id>). To re-enable automatic firing, unset "
+            "cron.provider (or set it to 'builtin') and restart the gateway.",
+            Colors.DIM,
+        ))
+        print()
+        _print_active_jobs_summary(list_jobs(include_disabled=False))
+        print()
+        return
+
     if provider != "builtin":
         # An external provider (e.g. Chronos) does NOT run the in-process 60s
         # ticker — it arms one external one-shot per job and is fired by a

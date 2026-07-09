@@ -15,13 +15,21 @@ delivery.
 The built-in InProcessCronScheduler runs the historical 60s daemon-thread
 ticker. Alternative providers (e.g. Chronos, a NAS-mediated managed-cron
 provider for scale-to-zero deployments) live under plugins/cron_providers/<name>/ and are
-selected via the `cron.provider` config key (empty = built-in).
+selected via the `cron.provider` config key (empty = built-in). The reserved
+value ``none`` (aliases: ``off``, ``disabled``) selects NullCronScheduler — no
+trigger at all — for instances that must never fire cron (e.g. the standby in
+an active/standby HA pair, #56103).
 """
 from __future__ import annotations
 
 import threading
 from abc import ABC, abstractmethod
 from typing import Any
+
+# Reserved `cron.provider` values that select NullCronScheduler (scheduler
+# off). Matched case-insensitively, before plugin discovery, so a plugin
+# directory named e.g. "none" can never shadow the disable switch.
+NULL_PROVIDER_NAMES = ("none", "off", "disabled")
 
 
 class CronScheduler(ABC):
@@ -114,10 +122,14 @@ class CronScheduler(ABC):
 def resolve_cron_scheduler() -> "CronScheduler":
     """Return the active cron scheduler provider.
 
-    Reads ``cron.provider`` from config. Empty/absent → built-in. A named
+    Reads ``cron.provider`` from config. Empty/absent → built-in. The reserved
+    value ``none`` (aliases ``off``/``disabled``) → NullCronScheduler, an
+    explicit no-trigger provider for instances that must never fire cron
+    (#56103); reserved names are resolved before plugin discovery, so a plugin
+    directory with one of these names can never shadow them. Any other named
     provider that is missing, fails to load, or reports ``is_available() ==
-    False`` falls back to the built-in with a warning — cron must never be left
-    without a trigger.
+    False`` falls back to the built-in with a warning — cron must never be
+    *silently* left without a trigger; only the explicit ``none`` disables it.
     """
     import logging
 
@@ -126,12 +138,47 @@ def resolve_cron_scheduler() -> "CronScheduler":
     name = ""
     try:
         from hermes_cli.config import cfg_get, load_config
-        name = (cfg_get(load_config(), "cron", "provider", default="") or "").strip()
-    except Exception:
-        pass
+        raw = cfg_get(load_config(), "cron", "provider", default="")
+        if raw is False:
+            # YAML 1.1 parses a bare `off` / `no` as boolean False. A user who
+            # wrote `provider: off` asked for "no scheduler", not "default" —
+            # map it to the null provider instead of silently starting the
+            # built-in ticker.
+            name = "none"
+        elif raw is True:
+            # Symmetric YAML 1.1 footgun: a bare `on` / `yes` / `true` parses
+            # as boolean True — "scheduler on" is the default built-in ticker.
+            # Map it explicitly instead of relying on (True or "").strip()
+            # raising AttributeError into the except below.
+            name = ""
+        else:
+            # NOTE: a YAML `null` / `~` (like a bare `provider:` with no
+            # value) parses to None, indistinguishable from "unset" here — it
+            # selects the DEFAULT built-in ticker, NOT the null provider. To
+            # disable the scheduler, write the quoted string "none".
+            name = (raw or "").strip()
+    except Exception as e:
+        # Fail-open is the historical contract ("cron must never be silently
+        # left without a trigger") — but on an instance configured
+        # `cron.provider: none` an unreadable config re-arms the ticker, so
+        # say loudly which way we fell (#56103).
+        logger.warning(
+            "Could not read cron.provider from config (%s); assuming the "
+            "default built-in ticker. If this instance is a disabled standby "
+            "(cron.provider: none), the scheduler WILL tick and fire jobs "
+            "until the config is readable again.", e,
+        )
 
-    if not name or name in ("builtin", "in-process", "inprocess"):
+    lowered = name.lower()
+    if not name or lowered in ("builtin", "in-process", "inprocess"):
         return InProcessCronScheduler()
+
+    if lowered in NULL_PROVIDER_NAMES:
+        logger.info(
+            "Cron scheduler disabled (cron.provider: %s) — no scheduled jobs "
+            "will fire on this instance.", name,
+        )
+        return NullCronScheduler()
 
     try:
         from plugins.cron_providers import load_cron_scheduler
@@ -149,6 +196,54 @@ def resolve_cron_scheduler() -> "CronScheduler":
             "Failed to load cron.provider '%s' (%s); using built-in ticker", name, e
         )
         return InProcessCronScheduler()
+
+
+class NullCronScheduler(CronScheduler):
+    """Explicit no-trigger provider (``cron.provider: none``), #56103.
+
+    For instances that must never fire cron on their own — e.g. the standby
+    gateway in an active/standby HA pair, where only the active instance owns
+    the trigger and the built-in flock tick-lock cannot coordinate across
+    hosts. The gateway starts and serves normally; the scheduler simply never
+    ticks. Job *state* is untouched: jobs can still be created/listed/edited
+    and run manually (``hermes cron run``), and the instance picks them up as
+    usual once restarted with a real provider (promotion to active).
+
+    ``is_available()`` stays True (inherited): ``none`` is an explicit operator
+    choice, never a degraded state to fall back from.
+    """
+
+    @property
+    def name(self) -> str:
+        return "none"
+
+    def start(self, stop_event, *, adapters=None, loop=None, interval=60):
+        """No-op: never ticks, never records a ticker heartbeat.
+
+        Returns immediately — like an external provider's start() — so the
+        caller's scheduler thread exits at once and shutdown never waits on it.
+        """
+        import logging
+
+        logging.getLogger("cron.scheduler_provider").info(
+            "Cron scheduler disabled (cron.provider: none) — no scheduled "
+            "jobs will fire on this instance."
+        )
+
+    def fire_due(self, job_id: str, *, adapters: Any = None, loop: Any = None) -> bool:
+        """Refuse inbound fires: a disabled instance never runs cron jobs.
+
+        The default implementation would claim and execute the job, silently
+        re-enabling remote execution on an instance the operator explicitly
+        disabled (the standby would race the active instance for the claim).
+        """
+        import logging
+
+        logging.getLogger("cron.scheduler_provider").warning(
+            "Inbound cron fire for job %s refused: the scheduler is disabled "
+            "on this instance (cron.provider: none).", job_id,
+        )
+        return False
 
 
 class InProcessCronScheduler(CronScheduler):

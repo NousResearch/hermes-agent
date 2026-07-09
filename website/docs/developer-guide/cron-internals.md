@@ -113,15 +113,29 @@ The active provider is chosen by the `cron.provider` config key:
 - **empty (default)** → the built-in `InProcessCronScheduler`, which runs the
   historical in-process loop calling `scheduler.tick()` every 60 seconds. This
   is byte-identical to the pre-provider behavior.
+- **`none`** (aliases: `off`, `disabled`) → the `NullCronScheduler`: no trigger
+  at all. The gateway serves normally but never ticks, never records a ticker
+  heartbeat, and refuses inbound `/api/cron/fire` webhooks (the webhook still
+  returns 202-accepted — the external scheduler must not retry; the refused
+  fire is visible as a warning in this instance's gateway log). For instances
+  that must not own the cron trigger — e.g. the **standby** gateway of an
+  active/standby HA pair, where the built-in flock tick-lock cannot coordinate
+  across hosts (#56103). Jobs can still be created, edited, and run manually
+  (`hermes cron run` executes immediately; `hermes cron tick` remains a manual
+  override that executes due jobs); on promotion, restart the instance with
+  `cron.provider` unset. These reserved names are resolved before plugin
+  discovery, so a plugin can't shadow them. Write the quoted string `"none"` —
+  a YAML `null`/`~` (or a bare `provider:`) means *unset* and selects the
+  built-in ticker.
 - **a named provider** (e.g. `chronos`, a managed-cron provider for
-  scale-to-zero deployments) → discovered from `plugins/cron/<name>/` or
+  scale-to-zero deployments) → discovered from `plugins/cron_providers/<name>/` or
   `$HERMES_HOME/plugins/<name>/`.
 
 If a named provider is missing, fails to load, or reports `is_available() ==
 False`, the resolver falls back to the built-in with a warning — **cron is
-never left without a trigger.** The built-in provider lives in core
-(`cron/scheduler_provider.py`), not in `plugins/`, so the fallback can't be
-accidentally removed.
+never *silently* left without a trigger** (only the explicit `none` disables
+it). The built-in provider lives in core (`cron/scheduler_provider.py`), not in
+`plugins/`, so the fallback can't be accidentally removed.
 
 What "firing" *means* (job execution + delivery) is unchanged and shared by all
 providers — it stays in `scheduler.run_job()` / `scheduler._deliver_result()`.
@@ -167,7 +181,8 @@ Config (all non-secret; on hosted agents Nous sets these at provision time):
 
 If Chronos is misconfigured or the agent isn't logged into Nous,
 `resolve_cron_scheduler()` falls back to the built-in ticker (logged warning) —
-cron never loses its trigger. Recurring jobs re-arm after each fire; `repeat`-N
+cron never silently loses its trigger (only the explicit `cron.provider: none`
+disables it). Recurring jobs re-arm after each fire; `repeat`-N
 jobs stop cleanly when the count is exhausted (no orphaned one-shot). The full
 agent↔Nous wire contract lives in `docs/chronos-managed-cron-contract.md`.
 

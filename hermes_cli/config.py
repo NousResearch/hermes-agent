@@ -2639,8 +2639,16 @@ DEFAULT_CONFIG = {
         # ticker (default). Name an installed provider (plugins/cron_providers/<name>/ or
         # $HERMES_HOME/plugins/<name>/) to relocate the trigger — e.g. "chronos",
         # the NAS-mediated managed-cron provider for scale-to-zero deployments.
-        # An unknown or unavailable provider falls back to the built-in, so cron
-        # never loses its trigger.
+        # "none" (aliases: "off", "disabled") starts NO scheduler on this
+        # instance — jobs never fire here, though they can still be created,
+        # edited, and run manually. For instances that must not own the cron
+        # trigger, e.g. the standby gateway of an active/standby HA pair
+        # (#56103). An unknown or unavailable provider falls back to the
+        # built-in, so cron never SILENTLY loses its trigger — only the
+        # explicit "none" disables it.
+        # NOTE: write the QUOTED string "none" — a YAML null / ~ (like a bare
+        # `provider:` with no value) means "unset" and selects the built-in
+        # ticker; it does NOT disable the scheduler.
         "provider": "",
         # Chronos (NAS-mediated managed cron) settings. Only consulted when
         # provider == "chronos". All non-secret (URLs + the JWT audience): the

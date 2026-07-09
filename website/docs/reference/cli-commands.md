@@ -537,18 +537,21 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
 | `edit` | Update a job's schedule, prompt, name, delivery, repeat count, or attached skills. Supports `--clear-skills`, `--add-skill`, and `--remove-skill`. |
 | `pause` | Pause a job without deleting it. |
 | `resume` | Resume a paused job and compute its next future run. |
-| `run` | Trigger a job on the next scheduler tick. |
+| `run` | Execute a job immediately (works even when no scheduler is running). |
 | `remove` | Delete a scheduled job. |
 | `status` | Check whether the cron scheduler is running. |
-| `tick` | Run due jobs once and exit. |
+| `tick` | Run due jobs once and exit (manual override — executes even when `cron.provider: none`). |
 
 The cron **trigger** is pluggable via the `cron.provider` config key. Empty
 (the default) uses the built-in in-process ticker. Set it to `chronos` (the
 NAS-managed provider for scale-to-zero hosted gateways) — configured via the
 `cron.chronos.*` keys (`portal_url`, `callback_url`, `expected_audience`,
-`nas_jwks_url`) — or name a custom provider under `plugins/cron/<name>/` or
-`$HERMES_HOME/plugins/<name>/`. An unknown or unavailable provider falls back to
-the built-in, so cron is never left without a trigger. See the
+`nas_jwks_url`) — or name a custom provider under `plugins/cron_providers/<name>/` or
+`$HERMES_HOME/plugins/<name>/`. `none` (aliases: `off`, `disabled`) starts no
+scheduler at all — jobs never fire on this instance (e.g. the standby gateway
+of an active/standby HA pair), though they can still be created and run
+manually. An unknown or unavailable provider falls back to
+the built-in, so cron is never silently left without a trigger. See the
 [cron internals](../developer-guide/cron-internals.md#gateway-integration) doc.
 
 ## `hermes kanban`

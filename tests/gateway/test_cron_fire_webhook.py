@@ -150,3 +150,50 @@ async def test_fire_does_not_require_api_server_key(adapter, monkeypatch):
             break
         await asyncio.sleep(0.01)
     assert spy.fired == ["j9"]
+
+
+@pytest.mark.asyncio
+async def test_none_provider_refuses_fire_202_nothing_runs(adapter, monkeypatch, caplog):
+    """cron.provider: none (#56103) → 202 (the external scheduler must not
+    retry) but the disabled instance claims and executes NOTHING. Composed
+    through the REAL resolver — not a spy — so this pins the whole standby
+    refusal chain: config → resolve_cron_scheduler → NullCronScheduler.fire_due."""
+    import logging
+
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    import hermes_cli.config as cfg
+
+    monkeypatch.setattr(cfg, "load_config", lambda: {"cron": {"provider": "none"}})
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+    claimed, ran = [], []
+    monkeypatch.setattr(
+        jobs, "claim_job_for_fire", lambda jid: claimed.append(jid) or True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True
+    )
+
+    app = _create_app(adapter)
+    with caplog.at_level(logging.WARNING, logger="cron.scheduler_provider"):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/cron/fire",
+                                  headers={"Authorization": "Bearer good"},
+                                  json={"job_id": "standby-job"})
+            assert resp.status == 202
+
+        # The refusal happens in the background task after the 202 — wait for
+        # its warning log (the only operator-visible trace) instead of a fixed
+        # sleep.
+        for _ in range(200):
+            if "standby-job" in caplog.text:
+                break
+            await asyncio.sleep(0.01)
+
+    assert "refused" in caplog.text
+    assert claimed == [], "disabled instance claimed the inbound fire"
+    assert ran == [], "disabled instance executed the inbound fire"

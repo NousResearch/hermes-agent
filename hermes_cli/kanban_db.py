@@ -2566,6 +2566,50 @@ def create_task(
                 # ``<repo>/.worktrees/<task-id>`` dir keyed on the new task id.
                 project_repo = str(project_obj.primary_path)
 
+    # Board-linked worktree upgrade. When the task has no explicit project
+    # link and would otherwise be an ephemeral ``scratch`` task, but the
+    # target board is bound to a git repo (its ``default_workdir`` — set by
+    # ``hermes project bind-board`` / ``project create --board``), materialize
+    # the work as a real linked git worktree on that repo instead of a
+    # throwaway scratch dir. This keeps board-routed builds on their real
+    # branch/repo instead of evaporating when the scratch workspace is deleted
+    # on completion. ``default_workdir`` lives in the *shared* board metadata,
+    # so this resolves correctly no matter which profile creates the card —
+    # no cross-profile projects.db access is needed.
+    #
+    # goal_mode roots stay scratch: they run coordination loops, produce no
+    # code of their own, and the worktree completion gate (real CI on a code
+    # branch) would block them forever. An explicit ``--workspace worktree``
+    # still wins for the rare goal card that genuinely edits code.
+    board_repo: Optional[str] = None
+    if (
+        project_repo is None
+        and workspace_path is None
+        and workspace_kind == "scratch"
+        and not goal_mode
+    ):
+        try:
+            _board_slug = board if board else get_current_board()
+            _board_default = (
+                read_board_metadata(_board_slug).get("default_workdir") or ""
+            ).strip()
+            if _board_default:
+                _repo_root = _repo_root_for_worktree_target(
+                    Path(_board_default).expanduser()
+                )
+                if _repo_root is not None:
+                    # Upgrade to a linked worktree anchored on the bound repo.
+                    # The concrete ``<repo>/.worktrees/<task-id>`` path is
+                    # deferred to the insert loop (keyed on the new task id),
+                    # mirroring the project-linked path above.
+                    workspace_kind = "worktree"
+                    board_repo = str(_repo_root)
+        except Exception:
+            # Never let board resolution crash task creation — an unmounted
+            # external repo, a torn git dir, or a transient git failure must
+            # degrade gracefully to an ordinary scratch task.
+            board_repo = None
+
     parents = tuple(p for p in parents if p)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
@@ -2642,6 +2686,7 @@ def create_task(
     if (
         workspace_path is None
         and project_repo is None
+        and board_repo is None
         and workspace_kind in {"dir", "worktree"}
     ):
         board_slug = board if board else get_current_board()
@@ -2687,23 +2732,29 @@ def create_task(
                     if missing:
                         raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
 
-                # Project-linked worktree: a fresh worktree dir under the repo
-                # plus a deterministic branch (project slug + task id). Together
-                # these kill the random ``wt/<task-id>`` worker fallback and the
-                # unanchored ``.worktrees/<id>`` under the dispatcher's cwd.
-                if project_obj is not None and workspace_kind == "worktree":
-                    if project_repo and not workspace_path:
-                        workspace_path = os.path.join(
-                            project_repo, ".worktrees", task_id
+                # Project- or board-linked worktree: a fresh worktree dir under
+                # the anchor repo, ``<repo>/.worktrees/<task-id>``, keyed on the
+                # new task id. This kills the unanchored ``.worktrees/<id>``
+                # under the dispatcher's cwd. A project link additionally gets a
+                # deterministic branch (project slug + task id); a board link
+                # falls back to the worker's ``wt/<task-id>`` branch.
+                anchor_repo = project_repo or board_repo
+                if workspace_kind == "worktree" and anchor_repo and not workspace_path:
+                    workspace_path = os.path.join(
+                        anchor_repo, ".worktrees", task_id
+                    )
+                if (
+                    project_obj is not None
+                    and workspace_kind == "worktree"
+                    and not branch_name
+                ):
+                    # _pdb was imported above when project_obj was resolved.
+                    try:
+                        branch_name = _pdb.branch_name_for(
+                            project_obj, task_id, title=title or ""
                         )
-                    if not branch_name:
-                        # _pdb was imported above when project_obj was resolved.
-                        try:
-                            branch_name = _pdb.branch_name_for(
-                                project_obj, task_id, title=title or ""
-                            )
-                        except Exception:
-                            branch_name = None
+                    except Exception:
+                        branch_name = None
 
                 conn.execute(
                     """

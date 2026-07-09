@@ -219,6 +219,32 @@ describe('PreviewPane console state', () => {
     expect(screen.queryByLabelText('Find in preview text')).toBeNull()
   })
 
+  it('renders website previews directly in the browser tab content by default', () => {
+    const rendered = render(
+      <PreviewPane
+        embedded
+        setTitlebarToolGroup={vi.fn()}
+        target={{
+          kind: 'url',
+          label: 'Preview',
+          source: 'http://localhost:5174',
+          url: 'http://localhost:5174'
+        }}
+      />
+    )
+
+    const viewport = rendered.container.querySelector('[data-preview-viewport]') as HTMLElement | null
+    const browserContent = rendered.container.querySelector('[data-preview-browser-content]') as HTMLElement | null
+    const iframe = rendered.container.querySelector('iframe')
+
+    expect(viewport).toBeInstanceOf(HTMLElement)
+    expect(browserContent).toBeInstanceOf(HTMLElement)
+    expect(rendered.container.querySelector('[data-preview-frame]')).toBeNull()
+    expect(viewport?.className).toContain('overflow-hidden')
+    expect(browserContent?.style.width).toBe('')
+    expect(iframe?.parentElement).toBe(browserContent?.querySelector('.absolute.inset-0.flex.bg-transparent'))
+  })
+
   it('offers responsive preview viewport presets without resizing the outer pane', () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1600 })
 
@@ -256,9 +282,7 @@ describe('PreviewPane console state', () => {
       })
     })
 
-    const frame = rendered.container.querySelector('[data-preview-frame]') as HTMLElement | null
-
-    expect(frame).toBeInstanceOf(HTMLElement)
+    expect(rendered.container.querySelector('[data-preview-frame]')).toBeNull()
     expect(screen.getByRole('button', { name: 'Fit preview to pane' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Set preview viewport to Fold 6:5' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Set preview viewport to iPhone 9:16' })).toBeTruthy()
@@ -267,17 +291,84 @@ describe('PreviewPane console state', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Set preview viewport to Desktop 16:9' }))
 
+    let frame = rendered.container.querySelector('[data-preview-frame]') as HTMLElement | null
+
+    expect(frame).toBeInstanceOf(HTMLElement)
     expect($paneStates.get().preview?.widthOverride).toBeUndefined()
     expect(frame?.style.width).toBe('1280px')
 
     fireEvent.click(screen.getByRole('button', { name: 'Set preview viewport to iPhone 9:16' }))
+
+    frame = rendered.container.querySelector('[data-preview-frame]') as HTMLElement | null
 
     expect($paneStates.get().preview?.widthOverride).toBeUndefined()
     expect(frame?.style.width).toBe('405px')
 
     fireEvent.click(screen.getByRole('button', { name: 'Fit preview to pane' }))
 
-    expect(frame?.style.width).toBe('100%')
+    expect(rendered.container.querySelector('[data-preview-frame]')).toBeNull()
+  })
+
+  it('clears stale responsive sizing when switching to a local file preview', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1600 })
+
+    const setTitlebarToolGroup = vi.fn()
+
+    const rendered = render(
+      <PreviewPane
+        embedded
+        setTitlebarToolGroup={setTitlebarToolGroup}
+        target={{
+          kind: 'url',
+          label: 'Preview A',
+          source: 'http://localhost:5174/a',
+          url: 'http://localhost:5174/a'
+        }}
+      />
+    )
+
+    const viewport = rendered.container.querySelector('[data-preview-viewport]')
+
+    if (!(viewport instanceof HTMLElement)) {
+      throw new Error('missing preview viewport')
+    }
+
+    Object.defineProperty(viewport, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({
+        bottom: 720,
+        height: 720,
+        left: 0,
+        right: 400,
+        top: 0,
+        width: 400,
+        x: 0,
+        y: 0,
+        toJSON: () => ({})
+      })
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set preview viewport to Desktop 16:9' }))
+    expect((rendered.container.querySelector('[data-preview-frame]') as HTMLElement | null)?.style.width).toBe('1280px')
+
+    rendered.rerender(
+      <PreviewPane
+        embedded
+        setTitlebarToolGroup={setTitlebarToolGroup}
+        target={{
+          kind: 'file',
+          label: 'screenshot.png',
+          path: '/tmp/hermes/screenshot.png',
+          previewKind: 'image',
+          source: '/tmp/hermes/screenshot.png',
+          url: 'file:///tmp/hermes/screenshot.png'
+        }}
+      />
+    )
+
+    expect(screen.queryByRole('button', { name: 'Fit preview to pane' })).toBeNull()
+    expect(rendered.container.querySelector('[data-preview-frame]')).toBeNull()
+    expect((rendered.container.querySelector('[data-preview-browser-content]') as HTMLElement | null)?.style.width).toBe('')
   })
 
   it('makes annotate and debug preview controls visibly toggle in iframe fallback mode', () => {

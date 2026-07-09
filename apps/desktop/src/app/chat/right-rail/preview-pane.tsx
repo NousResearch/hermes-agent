@@ -197,8 +197,10 @@ export function PreviewPane({
   const previewLabel =
     target.label && target.label.replace(/\/$/, '') !== currentLabel.replace(/\/$/, '') ? target.label : currentLabel
 
-  const previewFrameStyle = useMemo<CSSProperties>(
-    () => ({ width: previewFrameWidth === null ? '100%' : `${previewFrameWidth}px` }),
+  const responsivePreviewActive = previewFrameWidth !== null
+
+  const previewFrameStyle = useMemo<CSSProperties | undefined>(
+    () => (previewFrameWidth === null ? undefined : { width: `${previewFrameWidth}px` }),
     [previewFrameWidth]
   )
 
@@ -760,6 +762,8 @@ export function PreviewPane({
     setFindOpen(false)
     setFindQuery('')
     setFindStatus('')
+    setPreviewFrameWidth(null)
+    setActiveRatioLabel(null)
     setPreviewEngine(isWebPreview ? 'detecting' : 'local-file')
     setLoadError(null)
     consoleState.reset()
@@ -1134,13 +1138,20 @@ export function PreviewPane({
         )}
 
         <div
-          className="pointer-events-auto relative min-h-0 flex-1 overflow-auto bg-transparent overscroll-contain [contain:paint]"
+          className={cn(
+            'pointer-events-auto relative min-h-0 flex-1 bg-transparent overscroll-contain [contain:paint]',
+            responsivePreviewActive ? 'overflow-auto' : 'overflow-hidden'
+          )}
           data-preview-viewport=""
           ref={previewContentRef}
         >
           <div
-            className="relative h-full min-h-full max-w-none shrink-0 overflow-hidden bg-transparent"
-            data-preview-frame=""
+            className={cn(
+              'relative h-full min-h-full overflow-hidden bg-transparent',
+              responsivePreviewActive ? 'max-w-none shrink-0' : 'w-full'
+            )}
+            data-preview-browser-content=""
+            data-preview-frame={responsivePreviewActive ? '' : undefined}
             style={previewFrameStyle}
           >
             <div

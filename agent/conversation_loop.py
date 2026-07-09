@@ -845,6 +845,37 @@ def _notify_context_engine_turn_complete(
             exc_info=True,
         )
 
+def _format_unexpected_kwarg_diagnostics(api_kwargs, middleware_trace) -> str:
+    """One-line diagnostic for ``TypeError: ... unexpected keyword argument``.
+
+    A kwarg the provider SDK rejects at dispatch means something upstream
+    injected a key the active api_mode's transport never emits. The two
+    invisible injectors are ``llm_request`` middleware (plugins may replace
+    the entire request dict, and their exceptions/traces are otherwise
+    never logged) and stale kwargs crossing an api_mode switch. #60821 —
+    a plugin writing the Anthropic-shape ``system`` key onto
+    chat_completions kwargs — took a multi-day forensic hunt precisely
+    because neither the kwargs keys nor the middleware trace appeared in
+    any log. Rendering both makes the injector a one-log diagnosis.
+    """
+    if isinstance(api_kwargs, dict):
+        keys = ", ".join(sorted(str(k) for k in api_kwargs))
+    else:
+        keys = "<unavailable>"
+    if middleware_trace:
+        rendered = []
+        for entry in middleware_trace:
+            if isinstance(entry, dict):
+                rendered.append(
+                    entry.get("name") or entry.get("source") or str(entry)
+                )
+            else:
+                rendered.append(str(entry))
+        trace = "; ".join(rendered)
+    else:
+        trace = "none applied"
+    return f"api_kwargs keys: [{keys}]; llm_request middleware trace: {trace}"
+
 
 def run_conversation(
     agent,
@@ -3687,6 +3718,20 @@ def run_conversation(
                     agent._client_log_context(),
                     _error_summary,
                 )
+
+                if error_type == "TypeError" and "unexpected keyword argument" in error_msg:
+                    # Identify the kwarg injector (middleware / mode mismatch)
+                    # in the log instead of leaving a multi-day hunt (#60821).
+                    try:
+                        _diag_kwargs, _diag_trace = api_kwargs, _llm_middleware_trace
+                    except NameError:
+                        _diag_kwargs, _diag_trace = None, None
+                    logger.warning(
+                        "%sUnexpected-kwarg TypeError at dispatch (api_mode=%s) — %s",
+                        agent.log_prefix,
+                        getattr(agent, "api_mode", "unknown"),
+                        _format_unexpected_kwarg_diagnostics(_diag_kwargs, _diag_trace),
+                    )
 
                 _provider = getattr(agent, "provider", "unknown")
                 _base = getattr(agent, "base_url", "unknown")

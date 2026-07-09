@@ -109,7 +109,11 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     # writes are billed at 1.25x the uncached input rate; cache reads get the
     # standard 90% discount (0.10x input, confirmed: Sol $0.50/M cached).
     # Note: "Sol Fast mode" ($12.5/$75, up to 750 tok/s via Cerebras) is a
-    # separate serving tier, not covered by these entries.
+    # separate serving tier, not covered by these entries. The "-pro"
+    # variants (high-effort modes, GA alongside base tiers) bill at the
+    # SAME per-token rates and are aliased onto these entries below the
+    # dict (they cost more per task by consuming more tokens, not by a
+    # higher rate — verified against OpenRouter's live pricing 2026-07-09).
     # Source: https://openai.com/index/previewing-gpt-5-6-sol/
     (
         "openai",
@@ -606,6 +610,15 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         pricing_version="minimax-pricing-2026-04",
     ),
 }
+
+# GPT-5.6 "-pro" high-effort variants bill at the same per-token rates as
+# their base tiers (more tokens per task, not a higher rate). Alias them
+# onto the base entries so the snapshot stays single-source.
+for _base_56 in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+    _OFFICIAL_DOCS_PRICING[("openai", f"{_base_56}-pro")] = _OFFICIAL_DOCS_PRICING[
+        ("openai", _base_56)
+    ]
+del _base_56
 
 
 def _to_decimal(value: Any) -> Optional[Decimal]:

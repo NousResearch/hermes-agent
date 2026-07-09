@@ -38,6 +38,14 @@ class TestGpt56SortInvariants:
         assert models[0] == "openai/gpt-5.6-sol"
 
 
+    def test_base_sol_outranks_sol_pro_for_alias_default(self):
+        # "-pro" high-effort variants parse as suffix "sol-pro" (rank 1), so
+        # `/model gpt` defaults to base Sol rather than the high-effort mode.
+        models = ["gpt-5.6-sol-pro", "gpt-5.6-sol"]
+        models.sort(key=lambda m: _model_sort_key(m, "gpt"))
+        assert models[0] == "gpt-5.6-sol"
+
+
 class TestGpt56PricingRoute:
     def test_official_pricing_reachable_from_openai(self):
         route = resolve_billing_route("gpt-5.6-sol", provider="openai")
@@ -64,3 +72,12 @@ class TestGpt56PricingRoute:
             assert entry.cache_read_cost_per_million == (
                 entry.input_cost_per_million * Decimal("0.10")
             ), slug
+
+    def test_pro_variants_alias_to_base_tier_pricing(self):
+        # -pro high-effort modes bill at the same per-token rates as their
+        # base tiers; the snapshot aliases them rather than duplicating rows.
+        for base in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+            assert (
+                _OFFICIAL_DOCS_PRICING[("openai", f"{base}-pro")]
+                is _OFFICIAL_DOCS_PRICING[("openai", base)]
+            ), base

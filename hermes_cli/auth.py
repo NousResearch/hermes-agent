@@ -620,13 +620,43 @@ def _resolve_api_key_provider_secret(
 # may only have access to recent models (glm-5.1, glm-5v-turbo) while older
 # ones still use glm-4.7.
 
+# Order chosen by audited key-popularity across 8 production keys:
+#   anthropic-global (6/8) > coding-global > anthropic-cn (4/8)
+#   > coding-cn > global > cn.
+# The "format" field drives detect_zai_endpoint() body shape selection.
 ZAI_ENDPOINTS = [
     # (id, base_url, probe_models, label)
-    ("global",        "https://api.z.ai/api/paas/v4",        ["glm-5"],   "Global"),
-    ("cn",            "https://open.bigmodel.cn/api/paas/v4", ["glm-5"],   "China"),
-    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
-    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
+    ("anthropic-global", "https://api.z.ai/api/anthropic", ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-5", "glm-4.7"], "Global (Anthropic wire)"),
+    ("coding-global",   "https://api.z.ai/api/coding/paas/v4",  ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-5", "glm-4.7"], "Global (Coding Plan)"),
+    ("anthropic-cn",    "https://open.bigmodel.cn/api/anthropic", ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-5", "glm-4.7"], "China (Anthropic wire)"),
+    ("coding-cn",       "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-5", "glm-4.7"], "China (Coding Plan)"),
+    ("global",          "https://api.z.ai/api/paas/v4",        ["glm-5"],   "Global"),
+    ("cn",              "https://open.bigmodel.cn/api/paas/v4", ["glm-5"],   "China"),
 ]
+
+
+def _zai_probe_path(ep_id: str, base_url: str) -> str:
+    """Return the request path for a given Z.AI endpoint, wire-format-aware."""
+    if ep_id.startswith("anthropic-"):
+        # Anthropic Messages API path on /api/anthropic
+        return f"{base_url}/v1/messages"
+    return f"{base_url}/chat/completions"
+
+
+def _zai_probe_body(ep_id: str, model: str) -> dict:
+    """Return the request body for a given Z.AI endpoint, wire-format-aware."""
+    if ep_id.startswith("anthropic-"):
+        return {
+            "model": model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ping"}],
+        }
+    return {
+        "model": model,
+        "stream": False,
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "ping"}],
+    }
 
 
 def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str, str]]:
@@ -635,22 +665,23 @@ def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str
     Returns {"id": ..., "base_url": ..., "model": ..., "label": ...} for the
     first working endpoint, or None if all fail.  For endpoints with multiple
     candidate models, tries each in order and returns the first that succeeds.
+
+    Supports two wire formats:
+      - OpenAI chat completions (default, /api/paas/v4 and /api/coding/paas/v4)
+      - Anthropic Messages (anthropic-* endpoints, /api/anthropic/v1/messages)
     """
     for ep_id, base_url, probe_models, label in ZAI_ENDPOINTS:
         for model in probe_models:
             try:
                 resp = httpx.post(
-                    f"{base_url}/chat/completions",
+                    _zai_probe_path(ep_id, base_url),
                     headers={
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
+                        # Anthropic wire requires this version header.
+                        **({"anthropic-version": "2023-06-01"} if ep_id.startswith("anthropic-") else {}),
                     },
-                    json={
-                        "model": model,
-                        "stream": False,
-                        "max_tokens": 1,
-                        "messages": [{"role": "user", "content": "ping"}],
-                    },
+                    json=_zai_probe_body(ep_id, model),
                     timeout=timeout,
                 )
                 if resp.status_code == 200:

@@ -46,10 +46,18 @@ def pytest_addoption(parser):
     )
 
 
+LIVE_ENABLED = (
+    os.environ.get("HERMES_RUN_LIVE") == "1"
+    or os.environ.get("GLM_TEST_KEYS", "").strip() != ""
+)
+
+
 def pytest_collection_modifyitems(config, items):
-    if config.getoption("--runlive"):
+    if LIVE_ENABLED or config.getoption("--runlive"):
         return
-    skip_live = pytest.mark.skip(reason="needs --runlive flag to run")
+    skip_live = pytest.mark.skip(
+        reason="needs --runlive flag or HERMES_RUN_LIVE=1 env var to run"
+    )
     for item in items:
         if "test_zai_live" in item.nodeid:
             item.add_marker(skip_live)

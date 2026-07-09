@@ -208,12 +208,19 @@ class TestRuntimePoolBaseUrlReresolution:
 class TestZaiEndpointsRegistryIntact:
     """The ZAI_ENDPOINTS list in hermes_cli.auth remains intact after the fix."""
 
-    def test_zai_endpoints_still_has_four_candidates(self):
+    def test_zai_endpoints_has_six_candidates_with_anthropic_first(self):
+        """ZAI_ENDPOINTS now has 6 candidates (4 legacy + 2 anthropic)."""
         from hermes_cli.auth import ZAI_ENDPOINTS
-        assert len(ZAI_ENDPOINTS) == 4
+        assert len(ZAI_ENDPOINTS) == 6, (
+            f"Expected 6 endpoints after the 5-gateway extension, got {len(ZAI_ENDPOINTS)}"
+        )
         labels = [e[3] for e in ZAI_ENDPOINTS]
         assert "Global (Coding Plan)" in labels
         assert "China (Coding Plan)" in labels
+        assert "Global (Anthropic wire)" in labels
+        assert "China (Anthropic wire)" in labels
+        # anthropic-global must be first (most popular based on 8-key audit)
+        assert ZAI_ENDPOINTS[0][0] == "anthropic-global"
 
     def test_resolve_zai_base_url_signature_intact(self):
         """The signature is (api_key, default_url, env_override)."""

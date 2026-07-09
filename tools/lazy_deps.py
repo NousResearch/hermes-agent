@@ -140,16 +140,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.0.1",),
-    "memory.hindsight": ("hindsight-client==0.6.1",),
-    # supermemory + mem0 are opt-in cloud memory providers with their own
-    # SDKs. On the published Docker image the agent venv is sealed
-    # (HERMES_DISABLE_LAZY_INSTALLS=1) and lazy installs are redirected to the
-    # durable target — so, like honcho/hindsight, these MUST go through
-    # ensure() to be installable there. Without an allowlist entry + an
-    # ensure() call at the import site, the SDK never installs on a hosted
-    # instance and the provider silently reports itself unavailable.
-    "memory.supermemory": ("supermemory==3.50.0",),
-    "memory.mem0": ("mem0ai==2.0.10",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.6",),

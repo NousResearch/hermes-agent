@@ -566,20 +566,6 @@ class TurnController {
     const rawText = (payload.text ?? payload.rendered ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
     const finalText = finalTail(split.text, this.segmentMessages)
-
-    // Fix #61520: When the gateway sends a separate `payload.text` at
-    // message.complete (the final answer only, not including streamed
-    // intermediate text), any unflushed streaming tail in `bufRef` would
-    // be silently dropped by the subsequent `idle()` call. Preserve it
-    // by appending to the transcript if the final answer is from
-    // `payload.text` rather than `bufRef` itself.
-    if (
-      (payload.text ?? payload.rendered) &&
-      this.bufRef.trimStart() &&
-      rawText === (payload.text ?? payload.rendered)
-    ) {
-      finalMessages.push({ role: 'assistant', text: this.bufRef.trimStart() })
-    }
     const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
     const savedReasoning = [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
     const savedToolTokens = this.toolTokenAcc
@@ -633,6 +619,20 @@ class TurnController {
 
     if (finalText) {
       finalMessages.push({ role: 'assistant', text: finalText })
+    }
+
+    // Fix #61520: When the gateway sends a separate `payload.text` at
+    // message.complete (the final answer only, not including streamed
+    // intermediate text), any unflushed streaming tail in `bufRef` would
+    // be silently dropped by the subsequent `idle()` call. Preserve it
+    // by appending to the transcript if the final answer is from
+    // `payload.text` rather than `bufRef` itself.
+    if (
+      (payload.text ?? payload.rendered) &&
+      this.bufRef.trimStart() &&
+      rawText === (payload.text ?? payload.rendered)
+    ) {
+      finalMessages.push({ role: 'assistant', text: this.bufRef.trimStart() })
     }
 
     const wasInterrupted = this.interrupted

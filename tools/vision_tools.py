@@ -1065,6 +1065,7 @@ async def vision_analyze_tool(
     user_prompt: str,
     model: str = None,
     task_id: Optional[str] = None,
+    session_id: str = None,
 ) -> str:
     """
     Analyze an image from a URL or local file path using vision AI.
@@ -1248,6 +1249,8 @@ async def vision_analyze_tool(
         }
         if model:
             call_kwargs["model"] = model
+        if session_id:
+            call_kwargs["session_id"] = session_id
         # Try full-size image first; on size-related rejection, downscale and retry.
         try:
             response = await async_call_llm(**call_kwargs)
@@ -1507,7 +1510,8 @@ async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:
         pass
     if not model:
         model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
-    return await vision_analyze_tool(image_url, full_prompt, model, task_id=task_id)
+    session_id = kw.get("session_id", "")
+    return await vision_analyze_tool(image_url, full_prompt, model, task_id=task_id, session_id=session_id)
 
 
 registry.register(

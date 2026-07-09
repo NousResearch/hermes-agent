@@ -166,6 +166,27 @@ _last_init_error_lock = threading.Lock()
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
 
+# Cached per-process SessionDB singleton for auxiliary code paths
+# (vision, compression, etc.) that run outside the main agent context.
+_session_db: Optional[Any] = None
+_session_db_lock = threading.Lock()
+
+
+def get_session_db() -> Optional[Any]:
+    """Return a cached per-process SessionDB instance, creating one if needed.
+
+    Returns None when the database is unavailable (e.g. locked, NFS).
+    """
+    global _session_db
+    if _session_db is None:
+        with _session_db_lock:
+            if _session_db is None:
+                try:
+                    _session_db = SessionDB()
+                except Exception:
+                    _session_db = None
+    return _session_db
+
 _FTS_TRIGGERS = (
     "messages_fts_insert",
     "messages_fts_delete",
@@ -793,6 +814,21 @@ CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+
+CREATE TABLE IF NOT EXISTS auxiliary_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT,
+    task TEXT NOT NULL,
+    provider TEXT,
+    model TEXT,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    estimated_cost_usd REAL,
+    created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_aux_usage_session ON auxiliary_usage(session_id);
+CREATE INDEX IF NOT EXISTS idx_aux_usage_created ON auxiliary_usage(created_at);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -2501,6 +2537,25 @@ class SessionDB:
         )
         def _do(conn):
             conn.execute(sql, params)
+        self._execute_write(_do)
+
+    def record_auxiliary_usage(
+        self,
+        session_id: str,
+        task: str,
+        provider: str = None,
+        model: str = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+    ) -> None:
+        """Record auxiliary model usage (vision, compression, etc.) for cost tracking."""
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO auxiliary_usage
+                   (session_id, task, provider, model, input_tokens, output_tokens, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (session_id, task, provider, model, input_tokens, output_tokens, time.time()),
+            )
         self._execute_write(_do)
 
     def ensure_session(

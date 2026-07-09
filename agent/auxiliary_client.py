@@ -69,6 +69,25 @@ if TYPE_CHECKING:
 
 _OPENAI_CLS_CACHE: Optional[type] = None
 
+# Thread-local storage for auxiliary session context.
+# Set by async_call_llm() when a session_id is provided,
+# consumed by _validate_llm_response() to record token usage.
+_aux_session = threading.local()
+
+
+def set_aux_session(session_id: str, provider: str, model: str, task: str) -> None:
+    """Store auxiliary session context on the current thread."""
+    _aux_session.active = True
+    _aux_session.session_id = session_id
+    _aux_session.provider = provider
+    _aux_session.model = model
+    _aux_session.task = task
+
+
+def clear_aux_session() -> None:
+    """Clear auxiliary session context for the current thread."""
+    _aux_session.active = False
+
 
 def _load_openai_cls() -> type:
     """Import and cache ``openai.OpenAI``."""
@@ -6284,11 +6303,39 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
     AttributeError (e.g. "'str' object has no attribute 'choices'").
 
     See #7264.
+
+    Also records auxiliary model usage when thread-local session context
+    is active (set by async_call_llm via set_aux_session).
     """
     if response is None:
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
+    # Record auxiliary usage if thread-local session context is active.
+    if getattr(_aux_session, 'active', False):
+        try:
+            usage = getattr(response, 'usage', None)
+            if usage is not None:
+                input_tokens = getattr(usage, 'prompt_tokens', 0) or 0
+                output_tokens = getattr(usage, 'completion_tokens', 0) or 0
+            else:
+                input_tokens = 0
+                output_tokens = 0
+            from hermes_state import get_session_db
+            db = get_session_db()
+            if db is not None:
+                db.record_auxiliary_usage(
+                    session_id=_aux_session.session_id or '',
+                    task=_aux_session.task or task or '',
+                    provider=_aux_session.provider or '',
+                    model=_aux_session.model or '',
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
+        except Exception:
+            pass
+        finally:
+            clear_aux_session()
     # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
     # AnthropicAuxiliaryClient) — they have .choices[0].message.
     try:
@@ -7033,10 +7080,14 @@ async def async_call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    session_id: str = None,
 ) -> Any:
     """Centralized asynchronous LLM call.
 
     Same as call_llm() but async. See call_llm() for full documentation.
+
+    If session_id is provided, auxiliary usage (tokens, provider, model)
+    is recorded to the auxiliary_usage table for cost tracking.
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
@@ -7103,6 +7154,15 @@ async def async_call_llm(
                 f"Run: hermes setup")
 
     effective_timeout = _effective_aux_timeout(task, timeout)
+
+    # Set session context for auxiliary cost tracking.
+    if session_id:
+        set_aux_session(
+            session_id=session_id,
+            provider=resolved_provider,
+            model=final_model or resolved_model or '',
+            task=task or '',
+        )
 
     # Pass the client's actual base_url (not just resolved_base_url) so
     # endpoint-specific temperature overrides can distinguish

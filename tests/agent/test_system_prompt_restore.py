@@ -33,6 +33,9 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     agent.platform = "cli"
     agent._session_db = session_db
     agent._build_system_prompt = MagicMock(return_value=prebuilt_prompt)
+    # Explicitly None — MagicMock auto-creates attributes on access, so
+    # getattr(agent, "ephemeral_system_prompt", None) would return a Mock.
+    agent.ephemeral_system_prompt = None
     return agent
 
 
@@ -259,6 +262,50 @@ class TestPromptStabilityInvariant:
         assert agent._cached_system_prompt == stored
         # Byte-level check
         assert agent._cached_system_prompt.encode("utf-8") == stored.encode("utf-8")
+
+
+class TestEphemeralSystemPromptOverride:
+    """When the caller sets an ephemeral system prompt (e.g. /personality),
+    it must win over the session-DB stored prompt (#58774)."""
+
+    def test_ephemeral_overrides_stored_prompt(self):
+        """ephemeral_system_prompt takes precedence over a matching stored prompt."""
+        stored = "Stored prompt from session DB"
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent.ephemeral_system_prompt = "Personality: pirate"
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == "Personality: pirate"
+        agent._build_system_prompt.assert_not_called()
+
+    def test_ephemeral_none_does_not_block_restore(self):
+        """ephemeral_system_prompt=None (the default) should still restore from DB."""
+        stored = "Stored prompt from session DB"
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent.ephemeral_system_prompt = None
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+
+    def test_ephemeral_empty_string_does_not_block_restore(self):
+        """ephemeral_system_prompt='' should still restore from DB (empty is falsy)."""
+        stored = "Stored prompt from session DB"
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent.ephemeral_system_prompt = ""
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -298,6 +298,18 @@ def reset_for_tests() -> None:
         _registered.clear()
 
 
+def clear_registered() -> None:
+    """Clear the idempotence set so register_from_config() can re-register.
+
+    Called after ``discover_plugins(force=True)`` clears the PluginManager's
+    hook registrations — without this, the idempotence guard (``_registered``)
+    would prevent shell hooks from being re-wired on the next
+    ``register_from_config`` call.  (#59999 area)
+    """
+    with _registered_lock:
+        _registered.clear()
+
+
 # ---------------------------------------------------------------------------
 # Config parsing
 # ---------------------------------------------------------------------------

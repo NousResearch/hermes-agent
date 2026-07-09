@@ -8655,6 +8655,81 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     return (evt_sid, evt_type)
 
 
+def _poll_kanban_task_events(
+    session: dict, sid: str, emitted: set
+) -> None:
+    """Poll kanban_notify_subs for task events belonging to this TUI session.
+
+    The gateway's _kanban_notifier_watcher delivers kanban notifications
+    for messaging channels (telegram/discord/etc.), but TUI subscriptions
+    are not handled there because the gateway has no TUI adapter.  This
+    function fills that gap: it reads kanban_notify_subs for the session,
+    claims unseen terminal events, and emits status.update messages so the
+    user sees kanban task completions/blocks in their TUI session (#59960).
+    """
+    import os
+
+    from hermes_cli import kanban_db as _kb
+
+    session_key = os.environ.get("HERMES_SESSION_KEY", "")
+    if not session_key:
+        return
+
+    # Open the default kanban board — TUI subscriptions always target the
+    # default board (kanban_tools._maybe_auto_subscribe doesn't set a board).
+    try:
+        conn = _kb.connect()
+    except Exception:
+        return
+
+    try:
+        subs = _kb.list_notify_subs(conn)
+    except Exception:
+        conn.close()
+        return
+
+    TERMINAL_KINDS = (
+        "completed", "blocked", "gave_up", "crashed",
+        "timed_out", "status", "archived", "unblocked",
+    )
+    for sub in subs:
+        if (sub.get("platform") or "").lower() != "tui":
+            continue
+        if (sub.get("chat_id") or "") != session_key:
+            continue
+        try:
+            _old, _new, events = _kb.claim_unseen_events_for_sub(
+                conn,
+                task_id=sub["task_id"],
+                platform=sub["platform"],
+                chat_id=sub["chat_id"],
+                thread_id=sub.get("thread_id") or "",
+                kinds=TERMINAL_KINDS,
+            )
+        except Exception:
+            continue
+        if not events:
+            continue
+        task = _kb.get_task(conn, sub["task_id"])
+        for ev in events:
+            kind = ev.kind
+            task_title = (task.title if task else sub["task_id"])[:80]
+            if kind == "completed":
+                text = f"Kanban task completed: {task_title}"
+            elif kind == "blocked":
+                text = f"Kanban task blocked: {task_title}"
+            elif kind in ("gave_up", "crashed", "timed_out"):
+                text = f"Kanban task {kind}: {task_title}"
+            else:
+                text = f"Kanban task {kind}: {task_title}"
+            _dedup_key = (sub["task_id"], kind, str(ev.event_id))
+            if _dedup_key not in emitted:
+                _emit("status.update", sid, {"kind": "kanban", "text": text})
+                emitted.add(_dedup_key)
+
+    conn.close()
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -8672,10 +8747,27 @@ def _notification_poller_loop(
     from tools.process_registry import process_registry, format_process_notification
 
     _emitted = set()  # dedup re-queued events so same completion isn't emitted 50 times while session is busy
+    _last_kanban_poll = 0.0
+    KANBAN_POLL_INTERVAL = 5.0  # seconds between kanban subscription polls
+
     while not stop_event.is_set() and not session.get("_finalized"):
         try:
             evt = process_registry.completion_queue.get(timeout=0.5)
         except Exception:
+            # Queue timeout — check for kanban task event notifications.
+            # The gateway's _kanban_notifier_watcher handles messaging
+            # channels (telegram/discord/etc.), but TUI subscriptions are
+            # delivered here since the gateway has no TUI adapter (#59960).
+            now = time.time()
+            if now - _last_kanban_poll >= KANBAN_POLL_INTERVAL:
+                _last_kanban_poll = now
+                try:
+                    _poll_kanban_task_events(session, sid, _emitted)
+                except Exception:
+                    logger.debug(
+                        "kanban notification poll for TUI session %s failed",
+                        sid, exc_info=True,
+                    )
             continue
 
         # Multiple desktop sessions share this one process-wide queue. Only

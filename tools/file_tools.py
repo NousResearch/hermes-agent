@@ -1646,6 +1646,14 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     Pass ``True`` after explicit user direction — same shape as ``force``
     on the terminal tool.
     """
+    # Reject paths containing ASCII control characters (U+0000-U+001F)
+    # which can cause path-injection: the OS silently rewrites the
+    # filename and the tool reports success for a different path.
+    if any(ord(c) < 0x20 for c in path):
+        return tool_error(
+            f"Path contains control characters: {path!r}. "
+            "Use only printable characters in file paths."
+        )
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
@@ -1726,9 +1734,15 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 
     ``cross_profile`` opts out of the soft cross-Hermes-profile guard for
     targets under another profile's skills/plugins/cron/memories
-    directory. Same shape as ``write_file``'s flag.
+    directory. Same shape as write_file's flag.
     """
-    # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
+    # Reject null bytes in old_string / new_string -- they corrupt files
+    # and can break downstream tools that expect text content.
+    if old_string is not None and "\x00" in old_string:
+        return tool_error("old_string contains null bytes")
+    if new_string is not None and "\x00" in new_string:
+        return tool_error("new_string contains null bytes")
+    # Check sensitive paths for both replace (explicit path) and V4A patch
     _paths_to_check = []
     if path:
         _paths_to_check.append(path)
@@ -1917,6 +1931,8 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 output_mode: str = "content", context: int = 0,
                 task_id: str = "default") -> str:
     """Search for content or files."""
+    if not pattern or not pattern.strip():
+        return tool_error("pattern must be a non-empty string")
     try:
         offset, limit = normalize_search_pagination(offset, limit)
 

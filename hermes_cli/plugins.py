@@ -1299,6 +1299,19 @@ class PluginManager:
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
             self._context_engine = None
+            # Re-register shell hooks from config — the hook table was
+            # cleared above and the idempotence guard in shell_hooks
+            # would prevent re-registration.  (#59999 area)
+            try:
+                from agent.shell_hooks import clear_registered, register_from_config
+                from hermes_cli.config import load_config
+                clear_registered()
+                register_from_config(load_config())
+            except Exception:
+                logger.debug(
+                    "Shell hook re-registration after force-reload failed",
+                    exc_info=True,
+                )
         # Set the flag up front as a re-entrancy guard (a plugin's register()
         # can transitively trigger discovery again), but reset it if the sweep
         # raises so a failed scan is NOT cached as "discovered with an empty

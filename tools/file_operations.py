@@ -1143,12 +1143,22 @@ class ShellFileOperations(FileOperations):
         if offset == 1:
             read_output, _ = _strip_bom(read_output)
         
-        # Get total line count
-        wc_cmd = f"wc -l < {self._escape_shell_arg(path)}"
-        wc_result = self._exec(wc_cmd)
-        wc_output = _strip_terminal_fence_leaks(wc_result.stdout)
+        # Get total line count. Use Python's universal newline reader
+        # instead of ``wc -l`` which counts newline characters, not lines.
+        # A file with N content lines and no trailing newline has N-1
+        # newlines → ``wc -l`` returns N-1 (off-by-one). A file with a
+        # trailing empty line has N+1 newlines → ``wc -l`` returns N+1.
+        # Python's ``sum(1 for _ in f)`` counts actual lines correctly
+        # regardless of trailing-newline convention (#59999).
+        py_cmd = (
+            "python -c \"import sys; "
+            "print(sum(1 for _ in open(sys.argv[1], encoding='utf-8', errors='replace')))\" "
+            + self._escape_shell_arg(path)
+        )
+        py_result = self._exec(py_cmd)
+        py_output = _strip_terminal_fence_leaks(py_result.stdout)
         try:
-            total_lines = int(wc_output.strip())
+            total_lines = int(py_output.strip())
         except ValueError:
             total_lines = 0
         
@@ -1157,7 +1167,18 @@ class ShellFileOperations(FileOperations):
         hint = None
         if truncated:
             hint = f"Use offset={end_line + 1} to continue reading (showing {offset}-{end_line} of {total_lines} lines)"
-        
+
+        # When offset exceeds total lines, return a clear message instead
+        # of a misleading empty line with just the line-number prefix.
+        if offset > total_lines and not read_output.strip():
+            return ReadResult(
+                content="",
+                total_lines=total_lines,
+                file_size=file_size,
+                truncated=False,
+                hint=f"Offset {offset} exceeds file length ({total_lines} lines)",
+            )
+
         return ReadResult(
             content=self._add_line_numbers(read_output, offset),
             total_lines=total_lines,

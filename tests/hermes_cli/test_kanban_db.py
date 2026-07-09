@@ -1063,6 +1063,91 @@ def test_resolve_rate_limit_cooldown_handles_bad_env(monkeypatch):
         )
 
 
+def _mark_latest_run_timed_out(conn, tid, ended_at):
+    run_id = kb.get_task(conn, tid).current_run_id
+    conn.execute(
+        "UPDATE task_runs SET outcome='timed_out', status='timed_out', "
+        "ended_at=? WHERE id=?",
+        (ended_at, run_id),
+    )
+    conn.execute(
+        "UPDATE tasks SET status='ready', current_run_id=NULL, "
+        "claim_lock=NULL WHERE id=?",
+        (tid,),
+    )
+    conn.commit()
+
+
+def test_respawn_guard_defers_timed_out_within_cooldown(
+    kanban_home,
+    monkeypatch,
+):
+    """A run that timed out moments ago must not respawn on the next tick —
+    synchronized mass retry of timed-out workers recreates the congestion
+    that caused the timeouts."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_TIMEOUT_RETRY_COOLDOWN_SECONDS", "180")
+    now = 6_000_000
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="to-cooldown", assignee="a")
+        kb.claim_task(conn, tid)
+        _mark_latest_run_timed_out(conn, tid, now)
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 1)
+        assert kb.check_respawn_guard(conn, tid) == "timeout_cooldown"
+
+
+def test_respawn_guard_timed_out_allows_after_cooldown_and_jitter(
+    kanban_home,
+    monkeypatch,
+):
+    """Beyond base cooldown + max jitter (2x base) the respawn is allowed."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_TIMEOUT_RETRY_COOLDOWN_SECONDS", "180")
+    now = 6_000_000
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="to-elapsed", assignee="a")
+        kb.claim_task(conn, tid)
+        _mark_latest_run_timed_out(conn, tid, now)
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 361)
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
+def test_respawn_guard_timeout_cooldown_zero_allows_immediately(
+    kanban_home,
+    monkeypatch,
+):
+    """Cooldown of 0 preserves pre-cooldown behavior (respawn next tick)."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_TIMEOUT_RETRY_COOLDOWN_SECONDS", "0")
+    now = 6_000_000
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="to-zero", assignee="a")
+        kb.claim_task(conn, tid)
+        _mark_latest_run_timed_out(conn, tid, now)
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 1)
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
+def test_resolve_timeout_retry_cooldown_handles_bad_env(monkeypatch):
+    import hermes_cli.kanban_db as _kb
+
+    for bad_val in ("notanumber", "-5", ""):
+        monkeypatch.setenv("HERMES_KANBAN_TIMEOUT_RETRY_COOLDOWN_SECONDS", bad_val)
+        assert (
+            _kb._resolve_timeout_retry_cooldown_seconds()
+            == _kb.DEFAULT_TIMEOUT_RETRY_COOLDOWN_SECONDS
+        )
+
+
 def test_max_runtime_uses_current_run_start_after_retry(kanban_home, monkeypatch):
     """A retry should get a fresh max-runtime window.
 

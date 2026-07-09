@@ -275,6 +275,25 @@ def _resolve_rate_limit_cooldown_seconds() -> int:
     return DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
 
 
+def _resolve_timeout_retry_cooldown_seconds() -> int:
+    """Return the timed-out-run respawn cooldown in seconds.
+
+    Reads ``HERMES_KANBAN_TIMEOUT_RETRY_COOLDOWN_SECONDS`` from the
+    environment; falls back to ``DEFAULT_TIMEOUT_RETRY_COOLDOWN_SECONDS`` when
+    absent, empty, non-integer, or negative. A value of 0 disables the
+    cooldown (re-spawn on the next tick), preserving pre-cooldown behavior.
+    """
+    raw = os.environ.get("HERMES_KANBAN_TIMEOUT_RETRY_COOLDOWN_SECONDS", "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = -1
+        if parsed >= 0:
+            return parsed
+    return DEFAULT_TIMEOUT_RETRY_COOLDOWN_SECONDS
+
+
 # Worker-context caps so build_worker_context() stays bounded on
 # pathological boards (retry-heavy tasks, comment storms, giant
 # summaries). Values chosen to fit a typical 100k-char LLM prompt with
@@ -5676,6 +5695,14 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # for operators who want a tighter/looser probe cadence.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
+# Timed-out runs must not respawn in the same tick they expired: when several
+# workers time out together (shared backend congestion), a synchronized mass
+# retry recreates the exact load that killed them (observed 2026-07-09 on a
+# local-LLM board: 6 workers timed out and were all re-spawned in one tick,
+# repeating the collapse). The cooldown plus per-task jitter spreads retries
+# across ticks.
+DEFAULT_TIMEOUT_RETRY_COOLDOWN_SECONDS = 180  # 3 minutes base, + 0-100% jitter
+
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
@@ -6776,6 +6803,12 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         never increments ``consecutive_failures``, so the breaker can't free
         it). Once the cooldown elapses the task falls through and respawns.
 
+    ``"timeout_cooldown"``
+        The task's most recent run ended ``timed_out`` within the base
+        cooldown (``_resolve_timeout_retry_cooldown_seconds()``) plus a
+        deterministic per-task jitter. Prevents synchronized mass retry of
+        workers that timed out together under shared-backend congestion.
+
     ``"blocker_auth"``
         The task's last failure error matches a quota / authentication
         pattern. Retrying immediately is unlikely to help (rate limits
@@ -6845,6 +6878,22 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         # (cheaply, spaced by the cooldown) until quota returns or a real
         # crash/completion supersedes it.
         return None
+
+    # 1b. Timeout cooldown: the most recent run TIMED OUT. enforce_max_runtime
+    #     flips expired tasks straight back to 'ready' in the same tick, so
+    #     without this guard every worker that timed out under shared load is
+    #     re-spawned together and recreates the congestion that killed it.
+    #     Defer by a base cooldown plus deterministic per-task jitter (hash of
+    #     the task id) so retries spread across ticks instead of stampeding.
+    if latest_run is not None and latest_run["outcome"] == "timed_out":
+        to_cooldown = _resolve_timeout_retry_cooldown_seconds()
+        if to_cooldown > 0:
+            ended_at = latest_run["ended_at"]
+            jitter = int(
+                hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:8], 16
+            ) % (to_cooldown + 1)
+            if ended_at is not None and (now - int(ended_at)) < to_cooldown + jitter:
+                return "timeout_cooldown"
 
     # 2. Quota / auth blocker: retrying immediately will not help.
     err = row["last_failure_error"]

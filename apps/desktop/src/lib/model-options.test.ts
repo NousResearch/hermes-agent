@@ -24,18 +24,46 @@ describe('requestModelOptions', () => {
 
     await expect(requestModelOptions({ gateway: gateway as never, sessionId: null })).resolves.toBe(gatewayPayload)
 
-    expect(gateway.request).toHaveBeenCalledWith('model.options', {})
+    expect(gateway.request).toHaveBeenCalledWith('model.options', { explicit_only: true })
     expect(getGlobalModelOptions).not.toHaveBeenCalled()
   })
 
-  it('passes the active session id and refresh flag through the gateway', async () => {
+  it('merges the global gateway catalog into session-scoped results', async () => {
+    const gatewayGlobal = {
+      model: 'gpt-5.4',
+      provider: 'openai-codex',
+      providers: [
+        { models: ['gpt-5.4'], name: 'OpenAI Codex', slug: 'openai-codex' },
+        { models: ['MiniMax M3'], name: 'MiniMax', slug: 'minimax' }
+      ]
+    }
+    const gatewayScoped = {
+      model: 'gpt-5.4',
+      provider: 'openai-codex',
+      providers: [{ models: ['MiniMax M3'], name: 'MiniMax', slug: 'minimax' }]
+    }
     const gateway = {
-      request: vi.fn(() => Promise.resolve(globalOptions))
+      request: vi
+        .fn()
+        .mockResolvedValueOnce(gatewayGlobal)
+        .mockResolvedValueOnce(gatewayScoped)
     }
 
-    await requestModelOptions({ gateway: gateway as never, refresh: true, sessionId: 'session-1' })
+    await expect(requestModelOptions({ gateway: gateway as never, refresh: true, sessionId: 'session-1' })).resolves
+      .toEqual({
+        ...gatewayScoped,
+        providers: [
+          { models: ['gpt-5.4'], name: 'OpenAI Codex', slug: 'openai-codex' },
+          { models: ['MiniMax M3'], name: 'MiniMax', slug: 'minimax' }
+        ]
+      })
 
-    expect(gateway.request).toHaveBeenCalledWith('model.options', {
+    expect(gateway.request).toHaveBeenNthCalledWith(1, 'model.options', {
+      explicit_only: true,
+      refresh: true
+    })
+    expect(gateway.request).toHaveBeenNthCalledWith(2, 'model.options', {
+      explicit_only: true,
       refresh: true,
       session_id: 'session-1'
     })
@@ -44,6 +72,6 @@ describe('requestModelOptions', () => {
   it('falls back to REST when no gateway is connected', async () => {
     await requestModelOptions({ refresh: true })
 
-    expect(getGlobalModelOptions).toHaveBeenCalledWith({ refresh: true })
+    expect(getGlobalModelOptions).toHaveBeenCalledWith({ explicitOnly: true, refresh: true })
   })
 })

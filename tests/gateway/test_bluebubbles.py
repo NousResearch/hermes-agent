@@ -164,6 +164,484 @@ class TestBlueBubblesHelpers:
         assert adapter._clean_mention_text("please ask Hermes about this") == "please ask Hermes about this"
 
 
+class TestBlueBubblesSocketIO:
+    def test_env_transport_socketio_reaches_platform_extra(self, monkeypatch):
+        monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
+        monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
+        monkeypatch.setenv("BLUEBUBBLES_TRANSPORT", "socketio")
+        from gateway.config import GatewayConfig, _apply_env_overrides
+
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+
+        assert config.platforms[Platform.BLUEBUBBLES].extra["transport"] == "socketio"
+
+    def test_adapter_transport_aliases_socketio(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, transport="websocket")
+
+        assert adapter.transport == "socketio"
+        assert adapter.use_socketio is True
+
+    @pytest.mark.asyncio
+    async def test_socketio_connect_skips_webhook_registration(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, transport="socketio")
+        registered = []
+        connected_socket = []
+
+        async def fake_api_get(path):
+            if path == "/api/v1/ping":
+                return {"status": 200}
+            if path == "/api/v1/server/info":
+                return {"data": {"private_api": True, "helper_connected": True}}
+            raise AssertionError(path)
+
+        async def fake_register_webhook():
+            registered.append(True)
+            return True
+
+        async def fake_connect_socketio():
+            connected_socket.append(True)
+            return True
+
+        monkeypatch.setattr(adapter, "_api_get", fake_api_get)
+        monkeypatch.setattr(adapter, "_register_webhook", fake_register_webhook)
+        monkeypatch.setattr(adapter, "_connect_socketio", fake_connect_socketio)
+
+        assert await adapter.connect() is True
+        assert connected_socket == [True]
+        assert registered == []
+        assert adapter._runner is None
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_socketio_registers_async_event_handlers(self, monkeypatch):
+        import inspect
+        import types
+        import sys
+
+        adapter = _make_adapter(monkeypatch, transport="socketio")
+        clients = []
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                self.handlers = {}
+                self.connected = False
+                clients.append(self)
+
+            def event(self, func):
+                self.handlers[func.__name__] = func
+                return func
+
+            def on(self, event_name, handler):
+                self.handlers[event_name] = handler
+
+            async def connect(self, *args, **kwargs):
+                self.connected = True
+
+        monkeypatch.setitem(sys.modules, "socketio", types.SimpleNamespace(AsyncClient=FakeAsyncClient))
+
+        assert await adapter._connect_socketio() is True
+        client = clients[0]
+        for event_name in ["message", "new-message", "updated-message"]:
+            assert inspect.iscoroutinefunction(client.handlers[event_name])
+
+    @pytest.mark.asyncio
+    async def test_socketio_new_message_dispatches_like_webhook(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, transport="socketio", send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        await adapter._handle_socketio_event("new-message", {
+            "guid": "msg-socket-1",
+            "text": "hello over socket",
+            "handle": {"address": "user@example.com"},
+            "isFromMe": False,
+            "chatGuid": "iMessage;-;user@example.com",
+            "chatIdentifier": "user@example.com",
+        })
+        await asyncio.sleep(0)
+
+        assert [event.text for event in handled] == ["hello over socket"]
+        assert handled[0].source.chat_id == "iMessage;-;user@example.com"
+
+
+    def test_check_requirements_uses_lazy_deps_for_env_socketio(self, monkeypatch):
+        from gateway.platforms import bluebubbles as bb
+
+        monkeypatch.setenv("BLUEBUBBLES_TRANSPORT", "socketio")
+        calls = []
+
+        def fake_feature_missing(feature):
+            calls.append(("missing", feature))
+            if feature == "platform.bluebubbles_socketio":
+                return ("python-socketio",)
+            raise AssertionError(feature)
+
+        def fake_ensure_and_bind(feature, importer, target_globals, **kwargs):
+            calls.append(("ensure", feature, kwargs))
+            return False
+
+        monkeypatch.setattr("tools.lazy_deps.feature_missing", fake_feature_missing)
+        monkeypatch.setattr("tools.lazy_deps.ensure_and_bind", fake_ensure_and_bind)
+
+        assert bb.check_bluebubbles_requirements() is False
+        assert calls == [
+            ("missing", "platform.bluebubbles_socketio"),
+            ("ensure", "platform.bluebubbles_socketio", {"prompt": False}),
+        ]
+
+    def test_check_requirements_uses_config_transport_socketio(self, monkeypatch):
+        from gateway.platforms import bluebubbles as bb
+
+        monkeypatch.delenv("BLUEBUBBLES_TRANSPORT", raising=False)
+        cfg = PlatformConfig(enabled=True, extra={"transport": "socketio"})
+        calls = []
+
+        def fake_feature_missing(feature):
+            calls.append(("missing", feature))
+            if feature == "platform.bluebubbles_socketio":
+                return ("python-socketio",)
+            raise AssertionError(feature)
+
+        def fake_ensure_and_bind(feature, importer, target_globals, **kwargs):
+            calls.append(("ensure", feature))
+            return False
+
+        monkeypatch.setattr("tools.lazy_deps.feature_missing", fake_feature_missing)
+        monkeypatch.setattr("tools.lazy_deps.ensure_and_bind", fake_ensure_and_bind)
+
+        assert bb.check_bluebubbles_requirements(cfg) is False
+        assert calls == [
+            ("missing", "platform.bluebubbles_socketio"),
+            ("ensure", "platform.bluebubbles_socketio"),
+        ]
+
+    def test_check_requirements_webhook_does_not_require_socketio(self, monkeypatch):
+        from gateway.platforms import bluebubbles as bb
+
+        monkeypatch.delenv("BLUEBUBBLES_TRANSPORT", raising=False)
+        calls = []
+
+        def fake_feature_missing(feature):
+            calls.append(("missing", feature))
+            if feature == "platform.bluebubbles":
+                return ()
+            if feature == "platform.bluebubbles_socketio":
+                return ("python-socketio",)
+            raise AssertionError(feature)
+
+        def fake_ensure_and_bind(feature, importer, target_globals, **kwargs):
+            calls.append(("ensure", feature))
+            return False
+
+        monkeypatch.setattr("tools.lazy_deps.feature_missing", fake_feature_missing)
+        monkeypatch.setattr("tools.lazy_deps.ensure_and_bind", fake_ensure_and_bind)
+
+        assert bb.check_bluebubbles_requirements(PlatformConfig(enabled=True, extra={"transport": "webhook"})) is True
+        assert calls == [("missing", "platform.bluebubbles")]
+
+    def test_check_requirements_socketio_does_not_require_webhook_aiohttp(self, monkeypatch):
+        from gateway.platforms import bluebubbles as bb
+
+        calls = []
+
+        def fake_feature_missing(feature):
+            calls.append(("missing", feature))
+            if feature == "platform.bluebubbles_socketio":
+                return ()
+            raise AssertionError(feature)
+
+        def fake_ensure_and_bind(feature, importer, target_globals, **kwargs):
+            calls.append(("ensure", feature))
+            return False
+
+        monkeypatch.setattr("tools.lazy_deps.feature_missing", fake_feature_missing)
+        monkeypatch.setattr("tools.lazy_deps.ensure_and_bind", fake_ensure_and_bind)
+
+        assert bb.check_bluebubbles_requirements(PlatformConfig(enabled=True, extra={"transport": "socketio"})) is True
+        assert calls == [("missing", "platform.bluebubbles_socketio")]
+
+    def test_check_requirements_socketio_requires_aiohttp_runtime(self, monkeypatch):
+        import builtins
+
+        from gateway.platforms import bluebubbles as bb
+
+        calls = []
+        real_import = builtins.__import__
+
+        def fake_feature_missing(feature):
+            calls.append(("missing", feature))
+            if feature == "platform.bluebubbles_socketio":
+                return ()
+            raise AssertionError(feature)
+
+        def fake_import(name, *args, **kwargs):
+            if name == "aiohttp":
+                raise ImportError("aiohttp intentionally hidden")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr("tools.lazy_deps.feature_missing", fake_feature_missing)
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+        assert bb.check_bluebubbles_requirements(PlatformConfig(enabled=True, extra={"transport": "socketio"})) is False
+        assert calls == [("missing", "platform.bluebubbles_socketio")]
+
+    def test_invalid_transport_fails_closed(self, monkeypatch):
+        from gateway.platforms import bluebubbles as bb
+
+        with pytest.raises(ValueError, match="unknown transport"):
+            _make_adapter(monkeypatch, transport="socket_io_typo")
+
+        assert bb.check_bluebubbles_requirements(
+            PlatformConfig(enabled=True, extra={"transport": "socket_io_typo"})
+        ) is False
+
+    def test_module_import_does_not_require_httpx(self, monkeypatch):
+        import importlib
+        import sys
+        import types
+        import builtins
+
+        sys.modules.pop("gateway.platforms.bluebubbles", None)
+        sys.modules.pop("httpx", None)
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "httpx":
+                raise ModuleNotFoundError("No module named 'httpx'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        module = importlib.import_module("gateway.platforms.bluebubbles")
+        assert isinstance(module, types.ModuleType)
+
+    @pytest.mark.asyncio
+    async def test_socketio_dedupes_same_guid_across_event_names(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, transport="socketio", send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        message = {
+            "guid": "dup-guid-1",
+            "text": "only once",
+            "handle": {"address": "user@example.com"},
+            "isFromMe": False,
+            "chatGuid": "iMessage;-;user@example.com",
+            "chatIdentifier": "user@example.com",
+        }
+
+        assert await adapter._handle_socketio_event("new-message", dict(message)) is True
+        assert await adapter._handle_socketio_event("message", dict(message)) is True
+        assert await adapter._handle_socketio_event("updated-message", dict(message)) is True
+        await asyncio.sleep(0)
+
+        assert [event.text for event in handled] == ["only once"]
+
+    @pytest.mark.asyncio
+    async def test_socketio_updated_message_same_guid_is_deduped(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, transport="socketio", send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        original = {
+            "guid": "edited-guid-1",
+            "text": "original text",
+            "handle": {"address": "user@example.com"},
+            "isFromMe": False,
+            "chatGuid": "iMessage;-;user@example.com",
+            "chatIdentifier": "user@example.com",
+        }
+        edited = dict(original, text="edited text")
+
+        assert await adapter._handle_socketio_event("new-message", original) is True
+        assert await adapter._handle_socketio_event("updated-message", edited) is True
+        await asyncio.sleep(0)
+
+        assert [event.text for event in handled] == ["original text"]
+
+    @pytest.mark.asyncio
+    async def test_socketio_accepts_webhook_shaped_payload(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, transport="socketio", send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        assert await adapter._handle_socketio_event("new-message", {
+            "type": "new-message",
+            "data": {
+                "guid": "msg-webhook-shaped",
+                "text": "already wrapped",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;user@example.com",
+                "chatIdentifier": "user@example.com",
+            },
+        }) is True
+        await asyncio.sleep(0)
+
+        assert [event.text for event in handled] == ["already wrapped"]
+
+    @pytest.mark.asyncio
+    async def test_socketio_accepts_message_wrapper_payload(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, transport="socketio", send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        assert await adapter._handle_socketio_event("new-message", {
+            "message": {
+                "guid": "msg-wrapper-shaped",
+                "text": "wrapped message",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;user@example.com",
+                "chatIdentifier": "user@example.com",
+            },
+        }) is True
+        await asyncio.sleep(0)
+
+        assert [event.text for event in handled] == ["wrapped message"]
+
+    @pytest.mark.asyncio
+    async def test_socketio_handlers_accept_multiple_args_and_update_state(self, monkeypatch):
+        import sys
+        import types
+
+        adapter = _make_adapter(monkeypatch, transport="socketio")
+        clients = []
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                self.handlers = {}
+                self.connected = False
+                clients.append(self)
+
+            def event(self, func):
+                self.handlers[func.__name__] = func
+                return func
+
+            def on(self, event_name, handler):
+                self.handlers[event_name] = handler
+
+            async def connect(self, *args, **kwargs):
+                self.connected = True
+
+        monkeypatch.setitem(sys.modules, "socketio", types.SimpleNamespace(AsyncClient=FakeAsyncClient))
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        assert await adapter._connect_socketio() is True
+        client = clients[0]
+        await client.handlers["connect"]()
+        assert adapter.is_connected is True
+        await client.handlers["new-message"]({
+            "guid": "multi-arg-guid",
+            "text": "multi arg",
+            "handle": {"address": "user@example.com"},
+            "isFromMe": False,
+            "chatGuid": "iMessage;-;user@example.com",
+            "chatIdentifier": "user@example.com",
+        }, {"ignored": True})
+        await asyncio.sleep(0)
+        assert [event.text for event in handled] == ["multi arg"]
+        await client.handlers["disconnect"]()
+        assert adapter.is_connected is False
+
+    @pytest.mark.asyncio
+    async def test_socketio_failed_connect_disconnects_partial_client(self, monkeypatch):
+        import sys
+        import types
+
+        adapter = _make_adapter(monkeypatch, transport="socketio")
+        clients = []
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                self.handlers = {}
+                self.connected = False
+                self.disconnect_called = False
+                clients.append(self)
+
+            def event(self, func):
+                self.handlers[func.__name__] = func
+                return func
+
+            def on(self, event_name, handler):
+                self.handlers[event_name] = handler
+
+            async def connect(self, *args, **kwargs):
+                self.connected = True
+                raise RuntimeError("boom")
+
+            async def disconnect(self):
+                self.disconnect_called = True
+                self.connected = False
+
+        monkeypatch.setitem(sys.modules, "socketio", types.SimpleNamespace(AsyncClient=FakeAsyncClient))
+
+        assert await adapter._connect_socketio() is False
+        assert clients[0].disconnect_called is True
+        assert adapter._sio is None
+
+    @pytest.mark.asyncio
+    async def test_socketio_failed_connect_disconnects_before_connected_state(self, monkeypatch):
+        import sys
+        import types
+
+        adapter = _make_adapter(monkeypatch, transport="socketio")
+        clients = []
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                self.handlers = {}
+                self.connected = False
+                self.disconnect_called = False
+                clients.append(self)
+
+            def event(self, func):
+                self.handlers[func.__name__] = func
+                return func
+
+            def on(self, event_name, handler):
+                self.handlers[event_name] = handler
+
+            async def connect(self, *args, **kwargs):
+                # Real python-socketio/Engine.IO can allocate aiohttp resources
+                # before connected flips true. Cleanup must not depend on this
+                # flag or the underlying ClientSession can leak.
+                raise RuntimeError("boom before connected")
+
+            async def disconnect(self):
+                self.disconnect_called = True
+
+        monkeypatch.setitem(sys.modules, "socketio", types.SimpleNamespace(AsyncClient=FakeAsyncClient))
+
+        assert await adapter._connect_socketio() is False
+        assert clients[0].connected is False
+        assert clients[0].disconnect_called is True
+        assert adapter._sio is None
+
+
 class _FakeBlueBubblesRequest:
     def __init__(self, payload, password="secret"):
         self.query = {"password": password}
@@ -232,6 +710,45 @@ class TestBlueBubblesMentionGating:
 
         assert response.status == 200
         assert [event.text for event in handled] == ["summarize this"]
+
+    @pytest.mark.asyncio
+    async def test_webhook_same_guid_new_and_updated_messages_both_dispatch(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            transport="webhook",
+            send_read_receipts=False,
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        message = {
+            "guid": "webhook-update-guid",
+            "text": "original webhook text",
+            "handle": {"address": "user@example.com"},
+            "isFromMe": False,
+            "chatGuid": "iMessage;-;user@example.com",
+            "chatIdentifier": "user@example.com",
+        }
+
+        first = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": dict(message),
+        }))
+        second = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "updated-message",
+            "data": dict(message, text="updated webhook text"),
+        }))
+        await asyncio.sleep(0)
+
+        assert first.status == 200
+        assert second.status == 200
+        assert [event.text for event in handled] == [
+            "original webhook text",
+            "updated webhook text",
+        ]
 
     @pytest.mark.asyncio
     async def test_dm_message_does_not_require_mention(self, monkeypatch):

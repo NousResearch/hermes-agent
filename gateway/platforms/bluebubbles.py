@@ -1,8 +1,9 @@
 """BlueBubbles iMessage platform adapter.
 
 Uses the local BlueBubbles macOS server for outbound REST sends and inbound
-webhooks.  Supports text messaging, media attachments (images, voice, video,
-documents), tapback reactions, typing indicators, and read receipts.
+webhook or Socket.IO events.  Supports text messaging, media attachments
+(images, voice, video, documents), tapback reactions, typing indicators, and
+read receipts.
 
 Architecture based on PR #5869 (benjaminsehl) with inbound attachment
 downloading from PR #4588 (YuhangLin).
@@ -16,10 +17,11 @@ import re
 import uuid
 from collections import OrderedDict
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from urllib.parse import quote
 
-import httpx
+if TYPE_CHECKING:
+    import httpx
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -69,6 +71,9 @@ _TAPBACK_REMOVED = {
 
 # Webhook event types that carry user messages
 _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
+_SOCKETIO_TRANSPORT_ALIASES = {"socketio", "socket.io", "socket", "websocket", "ws"}
+_VALID_TRANSPORTS = {"webhook", *_SOCKETIO_TRANSPORT_ALIASES}
+_DEDUPE_CACHE_SIZE = 500
 
 # Log redaction patterns
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
@@ -88,10 +93,64 @@ def _redact(text: str) -> str:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def check_bluebubbles_requirements() -> bool:
+def check_bluebubbles_requirements(config: Optional[PlatformConfig] = None) -> bool:
+    extra = (config.extra if config is not None and config.extra else {}) or {}
     try:
-        import aiohttp  # noqa: F401
+        transport = _normalize_transport(
+            extra.get("transport") or os.getenv("BLUEBUBBLES_TRANSPORT", "webhook"),
+            strict=True,
+        )
+    except ValueError as exc:
+        logger.error("[bluebubbles] %s", exc)
+        return False
+
+    try:
         import httpx  # noqa: F401
+        from tools.lazy_deps import feature_missing, ensure_and_bind
+    except Exception:
+        return False
+
+    def _import_webhook() -> dict:
+        import aiohttp  # noqa: F401
+        return {}
+
+    def _import_socketio() -> dict:
+        # python-socketio's AsyncClient uses aiohttp for its async Engine.IO
+        # HTTP/WebSocket runtime. Keep this under the Socket.IO feature path
+        # rather than routing through the webhook-only platform.bluebubbles
+        # dependency check, so default webhook users still avoid socketio.
+        import aiohttp  # noqa: F401
+        import socketio  # noqa: F401
+        return {}
+
+    if transport != "socketio":
+        try:
+            missing = feature_missing("platform.bluebubbles")
+        except Exception:
+            missing = ()
+        if missing:
+            if not ensure_and_bind("platform.bluebubbles", _import_webhook, globals(), prompt=False):
+                return False
+        else:
+            try:
+                _import_webhook()
+            except ImportError:
+                return False
+        return True
+
+    try:
+        socketio_missing = feature_missing("platform.bluebubbles_socketio")
+    except Exception:
+        socketio_missing = ()
+    if socketio_missing:
+        return ensure_and_bind(
+            "platform.bluebubbles_socketio",
+            _import_socketio,
+            globals(),
+            prompt=False,
+        )
+    try:
+        _import_socketio()
     except ImportError:
         return False
     return True
@@ -106,6 +165,20 @@ def _normalize_server_url(raw: str) -> str:
     return value.rstrip("/")
 
 
+def _normalize_transport(raw: Any, *, strict: bool = False) -> str:
+    value = str(raw or "webhook").strip().lower()
+    if not value or value == "webhook":
+        return "webhook"
+    if value in _SOCKETIO_TRANSPORT_ALIASES:
+        return "socketio"
+    message = (
+        f"unknown transport {_redact(value)!r}; expected 'webhook' or one of "
+        f"{sorted(_SOCKETIO_TRANSPORT_ALIASES)!r}"
+    )
+    if strict:
+        raise ValueError(message)
+    logger.warning("[bluebubbles] %s", message)
+    return "webhook"
 
 
 
@@ -141,6 +214,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not str(self.webhook_path).startswith("/"):
             self.webhook_path = f"/{self.webhook_path}"
         self.send_read_receipts = bool(extra.get("send_read_receipts", True))
+        self.transport = _normalize_transport(
+            extra.get("transport") or os.getenv("BLUEBUBBLES_TRANSPORT", "webhook"),
+            strict=True,
+        )
+        self.use_socketio = self.transport == "socketio"
         _require_mention = extra.get("require_mention")
         if _require_mention is None:
             _require_mention = os.getenv("BLUEBUBBLES_REQUIRE_MENTION")
@@ -150,11 +228,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             if "mention_patterns" in extra
             else os.getenv("BLUEBUBBLES_MENTION_PATTERNS")
         )
-        self.client: Optional[httpx.AsyncClient] = None
+        self.client: Optional["httpx.AsyncClient"] = None
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._processed_message_guids: OrderedDict[str, None] = OrderedDict()
+        self._sio = None
 
     # ------------------------------------------------------------------
     # API helpers
@@ -242,9 +322,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 "[bluebubbles] BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required"
             )
             return False
-        from aiohttp import web
 
         # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+        import httpx
         from gateway.platforms._http_client_limits import platform_httpx_limits
         self.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
         try:
@@ -254,10 +334,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             self._private_api_enabled = bool(server_data.get("private_api"))
             self._helper_connected = bool(server_data.get("helper_connected"))
             logger.info(
-                "[bluebubbles] connected to %s (private_api=%s, helper=%s)",
+                "[bluebubbles] connected to %s (private_api=%s, helper=%s, transport=%s)",
                 self.server_url,
                 self._private_api_enabled,
                 self._helper_connected,
+                self.transport,
             )
         except Exception as exc:
             logger.error(
@@ -267,6 +348,18 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 await self.client.aclose()
                 self.client = None
             return False
+
+        if self.use_socketio:
+            connected = await self._connect_socketio()
+            if not connected:
+                if self.client:
+                    await self.client.aclose()
+                    self.client = None
+                return False
+            self._mark_connected()
+            return True
+
+        from aiohttp import web
 
         # Explicit body cap: BlueBubbles webhook events are small JSON (or
         # form-encoded) payloads. client_max_size makes aiohttp enforce the
@@ -297,8 +390,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return True
 
     async def disconnect(self) -> None:
+        if self._sio is not None:
+            try:
+                if getattr(self._sio, "connected", False):
+                    await self._sio.disconnect()
+            finally:
+                self._sio = None
+
         # Unregister webhook before cleaning up
-        await self._unregister_webhook()
+        if not self.use_socketio:
+            await self._unregister_webhook()
 
         if self.client:
             await self.client.aclose()
@@ -307,6 +408,84 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._mark_disconnected()
+
+    async def _connect_socketio(self) -> bool:
+        """Connect to BlueBubbles' realtime Socket.IO interface."""
+        try:
+            import socketio
+        except ImportError:
+            logger.error(
+                "[bluebubbles] BLUEBUBBLES_TRANSPORT=socketio requires python-socketio"
+            )
+            return False
+
+        sio = socketio.AsyncClient(
+            reconnection=True,
+            logger=False,
+            engineio_logger=False,
+        )
+
+        async def _dispatch(event_name: str, data: Any):
+            try:
+                await self._handle_socketio_event(event_name, data)
+            except Exception as exc:
+                logger.exception(
+                    "[bluebubbles] socket.io event %s failed: %s",
+                    event_name,
+                    exc,
+                )
+
+        @sio.event
+        async def connect():
+            logger.info("[bluebubbles] socket.io connected to %s", self.server_url)
+            self._mark_connected()
+
+        @sio.event
+        async def disconnect():
+            logger.info("[bluebubbles] socket.io disconnected")
+            self._mark_disconnected()
+
+        for event_name in sorted(_MESSAGE_EVENTS):
+            async def _handler(*args: Any, event_name: str = event_name):
+                data = args[0] if args else {}
+                await _dispatch(event_name, data)
+
+            sio.on(event_name, handler=_handler)
+
+        self._sio = sio
+        url = f"{self.server_url}?password={quote(self.password, safe='')}"
+        try:
+            await sio.connect(
+                url,
+                transports=["websocket", "polling"],
+                socketio_path="socket.io",
+                wait_timeout=15,
+            )
+            return True
+        except Exception as exc:
+            logger.error("[bluebubbles] socket.io connect failed: %s", exc)
+            try:
+                # Engine.IO can allocate its aiohttp ClientSession before the
+                # Socket.IO client reports connected=True. disconnect() still
+                # runs Engine.IO reset/HTTP close in that partial state, so call
+                # it unconditionally instead of keying cleanup off connected.
+                await sio.disconnect()
+            except Exception:
+                logger.debug("[bluebubbles] socket.io cleanup after failed connect failed", exc_info=True)
+            self._sio = None
+            return False
+
+    async def _handle_socketio_event(self, event_type: str, data: Any) -> bool:
+        if isinstance(data, dict):
+            inner_type = self._value(data.get("type"), data.get("event"))
+            if inner_type and ("data" in data or "message" in data):
+                payload = dict(data)
+                payload.setdefault("type", event_type)
+                return await self._process_event_payload(payload)
+            if isinstance(data.get("message"), dict):
+                return await self._process_event_payload({"type": event_type, "message": data["message"]})
+        payload = {"type": event_type, "data": data}
+        return await self._process_event_payload(payload)
 
     @property
     def _webhook_url(self) -> str:
@@ -902,10 +1081,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.error("[bluebubbles] webhook parse error: %s", exc)
             return web.json_response({"error": "invalid payload"}, status=400)
 
+        ok = await self._process_event_payload(payload)
+        if ok:
+            return web.Response(text="ok")
+        return web.json_response({"error": "missing message fields"}, status=400)
+
+    async def _process_event_payload(self, payload: Dict[str, Any]) -> bool:
         event_type = self._value(payload.get("type"), payload.get("event")) or ""
         # Only process message events; silently acknowledge everything else
         if event_type and event_type not in _MESSAGE_EVENTS:
-            return web.Response(text="ok")
+            return True
 
         record = self._extract_payload_record(payload) or {}
         is_from_me = bool(
@@ -914,7 +1099,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             or record.get("is_from_me")
         )
         if is_from_me:
-            return web.Response(text="ok")
+            return True
 
         # Skip tapback reactions delivered as messages
         assoc_type = record.get("associatedMessageType")
@@ -922,7 +1107,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             **_TAPBACK_ADDED,
             **_TAPBACK_REMOVED,
         }:
-            return web.Response(text="ok")
+            return True
 
         text = (
             self._value(
@@ -1001,7 +1186,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not (chat_guid or chat_identifier) and sender:
             chat_identifier = sender
         if not sender or not (chat_guid or chat_identifier) or not text:
-            return web.json_response({"error": "missing message fields"}, status=400)
+            return False
 
         session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
@@ -1010,7 +1195,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 logger.debug(
                     "[bluebubbles] ignoring group message (require_mention=true, no mention pattern matched)"
                 )
-                return web.Response(text="ok")
+                return True
             text = self._clean_mention_text(text)
         source = self.build_source(
             chat_id=session_chat_id,
@@ -1020,16 +1205,33 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             user_name=sender,
             chat_id_alt=chat_identifier,
         )
+        message_guid = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+        if self.use_socketio and message_guid:
+            # BlueBubbles can emit the same iMessage GUID through overlapping
+            # Socket.IO event names (message/new-message/updated-message). Treat
+            # later Socket.IO events for an already-dispatched GUID as duplicates
+            # so edits or status-style updated-message events do not trigger fresh
+            # agent turns. Keep this scoped to Socket.IO so default webhook mode
+            # preserves its existing new-message/updated-message contract.
+            # Tapbacks are skipped above before they can enter this cache.
+            if message_guid in self._processed_message_guids:
+                logger.debug("[bluebubbles] ignoring duplicate message event guid=%s", _redact(message_guid))
+                return True
+            self._processed_message_guids[message_guid] = None
+            self._processed_message_guids.move_to_end(message_guid)
+            while len(self._processed_message_guids) > _DEDUPE_CACHE_SIZE:
+                self._processed_message_guids.popitem(last=False)
+
         event = MessageEvent(
             text=text,
             message_type=msg_type,
             source=source,
             raw_message=payload,
-            message_id=self._value(
-                record.get("guid"),
-                record.get("messageGuid"),
-                record.get("id"),
-            ),
+            message_id=message_guid,
             reply_to_message_id=self._value(
                 record.get("threadOriginatorGuid"),
                 record.get("associatedMessageGuid"),
@@ -1045,4 +1247,4 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if self.send_read_receipts and session_chat_id:
             asyncio.create_task(self.mark_read(session_chat_id))
 
-        return web.Response(text="ok")
+        return True

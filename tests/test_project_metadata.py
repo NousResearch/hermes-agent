@@ -72,6 +72,7 @@ def test_lazy_installable_extras_excluded_from_all():
         "voice",  # faster-whisper / sounddevice / numpy
         "modal", "daytona",
         "messaging", "slack", "matrix", "dingtalk", "feishu",
+        "bluebubbles-socketio",
         "honcho", "hindsight",
         "supermemory", "mem0",
         "mistral",  # mistralai — Voxtral STT/TTS, lazy-installed (stt.mistral / tts.mistral)
@@ -99,6 +100,23 @@ def _exact_pins(specs):
         package = package.split("[", 1)[0].lower().replace("_", "-")
         pins[package] = version
     return pins
+
+
+def test_bluebubbles_socketio_extra_matches_lazy_runtime_deps():
+    """Socket.IO's narrow opt-in path must include its async runtime deps.
+
+    python-socketio imports successfully without aiohttp, but AsyncClient cannot
+    connect without aiohttp. Keep aiohttp in the Socket.IO-specific extra/lazy
+    feature instead of depending on the webhook-only platform.bluebubbles path.
+    """
+    from tools.lazy_deps import LAZY_DEPS
+
+    optional_dependencies = _load_optional_dependencies()
+    extra_pins = _exact_pins(optional_dependencies["bluebubbles-socketio"])
+    lazy_pins = _exact_pins(LAZY_DEPS["platform.bluebubbles_socketio"])
+
+    assert extra_pins["python-socketio"] == lazy_pins["python-socketio"]
+    assert extra_pins["aiohttp"] == lazy_pins["aiohttp"]
 
 
 def test_pyproject_aiohttp_pins_match_lazy_slack_pin():

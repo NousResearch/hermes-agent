@@ -2155,6 +2155,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "webhook_host": getenv("BLUEBUBBLES_WEBHOOK_HOST", "127.0.0.1"),
             "webhook_port": getenv_int("BLUEBUBBLES_WEBHOOK_PORT", 8645),
             "webhook_path": getenv("BLUEBUBBLES_WEBHOOK_PATH", "/bluebubbles-webhook"),
+            "transport": getenv("BLUEBUBBLES_TRANSPORT", "webhook"),
             "send_read_receipts": is_truthy_value(getenv("BLUEBUBBLES_SEND_READ_RECEIPTS", "true")),
         })
         bluebubbles_require_mention = getenv("BLUEBUBBLES_REQUIRE_MENTION")

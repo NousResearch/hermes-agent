@@ -153,6 +153,14 @@ def cron_list(show_all: bool = False):
         print(f"    Repeat:    {repeat_str}")
         print(f"    Next run:  {next_run}")
         print(f"    Deliver:   {deliver_str}")
+        if "origin" in deliver and job.get("origin"):
+            origin = job["origin"]
+            platform = origin.get("platform")
+            chat_id = origin.get("chat_id")
+            print(f"    Origin:    {platform}:{chat_id}")
+        enabled_toolsets = job.get("enabled_toolsets")
+        if enabled_toolsets:
+            print(f"    Toolsets:  {', '.join(enabled_toolsets)}")
         if skills:
             print(f"    Skills:    {', '.join(skills)}")
         script = job.get("script")

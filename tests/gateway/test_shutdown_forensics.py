@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -248,3 +249,52 @@ class TestCheckSystemdTimingAlignment:
         # for whatever unit pytest IS in.  Both are valid; we just ensure
         # the function doesn't raise.
         assert result is None or isinstance(result, dict)
+
+    def test_system_scope_cgroup_skips_phantom_user_unit(self, monkeypatch):
+        """A system-scope unit must not trust systemctl --user's default row.
+
+        systemctl --user show can return success plus TimeoutStopUSec=90s even
+        for an unknown user unit. If /proc/self/cgroup says this process is in
+        /system.slice, the check should query the system manager directly.
+        """
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+
+        cgroup = "0::/system.slice/hermes-gateway-duke.service\n"
+        real_open = open
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/proc/self/cgroup":
+                from io import StringIO
+
+                return StringIO(cgroup)
+            return real_open(path, *args, **kwargs)
+
+        calls = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(cmd)
+            if "--user" in cmd:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="TimeoutStopUSec=1min 30s\n", stderr=""
+                )
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="TimeoutStopUSec=4min\n", stderr=""
+            )
+
+        monkeypatch.setattr("builtins.open", fake_open)
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert result is not None
+        assert result["unit"] == "hermes-gateway-duke.service"
+        assert result["timeout_stop_sec"] == 240.0
+        assert result["mismatch"] is False
+        assert calls == [
+            [
+                "systemctl",
+                "show",
+                "hermes-gateway-duke.service",
+                "--property=TimeoutStopUSec",
+            ]
+        ]

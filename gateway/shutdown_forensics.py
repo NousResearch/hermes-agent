@@ -342,12 +342,18 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
 
     # Try to identify our unit name and ask systemctl for its config.
     unit_name: Optional[str] = None
+    systemd_scope: Optional[str] = None
     try:
         # /proc/self/cgroup gives us "0::/user.slice/.../hermes-gateway.service"
         with open("/proc/self/cgroup", encoding="utf-8") as fh:
             for line in fh:
                 # systemd cgroup line ends with the unit name
                 if ".service" in line:
+                    cgroup_path = line.strip().split(":", 2)[-1]
+                    if cgroup_path.startswith("/system.slice/"):
+                        systemd_scope = "system"
+                    elif cgroup_path.startswith("/user.slice/"):
+                        systemd_scope = "user"
                     parts = line.strip().split("/")
                     for p in reversed(parts):
                         if p.endswith(".service"):
@@ -360,11 +366,19 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
     if not unit_name:
         return None
 
-    # Query systemctl for TimeoutStopUSec.  Use --user OR system depending
-    # on which manager actually owns the unit.  Try user first since
-    # that's the common case for hermes.
+    # Query systemctl for TimeoutStopUSec.  Use the manager identified by
+    # /proc/self/cgroup when possible: systemctl --user can return exit 0 plus
+    # a default TimeoutStopUSec for unknown units, so probing it first causes
+    # false stale-unit warnings for system-scope services (#61003).
     timeout_us: Optional[int] = None
-    for flag in (["--user"], []):
+    if systemd_scope == "system":
+        scope_flags = ([],)
+    elif systemd_scope == "user":
+        scope_flags = (["--user"],)
+    else:
+        scope_flags = (["--user"], [])
+
+    for flag in scope_flags:
         try:
             result = subprocess.run(
                 ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],

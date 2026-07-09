@@ -4810,3 +4810,98 @@ class TestMultiTargetDeliveryContinuesOnFailure:
         assert "a@example.com" in result
         assert "b@example.com" in result
         assert mock_pool.submit.call_count == 2
+
+
+    def test_run_job_delivers_budget_exhausted_summary(self, tmp_path):
+        """Budget-exhausted runs with a composed response should be delivered.
+
+        conversation_loop.py sets turn_exit_reason to "budget_exhausted"
+        (explicit exhaustion) or "unknown" (while-expiry fall-through).
+        These values should trigger the graceful delivery exemption,
+        delivering the composed response instead of raising as RuntimeError.
+        (issue #61631)
+        """
+        job = {
+            "id": "budget-job",
+            "name": "budget-test",
+            "prompt": "complete the task",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "budget-exhausted but complete report",
+                "completed": False,
+                "failed": False,
+                "turn_exit_reason": "budget_exhausted",
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "budget-exhausted but complete report"
+        assert "budget-exhausted but complete report" in output
+        assert "(FAILED)" not in output
+
+    def test_run_job_delivers_unknown_fallthrough_summary(self, tmp_path):
+        """Unknown fall-through exit reasons should also trigger graceful delivery.
+
+        When the while-loop expires without an explicit turn_exit_reason,
+        the "unknown" value should still trigger the exemption for
+        composed responses. (issue #61631)
+        """
+        job = {
+            "id": "unknown-job",
+            "name": "unknown-test",
+            "prompt": "complete the task",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "unknown exit but complete report",
+                "completed": False,
+                "failed": False,
+                "turn_exit_reason": "unknown",
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "unknown exit but complete report"
+        assert "unknown exit but complete report" in output
+        assert "(FAILED)" not in output

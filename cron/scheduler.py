@@ -3177,10 +3177,18 @@ def run_job(
         # builds the proper failure tuple. (issue #17855)
         turn_exit_reason = str(result.get("turn_exit_reason") or "")
         final_response_text = (result.get("final_response") or "").strip()
+        # Graceful delivery exemption: when the iteration budget is exhausted
+        # but a full response was composed, deliver it instead of raising.
+        # conversation_loop.py may set "budget_exhausted" (explicit exhaustion)
+        # or "unknown" (while-expiry fall-through); turn_finalizer.py may set
+        # "max_iterations_reached(N/N)". Match all three values.
         max_iteration_summary = (
             result.get("failed") is not True
             and result.get("completed") is False
-            and turn_exit_reason.startswith("max_iterations_reached(")
+            and (
+                turn_exit_reason.startswith("max_iterations_reached(")
+                or turn_exit_reason in ("budget_exhausted", "unknown")
+            )
             and bool(final_response_text)
         )
         if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):

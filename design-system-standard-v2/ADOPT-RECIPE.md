@@ -47,9 +47,10 @@
 - commit งาน DS แยกก้อน · ห้าม merge/deploy เอง
 - onemanfleet-ds.html = โครงตัวอย่างเท่านั้น · ก๊อปแล้ว **ต้องเปลี่ยนสี/แบรนด์/ข้อความเป็นของ [ชื่อโปรเจกต์] ทันที** · ห้ามเหลือสี OneManFleet (#E94560/#1A1A2E) ในหน้าโชว์ (พิสูจน์: `grep -riE "E94560|1A1A2E" <project>/design-system/` = 0)
 
-path ต้นทาง (ก๊อปมาจากที่นี่ ทุกไฟล์มีจริง):
-/Users/rattanasak/Documents/Viber Project/Tech Tools/Hermes Agent/design-system-standard-v2/
-  preview/onemanfleet-ds.html · tokens/ (core/front/admin/effects) · tools/ds-check.py · tools/contrast-check.mjs · tokens/build-tokens.mjs
+หาชุดต้นทางได้ 2 ทาง (อย่าฝัง path เครื่องเดียวลงในงานโปรเจกต์):
+- Mac เจ้าของ: โฟลเดอร์ repo Hermes Agent → `design-system-standard-v2/`
+- VPS/เครื่องอื่น: ชุดอยู่บน GitHub → `git clone --depth 1 https://github.com/rattanasak-ops/hermes-agent.git` แล้วใช้ `design-system-standard-v2/`
+ไฟล์ที่ก๊อป: tokens/ (core/front/admin/effects) · tools/ (ds-check.py · contrast-check.mjs · brand-leak-check.sh · build-tokens.mjs) · preview/onemanfleet-ds.html (โครงตัวอย่าง — เปลี่ยนสี/แบรนด์เป็นของโปรเจกต์ก่อนใช้)
 
 เริ่ม DS0-DS2 ก่อน (ปลอดภัย ไม่แตะโค้ดที่รันเว็บ) แล้วรายงานผลก่อนลุย DS3-DS4
 ```

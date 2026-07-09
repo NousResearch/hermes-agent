@@ -5,10 +5,13 @@ two things sprite generation needs that the agent-facing ``image_generate`` tool
 doesn't expose: **N variants** (loop) and **reference-image grounding** (so each
 animation row stays the same character as the chosen base).
 
-Reference grounding only works on providers that support it — currently OpenAI
-``gpt-image-2`` (image edits) and Krea (style references). We resolve to one of
-those and surface a clear, actionable error otherwise rather than silently
-producing an ungrounded, drifting pet.
+Reference grounding only works on providers that support it. A provider
+advertises that by including ``"image"`` in ``capabilities()["modalities"]``
+(image-to-image / editing), so user plugins qualify automatically; the built-in
+names in :data:`_REF_CAPABLE` are additionally trusted as a fallback and set the
+preference order. We resolve to a reference-capable provider and surface a
+clear, actionable error otherwise rather than silently producing an ungrounded,
+drifting pet.
 """
 
 from __future__ import annotations
@@ -20,10 +23,14 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Providers that can ground generation on a reference image, in preference order
-# (Nous Portal → OpenAI → OpenRouter → …). OpenRouter/Nous run a quality-first
-# model chain and may fall back depending on account access and endpoint behavior,
-# so fidelity can vary by configured backend + model availability.
+# Built-in providers known to ground generation on a reference image, in
+# preference order (Nous Portal → OpenAI → OpenRouter → …). OpenRouter/Nous run
+# a quality-first model chain and may fall back depending on account access and
+# endpoint behavior, so fidelity can vary by configured backend + model
+# availability. This tuple is an ordering hint plus a fallback for providers
+# that don't override ``capabilities()`` — any other registered provider that
+# declares the ``"image"`` modality (e.g. a local img2img plugin) is
+# reference-capable too; see :func:`_supports_references`.
 _REF_CAPABLE = ("nous", "openai", "openai-codex", "openrouter", "krea")
 
 # Friendly display label per reference-capable provider, surfaced in the desktop
@@ -37,15 +44,76 @@ _PROVIDER_LABELS: dict[str, str] = {
 }
 
 
+def _supports_references(name: str, provider: object) -> bool:
+    """True when *provider* can ground generation on reference images.
+
+    Primary signal: the provider's own ``capabilities()`` declares the
+    ``"image"`` modality (image-to-image / editing) — this is what lets user
+    plugins participate without being hardcoded here. Fallback: the name is in
+    :data:`_REF_CAPABLE`, which keeps built-ins working even if a provider
+    doesn't override ``capabilities()`` (the base-class default is text-only).
+    """
+    caps = getattr(provider, "capabilities", None)
+    if callable(caps):
+        try:
+            modalities = (caps() or {}).get("modalities") or ()
+        except Exception as exc:  # noqa: BLE001 - a broken override shouldn't break resolution
+            logger.debug("capabilities() failed for image provider '%s': %s", name, exc)
+        else:
+            if "image" in modalities:
+                return True
+    return name in _REF_CAPABLE
+
+
+def _ref_capable_names() -> list[str]:
+    """Names of reference-capable providers, in preference order.
+
+    The built-ins from :data:`_REF_CAPABLE` come first (their tuple order is
+    the preference order), followed by any other registered provider that
+    declares itself reference-capable, in the registry's name-sorted order.
+    """
+    from agent.image_gen_registry import list_providers
+
+    names = list(_REF_CAPABLE)
+    try:
+        registered = list_providers()
+    except Exception as exc:  # noqa: BLE001 - registry hiccups shouldn't break resolution
+        logger.debug("image provider listing failed: %s", exc)
+        registered = []
+    for provider in registered:
+        name = getattr(provider, "name", "")
+        if name and name not in names and _supports_references(name, provider):
+            names.append(name)
+    return names
+
+
+def _provider_label(name: str, provider: object) -> str:
+    """Display label for the desktop pet-gen picker."""
+    label = _PROVIDER_LABELS.get(name)
+    if label:
+        return label
+    return str(getattr(provider, "display_name", "") or name)
+
+
 def _forced_provider_from_env() -> str | None:
     """Optional QA override to force a pet-gen backend.
 
     `HERMES_PET_IMAGE_PROVIDER=<name>` (e.g. `openrouter`) bypasses the normal
-    active/default provider resolution for pet generation only. Unknown values are
-    ignored so existing users are unaffected.
+    active/default provider resolution for pet generation only. Any registered
+    reference-capable provider qualifies, including user plugins. Unknown values
+    are ignored so existing users are unaffected.
     """
     forced = os.environ.get("HERMES_PET_IMAGE_PROVIDER", "").strip().lower()
-    return forced if forced in _REF_CAPABLE else None
+    if not forced:
+        return None
+    if forced in _REF_CAPABLE:
+        return forced
+    from agent.image_gen_registry import get_provider
+
+    provider = get_provider(forced)
+    if provider is not None and _supports_references(forced, provider):
+        return forced
+    return None
 
 
 class GenerationError(RuntimeError):
@@ -94,7 +162,7 @@ def resolve_provider(*, require_references: bool = True, prefer: str | None = No
     # otherwise we ignore it and fall through to the normal resolution.
     if prefer:
         chosen = get_provider(prefer)
-        if prefer in _REF_CAPABLE and chosen is not None and chosen.is_available():
+        if chosen is not None and _supports_references(prefer, chosen) and chosen.is_available():
             return SpriteProvider(name=prefer, provider=chosen, supports_references=True)
 
     # Configured / active provider first.
@@ -105,11 +173,11 @@ def resolve_provider(*, require_references: bool = True, prefer: str | None = No
         active = None
     if active is not None:
         name = getattr(active, "name", "")
-        if name in _REF_CAPABLE and active.is_available():
+        if _supports_references(name, active) and active.is_available():
             return SpriteProvider(name=name, provider=active, supports_references=True)
 
     # Any available reference-capable provider.
-    for name in _REF_CAPABLE:
+    for name in _ref_capable_names():
         provider = get_provider(name)
         if provider is not None and provider.is_available():
             return SpriteProvider(name=name, provider=provider, supports_references=True)
@@ -122,7 +190,8 @@ def resolve_provider(*, require_references: bool = True, prefer: str | None = No
     raise GenerationError(
         "Pet generation needs an image backend that supports reference images. "
         "Open `hermes tools` → Image Generation and configure Nous Portal, "
-        "OpenRouter, or OpenAI (gpt-image-2) with an API key."
+        "OpenRouter, or OpenAI (gpt-image-2) with an API key. Any image-gen "
+        "plugin that supports image-to-image works too."
     )
 
 
@@ -144,14 +213,14 @@ def list_sprite_providers() -> list[dict]:
         default_name = ""
 
     out: list[dict] = []
-    for name in _REF_CAPABLE:
+    for name in _ref_capable_names():
         provider = get_provider(name)
         if provider is None or not provider.is_available():
             continue
         out.append(
             {
                 "name": name,
-                "label": _PROVIDER_LABELS.get(name, name),
+                "label": _provider_label(name, provider),
                 "default": name == default_name,
             }
         )

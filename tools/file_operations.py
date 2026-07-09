@@ -33,6 +33,12 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, ClassVar
 from pathlib import Path
 from tools.binary_extensions import BINARY_EXTENSIONS
+from tools.file_type_registry import (
+    detect_and_summarize,
+    detect_format,
+    known_format_extensions,
+    max_structured_file_size,
+)
 
 from agent.file_safety import (
     build_write_denied_paths,
@@ -167,6 +173,7 @@ class ReadResult:
     dimensions: Optional[str] = None  # For images: "WIDTHxHEIGHT"
     error: Optional[str] = None
     similar_files: List[str] = field(default_factory=list)
+    format_type: Optional[str] = None  # Structured format name (e.g. "har", "json", "csv")
     
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v is not None and v != []}
@@ -894,6 +901,51 @@ class ShellFileOperations(FileOperations):
         ext = os.path.splitext(path)[1].lower()
         return ext in IMAGE_EXTENSIONS
     
+    def _try_structured_read(self, path: str, file_size: int) -> Optional[ReadResult]:
+        """Check if *path* matches a known structured format and produce a summary.
+
+        Returns a ``ReadResult`` with the summary as ``content`` and
+        ``format_type`` set to the format name, or ``None`` if no format
+        handler matched or the file is too large to process.
+        """
+        ext = detect_format(path)
+        if ext is None:
+            return None
+
+        if file_size > max_structured_file_size():
+            return ReadResult(
+                format_type=ext.lstrip("."),
+                file_size=file_size,
+                hint=(
+                    f"Structured {ext} file detected ({_format_size(file_size)}), "
+                    "but it is too large to summarise automatically. "
+                    "Use the terminal tool with an appropriate parser to inspect it."
+                ),
+                is_binary=False,
+            )
+
+        # Read the full file content via cat
+        cat_cmd = f"cat {self._escape_shell_arg(path)}"
+        cat_result = self._exec(cat_cmd)
+        if cat_result.exit_code != 0:
+            return None  # Fall through to normal read
+
+        raw_content = _strip_terminal_fence_leaks(cat_result.stdout)
+        summary = detect_and_summarize(path, raw_content, file_size)
+
+        if summary is None:
+            return None  # Handler didn't produce output; fall through
+
+        return ReadResult(
+            content=summary,
+            file_size=file_size,
+            format_type=ext.lstrip("."),
+            hint=(
+                f"Structured summary for {ext} file. "
+                f"Use read_file with offset/limit to view the raw content."
+            ),
+        )
+    
     def _add_line_numbers(self, content: str, start_line: int = 1) -> str:
         """Add line numbers to content in ``LINE_NUM|CONTENT`` format.
 
@@ -1116,6 +1168,11 @@ class ShellFileOperations(FileOperations):
                     "Use vision_analyze with this file path to inspect the image contents."
                 ),
             )
+        
+        # Check for structured formats (HAR, JSON, CSV, etc.) — produce a summary
+        structured = self._try_structured_read(path, file_size)
+        if structured is not None:
+            return structured
         
         # Read a sample to check for binary content
         sample_cmd = f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null"

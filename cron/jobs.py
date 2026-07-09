@@ -1452,7 +1452,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                             "Job '%s' (%s) could not compute next_run_at; "
                             "leaving enabled and marking state=error so the "
                             "job is not silently disabled.",
-                            job.get("name", job["id"]),
+                            job.get("name", job.get("id", "?")),
                             kind,
                         )
                     else:
@@ -1506,7 +1506,7 @@ def claim_dispatch(job_id: str) -> bool:
                 save_jobs(jobs)
                 logger.info(
                     "Job '%s': dispatch limit reached (%d/%d) — removing",
-                    job.get("name", job["id"]),
+                    job.get("name", job.get("id", "?")),
                     completed,
                     times,
                 )
@@ -1516,7 +1516,7 @@ def claim_dispatch(job_id: str) -> bool:
             save_jobs(jobs)
             logger.debug(
                 "Job '%s': claimed dispatch %d/%d",
-                job.get("name", job["id"]),
+                job.get("name", job.get("id", "?")),
                 repeat["completed"],
                 times,
             )
@@ -1653,9 +1653,25 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     """Inner implementation of get_due_jobs(); must be called with _jobs_lock held."""
     now = _hermes_now()
     raw_jobs = load_jobs()
+    needs_save = False
+
+    # Repair id-less records BEFORE anything keys off ``job["id"]``. A direct
+    # jobs.json edit that bypassed add_job() can leave a record without an "id"
+    # (older writers used "job_id"). Every downstream site — the logging
+    # helpers and the ``for rj in raw_jobs: if rj["id"] == job["id"]``
+    # persistence loops — indexes job["id"] eagerly, so a single malformed
+    # record raised KeyError mid-tick, aborting the whole scan before
+    # save_jobs() ran. That froze the entire profile's scheduler in a
+    # per-minute fast-forward loop (healthy jobs recomputed in memory, then
+    # discarded when the exception unwound). Recover the id from the drifted
+    # "job_id" key when present, else synthesize one, and persist.
+    for rj in raw_jobs:
+        if not rj.get("id"):
+            rj["id"] = rj.pop("job_id", None) or uuid.uuid4().hex[:12]
+            needs_save = True
+
     jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
     due = []
-    needs_save = False
     # Resolve the one-shot running-claim stale-recovery TTL once per scan
     # (derived from HERMES_CRON_TIMEOUT). See _oneshot_run_claim_ttl_seconds.
     _run_claim_ttl = _oneshot_run_claim_ttl_seconds()
@@ -1716,7 +1732,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             next_run = recovered_next
             logger.info(
                 "Job '%s' had no next_run_at; recovering %s run at %s",
-                job.get("name", job["id"]),
+                job.get("name", job.get("id", "?")),
                 recovery_kind,
                 recovered_next,
             )
@@ -1757,7 +1773,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 logger.info(
                     "Job '%s' next_run_at offset changed (%s -> %s). "
                     "Recomputing cron run to preserve local wall-clock intent: %s",
-                    job.get("name", job["id"]),
+                    job.get("name", job.get("id", "?")),
                     raw_next_run_dt.utcoffset(),
                     now.utcoffset(),
                     new_next,
@@ -1785,7 +1801,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                         "Job '%s' missed its scheduled time (%s, grace=%ds). "
                         "Running now; next run provisionally set to: %s "
                         "(re-anchored on completion)",
-                        job.get("name", job["id"]),
+                        job.get("name", job.get("id", "?")),
                         next_run,
                         grace,
                         new_next,
@@ -1819,7 +1835,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                         logger.info(
                             "Job '%s': one-shot dispatch limit reached (%d/%d) "
                             "— removing stale due entry",
-                            job.get("name", job["id"]),
+                            job.get("name", job.get("id", "?")),
                             completed,
                             times,
                         )

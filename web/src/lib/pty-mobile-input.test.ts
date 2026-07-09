@@ -67,4 +67,25 @@ describe("updatePtyInputLine", () => {
     expect(updatePtyInputLine("abc", "\x7f")).toBe("ab");
     expect(updatePtyInputLine("abc", "\r")).toBe("");
   });
+
+  it("resets tracking on escape sequences instead of appending their payload", () => {
+    // Left-arrow arrives as one CSI chunk; the tracker cannot model cursor
+    // moves, so it must disarm rather than record "hello[D".
+    expect(updatePtyInputLine("hello", "\x1b[D")).toBe("");
+    expect(updatePtyInputLine("hello", "\x1b[H")).toBe("");
+    expect(updatePtyInputLine("hello", "\x1bOP")).toBe("");
+  });
+});
+
+describe("normalizePtyMobileInput after cursor movement", () => {
+  it("does not emit a replacement against a tracker reset by arrow keys", () => {
+    // Simulate: type "hello my name is kain", press left-arrow, then a
+    // Gboard suggestion arrives. The tracker reset means no replacement
+    // heuristic can fire against a stale line snapshot.
+    const afterArrow = updatePtyInputLine("hello my name is kain", "\x1b[D");
+    const result = normalizePtyMobileInput("Kain", afterArrow, true);
+
+    expect(result.normalized).toBe(false);
+    expect(result.data).toBe("Kain");
+  });
 });

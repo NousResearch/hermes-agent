@@ -1,0 +1,96 @@
+{
+  "name": "vscode-remote-use",
+  "displayName": "vscode-remote-use",
+  "description": "Hermes VS Code media primitive + breakout bridge",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "main": "./out/extension.js",
+  "activationEvents": ["onCommand:remoteUse.mediaWindow"],
+  "contributes": {
+    "commands": [
+      {
+        "command": "remoteUse.capture",
+        "title": "Remote Use: Capture Terminal Output"
+      },
+      {
+        "command": "remoteUse.runTask",
+        "title": "Remote Use: Run Hermes Task"
+      },
+      {
+        "command": "remoteUse.chat",
+        "title": "Remote Use: Open Hermes Chat"
+      },
+      {
+        "command": "remoteUse.mediaWindow",
+        "title": "Remote Use: VSCode VLC FFmpeg Media Player"
+      },
+      {
+        "command": "remoteUse.mediaCoevolve",
+        "title": "Remote Use: Ollama FFmpeg Coevolve"
+      },
+      {
+        "command": "remoteUse.reachyPanel",
+        "title": "Remote Use: Reachy Primitive Panel"
+      },
+      {
+        "command": "remoteUse.exportViewport",
+        "title": "Remote Use: Export Media Viewport HTML"
+      },
+      {
+        "command": "remoteUse.agenticHtmlViewport",
+        "title": "Remote Use: Open Agentic HTML Viewport"
+      },
+      {
+        "command": "remoteUse.daoBlueprint",
+        "title": "Remote Use: Open DAO Blueprint"
+      },
+      {
+        "command": "remoteUse.daoSurface",
+        "title": "Remote Use: Open DAO Surface"
+      },
+      {
+        "command": "remoteUse.commandPrompt",
+        "title": "Remote Use: Open commandprompt.ai Terminal"
+      },
+      {
+        "command": "remoteUse.homeOS",
+        "title": "Remote Use: Open home:// Surface"
+      }
+    ],
+    "configuration": {
+      "title": "Remote Use",
+      "properties": {
+        "remoteUse.hermesRepoPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the Hermes repository root. Leave empty to disable Hermes-dependent commands."
+        },
+        "remoteUse.vlcPath": {
+          "type": "string",
+          "default": "",
+          "format": "file",
+          "description": "Absolute path to VLC. Leave empty for auto-detect."
+        },
+        "remoteUse.daoSurfacePath": {
+          "type": "string",
+          "default": "",
+          "format": "file",
+          "description": "Absolute path to DAO surface HTML. Leave empty for default."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^5.6.0"
+  }
+}

@@ -1,0 +1,27 @@
+name: ha_conversation-platform
+label: HA Conversation Agent
+kind: platform
+version: 1.0.0
+description: >
+  Home Assistant conversation-agent gateway adapter (Wyoming `handle`
+  protocol). Registers Hermes as a conversation agent HA's Assist
+  pipeline can call: HA's voice hardware does wake word, STT, and TTS;
+  each utterance arrives over a fresh TCP connection and is answered
+  with a single spoken reply from the shared "home" gateway session.
+
+  Configuration lives in config.yaml under a top-level
+  `ha_conversation:` section (bind_host, port, ack timing, announce
+  mode) — no environment variables required. HASS_TOKEN/HASS_URL
+  (shared with the `homeassistant` platform) are optional and only
+  unlock home-control intents (turning on lights, etc.) inside the
+  conversation turn.
+author: Vincent Colombo
+optional_env:
+  - name: HASS_TOKEN
+    description: "Home Assistant Long-Lived Access Token (enables home-control intents)"
+    prompt: "Home Assistant Long-Lived Access Token (optional)"
+    password: true
+  - name: HASS_URL
+    description: "Home Assistant base URL (default: http://homeassistant.local:8123)"
+    prompt: "Home Assistant URL (optional)"
+    password: false

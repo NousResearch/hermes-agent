@@ -2461,6 +2461,18 @@ DEFAULT_CONFIG = {
         "allowed_rooms": "",           # If set, bot ONLY responds in these room IDs (whitelist)
     },
 
+    # Home Assistant Conversation Agent (Wyoming handle server)
+    "ha_conversation": {
+        # Wyoming `handle` server: Home Assistant registers Hermes as a
+        # conversation agent. HA keeps wake/STT/TTS; Hermes is the brain.
+        "bind_host": "127.0.0.1",  # set a LAN/tailnet address explicitly to expose
+        "port": 10600,             # clear of Wyoming defaults (10700/10400/10300/10200)
+        "ack_after_seconds": 8.0,  # slow turns: ack, then finish in background
+        "announce_mode": "off",    # off | last_active | default_device | broadcast
+        "announce_entity": "",     # assist_satellite.*, required for default_device
+        "max_transcript_chars": 2000,
+    },
+
     # Approval mode for dangerous commands:
     #   manual — always prompt the user (default)
     #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk

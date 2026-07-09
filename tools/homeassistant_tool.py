@@ -23,17 +23,21 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-# Kept for backward compatibility (e.g. test monkeypatching); prefer _get_config().
+# Kept for backward compatibility (e.g. test monkeypatching); prefer get_ha_config().
 _HASS_URL: str = ""
 _HASS_TOKEN: str = ""
 
 
-def _get_config():
+def get_ha_config():
     """Return (hass_url, hass_token) from env vars at call time."""
     return (
         (_HASS_URL or os.getenv("HASS_URL", "http://homeassistant.local:8123")).rstrip("/"),
         _HASS_TOKEN or os.getenv("HASS_TOKEN", ""),
     )
+
+
+# Alias for backward compatibility
+_get_config = get_ha_config
 
 # Regex for valid HA entity_id format (e.g. "light.living_room", "sensor.temperature_1")
 _ENTITY_ID_RE = re.compile(r"^[a-z_][a-z0-9_]*\.[a-z0-9_]+$")
@@ -63,7 +67,7 @@ _BLOCKED_DOMAINS = frozenset({
 def _get_headers(token: str = "") -> Dict[str, str]:
     """Return authorization headers for HA REST API."""
     if not token:
-        _, token = _get_config()
+        _, token = get_ha_config()
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -109,7 +113,7 @@ async def _async_list_entities(
     """Fetch entity states from HA and optionally filter by domain/area."""
     import aiohttp
 
-    hass_url, hass_token = _get_config()
+    hass_url, hass_token = get_ha_config()
     url = f"{hass_url}/api/states"
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=_get_headers(hass_token), timeout=aiohttp.ClientTimeout(total=15)) as resp:
@@ -123,7 +127,7 @@ async def _async_get_state(entity_id: str) -> Dict[str, Any]:
     """Fetch detailed state of a single entity."""
     import aiohttp
 
-    hass_url, hass_token = _get_config()
+    hass_url, hass_token = get_ha_config()
     url = f"{hass_url}/api/states/{entity_id}"
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=_get_headers(hass_token), timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -174,7 +178,7 @@ def _parse_service_response(
     }
 
 
-async def _async_call_service(
+async def async_call_service(
     domain: str,
     service: str,
     entity_id: Optional[str] = None,
@@ -183,7 +187,7 @@ async def _async_call_service(
     """Call a Home Assistant service."""
     import aiohttp
 
-    hass_url, hass_token = _get_config()
+    hass_url, hass_token = get_ha_config()
     url = f"{hass_url}/api/services/{domain}/{service}"
     payload = _build_service_payload(entity_id, data)
 
@@ -198,6 +202,10 @@ async def _async_call_service(
             result = await resp.json()
 
     return _parse_service_response(domain, service, result)
+
+
+# Alias for backward compatibility
+_async_call_service = async_call_service
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +289,7 @@ def _handle_call_service(args: dict, **kw) -> str:
             return tool_error(f"Invalid JSON string in 'data' parameter: {e}")
 
     try:
-        result = _run_async(_async_call_service(domain, service, entity_id, data))
+        result = _run_async(async_call_service(domain, service, entity_id, data))
         return json.dumps({"result": result})
     except Exception as e:
         logger.error("ha_call_service error: %s", e)
@@ -296,7 +304,7 @@ async def _async_list_services(domain: Optional[str] = None) -> Dict[str, Any]:
     """Fetch available services from HA and optionally filter by domain."""
     import aiohttp
 
-    hass_url, hass_token = _get_config()
+    hass_url, hass_token = get_ha_config()
     url = f"{hass_url}/api/services"
     headers = {"Authorization": f"Bearer {hass_token}", "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:

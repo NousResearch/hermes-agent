@@ -516,3 +516,19 @@ class TestRegistration:
         invalidate_check_fn_cache()
         defs = registry.get_definitions({"ha_list_entities", "ha_get_state", "ha_call_service"})
         assert len(defs) == 3
+
+
+# ---------------------------------------------------------------------------
+# Public interface exports
+# ---------------------------------------------------------------------------
+
+
+def test_public_service_helpers_exposed():
+    """The ha_conversation adapter imports these public names; the old
+    underscore names must remain as aliases for existing callers."""
+    from tools import homeassistant_tool as mod
+
+    assert callable(mod.get_ha_config)
+    assert callable(mod.async_call_service)
+    assert mod._get_config is mod.get_ha_config
+    assert mod._async_call_service is mod.async_call_service

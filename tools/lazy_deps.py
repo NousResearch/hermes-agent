@@ -203,6 +203,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # Wyoming voice-satellite platform ("Hey Hermes" hardware satellites).
     # wyoming is a zero-dependency MIT package (event framing only).
     "platform.voice_satellite": ("wyoming==1.10.0",),
+    # Home Assistant Conversation Agent (Wyoming handle server)
+    "platform.ha_conversation": ("wyoming==1.10.0",),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),

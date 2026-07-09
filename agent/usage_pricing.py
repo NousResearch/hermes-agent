@@ -121,7 +121,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_write_cost_per_million=Decimal("6.25"),
         source="official_docs_snapshot",
         source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
-        pricing_version="openai-gpt-5.6-preview-2026-07",
+        pricing_version="openai-gpt-5.6-2026-07",
     ),
     (
         "openai",
@@ -133,7 +133,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_write_cost_per_million=Decimal("3.125"),
         source="official_docs_snapshot",
         source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
-        pricing_version="openai-gpt-5.6-preview-2026-07",
+        pricing_version="openai-gpt-5.6-2026-07",
     ),
     (
         "openai",
@@ -145,7 +145,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_write_cost_per_million=Decimal("1.25"),
         source="official_docs_snapshot",
         source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
-        pricing_version="openai-gpt-5.6-preview-2026-07",
+        pricing_version="openai-gpt-5.6-2026-07",
     ),
     # ── Anthropic Claude 4.8 ─────────────────────────────────────────────
     # Same $5/$25 base pricing as 4.6/4.7.  Fast-mode variant is a separate
@@ -646,7 +646,11 @@ def resolve_billing_route(
         return BillingRoute(provider="nous", model=model, base_url=base_url or _NOUS_DEFAULT_BASE_URL, billing_mode="official_models_api")
     if provider_name == "anthropic":
         return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
-    if provider_name == "openai":
+    # "openai-api" is the picker/registry slug for direct api.openai.com; it
+    # bills identically to bare "openai", so normalize it here — otherwise the
+    # ("openai", <model>) _OFFICIAL_DOCS_PRICING keys are unreachable from the
+    # openai-api provider path.
+    if provider_name in {"openai", "openai-api"}:
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"minimax", "minimax-cn"}:
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")

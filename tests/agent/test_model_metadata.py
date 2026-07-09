@@ -142,6 +142,32 @@ class TestEstimateRequestTokensRough:
             estimate_request_tokens_rough(messages, system_prompt="x" * 8, tools=tools)
             assert dumps.call_count == 1
 
+    def test_tools_cache_is_bounded(self):
+        # A long-lived process builds many transient tool lists; the cache must
+        # not grow without bound. Feed more distinct lists than the cap and
+        # confirm the cache never exceeds it.
+        import agent.model_metadata as mm
+
+        mm._TOOLS_TOKENS_CACHE.clear()
+        cap = mm._TOOLS_TOKENS_CACHE_MAX
+        # Keep references so ids are not recycled mid-loop, forcing distinct keys.
+        held = []
+        for i in range(cap + 50):
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": f"tool_{i}",
+                        "description": "d",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ]
+            held.append(tools)
+            mm._estimate_tools_tokens_rough(tools)
+            assert len(mm._TOOLS_TOKENS_CACHE) <= cap
+        assert len(mm._TOOLS_TOKENS_CACHE) == cap
+
 
 # =========================================================================
 # Default context lengths

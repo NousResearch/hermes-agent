@@ -2445,7 +2445,13 @@ def estimate_request_tokens_rough(
 
 # NOTE: tool schemas can be large. Avoid repeated `str(tools)` conversions,
 # which are CPU-heavy and can stall GUI event loops under GIL pressure.
+#
+# Keyed by ``id(tools)``. A long-lived gateway/desktop backend builds many
+# transient tool lists over its lifetime, so the cache is bounded and evicts
+# oldest-first (insertion-ordered dict) once it exceeds the cap. The cap is
+# generous relative to how rarely toolsets are rebuilt within a process.
 _TOOLS_TOKENS_CACHE: dict[int, Tuple[int, str, str, int]] = {}
+_TOOLS_TOKENS_CACHE_MAX = 256
 
 
 def _tool_name_for_cache(tool: Any) -> str:
@@ -2505,5 +2511,10 @@ def _estimate_tools_tokens_rough(tools: List[Dict[str, Any]]) -> int:
             total_chars += len(str(params))
 
     tokens = (total_chars + 3) // 4
+    # Bound the cache: drop the oldest entry when the cap is exceeded so a
+    # long-running process can't accumulate an unbounded number of stale
+    # ``id(tools)`` entries (id values are recycled after GC anyway).
+    if len(_TOOLS_TOKENS_CACHE) >= _TOOLS_TOKENS_CACHE_MAX:
+        _TOOLS_TOKENS_CACHE.pop(next(iter(_TOOLS_TOKENS_CACHE)), None)
     _TOOLS_TOKENS_CACHE[key] = (n, first, last, tokens)
     return tokens

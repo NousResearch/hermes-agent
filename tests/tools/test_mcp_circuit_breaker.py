@@ -267,6 +267,44 @@ def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_pat
         _cleanup(mcp_tool, "srv")
 
 
+def test_transport_exception_signals_reconnect_on_breaker_trip(monkeypatch, tmp_path):
+    """When a transport exception trips the breaker, the handler must
+    proactively signal reconnect — even when the session object still exists.
+
+    Without this, a broken pipe or stale connection causes every half-open
+    probe after cooldown to hit the same dead transport, re-trip the breaker,
+    and leave the server permanently unreachable for the session.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    async def _call_tool_transport_error(*a, **kw):
+        raise ConnectionError("broken pipe")
+
+    server = _install_stub_server(mcp_tool, "srv", _call_tool_transport_error)
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        reconnect_calls_before = server._reconnect_event.set_calls
+        handler = _make_tool_handler("srv", "tool1", 10.0)
+
+        # Call enough times to trip the breaker (threshold=3). Each call hits
+        # the transport exception path, which bumps the count and — on the
+        # trip — signals reconnect.
+        for _ in range(mcp_tool._CIRCUIT_BREAKER_THRESHOLD):
+            handler({})
+
+        # The reconnect signal must have been delivered when the breaker tripped.
+        reconnect_calls_after = server._reconnect_event.set_calls
+        assert reconnect_calls_after > reconnect_calls_before, (
+            "breaker trip from transport exception must signal reconnect"
+        )
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
 def test_half_open_dead_session_recovers_after_reconnect(monkeypatch, tmp_path):
     """Once the transport comes back (session repopulated + breaker reset by
     the run loop), the next call must go straight through — proving the wedge

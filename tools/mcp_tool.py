@@ -4029,6 +4029,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 return recovered
 
             _bump_server_error(server_name)
+
+            # If the breaker just tripped, proactively signal reconnect. The
+            # session object may still exist while the underlying transport is
+            # dead (stale HTTP, broken pipe). Without this, every half-open
+            # probe after cooldown hits the same dead transport, re-trips the
+            # breaker, and the server stays unreachable for the session.
+            if _server_error_counts.get(server_name, 0) >= _CIRCUIT_BREAKER_THRESHOLD:
+                _signal_reconnect(server)
+
             logger.error(
                 "MCP tool %s/%s call failed: %s",
                 server_name, tool_name, exc,

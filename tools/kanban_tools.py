@@ -688,6 +688,40 @@ def _handle_complete(args: dict, **kw) -> str:
         return tool_error(
             f"metadata must be an object/dict, got {type(metadata).__name__}"
         )
+    if metadata is not None and "deviations" in metadata:
+        deviations = metadata.get("deviations")
+        if isinstance(deviations, str):
+            if deviations.strip().lower() != "none":
+                return tool_error(
+                    "metadata.deviations must be either the string 'none' or "
+                    "a list of objects describing plan/spec departures"
+                )
+            metadata["deviations"] = "none"
+        elif isinstance(deviations, (list, tuple)):
+            normalized = []
+            for idx, item in enumerate(deviations):
+                if not isinstance(item, dict):
+                    return tool_error(
+                        "metadata.deviations entries must be objects; "
+                        f"entry {idx} is {type(item).__name__}"
+                    )
+                departure = (
+                    item.get("departure")
+                    or item.get("what")
+                    or item.get("deviation")
+                )
+                why = item.get("why") or item.get("reason")
+                if not str(departure or "").strip() or not str(why or "").strip():
+                    return tool_error(
+                        "each metadata.deviations entry must include a non-empty "
+                        "departure/what/deviation field and a non-empty why/reason field"
+                    )
+                normalized.append(item)
+            metadata["deviations"] = normalized
+        else:
+            return tool_error(
+                "metadata.deviations must be either the string 'none' or a list"
+            )
     metadata = _stamp_worker_session_metadata(tid, metadata)
     board = args.get("board")
     try:
@@ -1309,7 +1343,10 @@ KANBAN_COMPLETE_SCHEMA = {
         "downstream workers and humans. Prefer ``summary`` for a "
         "human-readable 1-3 sentence description of what you did; put "
         "machine-readable facts in ``metadata`` (changed_files, "
-        "tests_run, decisions, findings, etc). At least one of "
+        "tests_run, decisions, findings, etc). When the work departed "
+        "from the requested plan/spec, include ``metadata.deviations`` "
+        "as either the explicit string ``'none'`` or a list of objects "
+        "with at least ``departure`` and ``why`` fields. At least one of "
         "``summary`` or ``result`` is required. If you created new "
         "tasks via ``kanban_create`` during this run, list their ids "
         "in ``created_cards`` — the kernel verifies them so phantom "
@@ -1341,8 +1378,9 @@ KANBAN_COMPLETE_SCHEMA = {
                 "description": (
                     "Free-form dict of structured facts about this "
                     "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
-                    "\"findings\": [...]}. Surfaced to downstream "
-                    "workers alongside ``summary``."
+                    "\"findings\": [...], \"deviations\": \"none\" or "
+                    "[{\"departure\": \"...\", \"why\": \"...\"}]}. "
+                    "Surfaced to downstream workers alongside ``summary``."
                 ),
             },
             "result": {

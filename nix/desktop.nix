@@ -28,7 +28,10 @@ let
 
   electronHeaders = pkgs.fetchurl {
     url = "https://artifacts.electronjs.org/headers/dist/v${electron.version}/node-v${electron.version}-headers.tar.gz";
-    sha256 = "sha256-zi/QMwRZ0+FwE9XTE+DiSIeJXAwxmLKEaBWD5W3pMOI=";
+    # Pinned to the current nixpkgs electron (41.9.1). This hash tracks
+    # electron.version and must be bumped alongside every nixpkgs electron
+    # bump — see #61443.
+    sha256 = "sha256-zOl8rx6woWh7aeRUOlkTMviKc/EAQQX6nr/MxAx1ZPI=";
   };
 
   # node-pty ships no Electron-tagged prebuild we can trust to match this

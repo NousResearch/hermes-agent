@@ -23,6 +23,7 @@ from __future__ import annotations
 import io
 import re
 import sys
+import types
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
@@ -139,6 +140,40 @@ def test_discovery_skipped_for_builtins(argv):
 def test_discovery_runs_for_unknown_positional(argv):
     with patch.object(sys, "argv", argv):
         assert _plugin_cli_discovery_needed() is True
+
+
+def test_mcp_serve_skips_agent_runtime_discovery(monkeypatch):
+    """`hermes mcp serve` hosts Hermes' MCP server; it should not also
+    discover external MCP clients/tools before stdio startup."""
+    from hermes_cli import main as _main
+
+    calls = []
+    monkeypatch.setattr(_main, "_apply_safe_mode", lambda _args: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: calls.append("plugins")),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=lambda: calls.append("mcp")),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(register_from_config=lambda *_a, **_k: calls.append("hooks")),
+    )
+
+    args = types.SimpleNamespace(
+        command="mcp",
+        mcp_action="serve",
+        accept_hooks=False,
+        tui=False,
+    )
+    _main._prepare_agent_startup(args)
+
+    assert calls == []
 
 
 # ── _BUILTIN_SUBCOMMANDS ↔ argparse registration parity ────────────────────

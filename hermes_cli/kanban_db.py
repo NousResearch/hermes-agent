@@ -90,6 +90,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
+from hermes_cli.worktree_sync import _resolve_worktree_base
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
@@ -5746,19 +5747,63 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
             return
     target.parent.mkdir(parents=True, exist_ok=True)
     if _git_branch_exists(repo_root, branch_name):
+        # Resume an existing branch: check it out as-is, no new base to pick.
         cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(
+                f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
+            )
+        return
+
+    # New-branch case: branch from the freshly-fetched remote tip by default so
+    # a dispatched card starts current with the project, not the standalone
+    # clone's (possibly stale) local HEAD. Branching from a stale HEAD roots the
+    # branch on an old merge base, which surfaces later as textual merge
+    # conflicts against a moved origin/main. This mirrors the interactive
+    # ``hermes -w`` path (cli._setup_worktree). Opt out with worktree_sync:
+    # false in config.
+    try:
+        from hermes_cli.config import load_config
+        sync_base = bool(load_config().get("worktree_sync", True))
+    except Exception:
+        sync_base = True
+    if sync_base:
+        try:
+            base_ref, _label = _resolve_worktree_base(str(repo_root))
+        except Exception:
+            base_ref = "HEAD"
     else:
-        cmd = [
-            "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name,
-            str(target), "HEAD",
-        ]
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
+        base_ref = "HEAD"
+
+    def _worktree_add(base: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", str(repo_root), "worktree", "add", "-b", branch_name,
+             str(target), base],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+
+    result = _worktree_add(base_ref)
+    if result.returncode != 0 and base_ref != "HEAD":
+        # Fail-soft: a partial fetch can leave the resolved remote ref unusable.
+        # Retry from local HEAD so worktree creation never hard-fails on a sync
+        # hiccup — same fallback the interactive _setup_worktree uses.
+        stderr = (result.stderr or result.stdout or "").strip()
+        _log.warning(
+            "worktree add for %s from %s failed (%s); retrying from local HEAD",
+            target, base_ref, stderr,
+        )
+        result = _worktree_add("HEAD")
     if result.returncode != 0:
         stderr = (result.stderr or result.stdout or "").strip()
         raise RuntimeError(

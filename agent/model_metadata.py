@@ -231,7 +231,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # This hardcoded value is only reached when every probe misses.
     # GPT-5.6 series (Sol/Terra/Luna, GA 2026-07-09) — 1.05M on the direct
     # OpenAI API (same as gpt-5.5). Codex OAuth caps these at 272K.
-    # More-specific keys precede "gpt-5.5" for longest-substring matching.
+    # (Lookups length-sort keys at match time, so dict order is cosmetic.)
     "gpt-5.6-luna": 1050000,
     "gpt-5.6-terra": 1050000,
     "gpt-5.6-sol": 1050000,

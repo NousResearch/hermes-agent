@@ -41,8 +41,11 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("anthropic/claude-haiku-4.5",             ""),
     # OpenAI
     ("openai/gpt-5.6-sol",                     ""),
+    ("openai/gpt-5.6-sol-pro",                 ""),
     ("openai/gpt-5.6-terra",                   ""),
+    ("openai/gpt-5.6-terra-pro",               ""),
     ("openai/gpt-5.6-luna",                    ""),
+    ("openai/gpt-5.6-luna-pro",                ""),
     ("openai/gpt-5.5",                         ""),
     ("openai/gpt-5.5-pro",                     ""),
     ("openai/gpt-5.4-mini",                    ""),
@@ -189,8 +192,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "anthropic/claude-haiku-4.5",
         # OpenAI
         "openai/gpt-5.6-sol",
+        "openai/gpt-5.6-sol-pro",
         "openai/gpt-5.6-terra",
+        "openai/gpt-5.6-terra-pro",
         "openai/gpt-5.6-luna",
+        "openai/gpt-5.6-luna-pro",
         "openai/gpt-5.5",
         "openai/gpt-5.5-pro",
         "openai/gpt-5.4-mini",

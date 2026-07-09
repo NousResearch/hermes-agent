@@ -574,6 +574,24 @@ def _build_markdown_post_payload(content: str) -> str:
     )
 
 
+def _build_interactive_card_payload(content: str) -> str:
+    elements: List[Dict[str, str]] = []
+    for row in _build_markdown_post_rows(content):
+        segment = "".join(str(item.get("text", "")) for item in row)
+        elements.append({"tag": "markdown", "content": segment})
+    if not elements:
+        elements.append({"tag": "markdown", "content": ""})
+    return json.dumps(
+        {
+            "schema": "2.0",
+            "body": {
+                "elements": elements,
+            },
+        },
+        ensure_ascii=False,
+    )
+
+
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     """Build Feishu post rows while isolating fenced code blocks.
 
@@ -1911,9 +1929,9 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type != "interactive" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                    logger.warning("[Feishu] Interactive card rejected by API; falling back to plain text")
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -1922,11 +1940,11 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 if (
-                    msg_type == "post"
+                    msg_type == "interactive"
                     and not self._response_succeeded(response)
                     and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
                 ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
+                    logger.warning("[Feishu] Interactive card rejected by API response; falling back to plain text")
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -1960,8 +1978,8 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await self._run_blocking(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
-            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
-                logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
+            if not result.success and msg_type == "interactive" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
+                logger.warning("[Feishu] Invalid interactive card update rejected by API; falling back to plain text")
                 fallback_body = self._build_update_message_body(
                     msg_type="text",
                     content=json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
@@ -4522,16 +4540,7 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
-        text_payload = {"text": content}
-        return "text", json.dumps(text_payload, ensure_ascii=False)
+        return "interactive", _build_interactive_card_payload(content)
 
     async def _send_uploaded_file_message(
         self,
@@ -4819,7 +4828,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 return response
             except Exception as exc:
                 last_error = exc
-                if msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
+                if msg_type in {"post", "interactive"} and _POST_CONTENT_INVALID_RE.search(str(exc)):
                     raise
                 if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
                     raise

@@ -2314,7 +2314,11 @@
             event.preventDefault();
             setIsDragOver(false);
             const type = (event.dataTransfer && event.dataTransfer.getData("text/plain")) || window.__HERMES_DRAG_NODE_TYPE || "";
-            if (type) addWorkflowCellAtPosition(type);
+            if (type === "manual" || type === "schedule") {
+              addTriggerOfType(type);
+            } else if (type) {
+              addWorkflowCellAtPosition(type);
+            }
             delete window.__HERMES_DRAG_NODE_TYPE;
           },
         },

@@ -184,6 +184,8 @@ def test_workflow_dashboard_supports_drag_from_palette_to_canvas() -> None:
     assert "onDragOver" in text
     assert "onDrop" in text
     assert "HERMES_DRAG_NODE_TYPE" in text
+    assert 'if (type === "manual" || type === "schedule")' in text
+    assert "addTriggerOfType(type)" in text
     assert "function addWorkflowCellAtPosition" in text
     assert "hermes-workflows-canvas-drop-target" in text
 

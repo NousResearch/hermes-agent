@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -10,6 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from gateway.config import Platform
+from gateway.platforms.base import MessageEvent, MessageType
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
@@ -32,6 +34,113 @@ def _runner(adapter=None):
     runner._thread_metadata_for_source = lambda *_args, **_kwargs: {}
     runner._reply_anchor_for_event = lambda _event: None
     return runner
+
+
+@pytest.mark.asyncio
+async def test_pending_voice_interrupt_reuses_transcript_and_echo():
+    adapter = SimpleNamespace(send=AsyncMock())
+    runner = _runner(adapter)
+    source = _source()
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        media_urls=["/tmp/telegram-voice.ogg"],
+        media_types=["audio/ogg"],
+    )
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={"success": True, "transcript": "hello once", "provider": "mock"},
+    ) as mock_transcribe:
+        interrupt_text, interrupt_transcripts = await runner._transcribe_pending_audio_event_once(
+            event,
+            event.text,
+        )
+        await runner._echo_pending_stt_transcripts_once(
+            event,
+            adapter,
+            source,
+            interrupt_transcripts,
+        )
+
+        drain_text, drain_transcripts = await runner._transcribe_pending_audio_event_once(
+            event,
+            event.text,
+        )
+        await runner._echo_pending_stt_transcripts_once(
+            event,
+            adapter,
+            source,
+            drain_transcripts,
+        )
+
+    assert interrupt_text == '"hello once"'
+    assert drain_text == interrupt_text
+    assert drain_transcripts == interrupt_transcripts == ["hello once"]
+    mock_transcribe.assert_called_once_with("/tmp/telegram-voice.ogg")
+    adapter.send.assert_awaited_once_with(
+        "12345",
+        '🎙️ "hello once"',
+        metadata=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_busy_voice_interrupt_transcribes_before_pending_drain(monkeypatch):
+    adapter = SimpleNamespace(send=AsyncMock(), _pending_messages={})
+    runner = _runner(adapter)
+    runner._is_user_authorized = lambda _source: True
+    runner._draining = False
+    runner._running_agents = {}
+    runner._busy_input_mode = "interrupt"
+    runner._busy_text_mode = "interrupt"
+    runner._busy_ack_ts = {}
+    runner._queued_events = {}
+    runner._agent_has_active_subagents = lambda _agent: False
+    runner._session_has_compression_in_flight = lambda _session_key: False
+    session_key = "telegram:dm:12345"
+    agent = MagicMock()
+    runner._running_agents[session_key] = agent
+    source = _source()
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        media_urls=["/tmp/telegram-busy-voice.ogg"],
+        media_types=["audio/ogg"],
+    )
+    monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
+
+    with (
+        patch("tools.approval.has_blocking_approval", return_value=False),
+        patch(
+            "tools.transcription_tools.transcribe_audio",
+            return_value={"success": True, "transcript": "interrupt me", "provider": "mock"},
+        ) as mock_transcribe,
+    ):
+        handled = await runner._handle_active_session_busy_message(event, session_key)
+        drain_text, drain_transcripts = await runner._transcribe_pending_audio_event_once(
+            adapter._pending_messages[session_key],
+            event.text,
+        )
+        await runner._echo_pending_stt_transcripts_once(
+            adapter._pending_messages[session_key],
+            adapter,
+            source,
+            drain_transcripts,
+        )
+
+    assert handled is True
+    agent.interrupt.assert_called_once_with('"interrupt me"')
+    assert adapter._pending_messages[session_key] is event
+    assert drain_text == '"interrupt me"'
+    mock_transcribe.assert_called_once_with("/tmp/telegram-busy-voice.ogg")
+    adapter.send.assert_awaited_once_with(
+        "12345",
+        '🎙️ "interrupt me"',
+        metadata={},
+    )
 
 
 def test_telegram_audio_size_gate_rejects_oversized_media_before_download():

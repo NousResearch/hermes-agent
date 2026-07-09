@@ -28,3 +28,11 @@ class TestSlackFullManifest:
         assert "assistant:write" in manifest["oauth_config"]["scopes"]["bot"]
         bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
         assert "assistant_thread_started" in bot_events
+
+    def test_member_joined_channel_event_subscribed(self):
+        """The bot needs `member_joined_channel` events to auto-onboard when
+        it is invited to a new channel."""
+        manifest = _build_full_manifest("Hermes", "Your Hermes agent on Slack")
+
+        bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
+        assert "member_joined_channel" in bot_events

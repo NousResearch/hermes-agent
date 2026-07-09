@@ -914,6 +914,24 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_assistant_thread_context_changed(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
 
+            # When the bot is added to a channel, kick off an onboarding
+            # message that lets the user bind a skill to the channel via
+            # `channel_skill_bindings`. Ignore other users joining.
+            @self._app.event("member_joined_channel")
+            async def handle_member_joined_channel(event, say):
+                try:
+                    joined_user = event.get("user")
+                    channel_id = event.get("channel")
+                    if not joined_user or not channel_id:
+                        return
+                    if not self._bot_user_id or joined_user != self._bot_user_id:
+                        return
+                    await self._handle_bot_added_to_channel(channel_id)
+                except Exception as e:  # pragma: no cover - defensive
+                    logger.warning(
+                        "[Slack] member_joined_channel handler failed: %s", e
+                    )
+
             # Register slash command handler(s)
             #
             # Every gateway command from COMMAND_REGISTRY is a native Slack
@@ -2044,6 +2062,114 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return {"name": chat_id, "type": "unknown"}
 
+    def _refresh_channel_skill_bindings_if_changed(self) -> None:
+        """Reload ``channel_skill_bindings`` from config.yaml on mtime change.
+
+        Called before every message dispatch. When the config file's mtime
+        differs from the last snapshot, re-parse only the
+        ``platforms.slack.channel_skill_bindings`` list and swap it into
+        ``self.config.extra["channel_skill_bindings"]`` so newly bound
+        channels take effect without a gateway restart. Other config fields
+        are intentionally NOT reloaded here — this is a targeted hot-path,
+        not a full config reload.
+        """
+        try:
+            from hermes_constants import get_hermes_home
+            import yaml
+
+            cfg_path = get_hermes_home() / "config.yaml"
+            if not cfg_path.exists():
+                return
+            mtime = cfg_path.stat().st_mtime
+            last_mtime = getattr(self, "_csb_last_mtime", None)
+            if last_mtime is not None and mtime == last_mtime:
+                return
+            with cfg_path.open("r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            # Support both flat "slack:" (dev/CLI layout) and
+            # "platforms.slack:" (gateway config schema).
+            slack_cfg = None
+            if isinstance(data.get("platforms"), dict):
+                slack_cfg = data["platforms"].get("slack")
+            if not isinstance(slack_cfg, dict):
+                slack_cfg = data.get("slack")
+            if not isinstance(slack_cfg, dict):
+                self._csb_last_mtime = mtime
+                return
+            bindings = slack_cfg.get("channel_skill_bindings")
+            if bindings is None and isinstance(slack_cfg.get("extra"), dict):
+                bindings = slack_cfg["extra"].get("channel_skill_bindings")
+            if isinstance(bindings, list):
+                if not isinstance(self.config.extra, dict):
+                    self.config.extra = {}
+                old = self.config.extra.get("channel_skill_bindings")
+                if bindings != old:
+                    self.config.extra["channel_skill_bindings"] = bindings
+                    logger.info(
+                        "[Slack] Reloaded channel_skill_bindings from disk "
+                        "(%d entries).",
+                        len(bindings),
+                    )
+            self._csb_last_mtime = mtime
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("[Slack] Failed to reload channel_skill_bindings: %s", e)
+
+    async def _handle_bot_added_to_channel(self, channel_id: str) -> None:
+        """Onboard the bot when it's added to a new channel.
+
+        Posts a short message in the channel that:
+        1. Announces the bot is present.
+        2. Asks the user to describe the project so a skill can be created
+           and bound to the channel via `slack.channel_skill_bindings`.
+
+        The user's reply will hit `_handle_slack_message` like any other
+        message; the agent handles skill creation + config update + restart
+        prompt from there. This handler is intentionally dumb — no state
+        machine on the adapter side.
+        """
+        info = await self.get_chat_info(channel_id)
+        name = info.get("name") or channel_id
+
+        # Check if a binding already exists — skip onboarding if so.
+        try:
+            bindings = (self.config.extra or {}).get("channel_skill_bindings") or []
+            if isinstance(bindings, list) and any(
+                isinstance(e, dict) and str(e.get("id", "")) == channel_id
+                for e in bindings
+            ):
+                logger.info(
+                    "[Slack] Bot joined channel %s (%s) — binding already exists, skipping onboarding.",
+                    channel_id,
+                    name,
+                )
+                return
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+        onboarding = (
+            f":wave: Hi! I've joined *{name}* (`{channel_id}`).\n\n"
+            "If this channel is dedicated to a specific project, reply with:\n"
+            "> `@hermes this is the <name> project`\n\n"
+            "I'll create a project skill for you, bind it to this channel, "
+            "and auto-load it every time we chat here."
+        )
+        try:
+            await self._get_client(channel_id).chat_postMessage(
+                channel=channel_id,
+                text=onboarding,
+            )
+            logger.info(
+                "[Slack] Bot joined channel %s (%s) — onboarding message posted.",
+                channel_id,
+                name,
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(
+                "[Slack] Failed to post onboarding message in %s: %s",
+                channel_id,
+                e,
+            )
+
     # ----- Internal handlers -----
 
     def _assistant_thread_key(
@@ -2802,6 +2928,16 @@ class SlackAdapter(BasePlatformAdapter):
             resolve_channel_prompt,
             resolve_channel_skills,
         )
+
+        # Hot-reload channel_skill_bindings from config.yaml if it changed on
+        # disk since the last check. Lets the agent update bindings via
+        # `hermes config set slack.channel_skill_bindings ...` and have new
+        # thread sessions pick them up on the very next message — no gateway
+        # restart required. Cheap (stat + optional YAML parse of one section).
+        try:
+            self._refresh_channel_skill_bindings_if_changed()
+        except Exception as _e:  # pragma: no cover - defensive
+            logger.debug("[Slack] channel_skill_bindings refresh skipped: %s", _e)
 
         _channel_prompt = resolve_channel_prompt(
             self.config.extra,

@@ -180,18 +180,31 @@ class TestCmdSetupLocalJwt:
 
 
 class TestCmdStatus:
-    def test_reports_connection_failure_when_session_setup_fails(self, monkeypatch, capsys, tmp_path):
+    def _install_base_status_stubs(self, monkeypatch, tmp_path, fake_config):
         import plugins.memory.honcho.cli as honcho_cli
 
         cfg_path = tmp_path / "honcho.json"
         cfg_path.write_text("{}")
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: {"apiKey": "***"})
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_active_profile_name", lambda: "default")
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            lambda host=None: fake_config,
+        )
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.get_honcho_client",
+            lambda cfg: object(),
+        )
+        monkeypatch.setitem(__import__("sys").modules, "honcho", SimpleNamespace())
+        return honcho_cli
 
+    @staticmethod
+    def _fake_config(*, enabled=True, api_key="root-key", base_url=None):
         class FakeConfig:
-            enabled = True
-            api_key = "root-key"
             workspace_id = "hermes"
             host = "hermes"
-            base_url = None
             ai_peer = "hermes"
             peer_name = "eri"
             recall_mode = "hybrid"
@@ -205,34 +218,57 @@ class TestCmdStatus:
             dialectic_reasoning_level = "low"
             reasoning_level_cap = "high"
             reasoning_heuristic = True
+            raw = {}
+
+            def __init__(self):
+                self.enabled = enabled
+                self.api_key = api_key
+                self.base_url = base_url
 
             def resolve_session_name(self):
                 return "hermes"
 
-        monkeypatch.setattr(honcho_cli, "_read_config", lambda: {"apiKey": "***"})
-        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
-        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
-        monkeypatch.setattr(honcho_cli, "_active_profile_name", lambda: "default")
-        monkeypatch.setattr(
-            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
-            lambda host=None: FakeConfig(),
-        )
-        monkeypatch.setattr(
-            "plugins.memory.honcho.client.get_honcho_client",
-            lambda cfg: object(),
-        )
+        return FakeConfig()
+
+    def test_reports_unreachable_when_session_setup_fails(self, monkeypatch, capsys, tmp_path):
+        fake_config = self._fake_config()
+        honcho_cli = self._install_base_status_stubs(monkeypatch, tmp_path, fake_config)
 
         def _boom(hcfg, client):
             raise RuntimeError("Invalid API key")
 
-        monkeypatch.setattr(honcho_cli, "_show_peer_cards", _boom)
-        monkeypatch.setitem(__import__("sys").modules, "honcho", SimpleNamespace())
+        monkeypatch.setattr(honcho_cli, "_load_peer_cards", _boom)
 
         honcho_cli.cmd_status(SimpleNamespace(all=False))
 
         out = capsys.readouterr().out
-        assert "FAILED (Invalid API key)" in out
+        assert "Configured:     True" in out
+        assert "Reachable:      no (Invalid API key)" in out
+        assert "Reachable:      yes" not in out
         assert "Connection... OK" not in out
+
+    def test_reports_reachable_when_peer_probe_succeeds(self, monkeypatch, capsys, tmp_path):
+        fake_config = self._fake_config()
+        honcho_cli = self._install_base_status_stubs(monkeypatch, tmp_path, fake_config)
+        monkeypatch.setattr(honcho_cli, "_load_peer_cards", lambda hcfg, client: (["Fact 1"], "AI summary"))
+
+        honcho_cli.cmd_status(SimpleNamespace(all=False))
+
+        out = capsys.readouterr().out
+        assert "Configured:     True" in out
+        assert "Reachable:      yes" in out
+        assert "User peer card (1 facts):" in out
+        assert "AI peer representation:" in out
+
+    def test_reports_not_checked_when_not_configured(self, monkeypatch, capsys, tmp_path):
+        fake_config = self._fake_config(enabled=False, api_key="")
+        honcho_cli = self._install_base_status_stubs(monkeypatch, tmp_path, fake_config)
+
+        honcho_cli.cmd_status(SimpleNamespace(all=False))
+
+        out = capsys.readouterr().out
+        assert "Configured:     False" in out
+        assert "Reachable:      not checked (disabled)" in out
 
     def test_auth_line_detects_oauth_grant(self, monkeypatch, capsys, tmp_path):
         import plugins.memory.honcho.cli as honcho_cli
@@ -285,7 +321,7 @@ class TestCmdStatus:
             lambda host=None: FakeConfig(),
         )
         monkeypatch.setattr("plugins.memory.honcho.client.get_honcho_client", lambda cfg: object())
-        monkeypatch.setattr(honcho_cli, "_show_peer_cards", lambda hcfg, client: None)
+        monkeypatch.setattr(honcho_cli, "_load_peer_cards", lambda hcfg, client: ([], ""))
         monkeypatch.setitem(__import__("sys").modules, "honcho", SimpleNamespace())
 
         honcho_cli.cmd_status(SimpleNamespace(all=False))

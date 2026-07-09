@@ -3245,7 +3245,8 @@ class SessionDB:
         the real continuation chain.
 
         Instead, only follow children of compression-ended parents, exclude
-        explicit branch/delegate/tool children, and prefer children that are
+        explicit branch/delegate/tool children, keep retained subagent audit
+        rows out of non-subagent conversations, and prefer children that are
         themselves continuing the compression chain (``end_reason='compression'``)
         or still live over stale closed siblings such as ``ws_orphan_reap``.
         Returns the latest continuation tip, or the input id when no
@@ -3267,6 +3268,8 @@ class SessionDB:
                       AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
                       AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
                       AND COALESCE(child.source, '') != 'tool'
+                      AND (COALESCE(child.source, '') != 'subagent'
+                           OR COALESCE(parent.source, '') = 'subagent')
                     ORDER BY
                       CASE
                         WHEN child.end_reason = 'compression' THEN 0
@@ -3526,6 +3529,8 @@ class SessionDB:
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
                       AND COALESCE(child.source, '') != 'tool'
+                      AND (COALESCE(child.source, '') != 'subagent'
+                           OR COALESCE(parent.source, '') = 'subagent')
                 ),
                 chain_max AS (
                     SELECT

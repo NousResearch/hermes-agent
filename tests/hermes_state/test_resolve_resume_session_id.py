@@ -169,6 +169,49 @@ def test_redirects_from_message_bearing_parent_to_child(db):
     assert db.resolve_resume_session_id("original") == "continued"
 
 
+def test_compression_tip_prefers_continuation_over_retained_subagent_sibling(db):
+    # Read-only delegate/subagent rows can be retained for audit/debugging under
+    # the compressed parent, but they are not the user's focused continuation.
+    # A newer subagent sibling must not consume the projected list/resume slot.
+    base = int(time.time()) - 10_000
+    db.create_session("root", source="cli")
+    db.append_message("root", role="user", content="pre-compression turn")
+    db.end_session("root", "compression")
+
+    db.create_session("focused_cont", source="cli", parent_session_id="root")
+    db.append_message("focused_cont", role="assistant", content="real continuation")
+
+    # Shape produced by retained audit/debug child rows: linked to the parent,
+    # source=subagent, no deletion required, and no reliable legacy marker.
+    db.create_session("audit_subagent", source="subagent", parent_session_id="root")
+    db.append_message("audit_subagent", role="assistant", content="read-only audit child")
+
+    # Separate normal conversation: newer than the real continuation, older
+    # than the audit child. If the audit child leaks into the compression-chain
+    # CTE, the focused continuation incorrectly outranks this row.
+    db.create_session("solo", source="cli")
+    db.append_message("solo", role="user", content="separate normal chat")
+
+    conn = db._conn
+    assert conn is not None
+    conn.execute("UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'root'", (base, base + 100))
+    conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'focused_cont'", (base + 90,))
+    conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'audit_subagent'", (base + 200,))
+    conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'solo'", (base + 180,))
+    conn.execute("UPDATE messages SET timestamp = ? WHERE session_id = 'root'", (base + 10,))
+    conn.execute("UPDATE messages SET timestamp = ? WHERE session_id = 'focused_cont'", (base + 110,))
+    conn.execute("UPDATE messages SET timestamp = ? WHERE session_id = 'solo'", (base + 220,))
+    conn.execute("UPDATE messages SET timestamp = ? WHERE session_id = 'audit_subagent'", (base + 300,))
+    conn.commit()
+
+    assert db.get_compression_tip("root") == "focused_cont"
+    assert db.resolve_resume_session_id("root") == "focused_cont"
+
+    listed = db.list_sessions_rich(source="cli", limit=10, order_by_last_active=True)
+    assert [row["id"] for row in listed] == ["solo", "focused_cont"]
+    assert listed[1]["_lineage_root_id"] == "root"
+
+
 def test_compression_tip_handles_pre_ended_real_child_and_ws_orphan_sibling(db):
     # Real desktop repro shape from a long GUI session:
     #

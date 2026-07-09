@@ -9,13 +9,64 @@ which has provider-specific conditionals for max_tokens defaults,
 reasoning configuration, temperature handling, and extra_body assembly.
 """
 
+import logging
 from typing import Any, Dict
+
+logger = logging.getLogger(__name__)
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+
+
+# Top-level keyword arguments the OpenAI SDK's chat.completions.create()
+# accepts. request_overrides are merged into the top-level api_kwargs, so any
+# key NOT in this set is rejected rather than forwarded — a stray key (e.g.
+# ``system``, a legacy top-level system-prompt injection from an old profile
+# config) would otherwise surface as TypeError: Completions.create() got an
+# unexpected keyword argument '<key>' (hermes-agent#60821 / #61030).
+_VALID_TOP_LEVEL_API_KWARGS = frozenset({
+    "model", "messages", "temperature", "top_p", "n", "stream",
+    "stop", "max_tokens", "max_completion_tokens", "presence_penalty",
+    "frequency_penalty", "logit_bias", "user", "tools", "tool_choice",
+    "logprobs", "top_logprobs", "response_format", "seed", "service_tier",
+    "extra_body", "extra_headers", "timeout", "reasoning_effort", "verbosity",
+    "metadata", "parallel_tool_calls", "modalities", "audio", "store",
+    "stream_options", "function_call", "functions",
+})
+
+
+def _safe_merge_request_overrides(api_kwargs: dict, overrides: dict | None) -> None:
+    """Merge ``request_overrides`` into top-level ``api_kwargs`` safely.
+
+    Only keys the OpenAI chat completions API actually accepts are forwarded.
+    ``extra_body`` (and ``extra_headers``) are merged into the existing
+    ``api_kwargs`` equivalents rather than clobbering them. Any other
+    unrecognized key is dropped with a debug log instead of being passed to
+    ``chat.completions.create()``, which would raise a ``TypeError``.
+    """
+    if not overrides:
+        return
+    _extra = api_kwargs.get("extra_body")
+    _headers = api_kwargs.get("extra_headers")
+    for k, v in overrides.items():
+        if k == "extra_body" and isinstance(v, dict):
+            merged = dict(_extra) if isinstance(_extra, dict) else {}
+            merged.update(v)
+            api_kwargs["extra_body"] = merged
+        elif k == "extra_headers" and isinstance(v, dict):
+            merged = dict(_headers) if isinstance(_headers, dict) else {}
+            merged.update(v)
+            api_kwargs["extra_headers"] = merged
+        elif k in _VALID_TOP_LEVEL_API_KWARGS:
+            api_kwargs[k] = v
+        else:
+            logger.debug(
+                "Dropping unsupported request_overrides key %r (not a valid "
+                "chat.completions.create() argument)", k,
+            )
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
@@ -484,10 +535,10 @@ class ChatCompletionsTransport(ProviderTransport):
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
-        # Request overrides last (service_tier etc.)
-        overrides = params.get("request_overrides")
-        if overrides:
-            api_kwargs.update(overrides)
+        # Request overrides last (service_tier etc.). Merged through the
+        # safe helper so a stray key can't reach chat.completions.create()
+        # as an invalid top-level kwarg (hermes-agent#60821 / #61030).
+        _safe_merge_request_overrides(api_kwargs, params.get("request_overrides"))
 
         return api_kwargs
 
@@ -598,15 +649,6 @@ class ChatCompletionsTransport(ProviderTransport):
         if additions:
             extra_body.update(additions)
 
-        # Request overrides (user config)
-        overrides = params.get("request_overrides")
-        if overrides:
-            for k, v in overrides.items():
-                if k == "extra_body" and isinstance(v, dict):
-                    extra_body.update(v)
-                else:
-                    api_kwargs[k] = v
-
         if extra_body:
             # Native Gemini (generativelanguage.googleapis.com, non-/openai)
             # speaks Google's REST schema, not OpenAI's. OpenAI-style extra_body
@@ -630,6 +672,14 @@ class ChatCompletionsTransport(ProviderTransport):
                 }
             if extra_body:
                 api_kwargs["extra_body"] = extra_body
+
+        # Request overrides (user config) — merged via the safe helper so
+        # keys that aren't valid chat.completions.create() arguments (e.g. a
+        # legacy top-level `system` from an old profile config) are dropped
+        # instead of crashing the call with a TypeError (hermes-agent#60821).
+        # Runs AFTER extra_body is finalized into api_kwargs so an override's
+        # extra_body merges with (rather than precedes) the profile-built body.
+        _safe_merge_request_overrides(api_kwargs, params.get("request_overrides"))
 
         return api_kwargs
 

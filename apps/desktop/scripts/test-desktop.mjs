@@ -101,7 +101,8 @@ function expectedNativeDepPaths() {
     packageJson: path.join(root, 'package.json'),
     prebuildsDir,
     buildReleaseDir,
-    libIndex: path.join(root, 'lib', 'index.js')
+    libIndex: path.join(root, 'lib', 'index.js'),
+    unixTerminal: path.join(root, 'lib', 'unixTerminal.js')
   }
 }
 
@@ -332,6 +333,9 @@ function validateBundle() {
   if (!exists(native.libIndex)) {
     die(`Missing node-pty lib/index.js in app.asar.unpacked: ${native.libIndex}`)
   }
+  if (!exists(native.unixTerminal)) {
+    die(`Missing node-pty lib/unixTerminal.js in app.asar.unpacked: ${native.unixTerminal}`)
+  }
   // The native binary lands in prebuilds/<platform>-<arch>/ (downloaded prebuild)
   // OR build/Release/ (compiled from source). stage-native-deps.mjs copies
   // whichever is present, so accept either.
@@ -356,6 +360,13 @@ function validateBundle() {
       .find(exists)
     if (!spawnHelper) {
       die(`Missing node-pty spawn-helper (required on darwin) in: ${nativeBinaryDirs.join(', ')}`)
+    }
+    if ((fs.statSync(spawnHelper).mode & 0o111) === 0) {
+      die(`node-pty spawn-helper is not executable: ${spawnHelper}`)
+    }
+    const unixTerminalSource = fs.readFileSync(native.unixTerminal, 'utf8')
+    if (!unixTerminalSource.includes('/app\\.asar(?!\\.unpacked)/')) {
+      die(`node-pty unixTerminal.js can double-unpack app.asar paths: ${native.unixTerminal}`)
     }
   }
 

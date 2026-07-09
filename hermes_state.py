@@ -4975,15 +4975,18 @@ class SessionDB:
             cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions s{where_sql}", params)
             return cursor.fetchone()[0]
 
-    def message_count(self, session_id: str = None) -> int:
+    def message_count(self, session_id: str = None, include_inactive: bool = True) -> int:
         """Count messages, optionally for a specific session."""
+        active_clause = "" if include_inactive else " WHERE active = 1"
         with self._lock:
             if session_id:
+                active_clause = "" if include_inactive else " AND active = 1"
                 cursor = self._conn.execute(
-                    "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
+                    f"SELECT COUNT(*) FROM messages WHERE session_id = ?{active_clause}",
+                    (session_id,),
                 )
             else:
-                cursor = self._conn.execute("SELECT COUNT(*) FROM messages")
+                cursor = self._conn.execute(f"SELECT COUNT(*) FROM messages{active_clause}")
             return cursor.fetchone()[0]
 
     def has_platform_message_id(

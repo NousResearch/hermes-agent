@@ -488,6 +488,35 @@ class TestReadShape:
         assert result["truncated"] is True
         assert len(result["messages"]) == 30  # head 20 + tail 10
 
+    def test_read_large_session_pages_head_and_tail(self, db, monkeypatch):
+        db.create_session("s_big", source="cli")
+        for i in range(50):
+            db.append_message("s_big", role="user" if i % 2 == 0 else "assistant", content=f"m{i}")
+        db._conn.commit()
+
+        calls = []
+        original_get_messages = db.get_messages
+
+        def spy_get_messages(session_id, include_inactive=False, limit=None, offset=0):
+            calls.append((session_id, include_inactive, limit, offset))
+            return original_get_messages(
+                session_id,
+                include_inactive=include_inactive,
+                limit=limit,
+                offset=offset,
+            )
+
+        monkeypatch.setattr(db, "get_messages", spy_get_messages)
+
+        result = json.loads(session_search(session_id="s_big", db=db))
+
+        assert result["message_count"] == 50
+        assert result["truncated"] is True
+        assert calls == [
+            ("s_big", False, 20, 0),
+            ("s_big", False, 10, 40),
+        ]
+
 
 # =========================================================================
 # Cross-profile read — `profile` swaps in another profile's DB (read-only)

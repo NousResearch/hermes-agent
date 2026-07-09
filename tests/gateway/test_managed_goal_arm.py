@@ -225,6 +225,38 @@ class TestGoalAnchor:
         # The stable anchor still resolves the active goal.
         assert GoalManager(session_id="mission:abc").is_active() is True
 
+    def test_arm_seam_keys_goal_by_anchor_not_gateway_session_id(self, hermes_home):
+        """Seam contract (pre-rebase): the /goal turn injected by POST /v1/message
+        arms through ``_get_goal_manager_for_event`` — for an API_SERVER event the
+        manager MUST be keyed by the conversationId ANCHOR, never by the gateway
+        session_id that compression rotates. If upstream restructures the goal
+        keying (v0.18 completion contracts), this fails at the seam."""
+        from gateway.platforms.base import MessageEvent
+        from hermes_cli.goals import GoalManager
+
+        runner = GatewayRunner(GatewayConfig())
+        source = SessionSource(
+            platform=Platform.API_SERVER,
+            chat_id="mission:rot",
+            chat_name="Jean-Billie mission",
+            chat_type="dm",
+            user_id="jb-managed",
+            user_name="Jean-Billie",
+        )
+        event = MessageEvent(text="/goal relancer les impayés", message_type=MessageType.TEXT, source=source)
+
+        mgr, session_entry = runner._get_goal_manager_for_event(event)
+        assert mgr is not None and session_entry is not None
+        # Keyed by the stable anchor…
+        assert mgr.session_id == "mission:rot"
+        # …which is NOT the gateway session_id (that one rotates at compression).
+        assert session_entry.session_id != "mission:rot"
+
+        mgr.set("relancer les impayés")
+        # Reachable via the anchor; invisible from the rotatable session_id.
+        assert GoalManager(session_id="mission:rot").is_active() is True
+        assert GoalManager(session_id=session_entry.session_id).is_active() is False
+
 
 # ──────────────────────────────────────────────────────────────────────
 # F4 — "rien ne part sans accord" (egress stays gated for mission turns)

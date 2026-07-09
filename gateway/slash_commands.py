@@ -1427,6 +1427,20 @@ class GatewaySlashCommandsMixin:
             force_refresh,
             is_session,
         ) = parse_model_flags(raw_args)
+
+        # Context-aware default: messaging platforms (Telegram, Discord, Slack, etc.)
+        # should default to session scope unless --global is explicitly provided.
+        # This prevents accidental global config changes when users pick models via
+        # platform menus, which cannot send --global/--session flags.
+        source = event.source
+        is_messaging_platform = (
+            source.platform is not None
+            and source.platform != Platform.LOCAL
+        )
+        if is_messaging_platform and not is_global_flag and not is_session:
+            # Treat as if --session was passed (session-scoped by default)
+            is_session = True
+
         persist_global = resolve_persist_behavior(is_global_flag, is_session)
 
         # --refresh: bust the disk cache so the picker shows live data.

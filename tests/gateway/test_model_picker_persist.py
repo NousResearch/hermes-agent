@@ -154,26 +154,40 @@ async def _drive_picker(runner, event):
     ],
     ids=["nested-dict", "flat-string"],
 )
-async def test_picker_tap_persists_by_default(tmp_path, monkeypatch, seed_model):
-    """Tapping a model in the picker (bare /model) persists to config.yaml,
-    matching the typed ``/model`` default — this is the #49176 fix. The written
-    ``model:`` must always end up a nested dict regardless of the seed shape."""
+async def test_picker_tap_is_session_scoped_by_default_on_messaging_platforms(
+    tmp_path, monkeypatch, seed_model
+):
+    """Tapping a model in the picker (bare /model) is session-scoped by default
+    on messaging platforms (Telegram, Discord, Slack, etc.).
+
+    This prevents accidental global config changes when users pick models via
+    platform menus, which cannot send --global/--session flags. The in-memory
+    session override IS applied (the switch worked), but config.yaml is untouched.
+
+    See #61458 for context.
+    """
     adapter = _FakePickerAdapter()
     cfg_path = _setup_isolated_home(tmp_path, monkeypatch, seed_model)
+    runner = _make_runner(adapter)
 
-    confirmation = await _drive_picker(_make_runner(adapter), _make_event("/model"))
+    confirmation = await _drive_picker(runner, _make_event("/model"))
 
     assert confirmation is not None
     assert "gpt-5.5" in confirmation
-    written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    assert isinstance(written["model"], dict), (
-        "model: should be coerced to a dict, got %r" % (written["model"],)
+    # The session override IS applied (proves the path didn't no-op).
+    assert runner._session_model_overrides, "session override should be set"
+    assert any(
+        ov.get("model") == "gpt-5.5"
+        for ov in runner._session_model_overrides.values()
     )
-    assert written["model"]["default"] == "gpt-5.5"
-    assert written["model"]["provider"] == "openrouter"
-    assert "base_url" not in written["model"]
-    assert "api_key" not in written["model"]
-    assert "api_mode" not in written["model"]
+    # But config.yaml is untouched — session-scoped by default on messaging platforms.
+    written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    if isinstance(written["model"], dict):
+        assert written["model"]["default"] == (
+            "old-model" if isinstance(seed_model, dict) else "deepseek-v4-flash"
+        )
+    else:
+        assert written["model"] == "deepseek-v4-flash"
 
 
 @pytest.mark.asyncio

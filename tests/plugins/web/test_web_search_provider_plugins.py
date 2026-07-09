@@ -2,8 +2,8 @@
 
 Covers:
 
-- All bundled web plugins (brave-free, ddgs, searxng, exa, parallel,
-  tavily, firecrawl, xai, oxylabs) instantiate and self-report the expected
+- All eight bundled plugins (brave-free, ddgs, searxng, exa, parallel,
+  tavily, firecrawl, xai) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The web_search_registry resolves an active provider in the documented
@@ -70,9 +70,9 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All bundled web plugins discover and register correctly."""
+    """All eight bundled web plugins discover and register correctly."""
 
-    def test_all_plugins_present_in_registry(self) -> None:
+    def test_all_seven_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
@@ -101,7 +101,8 @@ class TestBundledPluginsRegister:
             ("firecrawl", True, True),
             # xai: search-only via Grok's agentic web_search tool.
             ("xai", True, False),
-            # oxylabs: search + extract via AI Studio.
+            # oxylabs: search + extract via AI Studio (crawl also supported,
+            # not tracked in this test's 3-tuple after the recent refactor).
             ("oxylabs", True, True),
         ],
     )

@@ -1753,6 +1753,13 @@ DEFAULT_CONFIG = {
         # "Steered into current run" confirmation bubble by setting this false.
         # The mid-turn steering itself still happens.
         "busy_steer_ack_enabled": True,
+        # Classic CLI multiline fallbacks beyond Alt+Enter.
+        # Default true matches Claude Code / Codex / OpenCode: Ctrl+J inserts
+        # a newline, a trailing backslash followed by Enter continues the draft,
+        # and supported terminals are asked to report Shift+Enter distinctly.
+        # Set false to restore the legacy c-j submit fallback on unusual POSIX
+        # PTYs whose plain Enter arrives as LF instead of CR.
+        "cli_multiline_shortcuts": True,
         # Which interface bare `hermes` (and `hermes chat`) launches by default:
         #   "cli" — the classic prompt_toolkit REPL (default, preserves prior behavior)
         #   "tui" — the modern Ink TUI (same as passing `--tui`)

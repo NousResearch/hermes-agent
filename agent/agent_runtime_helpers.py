@@ -679,6 +679,14 @@ def recover_with_credential_pool(
     On billing exhaustion: immediately rotates.
     On auth failures: attempts token refresh before rotating.
 
+    Raises ``agent.credential_pool.CredentialPoolExhausted`` (BUILD-262)
+    when rotation finds no healthy credential left anywhere in the pool
+    after a small bounded retry budget. This is intentionally NOT caught
+    here — the caller (``agent/conversation_loop.py``) must catch it and
+    park/abort the request instead of looping back into this function on
+    its own retry cadence (that loop, with zero backoff, was the actual
+    spin site in the 2026-07-08 incident: 4,323 iterations in 43 minutes).
+
     `classified_reason` lets the recovery path honor the structured error
     classifier instead of relying only on raw HTTP codes. This matters for
     providers that surface billing/rate-limit/auth conditions under a
@@ -758,16 +766,21 @@ def recover_with_credential_pool(
 
     if effective_reason == FailoverReason.billing:
         rotate_status = status_code if status_code is not None else 402
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
-        if next_entry is not None:
-            _ra().logger.info(
-                "Credential %s (billing) — rotated to pool entry %s",
-                rotate_status,
-                getattr(next_entry, "id", "?"),
-            )
-            agent._swap_credential(next_entry)
-            return True, False
-        return False, has_retried_429
+        # BUILD-262: raises CredentialPoolExhausted (instead of returning
+        # None) once the bounded rotation-retry budget is spent with no
+        # healthy entry left. Deliberately NOT caught here — it propagates
+        # to the caller (agent/conversation_loop.py), which must park/abort
+        # the request rather than loop calling rotation again.
+        next_entry = pool.mark_exhausted_and_rotate_or_raise(
+            status_code=rotate_status, error_context=error_context,
+        )
+        _ra().logger.info(
+            "Credential %s (billing) — rotated to pool entry %s",
+            rotate_status,
+            getattr(next_entry, "id", "?"),
+        )
+        agent._swap_credential(next_entry)
+        return True, False
 
     if effective_reason == FailoverReason.rate_limit:
         # If current credential is already marked exhausted, skip retry and
@@ -782,16 +795,23 @@ def recover_with_credential_pool(
                 current_last_status,
             )
             rotate_status = status_code if status_code is not None else 429
-            next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
-            if next_entry is not None:
-                _ra().logger.info(
-                    "Credential %s (rate limit, pre-exhausted) — rotated to pool entry %s",
-                    rotate_status,
-                    getattr(next_entry, "id", "?"),
-                )
-                agent._swap_credential(next_entry)
-                return True, False
-            return False, True
+            # BUILD-262: raises CredentialPoolExhausted — see billing branch
+            # above. This is the exact spin site from the 2026-07-08
+            # incident (4,323 iterations / 43 min): the old code returned
+            # None here on genuine exhaustion, which was supposed to fall
+            # through to normal bounded backoff, but a same-entry "false
+            # rotation" bug kept this returning a (bogus) non-None entry
+            # instead, so the caller's `continue` never stopped.
+            next_entry = pool.mark_exhausted_and_rotate_or_raise(
+                status_code=rotate_status, error_context=error_context,
+            )
+            _ra().logger.info(
+                "Credential %s (rate limit, pre-exhausted) — rotated to pool entry %s",
+                rotate_status,
+                getattr(next_entry, "id", "?"),
+            )
+            agent._swap_credential(next_entry)
+            return True, False
 
         usage_limit_reached = False
         if error_context:
@@ -806,16 +826,17 @@ def recover_with_credential_pool(
         if not has_retried_429 and not usage_limit_reached:
             return False, True
         rotate_status = status_code if status_code is not None else 429
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
-        if next_entry is not None:
-            _ra().logger.info(
-                "Credential %s (rate limit) — rotated to pool entry %s",
-                rotate_status,
-                getattr(next_entry, "id", "?"),
-            )
-            agent._swap_credential(next_entry)
-            return True, False
-        return False, True
+        # BUILD-262: raises CredentialPoolExhausted — see above.
+        next_entry = pool.mark_exhausted_and_rotate_or_raise(
+            status_code=rotate_status, error_context=error_context,
+        )
+        _ra().logger.info(
+            "Credential %s (rate limit) — rotated to pool entry %s",
+            rotate_status,
+            getattr(next_entry, "id", "?"),
+        )
+        agent._swap_credential(next_entry)
+        return True, False
 
     if effective_reason == FailoverReason.auth:
         # Subscription/entitlement 403s look like auth failures on the wire
@@ -906,15 +927,18 @@ def recover_with_credential_pool(
         # Refresh failed — rotate to next credential instead of giving up.
         # The failed entry is already marked exhausted by try_refresh_current().
         rotate_status = status_code if status_code is not None else 401
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
-        if next_entry is not None:
-            _ra().logger.info(
-                "Credential %s (auth refresh failed) — rotated to pool entry %s",
-                rotate_status,
-                getattr(next_entry, "id", "?"),
-            )
-            agent._swap_credential(next_entry)
-            return True, False
+        # BUILD-262: raises CredentialPoolExhausted — see the billing/
+        # rate_limit branches above for the full rationale.
+        next_entry = pool.mark_exhausted_and_rotate_or_raise(
+            status_code=rotate_status, error_context=error_context,
+        )
+        _ra().logger.info(
+            "Credential %s (auth refresh failed) — rotated to pool entry %s",
+            rotate_status,
+            getattr(next_entry, "id", "?"),
+        )
+        agent._swap_credential(next_entry)
+        return True, False
 
     return False, has_retried_429
 

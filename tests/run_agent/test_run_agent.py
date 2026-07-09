@@ -5701,7 +5701,7 @@ class TestCredentialPoolRecovery:
             def current(self):
                 return current
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate_or_raise(self, *, status_code, error_context=None):
                 assert status_code == 402
                 assert error_context is None
                 return next_entry
@@ -5722,7 +5722,7 @@ class TestCredentialPoolRecovery:
         next_entry = SimpleNamespace(label="secondary")
 
         class _Pool:
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate_or_raise(self, *, status_code, error_context=None):
                 assert status_code == 400
                 assert error_context == {"reason": "out_of_extra_usage"}
                 return next_entry
@@ -5748,7 +5748,7 @@ class TestCredentialPoolRecovery:
             def current(self):
                 return SimpleNamespace(label="primary")
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate_or_raise(self, *, status_code, error_context=None):
                 assert status_code == 429
                 assert error_context is None
                 return next_entry
@@ -5853,7 +5853,7 @@ class TestCredentialPoolRecovery:
             def try_refresh_current(self):
                 return None  # refresh failed
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate_or_raise(self, *, status_code, error_context=None):
                 assert status_code == 401
                 assert error_context is None
                 return next_entry
@@ -5871,25 +5871,29 @@ class TestCredentialPoolRecovery:
         agent._swap_credential.assert_called_once_with(next_entry)
 
     def test_recover_with_pool_401_refresh_fails_no_more_credentials(self, agent):
-        """401 with failed refresh and no other credentials returns not recovered."""
+        """401 with failed refresh and no other credentials must raise
+        CredentialPoolExhausted (BUILD-262), not silently return
+        not-recovered — the caller must park/abort rather than keep
+        looping on a dead pool."""
+        from agent.credential_pool import CredentialPoolExhausted
 
         class _Pool:
             def try_refresh_current(self):
                 return None
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate_or_raise(self, *, status_code, error_context=None):
                 assert error_context is None
-                return None  # no more credentials
+                raise CredentialPoolExhausted(provider="test-provider", earliest_available_at=None)
 
         agent._credential_pool = _Pool()
         agent._swap_credential = MagicMock()
 
-        recovered, retry_same = agent._recover_with_credential_pool(
-            status_code=401,
-            has_retried_429=False,
-        )
+        with pytest.raises(CredentialPoolExhausted):
+            agent._recover_with_credential_pool(
+                status_code=401,
+                has_retried_429=False,
+            )
 
-        assert recovered is False
         agent._swap_credential.assert_not_called()
 
     def test_extract_api_error_context_uses_reset_timestamp_and_reason(self, agent):
@@ -5954,7 +5958,7 @@ class TestCredentialPoolRecovery:
             def current(self):
                 return SimpleNamespace(label="primary")
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate_or_raise(self, *, status_code, error_context=None):
                 captured["status_code"] = status_code
                 captured["error_context"] = error_context
                 return next_entry

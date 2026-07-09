@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.conversation_compression import conversation_history_after_compression
+from agent.credential_pool import CredentialPoolExhausted
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
@@ -2511,12 +2512,38 @@ def run_conversation(
                         )
                         continue
 
-                recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
-                    status_code=status_code,
-                    has_retried_429=_retry.has_retried_429,
-                    classified_reason=classified.reason,
-                    error_context=error_context,
-                )
+                try:
+                    recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
+                        status_code=status_code,
+                        has_retried_429=_retry.has_retried_429,
+                        classified_reason=classified.reason,
+                        error_context=error_context,
+                    )
+                except CredentialPoolExhausted as _pool_exhausted:
+                    # BUILD-262: the credential pool has no healthy entry
+                    # left and rotation's bounded retry budget is spent.
+                    # This is the actual spin site from the 2026-07-08
+                    # incident (4,323 iterations / 43 minutes, ~2 req/sec,
+                    # zero backoff) — `continue`-ing this loop on recovery
+                    # is exactly what spun. Park the turn with a clear,
+                    # actionable error instead of retry-looping on a dead
+                    # pool.
+                    logger.warning(
+                        "%scredential pool exhausted — parking request instead of "
+                        "retry-looping: %s",
+                        agent.log_prefix, _pool_exhausted,
+                    )
+                    agent._flush_status_buffer()
+                    agent._emit_status(f"❌ {_pool_exhausted}")
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "final_response": str(_pool_exhausted),
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": False,
+                        "failed": True,
+                        "error": str(_pool_exhausted),
+                    }
                 if recovered_with_pool:
                     continue
 

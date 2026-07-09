@@ -116,10 +116,70 @@ EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
 EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
 
+# BUILD-262: exponential backoff for 429s that carry no provider-supplied
+# Retry-After/reset_at.  Doubles per *consecutive* 429 on the same entry
+# (reset back to 0 whenever the entry recovers to STATUS_OK — see every
+# call site below that clears last_error_reset_at), capped at 15 minutes.
+# Prevents the 2026-07-08 incident pattern where a flat, always-in-the-
+# future TTL never actually got a chance to matter because something else
+# (a resync, a race) kept reporting the same credential as available.
+EXHAUSTED_BACKOFF_BASE_SECONDS = 30          # first 429 with no Retry-After
+EXHAUSTED_BACKOFF_CAP_SECONDS = 15 * 60      # 15 minutes
+
+# BUILD-262: bounded retry budget for a single rotation call when the pool
+# looks exhausted.  Small and fast (sub-second) — this is NOT the
+# credential's cooldown wait, it only guards against a benign race (e.g.
+# another thread/process freeing a lease or completing a resync a few
+# hundred ms after we first checked).  Once this budget is spent,
+# ``mark_exhausted_and_rotate_or_raise`` raises ``CredentialPoolExhausted``
+# instead of returning a false "recovered" signal — callers MUST NOT loop
+# calling rotation again on their own cadence (that was the actual spin
+# site: agent/conversation_loop.py's retry loop calling back in with zero
+# backoff, ~2 req/sec for 43 minutes).
+ROTATION_RETRY_MAX_ATTEMPTS = 3
+ROTATION_RETRY_BASE_SECONDS = 0.25
+ROTATION_RETRY_CAP_SECONDS = 2.0
+
 # Pool key prefix for custom OpenAI-compatible endpoints.
 # Custom endpoints all share provider='custom' but are keyed by their
 # custom_providers name: 'custom:<normalized_name>'.
 CUSTOM_POOL_PREFIX = "custom:"
+
+
+class CredentialPoolExhausted(Exception):
+    """Raised when a credential pool has no healthy entry to rotate to.
+
+    Distinct from ``mark_exhausted_and_rotate`` returning ``None`` (the
+    legacy contract several call sites still rely on): this is raised only
+    by ``mark_exhausted_and_rotate_or_raise`` after its bounded rotation
+    retry budget (``ROTATION_RETRY_MAX_ATTEMPTS``) is spent with no healthy
+    entry found.  Callers must treat this as "park/abort the request" —
+    NOT as a signal to call rotation again immediately (BUILD-262).
+    """
+
+    def __init__(
+        self,
+        *,
+        provider: str,
+        earliest_available_at: Optional[float] = None,
+        message: Optional[str] = None,
+    ):
+        self.provider = provider
+        self.earliest_available_at = earliest_available_at
+        if message is None:
+            if earliest_available_at is not None:
+                wait_seconds = max(0.0, earliest_available_at - time.time())
+                message = (
+                    f"credential pool '{provider}' exhausted — no healthy credential "
+                    f"available; earliest retry in {wait_seconds:.0f}s "
+                    f"(at {datetime.fromtimestamp(earliest_available_at, tz=timezone.utc).isoformat()})"
+                )
+            else:
+                message = (
+                    f"credential pool '{provider}' exhausted — no healthy credential available"
+                )
+        super().__init__(message)
+        self.message = message
 
 
 # Fields that are only round-tripped through JSON — never used for logic as attributes.
@@ -146,6 +206,12 @@ class PooledCredential:
     last_error_reason: Optional[str] = None
     last_error_message: Optional[str] = None
     last_error_reset_at: Optional[float] = None
+    # BUILD-262: count of consecutive 429s marked against this entry since
+    # it last recovered to STATUS_OK. Drives the exponential backoff in
+    # ``CredentialPool._mark_exhausted`` when no Retry-After/reset_at is
+    # supplied by the provider. Reset to 0 everywhere the entry is cleared
+    # back to healthy (TTL expiry, external re-auth resync, reset_statuses).
+    consecutive_429_count: int = 0
     base_url: Optional[str] = None
     expires_at: Optional[str] = None
     expires_at_ms: Optional[int] = None
@@ -585,8 +651,27 @@ class CredentialPool:
         # sync (``_save_codex_tokens`` after a fresh device-code login).
         if self._is_terminal_auth_failure(status_code, normalized_error):
             terminal_status = STATUS_DEAD
+            new_consecutive_429 = 0
+            reset_at = normalized_error.get("reset_at")
         else:
             terminal_status = STATUS_EXHAUSTED
+            reset_at = normalized_error.get("reset_at")
+            if status_code == 429:
+                # BUILD-262: track consecutive 429s on this entry and, when
+                # the provider gave us no Retry-After/reset_at to honor,
+                # fall back to exponential backoff instead of the old flat
+                # 1-hour TTL. Honoring a real provider reset_at always wins
+                # (spec item 1) — the exponential path only fires when
+                # reset_at is absent.
+                new_consecutive_429 = (entry.consecutive_429_count or 0) + 1
+                if reset_at is None:
+                    delay = min(
+                        EXHAUSTED_BACKOFF_BASE_SECONDS * (2 ** (new_consecutive_429 - 1)),
+                        EXHAUSTED_BACKOFF_CAP_SECONDS,
+                    )
+                    reset_at = time.time() + delay
+            else:
+                new_consecutive_429 = 0
         updated = replace(
             entry,
             last_status=terminal_status,
@@ -594,7 +679,8 @@ class CredentialPool:
             last_error_code=status_code,
             last_error_reason=normalized_error.get("reason"),
             last_error_message=normalized_error.get("message"),
-            last_error_reset_at=normalized_error.get("reset_at"),
+            last_error_reset_at=reset_at,
+            consecutive_429_count=new_consecutive_429,
         )
         self._replace_entry(entry, updated)
         self._persist()
@@ -644,6 +730,7 @@ class CredentialPool:
                     last_error_reason=None,
                     last_error_message=None,
                     last_error_reset_at=None,
+                    consecutive_429_count=0,
                 )
                 self._replace_entry(entry, updated)
                 self._persist()
@@ -1150,6 +1237,7 @@ class CredentialPool:
                         last_error_reason=None,
                         last_error_message=None,
                         last_error_reset_at=None,
+                        consecutive_429_count=0,
                     )
                     self._replace_entry(synced, updated)
                     self._persist()
@@ -1220,6 +1308,7 @@ class CredentialPool:
                         last_error_reason=None,
                         last_error_message=None,
                         last_error_reset_at=None,
+                        consecutive_429_count=0,
                     )
                     self._replace_entry(synced, updated)
                     self._persist()
@@ -1287,6 +1376,7 @@ class CredentialPool:
                         last_error_reason=None,
                         last_error_message=None,
                         last_error_reset_at=None,
+                        consecutive_429_count=0,
                     )
                     self._replace_entry(synced, updated)
                     self._persist()
@@ -1350,6 +1440,7 @@ class CredentialPool:
             last_error_reason=None,
             last_error_message=None,
             last_error_reset_at=None,
+            consecutive_429_count=0,
         )
         self._replace_entry(entry, updated)
         self._persist()
@@ -1485,6 +1576,7 @@ class CredentialPool:
                         last_error_reason=None,
                         last_error_message=None,
                         last_error_reset_at=None,
+                        consecutive_429_count=0,
                     )
                     self._replace_entry(entry, cleared)
                     entry = cleared
@@ -1542,6 +1634,92 @@ class CredentialPool:
         available = self._available_entries()
         return available[0] if available else None
 
+    def _resolve_entry_to_mark(
+        self, api_key_hint: Optional[str] = None
+    ) -> Optional[PooledCredential]:
+        """Resolve which entry a 429/402/401 failure should be charged against."""
+        entry = None
+        if api_key_hint:
+            # Prefer the specific entry whose API key matches the one that
+            # actually failed.  When this pool was freshly loaded from disk
+            # (another process already rotated), current() is None and
+            # _select_unlocked() would return the NEXT key — the wrong one.
+            entry = next(
+                (e for e in self._entries if e.runtime_api_key == api_key_hint),
+                None,
+            )
+        if entry is None:
+            entry = self.current() or self._select_unlocked()
+        return entry
+
+    def _mark_exhausted_and_log(
+        self,
+        entry: PooledCredential,
+        status_code: Optional[int],
+        error_context: Optional[Dict[str, Any]],
+    ) -> PooledCredential:
+        _label = entry.label or entry.id[:8]
+        self._mark_exhausted(entry, status_code, error_context)
+        # Re-read the updated entry to log the correct terminal state.
+        updated_entry = next(
+            (e for e in self._entries if e.id == entry.id), entry,
+        )
+        if updated_entry.last_status == STATUS_DEAD:
+            logger.warning(
+                "credential pool: marking %s DEAD (status=%s, reason=%s) — "
+                "permanently failed, will NOT re-enter rotation until re-auth",
+                _label, status_code, updated_entry.last_error_reason or "unknown",
+            )
+        else:
+            logger.info(
+                "credential pool: marking %s exhausted (status=%s), rotating",
+                _label, status_code,
+            )
+        return updated_entry
+
+    def _rotate_after_exhaustion(
+        self, exhausted_entry: PooledCredential
+    ) -> Optional[PooledCredential]:
+        """Select the next healthy entry after ``exhausted_entry`` was just marked.
+
+        BUILD-262 guard (spec item 3): if the only candidate rotation can
+        offer back is the SAME entry we just marked exhausted this call,
+        that is not a successful rotation — it means either the pool has a
+        single entry, or some resync path (e.g. ``_sync_codex_entry_from_
+        auth_store``) prematurely cleared the exhausted status without a
+        genuine external re-auth. Either way, reporting it as "rotated" lets
+        a caller retry the same dead credential in a tight loop (the
+        2026-07-08 incident: 4,323 iterations in 43 minutes, same pool
+        entry every time). Treat it as still-exhausted instead.
+
+        Note: when the guard fires, ``_current_id`` is deliberately left as
+        ``_select_unlocked`` set it (pointing at ``exhausted_entry``) rather
+        than reset to ``None``. That makes the NEXT call's ``pool.current()``
+        correctly report the still-cooling entry, so callers like
+        ``recover_with_credential_pool``'s "already exhausted — rotate
+        immediately" fast path recognize it without burning an extra live
+        retry against a credential we already know is bad.
+        """
+        self._current_id = None
+        next_entry = self._select_unlocked()
+        if next_entry is not None and next_entry.id == exhausted_entry.id:
+            next_entry = None
+        if next_entry:
+            _next_label = next_entry.label or next_entry.id[:8]
+            logger.info("credential pool: rotated to %s", _next_label)
+        return next_entry
+
+    def _earliest_cooldown_expiry(self) -> Optional[float]:
+        """Earliest cooldown expiry across all currently-exhausted entries."""
+        deadlines = [
+            deadline
+            for deadline in (
+                _exhausted_until(e) for e in self._entries if e.last_status == STATUS_EXHAUSTED
+            )
+            if deadline is not None
+        ]
+        return min(deadlines) if deadlines else None
+
     def mark_exhausted_and_rotate(
         self,
         *,
@@ -1549,44 +1727,87 @@ class CredentialPool:
         error_context: Optional[Dict[str, Any]] = None,
         api_key_hint: Optional[str] = None,
     ) -> Optional[PooledCredential]:
+        """Mark the current/matching entry exhausted and rotate once.
+
+        Legacy contract: returns ``None`` when nothing healthy is left in
+        the pool (several existing call sites — ``agent/auxiliary_client.py``,
+        ``hermes_cli/proxy/adapters/xai.py`` — depend on this). New call
+        sites that would otherwise loop on rotation should prefer
+        ``mark_exhausted_and_rotate_or_raise`` instead (BUILD-262).
+        """
         with self._lock:
-            entry = None
-            if api_key_hint:
-                # Prefer the specific entry whose API key matches the one that
-                # actually failed.  When this pool was freshly loaded from disk
-                # (another process already rotated), current() is None and
-                # _select_unlocked() would return the NEXT key — the wrong one.
-                entry = next(
-                    (e for e in self._entries if e.runtime_api_key == api_key_hint),
-                    None,
-                )
-            if entry is None:
-                entry = self.current() or self._select_unlocked()
+            entry = self._resolve_entry_to_mark(api_key_hint)
             if entry is None:
                 return None
-            _label = entry.label or entry.id[:8]
-            self._mark_exhausted(entry, status_code, error_context)
-            # Re-read the updated entry to log the correct terminal state.
-            updated_entry = next(
-                (e for e in self._entries if e.id == entry.id), entry,
+            self._mark_exhausted_and_log(entry, status_code, error_context)
+            return self._rotate_after_exhaustion(entry)
+
+    def mark_exhausted_and_rotate_or_raise(
+        self,
+        *,
+        status_code: Optional[int],
+        error_context: Optional[Dict[str, Any]] = None,
+        api_key_hint: Optional[str] = None,
+        max_attempts: int = ROTATION_RETRY_MAX_ATTEMPTS,
+        sleep_fn: Any = time.sleep,
+    ) -> PooledCredential:
+        """Mark the current/matching entry exhausted and rotate to a healthy one.
+
+        Unlike ``mark_exhausted_and_rotate``, this never silently reports
+        "nothing to do" — it raises ``CredentialPoolExhausted`` once a small
+        bounded number of rotation attempts (default
+        ``ROTATION_RETRY_MAX_ATTEMPTS``, exponential backoff + jitter
+        between attempts) all come back with no healthy entry.
+
+        This is a single bounded call, not a retry-forever primitive:
+        callers MUST NOT catch ``CredentialPoolExhausted`` and immediately
+        call this again on their own request-retry cadence — that
+        reproduces the exact 2026-07-08 incident (BUILD-262). On
+        ``CredentialPoolExhausted`` the caller must park/abort the request
+        and surface the error, waiting at least until
+        ``earliest_available_at``.
+        """
+        with self._lock:
+            entry = self._resolve_entry_to_mark(api_key_hint)
+            if entry is None:
+                raise CredentialPoolExhausted(
+                    provider=self.provider,
+                    earliest_available_at=None,
+                    message=f"credential pool '{self.provider}' has no credentials configured",
+                )
+            self._mark_exhausted_and_log(entry, status_code, error_context)
+
+            next_entry: Optional[PooledCredential] = None
+            attempts = max(1, int(max_attempts))
+            for attempt in range(attempts):
+                next_entry = self._rotate_after_exhaustion(entry)
+                if next_entry is not None:
+                    return next_entry
+                if attempt < attempts - 1:
+                    delay = min(
+                        ROTATION_RETRY_BASE_SECONDS * (2 ** attempt),
+                        ROTATION_RETRY_CAP_SECONDS,
+                    )
+                    delay += random.uniform(0, delay * 0.5)
+                    sleep_fn(delay)
+
+            earliest = self._earliest_cooldown_expiry()
+            # Single WARNING for the whole pool-exhausted event — NOT one
+            # line per attempt (spec item 4; the incident logged one
+            # "marking exhausted...rotating" pair per iteration, 4,323
+            # times).
+            logger.warning(
+                "credential pool '%s' exhausted — no healthy credential after "
+                "%d rotation attempt(s); earliest cooldown expiry: %s",
+                self.provider,
+                attempts,
+                (
+                    datetime.fromtimestamp(earliest, tz=timezone.utc).isoformat()
+                    if earliest is not None
+                    else "unknown"
+                ),
             )
-            if updated_entry.last_status == STATUS_DEAD:
-                logger.warning(
-                    "credential pool: marking %s DEAD (status=%s, reason=%s) — "
-                    "permanently failed, will NOT re-enter rotation until re-auth",
-                    _label, status_code, updated_entry.last_error_reason or "unknown",
-                )
-            else:
-                logger.info(
-                    "credential pool: marking %s exhausted (status=%s), rotating",
-                    _label, status_code,
-                )
-            self._current_id = None
-            next_entry = self._select_unlocked()
-            if next_entry:
-                _next_label = next_entry.label or next_entry.id[:8]
-                logger.info("credential pool: rotated to %s", _next_label)
-            return next_entry
+            raise CredentialPoolExhausted(provider=self.provider, earliest_available_at=earliest)
 
     def acquire_lease(self, credential_id: Optional[str] = None) -> Optional[str]:
         """Acquire a soft lease on a credential.
@@ -1655,6 +1876,7 @@ class CredentialPool:
                         last_error_reason=None,
                         last_error_message=None,
                         last_error_reset_at=None,
+                        consecutive_429_count=0,
                     )
                 )
                 count += 1

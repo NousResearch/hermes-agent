@@ -35,7 +35,7 @@ def test_rotate_immediately_when_credential_already_exhausted():
     instead of retrying (Option A fix for #26145)."""
     entries = [_make_entry(0, last_status=STATUS_EXHAUSTED, last_error_code=429), _make_entry(1)]
     pool = _make_pool(entries)
-    pool.mark_exhausted_and_rotate.return_value = entries[1]
+    pool.mark_exhausted_and_rotate_or_raise.return_value = entries[1]
 
     from run_agent import AIAgent
     with patch("run_agent.get_tool_definitions", return_value=[]),          patch("run_agent.check_toolset_requirements", return_value={}),          patch("run_agent.OpenAI"):
@@ -51,7 +51,7 @@ def test_rotate_immediately_when_credential_already_exhausted():
 
     assert recovered is True
     assert retried is False
-    pool.mark_exhausted_and_rotate.assert_called_once()
+    pool.mark_exhausted_and_rotate_or_raise.assert_called_once()
     agent._swap_credential.assert_called_once_with(entries[1])
 
 
@@ -73,14 +73,14 @@ def test_normal_retry_when_credential_not_exhausted():
 
     assert recovered is False
     assert retried is True
-    pool.mark_exhausted_and_rotate.assert_not_called()
+    pool.mark_exhausted_and_rotate_or_raise.assert_not_called()
 
 
 def test_rotate_on_second_429_when_not_exhausted():
     """When credential is active and this is the second 429, rotate (existing behavior)."""
     entries = [_make_entry(0, last_status=None), _make_entry(1)]
     pool = _make_pool(entries)
-    pool.mark_exhausted_and_rotate.return_value = entries[1]
+    pool.mark_exhausted_and_rotate_or_raise.return_value = entries[1]
 
     from run_agent import AIAgent
     with patch("run_agent.get_tool_definitions", return_value=[]),          patch("run_agent.check_toolset_requirements", return_value={}),          patch("run_agent.OpenAI"):
@@ -96,4 +96,4 @@ def test_rotate_on_second_429_when_not_exhausted():
 
     assert recovered is True
     assert retried is False
-    pool.mark_exhausted_and_rotate.assert_called_once()
+    pool.mark_exhausted_and_rotate_or_raise.assert_called_once()

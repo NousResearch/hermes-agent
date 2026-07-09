@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import time
 from datetime import datetime, timezone
 
 import pytest
+
+from agent.credential_pool import STATUS_EXHAUSTED, STATUS_OK
 
 
 def _write_auth_store(tmp_path, payload: dict) -> None:
@@ -3282,3 +3285,377 @@ def test_sync_anthropic_entry_clears_all_error_fields(tmp_path, monkeypatch):
     assert synced.last_error_reason is None
     assert synced.last_error_message is None
     assert synced.last_error_reset_at is None
+
+
+# ---------------------------------------------------------------------------
+# BUILD-262: credential-pool cooldown/backoff on 429, park-on-exhaustion
+# ---------------------------------------------------------------------------
+#
+# Incident: 2026-07-08 18:53:54→19:37:20, 4,323 tight-loop iterations of
+# "Credential 429 (rate limit) — rotated to pool entry e12de2" +
+# "credential pool: marking device_code exhausted (status=429), rotating"
+# over 43 minutes (~2 req/sec). Every "rotation" landed back on the SAME
+# exhausted entry — the pool effectively had one entry, and mark_exhausted_
+# and_rotate reported that as a successful rotation instead of exhaustion.
+# No cooldown had a chance to matter, no backoff, no park.
+
+
+def _pool_with_entries(monkeypatch, tmp_path, entries, provider="openai-codex"):
+    """Build a CredentialPool directly (no auth.json I/O needed to read),
+    but still route _persist() writes at a throwaway HERMES_HOME so a
+    real mark_exhausted_and_rotate call doesn't touch the user's actual
+    profile.
+    """
+    from agent.credential_pool import CredentialPool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+    return CredentialPool(provider, entries)
+
+
+def _entry(idx, **overrides):
+    from agent.credential_pool import PooledCredential
+
+    defaults = dict(
+        provider="openai-codex",
+        id=f"cred-{idx}",
+        label=f"cred-{idx}",
+        auth_type="oauth",
+        priority=idx,
+        source="device_code",
+        access_token=f"at-{idx}",
+        refresh_token=f"rt-{idx}",
+    )
+    defaults.update(overrides)
+    return PooledCredential(**defaults)
+
+
+class TestExhaustedBackoffStamping:
+    """Spec item 1: honor Retry-After if available, else exponential
+    backoff (base 30s, doubling per consecutive 429, capped at 15 min)."""
+
+    def test_first_429_with_no_retry_after_uses_base_backoff(self, tmp_path, monkeypatch):
+        entries = [_entry(0), _entry(1)]
+        pool = _pool_with_entries(monkeypatch, tmp_path, entries)
+
+        before = time.time()
+        next_entry = pool.mark_exhausted_and_rotate(
+            status_code=429, error_context={"message": "rate limited"},
+        )
+        after = time.time()
+
+        assert next_entry is not None and next_entry.id == "cred-1"
+        marked = next(e for e in pool.entries() if e.id == "cred-0")
+        assert marked.consecutive_429_count == 1
+        # base backoff (30s) — no Retry-After/reset_at supplied.
+        assert before + 30 <= marked.last_error_reset_at <= after + 30 + 1
+
+    def test_second_consecutive_429_doubles_backoff(self, tmp_path, monkeypatch):
+        # Simulate an entry that already took one 429 hit (no external
+        # recovery happened in between — still "consecutive").
+        entries = [_entry(0, consecutive_429_count=1), _entry(1)]
+        pool = _pool_with_entries(monkeypatch, tmp_path, entries)
+
+        before = time.time()
+        pool.mark_exhausted_and_rotate(status_code=429, error_context={"message": "rate limited"})
+        after = time.time()
+
+        marked = next(e for e in pool.entries() if e.id == "cred-0")
+        assert marked.consecutive_429_count == 2
+        # second consecutive 429 -> 60s (30 * 2^1)
+        assert before + 60 <= marked.last_error_reset_at <= after + 60 + 1
+
+    def test_backoff_caps_at_fifteen_minutes(self, tmp_path, monkeypatch):
+        # A long streak of consecutive 429s must not exceed the 15-minute cap.
+        entries = [_entry(0, consecutive_429_count=10), _entry(1)]
+        pool = _pool_with_entries(monkeypatch, tmp_path, entries)
+
+        before = time.time()
+        pool.mark_exhausted_and_rotate(status_code=429, error_context={"message": "rate limited"})
+        after = time.time()
+
+        marked = next(e for e in pool.entries() if e.id == "cred-0")
+        assert before + 900 <= marked.last_error_reset_at <= after + 900 + 1
+
+    def test_retry_after_header_overrides_exponential(self, tmp_path, monkeypatch):
+        """A provider-supplied Retry-After/reset_at always wins over the
+        exponential fallback (spec item 1)."""
+        entries = [_entry(0, consecutive_429_count=5), _entry(1)]
+        pool = _pool_with_entries(monkeypatch, tmp_path, entries)
+
+        explicit_reset_at = time.time() + 12345
+        pool.mark_exhausted_and_rotate(
+            status_code=429,
+            error_context={"message": "rate limited", "reset_at": explicit_reset_at},
+        )
+
+        marked = next(e for e in pool.entries() if e.id == "cred-0")
+        assert marked.last_error_reset_at == pytest.approx(explicit_reset_at, abs=1)
+        # Consecutive count still tracked even when reset_at is explicit.
+        assert marked.consecutive_429_count == 6
+
+    def test_consecutive_count_resets_after_recovery_then_backoff_restarts(
+        self, tmp_path, monkeypatch,
+    ):
+        """Once an entry genuinely recovers (TTL clears it to OK), the next
+        429 must restart the exponential backoff from the base delay, not
+        keep escalating from the old streak."""
+        entries = [
+            _entry(
+                0,
+                last_status=STATUS_EXHAUSTED,
+                last_status_at=time.time() - 90000,
+                last_error_code=429,
+                consecutive_429_count=7,
+            ),
+            _entry(1),
+        ]
+        pool = _pool_with_entries(monkeypatch, tmp_path, entries)
+
+        # TTL-expiry clear via _available_entries(clear_expired=True).
+        available = pool._available_entries(clear_expired=True, refresh=False)
+        recovered = next(e for e in available if e.id == "cred-0")
+        assert recovered.last_status == STATUS_OK
+        assert recovered.consecutive_429_count == 0
+
+        before = time.time()
+        pool.mark_exhausted_and_rotate(status_code=429, error_context={"message": "rate limited"})
+        after = time.time()
+        marked = next(e for e in pool.entries() if e.id == "cred-0")
+        assert marked.consecutive_429_count == 1
+        assert before + 30 <= marked.last_error_reset_at <= after + 30 + 1
+
+
+class TestSkipCoolingEntries:
+    """Spec item 2 (first half): rotation must skip entries still in cooldown."""
+
+    def test_rotation_skips_entry_in_cooldown_picks_healthy_one(self, tmp_path, monkeypatch):
+        entries = [
+            _entry(
+                0,
+                last_status=STATUS_EXHAUSTED,
+                last_status_at=time.time(),
+                last_error_code=429,
+                last_error_reset_at=time.time() + 3600,
+            ),
+            _entry(1),
+            _entry(2),
+        ]
+        pool = _pool_with_entries(monkeypatch, tmp_path, entries)
+
+        selected = pool.select()
+        assert selected is not None
+        assert selected.id in {"cred-1", "cred-2"}  # never the cooling cred-0
+
+    def test_all_entries_cooling_yields_no_selection(self, tmp_path, monkeypatch):
+        future = time.time() + 3600
+        entries = [
+            _entry(0, last_status=STATUS_EXHAUSTED, last_status_at=time.time(),
+                   last_error_code=429, last_error_reset_at=future),
+            _entry(1, last_status=STATUS_EXHAUSTED, last_status_at=time.time(),
+                   last_error_code=429, last_error_reset_at=future),
+        ]
+        pool = _pool_with_entries(monkeypatch, tmp_path, entries)
+
+        assert pool.has_available() is False
+        assert pool.select() is None
+
+
+class TestSingleEntrySameEntryGuard:
+    """Spec item 3: rotation that would return the same exhausted entry
+    must be treated as pool-exhausted, not a successful rotation."""
+
+    def test_single_entry_pool_mark_exhausted_and_rotate_returns_none(self, tmp_path, monkeypatch):
+        entries = [_entry(0)]
+        pool = _pool_with_entries(monkeypatch, tmp_path, entries)
+
+        next_entry = pool.mark_exhausted_and_rotate(
+            status_code=429, error_context={"message": "rate limited"},
+        )
+
+        assert next_entry is None
+
+    def test_same_entry_returned_by_select_is_treated_as_exhausted(self, tmp_path, monkeypatch):
+        """Regression for the 2026-07-08 incident: if some other code path
+        (e.g. a resync-from-auth-store race) makes ``_select_unlocked``
+        report the JUST-exhausted entry as available again, rotation must
+        still refuse to call that a success — it is the identical
+        credential we just failed on, not a real alternative.
+        """
+        entries = [_entry(0), ]
+        pool = _pool_with_entries(monkeypatch, tmp_path, entries)
+        target = entries[0]
+
+        # Simulate the historical bug: _select_unlocked keeps reporting the
+        # same (just marked-exhausted) entry as selectable, e.g. because a
+        # resync path incorrectly cleared its status. Real _select_unlocked
+        # always sets _current_id as a side effect before returning — the
+        # fake must too, or it isn't a faithful stand-in.
+        def _fake_select_unlocked():
+            found = next((e for e in pool.entries() if e.id == target.id), None)
+            pool._current_id = found.id if found is not None else None
+            return found
+
+        monkeypatch.setattr(pool, "_select_unlocked", _fake_select_unlocked)
+
+        next_entry = pool.mark_exhausted_and_rotate(status_code=429)
+
+        assert next_entry is None, (
+            "mark_exhausted_and_rotate must not report the same credential "
+            "it just marked exhausted as a successful rotation"
+        )
+
+    def test_guard_leaves_current_pointed_at_cooling_entry_for_fast_path(
+        self, tmp_path, monkeypatch,
+    ):
+        """When the guard fires, ``current()`` should still report the
+        (still-cooling) entry rather than ``None``.
+
+        This lets the next call into ``recover_with_credential_pool``'s
+        "already exhausted — rotate immediately" fast path recognize the
+        credential without burning one extra live retry against a
+        credential BUILD-262 already knows is bad.
+        """
+        entries = [_entry(0)]
+        pool = _pool_with_entries(monkeypatch, tmp_path, entries)
+        target = entries[0]
+
+        def _fake_select_unlocked():
+            found = next((e for e in pool.entries() if e.id == target.id), None)
+            pool._current_id = found.id if found is not None else None
+            return found
+
+        monkeypatch.setattr(pool, "_select_unlocked", _fake_select_unlocked)
+
+        pool.mark_exhausted_and_rotate(status_code=429)
+
+        current = pool.current()
+        assert current is not None
+        assert current.id == target.id
+        assert current.last_status == STATUS_EXHAUSTED
+
+
+class TestMarkExhaustedAndRotateOrRaise:
+    """Spec item 2 (second half): bounded retries, then a typed error."""
+
+    def test_multi_entry_pool_still_rotates_normally(self, tmp_path, monkeypatch):
+        entries = [_entry(0), _entry(1)]
+        pool = _pool_with_entries(monkeypatch, tmp_path, entries)
+
+        next_entry = pool.mark_exhausted_and_rotate_or_raise(status_code=429)
+
+        assert next_entry is not None
+        assert next_entry.id == "cred-1"
+
+    def test_single_entry_pool_raises_typed_error_with_earliest_available_at(
+        self, tmp_path, monkeypatch,
+    ):
+        from agent.credential_pool import CredentialPoolExhausted
+
+        entries = [_entry(0)]
+        pool = _pool_with_entries(monkeypatch, tmp_path, entries)
+
+        before = time.time()
+        with pytest.raises(CredentialPoolExhausted) as excinfo:
+            pool.mark_exhausted_and_rotate_or_raise(
+                status_code=429,
+                error_context={"message": "rate limited"},
+                sleep_fn=lambda _seconds: None,
+            )
+
+        err = excinfo.value
+        assert err.provider == "openai-codex"
+        assert err.earliest_available_at is not None
+        assert before + 30 <= err.earliest_available_at <= time.time() + 30 + 1
+        assert "openai-codex" in str(err)
+
+    def test_bounded_retries_no_unbounded_loop(self, tmp_path, monkeypatch):
+        """Assert exactly ``max_attempts`` rotation attempts happen, not an
+        unbounded loop — mocks time.sleep (via injectable sleep_fn) and
+        counts calls."""
+        from agent.credential_pool import CredentialPoolExhausted
+
+        entries = [_entry(0)]
+        pool = _pool_with_entries(monkeypatch, tmp_path, entries)
+
+        # Count calls to the rotation-attempt step specifically (distinct
+        # from the one-time "which entry do we charge this failure to"
+        # resolution at the start of the call, which also happens to fall
+        # back to _select_unlocked() and would otherwise be miscounted as
+        # an extra "attempt").
+        rotate_calls = {"n": 0}
+        real_rotate_after_exhaustion = pool._rotate_after_exhaustion
+
+        def counting_rotate_after_exhaustion(exhausted_entry):
+            rotate_calls["n"] += 1
+            return real_rotate_after_exhaustion(exhausted_entry)
+
+        monkeypatch.setattr(pool, "_rotate_after_exhaustion", counting_rotate_after_exhaustion)
+
+        sleep_calls = []
+        with pytest.raises(CredentialPoolExhausted):
+            pool.mark_exhausted_and_rotate_or_raise(
+                status_code=429,
+                error_context={"message": "rate limited"},
+                max_attempts=3,
+                sleep_fn=lambda seconds: sleep_calls.append(seconds),
+            )
+
+        # Exactly 3 rotation attempts — never more (no unbounded loop).
+        assert rotate_calls["n"] == 3
+        # Sleeps only BETWEEN attempts: 2 sleeps for 3 attempts.
+        assert len(sleep_calls) == 2
+        # Bounded, small, monotonically non-decreasing backoff (no giant
+        # delays hiding an effectively-unbounded wait).
+        assert all(0 < s <= 3.0 for s in sleep_calls)
+
+    def test_empty_pool_raises_immediately_without_sleeping(self, tmp_path, monkeypatch):
+        from agent.credential_pool import CredentialPool, CredentialPoolExhausted
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        pool = CredentialPool("openai-codex", [])
+
+        sleep_calls = []
+        with pytest.raises(CredentialPoolExhausted):
+            pool.mark_exhausted_and_rotate_or_raise(
+                status_code=429,
+                sleep_fn=lambda seconds: sleep_calls.append(seconds),
+            )
+        assert sleep_calls == []
+
+
+class TestPoolExhaustedLogsOnce:
+    """Spec item 4: log one WARNING entering pool-exhausted state (with
+    earliest cooldown expiry), not one line per attempt."""
+
+    def test_logs_exactly_one_warning_not_per_attempt(self, tmp_path, monkeypatch, caplog):
+        from agent.credential_pool import CredentialPoolExhausted
+
+        entries = [_entry(0)]
+        pool = _pool_with_entries(monkeypatch, tmp_path, entries)
+
+        with caplog.at_level(logging.WARNING, logger="agent.credential_pool"):
+            with pytest.raises(CredentialPoolExhausted):
+                pool.mark_exhausted_and_rotate_or_raise(
+                    status_code=429,
+                    error_context={"message": "rate limited"},
+                    max_attempts=3,
+                    sleep_fn=lambda _seconds: None,
+                )
+
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warning_records) == 1, (
+            f"Expected exactly one WARNING for pool exhaustion, got "
+            f"{len(warning_records)}: {[r.message for r in warning_records]}"
+        )
+        assert "exhausted" in warning_records[0].message.lower()
+
+    def test_no_warning_logged_on_healthy_rotation(self, tmp_path, monkeypatch, caplog):
+        entries = [_entry(0), _entry(1)]
+        pool = _pool_with_entries(monkeypatch, tmp_path, entries)
+
+        with caplog.at_level(logging.WARNING, logger="agent.credential_pool"):
+            pool.mark_exhausted_and_rotate_or_raise(status_code=429)
+
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert warning_records == []

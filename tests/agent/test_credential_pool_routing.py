@@ -11,6 +11,10 @@ Covers:
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from agent.credential_pool import CredentialPoolExhausted
+
 
 # ---------------------------------------------------------------------------
 # 1. CLI _resolve_turn_agent_config includes credential_pool
@@ -156,7 +160,10 @@ class TestPoolRotationCycle:
         pool = MagicMock()
         pool.has_credentials.return_value = True
 
-        # mark_exhausted_and_rotate returns next entry until exhausted
+        # mark_exhausted_and_rotate_or_raise returns next entry until
+        # exhausted, then raises CredentialPoolExhausted (BUILD-262) —
+        # matching the real contract that replaced "return None" so a
+        # spinning caller can't mistake exhaustion for silence.
         self._rotation_index = 0
 
         def rotate(status_code=None, error_context=None):
@@ -164,9 +171,9 @@ class TestPoolRotationCycle:
             if self._rotation_index < pool_entries:
                 return entries[self._rotation_index]
             pool.has_credentials.return_value = False
-            return None
+            raise CredentialPoolExhausted(provider="test-provider", earliest_available_at=None)
 
-        pool.mark_exhausted_and_rotate = MagicMock(side_effect=rotate)
+        pool.mark_exhausted_and_rotate_or_raise = MagicMock(side_effect=rotate)
         agent._credential_pool = pool
         agent._swap_credential = MagicMock()
         agent.log_prefix = ""
@@ -181,7 +188,7 @@ class TestPoolRotationCycle:
         )
         assert recovered is False
         assert has_retried is True
-        pool.mark_exhausted_and_rotate.assert_not_called()
+        pool.mark_exhausted_and_rotate_or_raise.assert_not_called()
 
     def test_second_429_rotates_to_next(self):
         """Second consecutive 429 should rotate to next credential."""
@@ -191,11 +198,20 @@ class TestPoolRotationCycle:
         )
         assert recovered is True
         assert has_retried is False  # reset after rotation
-        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=429, error_context=None)
+        pool.mark_exhausted_and_rotate_or_raise.assert_called_once_with(
+            status_code=429, error_context=None,
+        )
         agent._swap_credential.assert_called_once_with(entries[1])
 
-    def test_pool_exhaustion_returns_false(self):
-        """When all credentials exhausted, recovery should return False."""
+    def test_pool_exhaustion_raises_credential_pool_exhausted(self):
+        """When all credentials exhausted, recovery must raise (BUILD-262).
+
+        The caller (agent/conversation_loop.py) must park/abort on this —
+        NOT retry-loop expecting a plain ``(False, ...)`` return. Silently
+        swallowing exhaustion here was the "actual spin site" fixed by
+        BUILD-262: a same-entry rotation bug used to make this branch keep
+        returning ``(True, False)`` forever instead.
+        """
         agent, pool, _ = self._make_agent_with_pool(1)
         # First 429 sets flag
         _, has_retried = agent._recover_with_credential_pool(
@@ -204,10 +220,10 @@ class TestPoolRotationCycle:
         assert has_retried is True
 
         # Second 429 tries to rotate but pool is exhausted (only 1 entry)
-        recovered, _ = agent._recover_with_credential_pool(
-            status_code=429, has_retried_429=True
-        )
-        assert recovered is False
+        with pytest.raises(CredentialPoolExhausted):
+            agent._recover_with_credential_pool(
+                status_code=429, has_retried_429=True
+            )
 
     def test_402_immediate_rotation(self):
         """402 (billing) should immediately rotate, no retry-first."""
@@ -217,7 +233,9 @@ class TestPoolRotationCycle:
         )
         assert recovered is True
         assert has_retried is False
-        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=402, error_context=None)
+        pool.mark_exhausted_and_rotate_or_raise.assert_called_once_with(
+            status_code=402, error_context=None,
+        )
 
     def test_no_pool_returns_false(self):
         """No pool should return (False, unchanged)."""

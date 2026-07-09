@@ -1,7 +1,7 @@
 ---
 name: nika
 description: "Delegate repeatable work to Nika — a deterministic workflow runner with pre-flight checks, cost caps, and verifiable receipts."
-version: 1.0.2
+version: 1.0.3
 author: SuperNovae Studio (github.com/supernovae-st)
 license: MIT
 platforms: [linux, macos]
@@ -136,11 +136,13 @@ before anything runs.
 
 ## Receipts & Verification
 
-Every run writes a trace under `.nika/traces/`. After a run:
+Every run writes a trace under `.nika/traces/` — the run card prints the
+trace path on its `trace:` line. Both commands take that path (bare
+invocations are a usage error):
 
 ```
-terminal(command="nika trace show", workdir="~/project")
-terminal(command="nika trace verify", workdir="~/project")
+terminal(command="nika trace show .nika/traces/<run>.ndjson", workdir="~/project")
+terminal(command="nika trace verify .nika/traces/<run>.ndjson", workdir="~/project")
 ```
 
 `trace verify` checks the tamper-evidence hash chain: exit 0 intact · 2
@@ -169,7 +171,7 @@ live.
 | `nika explain <file>` | Narrate: waves, cost floor, touches |
 | `nika run <file> --model <p/m> --max-cost-usd <usd>` | Execute with budget |
 | `nika test <file>` | Golden test under the mock provider (offline) |
-| `nika trace show / verify / outputs / flow` | Receipts after a run |
+| `nika trace show/verify/outputs/flow <trace>` | Receipts after a run (path from the run card's `trace:` line) |
 | `nika doctor` | Diagnose env/keys — prints exact fixes |
 | `nika catalog` | Provider/model ids + required env vars |
 
@@ -185,14 +187,15 @@ live.
    `--max-cost-usd`.
 6. For long runs use `background=true` and poll with
    `process(action="poll"|"log")`.
-7. After the run: `nika trace show` + `nika trace verify`; report outputs,
-   actual cost, and the verify verdict to the user.
+7. After the run: `nika trace show <trace>` + `nika trace verify <trace>`
+   (path from the run card); report outputs, actual cost, and the verify
+   verdict to the user.
 
 ## Pitfalls
 
 - `nika run` renders live on a TTY; when piped (Hermes terminal), output can
   stay quiet until completion — for anything long, prefer `background=true` +
-  poll, then read `nika trace show` for the final card.
+  poll, then read `nika trace show <trace>` for the final card.
 - `nika new` with no `--from` opens a guided TTY flow; in a pipe it fails
   fast naming the flag — always pass `--from <template>` when delegating.
 - The budget guard stops NEW admissions: one wide parallel wave can overshoot

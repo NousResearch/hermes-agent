@@ -1,6 +1,7 @@
 import { useCallback, useRef } from 'react'
 
 import { getCronJobs, listAllProfileSessions, type SessionInfo } from '@/hermes'
+import { cronJobsProfileForScope } from '@/lib/cron-profile-scope'
 import {
   isMessagingSource,
   LOCAL_SESSION_SOURCE_IDS,
@@ -144,13 +145,13 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // next-run/state fresh as the scheduler advances them.
   const refreshCronJobs = useCallback(async () => {
     try {
-      const jobs = await getCronJobs()
+      const jobs = await getCronJobs(cronJobsProfileForScope(profileScope))
 
       setCronJobs(jobs)
     } catch {
       // Non-fatal: the cron section just keeps its last-known jobs.
     }
-  }, [])
+  }, [profileScope])
 
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1

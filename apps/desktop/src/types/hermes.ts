@@ -551,11 +551,15 @@ export interface AnalyticsTotals {
 export interface CronJob {
   deliver?: null | string
   enabled: boolean
+  hermes_home?: null | string
   id: string
+  is_default_profile?: boolean
   last_error?: null | string
   last_run_at?: null | string
   name?: null | string
   next_run_at?: null | string
+  profile?: null | string
+  profile_name?: null | string
   prompt?: null | string
   schedule?: CronJobSchedule
   schedule_display?: null | string

@@ -747,9 +747,9 @@ export function testMessagingPlatform(platformId: string): Promise<MessagingPlat
   })
 }
 
-export function getCronJobs(): Promise<CronJob[]> {
+export function getCronJobs(profile = 'default'): Promise<CronJob[]> {
   return window.hermesDesktop.api<CronJob[]>({
-    path: '/api/cron/jobs',
+    path: `/api/cron/jobs?profile=${encodeURIComponent(profile)}`,
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }

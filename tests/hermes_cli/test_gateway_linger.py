@@ -194,7 +194,12 @@ def test_systemd_install_repair_path_system_scope_skips_linger(monkeypatch, tmp_
     gateway.systemd_install(force=False, system=True)
 
     assert helper_calls == []
-    assert [cmd for cmd, _ in calls] == [
-        ["systemctl", "daemon-reload"],
-        ["systemctl", "enable", gateway.get_service_name()],
-    ]
+    # System scope: no `systemctl --user` anywhere, and the repair still runs
+    # daemon-reload + enable. Assert the behavior contract rather than an exact
+    # call sequence — refresh_systemd_unit_if_needed legitimately emits an
+    # extra `systemctl show ... --property Environment` (HERMES_HOME sync) that
+    # is an internal of the refresh path, not part of this test's contract.
+    systemctl_cmds = [cmd for cmd, _ in calls if cmd and cmd[0] == "systemctl"]
+    assert all("--user" not in cmd for cmd in systemctl_cmds)
+    assert ["systemctl", "daemon-reload"] in systemctl_cmds
+    assert ["systemctl", "enable", gateway.get_service_name()] in systemctl_cmds

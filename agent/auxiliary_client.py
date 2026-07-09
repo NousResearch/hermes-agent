@@ -486,13 +486,8 @@ _PROVIDER_VISION_MODELS: Dict[str, str] = {
 # it must skip straight to the aggregator chain instead of returning a client
 # that will 404 on every vision request.
 #
-# kimi-coding / kimi-coding-cn: the Kimi Coding Plan routes through
-# api.kimi.com/coding (Anthropic Messages wire) which Kimi's own docs
-# describe as having no image_in capability. Vision lives on the separate
-# Kimi Platform (api.moonshot.ai, OpenAI-wire, pay-as-you-go).  See #17076.
+
 _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
-    "kimi-coding",
-    "kimi-coding-cn",
 })
 
 # OpenRouter app attribution headers (base — always sent).

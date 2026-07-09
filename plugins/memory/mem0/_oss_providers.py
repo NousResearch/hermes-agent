@@ -57,6 +57,7 @@ KNOWN_DIMS: dict[str, int] = {
     "text-embedding-3-large": 3072,
     "text-embedding-ada-002": 1536,
     "nomic-embed-text": 768,
+    "intfloat/multilingual-e5-large": 1024,
 }
 
 

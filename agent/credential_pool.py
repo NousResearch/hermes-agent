@@ -651,7 +651,7 @@ class CredentialPool:
         return entry
 
     def _sync_codex_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
-        """Sync a Codex device_code pool entry from auth.json if tokens differ.
+        """Sync a Codex device-code pool entry from auth.json if tokens differ.
 
         When a Codex OAuth access token expires (or the ChatGPT account hits
         its 5h/weekly quota), the pool entry gets marked ``STATUS_EXHAUSTED``
@@ -664,10 +664,13 @@ class CredentialPool:
         fails with "no available entries (all exhausted or empty)".
 
         Mirrors the Nous/Anthropic resync paths above.  Only applies to
-        device_code-sourced entries; env/API-key-sourced entries have no
+        device-code-sourced entries; env/API-key-sourced entries have no
         auth.json shadow to sync from.
         """
-        if self.provider != "openai-codex" or entry.source != "device_code":
+        if (
+            self.provider != "openai-codex"
+            or entry.source not in {"device_code", "manual:device_code"}
+        ):
             return entry
         try:
             with _auth_store_lock():

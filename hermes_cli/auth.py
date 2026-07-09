@@ -1298,6 +1298,83 @@ def get_auth_provider_display_name(provider_id: str) -> str:
     return SERVICE_PROVIDER_NAMES.get(normalized, provider_id)
 
 
+_PROFILE_GLOBAL_HEALABLE_SOURCES = frozenset({
+    "device_code",
+    "manual:device_code",
+})
+
+
+def _credential_pool_entry_available(entry: Any) -> bool:
+    """Return True when a raw credential-pool entry can be tried now."""
+    if not isinstance(entry, dict):
+        return False
+    if not str(entry.get("access_token") or "").strip():
+        return False
+    status = str(entry.get("last_status") or "").strip().lower()
+    if not status or status == "ok":
+        return True
+    if status == "exhausted":
+        reset_at = entry.get("last_error_reset_at")
+        try:
+            return bool(reset_at and float(reset_at) <= time.time())
+        except (TypeError, ValueError):
+            return bool(entry.get("last_status_at") is None)
+    return False
+
+
+def _merge_profile_entries_with_global_health(
+    provider_id: str,
+    profile_entries: List[Dict[str, Any]],
+    global_entries: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Heal stale profile-local cooldowns from matching global OAuth entries.
+
+    Profile credential pools shadow global pools so profiles can intentionally
+    override provider auth.  However, when a profile first inherits global
+    entries and then writes runtime status, it materializes a local copy.  If
+    those copied entries later sit behind a long ``last_error_reset_at`` while
+    the matching global entry has been reset or re-authed, the profile appears
+    logged out even though usable credentials exist.  For owned OAuth sources,
+    a same-id global entry is the same credential, so prefer its healthier
+    token/status fields while keeping profile-only entries and priorities.
+    """
+    if provider_id != "openai-codex" or not profile_entries or not global_entries:
+        return profile_entries
+    global_by_id = {
+        str(entry.get("id") or ""): entry
+        for entry in global_entries
+        if isinstance(entry, dict)
+        and str(entry.get("id") or "")
+        and str(entry.get("source") or "").strip().lower()
+        in _PROFILE_GLOBAL_HEALABLE_SOURCES
+    }
+    if not global_by_id:
+        return profile_entries
+
+    merged: List[Dict[str, Any]] = []
+    changed = False
+    for profile_entry in profile_entries:
+        if not isinstance(profile_entry, dict):
+            merged.append(profile_entry)
+            continue
+        source = str(profile_entry.get("source") or "").strip().lower()
+        global_entry = global_by_id.get(str(profile_entry.get("id") or ""))
+        if (
+            source in _PROFILE_GLOBAL_HEALABLE_SOURCES
+            and global_entry is not None
+            and not _credential_pool_entry_available(profile_entry)
+            and _credential_pool_entry_available(global_entry)
+        ):
+            healed = dict(global_entry)
+            if "priority" in profile_entry:
+                healed["priority"] = profile_entry.get("priority")
+            merged.append(healed)
+            changed = True
+        else:
+            merged.append(profile_entry)
+    return merged if changed else profile_entries
+
+
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the persisted credential pool, or one provider slice.
 
@@ -1310,6 +1387,12 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     when the profile has zero entries for that provider. Once the user runs
     ``hermes auth add <provider>`` inside the profile, profile entries
     fully shadow global for that provider on the next read.
+
+    For Codex device-code credentials, profile-local copies are additionally
+    healed from matching global entries when the profile copy is exhausted but
+    the global copy is usable. This preserves explicit profile overrides while
+    preventing a runtime-written local cooldown from stranding a profile after
+    global re-auth or manual pool reset.
 
     Writes always go to the profile (``write_credential_pool`` is unchanged).
     See issue #18594 follow-up.
@@ -1333,15 +1416,26 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
             # Per-provider shadowing: profile wins whenever it has ANY entries.
             existing = merged.get(gp_key)
             if isinstance(existing, list) and existing:
+                merged[gp_key] = _merge_profile_entries_with_global_health(
+                    gp_key,
+                    list(existing),
+                    list(gp_entries),
+                )
                 continue
             merged[gp_key] = list(gp_entries)
         return merged
 
     provider_entries = pool.get(provider_id)
+    global_entries = global_pool.get(provider_id)
     if isinstance(provider_entries, list) and provider_entries:
+        if isinstance(global_entries, list):
+            return _merge_profile_entries_with_global_health(
+                provider_id,
+                list(provider_entries),
+                list(global_entries),
+            )
         return list(provider_entries)
     # Profile has no entries for this provider — fall back to global.
-    global_entries = global_pool.get(provider_id)
     return list(global_entries) if isinstance(global_entries, list) else []
 
 

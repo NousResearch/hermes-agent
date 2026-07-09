@@ -109,6 +109,76 @@ def test_profile_with_entries_fully_shadows_global(profile_env):
     assert entries[0]["access_token"] == "sk-or-profile"
 
 
+def test_codex_profile_exhausted_copy_heals_from_matching_global(profile_env):
+    """A stale profile-local Codex cooldown must not shadow usable global auth."""
+    from hermes_cli.auth import read_credential_pool
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [
+            {
+                "id": "personal",
+                "label": "personal",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "manual:device_code",
+                "access_token": "global-personal-access",
+                "refresh_token": "global-personal-refresh",
+            },
+            {
+                "id": "work",
+                "label": "work-merittas",
+                "auth_type": "oauth",
+                "priority": 1,
+                "source": "manual:device_code",
+                "access_token": "global-work-access",
+                "refresh_token": "global-work-refresh",
+            },
+        ],
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [
+            {
+                "id": "personal",
+                "label": "personal",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "manual:device_code",
+                "access_token": "stale-personal-access",
+                "refresh_token": "stale-personal-refresh",
+                "last_status": "exhausted",
+                "last_status_at": 1,
+                "last_error_code": 429,
+                "last_error_reason": "usage_limit_reached",
+                "last_error_message": "The usage limit has been reached",
+                "last_error_reset_at": 9999999999.0,
+            },
+            {
+                "id": "work",
+                "label": "work-merittas",
+                "auth_type": "oauth",
+                "priority": 1,
+                "source": "manual:device_code",
+                "access_token": "stale-work-access",
+                "refresh_token": "stale-work-refresh",
+                "last_status": "exhausted",
+                "last_status_at": 1,
+                "last_error_code": 429,
+                "last_error_reason": "usage_limit_reached",
+                "last_error_message": "The usage limit has been reached",
+                "last_error_reset_at": 9999999999.0,
+            },
+        ],
+    }))
+
+    entries = read_credential_pool("openai-codex")
+    assert [entry["id"] for entry in entries] == ["personal", "work"]
+    assert [entry["access_token"] for entry in entries] == [
+        "global-personal-access",
+        "global-work-access",
+    ]
+    assert [entry.get("last_status") for entry in entries] == [None, None]
+
+
 def test_per_provider_shadowing_is_independent(profile_env):
     """Profile can override one provider while inheriting another from global."""
     from hermes_cli.auth import read_credential_pool

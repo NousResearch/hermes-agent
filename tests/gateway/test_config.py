@@ -92,6 +92,28 @@ class TestPlatformConfigRoundtrip:
         # extra; from_dict must honor it there too (mirrors _grn fallback).
         restored = PlatformConfig.from_dict({"extra": {"typing_indicator": False}})
         assert restored.typing_indicator is False
+
+    def test_typing_status_text_defaults_none(self):
+        assert PlatformConfig().typing_status_text is None
+        assert PlatformConfig.from_dict({}).typing_status_text is None
+
+    def test_typing_status_text_roundtrip(self):
+        pc = PlatformConfig(enabled=True, typing_status_text="is pouncing… 🐾")
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.typing_status_text == "is pouncing… 🐾"
+
+    def test_typing_status_text_resolved_from_extra(self):
+        # Same bridge route as typing_indicator: the shared-key loop copies a
+        # nested platforms.<plat> value into extra.
+        restored = PlatformConfig.from_dict(
+            {"extra": {"typing_status_text": "chasing yarn…"}}
+        )
+        assert restored.typing_status_text == "chasing yarn…"
+
+    def test_typing_status_text_omitted_from_to_dict_when_unset(self):
+        # None must not serialize — keeps existing config files byte-stable.
+        assert "typing_status_text" not in PlatformConfig().to_dict()
+
     def test_channel_overrides_roundtrip(self):
         pc = PlatformConfig(
             enabled=True,

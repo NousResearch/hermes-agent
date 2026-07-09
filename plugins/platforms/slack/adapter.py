@@ -1515,7 +1515,8 @@ class SlackAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Show a typing/status indicator using assistant.threads.setStatus.
 
-        Displays "is thinking..." next to the bot name in a thread.
+        Displays "is thinking..." next to the bot name in a thread, or the
+        platform's ``typing_status_text`` config value when set.
         Requires the assistant:write or chat:write scope.
         Auto-clears when the bot sends a reply to the thread.
         """
@@ -1534,7 +1535,8 @@ class SlackAdapter(BasePlatformAdapter):
             await self._get_client(chat_id).assistant_threads_setStatus(
                 channel_id=chat_id,
                 thread_ts=thread_ts,
-                status="is thinking...",
+                status=getattr(self.config, "typing_status_text", None)
+                or "is thinking...",
             )
         except Exception as e:
             # Silently ignore — may lack assistant:write scope or not be

@@ -464,6 +464,15 @@ class PlatformConfig:
     # gateway/platforms/base.py.
     typing_indicator: bool = True
 
+    # Custom text for the working-state line on platforms whose typing
+    # indicator renders text rather than a native bubble: Slack's
+    # assistant.threads.setStatus line (shown next to the bot name; needs the
+    # assistant:write scope to render) and Google Chat's visible marker
+    # message. None keeps each platform's built-in default ("is thinking..." /
+    # "Hermes is thinking…"). Platforms with textless indicators (Discord,
+    # Telegram, Matrix, …) ignore it.
+    typing_status_text: Optional[str] = None
+
     # Per-channel model/provider/system_prompt overrides (channel_id -> ChannelOverride)
     channel_overrides: Dict[str, ChannelOverride] = field(default_factory=dict)
 
@@ -478,6 +487,8 @@ class PlatformConfig:
             "gateway_restart_notification": self.gateway_restart_notification,
             "typing_indicator": self.typing_indicator,
         }
+        if self.typing_status_text is not None:
+            result["typing_status_text"] = self.typing_status_text
         if self.token:
             result["token"] = self.token
         if self.api_key:
@@ -511,6 +522,12 @@ class PlatformConfig:
         if _typing is None:
             _typing = data.get("extra", {}).get("typing_indicator")
 
+        # typing_status_text takes the same two routes (top-level or bridged
+        # into extra); string passthrough, no coercion.
+        _typing_text = data.get("typing_status_text")
+        if _typing_text is None:
+            _typing_text = data.get("extra", {}).get("typing_status_text")
+
         channel_overrides: Dict[str, ChannelOverride] = {}
         raw_overrides = data.get("channel_overrides") or {}
         if isinstance(raw_overrides, dict):
@@ -526,6 +543,7 @@ class PlatformConfig:
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
             typing_indicator=_coerce_bool(_typing, True),
+            typing_status_text=_typing_text,
             channel_overrides=channel_overrides,
             extra=data.get("extra", {}),
         )
@@ -1223,6 +1241,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
                 if "typing_indicator" in platform_cfg:
                     bridged["typing_indicator"] = platform_cfg["typing_indicator"]
+                if "typing_status_text" in platform_cfg:
+                    bridged["typing_status_text"] = platform_cfg["typing_status_text"]
                 has_channel_overrides = "channel_overrides" in platform_cfg
                 if has_channel_overrides:
                     raw_overrides = platform_cfg.get("channel_overrides")

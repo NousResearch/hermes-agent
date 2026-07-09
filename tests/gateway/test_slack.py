@@ -2035,6 +2035,24 @@ class TestSendTyping:
         )
 
     @pytest.mark.asyncio
+    async def test_custom_typing_status_text(self):
+        # typing_status_text overrides the default status wording.
+        config = PlatformConfig(
+            enabled=True, token="xoxb-fake-token",
+            typing_status_text="is pouncing… 🐾",
+        )
+        a = SlackAdapter(config)
+        a._app = MagicMock()
+        a._app.client = AsyncMock()
+        a._app.client.assistant_threads_setStatus = AsyncMock()
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="is pouncing… 🐾",
+        )
+
+    @pytest.mark.asyncio
     async def test_noop_without_thread(self, adapter):
         adapter._app.client.assistant_threads_setStatus = AsyncMock()
         await adapter.send_typing("C123")

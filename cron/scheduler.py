@@ -2011,6 +2011,74 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
+# Well-known Git for Windows install locations, looked up in this order.
+# The Git for Windows installer's default PATH option adds ``Git\cmd`` (which
+# ships ``git.exe``) but NOT ``Git\bin`` / ``Git\usr\bin`` (which ship
+# ``bash.exe``). When Windows' own WSL launcher stub — ``system32\bash.exe`` —
+# is also present and ``Git\usr\bin`` isn't on PATH, ``shutil.which("bash")``
+# silently resolves to the WSL stub, and ``.sh`` cron scripts fail with
+# ``WSL_E_DEFAULT_DISTRO_NOT_FOUND`` whenever WSL has no distributions
+# installed.  Probing these well-known paths before consulting ``which("bash")``
+# picks real Git Bash in the common "default install" configuration and avoids
+# the WSL-stub resolution entirely.
+_GIT_WIN_BASH_PATHS = (
+    os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
+    os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
+    os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "usr", "bin", "bash.exe"),
+    os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "usr", "bin", "bash.exe"),
+)
+
+
+def _is_wsl_launcher(path: str) -> bool:
+    """Best-effort: True when ``path`` is the Windows WSL ``bash.exe`` stub.
+
+    ``shutil.which("bash")`` can hand us ``C:\\Windows\\System32\\bash.exe`` —
+    the WSL entrypoint — which exits non-zero with
+    ``WSL_E_DEFAULT_DISTRO_NOT_FOUND`` when WSL is enabled but unpopulated.
+    Treat any ``bash`` resolved under ``system32`` (or the WindowsApps WSL
+    alias dir) as the WSL stub so callers can prefer a real Git Bash instead.
+    """
+    if not path:
+        return False
+    norm = os.path.normcase(os.path.normpath(path))
+    parts = norm.split(os.sep)
+    return ("system32" in parts) or ("windowsapps" in parts)
+
+
+def _resolve_bash() -> "Optional[str]":
+    """Pick a bash interpreter for ``.sh``/``.bash`` cron scripts.
+
+    Order of preference:
+
+    1. On Windows, a real Git for Windows ``bash.exe`` at a well-known install
+       path — beats ``shutil.which("bash")`` so the WSL launcher stub under
+       ``system32`` never wins when WSL has no distributions installed.
+    2. ``shutil.which("bash")`` — the historical resolution, correct on
+       Linux/macOS and on Windows hosts that *did* add Git's ``bin``/``usr/bin``
+       to PATH — unless it resolves to the WSL stub (then keep looking).
+    3. ``/bin/bash`` — the POSIX fallback when nothing is on PATH.
+
+    Returns the bash path, or ``None`` if no usable bash was found (caller
+    emits a clear install-hint error in that case).
+    """
+    # 1. Windows: probe well-known Git for Windows locations first.
+    if sys.platform == "win32":
+        for cand in _GIT_WIN_BASH_PATHS:
+            if os.path.isfile(cand):
+                return cand
+
+    # 2. PATH lookup — but skip the WSL launcher stub on Windows.
+    which_hit = shutil.which("bash")
+    if which_hit and not _is_wsl_launcher(which_hit):
+        return which_hit
+
+    # 3. POSIX fallback (a no-op on Windows).
+    if os.path.isfile("/bin/bash"):
+        return "/bin/bash"
+
+    return None
+
+
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -2021,7 +2089,9 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
     Supported interpreters (chosen by file extension):
 
-    * ``.sh`` / ``.bash`` — run with ``/bin/bash``
+    * ``.sh`` / ``.bash`` — run with bash resolved via ``_resolve_bash()``
+      (Git for Windows location probe, then ``shutil.which("bash")`` minus
+      the WSL launcher stub, then ``/bin/bash``)
     * anything else — run with the current Python interpreter
       (``sys.executable``), preserving the original behaviour for
       Python-based pre-check and data-collection scripts.
@@ -2080,9 +2150,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         # shutil.which returns None — fall back to a clear error rather
         # than a FileNotFoundError with a confusing "[WinError 2]"
         # traceback.
-        _bash = shutil.which("bash") or (
-            "/bin/bash" if os.path.isfile("/bin/bash") else None
-        )
+        _bash = _resolve_bash()
         if _bash is None:
             return False, (
                 f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "

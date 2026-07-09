@@ -86,6 +86,30 @@ def _model_switch_skew_guard() -> Optional[str]:
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
+    @staticmethod
+    def _is_write_approval_toggle(args: list[str]) -> bool:
+        return bool(args) and args[0].lower() in {"approval", "mode"} and len(args) > 1
+
+    def _write_approval_toggle_denial(
+        self,
+        event: MessageEvent,
+        command: str,
+        args: list[str],
+    ) -> Optional[str]:
+        """Block non-admin gateway users from changing global approval config."""
+        if not self._is_write_approval_toggle(args):
+            return None
+
+        from gateway.slash_access import policy_for_source
+
+        policy = policy_for_source(self.config, event.source)
+        if policy.is_admin(getattr(event.source, "user_id", None)):
+            return None
+        return (
+            f"Permission denied: /{command} approval is admin-only here. "
+            f"You can still use other /{command} review subcommands allowed for your account."
+        )
+
     def _typed_command_prefix_for(self, platform) -> str:
         """Return the prefix users can always type to reach Hermes commands.
 
@@ -2769,6 +2793,10 @@ class GatewaySlashCommandsMixin:
         session_key = self._session_key_for_source(event.source)
         config_path = _hermes_home / "config.yaml"
 
+        denial = self._write_approval_toggle_denial(event, "memory", args)
+        if denial is not None:
+            return denial
+
         def _set_approval(enabled: bool):
             import yaml
             user_config = {}
@@ -2824,6 +2852,10 @@ class GatewaySlashCommandsMixin:
             return ("Skill write approval is off (skills.write_approval). "
                     "Enable it with /skills approval on, then review staged "
                     "writes here with /skills pending.")
+
+        denial = self._write_approval_toggle_denial(event, "skills", args)
+        if denial is not None:
+            return denial
 
         def _set_approval(enabled: bool):
             import yaml

@@ -23,6 +23,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import yaml
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
@@ -110,6 +111,24 @@ def _make_runner(*, platform_extra: dict | None = None,
     return runner
 
 
+def _isolate_hermes_home(monkeypatch, tmp_path, config: dict):
+    import gateway.run as gateway_run
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump(config),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+    return hermes_home
+
+
+def _read_test_config(hermes_home):
+    return yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8")) or {}
+
+
 # ---------------------------------------------------------------------------
 # /whoami response shape — proves the handler is reachable AND uses the
 # resolver. We use /whoami because it's deterministic and short-circuits
@@ -146,6 +165,110 @@ async def test_whoami_non_admin_lists_runnable_commands():
     assert "/whoami" in result    # always-allowed floor
     assert "/status" in result
     assert "/model" in result
+
+
+# ---------------------------------------------------------------------------
+# Listed write-review commands must not let non-admins mutate global gates
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_non_admin_memory_approval_toggle_denied_when_command_allowlisted(
+    monkeypatch,
+    tmp_path,
+):
+    hermes_home = _isolate_hermes_home(
+        monkeypatch,
+        tmp_path,
+        {"memory": {"write_approval": True}},
+    )
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": ["memory"],
+        }
+    )
+    runner._evict_cached_agent = MagicMock()
+
+    result = await runner._handle_message(
+        _make_event("/memory approval off", _make_source(user_id="999"))
+    )
+
+    assert "admin-only" in result
+    assert _read_test_config(hermes_home)["memory"]["write_approval"] is True
+    runner._evict_cached_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_admin_memory_approval_toggle_still_updates_config(monkeypatch, tmp_path):
+    hermes_home = _isolate_hermes_home(
+        monkeypatch,
+        tmp_path,
+        {"memory": {"write_approval": True}},
+    )
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": ["memory"],
+        }
+    )
+    runner._evict_cached_agent = MagicMock()
+
+    result = await runner._handle_message(
+        _make_event("/memory approval off", _make_source(user_id="111"))
+    )
+
+    assert "memory.write_approval set to 'off'" in result
+    assert _read_test_config(hermes_home)["memory"]["write_approval"] is False
+    runner._evict_cached_agent.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_legacy_memory_approval_toggle_works_without_admin_list(
+    monkeypatch,
+    tmp_path,
+):
+    hermes_home = _isolate_hermes_home(
+        monkeypatch,
+        tmp_path,
+        {"memory": {"write_approval": True}},
+    )
+    runner = _make_runner(platform_extra={})
+    runner._evict_cached_agent = MagicMock()
+
+    result = await runner._handle_message(
+        _make_event("/memory approval off", _make_source(user_id="999"))
+    )
+
+    assert "memory.write_approval set to 'off'" in result
+    assert _read_test_config(hermes_home)["memory"]["write_approval"] is False
+
+
+@pytest.mark.asyncio
+async def test_non_admin_skills_approval_toggle_denied_when_command_allowlisted(
+    monkeypatch,
+    tmp_path,
+):
+    hermes_home = _isolate_hermes_home(
+        monkeypatch,
+        tmp_path,
+        {"skills": {"write_approval": True}},
+    )
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": ["skills"],
+        }
+    )
+    runner._evict_cached_agent = MagicMock()
+
+    result = await runner._handle_message(
+        _make_event("/skills approval off", _make_source(user_id="999"))
+    )
+
+    assert "admin-only" in result
+    assert _read_test_config(hermes_home)["skills"]["write_approval"] is True
+    runner._evict_cached_agent.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

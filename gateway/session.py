@@ -1954,6 +1954,14 @@ class SessionStore:
                         session_key, entry.session_id,
                     )
                     self._entries.pop(session_key, None)
+                    # If an expiry watcher (daily/idle reset) already finalized
+                    # this session, honour the reset decision instead of silently
+                    # reopening it via recovery.
+                    if _reset_reason:
+                        was_auto_reset = True
+                        auto_reset_reason = _reset_reason
+                        reset_had_activity = entry.last_prompt_tokens > 0
+                        db_end_session_id = entry.session_id
                     entry = None
                     _needs_recover = True
                 elif entry.session_id != _stale_session_id:

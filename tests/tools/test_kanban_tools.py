@@ -375,7 +375,9 @@ def test_complete_happy_path(worker_env):
         run = kb.latest_run(conn, worker_env)
         assert run.outcome == "completed"
         assert run.summary == "got the thing done"
-        assert run.metadata == {"files": 2}
+        assert run.metadata is not None
+        assert run.metadata["files"] == 2
+        assert run.metadata["delivery_evidence"]["tool_call"]["action"] == "kanban_complete"
     finally:
         conn.close()
 
@@ -403,7 +405,10 @@ def test_complete_metadata_round_trips_through_show(worker_env):
     shown = json.loads(show_out)
     assert shown["task"]["status"] == "done"
     assert shown["runs"][-1]["summary"] == "finished with structured evidence"
-    assert shown["runs"][-1]["metadata"] == handoff
+    shown_metadata = shown["runs"][-1]["metadata"]
+    assert shown_metadata["changed_files"] == handoff["changed_files"]
+    assert shown_metadata["verification"] == handoff["verification"]
+    assert shown_metadata["delivery_evidence"]["tool_call"]["action"] == "kanban_complete"
 
 
 def test_complete_stamps_worker_session_id_from_env(monkeypatch, worker_env):
@@ -423,10 +428,11 @@ def test_complete_stamps_worker_session_id_from_env(monkeypatch, worker_env):
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)
-        assert run.metadata == {
-            "files": 2,
-            "worker_session_id": "session-trusted",
-        }
+        assert run is not None
+        assert run.metadata is not None
+        assert run.metadata["files"] == 2
+        assert run.metadata["worker_session_id"] == "session-trusted"
+        assert run.metadata["delivery_evidence"]["tool_call"]["worker_session_id"] == "session-trusted"
     finally:
         conn.close()
 
@@ -450,10 +456,11 @@ def test_complete_does_not_stamp_worker_session_id_without_scoped_task(
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)
-        assert run.metadata == {
-            "files": 2,
-            "worker_session_id": "user-provided",
-        }
+        assert run is not None
+        assert run.metadata is not None
+        assert run.metadata["files"] == 2
+        assert run.metadata["worker_session_id"] == "user-provided"
+        assert run.metadata["delivery_evidence"]["tool_call"]["worker_session_id"] == "session-trusted"
     finally:
         conn.close()
 
@@ -771,6 +778,11 @@ def test_block_happy_path(worker_env):
     conn = kb.connect()
     try:
         assert kb.get_task(conn, worker_env).status == "blocked"
+        run = kb.latest_run(conn, worker_env)
+        assert run is not None
+        assert run.metadata is not None
+        assert run.metadata["delivery_evidence"]["tool_call"]["action"] == "kanban_block"
+        assert run.metadata["delivery_evidence"]["tool_call"]["reason_present"] is True
     finally:
         conn.close()
 
@@ -1419,8 +1431,11 @@ def test_worker_lifecycle_through_tools(worker_env):
         assert parent.status == "done"
         assert parent.current_run_id is None
         run = kb.latest_run(conn, worker_env)
+        assert run is not None
         assert run.outcome == "completed"
-        assert run.metadata == {"child_task": child_out["task_id"]}
+        assert run.metadata is not None
+        assert run.metadata["child_task"] == child_out["task_id"]
+        assert run.metadata["delivery_evidence"]["tool_call"]["action"] == "kanban_complete"
         # Child is todo (parent just finished, but recompute_ready may
         # have promoted it — complete_task runs recompute internally).
         child = kb.get_task(conn, child_out["task_id"])

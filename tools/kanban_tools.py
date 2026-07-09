@@ -222,6 +222,60 @@ def _stamp_worker_session_metadata(
     return stamped
 
 
+def _delivery_evidence_artifact_checks(metadata: Optional[dict]) -> list[dict[str, Any]]:
+    if not isinstance(metadata, dict):
+        return []
+    raw = metadata.get("artifacts")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    checks: list[dict[str, Any]] = []
+    for item in raw:
+        path = str(item).strip()
+        if not path:
+            continue
+        expanded = os.path.expanduser(path)
+        checks.append({
+            "path": path,
+            "readable": os.path.isfile(expanded),
+        })
+    return checks
+
+
+def _write_tool_run_delivery_evidence(
+    kb,
+    conn,
+    task_id: str,
+    run_id: Optional[int],
+    *,
+    action: str,
+    summary: Optional[str] = None,
+    result: Optional[str] = None,
+    reason: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> None:
+    if run_id is None:
+        return
+    workspace = os.environ.get("HERMES_KANBAN_WORKSPACE")
+    evidence: dict[str, Any] = {
+        "tool_call": {
+            "action": action,
+            "task_id": task_id,
+            "worker_session_id": os.environ.get("HERMES_SESSION_ID"),
+            "scoped_worker_task": os.environ.get("HERMES_KANBAN_TASK"),
+            "workspace_path": workspace,
+            "workspace_exists": bool(workspace and os.path.exists(workspace)),
+            "summary_present": bool(summary),
+            "result_present": bool(result),
+            "reason_present": bool(reason),
+            "metadata_keys": sorted(metadata.keys()) if isinstance(metadata, dict) else [],
+        }
+    }
+    artifact_checks = _delivery_evidence_artifact_checks(metadata)
+    if artifact_checks:
+        evidence["artifact_checks"] = artifact_checks
+    kb.write_run_delivery_evidence(conn, int(run_id), evidence)
+
+
 def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     """Reject worker-driven destructive calls on foreign task IDs.
 
@@ -496,6 +550,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "started_at": t.started_at,
                     "completed_at": t.completed_at,
                     "result": t.result,
+                    "delivery_state": t.delivery_state,
                     "current_run_id": t.current_run_id,
                     "model_override": t.model_override,
                 }
@@ -796,6 +851,16 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
+            _write_tool_run_delivery_evidence(
+                kb,
+                conn,
+                tid,
+                run.id if run else None,
+                action="kanban_complete",
+                summary=summary,
+                result=result,
+                metadata=metadata,
+            )
             return _ok(task_id=tid, run_id=run.id if run else None)
         finally:
             conn.close()
@@ -867,6 +932,14 @@ def _handle_block(args: dict, **kw) -> str:
                     f"running/ready)"
                 )
             run = kb.latest_run(conn, tid)
+            _write_tool_run_delivery_evidence(
+                kb,
+                conn,
+                tid,
+                run.id if run else None,
+                action="kanban_block",
+                reason=str(reason),
+            )
             # Tell the worker where the task actually landed so it doesn't
             # assume it's sitting in 'blocked' when routing sent it elsewhere.
             landed = kb.get_task(conn, tid)

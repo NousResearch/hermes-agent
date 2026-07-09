@@ -177,6 +177,27 @@ def test_task_to_dict_uses_live_worker_workspace_snapshot(
     assert payload["branch_name"] == "wt/live"
 
 
+def test_task_to_dict_includes_delivery_state(kanban_home, tmp_path):
+    artifact = tmp_path / "delivery.md"
+    artifact.write_text("delivery\n", encoding="utf-8")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship delivery state")
+        kb.init_task_delivery_state(
+            conn,
+            tid,
+            stage="implementation",
+            workflow_stream_id="t_stream",
+            artifact_ref={"kind": "file", "path": str(artifact)},
+        )
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    payload = kc._task_to_dict(task)
+    assert payload["delivery_state"]["workflow_stream_id"] == "t_stream"
+    assert payload["delivery_state"]["artifact"]["readable"] is True
+
+
 def test_run_slash_rejects_branch_without_worktree(kanban_home):
     out = kc.run_slash("create 'bad branch' --workspace scratch --branch wt/bad")
     assert "--branch is only valid with --workspace worktree" in out

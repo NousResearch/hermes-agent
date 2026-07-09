@@ -923,6 +923,7 @@ class Task:
     workspace_base_ref: Optional[str] = None
     workspace_base_commit: Optional[str] = None
     result: Optional[str] = None
+    delivery_state: Optional[dict[str, Any]] = None
     idempotency_key: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
     #   * spawn failure (dispatcher couldn't launch the worker)
@@ -993,6 +994,14 @@ class Task:
                     skills_value = [str(s) for s in parsed if s]
             except Exception:
                 skills_value = None
+        delivery_state_value: Optional[dict[str, Any]] = None
+        if "delivery_state" in keys and row["delivery_state"]:
+            try:
+                parsed_delivery_state = json.loads(row["delivery_state"])
+                if isinstance(parsed_delivery_state, dict):
+                    delivery_state_value = parsed_delivery_state
+            except Exception:
+                delivery_state_value = None
         return cls(
             id=row["id"],
             title=row["title"],
@@ -1019,6 +1028,7 @@ class Task:
             tenant=row["tenant"] if "tenant" in keys else None,
             brand=row["brand"] if "brand" in keys else None,
             result=row["result"] if "result" in keys else None,
+            delivery_state=delivery_state_value,
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
             consecutive_failures=(
                 row["consecutive_failures"] if "consecutive_failures" in keys
@@ -1162,6 +1172,226 @@ class Event:
 
 
 # ---------------------------------------------------------------------------
+# Delivery-state helpers (pilot: machine-checkable software-delivery truth)
+# ---------------------------------------------------------------------------
+
+DELIVERY_REVIEW_GATE_STAGES = {"implementation", "qa"}
+DELIVERY_WORKTREE_PROVENANCE_STAGES = {"implementation", "review", "converge"}
+
+
+def _delivery_ref_path(ref: Optional[dict[str, Any]]) -> Optional[str]:
+    if not isinstance(ref, dict):
+        return None
+    raw = ref.get("path") or ref.get("stored_path")
+    if raw is None:
+        return None
+    path = str(raw).strip()
+    return path or None
+
+
+def delivery_artifact_readable(ref: Optional[dict[str, Any]]) -> bool:
+    """Return True when the delivery artifact ref resolves to a readable file.
+
+    The pilot intentionally treats file readability as first-class delivery
+    truth. Unsupported or incomplete refs stay false rather than pretending
+    delivery is green.
+    """
+
+    path = _delivery_ref_path(ref)
+    if not path:
+        return False
+    try:
+        return Path(path).expanduser().is_file()
+    except OSError:
+        return False
+
+
+def _delivery_workspace_snapshot(task: Task) -> dict[str, Any]:
+    return {
+        "kind": task.workspace_kind,
+        "path": task.workspace_path,
+        "branch_name": task.branch_name,
+        "base_ref": task.workspace_base_ref,
+        "base_commit": task.workspace_base_commit,
+    }
+
+
+def _deep_merge_dicts(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge_dicts(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def derive_delivery_verdict(snapshot: Optional[dict[str, Any]]) -> tuple[str, str]:
+    """Reduce a structured delivery-state snapshot into a verdict + reason."""
+
+    if not isinstance(snapshot, dict) or not snapshot:
+        return ("unknown", "delivery_state missing")
+
+    required = [
+        "stage",
+        "workflow_stream_id",
+        "artifact",
+        "workspace",
+        "proof",
+        "review",
+        "merge",
+        "release",
+    ]
+    missing = [key for key in required if snapshot.get(key) is None]
+    if missing:
+        return ("unknown", f"missing delivery_state fields: {', '.join(missing)}")
+
+    stage = str(snapshot.get("stage") or "").strip()
+    if not stage:
+        return ("unknown", "stage missing")
+
+    artifact = snapshot.get("artifact") or {}
+    primary_ref = artifact.get("primary_ref")
+    if primary_ref is None:
+        return ("unknown", "primary artifact missing")
+    if artifact.get("readable") is False:
+        return ("blocked", "primary artifact unreadable")
+
+    proof = snapshot.get("proof") or {}
+    proof_status = str(proof.get("proof_status") or "").strip()
+    if proof_status == "failed":
+        return ("failed", "proof status failed")
+
+    workspace = snapshot.get("workspace") or {}
+    if (
+        stage in DELIVERY_WORKTREE_PROVENANCE_STAGES
+        and workspace.get("kind") == "worktree"
+        and (not workspace.get("branch_name") or not workspace.get("base_ref"))
+    ):
+        return ("unknown", "worktree delivery stage missing branch/base provenance")
+
+    task_status = str(snapshot.get("task_status") or "").strip()
+    if task_status == "blocked":
+        return ("blocked", "task is blocked")
+
+    review = snapshot.get("review") or {}
+    merge = snapshot.get("merge") or {}
+    release = snapshot.get("release") or {}
+    review_status = str(review.get("status") or "").strip()
+    merge_status = str(merge.get("status") or "").strip()
+    release_status = str(release.get("status") or "").strip()
+
+    if release_status == "released":
+        return ("released", "release evidence recorded")
+    if merge_status == "merged" and release_status not in {"released", "not_applicable"}:
+        return ("merged_not_released", "merge verified but release not proven")
+    if stage in DELIVERY_REVIEW_GATE_STAGES and review_status not in {"approved", "not_applicable"}:
+        return ("needs_review", "stage output awaits explicit review")
+    if review_status == "approved" and merge_status not in {"merged", "not_applicable"}:
+        return ("verified_not_merged", "review approved but merge not proven")
+    if task_status in {"running", "ready", "todo", "scheduled"}:
+        return ("in_progress", "delivery evidence still being collected")
+    if task_status == "done":
+        return ("in_progress", "task completed but downstream delivery truth is still partial")
+    return ("unknown", "delivery state incomplete")
+
+
+def _normalize_delivery_state(task: Task, state: dict[str, Any]) -> dict[str, Any]:
+    now = int(time.time())
+    normalized = dict(state)
+    normalized["schema_version"] = int(normalized.get("schema_version") or 1)
+    normalized["task_id"] = task.id
+    normalized["task_status"] = task.status
+    normalized["assignee_profile"] = task.assignee
+
+    workspace = normalized.get("workspace")
+    if isinstance(workspace, dict):
+        normalized["workspace"] = _deep_merge_dicts(_delivery_workspace_snapshot(task), workspace)
+    else:
+        normalized["workspace"] = _delivery_workspace_snapshot(task)
+
+    artifact_raw = normalized.get("artifact")
+    artifact: dict[str, Any] = dict(artifact_raw) if isinstance(artifact_raw, dict) else {}
+    artifact.setdefault("primary_ref", None)
+    refs = artifact.get("refs")
+    artifact["refs"] = list(refs) if isinstance(refs, list) else []
+    artifact["readable"] = delivery_artifact_readable(artifact.get("primary_ref"))
+    artifact["last_checked_at"] = now
+    normalized["artifact"] = artifact
+
+    proof_raw = normalized.get("proof")
+    proof: dict[str, Any] = dict(proof_raw) if isinstance(proof_raw, dict) else {}
+    proof.setdefault("tests_required", {"count": 0, "items": []})
+    proof.setdefault("tests_run", {"count": 0, "items": []})
+    proof.setdefault("tests_passed", {"count": 0, "items": []})
+    proof.setdefault("test_evidence_refs", [])
+    proof.setdefault("proof_status", "not_started")
+    normalized["proof"] = proof
+
+    review_raw = normalized.get("review")
+    review: dict[str, Any] = dict(review_raw) if isinstance(review_raw, dict) else {}
+    review.setdefault("status", "not_requested")
+    review.setdefault("reviewer_identity", None)
+    review.setdefault("evidence_ref", None)
+    normalized["review"] = review
+
+    merge_raw = normalized.get("merge")
+    merge: dict[str, Any] = dict(merge_raw) if isinstance(merge_raw, dict) else {}
+    merge.setdefault("status", "not_applicable")
+    merge.setdefault("target", None)
+    merge.setdefault("commit", None)
+    merge.setdefault("evidence_ref", None)
+    normalized["merge"] = merge
+
+    release_raw = normalized.get("release")
+    release: dict[str, Any] = dict(release_raw) if isinstance(release_raw, dict) else {}
+    release.setdefault("status", "not_applicable")
+    release.setdefault("target", None)
+    release.setdefault("evidence_ref", None)
+    normalized["release"] = release
+
+    normalized["risk_class"] = str(normalized.get("risk_class") or "medium")
+    verdict, reason = derive_delivery_verdict(normalized)
+    normalized["delivery_verdict"] = verdict
+    normalized["delivery_verdict_reason"] = reason
+    normalized["last_verified_at"] = now
+    return normalized
+
+
+def build_delivery_state(
+    task: Task,
+    *,
+    stage: str,
+    workflow_stream_id: str,
+    artifact_ref: Optional[dict[str, Any]] = None,
+    artifact_refs: Optional[Iterable[dict[str, Any]]] = None,
+    risk_class: str = "medium",
+    proof: Optional[dict[str, Any]] = None,
+    review: Optional[dict[str, Any]] = None,
+    merge: Optional[dict[str, Any]] = None,
+    release: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    base_state: dict[str, Any] = {
+        "schema_version": 1,
+        "task_id": task.id,
+        "workflow_stream_id": workflow_stream_id,
+        "stage": stage,
+        "task_status": task.status,
+        "assignee_profile": task.assignee,
+        "artifact": {
+            "primary_ref": artifact_ref,
+            "refs": list(artifact_refs) if artifact_refs is not None else [],
+        },
+        "workspace": _delivery_workspace_snapshot(task),
+        "proof": proof or {},
+        "review": review or {},
+        "merge": merge or {},
+        "release": release or {},
+        "risk_class": risk_class,
+    }
+    return _normalize_delivery_state(task, base_state)
+
+# ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
 
@@ -1191,6 +1421,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     tenant               TEXT,
     brand                TEXT,
     result               TEXT,
+    delivery_state       TEXT,
     idempotency_key      TEXT,
     -- Unified consecutive-failure counter. Incremented on spawn
     -- failure, timeout, or crash; reset only on successful completion.
@@ -2066,6 +2297,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "tasks",
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
+        )
+
+    if "delivery_state" not in cols:
+        # Canonical task-level machine-readable delivery-truth snapshot for
+        # the structured software-delivery pilot. Existing rows keep NULL
+        # until a bounded backfill or an explicit stage handoff writes one.
+        _add_column_if_missing(
+            conn, "tasks", "delivery_state", "delivery_state TEXT"
         )
 
     # Indexes over additive ``tasks`` columns must be created after the
@@ -3259,6 +3498,259 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
             )
         )
     return out
+
+
+def write_delivery_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    state: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    """Persist a normalized task-level delivery-truth snapshot."""
+
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    normalized = _normalize_delivery_state(task, state)
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET delivery_state = ? WHERE id = ?",
+            (json.dumps(normalized, ensure_ascii=False), task_id),
+        )
+        if emit_event:
+            _append_event(
+                conn,
+                task_id,
+                "delivery_state_updated",
+                {
+                    "stage": normalized.get("stage"),
+                    "workflow_stream_id": normalized.get("workflow_stream_id"),
+                    "delivery_verdict": normalized.get("delivery_verdict"),
+                    "delivery_verdict_reason": normalized.get("delivery_verdict_reason"),
+                    "artifact_readable": ((normalized.get("artifact") or {}).get("readable")),
+                },
+                run_id=run_id,
+            )
+    return normalized
+
+
+def init_task_delivery_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    stage: str,
+    workflow_stream_id: str,
+    artifact_ref: Optional[dict[str, Any]] = None,
+    artifact_refs: Optional[Iterable[dict[str, Any]]] = None,
+    risk_class: str = "medium",
+    proof: Optional[dict[str, Any]] = None,
+    review: Optional[dict[str, Any]] = None,
+    merge: Optional[dict[str, Any]] = None,
+    release: Optional[dict[str, Any]] = None,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    state = build_delivery_state(
+        task,
+        stage=stage,
+        workflow_stream_id=workflow_stream_id,
+        artifact_ref=artifact_ref,
+        artifact_refs=artifact_refs,
+        risk_class=risk_class,
+        proof=proof,
+        review=review,
+        merge=merge,
+        release=release,
+    )
+    return write_delivery_state(conn, task_id, state, run_id=run_id, emit_event=emit_event)
+
+
+def patch_task_delivery_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    patch: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    base = task.delivery_state or {}
+    merged = _deep_merge_dicts(base, patch)
+    return write_delivery_state(conn, task_id, merged, run_id=run_id, emit_event=emit_event)
+
+
+def update_delivery_artifacts(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    primary_ref: Optional[dict[str, Any]] = None,
+    refs: Optional[Iterable[dict[str, Any]]] = None,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    artifact_patch: dict[str, Any] = {}
+    if primary_ref is not None:
+        artifact_patch["primary_ref"] = primary_ref
+    if refs is not None:
+        artifact_patch["refs"] = list(refs)
+    return patch_task_delivery_state(
+        conn,
+        task_id,
+        {"artifact": artifact_patch},
+        run_id=run_id,
+        emit_event=emit_event,
+    )
+
+
+def update_delivery_proof(
+    conn: sqlite3.Connection,
+    task_id: str,
+    proof: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    return patch_task_delivery_state(
+        conn, task_id, {"proof": proof}, run_id=run_id, emit_event=emit_event
+    )
+
+
+def update_delivery_review(
+    conn: sqlite3.Connection,
+    task_id: str,
+    review: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    return patch_task_delivery_state(
+        conn, task_id, {"review": review}, run_id=run_id, emit_event=emit_event
+    )
+
+
+def update_delivery_merge(
+    conn: sqlite3.Connection,
+    task_id: str,
+    merge: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    return patch_task_delivery_state(
+        conn, task_id, {"merge": merge}, run_id=run_id, emit_event=emit_event
+    )
+
+
+def update_delivery_release(
+    conn: sqlite3.Connection,
+    task_id: str,
+    release: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    return patch_task_delivery_state(
+        conn, task_id, {"release": release}, run_id=run_id, emit_event=emit_event
+    )
+
+
+def write_run_delivery_evidence(
+    conn: sqlite3.Connection,
+    run_id: int,
+    delivery_evidence: dict[str, Any],
+    *,
+    merge: bool = True,
+) -> dict[str, Any]:
+    row = conn.execute("SELECT metadata FROM task_runs WHERE id = ?", (run_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"unknown run {run_id}")
+    try:
+        metadata = json.loads(row["metadata"]) if row["metadata"] else {}
+    except Exception:
+        metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    current = metadata.get("delivery_evidence")
+    if merge and isinstance(current, dict):
+        metadata["delivery_evidence"] = _deep_merge_dicts(current, delivery_evidence)
+    else:
+        metadata["delivery_evidence"] = dict(delivery_evidence)
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE task_runs SET metadata = ? WHERE id = ?",
+            (json.dumps(metadata, ensure_ascii=False), run_id),
+        )
+    return metadata
+
+
+def refresh_task_delivery_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> Optional[dict[str, Any]]:
+    """Re-normalize an existing delivery-state snapshot against live task truth.
+
+    This keeps fields derived from the task row itself (notably
+    ``task_status`` and workspace provenance) aligned after lifecycle
+    transitions such as complete/block/unblock.
+    """
+
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    if not isinstance(task.delivery_state, dict) or not task.delivery_state:
+        return None
+    return write_delivery_state(
+        conn,
+        task_id,
+        task.delivery_state,
+        run_id=run_id,
+        emit_event=emit_event,
+    )
+
+
+def backfill_delivery_states(
+    conn: sqlite3.Connection,
+    task_specs: Iterable[dict[str, Any]],
+    *,
+    emit_events: bool = True,
+) -> list[dict[str, Any]]:
+    """Bounded helper for pilot-chain backfills from verified current data."""
+
+    written: list[dict[str, Any]] = []
+    for spec in task_specs:
+        task_id = str(spec.get("task_id") or "").strip()
+        stage = str(spec.get("stage") or "").strip()
+        workflow_stream_id = str(spec.get("workflow_stream_id") or "").strip()
+        if not task_id or not stage or not workflow_stream_id:
+            raise ValueError("each delivery-state backfill spec needs task_id, stage, and workflow_stream_id")
+        written.append(
+            init_task_delivery_state(
+                conn,
+                task_id,
+                stage=stage,
+                workflow_stream_id=workflow_stream_id,
+                artifact_ref=spec.get("artifact_ref"),
+                artifact_refs=spec.get("artifact_refs"),
+                risk_class=str(spec.get("risk_class") or "medium"),
+                proof=spec.get("proof"),
+                review=spec.get("review"),
+                merge=spec.get("merge"),
+                release=spec.get("release"),
+                run_id=spec.get("run_id"),
+                emit_event=emit_events,
+            )
+        )
+    return written
 
 
 def _append_event(
@@ -4456,6 +4948,7 @@ def complete_task(
             completed_payload,
             run_id=run_id,
         )
+    refresh_task_delivery_state(conn, task_id, run_id=run_id)
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
     # its own txn so the completion itself is already durable by the
@@ -5070,6 +5563,7 @@ def block_task(
                 run_id=run_id,
             )
         _blocked_task = get_task(conn, task_id)
+    refresh_task_delivery_state(conn, task_id, run_id=run_id)
     _fire_kanban_lifecycle_hook(
         "kanban_task_blocked",
         task_id,
@@ -5215,7 +5709,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             conn, task_id, "unblocked",
             {"status": new_status} if new_status != "ready" else None,
         )
-        return True
+    refresh_task_delivery_state(conn, task_id)
+    return True
 
 
 def specify_triage_task(
@@ -8696,6 +9191,15 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     if task.body and task.body.strip():
         lines.append("## Body")
         lines.append(_cap(task.body, _CTX_MAX_BODY_BYTES))
+        lines.append("")
+
+    if task.delivery_state:
+        lines.append("## Delivery state")
+        try:
+            state_text = json.dumps(task.delivery_state, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            state_text = str(task.delivery_state)
+        lines.append(f"`{_cap(state_text)}`")
         lines.append("")
 
     # Attachments — files uploaded to this task (PDFs, source docs,

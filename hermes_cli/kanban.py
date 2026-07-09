@@ -84,6 +84,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "started_at": t.started_at,
         "completed_at": t.completed_at,
         "result": t.result,
+        "delivery_state": t.delivery_state,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
         "session_id": t.session_id,
@@ -1525,6 +1526,12 @@ def _cmd_show(args: argparse.Namespace) -> int:
           (f" @ {task.workspace_path}" if task.workspace_path else ""))
     if task.branch_name:
         print(f"  branch:    {task.branch_name}")
+    if task.delivery_state:
+        print(
+            "  delivery:  "
+            f"{task.delivery_state.get('stage', '?')} / "
+            f"{task.delivery_state.get('delivery_verdict', '?')}"
+        )
     if task.skills:
         print(f"  skills:    {', '.join(task.skills)}")
     if task.model_override:

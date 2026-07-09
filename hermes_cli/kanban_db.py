@@ -917,6 +917,7 @@ class Task:
     claim_lock: Optional[str]
     claim_expires: Optional[int]
     tenant: Optional[str]
+    brand: Optional[str] = None
     branch_name: Optional[str] = None
     project_id: Optional[str] = None
     workspace_base_ref: Optional[str] = None
@@ -1016,6 +1017,7 @@ class Task:
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
+            brand=row["brand"] if "brand" in keys else None,
             result=row["result"] if "result" in keys else None,
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
             consecutive_failures=(
@@ -1187,6 +1189,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     claim_lock           TEXT,
     claim_expires        INTEGER,
     tenant               TEXT,
+    brand                TEXT,
     result               TEXT,
     idempotency_key      TEXT,
     -- Unified consecutive-failure counter. Incremented on spawn
@@ -1930,6 +1933,8 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
     if "tenant" not in cols:
         _add_column_if_missing(conn, "tasks", "tenant", "tenant TEXT")
+    if "brand" not in cols:
+        _add_column_if_missing(conn, "tasks", "brand", "brand TEXT")
     if "result" not in cols:
         _add_column_if_missing(conn, "tasks", "result", "result TEXT")
     if "branch_name" not in cols:
@@ -2071,6 +2076,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # is cheap thanks to ``IF NOT EXISTS`` and stays correct on fresh DBs
     # (where the columns already exist from SCHEMA_SQL).
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_brand ON tasks(brand)")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
     )
@@ -2460,6 +2466,28 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def _canonical_brand(brand: Optional[str], board: Optional[str]) -> Optional[str]:
+    """Return a stable brand tag for the task row.
+
+    Explicit ``brand`` wins. Otherwise we fall back to the board slug so every
+    task row carries a machine-checkable brand tag, even when the caller only
+    knows which board/database it is writing to.
+    """
+    if brand is not None:
+        brand = str(brand).strip()
+        return brand or None
+    try:
+        board_slug = _normalize_board_slug(board) if board is not None else None
+    except Exception:
+        board_slug = None
+    if board_slug:
+        return board_slug
+    try:
+        return get_current_board() or None
+    except Exception:
+        return None
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -2471,6 +2499,7 @@ def create_task(
     workspace_path: Optional[str] = None,
     branch_name: Optional[str] = None,
     tenant: Optional[str] = None,
+    brand: Optional[str] = None,
     priority: int = 0,
     parents: Iterable[str] = (),
     triage: bool = False,
@@ -2610,6 +2639,7 @@ def create_task(
             # degrade gracefully to an ordinary scratch task.
             board_repo = None
 
+    brand = _canonical_brand(brand, board)
     parents = tuple(p for p in parents if p)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
@@ -2761,10 +2791,10 @@ def create_task(
                     INSERT INTO tasks (
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
-                        branch_name, project_id, tenant, idempotency_key,
+                        branch_name, project_id, tenant, brand, idempotency_key,
                         max_runtime_seconds,
                         skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2780,6 +2810,7 @@ def create_task(
                         branch_name,
                         project_id,
                         tenant,
+                        brand,
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
                         json.dumps(skills_list) if skills_list is not None else None,
@@ -2803,6 +2834,7 @@ def create_task(
                         "status": task_status,
                         "parents": list(parents),
                         "tenant": tenant,
+                        "brand": brand,
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
@@ -2855,6 +2887,7 @@ def list_tasks(
     assignee: Optional[str] = None,
     status: Optional[str] = None,
     tenant: Optional[str] = None,
+    brand: Optional[str] = None,
     session_id: Optional[str] = None,
     include_archived: bool = False,
     limit: Optional[int] = None,
@@ -2875,6 +2908,9 @@ def list_tasks(
     if tenant is not None:
         query += " AND tenant = ?"
         params.append(tenant)
+    if brand is not None:
+        query += " AND brand = ?"
+        params.append(brand)
     if session_id is not None:
         query += " AND session_id = ?"
         params.append(session_id)
@@ -5190,6 +5226,7 @@ def specify_triage_task(
     body: Optional[str] = None,
     assignee: Optional[str] = None,
     author: Optional[str] = None,
+    event_payload: Optional[dict] = None,
 ) -> bool:
     """Flesh out a triage task and promote it to ``todo``.
 
@@ -5258,12 +5295,10 @@ def specify_triage_task(
                     int(time.time()),
                 ),
             )
-        _append_event(
-            conn,
-            task_id,
-            "specified",
-            {"changed_fields": changed_fields} if changed_fields else None,
-        )
+        payload: Optional[dict] = {"changed_fields": changed_fields} if changed_fields else None
+        if event_payload:
+            payload = {**(payload or {}), **event_payload}
+        _append_event(conn, task_id, "specified", payload)
     # Outside the write_txn above, so we don't nest BEGIN IMMEDIATE — the
     # ready-promotion pass opens its own IMMEDIATE txn. This runs the same
     # logic the dispatcher would on its next tick, so a specified task
@@ -5281,6 +5316,8 @@ def decompose_triage_task(
     children: list[dict],
     author: Optional[str] = None,
     auto_promote: bool = True,
+    rationale: Optional[str] = None,
+    roster_snapshot: Optional[list[dict]] = None,
 ) -> Optional[list[str]]:
     """Fan a triage task out into child tasks and promote the root to ``todo``.
 
@@ -5366,7 +5403,7 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, status, tenant, brand, workspace_kind, workspace_path "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -5375,6 +5412,7 @@ def decompose_triage_task(
         if root_row["status"] != "triage":
             return None
         tenant = root_row["tenant"]
+        brand = root_row["brand"]
         # Children inherit the root's workspace by default so a fan-out
         # of a code-gen task lands in the parent's project dir/worktree
         # rather than throwaway scratch tmp dirs. A child dict can still
@@ -5406,8 +5444,8 @@ def decompose_triage_task(
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                " workspace_path, tenant, brand, created_at, created_by) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -5416,13 +5454,19 @@ def decompose_triage_task(
                     child_ws_kind,
                     child_ws_path,
                     tenant,
+                    brand,
                     now,
                     (author or "decomposer"),
                 ),
             )
             _append_event(
                 conn, new_id, "created",
-                {"by": author or "decomposer", "from_decompose_of": task_id},
+                {
+                    "by": author or "decomposer",
+                    "from_decompose_of": task_id,
+                    "tenant": tenant,
+                    "brand": brand,
+                },
             )
             child_ids.append(new_id)
 
@@ -5483,6 +5527,10 @@ def decompose_triage_task(
             {
                 "child_ids": child_ids,
                 "root_assignee": root_assignee,
+                "tenant": tenant,
+                "brand": brand,
+                "rationale": rationale,
+                "roster_snapshot": roster_snapshot,
             },
         )
 

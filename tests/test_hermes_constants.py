@@ -111,7 +111,7 @@ class TestGetHermesHome:
         monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
         monkeypatch.setattr(Path, "home", lambda: tmp_path / "Home")
         monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
-        monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", False)
+        monkeypatch.setattr(hermes_constants, "_cached_home", None)
 
         assert get_hermes_home() == local_appdata / "hermes"
 

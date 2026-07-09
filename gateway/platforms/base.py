@@ -140,7 +140,16 @@ def _mark_notify_metadata(metadata: dict | None) -> dict:
 
 
 def _reply_anchor_for_event(event) -> str | None:
-    """Return reply_to id for platforms that need reply semantics."""
+    """Return reply_to id for platforms that need reply semantics.
+
+    Telegram forum/supergroup topics are still routed by ``message_thread_id``
+    metadata; quoting the triggering message is optional UX so members can see
+    which message the bot answered in a busy multi-person topic. Hermes-created
+    Telegram private-chat topic lanes prefer replying to the triggering user
+    message so the answer stays attached to the active lane; synthetic/resumed
+    sends fall back to ``direct_messages_topic_id`` metadata when no message id
+    is available.
+    """
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
@@ -150,11 +159,9 @@ def _reply_anchor_for_event(event) -> str | None:
         # Slack reaction handoff = new top-level message; a message_id anchor would make
         # _resolve_thread_ts() reply in a nonexistent thread.
         return None
-    if platform == "telegram" and thread_id:
-        # Forum topics route by topic metadata (no reply); DM-topic lanes reply to the triggering
-        # message — replying to the topic seed/anchor can render outside the active lane.
-        if getattr(source, "chat_type", None) != "dm":
-            return None
+    if platform == "telegram" and thread_id and getattr(source, "chat_type", None) == "dm":
+        # Reply to the triggering user message. Replying to Telegram's earlier
+        # topic seed/anchor can render the bot response outside the active lane.
         return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)

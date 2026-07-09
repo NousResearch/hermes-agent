@@ -113,7 +113,10 @@ def _logged_in(client: TestClient) -> None:
 class TestWsTicketEndpoint:
     def test_authenticated_session_can_mint(self, gated_app):
         _logged_in(gated_app)
-        r = gated_app.post("/api/auth/ws-ticket")
+        r = gated_app.post(
+            "/api/auth/ws-ticket",
+            headers={"Origin": "https://fly-app.fly.dev"},
+        )
         assert r.status_code == 200
         body = r.json()
         assert "ticket" in body
@@ -129,8 +132,13 @@ class TestWsTicketEndpoint:
 
     def test_each_call_returns_a_distinct_ticket(self, gated_app):
         _logged_in(gated_app)
-        tickets = {gated_app.post("/api/auth/ws-ticket").json()["ticket"]
-                   for _ in range(5)}
+        tickets = {
+            gated_app.post(
+                "/api/auth/ws-ticket",
+                headers={"Origin": "https://fly-app.fly.dev"},
+            ).json()["ticket"]
+            for _ in range(5)
+        }
         assert len(tickets) == 5
 
     def test_get_method_is_not_allowed(self, gated_app):

@@ -2034,6 +2034,9 @@ def _run_single_child(
 
         duration = round(time.monotonic() - child_start, 2)
 
+        # Guard: result may be a list (e.g. from background-review re-dispatch)
+        if not isinstance(result, dict):
+            result = {"final_response": str(result)[:500], "completed": False, "interrupted": False, "api_calls": 0}
         summary = result.get("final_response") or ""
         completed = result.get("completed", False)
         interrupted = result.get("interrupted", False)
@@ -2714,6 +2717,13 @@ def delegate_task(
                     if isinstance(_child_index, int) and 0 <= _child_index < len(children)
                     else None
                 )
+                # Governance hook: subagent_stop fires here
+                logger.debug(
+                    "Firing subagent_stop hook: child_session=%s status=%s role=%s",
+                    getattr(_child_agent, "session_id", None),
+                    entry.get("status"),
+                    child_role,
+                )
                 _invoke_hook(
                     "subagent_stop",
                     parent_session_id=_parent_session_id,
@@ -2724,8 +2734,12 @@ def delegate_task(
                     child_status=entry.get("status"),
                     duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
                 )
+                logger.debug(
+                    "subagent_stop hook completed: child_session=%s",
+                    getattr(_child_agent, "session_id", None),
+                )
             except Exception:
-                logger.debug("subagent_stop hook invocation failed", exc_info=True)
+                logger.warning("subagent_stop hook invocation failed", exc_info=True)
 
         # Fold the aggregated child cost into the parent's session total.  This is
         # additive — each delegate_task call contributes its own children — so

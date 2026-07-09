@@ -1909,6 +1909,12 @@ class PluginManager:
         """
         kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         callbacks = self._hooks.get(hook_name, [])
+        # Governance: log callback count at DEBUG level for diagnostics
+        if callbacks:
+            logger.debug(
+                "invoke_hook(%s): %d callback(s) registered, firing...",
+                hook_name, len(callbacks),
+            )
         results: List[Any] = []
         for cb in callbacks:
             try:
@@ -2151,6 +2157,11 @@ def _get_pre_tool_call_directive_details(
         api_request_id=api_request_id,
         middleware_trace=list(middleware_trace or []),
     )
+    if hook_results:
+        logger.debug(
+            "pre_tool_call hook returned %d result(s) for tool=%s",
+            len(hook_results), tool_name,
+        )
 
     for result in hook_results:
         if not isinstance(result, dict):

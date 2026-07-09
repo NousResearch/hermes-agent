@@ -4374,6 +4374,17 @@ def _make_agent(
 ):
     from run_agent import AIAgent
 
+    # discover_plugins() is not triggered by lazy imports in the dashboard/
+    # desktop WebSocket path the way it is for the CLI and slash_worker paths.
+    # Call it explicitly here so plugin hooks fire for every agent created by
+    # the desktop GUI.  discover_plugins() is idempotent (no-ops after the
+    # first call per process), so this is safe.
+    try:
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
+    except Exception:
+        pass
+
     # MCP tool discovery runs in a background daemon thread at startup so a
     # dead server can't freeze the shell.  The agent snapshots its tool list
     # once here and never re-reads it, so briefly wait for in-flight discovery

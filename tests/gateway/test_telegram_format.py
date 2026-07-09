@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
 
 
 # ---------------------------------------------------------------------------
@@ -843,16 +843,16 @@ class TestFormatMessageTables:
 
 
 @pytest.mark.asyncio
-async def test_send_escapes_chunk_indicator_for_markdownv2(adapter):
+async def test_send_keeps_plain_chunk_indicators_for_multi_chunk_legacy(adapter):
     adapter.MAX_MESSAGE_LENGTH = 80
     adapter._bot = MagicMock()
 
-    sent_texts = []
+    sent_calls = []
 
     async def _fake_send_message(**kwargs):
-        sent_texts.append(kwargs["text"])
+        sent_calls.append(kwargs)
         msg = MagicMock()
-        msg.message_id = len(sent_texts)
+        msg.message_id = len(sent_calls)
         return msg
 
     adapter._bot.send_message = AsyncMock(side_effect=_fake_send_message)
@@ -861,9 +861,37 @@ async def test_send_escapes_chunk_indicator_for_markdownv2(adapter):
     result = await adapter.send("123", content)
 
     assert result.success is True
-    assert len(sent_texts) > 1
-    assert re.search(r" \\\([0-9]+/[0-9]+\\\)$", sent_texts[0])
-    assert re.search(r" \\\([0-9]+/[0-9]+\\\)$", sent_texts[-1])
+    assert len(sent_calls) > 1
+    assert re.search(r" \([0-9]+/[0-9]+\)$", sent_calls[0]["text"])
+    assert re.search(r" \([0-9]+/[0-9]+\)$", sent_calls[-1]["text"])
+    assert all(call.get("parse_mode") is None for call in sent_calls)
+
+
+@pytest.mark.asyncio
+async def test_long_legacy_send_uses_consistent_plain_chunks(adapter):
+    """Multi-chunk legacy sends must not mix raw/plain and rendered chunks.
+
+    If Telegram rejects MarkdownV2 for one chunk, previously only that chunk
+    fell back to plain text while later continuations still rendered as
+    MarkdownV2.  The user-visible result looked like duplicate/inconsistent
+    long-text delivery.  Keep all chunks on the same plain-text path.
+    """
+    adapter.MAX_MESSAGE_LENGTH = 80
+    adapter._bot = MagicMock()
+    adapter._rich_messages_enabled = False
+    adapter._bot.send_message = AsyncMock(
+        side_effect=[SimpleNamespace(message_id=i) for i in range(1, 20)]
+    )
+
+    content = ("**bold** chunk content " * 12).strip()
+    result = await adapter.send("123", content, metadata={"expect_edits": True})
+
+    assert result.success is True
+    assert adapter._bot.send_message.await_count > 1
+    for call in adapter._bot.send_message.await_args_list:
+        assert call.kwargs.get("parse_mode") is None
+        assert "**" not in call.kwargs["text"]
+        assert "\\(" not in call.kwargs["text"]
 
 
 # =========================================================================
@@ -1041,6 +1069,8 @@ def _guest_test_adapter(*, guest_mode=True, require_mention=True, allowed_chats=
     )
     adapter = object.__new__(TelegramAdapter)
     adapter.config = config
+    object.__setattr__(adapter, "_platform", Platform.TELEGRAM)
+    object.__setattr__(adapter, "platform", Platform.TELEGRAM)
     adapter._bot = SimpleNamespace(id=999, username="hermes_bot")
     adapter._mention_patterns = adapter._compile_mention_patterns()
     # PR db50af910 added a TELEGRAM_ALLOWED_USERS allowlist gate to

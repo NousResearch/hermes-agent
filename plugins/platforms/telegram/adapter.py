@@ -3286,7 +3286,8 @@ class TelegramAdapter(BasePlatformAdapter):
             chunks = self.truncate_message(
                 formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
             )
-            if len(chunks) > 1:
+            multi_chunk_legacy_plain = len(chunks) > 1
+            if multi_chunk_legacy_plain:
                 # truncate_message appends a raw " (1/2)" suffix. Escape the
                 # MarkdownV2-special parentheses so Telegram doesn't reject the
                 # chunk and fall back to plain text.
@@ -3296,6 +3297,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                     for chunk in chunks
                 ]
+                # Telegram can reject MarkdownV2 for only one chunk (for
+                # example when a split cuts through a code span/fence or leaves
+                # a reserved character in a bad context).  Once some chunks are
+                # already sent we cannot atomically roll them back, so sending a
+                # multi-part legacy response as mixed MarkdownV2/plain text
+                # produces the confusing UX reported by users: one long chunk is
+                # raw/unrendered while the next continuation is rendered.  Keep
+                # the whole legacy multi-chunk delivery visually consistent.
+                chunks = [_strip_mdv2(chunk) for chunk in chunks]
             
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
@@ -3363,33 +3373,44 @@ class TelegramAdapter(BasePlatformAdapter):
                 msg = None
                 for _send_attempt in range(3):
                     try:
-                        # Try Markdown first, fall back to plain text if it fails
-                        try:
+                        if multi_chunk_legacy_plain:
                             msg = await self._bot.send_message(
                                 chat_id=normalize_telegram_chat_id(chat_id),
                                 text=chunk,
-                                parse_mode=ParseMode.MARKDOWN_V2,
+                                parse_mode=None,
                                 reply_to_message_id=reply_to_id,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
                             )
-                        except Exception as md_error:
-                            # Markdown parsing failed, try plain text
-                            if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
-                                logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
-                                plain_chunk = _strip_mdv2(chunk)
+                        else:
+                            # Try Markdown first, fall back to plain text if it fails
+                            try:
                                 msg = await self._bot.send_message(
                                     chat_id=normalize_telegram_chat_id(chat_id),
-                                    text=plain_chunk,
-                                    parse_mode=None,
+                                    text=chunk,
+                                    parse_mode=ParseMode.MARKDOWN_V2,
                                     reply_to_message_id=reply_to_id,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
                                 )
-                            else:
-                                raise
+                            except Exception as md_error:
+                                # Markdown parsing failed, try plain text
+                                if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
+                                    logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
+                                    plain_chunk = _strip_mdv2(chunk)
+                                    msg = await self._bot.send_message(
+                                        chat_id=normalize_telegram_chat_id(chat_id),
+                                        text=plain_chunk,
+                                        parse_mode=None,
+                                        reply_to_message_id=reply_to_id,
+                                        **thread_kwargs,
+                                        **self._link_preview_kwargs(),
+                                        **self._notification_kwargs(metadata),
+                                    )
+                                else:
+                                    raise
                         break  # success
                     except _NetErr as send_err:
                         # BadRequest is a subclass of NetworkError in
@@ -3810,6 +3831,7 @@ class TelegramAdapter(BasePlatformAdapter):
         chunks = self.truncate_message(
             content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
         )
+        multi_chunk_legacy_plain = finalize and len(chunks) > 1
         if len(chunks) <= 1:
             # Defensive: shouldn't happen given the caller's pre-flight, but
             # if truncate_message returned a single chunk just edit normally.
@@ -3818,7 +3840,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # Step 1 — edit the existing message with the first chunk.
         first_chunk = chunks[0]
         try:
-            if finalize:
+            if multi_chunk_legacy_plain:
+                await self._bot.edit_message_text(
+                    chat_id=normalize_telegram_chat_id(chat_id),
+                    message_id=int(message_id),
+                    text=_strip_mdv2(first_chunk),
+                )
+            elif finalize:
                 # Use format_message + parse_mode for the final chunk;
                 # mirror edit_message's main happy-path.
                 formatted = _separate_chunk_indicator_from_fence(
@@ -3881,7 +3909,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 metadata,
                 reply_to_message_id=reply_to_id,
             )
-            for use_markdown in (True, False) if finalize else (False,):
+            markdown_attempts = (
+                (False,)
+                if multi_chunk_legacy_plain
+                else ((True, False) if finalize else (False,))
+            )
+            for use_markdown in markdown_attempts:
                 try:
                     if use_markdown:
                         text = _separate_chunk_indicator_from_fence(

@@ -38,6 +38,11 @@ function electronBuilderCli() {
 
 const dist = electronDistDir()
 const args = []
+// Never let a local/dev packaging run overwrite an installed unpacked build.
+// The official installer uses `release`; local experiments must be isolated.
+if (process.env.HERMES_LOCAL_BUILD === "1") {
+  args.push("-c.directories.output=release-local")
+}
 if (dist && fs.existsSync(distBinary(dist))) {
   args.push(`-c.electronDist=${dist}`)
 } else {

@@ -384,6 +384,7 @@ def register(ctx):
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
+| [`on_turn_failed`](#on_turn_failed) | Retry and fallback options are exhausted | ignored |
 | [`pre_verify`](#pre_verify) | Once per turn when the agent edited code, before it verifies/finishes | `{"action": "continue", "message": str}` to keep going |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
@@ -652,6 +653,29 @@ def log_response_length(session_id, assistant_response, model, **kwargs):
 def register(ctx):
     ctx.register_hook("post_llm_call", log_response_length)
 ```
+
+---
+
+### `on_turn_failed`
+
+Fires once when a turn reaches a terminal retry boundary after configured
+fallbacks have also been exhausted. It accompanies the stable
+`HERMES-TURN-DEAD:` log marker and the returned `turn_dead` result field.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, failure_reason: str, error: str,
+                provider: str, model: str, max_retries: int,
+                api_calls: int, http_status: int | None = None, **kwargs):
+```
+
+The payload also includes `completed=False` and `failed=True`.
+`failure_reason` is a stable classifier value such as `rate_limit`, `timeout`,
+or `invalid_response`. `http_status` is omitted when no status is available.
+
+**Return value:** Ignored. Hook failures are logged and cannot replace the
+terminal result.
 
 ---
 

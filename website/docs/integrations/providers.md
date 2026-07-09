@@ -531,7 +531,7 @@ model:
   default: "muse-spark-1.1"
 ```
 
-The base URL can be overridden with `META_BASE_URL` (default: `https://api.meta.ai/v1`). Aliases: `meta`, `muse`, `llama-api`, `model-api`.
+The base URL can be overridden with `META_BASE_URL` (default: `https://api.meta.ai/v1`). Aliases: `meta`, `muse`, `llama-api`, `model-api`. Hermes sets a high default max tokens for this provider because Muse Spark spends completion budget on hidden reasoning tokens before visible output.
 
 ### StepFun
 

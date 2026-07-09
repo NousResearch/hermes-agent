@@ -77,6 +77,9 @@ meta_ai = MetaAiProfile(
     base_url="https://api.meta.ai/v1",
     auth_type="api_key",
     api_mode="chat_completions",
+    # Muse Spark spends completion budget on hidden reasoning_tokens first;
+    # low caps (e.g. 32–128) finish with empty content. Cap high like NVIDIA NIM.
+    default_max_tokens=16384,
     default_aux_model="muse-spark-1.1",
     fallback_models=("muse-spark-1.1",),
 )

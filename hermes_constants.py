@@ -48,13 +48,155 @@ def get_hermes_home_override() -> str | None:
     return str(override)
 
 
-def _get_platform_default_hermes_home() -> Path:
-    """Return the platform-native default Hermes home path."""
+# The fork's data directory (Phase 6). New installs use the HT-branded
+# location; existing installs keep their legacy ~/.hermes in place until it is
+# migrated (see maybe_migrate_home). Both resolve through
+# _get_platform_default_hermes_home().
+_NEW_HOME_POSIX = ".ht-ai-agent"
+_NEW_HOME_WIN = "ht-ai-agent"
+_LEGACY_HOME_POSIX = ".hermes"
+_LEGACY_HOME_WIN = "hermes"
+
+
+def _platform_home(posix_name: str, win_name: str) -> Path:
+    """Return a platform-native home path for the given brand dir names."""
     if sys.platform == "win32":
         local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
         base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
-        return base / "hermes"
-    return Path.home() / ".hermes"
+        return base / win_name
+    return Path.home() / posix_name
+
+
+def _new_default_home() -> Path:
+    """The HT-branded default home (``~/.ht-ai-agent`` / ``%LOCALAPPDATA%\\ht-ai-agent``)."""
+    return _platform_home(_NEW_HOME_POSIX, _NEW_HOME_WIN)
+
+
+def _legacy_default_home() -> Path:
+    """The legacy default home (``~/.hermes`` / ``%LOCALAPPDATA%\\hermes``)."""
+    return _platform_home(_LEGACY_HOME_POSIX, _LEGACY_HOME_WIN)
+
+
+def _get_platform_default_hermes_home() -> Path:
+    """Return the platform-native default data directory.
+
+    Prefers the HT-branded ``~/.ht-ai-agent`` location, but keeps honoring an
+    existing legacy ``~/.hermes`` install *in place* until it is migrated, so an
+    un-migrated install never loses its home. Fresh installs (neither present)
+    get the new location.
+
+    The physical migration is done separately and explicitly by
+    :func:`maybe_migrate_home` — never here, because this runs at import time
+    from 30+ callers and must stay side-effect-free.
+    """
+    new = _new_default_home()
+    try:
+        if new.exists():
+            return new
+        legacy = _legacy_default_home()
+        if legacy.exists():
+            return legacy
+    except OSError:
+        pass
+    return new
+
+
+def _migrate_legacy_home(legacy: Path, new: Path) -> bool:
+    """Atomically move a populated legacy home to *new* and leave a back-symlink.
+
+    All-or-nothing: migrates only when *legacy* is a populated real directory,
+    *new* does not exist, and BOTH the atomic rename and the back-compat symlink
+    succeed. On any failure it rolls back so the legacy home stays authoritative
+    and no data is ever lost or half-moved. Returns ``True`` iff migration ran.
+
+    The back-symlink (``legacy -> new``) means anything still referencing the
+    old path — a module-level cached ``~/.hermes`` path, an external tool —
+    keeps resolving after the move.
+    """
+    try:
+        if new.exists():
+            return False
+        # Real, populated directory only (not a symlink, not an empty stub).
+        if not legacy.is_dir() or legacy.is_symlink():
+            return False
+        try:
+            next(legacy.iterdir())
+        except StopIteration:
+            return False  # empty legacy stub — nothing worth migrating
+        new.parent.mkdir(parents=True, exist_ok=True)
+        os.rename(legacy, new)  # atomic within one filesystem
+    except OSError:
+        return False
+    try:
+        legacy.symlink_to(new, target_is_directory=True)
+    except OSError:
+        # Can't create the back-compat shim (e.g. Windows without the symlink
+        # privilege). Roll back so cached references to the old path keep
+        # resolving — all-or-nothing.
+        try:
+            os.rename(new, legacy)
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def _provision_fresh_home(new: Path, legacy: Path) -> bool:
+    """For a fresh install (neither home exists), create the new home and point
+    the legacy path at it via a symlink.
+
+    This bridges code paths that still hardcode the legacy ``~/.hermes`` fallback
+    (``os.environ.get("HERMES_HOME", ~/.hermes)``) so they resolve to the same
+    directory as :func:`get_hermes_home` instead of splitting off a second data
+    dir. Best-effort: if the symlink can't be created (e.g. Windows without the
+    privilege) the new home is still created and used — only the legacy bridge
+    is skipped. Returns ``True`` iff the new home was created.
+    """
+    try:
+        if new.exists() or legacy.exists() or legacy.is_symlink():
+            return False
+        new.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+    try:
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.symlink_to(new, target_is_directory=True)
+    except OSError:
+        pass  # bridge is best-effort; the new home is created regardless
+    return True
+
+
+def maybe_migrate_home() -> bool:
+    """Best-effort one-time reconciliation of the default data dir at process
+    startup. Call once from a controlled entrypoint (e.g. the CLI), never at
+    import time. For an existing ``~/.hermes`` install it migrates the data to
+    ``~/.ht-ai-agent`` and leaves a back-compat symlink; for a fresh install it
+    creates ``~/.ht-ai-agent`` and points ``~/.hermes`` at it. Either way,
+    references to the old and new paths resolve to one directory.
+
+    Skips when a home override is in effect (``HT_HOME`` / ``HERMES_HOME`` env or
+    the context override) — those name an explicit location we must not touch —
+    when ``HT_SKIP_HOME_MIGRATION`` is set, and under pytest (so tests never
+    move real directories). Non-fatal. Returns ``True`` iff anything changed.
+    """
+    try:
+        if os.environ.get("HT_SKIP_HOME_MIGRATION"):
+            return False
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return False
+        if get_hermes_home_override():
+            return False
+        if (_resolve_brand_env("HERMES_HOME", "") or "").strip():
+            return False
+        legacy = _legacy_default_home()
+        new = _new_default_home()
+        if new.exists():
+            return False
+        if legacy.is_dir() and not legacy.is_symlink():
+            return _migrate_legacy_home(legacy, new)
+        return _provision_fresh_home(new, legacy)
+    except Exception:
+        return False
 
 
 def get_hermes_home() -> Path:

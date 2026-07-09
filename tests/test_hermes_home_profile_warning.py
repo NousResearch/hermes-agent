@@ -33,9 +33,9 @@ class TestGetHermesHomeProfileWarning:
     def test_classic_mode_no_active_profile_no_warning(
         self, fresh_constants, tmp_path, capsys
     ):
-        """Classic mode: no active_profile file → silent, returns ~/.hermes."""
+        """Fresh install: no dir/profile → silent, returns the new ~/.ht-ai-agent."""
         result = fresh_constants.get_hermes_home()
-        assert result == tmp_path / ".hermes"
+        assert result == tmp_path / ".ht-ai-agent"
         assert "HERMES_HOME fallback" not in capsys.readouterr().err
 
     def test_default_active_profile_no_warning(

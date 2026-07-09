@@ -12730,6 +12730,15 @@ def main():
     except Exception:
         pass
 
+    # Phase 6: one-time best-effort migration of the legacy ~/.hermes data dir
+    # to the HT-branded ~/.ht-ai-agent (atomic rename + back-compat symlink).
+    # Guarded and non-fatal; skips when a home override is set or under tests.
+    try:
+        from hermes_constants import maybe_migrate_home
+        maybe_migrate_home()
+    except Exception:
+        pass
+
     # Cosmetic: make the process show up as 'hermes' instead of 'python3.11'
     # in ps/top/htop.  Non-fatal — just a nicer UX.
     _set_process_title()

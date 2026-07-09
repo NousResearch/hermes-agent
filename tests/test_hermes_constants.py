@@ -31,11 +31,32 @@ class TestGetDefaultHermesRoot:
     """Tests for get_default_hermes_root() — Docker/custom deployment awareness."""
 
     def test_no_hermes_home_returns_native(self, tmp_path, monkeypatch):
-        """When HERMES_HOME is not set, returns ~/.hermes."""
+        """When HERMES_HOME is not set and no dir exists yet, returns the new
+        HT-branded default ~/.ht-ai-agent (fresh install)."""
         monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HT_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
+        assert get_default_hermes_root() == tmp_path / ".ht-ai-agent"
+
+    def test_no_hermes_home_honors_existing_legacy_dir(self, tmp_path, monkeypatch):
+        """An existing legacy ~/.hermes is honored in place until migrated."""
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HT_HOME", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        (tmp_path / ".hermes").mkdir()
+
         assert get_default_hermes_root() == tmp_path / ".hermes"
+
+    def test_new_dir_wins_over_legacy_when_both_exist(self, tmp_path, monkeypatch):
+        """After migration both may exist; the new location is authoritative."""
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HT_HOME", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        (tmp_path / ".hermes").mkdir()
+        (tmp_path / ".ht-ai-agent").mkdir()
+
+        assert get_default_hermes_root() == tmp_path / ".ht-ai-agent"
 
     def test_hermes_home_is_native(self, tmp_path, monkeypatch):
         """When HERMES_HOME = ~/.hermes, returns ~/.hermes."""
@@ -81,24 +102,26 @@ class TestGetDefaultHermesRoot:
         assert get_default_hermes_root() == docker_root
 
     def test_no_hermes_home_returns_localappdata_root_on_windows(self, tmp_path, monkeypatch):
-        """Native Windows falls back to %LOCALAPPDATA%\\hermes, not ~/.hermes."""
+        """Native Windows fresh default is %LOCALAPPDATA%\\ht-ai-agent."""
         local_appdata = tmp_path / "LocalAppData"
         monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HT_HOME", raising=False)
         monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
         monkeypatch.setattr(Path, "home", lambda: tmp_path / "Home")
         monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
 
-        assert get_default_hermes_root() == local_appdata / "hermes"
+        assert get_default_hermes_root() == local_appdata / "ht-ai-agent"
 
     def test_no_hermes_home_uses_windows_path_when_localappdata_missing(self, tmp_path, monkeypatch):
-        """Windows fallback still uses AppData/Local/hermes without LOCALAPPDATA."""
+        """Windows fresh default uses AppData/Local/ht-ai-agent without LOCALAPPDATA."""
         home = tmp_path / "Home"
         monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HT_HOME", raising=False)
         monkeypatch.delenv("LOCALAPPDATA", raising=False)
         monkeypatch.setattr(Path, "home", lambda: home)
         monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
 
-        assert get_default_hermes_root() == home / "AppData" / "Local" / "hermes"
+        assert get_default_hermes_root() == home / "AppData" / "Local" / "ht-ai-agent"
 
 
 class TestHtHomeAlias:
@@ -139,15 +162,17 @@ class TestGetHermesHome:
     """Tests for get_hermes_home() platform-aware fallback."""
 
     def test_windows_fallback_uses_localappdata(self, tmp_path, monkeypatch):
-        """When HERMES_HOME is unset on Windows, use %LOCALAPPDATA%\\hermes."""
+        """When HERMES_HOME/HT_HOME are unset on Windows and no dir exists yet,
+        use the fresh default %LOCALAPPDATA%\\ht-ai-agent."""
         local_appdata = tmp_path / "LocalAppData"
         monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HT_HOME", raising=False)
         monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
         monkeypatch.setattr(Path, "home", lambda: tmp_path / "Home")
         monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
         monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", False)
 
-        assert get_hermes_home() == local_appdata / "hermes"
+        assert get_hermes_home() == local_appdata / "ht-ai-agent"
 
 
 class TestHermesManagedNode:

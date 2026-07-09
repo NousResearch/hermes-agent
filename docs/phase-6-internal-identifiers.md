@@ -1,7 +1,8 @@
 # Phase 6 — Internal Identifier Rebrand (backward-compatible)
 
-**Status:** In progress — the alias foundation has landed; the physical data-dir
-migration and Python module renames are deferred follow-up increments.
+**Status:** In progress — the alias foundation, entrypoint hardening, and the
+backward-compatible `~/.hermes` → `~/.ht-ai-agent` data-dir migration have
+landed; the Python module renames remain a deferred follow-up increment.
 
 Phase 6 rebrands the fork's **load-bearing internal identifiers** from the
 `Hermes` name to `HT`. Unlike Phases 1–5 (user-visible surfaces, safe to change
@@ -93,29 +94,47 @@ unaffected; the mirror is additive and non-clobbering.
 
 ---
 
-## Deliberately deferred (each its own increment)
+## Physical `~/.hermes` → `~/.ht-ai-agent` data-dir migration (landed)
 
-These are **not** in this increment because doing them wrong is destructive and
-they each need dedicated care. They are safe to do next, on this same branch.
+The on-disk default is now the HT-branded `~/.ht-ai-agent` (POSIX) /
+`%LOCALAPPDATA%\ht-ai-agent` (Windows), with a backward-compatible migration.
 
-### 1. Physical `~/.hermes` → `~/.ht-ai-agent` data-dir migration
+**Resolver** (`_get_platform_default_hermes_home`, side-effect-free — safe to
+call at import from 30+ sites): prefer `~/.ht-ai-agent` if it exists, else an
+existing legacy `~/.hermes` *in place* (so an un-migrated install never loses
+its home), else the new location for fresh installs. Env resolution is unchanged
+and still legacy-authoritative (`HT_HOME` → `HERMES_HOME` → default).
 
-The `HT_HOME` env alias lands now, but the **on-disk default stays `~/.hermes`**.
-Flipping the default is a separate change because:
+**Migration** (`maybe_migrate_home`, explicit, run once from CLI startup —
+never at import): reconciles the default dir:
+- *Existing install* (`~/.hermes` is a populated real dir): atomic `os.rename`
+  to `~/.ht-ai-agent` + a back-compat symlink `~/.hermes → ~/.ht-ai-agent`.
+  All-or-nothing — if the rename or the symlink fails it rolls back and the
+  legacy home stays authoritative, so data is never lost or half-moved.
+- *Fresh install* (neither exists): create `~/.ht-ai-agent` and point
+  `~/.hermes` at it via symlink.
 
-- `_get_platform_default_hermes_home()` is called at import time from 30+ sites;
-  a data *move* must never happen there.
-- ~250 test files reference `.hermes` paths and several assert the literal
-  default — the flip must reconcile all of them.
+Either way, the `~/.hermes → ~/.ht-ai-agent` symlink means the ~25 code paths
+that still hardcode the legacy `os.environ.get("HERMES_HOME", ~/.hermes)`
+fallback resolve to the **same** directory as `get_hermes_home()` — no split
+data dir — without needing to touch each callsite. Migration skips entirely
+when a home override is set (`HT_HOME`/`HERMES_HOME`/context override), when
+`HT_SKIP_HOME_MIGRATION` is set, and under pytest (so tests never move real
+dirs). On Windows without symlink privilege the migration rolls back / the
+bridge is skipped (existing installs keep `~/.hermes`); the env alias still
+works.
 
-**Planned design:** resolver preference `HT_HOME → HERMES_HOME →
-~/.ht-ai-agent (if exists) → ~/.hermes (if exists) → ~/.ht-ai-agent`, plus an
-explicit `maybe_migrate_home()` run once from controlled startup (not at import)
-that does an atomic `os.rename` of `~/.hermes → ~/.ht-ai-agent` and leaves a
-back-symlink so anything still referencing the old path keeps working. Falls
-back to keep-using-old if the rename can't be done (e.g. cross-device).
+**Tests:** `tests/test_home_migration.py` covers the resolver preference,
+atomic migrate-with-rollback, fresh-provision, and every `maybe_migrate_home`
+guard; the bare-default assertions in `tests/test_hermes_constants.py` and
+`tests/test_hermes_home_profile_warning.py` were updated to the new default.
 
-### 2. Python module renames (`hermes_cli` → `ht_cli`, …)
+**Follow-up (optional):** the hardcoded `~/.hermes` fallbacks in
+`scripts/`, `optional-skills/`, and some plugins are bridged by the symlink for
+migrated/fresh installs today; routing them through `get_hermes_home()` is a
+tidy-up that can happen anytime.
+
+## Deferred: Python module renames (`hermes_cli` → `ht_cli`, …)
 
 The bulk of the ~12,300 occurrences, and purely internal — no user value, high
 churn. The backward-compatible way is a **shim**: create the new module and
@@ -123,7 +142,7 @@ leave the old name re-exporting from it (so `import hermes_cli` and any pickled
 session state referencing the old module path keep working). This is a
 mechanical, self-contained pass best done in isolation with its own review.
 
-### Left unchanged on purpose
+## Left unchanged on purpose
 
 The `hermes-tools` codex config key (written into users' `~/.codex/config.toml`),
 the `hermes-agent` ACP registry id and OAuth `client_id`, and the "Nous Hermes"

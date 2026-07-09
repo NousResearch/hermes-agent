@@ -298,6 +298,58 @@ def test_base_gateway_metadata_marks_telegram_dm_topics_as_reply_fallback():
     }
 
 
+def test_base_gateway_metadata_for_resumed_telegram_dm_topic_uses_direct_topic():
+    """Resumed/synthetic DM-topic events may have no reply anchor."""
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        thread_id="20189",
+    )
+
+    metadata = _thread_metadata_for_source(source)
+
+    assert metadata == {
+        "thread_id": "20189",
+        "telegram_dm_topic_reply_fallback": True,
+        "direct_messages_topic_id": "20189",
+    }
+
+
+def test_base_gateway_replies_to_triggering_message_for_telegram_dm_topic():
+    """Private DM topic lanes should anchor replies to the active user message."""
+    event = SimpleNamespace(
+        message_id="463",
+        reply_to_message_id="462",
+        source=SimpleNamespace(
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            thread_id="20189",
+        ),
+    )
+
+    assert _reply_anchor_for_event(event) == "463"
+
+
+def test_base_gateway_replies_to_triggering_message_for_telegram_forum_topic():
+    """Forum/supergroup topics should quote the triggering message for UX.
+
+    Topic placement still uses ``message_thread_id`` metadata; the reply
+    anchor is independent visual context in multi-person topics.
+    """
+    event = SimpleNamespace(
+        message_id="9001",
+        reply_to_message_id=None,
+        source=SimpleNamespace(
+            platform=Platform.TELEGRAM,
+            chat_type="group",
+            thread_id="42",
+        ),
+    )
+
+    assert _reply_anchor_for_event(event) == "9001"
+
+
+>>>>>>> 94716204f (fix(telegram): quote-reply triggering message in forum topics)
 @pytest.mark.asyncio
 async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegram_dm_topic(monkeypatch, tmp_path):
     """GatewayRunner's duplicate thread metadata must match the base helper."""
@@ -362,6 +414,150 @@ async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegra
 
 
 @pytest.mark.asyncio
+async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegram_forum_topic(monkeypatch, tmp_path):
+    """Forum topic busy-acks should quote the triggering message like normal replies."""
+    from gateway import run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    GatewayRunner = gateway_run.GatewayRunner
+
+    class BusyAdapter:
+        def __init__(self):
+            self._pending_messages = {}
+            self.calls = []
+
+        async def _send_with_retry(self, **kwargs):
+            self.calls.append(kwargs)
+            return SendResult(success=True, message_id="ack-1")
+
+    class BusyAgent:
+        def interrupt(self, _text):
+            return None
+
+        def get_activity_summary(self):
+            return {}
+
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001234567890",
+        chat_type="group",
+        thread_id="42",
+        user_id="user-1",
+        user_id_alt=None,
+        chat_id_alt=None,
+    )
+    event = MessageEvent(
+        text="busy follow-up",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="9001",
+    )
+    session_key = build_session_key(source)
+    adapter = BusyAdapter()
+
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._running_agents = {session_key: BusyAgent()}
+    runner._running_agents_ts = {}
+    runner._pending_messages = {}
+    runner._busy_ack_ts = {}
+    runner._draining = False
+    runner._busy_input_mode = "interrupt"
+    runner._is_user_authorized = lambda _source: True
+
+    assert await runner._handle_active_session_busy_message(event, session_key) is True
+
+    assert adapter.calls
+    assert adapter.calls[0]["reply_to"] == "9001"
+    assert adapter.calls[0]["metadata"] == {"thread_id": "42"}
+
+
+@pytest.mark.asyncio
+async def test_send_uses_reply_fallback_for_hermes_dm_topics():
+    """Hermes-created Telegram DM topics route with thread id plus reply anchor."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(kwargs)
+        return SimpleNamespace(message_id=777)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="test message",
+        reply_to="462",
+        metadata={
+            "thread_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
+        },
+    )
+
+    assert result.success is True
+    assert call_log[0]["reply_to_message_id"] == 462
+    assert call_log[0]["message_thread_id"] == 20197
+    assert "direct_messages_topic_id" not in call_log[0]
+
+
+@pytest.mark.asyncio
+async def test_send_uses_reply_anchor_when_direct_topic_fallback_metadata_exists():
+    """Restart/update replay metadata keeps the anchor authoritative when present."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(kwargs)
+        return SimpleNamespace(message_id=777)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="test message",
+        metadata={
+            "thread_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "20197",
+            "telegram_reply_to_message_id": "462",
+        },
+    )
+
+    assert result.success is True
+    assert call_log[0]["reply_to_message_id"] == 462
+    assert call_log[0]["message_thread_id"] == 20197
+    assert "direct_messages_topic_id" not in call_log[0]
+
+
+@pytest.mark.asyncio
+async def test_send_created_private_topic_uses_message_thread_without_anchor():
+    """Topics created via createForumTopic are addressable by message_thread_id directly."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(kwargs)
+        return SimpleNamespace(message_id=781)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="created topic message",
+        metadata={
+            "thread_id": "38049",
+            "telegram_dm_topic_created_for_send": True,
+        },
+    )
+
+    assert result.success is True
+    assert call_log[0]["reply_to_message_id"] is None
+    assert call_log[0]["message_thread_id"] == 38049
+    assert "direct_messages_topic_id" not in call_log[0]
+
+
+@pytest.mark.asyncio
+>>>>>>> 94716204f (fix(telegram): quote-reply triggering message in forum topics)
 async def test_created_private_topic_thread_not_found_fails_without_root_fallback():
     """Created private-topic sends must not retry into All Messages on stale thread IDs."""
     adapter = _make_adapter()

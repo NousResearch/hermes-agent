@@ -836,25 +836,15 @@ async def web_extract_tool(
 
             provider = _wsp_get_provider(backend) if backend else None
             if provider is None or not provider.supports_extract():
-                # When the configured name IS registered but doesn't support
-                # extract (search-only providers like brave-free / ddgs /
-                # searxng), surface that as a typed "search-only" error
-                # rather than silently switching backends. When the name
-                # isn't registered at all (typo / uninstalled plugin), fall
-                # through to the active-provider walk.
+                # Hot-patch: search-only backend (ddgs) →
+                # fall through to active extract provider or httpx fallback
                 if provider is not None and not provider.supports_extract():
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "error": (
-                                f"{provider.display_name} is a search-only "
-                                "backend and cannot extract URL content. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
-                            ),
-                        },
-                        ensure_ascii=False,
+                    logger.info(
+                        "Backend '%s' is search-only; falling back to "
+                        "active extract provider or httpx extraction",
+                        backend,
                     )
+                    provider = None
                 provider = get_active_extract_provider()
                 if provider is None:
                     # If the configured backend is a bundled web plugin the

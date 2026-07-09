@@ -226,6 +226,7 @@ class QQAdapter(BasePlatformAdapter):
         self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
+        self._last_event_time: float = 0.0  # monotonic time of last server event
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
 
         # Request/response correlation
@@ -278,7 +279,7 @@ class QQAdapter(BasePlatformAdapter):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Authenticate, obtain gateway URL, and open the WebSocket."""
         if not AIOHTTP_AVAILABLE:
             message = "QQ startup failed: aiohttp not installed"
@@ -713,11 +714,33 @@ class QQAdapter(BasePlatformAdapter):
                 await asyncio.sleep(self._heartbeat_interval)
                 if not self._ws or self._ws.closed:
                     continue
+                # Zombie connection detection: if no server events for 5 min,
+                # close WS to trigger reconnection
+                if self._last_event_time > 0:
+                    import time as _time
+                    idle = _time.monotonic() - self._last_event_time
+                    if idle > 900:
+                        logger.warning(
+                            "[%s] No server events for %.0fs, closing zombie connection",
+                            self._log_tag, idle,
+                        )
+                        try:
+                            await self._ws.close()
+                        except Exception:
+                            pass
+                        continue
                 try:
                     # d should be the latest sequence number received, or null
                     await self._ws.send_json({"op": 1, "d": self._last_seq})
                 except Exception as exc:
-                    logger.debug("[%s] Heartbeat failed: %s", self._log_tag, exc)
+                    logger.warning(
+                        "[%s] Heartbeat failed (%s), closing WS to trigger reconnect",
+                        self._log_tag, exc,
+                    )
+                    try:
+                        await self._ws.close()
+                    except Exception:
+                        pass
         except asyncio.CancelledError:
             pass
 
@@ -817,8 +840,11 @@ class QQAdapter(BasePlatformAdapter):
         if op == 10:
             d_data = d if isinstance(d, dict) else {}
             interval_ms = d_data.get("heartbeat_interval", 30000)
-            # Send heartbeats at 80% of the server interval to stay safe
-            self._heartbeat_interval = interval_ms / 1000.0 * 0.8
+            # Send heartbeats at 50% of the server interval for more
+            # aggressive keepalive (QQ server has a ~30min session timeout
+            # that fires despite heartbeats at 80%).
+            self._heartbeat_interval = interval_ms / 1000.0 * 0.5
+            import time as _time; self._last_event_time = _time.monotonic()
             logger.debug(
                 "[%s] Hello received, heartbeat_interval=%dms (sending every %.1fs)",
                 self._log_tag,
@@ -835,6 +861,7 @@ class QQAdapter(BasePlatformAdapter):
 
         # op 0 = Dispatch
         if op == 0 and t:
+            import time as _time; self._last_event_time = _time.monotonic()
             if t == "READY":
                 self._handle_ready(d)
             elif t == "RESUMED":
@@ -853,8 +880,10 @@ class QQAdapter(BasePlatformAdapter):
                 logger.debug("[%s] Unhandled dispatch: %s", self._log_tag, t)
             return
 
-        # op 11 = Heartbeat ACK
+        # op 11 = Heartbeat ACK — also mark alive so zombie detector
+        # does not fire when the server is healthy but simply idle.
         if op == 11:
+            import time as _time; self._last_event_time = _time.monotonic()
             return
 
         # op 7 = Server Reconnect — server asks client to reconnect (e.g.
@@ -2488,7 +2517,8 @@ class QQAdapter(BasePlatformAdapter):
                 # Permanent errors — don't retry
                 if any(
                         k in err
-                        for k in ("invalid", "forbidden", "not found", "bad request")
+                        for k in ("invalid", "forbidden", "not found", "bad request",
+                                  "无权限", "权限不足")
                 ):
                     break
                 # Transient — back off and retry
@@ -2506,7 +2536,8 @@ class QQAdapter(BasePlatformAdapter):
         error_msg = str(last_exc) if last_exc else "Unknown error"
         logger.error("[%s] Send failed: %s", self._log_tag, error_msg)
         retryable = not any(
-            k in error_msg.lower() for k in ("invalid", "forbidden", "not found")
+            k in error_msg.lower() for k in ("invalid", "forbidden", "not found",
+                                               "无权限", "权限不足")
         )
         return SendResult(success=False, error=error_msg, retryable=retryable)
 

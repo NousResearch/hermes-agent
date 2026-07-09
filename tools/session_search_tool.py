@@ -961,6 +961,14 @@ SESSION_SEARCH_SCHEMA = {
                     "the current session's database."
                 ),
             },
+            "include_claude": {
+                "type": "boolean",
+                "description": (
+                    "Set True to also search Claude Code conversation history "
+                    "(~2,600 sessions) alongside Hermes sessions. Results appear in "
+                    "a 'claude_results' field. Default: False (Hermes-only)."
+                ),
+            },
         },
         "required": [],
     },

@@ -1800,6 +1800,11 @@ DEFAULT_CONFIG = {
         "compact": False,
         "personality": "",
         "resume_display": "full",
+        # Persistent chat visibility preferences.
+        # Tool calls and reasoning remain collapsed by default, but users
+        # who want full inspection can enable these globally.
+        "tool_calls_default_expanded": False,
+        "reasoning_default_expanded": False,
         # Recap tuning for /resume and startup resume. The defaults match the
         # historical hardcoded values; expose them as config so power users can
         # widen or tighten the snapshot to taste.

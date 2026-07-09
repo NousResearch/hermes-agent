@@ -692,6 +692,14 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "How resumed sessions display history",
         "options": ["minimal", "full", "off"],
     },
+    "display.tool_calls_default_expanded": {
+        "type": "boolean",
+        "description": "Expand tool call details by default in chat",
+    },
+    "display.reasoning_default_expanded": {
+        "type": "boolean",
+        "description": "Expand reasoning sections by default when available",
+    },
     "display.busy_input_mode": {
         "type": "select",
         "description": "Input behavior while agent is running",

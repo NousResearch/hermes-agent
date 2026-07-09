@@ -4509,7 +4509,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """
         if prompt_start_time is None and prompt_duration == 0.0:
             return "⏲ 0s"
-        elapsed = time.time() - prompt_start_time if prompt_start_time is not None else prompt_duration
+        # Use time.monotonic() for elapsed calculation to stay immune to
+        # system clock adjustments (NTP sync, DST transitions).  The per‑turn
+        # start timestamp is also recorded with time.monotonic().
+        elapsed = time.monotonic() - prompt_start_time if prompt_start_time is not None else prompt_duration
         elapsed = max(0.0, elapsed)
 
         days = int(elapsed // 86400)
@@ -12394,7 +12397,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # exits the main thread and daemon threads are reaped automatically).
             # Start per-prompt elapsed timer — frozen after the agent thread
             # finishes; reset on the next turn.
-            self._prompt_start_time = time.time()
+            # Use time.monotonic() so the elapsed timer is immune to system clock
+            # adjustments (NTP sync, DST transitions, VM suspend/resume).
+            self._prompt_start_time = time.monotonic()
             self._prompt_duration = 0.0
             agent_thread = threading.Thread(target=run_agent, daemon=True)
             agent_thread.start()
@@ -12487,8 +12492,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             # Freeze per-prompt elapsed timer once the agent thread has
             # exited (or been abandoned as a daemon after interrupt).
+            # Uses time.monotonic() — consistent with _prompt_start_time.
             if self._prompt_start_time is not None:
-                self._prompt_duration = max(0.0, time.time() - self._prompt_start_time)
+                self._prompt_duration = max(0.0, time.monotonic() - self._prompt_start_time)
                 self._prompt_start_time = None
             # Record when this agent loop finished so the status bar can show
             # idle time since the last final response.
@@ -15139,7 +15145,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if not self._app:
                     time.sleep(0.1)
                     continue
-                if self._command_running:
+                if self._command_running or getattr(self, "_agent_running", False):
                     self._invalidate(min_interval=0.1)
                     time.sleep(0.1)
                 else:

@@ -1,10 +1,11 @@
 # IX Agency
 
 IX Agency is the Intelliverse X build of the Hermes Agent desktop app: the
-stock `apps/desktop` shell rebranded for the org, shipping the `ivx-*` agent
-skills, wired to the self-hosted Firecrawl instance for web research, and
-reachable over the org VPN (Headscale + Tailscale) when the backend runs
-remotely.
+stock `apps/desktop` shell rebranded for the org, with an agency workspace
+(clients, engagements, billing, org skill/tool catalogs), shipping the
+`ivx-*` agent skills, wired to the self-hosted Firecrawl instance for web
+research, and connected to the company WireGuard VPN (`usa-vpn`) for
+reaching org backends privately.
 
 This directory holds the org-specific pieces. Everything else is tracked
 upstream (`NousResearch/hermes-agent`); keep the fork current with:
@@ -67,21 +68,58 @@ Do not fork Firecrawl's core into this repo: it is AGPL-3.0. Run it as a
 separate service and talk to it over the API, which keeps this fork's
 licensing MIT-clean.
 
-## VPN: reaching a remote backend (Headscale + Tailscale)
+## The IX Agency workspace (sidebar → IX Agency)
+
+`apps/desktop/src/app/ix-agency/` adds an agency workspace to the app:
+
+| Tab | What it holds |
+| --- | --- |
+| Copilot | Native admin copilot — LiteLLM chat with admin-mcp tools, skill pills, and a write-action confirmation gate |
+| Clients | Accounts the agency serves — status (lead/active/paused/churned), contacts, notes |
+| Engagements | Projects and retainers per client — billing model, value, dates |
+| Billing | Invoices with outstanding/overdue/paid-this-year totals and mark-paid |
+| Org skills | The Intelliverse portal's admin-copilot playbooks plus your own drafts, injectable into Copilot chats |
+| Org tools | The admin-mcp MCP tile directory (bundled snapshot, live via gateway token) |
+| Connect | One-click company VPN (WireGuard) + portal / admin-mcp gateway settings |
+
+Clients, engagements, and invoices are local-first: they persist on the
+machine (localStorage, `hermes.desktop.ixAgency.book`) with no server
+dependency. The gateway bearer token entered under Connect is encrypted at
+rest with Electron `safeStorage` (`userData/ix-agency.json`).
+
+`apps/desktop/scripts/generate-ix-agency-data.mjs` regenerates the bundled
+skill/tile snapshots from sibling checkouts of `Intelliverse-X-Webfrontend`
+and `intelli-verse-kube-infra` (override with `IX_FRONTEND_DIR` /
+`IX_INFRA_DIR`).
+
+## VPN: the company WireGuard (`usa-vpn`)
+
+The org's VPN is the existing `usa-vpn` deployment (see
+`intelli-verse-kube-infra/usa-vpn/`): WireGuard via wg-easy v15 on
+Lightsail, endpoint `3.224.15.124:51820`, full tunnel, one `.conf` profile
+per employee. The EKS-hosted admin surfaces (Cloudflare Access / IP
+allowlists pinned to the VPN exit IP) become reachable once connected.
+
+Desktop integration — the Connect tab drives the tunnel directly:
+
+1. Get your profile: admins mint one per employee with
+   `usa-vpn/create-clients.sh` (or the wg-easy admin UI) and hand you
+   `<name>/usa-vpn.conf` — see `usa-vpn/EMPLOYEE-GUIDE.md`.
+2. Install WireGuard tooling: `brew install wireguard-tools` (macOS),
+   `apt install wireguard-tools` (Linux), or WireGuard for Windows.
+3. In IX Agency → Connect, browse to the `.conf` and hit Connect. macOS
+   prompts for your admin password (wg-quick needs root); Windows raises a
+   real UAC prompt; Linux needs a passwordless sudoers rule for wg-quick.
+   Status polls without elevation and shows connected/disconnected live.
+
+### Remote Hermes backend over the VPN
 
 The desktop app runs a local backend by default and works fully offline.
-For a shared org backend (k8s via `intelli-verse-x/hermes-deployment`, or a
-VPS), put backend and clients on the org tailnet:
+For a shared org backend (k8s via `intelli-verse-x/hermes-deployment` on
+EKS, namespace `aicart`, host `hermes.intelli-verse-x.ai`):
 
-1. Server side — join the backend host to the Headscale coordination
-   server with the standard Tailscale client:
-
-   ```bash
-   tailscale up --login-server=https://headscale.intelli-verse-x.ai
-   ```
-
-2. Backend — pin a session token and serve the dashboard on the tailnet
-   interface (never on a public interface):
+1. Backend — pin a session token so desktop Remote Gateway connections
+   survive restarts:
 
    ```bash
    # in ~/.hermes/.env on the backend host
@@ -91,13 +129,9 @@ VPS), put backend and clients on the org tailnet:
    ```
 
    `--insecure` here means session-token auth instead of the Nous Portal
-   OAuth gate; the tailnet provides the transport security.
+   OAuth gate; keep the ingress restricted (Cloudflare Access or an IP
+   allowlist pinned to the VPN exit IP `3.224.15.124`) — the dashboard
+   must never be reachable from the open internet.
 
-3. Desktop — each teammate joins the tailnet with the Tailscale client
-   (same `--login-server`), then in IX Agency: Settings -> Gateway ->
-   Remote gateway, enter `http://<tailnet-hostname>:9119` and the session
-   token.
-
-Headscale ACLs scope which users can reach the backend node. New Hermes
-release features may lag on Headscale-hosted setups only where they depend
-on Tailscale SaaS extras (Funnel, SAML SSO); nothing in this flow does.
+2. Desktop — connect the VPN (Connect tab), then Settings → Gateway →
+   Remote gateway, enter the backend URL and the session token.

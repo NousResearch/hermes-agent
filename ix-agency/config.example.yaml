@@ -33,14 +33,17 @@ mcp_servers:
       # FIRECRAWL_API_KEY: "fc-..."
 
 # -----------------------------------------------------------------------------
-# Dashboard behind the tailnet (remote IX Agency backends)
+# Dashboard behind the company VPN (remote IX Agency backends)
 # -----------------------------------------------------------------------------
-# For a backend that desktop clients reach over the VPN (Headscale/Tailscale),
-# serve the dashboard on the tailnet address and pin a session token in
-# ~/.hermes/.env (HERMES_DASHBOARD_SESSION_TOKEN) so desktop Remote Gateway
-# connections survive restarts. Never expose this port to the public internet.
+# For a backend that desktop clients reach over the org VPN (usa-vpn —
+# WireGuard/wg-easy on Lightsail; connect via the desktop's IX Agency →
+# Connect tab), pin a session token in ~/.hermes/.env
+# (HERMES_DASHBOARD_SESSION_TOKEN) so desktop Remote Gateway connections
+# survive restarts. Keep the port behind Cloudflare Access or an IP
+# allowlist pinned to the VPN exit IP (3.224.15.124) — never expose it to
+# the open internet. See ix-agency/README.md → "VPN".
 #
 # Start with:  hermes dashboard --host 0.0.0.0 --port 9119 --insecure --tui --no-open
 #
 # dashboard:
-#   public_url: "http://<tailnet-hostname>:9119"
+#   public_url: "https://hermes.intelli-verse-x.ai"

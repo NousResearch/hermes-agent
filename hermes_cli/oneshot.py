@@ -166,6 +166,7 @@ def run_oneshot(
     provider: Optional[str] = None,
     toolsets: object = None,
     usage_file: Optional[str] = None,
+    max_turns: Optional[int] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -232,6 +233,7 @@ def run_oneshot(
                     provider=provider,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
+                    max_turns=max_turns,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -300,6 +302,7 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    max_turns: Optional[int] = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -384,6 +387,10 @@ def _run_agent(
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
 
+    # An explicit --max-turns caps this run's tool-calling iterations; when unset
+    # we pass nothing so AIAgent keeps its own default (max_iterations=90).
+    _max_iter = {"max_iterations": max_turns} if max_turns is not None else {}
+
     agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -394,6 +401,7 @@ def _run_agent(
         quiet_mode=True,
         platform="cli",
         session_db=session_db,
+        **_max_iter,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
         # Interactive callbacks are intentionally NOT wired beyond this

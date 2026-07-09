@@ -153,6 +153,18 @@ def build_top_level_parser():
         default=None,
         help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot and --tui.",
     )
+    # Accepted at the top level so it can pair with -z/--oneshot without the
+    # `chat` subcommand (mirrors `hermes chat --max-turns`). The chat subparser
+    # sets its --max-turns default to argparse.SUPPRESS so `hermes --max-turns N
+    # chat` — the flag placed before the subcommand — is not clobbered back to
+    # the default. Callers read it via getattr(args, "max_turns", None).
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Maximum tool-calling iterations for this invocation. Applies to -z/--oneshot (default: 90).",
+    )
     parser.add_argument(
         "--resume",
         "-r",
@@ -353,7 +365,11 @@ def build_top_level_parser():
     chat_parser.add_argument(
         "--max-turns",
         type=int,
-        default=None,
+        # SUPPRESS (not None) so `hermes --max-turns N chat` — the flag placed
+        # before the subcommand and parsed by the top-level parser — is not
+        # clobbered back to the default by this subparser. Absence therefore
+        # reads as None via getattr(args, "max_turns", None), same as before.
+        default=argparse.SUPPRESS,
         metavar="N",
         help="Maximum tool-calling iterations per conversation turn (default: 90, or agent.max_turns in config)",
     )

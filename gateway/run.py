@@ -11240,7 +11240,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         )
 
                                     # Only rewrite the transcript when rotation produced
-                                    # a NEW session id OR in-place compaction succeeded.
+                                    # a NEW session id.  In-place compaction does NOT
+                                    # need a rewrite: archive_and_compact() has already
+                                    # soft-archived the previous active rows and inserted
+                                    # the compacted messages as the new active set inside
+                                    # _compress_context().  Calling rewrite_transcript()
+                                    # after in-place compaction would invoke
+                                    # replace_messages(active_only=False) which DELETEs
+                                    # ALL rows — including the archived turns that
+                                    # archive_and_compact() deliberately preserved
+                                    # (silent data loss, #61145).
+                                    #
                                     # The danger this guards against (mirrors the
                                     # /compress fix #44794/#39704): if _compress_context
                                     # returns a summary but neither rotates nor completes
@@ -11249,11 +11259,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # rewrite_transcript() would DELETE the original
                                     # messages and replace them with only the compressed
                                     # summary (permanent data loss, #21301).
-                                    if _hyg_rotated or _hyg_in_place:
+                                    if _hyg_rotated:
                                         self.session_store.rewrite_transcript(
                                             session_entry.session_id, _compressed
                                         )
                                         # Reset stored token count — transcript rewritten
+                                        session_entry.last_prompt_tokens = 0
+                                        history = _compressed
+                                        _new_count = len(_compressed)
+                                        _new_tokens = estimate_messages_tokens_rough(
+                                            _compressed
+                                        )
+                                    elif _hyg_in_place:
+                                        # archive_and_compact() already persisted the
+                                        # compacted transcript inside _compress_context.
+                                        # Reset counts to match the new active set.
                                         session_entry.last_prompt_tokens = 0
                                         history = _compressed
                                         _new_count = len(_compressed)

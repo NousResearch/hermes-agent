@@ -5883,9 +5883,13 @@ def test_session_delete_returns_db_unavailable_when_no_db(monkeypatch):
     assert "state.db unavailable" in resp["error"]["message"]
 
 
-def test_session_delete_refuses_active_session(monkeypatch):
-    """Cannot delete a session currently bound to a live TUI session."""
+def test_session_delete_evicts_then_deletes_active_session(monkeypatch):
+    """A session currently bound to a live TUI session is evicted (torn down
+    out of the live set) and THEN deleted on disk — no longer refused with
+    4023.  The live row is keyed off the STORED id (``session_key``), so the
+    handler must resolve it through the key, not the runtime ``sid``."""
     called: list[str] = []
+    torn_down: list[str] = []
 
     class _DB:
         def delete_session(self, sid, sessions_dir=None):
@@ -5893,6 +5897,94 @@ def test_session_delete_refuses_active_session(monkeypatch):
             return True
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    # Reuse the stock teardown helper, but stub it so the test stays focused on
+    # the delete handler's evict-then-delete contract rather than agent close.
+    monkeypatch.setattr(
+        server,
+        "_close_session_by_id",
+        lambda sid, **kw: (torn_down.append(sid) or True),
+    )
+    # Runtime sid ("live") differs from the stored id ("key-live").
+    monkeypatch.setitem(server._sessions, "live", {"session_key": "key-live"})
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.delete",
+                "params": {"session_id": "key-live"},
+            }
+        )
+    finally:
+        server._sessions.pop("live", None)
+
+    assert "result" in resp, resp
+    assert resp["result"] == {"deleted": "key-live", "evicted": True}
+    # Eviction tore down the live row by its runtime sid, then the on-disk row
+    # was deleted by the stored id.
+    assert torn_down == ["live"], "live runtime must be torn down before delete"
+    assert called == ["key-live"], "delete_session must run after eviction"
+
+
+def test_session_delete_interrupts_active_running_session(monkeypatch):
+    """Deleting a session that is mid-turn first interrupts the agent and
+    releases its pending prompts (mirrors session.interrupt) so a
+    deleted-while-streaming session never leaks a spending runtime."""
+    events: list[str] = []
+
+    class _Agent:
+        def interrupt(self):
+            events.append("interrupt")
+
+    class _DB:
+        def delete_session(self, sid, sessions_dir=None):
+            events.append("delete")
+            return True
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(
+        server, "_close_session_by_id", lambda sid, **kw: events.append("teardown") or True
+    )
+    monkeypatch.setattr(
+        server, "_clear_pending", lambda sid=None: events.append("clear_pending")
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "live",
+        {"session_key": "key-run", "running": True, "agent": _Agent()},
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.delete",
+                "params": {"session_id": "key-run"},
+            }
+        )
+    finally:
+        server._sessions.pop("live", None)
+
+    assert "result" in resp, resp
+    assert resp["result"] == {"deleted": "key-run", "evicted": True}
+    # interrupt + clear_pending happen BEFORE the teardown; the on-disk delete
+    # happens last.
+    assert events == ["interrupt", "clear_pending", "teardown", "delete"], events
+
+
+def test_session_delete_returns_4023_when_eviction_raises(monkeypatch):
+    """If the eviction teardown itself raises, the delete is refused with the
+    legacy 4023 code rather than deleting a half-torn-down session — and the
+    on-disk delete never runs."""
+
+    class _DB:
+        def delete_session(self, *a, **kw):
+            raise AssertionError("delete must not run when eviction fails")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    def _boom(sid, **kw):
+        raise RuntimeError("agent close hung")
+
+    monkeypatch.setattr(server, "_close_session_by_id", _boom)
     monkeypatch.setitem(server._sessions, "live", {"session_key": "key-live"})
     try:
         resp = server.handle_request(
@@ -5907,8 +5999,8 @@ def test_session_delete_refuses_active_session(monkeypatch):
 
     assert "error" in resp
     assert resp["error"]["code"] == 4023
-    assert "active session" in resp["error"]["message"]
-    assert called == [], "delete_session must not be called for active sessions"
+    assert "could not evict active session" in resp["error"]["message"]
+    assert "agent close hung" in resp["error"]["message"]
 
 
 def test_session_delete_fails_closed_when_active_snapshot_raises(monkeypatch):
@@ -5969,7 +6061,8 @@ def test_session_delete_propagates_db_exception(monkeypatch):
 
 
 def test_session_delete_success_returns_deleted_id(monkeypatch):
-    """Happy path — DB delete succeeds, response carries the deleted id
+    """Happy path — DB delete succeeds for a NON-active session, response
+    carries the deleted id (with ``evicted: False`` since nothing was live)
     and the on-disk sessions dir is forwarded so transcript files get
     cleaned up alongside the row."""
     captured: dict = {}
@@ -5987,7 +6080,7 @@ def test_session_delete_success_returns_deleted_id(monkeypatch):
     )
 
     assert "result" in resp, resp
-    assert resp["result"] == {"deleted": "old-1"}
+    assert resp["result"] == {"deleted": "old-1", "evicted": False}
     assert captured["sid"] == "old-1"
     # sessions_dir must be forwarded so transcript files get cleaned up
     # too — not just the SQLite row.  The autouse _isolate_hermes_home

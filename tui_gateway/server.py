@@ -6121,11 +6121,20 @@ def _(rid, params: dict) -> dict:
     """Delete a stored session and its on-disk transcript files.
 
     Used by the TUI resume picker (``d`` key) so users can prune old
-    sessions without dropping to the CLI.  Refuses to delete a session
-    that is currently active in this gateway process — those rows are
-    still being written to and removing them out from under the live
-    agent corrupts message ordering and trips FK constraints when the
-    next message append flushes.
+    sessions without dropping to the CLI.  A session the user has open is
+    registered LIVE in this gateway process (``session.resume`` →
+    ``_init_session``), so the old "refuse any active session" guard made
+    delete reliably fail for anything currently open.  Instead of refusing,
+    we AUTO-EVICT the live row first, then delete the on-disk state.
+
+    Eviction is scoped to the single ``target`` session — other live rows are
+    never touched — and reuses the SAME teardown idiom as ``session.close``
+    (``_close_session_by_id``: pop under the resume/sessions locks +
+    ``_teardown_session``).  When the target is mid-turn we first interrupt the
+    agent and release any pending prompts/approvals (mirroring
+    ``session.interrupt``) so a deleted-while-streaming session never leaks a
+    spending runtime.  If the eviction teardown itself raises we refuse with
+    ``4023`` rather than delete a half-torn-down session.
     """
     target = params.get("session_id", "")
     if not target:
@@ -6133,29 +6142,68 @@ def _(rid, params: dict) -> dict:
     db = _get_db()
     if db is None:
         return _db_unavailable_error(rid, code=5036)
-    # Block deletion of any session currently bound to a live TUI session
-    # in this process.  The picker hides the active session anyway, but a
-    # racing caller could still target it.  Snapshot via ``list(...)``
-    # because ``_sessions`` is mutated by concurrent RPCs on the thread
-    # pool — iterating the dict directly can raise ``RuntimeError:
-    # dictionary changed size during iteration``.  If even the snapshot
-    # raises, fail closed (refuse the delete) rather than fail open.
+    # Snapshot the live table to learn whether ``target`` is currently bound to
+    # a live TUI session in this process.  Snapshot via ``list(...)`` because
+    # ``_sessions`` is mutated by concurrent RPCs on the thread pool — iterating
+    # the dict directly can raise ``RuntimeError: dictionary changed size during
+    # iteration``.  If even the snapshot raises, fail closed (refuse the delete)
+    # rather than fall through and delete blind.
     try:
         with _sessions_lock:
-            snapshot = list(_sessions.values())
+            snapshot = list(_sessions.items())
     except Exception as e:
         return _err(rid, 5036, f"could not enumerate active sessions: {e}")
-    active = {s.get("session_key") for s in snapshot if s.get("session_key")}
-    if target in active:
-        return _err(rid, 4023, "cannot delete an active session")
+
+    # ``session.delete`` keys on the STORED id (``session_key``), not the
+    # runtime ``sid``.  Resolve the live row through the key — never via
+    # ``_sessions.get(target)`` (which is keyed by ``sid``).
+    live: tuple[str, dict] | None = None
+    for sid, session in snapshot:
+        if session.get("_finalized"):
+            continue
+        if str(session.get("session_key") or "") == target:
+            live = (sid, session)
+            break
+
+    evicted = False
+    if live is not None:
+        live_sid, live_session = live
+        try:
+            if live_session.get("running"):
+                # Mid-turn: stop the spending runtime BEFORE evicting so a
+                # deleted-while-streaming session never leaks an orphaned
+                # agent.  Mirrors ``session.interrupt`` (interrupt + release
+                # pending prompts/approvals), scoped to this session only.
+                agent = live_session.get("agent")
+                if agent is not None and hasattr(agent, "interrupt"):
+                    agent.interrupt()
+                _clear_pending(live_sid)
+                try:
+                    from tools.approval import resolve_gateway_approval
+
+                    resolve_gateway_approval(target, "deny", resolve_all=True)
+                except Exception:
+                    pass
+            # Tear down via the same stock idiom as ``session.close``: serialize
+            # against the WS-orphan reaper under ``_session_resume_lock`` and let
+            # ``_close_session_by_id`` do the single idempotent pop+teardown.
+            with _session_resume_lock:
+                _close_session_by_id(live_sid, end_reason="tui_delete")
+            evicted = True
+        except Exception as e:
+            # Eviction teardown failed — refuse rather than delete a
+            # half-torn-down session.  ``4023`` is preserved for this fallback.
+            return _err(rid, 4023, f"could not evict active session: {e}")
+
     sessions_dir = get_hermes_home() / "sessions"
     try:
         deleted = db.delete_session(target, sessions_dir=sessions_dir)
     except Exception as e:
         return _err(rid, 5036, f"delete failed: {e}")
-    if not deleted:
+    if not deleted and not evicted:
+        # No on-disk row AND no live row existed — genuinely not found.
         return _err(rid, 4007, "session not found")
-    return _ok(rid, {"deleted": target})
+    return _ok(rid, {"deleted": target, "evicted": evicted})
 
 
 @method("session.title")

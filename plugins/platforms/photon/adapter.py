@@ -104,6 +104,21 @@ _PHOTON_RETRYABLE_PATTERNS = (
     "upstream_unavailable",
 )
 
+# Permanent, non-actionable rejections. Unlike the patterns above these will
+# NEVER succeed on retry — re-hammering the same target just floods the logs
+# (and Photon's abuse controls) with the same error. The free/shared-line
+# "Target not allowed" rejection (#51897) is the canonical case: a shared
+# Photon line pool cannot originate outbound sends to an arbitrary target,
+# so the send is rejected at the upstream and must be surfaced, not retried.
+_PHOTON_FATAL_PATTERNS = (
+    "target not allowed",
+    "not allowed for this project",
+    "shared line",
+    "free tier",
+    "outbound not permitted",
+    "forbidden target",
+)
+
 # Minimum seconds between typing-indicator calls for the same chat.
 # iMessage is a personal channel — suppressing rapid repeats reduces
 # upstream gRPC pressure during Photon overflow events.
@@ -1398,6 +1413,19 @@ class PhotonAdapter(BasePlatformAdapter):
         lowered = error.lower()
         return any(pat in lowered for pat in _PHOTON_RETRYABLE_PATTERNS)
 
+    @staticmethod
+    def _is_fatal_error(error: Optional[str]) -> bool:
+        """Permanent upstream rejection — never worth retrying.
+
+        Retrying (or downgrading to plain text) only re-hammers the same
+        rejected target. The shared-line / free-tier ``Target not allowed``
+        rejection falls here (#51897).
+        """
+        if not error:
+            return False
+        lowered = error.lower()
+        return any(pat in lowered for pat in _PHOTON_FATAL_PATTERNS)
+
     async def _send_with_retry(
         self,
         chat_id: str,
@@ -1424,6 +1452,13 @@ class PhotonAdapter(BasePlatformAdapter):
             return result
 
         error_str = result.error or ""
+        if self._is_fatal_error(error_str):
+            # Permanent upstream rejection (e.g. shared-line free tier
+            # "Target not allowed"). Retrying or downgrading to plain text
+            # only re-hammers the same rejected target — surface it once.
+            logger.error("[photon] Outbound send permanently rejected: %s", error_str)
+            return result
+
         is_network = result.retryable or self._is_retryable_error(error_str)
         if not is_network and self._is_timeout_error(error_str):
             return result
@@ -1703,7 +1738,18 @@ async def _standalone_send(
                     return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
                 data = resp.json() or {}
                 if not data.get("ok"):
-                    return {"error": data.get("error") or "sidecar reported failure"}
+                    err = data.get("error") or "sidecar reported failure"
+                    lowered = str(err).lower()
+                    if any(pat in lowered for pat in _PHOTON_FATAL_PATTERNS):
+                        return {
+                            "error": (
+                                f"{err}. This Photon line cannot originate "
+                                "outbound sends (shared/free-tier line pool — "
+                                "see Photon docs). Use a different delivery "
+                                "channel such as Discord for cron output."
+                            )
+                        }
+                    return {"error": err}
                 last_message_id = data.get("messageId")
 
             # 2. Each attachment as a separate /send-attachment call.
@@ -1731,7 +1777,18 @@ async def _standalone_send(
                     return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
                 data = resp.json() or {}
                 if not data.get("ok"):
-                    return {"error": data.get("error") or "sidecar reported failure"}
+                    err = data.get("error") or "sidecar reported failure"
+                    lowered = str(err).lower()
+                    if any(pat in lowered for pat in _PHOTON_FATAL_PATTERNS):
+                        return {
+                            "error": (
+                                f"{err}. This Photon line cannot originate "
+                                "outbound sends (shared/free-tier line pool — "
+                                "see Photon docs). Use a different delivery "
+                                "channel such as Discord for cron output."
+                            )
+                        }
+                    return {"error": err}
                 last_message_id = data.get("messageId") or last_message_id
 
         return {"success": True, "message_id": last_message_id}

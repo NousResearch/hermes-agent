@@ -20,6 +20,16 @@ your first iMessage from Hermes — just a phone number we can bind to
 your account.
 :::
 
+:::warning Outbound sends require a paid tier
+The free shared-line pool can **receive and reply within an active
+conversation**, but Photon rejects **outbound sends initiated by Hermes**
+(e.g. cron-delivered messages) from shared lines with a
+`Target not allowed for this project` error. This is a Photon platform
+limitation, not a Hermes bug. If you need Hermes to originate messages
+(cron deliveries, proactive alerts), use the **paid Business tier** for a
+dedicated sending number, or deliver over another channel (Discord, etc.).
+:::
+
 ## Architecture
 
 Photon is a **persistent-connection** channel, like Discord or Slack —

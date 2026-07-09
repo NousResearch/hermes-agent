@@ -1140,14 +1140,41 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
 
 
 def _resolve_last_session(source: str = "cli") -> Optional[str]:
-    """Look up the most recently-used session ID for a source."""
+    """Look up the most recently-used session ID for a source.
+
+    Workspace-aware: filters candidates by current workspace identity so that
+    auto-continue (hermes -c) picks sessions from the same project, not just
+    the chronologically last one across unrelated workspaces.
+    """
     db = None
     try:
         from hermes_state import SessionDB
 
         db = SessionDB()
-        sessions = db.search_sessions(source=source, limit=1)
-        return sessions[0]["id"] if sessions else None
+        # Fetch more candidates to allow workspace filtering (default limit=1 is too narrow)
+        sessions = db.search_sessions(source=source, limit=20)
+        if not sessions:
+            return None
+
+        # Workspace-aware filtering for auto-continue
+        try:
+            from hermes_cli.workspace_guard import filter_sessions_by_workspace
+            compatible, incompatible = filter_sessions_by_workspace(
+                sessions, current_cwd=os.getcwd()  # resolve cwd at query time
+            )
+            if compatible:
+                return compatible[0]["id"]
+            elif incompatible:
+                logger.debug(
+                    "No workspace-compatible session found for auto-continue; "
+                    "skipped %d mismatched candidate(s)",
+                    len(incompatible),
+                )
+                return None
+        except Exception:
+            pass
+
+        return sessions[0]["id"]
     except Exception:
         pass
     finally:

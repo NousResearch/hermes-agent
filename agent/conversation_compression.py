@@ -432,6 +432,46 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
     })
 
 
+def _stamp_workspace_metadata_on_compressed_messages(agent: Any, compressed: list) -> None:
+    """Append workspace metadata to compressed summary messages in-place.
+
+    This is a secondary restore-boundary signal. The primary guard uses
+    sessions.git_repo_root/cwd, but legacy or rotated rows can lack those
+    fields. Appending to an existing compressed-summary message avoids adding
+    a new role and preserves strict alternation.
+    """
+    try:
+        from agent.context_compressor import (
+            COMPRESSED_SUMMARY_METADATA_KEY,
+            _append_text_to_content,
+        )
+        from hermes_cli.workspace_guard import stamp_compaction_metadata
+
+        db = getattr(agent, "_session_db", None)
+        session_id = getattr(agent, "session_id", "") or ""
+        if not db or not session_id:
+            return
+        try:
+            session_row = db.get_session(session_id) or {}
+        except Exception:
+            session_row = {}
+        marker = stamp_compaction_metadata("", session_row)
+        if not marker:
+            return
+
+        for msg in compressed:
+            if not isinstance(msg, dict):
+                continue
+            if not msg.get(COMPRESSED_SUMMARY_METADATA_KEY):
+                continue
+            content = msg.get("content", "")
+            if "HERMES_WORKSPACE:" in str(content):
+                continue
+            msg["content"] = _append_text_to_content(content, marker, prepend=False)
+    except Exception as exc:
+        logger.debug("Failed to stamp workspace metadata on compressed messages: %s", exc)
+
+
 def compress_context(
     agent: Any,
     messages: list,
@@ -704,6 +744,7 @@ def compress_context(
         if todo_snapshot:
             compressed.append({"role": "user", "content": todo_snapshot})
         _ensure_compressed_has_user_turn(messages, compressed)
+        _stamp_workspace_metadata_on_compressed_messages(agent, compressed)
 
         agent._invalidate_system_prompt()
         new_system_prompt = agent._build_system_prompt(system_message)

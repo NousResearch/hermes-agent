@@ -286,7 +286,35 @@ class CLIAgentSetupMixin:
                 resolved_meta = self._session_db.get_session(self.session_id)
                 if resolved_meta:
                     session_meta = resolved_meta
-            restored = self._session_db.get_messages_as_conversation(self.session_id)
+            restored = []
+            # Workspace guard: validate session identity before injecting history.
+            # Prevents cross-workspace context leakage (e.g. scout vs hermes-agent).
+            try:
+                from hermes_cli.workspace_guard import (
+                    augment_session_row_from_compaction,
+                    format_workspace_mismatch_error,
+                    format_legacy_warning,
+                    validate_session_workspace,
+                )
+
+                session_meta = self._session_db.get_session(self.session_id) or {}
+                restored = self._session_db.get_messages_as_conversation(self.session_id)
+                session_meta = augment_session_row_from_compaction(session_meta, restored)
+                guard_result = validate_session_workspace(
+                    session_meta, current_cwd=self.cwd if hasattr(self, "cwd") else None
+                )
+                if guard_result.blocked:
+                    error_msg = format_workspace_mismatch_error(guard_result)
+                    ChatConsole().print(f"[bold red]{error_msg}[/]")
+                    print(error_msg, file=sys.stderr)
+                    return False
+                elif guard_result.warning:
+                    _cprint(format_legacy_warning(guard_result.warning))
+            except Exception as exc:
+                logger.debug("Workspace guard check failed for session %s: %s", self.session_id, exc)
+
+            if not restored:
+                restored = self._session_db.get_messages_as_conversation(self.session_id)
             if restored:
                 restored = [m for m in restored if m.get("role") != "session_meta"]
                 self.conversation_history = restored

@@ -1680,6 +1680,7 @@ class SessionDB:
         thread_id: str = None,
         display_name: str = None,
         origin_json: str = None,
+        git_repo_root: str = None,  # NEW: workspace identity for resume validation
     ) -> None:
         """Persist the gateway routing peer for an existing session row.
 
@@ -1688,6 +1689,9 @@ class SessionDB:
         channel directory) can read routing data from state.db instead of
         sessions.json.  They are COALESCE'd only in the sense that ``None``
         leaves the existing value untouched.
+
+        ``git_repo_root`` captures the workspace identity at session creation
+        so that future resume restores can validate cross-workspace safety.
         """
         if not session_id or not session_key:
             return
@@ -1698,7 +1702,8 @@ class SessionDB:
                    SET session_key = ?, source = ?, user_id = ?, chat_id = ?,
                        chat_type = ?, thread_id = ?,
                        display_name = COALESCE(?, display_name),
-                       origin_json = COALESCE(?, origin_json)
+                       origin_json = COALESCE(?, origin_json),
+                       git_repo_root = COALESCE(?, git_repo_root)
                    WHERE id = ?""",
                 (
                     session_key,
@@ -1709,6 +1714,7 @@ class SessionDB:
                     thread_id,
                     display_name,
                     origin_json,
+                    git_repo_root,  # NEW: workspace identity capture
                     session_id,
                 ),
             )

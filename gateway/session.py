@@ -1402,9 +1402,23 @@ class SessionStore:
         source: Optional[SessionSource],
         display_name: Optional[str] = None,
     ) -> None:
-        """Persist the routing peer for an existing gateway session row."""
+        """Persist the routing peer for an existing gateway session row.
+
+        Also captures workspace identity (git_repo_root) at creation time so
+        that future resume restores can validate cross-workspace safety.
+        """
         if not self._db or not source:
             return
+        
+        # Resolve current working directory's git repo root for workspace capture
+        git_repo_root = ""
+        try:
+            from tui_gateway.git_probe import repo_root as _git_repo_root
+            cwd = os.getcwd()
+            git_repo_root = _git_repo_root(cwd) or ""
+        except Exception:
+            pass  # Non-critical; legacy sessions will have null
+        
         recorder = getattr(self._db, "record_gateway_session_peer", None)
         if not callable(recorder):
             return
@@ -1424,6 +1438,7 @@ class SessionStore:
                 thread_id=source.thread_id,
                 display_name=display_name or source.chat_name,
                 origin_json=origin_json,
+                git_repo_root=git_repo_root,  # NEW: workspace identity capture
             )
         except TypeError:
             # Older SessionDB without display_name/origin_json kwargs.

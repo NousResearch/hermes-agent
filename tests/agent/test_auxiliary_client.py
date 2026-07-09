@@ -1744,6 +1744,44 @@ class TestIsPaymentError:
         exc.status_code = 429
         assert _is_payment_error(exc) is False
 
+    # ── Z.AI Coding Plan rolling quotas (NOT payment errors) ─────────────
+
+    def test_zai_coding_plan_1113_no_resource_package(self):
+        """Z.AI Coding Plan code 1113 is a per-key rolling quota, NOT a payment error."""
+        exc = Exception("Insufficient balance or no resource package")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is False
+
+    def test_zai_coding_plan_1308_usage_limit_reached(self):
+        """Z.AI Coding Plan code 1308 is a per-key rolling quota, NOT a payment error."""
+        exc = Exception("Usage limit reached for 5 hour")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is False
+
+    def test_zai_coding_plan_api_zai_domain(self):
+        """Z.AI Coding Plan errors from api.z.ai are NOT payment errors."""
+        exc = Exception("1113 — Insufficient balance or no resource package")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is False
+
+    def test_zai_coding_plan_coding_endpoint(self):
+        """Z.AI Coding Plan endpoint errors are NOT payment errors."""
+        exc = Exception("1308 — Usage limit reached for 5 hour")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is False
+
+    def test_zai_metered_endpoint_payment_error_still_detected(self):
+        """Real Z.AI payment errors (non-Coding Plan) should still be detected."""
+        exc = Exception("Insufficient funds for this request")
+        exc.status_code = 402
+        assert _is_payment_error(exc) is True
+
+    def test_vertex_ai_resource_exhausted_still_detected(self):
+        """Vertex AI 'resource exhausted' should still be a payment error."""
+        exc = Exception("resource exhausted")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is True
+
 
 class TestIsModelNotFoundError:
     """_is_model_not_found_error detects stale/invalid model 404s, distinct

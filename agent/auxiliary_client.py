@@ -2824,11 +2824,35 @@ def _is_payment_error(exc: Exception) -> bool:
     Vertex AI "quota exceeded") are functionally equivalent to credit
     exhaustion — the provider cannot serve the request until the quota
     resets — and should trigger the same provider-fallback logic.
+
+    EXCEPTION: Z.AI Coding Plan errors (codes 1113 and 1308) are per-key
+    rolling quotas, not wallet-billing exhaustion. They should trigger
+    credential pool rotation, not provider fallback.
     """
     status = getattr(exc, "status_code", None)
     if status == 402:
         return True
     err_lower = str(exc).lower()
+
+    # Z.AI Coding Plan per-key rolling quotas are NOT payment errors.
+    # These errors should trigger pool rotation (try next key) rather than
+    # provider fallback (which takes the whole pool offline).
+    # Codes 1113 ("Insufficient balance or no resource package") and 1308
+    # ("Usage limit reached for 5 hour") are rolling quotas, not billing issues.
+    if (
+        "api.z.ai" in err_lower
+        or "z.ai/api/coding" in err_lower
+        or ("zhipuai" in err_lower and "coding" in err_lower)
+    ):
+        if "1113" in err_lower:
+            return False
+        if "1308" in err_lower:
+            return False
+        if "no resource package" in err_lower:
+            return False
+        if "usage limit reached" in err_lower:
+            return False
+
     # OpenRouter and other providers include "credits" or "afford" in 402 bodies,
     # but sometimes wrap them in 429 or other codes.
     # Daily quota exhaustion from Bedrock, Vertex AI, and similar providers

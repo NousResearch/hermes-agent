@@ -21,7 +21,7 @@ import { getSessionMessages, listAllProfileSessions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
 import { FileImage, FileText, FolderOpen, Link2, Loader2, RefreshCw } from '@/lib/icons'
-import { downloadGatewayMediaFile, isRemoteGateway } from '@/lib/media'
+import { downloadGatewayMediaFile, isRemoteGateway, mediaExternalUrl } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { fmtDayTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
@@ -98,6 +98,178 @@ interface ArtifactColumn {
 const itemsLabel = (f: ArtifactFilter, a: Translations['artifacts']) =>
   f === 'link' ? a.itemsLink : f === 'file' ? a.itemsFile : a.itemsGeneric
 
+// BEGIN output-image discovery
+const DEFAULT_OUTPUT_IMAGE_ROOTS = ['/home/moozyx/.openclaw-moo/media/output'] as const
+const SESSION_IMAGE_ROOTS = ['/home/moozyx/.hermes/images'] as const
+const ARTIFACT_IMAGE_ROOTS_STORAGE_KEY = 'hermes.artifacts.imageRoots'
+const OUTPUT_IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp)(?:[?#].*)?$/i
+
+interface ArtifactFsListEntry {
+  name: string
+  path: string
+  isDirectory: boolean
+}
+
+function artifactFileName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() || path
+}
+
+function pathFromArtifactValue(value: string): string {
+  if (!value.startsWith('file://')) {
+    return value
+  }
+
+  try {
+    return decodeURIComponent(new URL(value).pathname)
+  } catch {
+    return value.replace(/^file:\/\//, '')
+  }
+}
+
+function normalizeArtifactRoot(root: string): string {
+  return root.trim().replace(/\/+$/, '')
+}
+
+function parseArtifactRoots(raw: string | null | undefined): string[] {
+  if (!raw?.trim()) {
+    return []
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+
+    if (Array.isArray(parsed)) {
+      return parsed.filter((entry): entry is string => typeof entry === 'string').map(normalizeArtifactRoot).filter(Boolean)
+    }
+  } catch {
+    // Fall back to comma/newline parsing below.
+  }
+
+  return raw
+    .split(/[,\n]/)
+    .map(normalizeArtifactRoot)
+    .filter(Boolean)
+}
+
+function configuredOutputImageRoots(): string[] {
+  if (typeof window === 'undefined') {
+    return [...DEFAULT_OUTPUT_IMAGE_ROOTS]
+  }
+
+  const configuredRoots = parseArtifactRoots(window.localStorage?.getItem(ARTIFACT_IMAGE_ROOTS_STORAGE_KEY))
+
+  return configuredRoots.length > 0 ? configuredRoots : [...DEFAULT_OUTPUT_IMAGE_ROOTS]
+}
+
+function trustedSessionArtifactRoots(): string[] {
+  return [...configuredOutputImageRoots(), ...SESSION_IMAGE_ROOTS]
+}
+
+function isUnderArtifactRoot(path: string, roots: readonly string[]): boolean {
+  return roots.some(root => path === root || path.startsWith(`${root}/`))
+}
+
+function isTrustedSessionArtifact(artifact: ArtifactRecord): boolean {
+  if (artifact.kind === 'link') {
+    return true
+  }
+
+  const path = pathFromArtifactValue(artifact.value)
+
+  if (!path.startsWith('/')) {
+    return true
+  }
+
+  return isUnderArtifactRoot(path, trustedSessionArtifactRoots())
+}
+
+async function listOutputImagePaths(roots = configuredOutputImageRoots()): Promise<string[]> {
+  const desktop = typeof window === 'undefined' ? undefined : window.hermesDesktop
+
+  if (!desktop?.api) {
+    return []
+  }
+
+  const pending = [...roots]
+  const visitedDirectories = new Set<string>()
+  const files = new Set<string>()
+
+  while (pending.length > 0) {
+    const directory = pending.pop()
+
+    if (!directory || visitedDirectories.has(directory)) {
+      continue
+    }
+
+    visitedDirectories.add(directory)
+
+    try {
+      const result = await desktop.api<{ entries?: ArtifactFsListEntry[]; error?: string }>({
+        path: `/api/fs/list?path=${encodeURIComponent(directory)}`
+      })
+
+      if (result.error) {
+        continue
+      }
+
+      for (const entry of result.entries || []) {
+        if (entry.isDirectory) {
+          if (isUnderArtifactRoot(entry.path, roots)) {
+            pending.push(entry.path)
+          }
+
+          continue
+        }
+
+        if (OUTPUT_IMAGE_EXT_RE.test(entry.path) && isUnderArtifactRoot(entry.path, roots)) {
+          files.add(entry.path)
+        }
+      }
+    } catch {
+      // Keep Artifacts usable even if one directory is unreadable.
+    }
+  }
+
+  return Array.from(files).sort((left, right) => left.localeCompare(right))
+}
+
+async function collectOutputImageArtifacts(): Promise<ArtifactRecord[]> {
+  const paths = await listOutputImagePaths()
+  const now = Date.now()
+
+  return paths.map((path, index): ArtifactRecord => ({
+    id: `output-image:${path}`,
+    kind: 'image',
+    value: path,
+    href: mediaExternalUrl(path),
+    label: artifactFileName(path),
+    sessionId: 'output-folder',
+    sessionTitle: 'Output folder',
+    timestamp: now - index
+  }))
+}
+
+function mergeArtifactsByValue(...groups: ArtifactRecord[][]): ArtifactRecord[] {
+  const merged: ArtifactRecord[] = []
+  const seen = new Set<string>()
+
+  for (const artifacts of groups) {
+    for (const artifact of artifacts) {
+      const key = `${artifact.kind}:${artifact.value}`
+
+      if (seen.has(key)) {
+        continue
+      }
+
+      seen.add(key)
+      merged.push(artifact)
+    }
+  }
+
+  return merged
+}
+// END output-image discovery
+
 interface ArtifactsViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
@@ -134,7 +306,11 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         nextArtifacts.push(...collectArtifactsForSession(session, result.value.messages))
       })
 
-      setArtifacts(nextArtifacts.sort((left, right) => right.timestamp - left.timestamp))
+      const outputArtifacts = await collectOutputImageArtifacts()
+      const trustedSessionArtifacts = nextArtifacts.filter(isTrustedSessionArtifact)
+      const mergedArtifacts = mergeArtifactsByValue(outputArtifacts, trustedSessionArtifacts)
+
+      setArtifacts(mergedArtifacts.sort((left, right) => right.timestamp - left.timestamp))
     } catch (err) {
       notifyError(err, a.failedLoad)
       setArtifacts([])

@@ -2143,10 +2143,24 @@ class AIAgent:
         # widens exposure vs the old empty-body "HTTP 400" string).
         response = getattr(error, "response", None)
         if response is not None:
+            snippet_text = ""
             try:
-                snippet = (getattr(response, "text", None) or "").strip()
+                snippet_text = getattr(response, "text", None) or ""
             except Exception:
-                snippet = ""
+                # Streaming httpx responses can still be unread when an API error
+                # bubbles out of the stream. Accessing ``response.text`` then
+                # raises ResponseNotRead; error summarization must never mask the
+                # original provider failure or crash the gateway. Upstream added a
+                # plain try/except that swallows to ""; we go further and read()
+                # the stream first so the real provider error body is recovered.
+                try:
+                    read = getattr(response, "read", None)
+                    if callable(read):
+                        read()
+                        snippet_text = getattr(response, "text", None) or ""
+                except Exception:
+                    snippet_text = ""
+            snippet = snippet_text.strip()
             if snippet:
                 status_code = getattr(error, "status_code", None)
                 prefix = f"HTTP {status_code}: " if status_code else ""

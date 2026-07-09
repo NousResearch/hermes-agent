@@ -1879,6 +1879,30 @@ def test_respawn_guard_recent_success(kanban_home):
     assert reason == "recent_success"
 
 
+def test_respawn_guard_recent_success_bypassed_by_requeue(kanban_home):
+    """An explicit re-queue after a recent success (operator done->ready,
+    promote, unblock, reclaim) is a deliberate re-run and must bypass the
+    recent_success guard — otherwise a manual done->ready just sits there
+    until the window elapses."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="rerun-me", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'done', 'completed', ?, ?)",
+            (t, now - 120, now - 60),
+        )
+        # Baseline: a recent completion defers the respawn.
+        assert kb.check_respawn_guard(conn, t) == "recent_success"
+        # Operator drags done -> ready: a 'status' event after completion.
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) "
+            "VALUES (?, 'status', ?)",
+            (t, now - 10),
+        )
+        assert kb.check_respawn_guard(conn, t) is None
+
+
 def test_respawn_guard_stale_success_not_guarded(kanban_home):
     """A completed run outside the guard window does not block re-spawn."""
     with kb.connect() as conn:

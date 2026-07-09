@@ -1377,6 +1377,63 @@ class TestMarkJobRunConcurrency:
         assert c["last_run_at"] is not None, "Job C last_run_at not set"
         assert c["repeat"]["completed"] == 1, f"Job C completed count wrong: {c['repeat']['completed']}"
 
+
+class TestBadNextRunAtRecovery:
+    """Regression: malformed next_run_at must not crash the due scan or starve siblings.
+
+    Mirrors the id-less and non-dict-schedule patterns: a single bad persisted
+    record in jobs.json must not abort _get_due_jobs_locked before save.
+    """
+
+    def test_bad_next_run_at_does_not_crash_or_block_sibling_jobs(self, tmp_cron_dir):
+        """One job with unparseable next_run_at + one healthy due sibling.
+
+        get_due_jobs must succeed and return the healthy job; the bad record
+        must be repaired (next_run_at cleared so recovery can set a sane value).
+        """
+        from datetime import timezone, timedelta as td
+        now = datetime.now(timezone.utc)
+        past = (now - td(seconds=30)).isoformat()
+        future = (now + td(days=1)).isoformat()
+
+        # Bad record: next_run_at is not a valid ISO string (e.g. from hand-edit or corruption)
+        # Healthy sibling is past due with good schedule.
+        bad_job = {
+            "id": "bad-next",
+            "schedule": {"kind": "interval", "minutes": 60},
+            "next_run_at": "not-a-valid-iso-timestamp!!!",
+            "enabled": True,
+            "created_at": past,
+        }
+        good_job = {
+            "id": "good-sibling",
+            "schedule": {"kind": "interval", "minutes": 5},
+            "next_run_at": past,
+            "enabled": True,
+            "created_at": past,
+        }
+        save_jobs([bad_job, good_job])
+
+        # Must not raise
+        due = get_due_jobs()
+
+        # The healthy job must still be returned
+        ids = [j["id"] for j in due]
+        assert "good-sibling" in ids, f"healthy sibling missing from due jobs: {ids}"
+        assert "bad-next" not in ids  # bad one may be repaired and/or not yet due after repair
+
+        # Bad job should have been auto-repaired (next_run_at stripped or fixed)
+        repaired = get_job("bad-next")
+        assert repaired is not None
+        nr = repaired.get("next_run_at")
+        if nr is not None:
+            # If still present it must now be parseable
+            datetime.fromisoformat(nr)
+
+        # Calling again must remain stable (no crash on re-scan)
+        due2 = get_due_jobs()
+        assert any(j["id"] == "good-sibling" for j in due2)
+
     def test_repeated_concurrent_runs_accumulate_completed_count(self, tmp_cron_dir):
         """Stress test: 10 threads each call mark_job_run on a different job once.
 

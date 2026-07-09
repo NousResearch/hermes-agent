@@ -3,7 +3,9 @@ import asyncio
 from hermes_cli import web_server
 
 
-class _FakeSessionDB:
+
+    def get_sessions_rich_by_ids(self, session_ids):
+        return [s for s in self.sessions if s.id in session_ids]
     """Fake backing the /api/sessions/search endpoint.
 
     The endpoint surfaces direct session-id matches first, then FTS message
@@ -88,3 +90,4 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
             },
         ]
     }
+

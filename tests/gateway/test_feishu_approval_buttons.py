@@ -129,6 +129,31 @@ class TestFeishuExecApproval:
         ]
 
     @pytest.mark.asyncio
+    async def test_hides_always_when_permanent_approval_disallowed(self):
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_001"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            await adapter.send_exec_approval(
+                chat_id="oc_12345",
+                command="curl http://172.16.0.2/internal",
+                session_key="agent:main:feishu:group:oc_12345",
+                description="Security scan warning",
+                allow_permanent=False,
+            )
+
+        card = json.loads(mock_send.call_args[1]["payload"])
+        actions = card["elements"][1]["actions"]
+        action_names = [a["value"]["hermes_action"] for a in actions]
+        assert action_names == ["approve_once", "approve_session", "deny"]
+
+    @pytest.mark.asyncio
     async def test_stores_approval_state(self):
         adapter = _make_adapter()
 

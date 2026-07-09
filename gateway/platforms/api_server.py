@@ -4308,11 +4308,15 @@ class APIServerAdapter(BasePlatformAdapter):
                         from gateway.run import _redact_approval_command
 
                         event["command"] = _redact_approval_command(event.get("command"))
+                    choices = ["once", "session"]
+                    if event.get("allow_permanent", True):
+                        choices.append("always")
+                    choices.append("deny")
                     event.update({
                         "event": "approval.request",
                         "run_id": run_id,
                         "timestamp": time.time(),
-                        "choices": ["once", "session", "always", "deny"],
+                        "choices": choices,
                     })
                     self._set_run_status(
                         run_id,

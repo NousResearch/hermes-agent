@@ -46,6 +46,7 @@ from rich.console import Console
 logger = logging.getLogger(__name__)
 import fire
 
+from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
 from run_agent import AIAgent
 from toolset_distributions import (
     list_distributions, 
@@ -66,6 +67,17 @@ ALL_POSSIBLE_TOOLS = set(TOOL_TO_TOOLSET_MAP.keys())
 
 # Default stats for tools that weren't used
 DEFAULT_TOOL_STATS = {'count': 0, 'success': 0, 'failure': 0}
+
+
+def _parse_batch_reasoning_config(
+    *,
+    reasoning_disabled: bool,
+    reasoning_effort: str | None,
+) -> dict[str, Any] | None:
+    """Return the canonical config shape for batch reasoning flags."""
+    if reasoning_disabled:
+        return parse_reasoning_effort("none")
+    return parse_reasoning_effort(reasoning_effort)
 
 
 def _normalize_tool_stats(tool_stats: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
@@ -1192,7 +1204,7 @@ def main(
         providers_order (str): Comma-separated list of OpenRouter providers to try in order (e.g. "anthropic,openai,google")
         provider_sort (str): Sort providers by "price", "throughput", or "latency" (OpenRouter only)
         max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
-        reasoning_effort (str): OpenRouter reasoning effort level: "none", "minimal", "low", "medium", "high", "xhigh" (default: "medium")
+        reasoning_effort (str): Reasoning effort level: "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra" (default: "medium")
         reasoning_disabled (bool): Completely disable reasoning/thinking tokens (default: False)
         prefill_messages_file (str): Path to JSON file containing prefill messages (list of {role, content} dicts)
         max_samples (int): Only process the first N samples from the dataset (optional, processes all if not set)
@@ -1254,18 +1266,17 @@ def main(
     
     # Build reasoning_config from CLI flags
     # --reasoning_disabled takes priority, then --reasoning_effort, then default (medium)
-    reasoning_config = None
-    if reasoning_disabled:
-        # Completely disable reasoning/thinking tokens
-        reasoning_config = {"effort": "none"}
+    reasoning_config = _parse_batch_reasoning_config(
+        reasoning_disabled=reasoning_disabled,
+        reasoning_effort=reasoning_effort,
+    )
+    if reasoning_config == {"enabled": False}:
         print("🧠 Reasoning: DISABLED (effort=none)")
     elif reasoning_effort:
-        # Use specified effort level
-        valid_efforts = ["none", "minimal", "low", "medium", "high", "xhigh"]
-        if reasoning_effort not in valid_efforts:
+        if reasoning_config is None:
+            valid_efforts = ["none", *VALID_REASONING_EFFORTS]
             print(f"❌ Error: --reasoning_effort must be one of: {', '.join(valid_efforts)}")
             return
-        reasoning_config = {"enabled": True, "effort": reasoning_effort}
         print(f"🧠 Reasoning effort: {reasoning_effort}")
     
     # Load prefill messages from JSON file if provided
@@ -1318,4 +1329,3 @@ def main(
 
 if __name__ == "__main__":
     fire.Fire(main)
-

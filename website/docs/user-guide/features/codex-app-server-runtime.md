@@ -193,12 +193,21 @@ agent:
   reasoning_effort: ultra
 ```
 
-Hermes sends literal `ultra` only as the Codex app-server `turn/start` effort.
+Hermes sends `max` or `ultra` only when the selected model advertises it through
+the Codex app-server model catalog. Otherwise Hermes uses the strongest
+advertised lower effort. App-servers without that catalog receive `xhigh`, the
+highest effort supported by the oldest compatible protocol.
 Direct OpenAI/Codex Responses requests project it onto the selected model's
-supported ceiling: `max` for GPT-5.6, `xhigh` for known older Codex models,
-and `high` for unknown models. Other providers receive `max` before their
-existing provider-specific handling runs. GPT-5.6 Luna also falls back to
-`max` because it does not advertise the proactive multi-agent mode.
+supported ceiling: `max` for GPT-5.6, `xhigh` for known GPT-5.2+ models, and
+`high` for GPT-5/5.1 and unknown models. Other providers receive `max` before
+their existing provider-specific handling runs. GPT-5.6 Luna also falls back
+to `max` because it does not advertise the proactive multi-agent mode.
+
+Codex persists a turn-level effort override to later turns. When
+`/reasoning none` follows an explicit effort, Hermes sends the selected model's
+advertised `none` value on the same thread. If the model does not advertise
+`none`, Hermes rejects the turn with a clear unsupported-effort error instead
+of silently retaining the prior override or running at a different level.
 
 ## Self-improvement loop (memory + skill nudges)
 

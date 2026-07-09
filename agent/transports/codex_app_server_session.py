@@ -233,6 +233,7 @@ class CodexAppServerSession:
         # approval params don't carry the changeset, so we cache here
         # to surface a real summary in the approval prompt (quirk #4).
         self._pending_file_changes: dict[str, str] = {}
+        self._model_reasoning_catalog: Optional[dict[str, frozenset[str]]] = None
         self._closed = False
 
     # ---------- lifecycle ----------
@@ -361,6 +362,94 @@ class CodexAppServerSession:
         redacted = redact_sensitive_text(joined, force=True)
         return f"{base}\ncodex stderr (last {len(tail)} lines):\n{redacted}"
 
+    def _load_model_reasoning_catalog(
+        self,
+    ) -> dict[str, frozenset[str]]:
+        """Load advertised app-server efforts keyed by model id and slug."""
+        if self._model_reasoning_catalog is not None:
+            return self._model_reasoning_catalog
+        assert self._client is not None
+
+        catalog: dict[str, frozenset[str]] = {}
+        cursor: Optional[str] = None
+        seen_cursors: set[str] = set()
+        while True:
+            params: dict[str, Any] = {"includeHidden": True, "limit": 100}
+            if cursor:
+                params["cursor"] = cursor
+            response = self._client.request("model/list", params, timeout=15)
+            rows = response.get("data") or []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                supported = frozenset(
+                    str(option.get("reasoningEffort") or "").lower()
+                    for option in (row.get("supportedReasoningEfforts") or [])
+                    if isinstance(option, dict) and option.get("reasoningEffort")
+                )
+                for identity in (row.get("id"), row.get("model")):
+                    key = str(identity or "").strip().lower()
+                    if key:
+                        catalog[key] = supported
+
+            next_cursor = str(response.get("nextCursor") or "").strip()
+            if not next_cursor or next_cursor in seen_cursors:
+                break
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+
+        self._model_reasoning_catalog = catalog
+        return catalog
+
+    def _resolve_reasoning_reset_effort(self, model: str) -> str:
+        """Return an advertised off value that overwrites a prior override."""
+        model_id = str(model or "").strip().lower()
+        if not model_id:
+            raise CodexAppServerError(
+                code=-32602,
+                message="cannot reset reasoning effort without a selected model",
+            )
+
+        catalog = self._load_model_reasoning_catalog()
+        entry = catalog.get(model_id) or catalog.get(model_id.rsplit("/", 1)[-1])
+        if entry is None:
+            raise CodexAppServerError(
+                code=-32602,
+                message=f"selected model {model!r} is absent from model/list",
+            )
+
+        if "none" in entry:
+            return "none"
+        raise CodexAppServerError(
+            code=-32602,
+            message=f"selected model {model!r} does not support disabling reasoning",
+        )
+
+    def _resolve_requested_reasoning_effort(self, model: str, effort: str) -> str:
+        """Keep extended efforts only when this app-server advertises them."""
+        if effort not in {"max", "ultra"}:
+            return effort
+
+        model_id = str(model or "").strip().lower()
+        try:
+            catalog = self._load_model_reasoning_catalog()
+        except CodexAppServerError as exc:
+            if exc.code != -32601:
+                raise
+            # Older compatible app-servers may not expose model/list. Their
+            # turn/start schema accepts efforts only through xhigh.
+            self._model_reasoning_catalog = {}
+            return "xhigh"
+
+        entry = catalog.get(model_id) or catalog.get(model_id.rsplit("/", 1)[-1])
+        if entry:
+            effort_order = ("low", "medium", "high", "xhigh", "max", "ultra")
+            requested_rank = effort_order.index(effort)
+            for candidate in reversed(effort_order[: requested_rank + 1]):
+                if candidate in entry:
+                    return candidate
+        return "xhigh"
+
     # ---------- per-turn ----------
 
     def run_turn(
@@ -369,6 +458,7 @@ class CodexAppServerSession:
         *,
         model: Optional[str] = None,
         effort: Optional[str] = None,
+        reset_reasoning_effort: bool = False,
         turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25,
         post_tool_quiet_timeout: float = 90.0,
@@ -382,6 +472,10 @@ class CodexAppServerSession:
         `turn/completed`, fast-fail and mark the session for retirement.
         Mirrors openclaw beta.8's post-tool completion watchdog (#81697)
         so a wedged codex doesn't burn the full turn deadline.
+
+        reset_reasoning_effort: Hermes explicitly disabled reasoning. Codex
+        persists turn-level effort overrides, so send an advertised disabled
+        value rather than omitting the field or silently using a default.
         """
         # Pre-create the result so startup failures (codex subprocess can't
         # spawn, initialize handshake rejects, thread/start blows up) surface
@@ -409,8 +503,8 @@ class CodexAppServerSession:
 
         # Send turn/start with the user input. Model and effort are per-turn
         # controls in the app-server protocol; in particular, client-level
-        # ``ultra`` activates Codex's proactive multi-agent mode while Codex
-        # normalizes the underlying Responses effort to ``max`` itself.
+        # Catalog-supported ``ultra`` activates Codex's proactive multi-agent
+        # mode while Codex normalizes the underlying Responses effort to max.
         # Text-only for now (codex supports rich content but Hermes' text path
         # is the common case).
         turn_params: dict[str, Any] = {
@@ -419,6 +513,35 @@ class CodexAppServerSession:
         }
         normalized_model = str(model or "").strip()
         normalized_effort = str(effort or "").strip().lower()
+        if reset_reasoning_effort:
+            try:
+                normalized_effort = self._resolve_reasoning_reset_effort(
+                    normalized_model
+                )
+            except (CodexAppServerError, TimeoutError) as exc:
+                result.error = self._format_error_with_stderr(
+                    "could not reset the Codex reasoning effort",
+                    exc,
+                )
+                if isinstance(exc, TimeoutError):
+                    result.should_retire = True
+                return result
+
+        elif normalized_effort:
+            try:
+                normalized_effort = self._resolve_requested_reasoning_effort(
+                    normalized_model,
+                    normalized_effort,
+                )
+            except (CodexAppServerError, TimeoutError) as exc:
+                result.error = self._format_error_with_stderr(
+                    "could not validate the Codex reasoning effort",
+                    exc,
+                )
+                if isinstance(exc, TimeoutError):
+                    result.should_retire = True
+                return result
+
         if normalized_model:
             turn_params["model"] = normalized_model
         if normalized_effort:

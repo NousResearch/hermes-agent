@@ -2471,13 +2471,16 @@ class CLICommandsMixin:
 
         Usage:
             /reasoning              Show current effort level and display state
-            /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh, max)
+            /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh, max, ultra)
             /reasoning show|on      Show model thinking/reasoning in output
             /reasoning hide|off     Hide model thinking/reasoning from output
             /reasoning full         Show complete thinking (no 10-line clamp)
             /reasoning clamp        Collapse long thinking to the first 10 lines
         """
         from cli import _ACCENT, _DIM, _RST, _cprint, _parse_reasoning_config, save_config_value
+        from hermes_constants import VALID_REASONING_EFFORTS
+
+        valid_levels = ("none", *VALID_REASONING_EFFORTS)
         parts = cmd.strip().split(maxsplit=1)
 
         if len(parts) < 2:
@@ -2493,7 +2496,8 @@ class CLICommandsMixin:
             full_state = "full" if getattr(self, "reasoning_full", False) else "clamped to 10 lines"
             _cprint(f"  {_ACCENT}Reasoning effort:  {level}{_RST}")
             _cprint(f"  {_ACCENT}Reasoning display: {display_state} ({full_state}){_RST}")
-            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|max|show|hide|full|clamp>{_RST}")
+            usage_levels = "|".join((*valid_levels, "show", "hide", "full", "clamp"))
+            _cprint(f"  {_DIM}Usage: /reasoning <{usage_levels}>{_RST}")
             return
 
         arg = parts[1].strip().lower()
@@ -2534,7 +2538,7 @@ class CLICommandsMixin:
         parsed = _parse_reasoning_config(arg)
         if parsed is None:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Valid levels: none, minimal, low, medium, high, xhigh, max{_RST}")
+            _cprint(f"  {_DIM}Valid levels: {', '.join(valid_levels)}{_RST}")
             _cprint(f"  {_DIM}Display:      show, hide{_RST}")
             return
 

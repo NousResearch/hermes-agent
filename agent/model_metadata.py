@@ -370,24 +370,51 @@ _GROK_EFFORT_CAPABLE_PREFIXES = (
     # unlike grok-4.3. models.dev agrees: effort values [low, medium, high].
     "grok-4.5",
 )
+_GROK_XHIGH_EFFORT_PREFIXES = ("grok-4.20-multi-agent",)
+
+
+def _grok_model_id(model: str) -> str:
+    name = (model or "").strip().lower()
+    return name.rsplit("/", 1)[-1]
 
 
 def grok_supports_reasoning_effort(model: str) -> bool:
     """Return True when an xAI Grok model accepts ``reasoning.effort``.
 
-    Allowlist by substring (matches both bare ``grok-3-mini`` and
+    Allowlist by model prefix (matches both bare ``grok-3-mini`` and
     aggregator-prefixed ``x-ai/grok-3-mini``). Conservative by design:
     if a future Grok model isn't listed, we send no effort dial rather
     than 400.
     """
-    name = (model or "").strip().lower()
+    name = _grok_model_id(model)
     if not name:
         return False
-    # Strip common aggregator prefixes (x-ai/, openrouter/x-ai/, xai/, ...)
-    for sep in ("/",):
-        if sep in name:
-            name = name.rsplit(sep, 1)[-1]
     return any(name.startswith(prefix) for prefix in _GROK_EFFORT_CAPABLE_PREFIXES)
+
+
+def resolve_grok_reasoning_effort(model: str, effort: Any) -> Optional[str]:
+    """Return an xAI-safe effort, or ``None`` when the dial is unsupported.
+
+    Grok 4.20 multi-agent supports ``xhigh``; the other allowlisted families
+    cap at ``high``. Client-only levels above each ceiling are clamped.
+    """
+    if not grok_supports_reasoning_effort(model):
+        return None
+
+    requested = str(effort or "").strip().lower()
+    if requested == "minimal":
+        requested = "low"
+    if requested not in {"low", "medium", "high", "xhigh", "max", "ultra"}:
+        return None
+
+    model_id = _grok_model_id(model)
+    ceiling = (
+        "xhigh"
+        if any(model_id.startswith(prefix) for prefix in _GROK_XHIGH_EFFORT_PREFIXES)
+        else "high"
+    )
+    order = ("low", "medium", "high", "xhigh", "max", "ultra")
+    return order[min(order.index(requested), order.index(ceiling))]
 
 
 _CODEX_REASONING_EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max", "ultra")
@@ -405,8 +432,7 @@ _CODEX_XHIGH_MODEL_FAMILIES = (
     "gpt-5.4",
     "gpt-5.3-codex",
     "gpt-5.2",
-    "gpt-5.1",
-    "gpt-5",
+    "gpt-5.1-codex-max",
 )
 
 
@@ -424,8 +450,8 @@ def resolve_codex_reasoning_effort(
 
     Direct Responses requests cap the GPT-5.6 family at ``max``. Codex
     app-server turns preserve ``ultra`` only for Sol/Terra, where it enables
-    native proactive delegation. Known older Codex models cap at ``xhigh``;
-    unknown models use the conservative ``high`` ceiling.
+    native proactive delegation. Known GPT-5.2+ Codex models cap at ``xhigh``;
+    GPT-5/5.1 and unknown models use the conservative ``high`` ceiling.
     """
     requested = str(effort or "").strip().lower()
     if requested in {"none", "false", "disabled"}:

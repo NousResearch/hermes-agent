@@ -730,7 +730,7 @@ class TestSubcommandCompletion:
         """Typing '/reasoning ' then Tab should show subcommands."""
         completions = _completions(SlashCommandCompleter(), "/reasoning ")
         texts = {c.text for c in completions}
-        assert "high" in texts
+        assert set(VALID_REASONING_EFFORTS) <= texts
         assert "show" in texts
 
     def test_fast_subcommand_completion_after_space(self):

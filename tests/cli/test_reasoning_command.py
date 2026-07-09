@@ -114,6 +114,27 @@ class TestHandleReasoningCommand(unittest.TestCase):
         stub.reasoning_config = parsed
         self.assertEqual(stub.reasoning_config, {"enabled": False})
 
+    def test_max_and_ultra_reach_real_handler_and_persist(self):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        for level in ("max", "ultra"):
+            with self.subTest(level=level):
+                stub = self._make_cli()
+                with (
+                    patch("cli._cprint"),
+                    patch("cli.save_config_value", return_value=True) as save,
+                ):
+                    CLICommandsMixin._handle_reasoning_command(
+                        stub, f"/reasoning {level}"
+                    )
+
+                self.assertEqual(
+                    stub.reasoning_config,
+                    {"enabled": True, "effort": level},
+                )
+                self.assertIsNone(stub.agent)
+                save.assert_called_once_with("agent.reasoning_effort", level)
+
     def test_invalid_argument_rejected(self):
         """Invalid arguments should be rejected (parsed returns None)."""
         from cli import _parse_reasoning_config

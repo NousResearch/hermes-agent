@@ -2648,6 +2648,9 @@ class GatewaySlashCommandsMixin:
 
         raw_args = event.get_command_args().strip()
         args, persist_global = self._parse_reasoning_command_args(raw_args)
+        reasoning_levels = ("none", *VALID_REASONING_EFFORTS)
+        level_list = ", ".join(reasoning_levels)
+        usage_levels = "|".join((*reasoning_levels, "reset", "show", "hide"))
         config_path = _hermes_home / "config.yaml"
         # Normalize the source (Telegram DM topic recovery) before deriving
         # the override key so storage matches the key the next message turn
@@ -2705,6 +2708,7 @@ class GatewaySlashCommandsMixin:
                 level=level,
                 scope=scope,
                 display=display_state,
+                usage_levels=usage_levels,
             )
 
         # Display toggle (per-platform)
@@ -2736,6 +2740,7 @@ class GatewaySlashCommandsMixin:
             return t(
                 "gateway.reasoning.unknown_arg",
                 arg=effort or raw_args.lower(),
+                levels=level_list,
             )
 
         self._reasoning_config = parsed

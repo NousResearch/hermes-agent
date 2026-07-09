@@ -437,7 +437,7 @@ def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
 
     for effort in ("low", "medium", "high", "xhigh"):
         agent = run_agent.AIAgent(
-            model="gpt-5-codex",
+            model="gpt-5.4",
             base_url="https://chatgpt.com/backend-api/codex",
             api_key="codex-token",
             quiet_mode=True,
@@ -481,6 +481,12 @@ def test_direct_codex_request_uses_wire_max_without_mutating_client_effort(
 @pytest.mark.parametrize(
     ("model", "client_effort", "wire_effort"),
     [
+        ("gpt-5", "max", "high"),
+        ("gpt-5-pro", "ultra", "high"),
+        ("gpt-5.1", "max", "high"),
+        ("gpt-5.1-codex", "ultra", "high"),
+        ("gpt-5.1-codex-max", "ultra", "xhigh"),
+        ("gpt-5.2", "ultra", "xhigh"),
         ("gpt-5.4", "max", "xhigh"),
         ("gpt-5.4", "ultra", "xhigh"),
         ("gpt-9.9-unknown", "max", "high"),
@@ -671,6 +677,18 @@ def test_build_api_kwargs_xai_strips_slash_enum_from_outgoing_request(monkeypatc
     # pattern/format must also be stripped (existing #27197 contract).
     assert "pattern" not in params["properties"]["match"]
     assert "format" not in params["properties"]["match"]
+
+
+@pytest.mark.parametrize("client_effort", ["xhigh", "max", "ultra"])
+def test_build_api_kwargs_xai_clamps_extended_effort(monkeypatch, client_effort):
+    agent = _build_xai_agent_with_slash_enum_tool(monkeypatch)
+    agent.model = "grok-4.5"
+    agent.reasoning_config = {"enabled": True, "effort": client_effort}
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    assert kwargs["reasoning"] == {"effort": "high"}
+    assert agent.reasoning_config == {"enabled": True, "effort": client_effort}
 
 
 def test_build_api_kwargs_xai_does_not_mutate_agent_tools(monkeypatch):

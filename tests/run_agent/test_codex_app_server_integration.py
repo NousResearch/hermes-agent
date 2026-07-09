@@ -86,36 +86,41 @@ class TestRunConversationCodexPath:
         assert result["codex_turn_id"] == "turn-stub-1"
 
     @pytest.mark.parametrize(
-        ("model", "reasoning_config", "expected_effort"),
+        ("model", "reasoning_config", "expected_effort", "expected_reset"),
         [
             pytest.param(
                 "gpt-5.6-sol",
                 {"enabled": True, "effort": "ultra"},
                 "ultra",
+                False,
                 id="sol-keeps-ultra",
             ),
             pytest.param(
                 "gpt-5.6-luna",
                 {"enabled": True, "effort": "ultra"},
                 "max",
+                False,
                 id="luna-clamps-ultra-to-max",
             ),
             pytest.param(
                 "gpt-5.6-sol",
                 {"enabled": False},
                 None,
-                id="disabled-omits-effort",
+                True,
+                id="disabled-resets-effort",
             ),
             pytest.param(
                 "gpt-5.6-sol",
                 {"effort": "none"},
                 None,
-                id="legacy-none-omits-effort",
+                True,
+                id="legacy-none-resets-effort",
             ),
             pytest.param(
                 "gpt-9.9-unknown",
                 {"enabled": True, "effort": "ultra"},
                 "high",
+                False,
                 id="unknown-clamps-ultra-to-high",
             ),
         ],
@@ -126,6 +131,7 @@ class TestRunConversationCodexPath:
         model,
         reasoning_config,
         expected_effort,
+        expected_reset,
     ):
         captured = {}
 
@@ -159,6 +165,7 @@ class TestRunConversationCodexPath:
             "user_input": "solve this",
             "model": model,
             "effort": expected_effort,
+            "reset_reasoning_effort": expected_reset,
         }
         assert reasoning_config == original_reasoning_config
         assert agent.reasoning_config == reasoning_config

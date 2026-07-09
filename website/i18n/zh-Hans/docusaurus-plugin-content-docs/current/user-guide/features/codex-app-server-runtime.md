@@ -188,11 +188,17 @@ agent:
   reasoning_effort: ultra
 ```
 
-Hermes 只会将字面值 `ultra` 作为 Codex app-server 的 `turn/start` effort 发送。
+只有当所选模型通过 Codex app-server 模型目录声明支持时，Hermes 才会发送 `max` 或
+`ultra`。否则，Hermes 会使用模型声明的最强较低强度。没有该目录的 app-server 会改用
+`xhigh`，即最早兼容协议支持的最高强度。
 直接 OpenAI/Codex Responses 请求会将它投影到所选模型支持的上限：GPT-5.6 为 `max`，
-已知的较旧 Codex 模型为 `xhigh`，未知模型为 `high`。其他 provider 在执行现有的
+已知的 GPT-5.2+ 模型为 `xhigh`，GPT-5/5.1 和未知模型为 `high`。其他 provider 在执行现有的
 provider 特定处理之前会收到 `max`。GPT-5.6 Luna 也会回退到 `max`，
 因为它没有声明主动多 agent 模式。
+
+Codex 会将轮次级 effort 覆盖保留到后续轮次。如果在显式 effort 之后运行
+`/reasoning none`，Hermes 会在同一线程上发送所选模型声明的 `none` 值。若模型未声明
+`none`，Hermes 会返回明确的不支持错误，而不会静默保留之前的设置或改用其他强度。
 
 ## 自我改进循环（记忆 + 技能提示）
 

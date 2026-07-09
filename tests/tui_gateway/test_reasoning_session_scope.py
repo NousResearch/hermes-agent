@@ -90,6 +90,29 @@ class TestConfigSetReasoningSessionScope:
         }
         write_key.assert_not_called()
 
+    def test_session_scoped_set_accepts_extended_efforts(self) -> None:
+        for effort in ("max", "ultra"):
+            agent = _agent(None)
+            session = {"session_key": "k3", "agent": agent}
+            with patch.dict(server._sessions, {"s3": session}, clear=False), \
+                    patch.object(server, "_write_config_key") as write_key, \
+                    patch.object(server, "_persist_live_session_runtime"), \
+                    patch.object(server, "_emit"):
+                resp = self._dispatch(
+                    {"key": "reasoning", "session_id": "s3", "value": effort}
+                )
+
+            assert resp["result"]["value"] == effort
+            assert session["create_reasoning_override"] == {
+                "enabled": True,
+                "effort": effort,
+            }
+            assert agent.reasoning_config == {
+                "enabled": True,
+                "effort": effort,
+            }
+            write_key.assert_not_called()
+
     def test_no_session_persists_globally(self) -> None:
         with patch.object(server, "_write_config_key") as write_key:
             resp = self._dispatch({"key": "reasoning", "value": "low"})

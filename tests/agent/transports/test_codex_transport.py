@@ -289,14 +289,31 @@ class TestCodexBuildKwargs:
         # full history.
         assert "reasoning.encrypted_content" in kw.get("include", [])
 
-    def test_xai_reasoning_effort_bypasses_codex_model_ceiling(self, transport):
+    @pytest.mark.parametrize("effort", ["xhigh", "max", "ultra"])
+    def test_xai_reasoning_effort_clamps_to_supported_ceiling(
+        self, transport, effort
+    ):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="grok-4.5",
             messages=messages,
             tools=[],
             is_xai_responses=True,
-            reasoning_config={"effort": "xhigh"},
+            reasoning_config={"effort": effort},
+        )
+
+        assert kw.get("reasoning") == {"effort": "high"}
+
+    @pytest.mark.parametrize("effort", ["xhigh", "max", "ultra"])
+    def test_xai_multi_agent_reasoning_clamps_to_xhigh(
+        self, transport, effort
+    ):
+        kw = transport.build_kwargs(
+            model="grok-4.20-multi-agent-0309",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": effort},
         )
 
         assert kw.get("reasoning") == {"effort": "xhigh"}

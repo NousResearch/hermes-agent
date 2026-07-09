@@ -3429,6 +3429,13 @@ class TestBuildSchemaFromConfig:
             assert "type" in entry, f"Missing type for {key}"
             assert "category" in entry, f"Missing category for {key}"
 
+    def test_delegation_reasoning_schema_uses_shared_efforts(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        from hermes_constants import VALID_REASONING_EFFORTS
+
+        options = CONFIG_SCHEMA["delegation.reasoning_effort"]["options"]
+        assert options == ["", "none", *VALID_REASONING_EFFORTS]
+
     def test_overrides_applied(self):
         from hermes_cli.web_server import CONFIG_SCHEMA
         # terminal.backend should be a select with options

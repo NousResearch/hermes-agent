@@ -14,6 +14,7 @@ from typing import Any, Optional
 import pytest
 
 import agent.transports.codex_app_server_session as session_mod
+from agent.transports.codex_app_server import CodexAppServerError
 from agent.transports.codex_app_server_session import (
     CodexAppServerSession,
     _ServerRequestRouting,
@@ -53,6 +54,42 @@ class FakeClient:
         if method == "thread/start":
             return {"thread": {"id": "thread-fake-001"},
                     "activePermissionProfile": {"id": "workspace-write"}}
+        if method == "model/list":
+            def _efforts(*values):
+                return [
+                    {"reasoningEffort": value, "description": value}
+                    for value in values
+                ]
+
+            return {
+                "data": [
+                    {
+                        "id": "gpt-5.6-sol",
+                        "model": "gpt-5.6-sol",
+                        "defaultReasoningEffort": "low",
+                        "supportedReasoningEfforts": _efforts(
+                            "low", "medium", "high", "xhigh", "max", "ultra"
+                        ),
+                    },
+                    {
+                        "id": "gpt-5.6-luna",
+                        "model": "gpt-5.6-luna",
+                        "defaultReasoningEffort": "medium",
+                        "supportedReasoningEfforts": _efforts(
+                            "low", "medium", "high", "xhigh", "max"
+                        ),
+                    },
+                    {
+                        "id": "gpt-supports-none",
+                        "model": "gpt-supports-none",
+                        "defaultReasoningEffort": "low",
+                        "supportedReasoningEfforts": _efforts(
+                            "none", "low", "medium", "high"
+                        ),
+                    },
+                ],
+                "nextCursor": None,
+            }
         if method == "turn/start":
             return {"turn": {"id": "turn-fake-001"}}
         if method == "turn/interrupt":
@@ -221,7 +258,7 @@ class TestRunTurn:
             "effort": "ultra",
         }
 
-    def test_turn_start_omits_disabled_reasoning_effort(self):
+    def test_ultra_falls_back_to_max_when_model_does_not_advertise_it(self):
         client = FakeClient()
         client.queue_notification(
             "turn/completed",
@@ -230,7 +267,79 @@ class TestRunTurn:
         )
 
         result = make_session(client).run_turn(
-            "reasoning is disabled",
+            "use the strongest supported effort",
+            model="gpt-5.6-luna",
+            effort="ultra",
+            turn_timeout=2.0,
+        )
+
+        assert result.error is None
+        turn_params = next(
+            params for method, params in client.requests if method == "turn/start"
+        )
+        assert turn_params["effort"] == "max"
+
+    def test_max_falls_back_to_highest_advertised_effort(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).run_turn(
+            "use the strongest supported effort",
+            model="gpt-supports-none",
+            effort="max",
+            turn_timeout=2.0,
+        )
+
+        assert result.error is None
+        turn_params = next(
+            params for method, params in client.requests if method == "turn/start"
+        )
+        assert turn_params["effort"] == "high"
+
+    def test_ultra_falls_back_to_max_when_model_list_is_unavailable(self):
+        class LegacyClient(FakeClient):
+            def request(self, method, params=None, timeout=30):
+                if method == "model/list":
+                    raise CodexAppServerError(
+                        code=-32601,
+                        message="Method not found: model/list",
+                    )
+                return super().request(method, params, timeout)
+
+        client = LegacyClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).run_turn(
+            "use ultra when available",
+            model="gpt-5.6-sol",
+            effort="ultra",
+            turn_timeout=2.0,
+        )
+
+        assert result.error is None
+        turn_params = next(
+            params for method, params in client.requests if method == "turn/start"
+        )
+        assert turn_params["effort"] == "xhigh"
+
+    def test_turn_start_omits_unset_reasoning_effort(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).run_turn(
+            "reasoning is unset",
             model="gpt-5.6-sol",
             effort=None,
             turn_timeout=2.0,
@@ -241,9 +350,78 @@ class TestRunTurn:
         assert method == "turn/start"
         assert params == {
             "threadId": "thread-fake-001",
-            "input": [{"type": "text", "text": "reasoning is disabled"}],
+            "input": [{"type": "text", "text": "reasoning is unset"}],
             "model": "gpt-5.6-sol",
         }
+
+    def test_explicit_disable_fails_when_model_does_not_support_none(self):
+        client = FakeClient()
+        session = make_session(client)
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        assert session.run_turn(
+            "use ultra",
+            model="gpt-5.6-sol",
+            effort="ultra",
+            turn_timeout=2.0,
+        ).error is None
+
+        result = session.run_turn(
+            "disable reasoning",
+            model="gpt-5.6-luna",
+            effort=None,
+            reset_reasoning_effort=True,
+            turn_timeout=2.0,
+        )
+
+        assert "does not support disabling reasoning" in result.error
+        assert result.thread_id == "thread-fake-001"
+        turn_requests = [
+            params for method, params in client.requests if method == "turn/start"
+        ]
+        assert [params["effort"] for params in turn_requests] == ["ultra"]
+        assert turn_requests[0]["threadId"] == "thread-fake-001"
+        model_list_params = next(
+            params for method, params in client.requests if method == "model/list"
+        )
+        assert model_list_params == {"includeHidden": True, "limit": 100}
+
+    def test_explicit_disable_uses_none_when_model_advertises_it(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).run_turn(
+            "disable reasoning",
+            model="gpt-supports-none",
+            reset_reasoning_effort=True,
+            turn_timeout=2.0,
+        )
+
+        assert result.error is None
+        turn_params = next(
+            params for method, params in client.requests if method == "turn/start"
+        )
+        assert turn_params["effort"] == "none"
+
+    def test_explicit_disable_missing_model_fails_before_turn_start(self):
+        client = FakeClient()
+
+        result = make_session(client).run_turn(
+            "disable reasoning",
+            model="gpt-not-in-catalog",
+            reset_reasoning_effort=True,
+            turn_timeout=2.0,
+        )
+
+        assert "absent from model/list" in result.error
+        assert not any(method == "turn/start" for method, _ in client.requests)
 
     def test_token_usage_notification_is_captured(self):
         client = FakeClient()

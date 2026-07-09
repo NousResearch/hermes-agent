@@ -105,8 +105,22 @@ class TestReasoningCommand:
 
         assert "**Effort:** `none (disabled)`" in result
         assert "**Display:** on ✓" in result
+        assert "max" in result and "ultra" in result
         assert runner._reasoning_config == {"enabled": False}
         assert runner._show_reasoning is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_reasoning_lists_shared_efforts(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("agent: {}\n", encoding="utf-8")
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        result = await _make_runner()._handle_reasoning_command(
+            _make_event("/reasoning turbo")
+        )
+
+        assert "max" in result and "ultra" in result
 
     @pytest.mark.asyncio
     async def test_handle_reasoning_command_updates_config_and_cache(self, tmp_path, monkeypatch):
@@ -128,7 +142,10 @@ class TestReasoningCommand:
         assert "takes effect on next message" in result
 
     @pytest.mark.asyncio
-    async def test_handle_reasoning_command_accepts_shared_max_effort(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("effort", ["max", "ultra"])
+    async def test_handle_reasoning_command_accepts_shared_extended_efforts(
+        self, tmp_path, monkeypatch, effort
+    ):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
@@ -139,11 +156,13 @@ class TestReasoningCommand:
         runner = _make_runner()
         runner._reasoning_config = {"enabled": True, "effort": "medium"}
 
-        result = await runner._handle_reasoning_command(_make_event("/reasoning max --global"))
+        result = await runner._handle_reasoning_command(
+            _make_event(f"/reasoning {effort} --global")
+        )
 
         saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        assert saved["agent"]["reasoning_effort"] == "max"
-        assert runner._reasoning_config == {"enabled": True, "effort": "max"}
+        assert saved["agent"]["reasoning_effort"] == effort
+        assert runner._reasoning_config == {"enabled": True, "effort": effort}
         assert "saved to config" in result
 
     @pytest.mark.asyncio

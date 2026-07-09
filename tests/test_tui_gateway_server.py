@@ -3347,6 +3347,21 @@ def test_complete_slash_details_args():
     assert any(item["text"] == "expanded" for item in resp_mode["result"]["items"])
 
 
+def test_complete_slash_reasoning_includes_shared_efforts():
+    from hermes_constants import VALID_REASONING_EFFORTS
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "complete.slash",
+            "params": {"text": "/reasoning "},
+        }
+    )
+
+    texts = {item["text"] for item in resp["result"]["items"]}
+    assert set(VALID_REASONING_EFFORTS) <= texts
+
+
 def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     agent = types.SimpleNamespace(reasoning_config=None)

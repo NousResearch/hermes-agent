@@ -10,7 +10,34 @@ import pytest
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from batch_runner import BatchRunner, _process_batch_worker
+from batch_runner import (
+    BatchRunner,
+    _parse_batch_reasoning_config,
+    _process_batch_worker,
+)
+
+
+@pytest.mark.parametrize("reasoning_effort", ["none", "false", "disabled"])
+def test_batch_reasoning_none_uses_canonical_disabled_shape(reasoning_effort):
+    assert _parse_batch_reasoning_config(
+        reasoning_disabled=False,
+        reasoning_effort=reasoning_effort,
+    ) == {"enabled": False}
+
+
+@pytest.mark.parametrize("reasoning_effort", ["max", "ultra"])
+def test_batch_reasoning_accepts_extended_efforts(reasoning_effort):
+    assert _parse_batch_reasoning_config(
+        reasoning_disabled=False,
+        reasoning_effort=reasoning_effort,
+    ) == {"enabled": True, "effort": reasoning_effort}
+
+
+def test_batch_reasoning_disabled_flag_takes_priority():
+    assert _parse_batch_reasoning_config(
+        reasoning_disabled=True,
+        reasoning_effort="ultra",
+    ) == {"enabled": False}
 
 
 @pytest.fixture

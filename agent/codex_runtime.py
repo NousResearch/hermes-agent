@@ -313,6 +313,16 @@ def _codex_app_server_effort(
     return resolve_codex_reasoning_effort(model or "", effort, app_server=True)
 
 
+def _codex_app_server_reasoning_disabled(reasoning_config: Any) -> bool:
+    """Return whether Hermes explicitly disabled reasoning for this turn."""
+    if not isinstance(reasoning_config, dict):
+        return False
+    if reasoning_config.get("enabled") is False:
+        return True
+    effort = str(reasoning_config.get("effort") or "").strip().lower()
+    return effort in {"none", "false", "disabled"}
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -403,12 +413,16 @@ def run_codex_app_server_turn(
 
     try:
         selected_model = getattr(agent, "model", None)
+        reasoning_config = getattr(agent, "reasoning_config", None)
         turn = agent._codex_session.run_turn(
             user_input=user_message,
             model=selected_model,
             effort=_codex_app_server_effort(
-                getattr(agent, "reasoning_config", None),
+                reasoning_config,
                 selected_model,
+            ),
+            reset_reasoning_effort=_codex_app_server_reasoning_disabled(
+                reasoning_config
             ),
         )
     except Exception as exc:

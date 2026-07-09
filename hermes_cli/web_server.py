@@ -9087,6 +9087,54 @@ def _xai_device_poller(session_id: str) -> None:
             sess["error_message"] = str(e)
 
 
+def _http_response_error_detail(resp: Any) -> str:
+    """Best-effort extraction of a short provider error detail."""
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            parts = [
+                str(error.get(key, "")).strip()
+                for key in ("message", "error_description", "code", "type")
+                if str(error.get(key, "")).strip()
+            ]
+            if parts:
+                return ": ".join(parts)
+        if isinstance(error, str) and error.strip():
+            return error.strip()
+        for key in ("detail", "message", "error_description"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    text = str(getattr(resp, "text", "") or "").strip()
+    return text[:500]
+
+
+def _codex_device_code_start_error(resp: Any) -> str:
+    """Dashboard-facing OpenAI Codex device-code start failure."""
+    status = getattr(resp, "status_code", "unknown")
+    detail = _http_response_error_detail(resp)
+    lower = detail.lower()
+    if "device" in lower and ("authori" in lower or "enable" in lower):
+        message = (
+            "OpenAI rejected the device-code login request. Your OpenAI "
+            "account may need device-code authorization enabled before Hermes "
+            "can start this dashboard login. Enable device-code authorization "
+            "in OpenAI, then return here and click Login again."
+        )
+    else:
+        message = (
+            "OpenAI rejected the device-code login request. Please try Login "
+            "again from the dashboard after checking your OpenAI account settings."
+        )
+    if detail:
+        return f"{message} (HTTP {status}: {detail})"
+    return f"{message} (HTTP {status})"
+
+
 def _codex_full_login_worker(session_id: str) -> None:
     """Run the complete OpenAI Codex device-code flow.
 
@@ -9119,7 +9167,7 @@ def _codex_full_login_worker(session_id: str) -> None:
                 headers={"Content-Type": "application/json"},
             )
         if resp.status_code != 200:
-            raise RuntimeError(f"deviceauth/usercode returned {resp.status_code}")
+            raise RuntimeError(_codex_device_code_start_error(resp))
         device_data = resp.json()
         user_code = device_data.get("user_code", "")
         device_auth_id = device_data.get("device_auth_id", "")

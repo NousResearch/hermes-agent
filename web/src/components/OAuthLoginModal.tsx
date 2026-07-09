@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, X, Check } from "lucide-react";
+import { ExternalLink, X, Check, Copy } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { CopyButton } from "@nous-research/ui/ui/components/command-block";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api, type OAuthProvider, type OAuthStartResponse } from "@/lib/api";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { useI18n } from "@/i18n";
 import { cn, themedBody } from "@/lib/utils";
@@ -30,9 +30,13 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
   const [start, setStart] = useState<OAuthStartResponse | null>(null);
   const [pkceCode, setPkceCode] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">(
+    "idle",
+  );
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
   const isMounted = useRef(true);
   const pollTimer = useRef<number | null>(null);
+  const copyResetTimer = useRef<number | null>(null);
   const { t } = useI18n();
 
   // Initiate flow on mount
@@ -59,6 +63,8 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
     return () => {
       isMounted.current = false;
       if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
+      if (copyResetTimer.current !== null)
+        window.clearTimeout(copyResetTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -162,6 +168,24 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
     return `${m}:${String(r).padStart(2, "0")}`;
   };
 
+  const handleCopyDeviceCode = async (code: string) => {
+    if (copyResetTimer.current !== null) {
+      window.clearTimeout(copyResetTimer.current);
+      copyResetTimer.current = null;
+    }
+    const copied = await copyTextToClipboard(code);
+    if (!isMounted.current) return;
+    setCopyStatus(copied ? "copied" : "failed");
+    copyResetTimer.current = window.setTimeout(() => {
+      if (isMounted.current) setCopyStatus("idle");
+      copyResetTimer.current = null;
+    }, 2000);
+  };
+
+  const deviceCode = start?.flow === "device_code" ? start.user_code : "";
+  const verificationUrl =
+    start?.flow === "device_code" ? start.verification_url : "";
+
   return (
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
@@ -262,35 +286,35 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
               </p>
               <div className="flex items-center justify-between gap-2 border border-border bg-secondary/30 p-4">
                 <code className="font-mono-ui text-2xl tracking-widest text-foreground">
-                  {
-                    (
-                      start as Extract<
-                        OAuthStartResponse,
-                        { flow: "device_code" }
-                      >
-                    ).user_code
-                  }
+                  {deviceCode}
                 </code>
-                <CopyButton
-                  text={
-                    (
-                      start as Extract<
-                        OAuthStartResponse,
-                        { flow: "device_code" }
-                      >
-                    ).user_code
+                <Button
+                  size="sm"
+                  outlined
+                  className="shrink-0 uppercase"
+                  onClick={() => void handleCopyDeviceCode(deviceCode)}
+                  prefix={
+                    copyStatus === "copied" ? (
+                      <Check className="h-4 w-4" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
+                    )
                   }
-                />
+                  aria-label={t.oauth.copyCode ?? "Copy code"}
+                >
+                  {copyStatus === "copied"
+                    ? t.oauth.copied
+                    : (t.oauth.copyCode ?? "Copy code")}
+                </Button>
               </div>
+              {copyStatus === "failed" && (
+                <p className="text-xs text-destructive">
+                  {t.oauth.copyFailed ??
+                    "Could not copy automatically. Select the code and copy it manually."}
+                </p>
+              )}
               <a
-                href={
-                  (
-                    start as Extract<
-                      OAuthStartResponse,
-                      { flow: "device_code" }
-                    >
-                  ).verification_url
-                }
+                href={verificationUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"

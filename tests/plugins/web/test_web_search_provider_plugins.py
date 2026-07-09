@@ -252,7 +252,8 @@ class TestIsAvailable:
         monkeypatch.setenv("XAI_API_KEY", "real")
         assert p.is_available() is True
 
-    def test_oxylabs_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_oxylabs_requires_api_key(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         _ensure_plugins_loaded()
         from agent.web_search_registry import get_provider
 
@@ -260,6 +261,9 @@ class TestIsAvailable:
         assert p is not None
         assert p.is_available() is False
         monkeypatch.setenv("OXYLABS_AI_STUDIO_API_KEY", "real")
+        assert p.is_available() is True
+        monkeypatch.delenv("OXYLABS_AI_STUDIO_API_KEY", raising=False)
+        (tmp_path / ".env").write_text("OXYLABS_AI_STUDIO_API_KEY=real\n", encoding="utf-8")
         assert p.is_available() is True
 
 

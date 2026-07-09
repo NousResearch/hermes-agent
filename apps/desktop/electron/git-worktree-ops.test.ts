@@ -92,6 +92,19 @@ test('switchBranch: switches a normal checkout branch', async () => {
   }
 })
 
+test('switchBranch: reports a friendly error for non-git project folders', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-non-git-switch-'))
+
+  try {
+    await assert.rejects(
+      () => switchBranch(dir, '2026-notes', 'git'),
+      /This project folder is not a git repository/
+    )
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('listBranches: lists locals and flags the checked-out branch', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-branches-'))
 

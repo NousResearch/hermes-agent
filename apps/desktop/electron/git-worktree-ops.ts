@@ -332,6 +332,23 @@ async function switchBranch(repoPath, branch, gitBin) {
     throw new Error('Branch name is required.')
   }
 
+  try {
+    const inside = (await runGit(gitBin, ['rev-parse', '--is-inside-work-tree'], resolved)).trim()
+
+    if (inside !== 'true') {
+      throw new Error('This project folder is not a git repository.')
+    }
+  } catch (err) {
+    const caught = err as { message?: unknown; stderr?: unknown }
+    const detail = `${String(caught.stderr || '')}\n${String(caught.message || '')}`
+
+    if (/not a git repository/i.test(detail)) {
+      throw new Error('This project folder is not a git repository.')
+    }
+
+    throw err
+  }
+
   await runGit(gitBin, ['switch', target], resolved)
 
   return { branch: target }

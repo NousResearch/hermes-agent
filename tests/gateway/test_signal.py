@@ -2,10 +2,12 @@
 import asyncio
 import base64
 import os
-import pytest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
 from urllib.parse import quote
+
+import pytest
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
@@ -3007,9 +3009,24 @@ class TestSignalGroupV2Routing:
         assert captured[0].source.chat_id == "group:allowed-v2=="
 
     @pytest.mark.asyncio
-    async def test_group_allowlist_accepts_group_names(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch, group_allowed="AgentChat", require_mention=False)
+    async def test_group_allowlist_name_survives_adapter_and_gateway_authorization(
+        self, monkeypatch
+    ):
+        """A name accepted at Signal intake must pass the canonical runner gate."""
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            group_allowed="AgentChat",
+            require_mention=False,
+        )
         captured = []
+
+        for env_key in (
+            "SIGNAL_ALLOWED_USERS",
+            "SIGNAL_ALLOW_ALL_USERS",
+            "GATEWAY_ALLOWED_USERS",
+            "GATEWAY_ALLOW_ALL_USERS",
+        ):
+            monkeypatch.delenv(env_key, raising=False)
 
         async def _capture(event):
             captured.append(event)
@@ -3017,12 +3034,42 @@ class TestSignalGroupV2Routing:
         adapter.handle_message = _capture
 
         await adapter._handle_envelope(self._base_envelope({
+            "message": "blocked",
+            "groupV2": {"id": "other-v2==", "name": "OtherChat"},
+        }))
+        assert captured == []
+
+        await adapter._handle_envelope(self._base_envelope({
             "message": "allowed by name",
             "groupV2": {"id": "agent-chat-v2==", "name": "AgentChat"},
         }))
 
         assert len(captured) == 1
-        assert captured[0].source.chat_id == "group:agent-chat-v2=="
+        source = captured[0].source
+        assert source.chat_id == "group:agent-chat-v2=="
+        assert source.chat_name == "AgentChat"
+
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner.adapters = {}
+        runner._profile_adapters = {}
+        runner.pairing_store = MagicMock()
+        runner.pairing_store.is_approved.return_value = False
+        runner.pairing_stores = {}
+
+        assert runner._is_user_authorized(source) is True
+        # The early no-user-ID path uses the same Signal name vocabulary.
+        assert runner._is_user_authorized(replace(source, user_id=None)) is True
+        assert runner._is_user_authorized(
+            replace(source, chat_name="OtherChat")
+        ) is False
+        # Human-readable group names remain Signal-specific; other adapters
+        # continue to match their chat allowlists by ID only.
+        monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "AgentChat")
+        assert runner._is_user_authorized(
+            replace(source, platform=Platform.TELEGRAM)
+        ) is False
 
     @pytest.mark.asyncio
     async def test_group_allowlist_names_resolve_to_ids_on_connect(self, monkeypatch):

@@ -5,7 +5,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -833,39 +833,61 @@ class TestProfileScopedStorage:
             tmp_path / "profiles" / "yangyang" / "pairing" / "_rate_limits.json"
         )
 
-    def test_pairing_store_for_helper_routes_by_profile(self, tmp_path, monkeypatch):
-        """_pairing_store_for(source) on a gateway-like object picks the
-        per-profile store when source.profile is set, and falls back to
-        the global store when it isn't (defensive — single-profile
-        gateways, or any code path that hasn't stamped source.profile)."""
+    def test_gateway_authorization_uses_only_profile_pairing_store(self, monkeypatch):
+        """A secondary profile must neither consult nor trust the global store."""
+        from gateway.run import GatewayRunner
         from gateway.session import SessionSource
         from gateway.config import Platform
 
-        class FakeGateway:
-            def __init__(self):
-                self.pairing_store = object()  # sentinel
-                self.pairing_stores = {
-                    "default": "default-store",
-                    "yangyang": "yangyang-store",
-                }
+        for env_key in (
+            "WEIXIN_ALLOWED_USERS",
+            "WEIXIN_ALLOW_ALL_USERS",
+            "GATEWAY_ALLOWED_USERS",
+            "GATEWAY_ALLOW_ALL_USERS",
+        ):
+            monkeypatch.delenv(env_key, raising=False)
 
-            # Method under test — copy of the real helper so this test
-            # is self-contained even if the real one moves.
-            def _pairing_store_for(self, source):
-                per_profile = getattr(self, "pairing_stores", None) or {}
-                profile = getattr(source, "profile", None)
-                if profile and profile in per_profile:
-                    return per_profile[profile]
-                return getattr(self, "pairing_store", None)
+        runner = object.__new__(GatewayRunner)
+        runner.adapters = {}
+        runner._profile_adapters = {}
+        runner.pairing_store = MagicMock()
+        runner.pairing_store.is_approved.return_value = True
+        profile_store = MagicMock()
+        profile_store.is_approved.return_value = False
+        runner.pairing_stores = {"yangyang": profile_store}
+        source = SessionSource(
+            platform=Platform.WEIXIN,
+            chat_id="c",
+            user_id="global-only-user",
+            profile="yangyang",
+        )
 
-        g = FakeGateway()
-        # source with profile="yangyang" → per-profile store
-        s_yy = SessionSource(platform=Platform.WEIXIN, chat_id="c", profile="yangyang")
-        assert g._pairing_store_for(s_yy) == "yangyang-store"
-        # source with no profile → fallback to global
-        s_none = SessionSource(platform=Platform.WEIXIN, chat_id="c")
-        assert g._pairing_store_for(s_none) is g.pairing_store
-        # source with an unknown profile → fallback (defensive)
-        s_unknown = SessionSource(platform=Platform.WEIXIN, chat_id="c", profile="ghost")
-        assert g._pairing_store_for(s_unknown) is g.pairing_store
+        assert runner._is_user_authorized(source) is False
+        profile_store.is_approved.assert_called_once_with("weixin", "global-only-user")
+        runner.pairing_store.is_approved.assert_not_called()
+
+        profile_store.is_approved.reset_mock()
+        profile_store.is_approved.return_value = True
+        source.user_id = "profile-user"
+        assert runner._is_user_authorized(source) is True
+        profile_store.is_approved.assert_called_once_with("weixin", "profile-user")
+        runner.pairing_store.is_approved.assert_not_called()
+
+    @pytest.mark.parametrize("profile", [None, "ghost"])
+    def test_gateway_pairing_store_falls_back_without_known_profile(self, profile):
+        """No or unknown profile preserves the global-store fallback."""
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionSource
+        from gateway.config import Platform
+
+        runner = object.__new__(GatewayRunner)
+        runner.pairing_store = object()
+        runner.pairing_stores = {"yangyang": object()}
+        source = SessionSource(
+            platform=Platform.WEIXIN,
+            chat_id="c",
+            profile=profile,
+        )
+
+        assert runner._pairing_store_for(source) is runner.pairing_store
 

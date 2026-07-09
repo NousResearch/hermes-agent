@@ -261,6 +261,29 @@ class GatewayAuthorizationMixin:
             return per_profile[profile]
         return getattr(self, "pairing_store", None)
 
+    @staticmethod
+    def _group_allowlist_matches(source: SessionSource, raw_allowlist: str) -> bool:
+        """Match a chat-scoped allowlist against the source's adapter identities.
+
+        Signal accepts either a group ID or group name at adapter intake and
+        stamps both on ``SessionSource``. Other adapters retain their existing
+        ID-only matching behavior.
+        """
+        allowed_groups = {
+            value.strip() for value in raw_allowlist.split(",") if value.strip()
+        }
+        source_groups = {source.chat_id}
+        if isinstance(source.chat_id, str) and source.chat_id.startswith("group:"):
+            source_groups.add(source.chat_id[6:])
+        chat_id_alt = getattr(source, "chat_id_alt", None)
+        if chat_id_alt:
+            source_groups.add(str(chat_id_alt))
+        if source.platform == Platform.SIGNAL:
+            chat_name = getattr(source, "chat_name", None)
+            if chat_name:
+                source_groups.add(str(chat_name))
+        return "*" in allowed_groups or bool(source_groups.intersection(allowed_groups))
+
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
@@ -330,17 +353,18 @@ class GatewayAuthorizationMixin:
             chat_allowlist_env = {
                 Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
                 Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+                # Signal's adapter gates group intake with SIGNAL_GROUP_ALLOWED_USERS
+                # before messages reach the gateway. Mirror that chat-scoped
+                # authorization here so non-DM group participants are not denied
+                # again solely because their phone number is not in SIGNAL_ALLOWED_USERS.
+                Platform.SIGNAL: "SIGNAL_GROUP_ALLOWED_USERS",
             }.get(source.platform, "")
             if chat_allowlist_env:
                 raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
-                if raw_chat_allowlist:
-                    allowed_group_ids = {
-                        cid.strip()
-                        for cid in raw_chat_allowlist.split(",")
-                        if cid.strip()
-                    }
-                    if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
-                        return True
+                if raw_chat_allowlist and self._group_allowlist_matches(
+                    source, raw_chat_allowlist
+                ):
+                    return True
 
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
         # Checked before the no-user-id guard below: some platforms deliver
@@ -388,6 +412,7 @@ class GatewayAuthorizationMixin:
         platform_group_chat_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
             Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+            Platform.SIGNAL: "SIGNAL_GROUP_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -517,10 +542,7 @@ class GatewayAuthorizationMixin:
         # Keep this separate from TELEGRAM_GROUP_ALLOWED_USERS, which gates
         # the sender user ID for group/forum messages.
         if group_chat_allowlist and source.chat_type in {"group", "forum"} and source.chat_id:
-            allowed_group_ids = {
-                chat_id.strip() for chat_id in group_chat_allowlist.split(",") if chat_id.strip()
-            }
-            if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
+            if self._group_allowlist_matches(source, group_chat_allowlist):
                 return True
 
         # Backward-compat shim for #15027: prior to PR #17686,

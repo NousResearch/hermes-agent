@@ -2256,6 +2256,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     question=next_args.get("question", ""),
                     choices=next_args.get("choices"),
                     callback=agent.clarify_callback,
+                    multi_select=bool(next_args.get("multi_select", False)),
+                    min_selections=next_args.get("min_selections", 0),
+                    max_selections=next_args.get("max_selections"),
+                    allow_other=bool(next_args.get("allow_other", True)),
                 ),
                 next_args,
             )

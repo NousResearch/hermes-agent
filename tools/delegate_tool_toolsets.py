@@ -111,4 +111,7 @@ def _resolve_child_toolsets(
     child_disabled_toolsets = list(
         dict.fromkeys(inherited_disabled + _blocked_toolsets_for_role(effective_role) + ["kanban"])
     )
+    # Both leaf and orchestrator children produce deliverables for their parent.
+    if "delegation_reply" not in child_toolsets:
+        child_toolsets.append("delegation_reply")
     return child_toolsets, child_disabled_toolsets

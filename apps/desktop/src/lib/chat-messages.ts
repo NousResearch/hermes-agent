@@ -1,6 +1,8 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
 
+import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
+import { normalize } from '@/lib/text'
 import { parseTodos } from '@/lib/todos'
 import type { SessionMessage, UsageStats } from '@/types/hermes'
 
@@ -51,6 +53,9 @@ export type GatewayEventPayload = {
   credential_warning?: string
   personality?: string
   usage?: Partial<UsageStats>
+  // agent.terminal.output — live chunk for a read-only agent terminal tab
+  process_id?: string
+  chunk?: string
   // clarify.request
   request_id?: string
   question?: string
@@ -58,9 +63,23 @@ export type GatewayEventPayload = {
   // approval.request (dangerous command / execute_code) — session-keyed
   command?: string
   description?: string
+  // False when a tirith content-security warning forbids a permanent allow.
+  allow_permanent?: boolean
   // secret.request (skill credential capture)
   env_var?: string
   prompt?: string
+  // terminal.read.request (GUI agent reading the in-app terminal pane)
+  start?: number
+  count?: number
+  // status.update (kind=process → background process completion/watch-match)
+  kind?: string
+  // session.title (live auto-title push) — stored session id + generated title
+  session_id?: string
+  title?: string
+  // moa.reference / moa.aggregating (Mixture of Agents per-model relay)
+  label?: string
+  index?: number
+  aggregator?: string
 }
 
 export function textPart(text: string): ChatMessagePart {
@@ -170,50 +189,70 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
   return [refs.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
 }
 
-export function appendTextPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
-  const next = [...parts]
-  const last = next.at(-1)
-
-  if (last?.type === 'text') {
-    next[next.length - 1] = { ...last, text: `${last.text}${delta}` }
-
-    return next
-  }
-
-  next.push(textPart(delta))
-
-  return next
+const STREAM_PART: Record<'reasoning' | 'text', (text: string) => ChatMessagePart> = {
+  reasoning: reasoningPart,
+  text: textPart
 }
 
-export function appendAssistantTextPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
-  const next = appendTextPart(parts, delta)
-  const last = next.at(-1)
+// Coalesce a streaming delta into the most recent same-type part within the
+// current segment, where a segment is bounded by any non-streaming part (a
+// tool call, image, …). The opposite streaming channel (text <-> reasoning) is
+// transparent, so a reasoning burst between two content deltas can't shred one
+// sentence into text / Thinking / text — the fragmentation models that
+// interleave reasoning_content + content otherwise produce. Tool calls still
+// open a fresh part, preserving narration order across steps.
+function appendStreamPart(
+  parts: ChatMessagePart[],
+  type: 'reasoning' | 'text',
+  delta: string
+): { index: number; parts: ChatMessagePart[] } {
+  const next = [...parts]
 
-  if (last?.type === 'text') {
-    const current = last.text
+  for (let i = next.length - 1; i >= 0; i--) {
+    const part = next[i]
 
-    const deltaMayContainMedia =
-      delta.includes('MEDIA:') || delta.includes('DIA:') || delta.includes('EDIA:') || delta.includes('IA:')
+    if (part.type === type) {
+      next[i] = { ...part, text: `${(part as { text: string }).text}${delta}` } as ChatMessagePart
 
-    const needsMediaPass = deltaMayContainMedia || current.includes('MEDIA:')
-    const nextText = needsMediaPass ? renderMediaTags(current) : current
-    next[next.length - 1] = nextText === current ? last : { ...last, text: nextText }
+      return { index: i, parts: next }
+    }
+
+    if (part.type !== 'text' && part.type !== 'reasoning') {
+      break
+    }
   }
 
-  return next
+  next.push(STREAM_PART[type](delta))
+
+  return { index: next.length - 1, parts: next }
+}
+
+export function appendTextPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
+  return appendStreamPart(parts, 'text', delta).parts
 }
 
 export function appendReasoningPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
-  const next = [...parts]
-  const last = next.at(-1)
+  return appendStreamPart(parts, 'reasoning', delta).parts
+}
 
-  if (last?.type === 'reasoning') {
-    next[next.length - 1] = { ...last, text: `${last.text}${delta}` }
+export function appendAssistantTextPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
+  const { index, parts: next } = appendStreamPart(parts, 'text', delta)
+  const part = next[index]
 
+  if (part?.type !== 'text') {
     return next
   }
 
-  next.push(reasoningPart(delta))
+  const mayContainMedia =
+    delta.includes('MEDIA:') || delta.includes('DIA:') || delta.includes('EDIA:') || delta.includes('IA:')
+
+  if (mayContainMedia || part.text.includes('MEDIA:')) {
+    const rendered = renderMediaTags(part.text)
+
+    if (rendered !== part.text) {
+      next[index] = { ...part, text: rendered }
+    }
+  }
 
   return next
 }
@@ -247,7 +286,7 @@ function firstStringField(record: Record<string, unknown>, keys: readonly string
 }
 
 function normalizeToolMatchValue(value: string): string {
-  return value.trim().toLowerCase()
+  return normalize(value)
 }
 
 function collectToolMatchValues(query: string, context: string, preview: string): string[] {
@@ -804,8 +843,12 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   })
   flushPendingTools(messages.length)
 
+  const withoutGeneratedImageEchoes = result.map(message =>
+    message.role === 'assistant' ? { ...message, parts: dedupeGeneratedImageEchoesInParts(message.parts) } : message
+  )
+
   return withUniqueToolCallIds(
-    result.filter(m => chatMessageText(m).trim() || m.parts.some(part => part.type !== 'text'))
+    withoutGeneratedImageEchoes.filter(m => chatMessageText(m).trim() || m.parts.some(part => part.type !== 'text'))
   )
 }
 

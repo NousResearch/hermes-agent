@@ -201,9 +201,20 @@ class TestGoalAnchor:
         assert runner._goal_anchor_for_source(None) is None
 
     def test_api_server_authorized_without_allowlist(self):
-        """API_SERVER turns are authorized by the API-key boundary — no user allowlist needed."""
+        """API_SERVER turns are authorized by the API-key boundary — no user allowlist needed.
+
+        [jb merge v2026.7.7.2] Le spécial-case historique de gateway/run.py est remplacé par le
+        SEAM NATIF : l'adaptateur api_server déclare ``authorization_is_upstream=True`` (chaque
+        handler passe _check_auth, clé exigée même en loopback) et le mixin authz l'honore.
+        L'autorisation dérive donc de l'ADAPTATEUR ENREGISTRÉ, plus de l'enum de plateforme :
+        sans adaptateur, un événement API_SERVER est REFUSÉ (fail-closed — plus strict qu'avant).
+        """
         runner = GatewayRunner(GatewayConfig())
         src = SessionSource(platform=Platform.API_SERVER, chat_id="mission:abc", user_id="jb-managed")
+        # Fail-closed : aucun adaptateur enregistré ⇒ refusé (le spécial-case par enum a disparu).
+        assert runner._is_user_authorized(src) is False
+        # Avec l'adaptateur réel (comme en prod, où il injecte les tours synthétiques) ⇒ autorisé.
+        runner.adapters[Platform.API_SERVER] = APIServerAdapter(PlatformConfig(enabled=True))
         assert runner._is_user_authorized(src) is True
 
     def test_telegram_still_denied_without_allowlist(self, monkeypatch):

@@ -282,6 +282,17 @@ def test_failure_rules_exempt_terminal_statuses():
         assert kd.compute_task_diagnostics(task, [], runs) == []
 
 
+def test_failure_rules_exempt_running_retry():
+    # Retrying a task (→ running) puts a fresh attempt in flight; its
+    # in-flight run (no outcome) doesn't break the trailing crash scan,
+    # so the past streak used to keep flagging over an active retry.
+    # A running card must clear the failure/crash banner until this
+    # attempt itself resolves.
+    runs = [_run(outcome="crashed", run_id=1), _run(outcome="crashed", run_id=2)]
+    task = _task(status="running", assignee="crashy", consecutive_failures=3)
+    assert kd.compute_task_diagnostics(task, [], runs) == []
+
+
 def test_stuck_in_blocked_fires_past_threshold():
     now = int(time.time())
     task = _task(status="blocked")

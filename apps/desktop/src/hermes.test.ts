@@ -101,7 +101,7 @@ describe('Hermes REST session helpers', () => {
       [getHermesConfigDefaults, '/api/config/defaults'],
       [getGlobalModelInfo, '/api/model/info'],
       [() => getGlobalModelOptions(), '/api/model/options?explicit_only=1'],
-      [getCronJobs, '/api/cron/jobs']
+      [getCronJobs, '/api/cron/jobs?profile=default']
     ]
 
     for (const [call, path] of bootCalls) {
@@ -109,6 +109,35 @@ describe('Hermes REST session helpers', () => {
       await call()
       expect(api).toHaveBeenCalledWith(expect.objectContaining({ path, timeoutMs: 60_000 }))
     }
+  })
+
+  it('defaults cron job listing to the primary profile instead of aggregating worker profiles', async () => {
+    api.mockResolvedValue([])
+
+    await getCronJobs()
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/cron/jobs?profile=default',
+        timeoutMs: 60_000
+      })
+    )
+  })
+
+  it('can explicitly request named-profile or all-profile cron job lists', async () => {
+    api.mockResolvedValue([])
+
+    await getCronJobs('coder')
+    await getCronJobs('all')
+
+    expect(api).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ path: '/api/cron/jobs?profile=coder', timeoutMs: 60_000 })
+    )
+    expect(api).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ path: '/api/cron/jobs?profile=all', timeoutMs: 60_000 })
+    )
   })
 
   it('keeps the liveness poll on the short default so a dead backend fails fast', async () => {

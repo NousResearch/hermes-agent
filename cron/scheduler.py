@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import shlex
 import threading
 import time
 
@@ -2046,7 +2047,11 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
 
-    raw = Path(script_path).expanduser()
+    # Split "script.py --arg1 val --arg2" into path + args so arguments
+    # aren't incorrectly treated as part of the filename.
+    parts = shlex.split(script_path)
+    raw = Path(parts[0]).expanduser()
+    extra_args = parts[1:]
     if raw.is_absolute():
         path = raw.resolve()
     else:
@@ -2089,9 +2094,9 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )
-        argv = [_bash, str(path)]
+        argv = [_bash, str(path)] + extra_args
     else:
-        argv = [sys.executable, str(path)]
+        argv = [sys.executable, str(path)] + extra_args
 
     try:
         from tools.environments.local import _sanitize_subprocess_env

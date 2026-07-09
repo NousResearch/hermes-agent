@@ -1273,3 +1273,54 @@ def test_review_fork_runs_under_background_review_origin(curator_env, monkeypatc
         "'background_review' — the skill_manage background-review write "
         "guard would not fire (GH-47688 regression)"
     )
+
+
+def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatch):
+    """Curator must pass credential_pool + request_overrides from resolve_runtime_provider."""
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+
+    fake_pool = object()
+    fake_overrides = {"extra_body": {"store": False}}
+    captured = {}
+
+    def _fake_resolve_runtime_provider(**kwargs):
+        return {
+            "provider": "custom",
+            "api_key": "pool-token",
+            "base_url": "https://hyper.charm.land/v1",
+            "api_mode": "chat_completions",
+            "credential_pool": fake_pool,
+            "request_overrides": fake_overrides,
+        }
+
+    class _StubAgent:
+        def __init__(self, *args, **kwargs):
+            captured["kwargs"] = kwargs
+            self._memory_write_origin = "assistant_tool"
+            self._memory_nudge_interval = 0
+            self._skill_nudge_interval = 0
+            self._session_messages = []
+
+        def run_conversation(self, user_message=None, **kwargs):
+            return {"final_response": "ok"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"provider": "custom:hyper-charm", "default": "glm-5.2"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        _fake_resolve_runtime_provider,
+    )
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+
+    meta = curator._run_llm_review("review prompt")
+
+    assert meta.get("error") is None, meta.get("error")
+    assert captured["kwargs"]["credential_pool"] is fake_pool
+    assert captured["kwargs"]["request_overrides"] == fake_overrides

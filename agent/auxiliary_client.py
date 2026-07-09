@@ -549,6 +549,32 @@ def _apply_user_default_headers(headers: dict | None) -> dict | None:
     return merged or headers
 
 
+def _apply_custom_provider_own_extra_headers(
+    headers: dict | None, custom_entry: dict
+) -> dict | None:
+    """Merge a named ``custom_providers``/``providers`` entry's own
+    ``extra_headers`` onto *headers*.
+
+    Per-provider headers are the most specific config level and must win over
+    ``model.default_headers``/``model.extra_headers`` (applied by
+    :func:`_apply_user_default_headers`) — mirrors
+    ``apply_custom_provider_extra_headers_to_client_kwargs`` (see
+    ``hermes_cli/config.py``), which the main agent client applies last for
+    the same reason (``agent_init.py`` / ``run_agent.py``). Without this, an
+    ``extra_headers`` entry used for gateway auth (e.g. ``x-gateway-auth``)
+    would apply to the main turn but silently drop from auxiliary tasks
+    (title generation, compression, vision, goal judge).
+
+    SECURITY: values may carry credentials — never log them.
+    """
+    entry_headers = custom_entry.get("extra_headers")
+    if not isinstance(entry_headers, dict) or not entry_headers:
+        return headers
+    merged = dict(headers or {})
+    merged.update(entry_headers)
+    return merged
+
+
 def build_or_headers(or_config: dict | None = None) -> dict:
     """Build OpenRouter headers, optionally including response-cache headers.
 
@@ -4745,6 +4771,7 @@ def resolve_provider_client(
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
                 _headers2 = _apply_user_default_headers(_extra2.get("default_headers"))
+                _headers2 = _apply_custom_provider_own_extra_headers(_headers2, custom_entry)
                 if _headers2:
                     _extra2["default_headers"] = _headers2
                 logger.debug(
@@ -4770,6 +4797,7 @@ def resolve_provider_client(
                         _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
                         _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
                         _fb_headers = _apply_user_default_headers(_fb_extra.get("default_headers"))
+                        _fb_headers = _apply_custom_provider_own_extra_headers(_fb_headers, custom_entry)
                         if _fb_headers:
                             _fb_extra["default_headers"] = _fb_headers
                         client = _create_openai_client(api_key=custom_key, base_url=_fb_clean, **_fb_extra)

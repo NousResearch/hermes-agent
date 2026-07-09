@@ -135,3 +135,94 @@ class TestAuxClientHonorsUserDefaultHeaders:
         assert client is not None
         headers = mock_openai.call_args.kwargs.get("default_headers", {}) or {}
         assert headers.get("User-Agent") == "curl/8.7.1"
+
+
+class TestAuxClientHonorsPerProviderExtraHeaders:
+    """A named ``custom_providers``/``providers`` entry's own ``extra_headers``
+    (e.g. gateway auth like ``x-gateway-auth``) must reach the auxiliary
+    client, not just the main agent client. Regression for the auxiliary
+    named-custom-provider path silently dropping ``custom_entry["extra_headers"]``.
+    """
+
+    def test_entry_extra_headers_applied_to_aux_client(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "test-model"},
+            "custom_providers": [
+                {
+                    "name": "my-gw",
+                    "base_url": "http://my-gw.local/v1",
+                    "api_key": "k",
+                    "extra_headers": {"x-gateway-auth": "token"},
+                },
+            ],
+        })
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+            client, model = resolve_provider_client("my-gw", "test-model")
+
+        assert client is not None
+        headers = mock_openai.call_args.kwargs.get("default_headers", {}) or {}
+        assert headers.get("x-gateway-auth") == "token"
+
+    def test_entry_extra_headers_win_over_top_level_default_headers(self, tmp_path):
+        """Precedence must match the main client: per-provider extra_headers
+        (applied last by ``apply_custom_provider_extra_headers_to_client_kwargs``
+        in agent_init.py/run_agent.py) win over ``model.default_headers``.
+        """
+        _write_config(tmp_path, {
+            "model": {
+                "default": "test-model",
+                "default_headers": {"User-Agent": "curl/8.7.1", "x-gateway-auth": "should-lose"},
+            },
+            "custom_providers": [
+                {
+                    "name": "my-gw",
+                    "base_url": "http://my-gw.local/v1",
+                    "api_key": "k",
+                    "extra_headers": {"x-gateway-auth": "token"},
+                },
+            ],
+        })
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+            client, model = resolve_provider_client("my-gw", "test-model")
+
+        assert client is not None
+        headers = mock_openai.call_args.kwargs.get("default_headers", {}) or {}
+        # Non-conflicting top-level header still present...
+        assert headers.get("User-Agent") == "curl/8.7.1"
+        # ...but the per-provider entry wins on the overlapping key.
+        assert headers.get("x-gateway-auth") == "token"
+
+    def test_entry_extra_headers_applied_on_anthropic_messages_sdk_missing_fallback(self, tmp_path):
+        """When api_mode=anthropic_messages but the anthropic SDK import/call
+        fails, the code falls back to an OpenAI-wire client (see
+        agent/auxiliary_client.py around the ImportError handler). That
+        fallback path builds its own headers dict and must also honor the
+        entry's extra_headers.
+        """
+        _write_config(tmp_path, {
+            "model": {"default": "test-model"},
+            "custom_providers": [
+                {
+                    "name": "my-gw",
+                    "base_url": "http://my-gw.local/anthropic",
+                    "api_key": "k",
+                    "api_mode": "anthropic_messages",
+                    "extra_headers": {"x-gateway-auth": "token"},
+                },
+            ],
+        })
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai, patch(
+            "agent.anthropic_adapter.build_anthropic_client",
+            side_effect=ImportError("anthropic package not installed"),
+        ):
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+            client, model = resolve_provider_client("my-gw", "test-model")
+
+        assert client is not None
+        headers = mock_openai.call_args.kwargs.get("default_headers", {}) or {}
+        assert headers.get("x-gateway-auth") == "token"

@@ -7786,13 +7786,29 @@ def _default_spawn(
         for sk in task.skills:
             if sk:
                 cmd.extend(["--skills", sk])
+    # A1 override args must ride as `chat` SUBCOMMAND options (after the `chat`
+    # token), never top-level. `--provider`/`-m` also exist as top-level flags
+    # (for -z/--oneshot/--tui), but when a `chat` subcommand follows, argparse's
+    # subparser defaults (default=None) overwrite the top-level values back to
+    # None — silently dropping the override so the worker falls back to the
+    # config-default provider (openrouter/mimo) instead of the local A1 endpoint.
+    # Verified: flags before `chat` → mimo; flags after `chat` → A1 (:8001).
+    _model_override_args: list[str] = []
     if task.model_override:
-        cmd.extend(["-m", task.model_override])
+        _model_override = str(task.model_override).strip()
+        if _model_override == "agents-a1":
+            # model_override alone only changes the model string; A1 is a local
+            # OpenAI-compatible endpoint, so the worker must also switch to the
+            # named custom provider. Keep the model string plain for provenance.
+            _model_override_args.extend(["--provider", "custom:agents-a1"])
+        if _model_override:
+            _model_override_args.extend(["-m", _model_override])
     worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
     cmd.extend([
         "chat",
+        *_model_override_args,
         "-q", prompt,
     ])
     # Redirect output to a per-task log under <board-root>/logs/.

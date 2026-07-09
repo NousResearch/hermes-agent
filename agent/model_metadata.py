@@ -636,6 +636,24 @@ def is_local_endpoint(base_url: str) -> bool:
     return False
 
 
+def _localhost_to_ipv4(url: str) -> str:
+    """Rewrite a ``localhost`` host to ``127.0.0.1`` in a probe URL.
+
+    On Windows dual-stack machines, httpx resolves ``localhost`` to ``::1``
+    first and pays a ~2s IPv6 connect timeout before falling back to IPv4
+    when the local server only listens on IPv4 (LM Studio, Ollama defaults).
+    Probing the IPv4 loopback directly skips that penalty. Non-localhost
+    URLs pass through unchanged.
+    """
+    if not url:
+        return url
+    url = url.replace("://localhost:", "://127.0.0.1:")
+    url = url.replace("://localhost/", "://127.0.0.1/")
+    if url.endswith("://localhost"):
+        url = url[:-len("localhost")] + "127.0.0.1"
+    return url
+
+
 def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     """Detect which local server is running at base_url by probing known endpoints.
 
@@ -652,10 +670,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     # Resolve localhost to IPv4 to avoid 2s IPv6 timeout on Windows dual-stack.
     # Applied to ``normalized`` before deriving server/LM Studio URLs AND
     # before the cache lookup, so localhost and 127.0.0.1 share a cache entry.
-    normalized = normalized.replace("://localhost:", "://127.0.0.1:")
-    normalized = normalized.replace("://localhost/", "://127.0.0.1/")
-    if normalized.endswith("://localhost"):
-        normalized = normalized[:-len("localhost")] + "127.0.0.1"
+    normalized = _localhost_to_ipv4(normalized)
 
     server_url = normalized
     if server_url.endswith("/v1"):
@@ -1393,7 +1408,7 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
     import httpx
 
     bare_model = _strip_provider_prefix(model)
-    server_url = base_url.rstrip("/")
+    server_url = _localhost_to_ipv4(base_url.rstrip("/"))
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
 
@@ -1454,7 +1469,7 @@ def query_ollama_supports_vision(model: str, base_url: str, api_key: str = "") -
     except Exception:
         return None
 
-    server_url = base_url.rstrip("/")
+    server_url = _localhost_to_ipv4(base_url.rstrip("/"))
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
 
@@ -1531,7 +1546,7 @@ def _query_ollama_api_show_uncached(model: str, base_url: str, api_key: str = ""
     """Uncached body of ``_query_ollama_api_show`` — one POST to ``/api/show``."""
     import httpx
 
-    server_url = base_url.rstrip("/")
+    server_url = _localhost_to_ipv4(base_url.rstrip("/"))
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
 
@@ -1650,10 +1665,10 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
     model = _strip_provider_prefix(model)
 
     # Strip /v1 suffix to get the server root
-    server_url = base_url.rstrip("/")
+    server_url = _localhost_to_ipv4(base_url.rstrip("/"))
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
-    lmstudio_url = _lmstudio_server_root(base_url)
+    lmstudio_url = _localhost_to_ipv4(_lmstudio_server_root(base_url))
 
     headers = _auth_headers(api_key)
 

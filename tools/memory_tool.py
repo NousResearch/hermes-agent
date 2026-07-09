@@ -705,12 +705,8 @@ class MemoryStore:
         """Return a backup-path string if on-disk content shows external drift.
 
         The memory file is supposed to be a list of small entries the tool
-        wrote, joined by §. Detect drift via two signals:
-
-        1. Round-trip mismatch — re-parsing and re-serializing the file
-           doesn't produce identical bytes (rare; would catch oddly-encoded
-           delimiters).
-        2. Entry-size overflow — any single parsed entry exceeds the
+        wrote, joined by §. Detect drift via entry-size overflow: any single
+        parsed entry exceeds the
            store's whole-file char limit. The tool budgets the ENTIRE store
            against that limit; no single tool-written entry can exceed it.
            When we see one entry larger than the limit, an external writer
@@ -718,6 +714,11 @@ class MemoryStore:
            free-form content into what the tool will treat as one entry.
            Flushing would then truncate that entry to the model's new
            content, discarding the appended bytes — issue #26045.
+
+        Formatting-only differences around the delimiter are intentionally not
+        drift. _read_file() already strips each parsed entry, so blank lines
+        next to § would be normalized by any successful write without losing
+        parsed content (#61523).
 
         Returns the absolute path of the .bak file when drift was found and
         backed up; returns None when the file looks tool-shaped.
@@ -736,12 +737,10 @@ class MemoryStore:
             return None
 
         parsed = [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
-        roundtrip = ENTRY_DELIMITER.join(parsed)
-
         char_limit = self._char_limit(target)
         max_entry_len = max((len(e) for e in parsed), default=0)
 
-        drift_detected = (raw.strip() != roundtrip) or (max_entry_len > char_limit)
+        drift_detected = max_entry_len > char_limit
         if not drift_detected:
             return None
 
@@ -1146,7 +1145,5 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
 
 

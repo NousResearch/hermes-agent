@@ -5113,7 +5113,7 @@ function openOauthLoginWindow(baseUrl) {
     let win = null
     let pollTimer = null
 
-    const finish = err => {
+    const finish = async err => {
       if (settled) {
         return
       }
@@ -5121,6 +5121,27 @@ function openOauthLoginWindow(baseUrl) {
 
       if (pollTimer) {
         clearInterval(pollTimer)
+      }
+
+      if (!err) {
+        // Flush the OAuth partition's cookie store to disk BEFORE tearing
+        // down the login window. The session cookies were just set by the
+        // window's network process; calling win.destroy() (instead of a
+        // graceful close) exits that process synchronously and can roll
+        // back / drop the not-yet-flushed writes — so the very next REST
+        // call (hermes:api) sees no cookie and gets bounced with a 401
+        // no_cookie, even though mintGatewayWsTicket succeeded moments
+        // earlier using the still-live in-memory jar. Persisting first
+        // guarantees fetchJsonViaOauthSession's electronNet.request sees
+        // the same session the WS ticket mint did. See issue #61457.
+        try {
+          const sess = getOauthSession()
+          if (sess && typeof sess.cookies?.flushStorage === 'function') {
+            await sess.cookies.flushStorage()
+          }
+        } catch {
+          // Best effort — tear down regardless.
+        }
       }
 
       try {

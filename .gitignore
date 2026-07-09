@@ -27,6 +27,9 @@ __pycache__/model_tools.cpython-310.pyc
 __pycache__/web_tools.cpython-310.pyc
 logs/
 data/
+# The broad data/ rule above must not swallow the IX Agency fallback data the
+# renderer imports at build time (skills.json / mcp-tiles.json).
+!apps/desktop/src/app/ix-agency/data/
 .pytest_cache/
 test_durations.json
 .pytest-cache/

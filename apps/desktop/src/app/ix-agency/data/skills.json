@@ -1,0 +1,556 @@
+{
+  "generatedAt": "2026-07-09T05:32:04.209Z",
+  "source": "admin-skills.ts",
+  "items": [
+    {
+      "id": "weekly-business-report",
+      "title": "Weekly business report",
+      "description": "Pull numbers from email, social, support, CRM and cloud costs into one report.",
+      "persona": "all tiers",
+      "rank": null,
+      "superAdminOnly": false,
+      "content": "# Skill: Weekly business report\n\n## Goal\nProduce a single markdown report of the week across marketing, support, sales and infra.\n\n## Steps (run tools in parallel where possible)\n1. Email — notifuse (tileId \"notifuse\"): notifuse_broadcasts_list for the last week's\n   campaigns; note sends, open rate, click rate per campaign.\n2. Social — postiz (tileId \"postiz\"): postiz_list_integrations, then postiz_analytics\n   per channel (days: 7). Note followers delta and top post.\n3. Support — chatwoot (tileId \"chatwoot\"): chatwoot_list_conversations (accountId 1,\n   status open) — count open vs resolved this week.\n4. Sales — twenty (tileId \"twenty\"): meta-tool flow (get_tool_catalog → learn_tools →\n   execute_tool find_many_opportunities, select:[\"*\"]) — pipeline value by stage.\n5. Cloud — aws (tileId \"aws\"): aws_cost_daily (days: 7) and aws_cost_forecast.\n6. Shipped — gastown (tileId \"gastown\"): gastown_completed_work (period \"week\").\n\n## Output format\nOne markdown report: TL;DR (3 bullets), then a section per area with the numbers,\neach ending with one recommended action. Flag anything anomalous (cost spike,\nopen-rate drop, support backlog growth) at the top.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [],
+      "appIds": []
+    },
+    {
+      "id": "cloud-cost-review",
+      "title": "Cloud cost review",
+      "description": "Monthly AWS bill breakdown, trend, forecast, and concrete saving actions.",
+      "persona": "all tiers",
+      "rank": null,
+      "superAdminOnly": false,
+      "content": "# Skill: Cloud cost review\n\n## Goal\nExplain where the AWS money goes and propose concrete, safe savings.\n\n## Steps\n1. aws_cost_by_service (months: 3, top: 15) — identify the top services and their trend.\n2. aws_cost_daily (days: 30) — spot spikes; for each spike day, drill into the top\n   service with aws_cost_daily{service}.\n3. aws_cost_forecast — projected month-end vs last month.\n4. aws_eks_list_clusters + aws_eks_list_nodegroups — check instance types, capacity\n   type (ON_DEMAND vs SPOT) and min/desired/max for headroom.\n5. Cross-check LLM spend: Bedrock line items in the bill vs the Langfuse tile\n   (admin_launch_url \"langfuse\") for per-model usage.\n\n## Actions (always confirm with the user first)\n- Scale a deployment: intelliverse gateway k8s_scale_deployment\n  {resourceType:\"deployment\", resourceName, namespace, replicas}.\n- Nodegroup changes are IaC — assign to the coding crew instead:\n  gastown_assign_coding_task (repo \"kube_infra\") with the exact change.\n\n## Output format\nTable of top services (this month, last month, delta), spike diagnosis, forecast,\nthen a ranked list of savings with estimated $ impact and the action for each.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [],
+      "appIds": []
+    },
+    {
+      "id": "email-outreach-campaign",
+      "title": "Email outreach campaign",
+      "description": "Plan and stage a segmented, personalized email campaign end to end.",
+      "persona": "all tiers",
+      "rank": null,
+      "superAdminOnly": false,
+      "content": "# Skill: Email outreach campaign\n\n## Goal\nStage a high-converting email campaign in Notifuse (tileId \"notifuse\", workspace\n\"intelliversex\") without sending anything unapproved.\n\n## Steps\n1. Audience: notifuse_lists_list + notifuse_lists_stats — find or create the target\n   list. Check notifuse_contacts_list for overlap with past sends (dedupe).\n2. Pattern check: notifuse_broadcasts_list — what did past campaigns' open/click\n   rates look like? Reuse what worked (sender, subject style, send time).\n3. Template: notifuse_templates_list; personalized campaigns here use\n   contact.custom_string_1 (subject), custom_string_2 (preview) and\n   custom_json_1.html (body) so each contact gets bespoke content.\n4. Draft 2-3 sample emails and show the user BEFORE staging anything.\n5. After approval: create/update template, import contacts with their custom\n   fields, subscribe to the list, create the broadcast — scheduled per timezone\n   (morning local time beats a single blast).\n6. Send ONE test email to the user first (notifuse_transactional_send).\n\n## Hard rules\n- Never send or schedule a broadcast without explicit user approval in this chat.\n- Exclude previously bounced addresses.\n\n## Output format\nPlan → samples → (on approval) staging log with ids → what's scheduled when.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [],
+      "appIds": []
+    },
+    {
+      "id": "ship-a-fix",
+      "title": "Ship a fix (coding crew)",
+      "description": "Take a bug from report to assigned coding agent to deployed fix.",
+      "persona": "all tiers",
+      "rank": null,
+      "superAdminOnly": false,
+      "content": "# Skill: Ship a fix\n\n## Goal\nTurn a bug report or feature request into deployed code via the coding crew\n(tileId \"gastown\").\n\n## Steps\n1. Evidence first: grafana_alerts (firing?), and for runtime errors the\n   intelliverse gateway k8s_get_pod_errors / k8s_get_deployment_errors\n   {namespace:\"aicart\"} to capture the actual stack trace.\n2. Pick the repo: gastown_list_repos — map the failing service to its rig\n   (core AI backend → intelliverse_x_ai, infra/deploy → kube_infra, content\n   pipelines → content_factory, game server → nakama, auth → user_auth).\n3. Write the task: title = one line; description = symptom, evidence (paste the\n   error), suspected area, acceptance criteria. Confirm with the user, then\n   gastown_assign_coding_task {repo, title, description}.\n4. Track: gastown_work_batches → gastown_batch_status {id} until the work lands\n   through the merge queue. gastown_completed_work shows it when shipped.\n5. Verify deploy: intelliverse k8s_rollout_status {resourceType:\"deployment\",\n   resourceName, namespace:\"aicart\"}; re-check the error stream from step 1.\n\n## Hard rules\n- gastown_assign_coding_task spawns a real agent that opens PRs — always show\n  the user repo + title + description and get a yes before calling it.\n\n## Output format\nEvidence summary → task assigned (id) → tracking updates → verification result.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [],
+      "appIds": []
+    },
+    {
+      "id": "support-inbox-triage",
+      "title": "Support inbox triage",
+      "description": "Clear the Chatwoot queue: classify, enrich with account context, draft replies for approval.",
+      "persona": "all tiers",
+      "rank": null,
+      "superAdminOnly": false,
+      "content": "# Skill: Support Inbox Triage\n\n## Goal\nClear the Chatwoot support queue efficiently: classify every open conversation, enrich it\nwith account context, draft replies for approval, and escalate what agents can't solve.\n\n## Steps\n1. Ask the user which app/tenant to triage (determines Chatwoot accountId) if not stated.\n2. chatwoot (tileId \"chatwoot\"): chatwoot_list_conversations with status open for that\n   accountId. Sort oldest-first (longest-waiting customers are closest to SLA breach).\n3. For each conversation, read the latest messages and classify into exactly one of:\n   bug-report, billing/payment, rewards/redemption, account/access, feature-request, spam.\n4. Enrich before drafting — wrong context is worse than slow replies:\n   - Game/account issues: nakama (tileId \"nakama\") player search + inspect (wallet, storage).\n   - Rewards/gift-card issues: questx (tileId \"quests\") — the user's redemptions and offers.\n   - Payment issues: stripe (tileId \"stripe\") search charges/subscriptions by email (read-only).\n5. Draft a reply per conversation using the enrichment. Under 120 words, plain language,\n   no promises of refunds or reversals.\n6. Present the triage table (see Output format) and WAIT for approval.\n7. Only after approval: chatwoot send message, add the classification label, toggle status\n   as approved.\n8. List escalations (bugs needing engineers, fraud suspicions) as a separate handoff block.\n\n## Hard rules\n- NEVER send a message, change a label, or toggle status without explicit approval of that\n  specific conversation in this session.\n- NEVER promise refunds, credits, or reversals in drafts — flag those for a human decision.\n- If a conversation mentions fraud, chargebacks, or legal threats, do not draft; escalate.\n\n## Output format\nTable: conversation id | customer | waiting time | category | context found | draft reply\n(truncated) | proposed action. Then \"Escalations\" bullets, and a final line asking which\nrows to execute.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [],
+      "appIds": []
+    },
+    {
+      "id": "app-review-triage",
+      "title": "App review triage",
+      "description": "Cluster new App Store & Play reviews, flag rating-threatening bugs, draft replies and tickets.",
+      "persona": "all tiers",
+      "rank": null,
+      "superAdminOnly": false,
+      "content": "# Skill: App Review Triage & Response\n\n## Goal\nTurn the week's App Store and Google Play reviews into (a) approved reply drafts,\n(b) a theme/sentiment digest, and (c) engineering tickets for rating-threatening bugs.\n\n## Steps\n1. Ask which app(s) to cover if not stated (QuizVerse, QuestX, …).\n2. appstore (tileId \"appstore\"): reviews + ratings for the chosen window (default 7 days).\n3. playstore (tileId \"playstore\"): reviews for the same window; also crash/ANR rates to\n   check whether negative reviews correlate with a stability regression.\n4. Cluster reviews into themes (crashes, ads, payouts/rewards, difficulty, praise, other),\n   tag sentiment, count per theme by store and star rating.\n5. Identify rating-threatening items: 1–2★ reviews describing a reproducible bug, payment\n   loss, or reward not received — those need engineering, not just a reply.\n6. Draft replies for reviews worth answering (all 1–3★ with substance, top 5★ with\n   questions). Friendly voice; never argue; never offer compensation.\n7. Cross-check payout/reward complaints against questx (tileId \"quests\") redemption status\n   or nakama (tileId \"nakama\") player wallet so replies say something true and specific.\n8. For each confirmed bug cluster, draft a ticket; only on approval assign via\n   gastown_assign_coding_task (tileId \"gastown\").\n\n## Hard rules\n- NEVER create a gastown task or send any message without explicit approval.\n- Store reply publishing is manual: output approved reply text clearly labeled per review\n  so the owner can paste it into App Store Connect / Play Console.\n- Never offer refunds, promo codes, or compensation in reply drafts.\n\n## Output format\n1) Scorecard: reviews by store, avg rating vs prior week, crash/ANR trend.\n2) Theme table: theme | count | avg stars | example quote | action.\n3) Reply drafts grouped by review. 4) Proposed engineering tickets. End by asking what to\napprove.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [],
+      "appIds": []
+    },
+    {
+      "id": "weekly-ua-review",
+      "title": "Weekly paid-UA review",
+      "description": "Monday audit: ROAS/LTV by media source week-over-week, flag >20% swings, budget calls.",
+      "persona": "all tiers",
+      "rank": null,
+      "superAdminOnly": false,
+      "content": "# Skill: Weekly Paid-UA Performance Review\n\n## Goal\nRun the Monday-morning UA audit in minutes: validate the data, compare ROAS/retention by\nmedia source week-over-week, flag channels losing money, recommend budget moves.\nRead-only — this skill informs decisions, it does not change campaigns.\n\n## Steps\n1. Confirm the app and comparison windows (default: last 7 days vs prior 7 days).\n2. appsflyer (tileId \"appsflyer\"): installs and ROAS by media source for both windows;\n   also LTV and retention by media source for the last-7-day cohort.\n3. Sanity-check before analyzing: if any channel shows revenue with near-zero installs,\n   or installs dropped >50% while spend held, flag a possible attribution/postback issue\n   instead of drawing a performance conclusion.\n4. appsflyer breakdown by campaign for the top spenders; flag any campaign whose ROAS\n   moved >20% week-over-week in either direction.\n5. ga4 (tileId \"ga4\", matching app-id): users and sessions by source for the same windows\n   to compare paid vs organic mix shift.\n6. Cross-check revenue reality: revenuecat (tileId \"revenuecat\") MRR and active-subs\n   trend, stripe (tileId \"stripe\") revenue summary — attribution revenue should roughly\n   track actuals; note divergence.\n7. Classify each media source: SCALE (strong/improving), HOLD (flat), INVESTIGATE (>20%\n   drop — name the likely cause), LOSING MONEY (CPI exceeds revenue per install).\n\n## Hard rules\n- Read-only: never call any write tool. Budget changes happen in the ad platforms.\n- Always report the data-quality caveats from step 3 alongside conclusions.\n- Compare week-over-week, not month-to-date — monthly smoothing hides breakage.\n\n## Output format\nExecutive summary (max 5 bullets), then table: media source | spend trend | installs |\nROAS this wk / prior wk | D7 retention | verdict. End with \"Top 3 recommended actions\"\nand \"Data caveats\".",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [],
+      "appIds": []
+    },
+    {
+      "id": "questx-fraud-triage",
+      "title": "Redemption fraud triage",
+      "description": "Score pending gift-card redemptions against fraud signals and KYC; approve/hold/deny queue.",
+      "persona": "all tiers",
+      "rank": null,
+      "superAdminOnly": false,
+      "content": "# Skill: QuestX Redemption Fraud Triage\n\n## Goal\nWork the pending gift-card redemption queue: score each redemption against fraud signals,\nverify identity status, and produce an approve/hold/deny recommendation list. Gift cards\nare irreversible once issued, so every release must survive this check.\n\n## Steps\n1. questx (tileId \"quests\"): list pending/flagged redemptions (default: since last triage)\n   plus the fraud-check results questx already computed.\n2. Per redemption, pull the user's questx history: prior redemptions, offer completion\n   pattern, account age, cumulative payout value.\n3. Identity: didit (tileId \"didit\") — or veriff if that tenant uses it — KYC session\n   status and decision. No approved KYC above the value threshold = automatic HOLD.\n4. For QuizVerse-linked users, nakama (tileId \"nakama\") player inspect (wallet\n   transactions, storage) to spot impossible earning velocity or wallet manipulation.\n5. Score LOW / MEDIUM / HIGH risk. HIGH signals: burst redemptions in <24h, shared\n   device/email patterns across accounts, redemption right after account creation, failed\n   or missing KYC, earning velocity beyond legitimate play. Rewards fraud grows through\n   volume of small claims — velocity matters more than any single amount.\n6. Recommend: LOW → approve; MEDIUM → hold for the standard review window; HIGH → deny\n   and optionally notify via chatwoot (tileId \"chatwoot\").\n7. Present the queue with evidence per row and WAIT for user decisions.\n8. Only after explicit per-row approval, execute approve/deny via questx and any\n   notifications via chatwoot.\n\n## Hard rules\n- NEVER approve, deny, or release a redemption without explicit approval of that row.\n- NEVER approve a HIGH-risk redemption casually — the user must state they reviewed the\n  evidence.\n- Do not include raw KYC document details in output; reference only status and decision.\n\n## Output format\nQueue table: redemption id | user | gift card + value | account age | KYC status | risk |\nkey evidence | recommendation. Then totals by recommendation and a prompt asking which\nrows to execute.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [],
+      "appIds": []
+    },
+    {
+      "id": "kyc-verification-ops",
+      "title": "KYC verification ops",
+      "description": "Work the identity-verification queue across Didit and Veriff: statuses, stuck sessions, decisions, new verification links.",
+      "persona": "tiers: owner/manager · bundles: support",
+      "rank": 1,
+      "superAdminOnly": false,
+      "content": "# Skill: KYC Verification Ops\n\n## Goal\nRun the identity-verification desk across both KYC providers: see who verified, who is\nstuck or declined, pull decision evidence for disputes, and (on request) mint a fresh\nhosted verification link for a user. Read-heavy; the only write is creating a session.\n\n## Steps\n1. Health first — didit (tileId \"didit\"): didit_setup_status; veriff (tileId \"veriff\"):\n   veriff_setup_status. If a provider isn't onboarded/active, report its fix steps and\n   continue with the other (Veriff is known to need portal activation).\n2. Queue view — didit_list_sessions (filter by status \"In Review\", \"Declined\" or\n   vendorData = the user id being investigated). Veriff has NO list endpoint: sessionIds\n   come from your backend records, webhooks, or the user's support ticket.\n3. Per case, pull the decision: didit_session_decision (checks: ID verification,\n   liveness, face match, AML) or veriff_session_decision + veriff_session_person +\n   veriff_watchlist_screening (PEP/sanctions). For document disputes,\n   veriff_session_media / veriff_session_attempts list the captured photos and videos.\n4. Stuck \"In Review\" sessions on Didit: didit_session_reviews shows manual-review\n   activity — who touched it and when; escalate cases idle beyond the SLA.\n5. Ops hygiene when asked: didit_billing_balance (credits remaining — flag if low),\n   didit_list_workflows (which flow new sessions use), didit_webhook_config (where\n   decisions are delivered; the HMAC secret stays masked).\n6. Re-verification: on explicit request only, didit_create_session (consumes credits)\n   or veriff_create_session, passing vendorData = the internal user id. Return the\n   hosted url for the support agent to send; do NOT message the end user yourself\n   unless asked to (chatwoot, tileId \"chatwoot\").\n\n## Hard rules\n- NEVER create a verification session without explicit approval — Didit sessions\n  consume paid credits.\n- Do not include raw document images, document numbers, or DOB in output; reference\n  decision status, reason codes and check results only.\n- If a provider call fails with auth errors, run its *_setup_status tool and report\n  the returned fix steps instead of retrying blindly.\n\n## Output format\nPer-case table: provider | session id | user (vendorData) | status | failing check |\nrecommended action. Then provider health (key status, Didit credits) and any\nescalations. When a link was created, end with the session id + hosted url.",
+      "starterPrompts": [],
+      "tiers": [
+        "owner",
+        "manager"
+      ],
+      "bundles": [
+        "support"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "incident-first-response",
+      "title": "Incident first response",
+      "description": "Alert fired? Assemble blast radius, likely cause, and smallest safe remediation in minutes.",
+      "persona": "all tiers",
+      "rank": null,
+      "superAdminOnly": false,
+      "content": "# Skill: Incident First Response\n\n## Goal\nWhen an alert fires or something \"seems down\", assemble a full picture in minutes — what\nbroke, blast radius, likely cause — and propose the smallest safe remediation. Diagnosis\nis autonomous; every remediation is a separate approved action.\n\n## Steps\n1. grafana (tileId \"grafana\"): grafana_alerts for firing alerts. If the user named a\n   symptom instead, search dashboards for the service and run PromQL for error rate,\n   latency, saturation over the last 3h vs 24h baseline.\n2. intelliverse gateway (tileId \"intelliverse\"): k8s list pods/deployments in the affected\n   namespace, restart counts, pending pods, recent events. Note OOMKilled/CrashLooping.\n3. If the symptom is latency or read/write errors, use intelliverse postgres tools\n   (connections, slow queries) — diagnostic reads only.\n4. n8n (tileId \"n8n\"): list executions for related workflows — a stuck or failing\n   automation is a common silent culprit, and disabling one is the cheapest mitigation.\n5. If user-facing on mobile, playstore (tileId \"playstore\") crash/ANR rates and the\n   latest appstore (tileId \"appstore\") reviews to gauge visible blast radius.\n6. Correlate the timeline: alert start vs pod restarts vs workflow failures vs deploys.\n   State the most likely cause with a confidence level and what evidence contradicts it.\n7. Propose remediation as an ordered smallest-safe-first list (restart one deployment via\n   intelliverse k8s_restart, scale replicas, deactivate an n8n workflow), each with\n   expected effect and rollback.\n8. WAIT for approval. Execute only the approved action, re-run the step-1 queries to\n   verify recovery, and report before/after numbers.\n\n## Hard rules\n- NEVER restart, scale, deploy, or deactivate anything without explicit approval of that\n  exact action. One action per approval — no batching remediations.\n- Never touch databases with writes; postgres access is diagnostic only.\n- If evidence is ambiguous, say so and recommend paging an engineer rather than guessing.\n\n## Output format\n\"INCIDENT BRIEF\": symptom | start time | blast radius | evidence timeline (bulleted) |\nlikely cause + confidence | proposed remediations (ordered, with rollback). After any\napproved action: verification section with before/after metrics.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [],
+      "appIds": []
+    },
+    {
+      "id": "funnel-health-report",
+      "title": "Funnel health report",
+      "description": "Full acquisition→retention→revenue funnel for one app, verdict per stage by source.",
+      "persona": "all tiers · bundles: analytics, growth, revenue",
+      "rank": 1,
+      "superAdminOnly": false,
+      "content": "# Skill: Funnel Health Report\n\n## Goal\nFor ONE app-id, walk the entire funnel — paid/organic acquisition → store page →\nonboarding → retention → revenue — and give a verdict per stage, broken down by source.\n\n## Steps\n1. Confirm the app-id (default to the current portal scope). Window: last 28 days\n   unless the user says otherwise.\n2. Acquisition — appsflyer (tileId \"appsflyer\"): fetch_aggregated_data with\n   metrics Installs, ROAS, Cost and grouping \"Media source\" for the window.\n3. Web traffic — ga4 (tileId \"ga4\"): traffic summary + sources for the app-id;\n   gsc (tileId \"gsc\"): clicks/impressions trend for the same window.\n4. Store conversion — appstore (tileId \"appstore\"): latest reviews + ratings;\n   playstore (tileId \"playstore\"): reviews plus crash/ANR rates. Note anything\n   that suppresses page conversion (rating drop, crash spike, review themes).\n5. Onboarding + retention — nakama (tileId \"nakama\"): the onboarding funnel via\n   analytics tools, then analytics_retention_curves for cohort retention and\n   analytics_churn_risk for at-risk segments.\n6. Revenue — revenuecat (tileId \"revenuecat\") MRR/active subs and stripe\n   (tileId \"stripe\") revenue summary; compute ARPU against the active-user base.\n7. Verdict per stage (acquisition / store / onboarding / retention / revenue):\n   HEALTHY, WATCH, or BROKEN — with the number that justifies it, and the best\n   and worst media source where the data allows a by-source split.\n\n## Hard rules\n- Nakama analytics_retention_cohort and analytics_engagement_score are UNREGISTERED RPCs — NEVER call them. Always use analytics_retention_curves and analytics_churn_risk instead.\n- QuestX (tileId \"quests\") DAU/MAU numbers are a LEDGER PROXY (derived from reward-ledger activity, not true sessions) — always label them \"ledger-proxy DAU/MAU\" in any output.\n- Read-only: this skill never writes anywhere.\n- If a stage's tool fails or isn't onboarded, mark the stage NO DATA and keep going.\n\n## Output format\nOne markdown report: TL;DR verdict line per funnel stage, then a stage-by-stage\nsection with the numbers, a by-source table (source | installs | ROAS | D7 retention |\nARPU) and \"Top 3 fixes\" ranked by expected impact.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [
+        "analytics",
+        "growth",
+        "revenue"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "acquisition-source-audit",
+      "title": "Acquisition source audit",
+      "description": "Rank media sources by D7 retention + LTV and recommend budget shifts.",
+      "persona": "all tiers · bundles: growth, analytics",
+      "rank": 1,
+      "superAdminOnly": false,
+      "content": "# Skill: Acquisition Source Audit\n\n## Goal\nRank every media source by the QUALITY of the users it delivers (D7 retention, LTV),\nnot just volume — then recommend concrete budget shifts.\n\n## Steps\n1. Confirm the app-id and window (default: last 30 days).\n2. appsflyer (tileId \"appsflyer\"): fetch_aggregated_data grouped by \"Media source\"\n   with metrics Installs, Cost, ROAS, Retention rate, ARPU; pull LTV where exposed.\n3. ga4 (tileId \"ga4\"): sessions + engaged sessions by source for the same window —\n   cross-check that web-driven sources actually engage.\n4. nakama (tileId \"nakama\"): analytics_audience_breakdown with dimension\n   install_source — in-game retention and spend by acquisition source, the ground\n   truth behind the attribution numbers.\n5. Join the three views per source. Flag disagreements (e.g. a source AppsFlyer\n   rates highly whose nakama cohort churns immediately = likely incent/fraud traffic).\n6. Rank sources by blended quality score (D7 retention first, then LTV/ARPU, then\n   ROAS). Recommend: SCALE / HOLD / CUT with a suggested % budget shift.\n\n## Hard rules\n- Nakama analytics_retention_cohort and analytics_engagement_score are UNREGISTERED RPCs — NEVER call them. Always use analytics_retention_curves and analytics_churn_risk instead.\n- Read-only — budget changes happen in the ad platforms, not here.\n- Never recommend scaling a source with fewer than 100 installs in the window;\n  label it INSUFFICIENT DATA instead.\n\n## Output format\nTable: media source | installs | cost | ROAS | D7 retention | LTV/ARPU | verdict |\nsuggested budget move. Then 3 bullets of rationale and any data-quality caveats.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [
+        "growth",
+        "analytics"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "store-conversion-optimizer",
+      "title": "Store conversion optimizer",
+      "description": "Reviews, ratings, crashes → conversion blockers, reply drafts, one crash ticket.",
+      "persona": "tiers: owner/manager · bundles: growth, content",
+      "rank": 1,
+      "superAdminOnly": false,
+      "content": "# Skill: Store Conversion Optimizer\n\n## Goal\nFind what's suppressing App Store / Play Store page conversion (ratings, review\nthemes, crashes), draft review replies, and stage ONE engineering ticket for the\ntop crash cluster.\n\n## Steps\n1. Confirm the app-id. Window: last 14 days.\n2. appstore (tileId \"appstore\"): ratings trend + newest reviews.\n3. playstore (tileId \"playstore\"): reviews + crash/ANR rates for the same window.\n4. Cluster negative reviews into themes; correlate 1–2★ spikes with the crash/ANR\n   series to separate stability complaints from product complaints.\n5. Rank conversion blockers (rating headline, top negative theme, crash rate) with\n   an estimated impact each.\n6. Draft replies for the reviews worth answering (substantive 1–3★ first). Friendly,\n   specific, no compensation offers.\n7. For the single worst crash cluster, draft a gastown (tileId \"gastown\") ticket:\n   title, evidence (crash rate, affected versions, example reviews), acceptance\n   criteria. Show it and WAIT.\n8. Only after an explicit yes: gastown_assign_coding_task. Review replies are\n   pasted manually into the consoles — output them clearly labeled.\n\n## Hard rules\n- gastown_assign_coding_task is WRITE and confirmation-gated: never call it without\n  an explicit yes on the exact repo + title + description in THIS chat.\n- Never promise refunds, credits or timelines in reply drafts.\n- One ticket per run — the top crash only.\n\n## Output format\nConversion blocker ranking → theme table (theme | count | avg stars | example) →\nreply drafts per review → proposed ticket (repo/title/description) → approval ask.",
+      "starterPrompts": [],
+      "tiers": [
+        "owner",
+        "manager"
+      ],
+      "bundles": [
+        "growth",
+        "content"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "retention-rescue",
+      "title": "Retention rescue",
+      "description": "Find churning cohorts, then stage winback email + live-ops actions (gated).",
+      "persona": "tiers: owner/manager · bundles: growth, analytics",
+      "rank": 1,
+      "superAdminOnly": false,
+      "content": "# Skill: Retention Rescue\n\n## Goal\nIdentify WHICH cohorts are churning and stage a two-pronged rescue: a Notifuse\nwinback campaign plus in-game live-ops actions. Every send/write is approval-gated.\n\n## Steps\n1. Confirm the app-id (nakama-backed games: quizverse, questx, intelliverse).\n2. nakama (tileId \"nakama\"): analytics_retention_curves by cohort — find where the\n   curve breaks vs the healthy baseline (which day, which cohort).\n3. nakama: analytics_churn_risk — the at-risk segments right now, with segment sizes.\n4. Diagnose: cross-reference the breaking cohorts with what changed (recent release\n   via appstore/playstore tileIds, live-event config via nakama_config_get).\n5. Winback plan — notifuse (tileId \"notifuse\", workspace \"intelliversex\"): pick or\n   define the target list from the churn-risk segment; draft 2 winback emails\n   (subject + body). SHOW, don't send.\n6. Live-ops plan — nakama: propose concrete actions (e.g. nakama_mailbox_send a\n   comeback reward, nakama_flag_toggle a re-engagement event). SHOW the exact\n   payloads, don't execute.\n7. WAIT for explicit approval per action; execute only what's approved, then report\n   ids/results.\n\n## Hard rules\n- Nakama analytics_retention_cohort and analytics_engagement_score are UNREGISTERED RPCs — NEVER call them. Always use analytics_retention_curves and analytics_churn_risk instead.\n- Every notifuse send/broadcast, nakama_mailbox_send, nakama_wallet_grant and\n  nakama_flag_toggle is WRITE: explicit per-action approval in this chat first.\n- Cap any proposed reward grant at what the user states; never invent amounts.\n\n## Output format\nChurn diagnosis (cohort, break point, size, suspected cause) → rescue plan table\n(action | channel | audience size | payload/draft) → approval checklist.",
+      "starterPrompts": [],
+      "tiers": [
+        "owner",
+        "manager"
+      ],
+      "bundles": [
+        "growth",
+        "analytics"
+      ],
+      "appIds": [
+        "quizverse",
+        "questx",
+        "intelliverse"
+      ]
+    },
+    {
+      "id": "weekly-growth-report",
+      "title": "Weekly growth report",
+      "description": "WoW funnel deltas + anomalies across attribution, analytics, revenue and quests.",
+      "persona": "all tiers · bundles: analytics, growth, revenue",
+      "rank": 1,
+      "superAdminOnly": false,
+      "content": "# Skill: Weekly Growth Report\n\n## Goal\nOne markdown digest of week-over-week movement across the whole growth stack, with\nanomalies called out at the top. Read-only.\n\n## Steps (parallelize; run_agent_swarm when 3+ areas are involved)\n1. Windows: last 7 days vs the prior 7 days. Scope to the current app-id, or all\n   apps for the super admin.\n2. appsflyer (tileId \"appsflyer\"): installs, cost, ROAS by media source, both windows.\n3. ga4 (tileId \"ga4\") + gsc (tileId \"gsc\"): users/sessions and organic clicks WoW.\n4. stripe (tileId \"stripe\") revenue summary + revenuecat (tileId \"revenuecat\")\n   MRR/active subs, both windows.\n5. nakama (tileId \"nakama\"): DAU/new users WoW and analytics_retention_curves for\n   the newest cohort vs the prior one.\n6. questx (tileId \"quests\"): quest completions, redemptions and ledger-proxy\n   DAU/MAU WoW.\n7. Compute deltas; flag anomalies (any metric moving >20% WoW) with the most likely\n   driver from the surrounding data.\n\n## Hard rules\n- Nakama analytics_retention_cohort and analytics_engagement_score are UNREGISTERED RPCs — NEVER call them. Always use analytics_retention_curves and analytics_churn_risk instead.\n- QuestX (tileId \"quests\") DAU/MAU numbers are a LEDGER PROXY (derived from reward-ledger activity, not true sessions) — always label them \"ledger-proxy DAU/MAU\" in any output.\n- Read-only. Missing/unonboarded sources get a NO DATA row, never a guess.\n\n## Output format\n\"Anomalies\" bullets first, then one table per area (metric | this wk | prior wk |\ndelta), then \"What to do about it\" — max 5 recommended actions.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [
+        "analytics",
+        "growth",
+        "revenue"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "revenue-deep-dive",
+      "title": "Revenue deep dive",
+      "description": "Stripe + RevenueCat + game monetization + affiliate commissions in one payer view.",
+      "persona": "all tiers · bundles: revenue",
+      "rank": 1,
+      "superAdminOnly": false,
+      "content": "# Skill: Revenue Deep Dive\n\n## Goal\nUnify every revenue stream — web payments, mobile IAP, in-game monetization,\naffiliate commissions — into one picture with payer-conversion rates.\n\n## Steps\n1. Confirm scope (app-id or all) and window (default: last 30 days + prior 30).\n2. stripe (tileId \"stripe\"): stripe_revenue_summary — gross, fees, refunds, net;\n   subscriptions vs one-time split where exposed.\n3. revenuecat (tileId \"revenuecat\"): revenuecat_list_projects then\n   revenuecat_overview_metrics — MRR, active subs, active trials, 28-day revenue.\n4. nakama (tileId \"nakama\"): monetization view — purchase events, wallet sinks and\n   sources, spender counts vs active users.\n5. questx (tileId \"quests\"): affiliate/commission revenue — completed offers and\n   commission totals for the window.\n6. Compute: total blended revenue, mix by stream, payer conversion (payers ÷\n   actives per stream), ARPU / ARPPU, WoW or MoM trend.\n7. Call out the biggest mover and the weakest stream with a hypothesis each.\n\n## Hard rules\n- QuestX (tileId \"quests\") DAU/MAU numbers are a LEDGER PROXY (derived from reward-ledger activity, not true sessions) — always label them \"ledger-proxy DAU/MAU\" in any output.\n- Read-only. Never mix currencies silently — state the currency per stream.\n- Stripe amounts are already in major units (dollars); do not re-divide by 100.\n\n## Output format\nRevenue mix table (stream | gross | net | payers | conversion | ARPPU | trend) →\nblended totals → 3 insights → 3 recommended experiments.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [
+        "revenue"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "launch-campaign",
+      "title": "Launch a campaign",
+      "description": "Content pipeline → social + email + newsletter scheduling → tracking plan. Sends gated.",
+      "persona": "tiers: owner/manager · bundles: growth, content",
+      "rank": 1,
+      "superAdminOnly": false,
+      "content": "# Skill: Launch a Campaign\n\n## Goal\nTake a campaign brief from idea to STAGED execution: content produced via the\ncontent pipeline, distribution scheduled across social/email/newsletter, and a\nmeasurement plan — with every send/publish approval-gated.\n\n## Steps\n1. Collect the brief: app-id, campaign goal, audience, key message, launch date.\n2. Content — content-factory (tileId \"content-factory\"): pick the right pipeline\n   (blog / video / creative) and show the trigger_pipeline config BEFORE running it.\n3. Social — postiz (tileId \"postiz\"): postiz_list_integrations for channels, draft\n   posts per channel (type \"draft\" only), postiz_find_slot for timing.\n4. Email — notifuse (tileId \"notifuse\", workspace \"intelliversex\"): target list via\n   notifuse_lists_list, draft the campaign email; beehiiv (tileId \"beehiiv\") for the\n   newsletter edition if applicable.\n5. Tracking plan — define UTMs per channel, what ga4 (tileId \"ga4\") should show by\n   when, and which appsflyer (tileId \"appsflyer\") media source / campaign name will\n   carry paid amplification. Include a day-3 and day-7 check.\n6. Present the full plan and WAIT. Only after explicit per-item approval: trigger\n   the pipeline, move postiz drafts to scheduled, stage the notifuse broadcast\n   (test send to the user first via notifuse_transactional_send).\n\n## Hard rules\n- ALL sends/publishes are WRITE: postiz type schedule/now, notifuse broadcasts,\n  beehiiv posts and content-factory pipeline runs each need an explicit yes in\n  THIS chat. Drafts are always safe.\n- Nothing schedules before the user confirms the launch date.\n\n## Output format\nCampaign one-pager: goal → content plan → channel calendar (channel | asset |\ntime) → tracking plan → approval checklist with each pending write action.",
+      "starterPrompts": [],
+      "tiers": [
+        "owner",
+        "manager"
+      ],
+      "bundles": [
+        "growth",
+        "content"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "lead-capture-audit",
+      "title": "Lead capture audit",
+      "description": "Outreach stats + CRM pipeline + support + list growth = lead-funnel health.",
+      "persona": "all tiers · bundles: growth, support",
+      "rank": 1,
+      "superAdminOnly": false,
+      "content": "# Skill: Lead Capture Audit\n\n## Goal\nAudit the lead funnel end to end: outreach volume → captured leads → CRM pipeline\nmovement → conversation quality → email list growth. Find where leads leak.\n\n## Steps\n1. Confirm scope (app-id / brand) and window (default: last 30 days).\n2. questx (tileId \"quests\"): outreach/offer stats — impressions, starts, completions\n   for lead-gen quests and campaigns.\n3. twenty (tileId \"twenty\"): meta-tool flow (get_tool_catalog → learn_tools →\n   execute_tool). find_many_people with createdAt in the window (select as an\n   ARRAY, e.g. [\"id\",\"name\",\"createdAt\"]), find_many_opportunities for pipeline\n   value by stage; note stage-to-stage conversion.\n4. chatwoot (tileId \"chatwoot\"): new conversations in the window, first-response\n   time, open vs resolved — slow support kills warm leads.\n5. notifuse (tileId \"notifuse\"): notifuse_lists_list + notifuse_lists_stats — list\n   growth, unsubscribe rate, last-campaign open/click.\n6. Stitch the funnel: outreach → captured → CRM-qualified → active conversation →\n   subscribed. Compute the drop-off % at each step and name the leakiest one.\n\n## Hard rules\n- QuestX (tileId \"quests\") DAU/MAU numbers are a LEDGER PROXY (derived from reward-ledger activity, not true sessions) — always label them \"ledger-proxy DAU/MAU\" in any output.\n- Read-only. Never message a lead or edit CRM records from this skill.\n- Twenty find_many_* requires arguments.select as an ARRAY — never guess schemas;\n  learn_tools first.\n\n## Output format\nFunnel table (stage | count | conversion from prior | WoW trend) → leakiest stage\ndiagnosis → 3 concrete fixes ranked by effort/impact.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [
+        "growth",
+        "support"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "daily-pulse",
+      "title": "Daily pulse",
+      "description": "Per app: DAU, new users, revenue, alerts and the single biggest anomaly — in one minute.",
+      "persona": "all tiers",
+      "rank": 2,
+      "superAdminOnly": false,
+      "content": "# Skill: Daily Pulse\n\n## Goal\nThe one-minute morning read for an app-id: DAU, new users, revenue, firing alerts,\nand the single most important anomaly. Designed to run immediately with zero input.\n\n## Steps\n1. App-id = current portal scope (super admin: ask, or loop the main apps briefly).\n   Windows: yesterday vs the same weekday last week.\n2. nakama (tileId \"nakama\"): DAU + new users (for nakama-backed games); otherwise\n   ga4 (tileId \"ga4\") daily active users. questx numbers are ledger-proxy — label.\n3. Revenue: stripe (tileId \"stripe\") yesterday's net + revenuecat\n   (tileId \"revenuecat\") MRR delta.\n4. grafana (tileId \"grafana\"): grafana_alerts — anything firing that touches this\n   app's services.\n5. Scan for the top anomaly: biggest % mover across installs (appsflyer,\n   tileId \"appsflyer\"), traffic (ga4), retention (nakama\n   analytics_retention_curves), crashes (playstore tileId \"playstore\").\n6. Compose the pulse — numbers first, one line each, anomaly on top.\n\n## Hard rules\n- Nakama analytics_retention_cohort and analytics_engagement_score are UNREGISTERED RPCs — NEVER call them. Always use analytics_retention_curves and analytics_churn_risk instead.\n- QuestX (tileId \"quests\") DAU/MAU numbers are a LEDGER PROXY (derived from reward-ledger activity, not true sessions) — always label them \"ledger-proxy DAU/MAU\" in any output.\n- Read-only, fast: skip any source that errors (mark NO DATA) rather than retrying\n  repeatedly.\n\n## Output format\n5–8 lines max: \"⚠ anomaly\" line first (or \"no anomalies\"), then DAU | new users |\nrevenue | alerts, each with the vs-last-week delta. End with one suggested follow-up\nquestion.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [],
+      "appIds": []
+    },
+    {
+      "id": "anomaly-watch",
+      "title": "Anomaly watch",
+      "description": "Cross-MCP anomaly scan — every major metric vs its baseline, ranked by severity.",
+      "persona": "all tiers",
+      "rank": 2,
+      "superAdminOnly": false,
+      "content": "# Skill: Anomaly Watch\n\n## Goal\nScan every wired data source for metrics that moved abnormally vs their baseline and\nrank them by severity. Super admin: across ALL apps. Pinned owner: their app-ids only.\n\n## Steps\n1. Baseline: last 7 days vs the prior 21-day average (or the tool's closest\n   equivalent). Use run_agent_swarm (one agent per area) when scanning 3+ areas.\n2. Acquisition: appsflyer (tileId \"appsflyer\") installs + cost by source.\n3. Traffic: ga4 (tileId \"ga4\") users/sessions; gsc (tileId \"gsc\") clicks.\n4. Stores: playstore (tileId \"playstore\") crash/ANR + rating; appstore\n   (tileId \"appstore\") rating/review velocity.\n5. Engagement: nakama (tileId \"nakama\") DAU + analytics_retention_curves +\n   analytics_churn_risk deltas.\n6. Revenue: stripe (tileId \"stripe\") daily net; revenuecat (tileId \"revenuecat\")\n   MRR/active subs.\n7. Infra (super admin only): grafana (tileId \"grafana\") firing alerts; n8n\n   (tileId \"n8n\") failed executions; aws (tileId \"aws\") daily cost spike.\n8. Score each anomaly: severity = % deviation × business criticality (revenue >\n   retention > acquisition > infra noise). Report the top 5 with likely causes.\n\n## Hard rules\n- Nakama analytics_retention_cohort and analytics_engagement_score are UNREGISTERED RPCs — NEVER call them. Always use analytics_retention_curves and analytics_churn_risk instead.\n- QuestX (tileId \"quests\") DAU/MAU numbers are a LEDGER PROXY (derived from reward-ledger activity, not true sessions) — always label them \"ledger-proxy DAU/MAU\" in any output.\n- Read-only. Respect scope: never scan app-ids outside the signed allowlist.\n- No anomaly = say so plainly; never manufacture findings.\n\n## Output format\nRanked anomaly list: severity | metric | value vs baseline | app-id | likely cause |\nsuggested next step. Then \"Clean areas\" one-liner.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [],
+      "appIds": []
+    },
+    {
+      "id": "appsflyer-analyst",
+      "title": "AppsFlyer analyst",
+      "description": "Attribution deep-dives: installs, ROAS, cohorts, SKAN, OneLink — with correct query syntax.",
+      "persona": "all tiers · bundles: growth, analytics",
+      "rank": 3,
+      "superAdminOnly": false,
+      "content": "# Skill: AppsFlyer Analyst\n\n## Goal\nAnswer any attribution question with correctly-formed AppsFlyer queries — installs,\nROAS, LTV, retention cohorts, SKAN, OneLink and audiences.\n\n## Steps\n1. appsflyer (tileId \"appsflyer\"): get_apps first if the app_ids are unknown\n   (QuizVerse: com.intelliverse.quizverse / id6752571885).\n2. Core queries use fetch_aggregated_data with ONE nested \"query\" object:\n   {query:{start_date,end_date (yyyy-MM-dd), app_ids:[...], metrics:\n   [{metric_name:\"Installs\"},{metric_name:\"ROAS\"}], groupings:[\"Media source\"],\n   sort_by_metrics:[...], row_count}}. Valid metric names: Installs, ROAS, ROI,\n   Revenue, Cost, Sessions, Retention rate, ARPU, Conversion rate, Clicks,\n   Impressions, Loyal users, Uninstalls. Groupings: Media source, Campaign, Geo,\n   Date, Platform, Channel. \"Organic\" appears as a Media source row.\n3. iOS privacy traffic: skan_get_app_data. Deep links: get_onelink_templates.\n   Audiences: list_active_audiences. Config sanity: get_app_settings,\n   get_active_cost_integrations.\n4. Always compare against a prior period of equal length before concluding.\n\n## Hard rules\n- Read-only server. If a call 401s, the MCP token isn't seeded — point the user to\n  AppsFlyer HQ → Security Center → MCP token, then Admin → Connectors.\n- Never present attributed revenue as ground truth — recommend cross-checking\n  against stripe/revenuecat when the question is about money.\n\n## Output format\nThe numbers in a compact table, the query parameters used (so it's reproducible),\nthen interpretation in 3 bullets max.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [
+        "growth",
+        "analytics"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "ga4-analyst",
+      "title": "GA4 analyst",
+      "description": "Web/app traffic answers: users, sources, pages, events, realtime — scoped to the app-id.",
+      "persona": "all tiers · bundles: analytics",
+      "rank": 3,
+      "superAdminOnly": false,
+      "content": "# Skill: GA4 Analyst\n\n## Goal\nFast, correct answers from Google Analytics 4 for one app-id: traffic, sources,\nlanding pages, events, conversions, realtime.\n\n## Steps\n1. ga4 (tileId \"ga4\"): every tool takes appId — default it to the current portal\n   scope; never query another app-id unless the user (in scope) asks.\n2. Traffic questions: the summary tool for users/sessions/engagement over the\n   window, then sources and top-pages breakdowns.\n3. Behavior questions: events + conversions tools; realtime for \"right now\".\n4. Always pair a metric with its prior-period delta and call out mix shifts\n   (paid vs organic) rather than raw totals alone.\n5. If a call errors or the app isn't onboarded: run ga4_setup_status and walk the\n   user through fixing it — ga4_onboard_app saves the property id from chat\n   (persists instantly). Never tell them to use kubectl.\n\n## Hard rules\n- Read-only. Stay inside the signed app-id scope.\n- Sampled/thresholded data: if numbers look suspiciously round or missing, say GA4\n  may be thresholding small segments.\n\n## Output format\nMetric table with deltas, then max 3 insight bullets, then one suggested follow-up.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [
+        "analytics"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "gsc-seo-audit",
+      "title": "GSC SEO audit",
+      "description": "Organic search health: queries, pages, CTR opportunities, sitemap/indexing issues.",
+      "persona": "all tiers · bundles: growth, analytics",
+      "rank": 3,
+      "superAdminOnly": false,
+      "content": "# Skill: GSC SEO Audit\n\n## Goal\nAudit organic Google Search performance for one app-id and surface the highest-value\nSEO fixes: CTR opportunities, decaying pages, indexing problems.\n\n## Steps\n1. gsc (tileId \"gsc\"): tools take appId — default to the current portal scope.\n2. Overview: clicks, impressions, CTR, avg position for the last 28 days vs the\n   prior 28.\n3. Queries: top queries by impressions with position 4–15 and below-median CTR =\n   the \"striking distance\" list (title/meta rewrites win here).\n4. Pages: pages losing clicks period-over-period (content decay) and pages with\n   impressions but near-zero clicks.\n5. Hygiene: sitemap status + indexing/coverage issues the API exposes.\n6. Optionally cross-reference open-seo (tileId \"open-seo\") keyword research for\n   the striking-distance queries.\n7. If anything errors or the app isn't onboarded, run gsc_setup_status and fix it\n   in chat via gsc_onboard_app (sc-domain:... persists instantly).\n\n## Hard rules\n- Read-only. Stay inside the signed app-id scope.\n- GSC data lags ~2 days — never treat the last 48h as complete.\n\n## Output format\nScorecard (clicks/impressions/CTR/position, WoW) → striking-distance table (query |\npage | position | CTR) → decaying pages → indexing issues → top 5 actions.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [
+        "growth",
+        "analytics"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "stripe-finance",
+      "title": "Stripe finance",
+      "description": "Revenue, subscriptions, invoices, refunds and payout reconciliation — read-only.",
+      "persona": "all tiers · bundles: revenue",
+      "rank": 3,
+      "superAdminOnly": false,
+      "content": "# Skill: Stripe Finance\n\n## Goal\nAnswer finance questions from Stripe precisely: revenue net of fees/refunds,\nsubscription movement, invoice status, payout reconciliation.\n\n## Steps\n1. stripe (tileId \"stripe\"): stripe_revenue_summary for the requested window —\n   gross, fees, refunds, net. Amounts are ALREADY in major units (dollars).\n2. Subscriptions: list/search subscription tools for new, active, canceled in the\n   window; compute net movement.\n3. Cash timing: payouts vs the revenue period (revenue ≠ cash landed this week).\n4. Disputes/refunds: list refunds + disputes in the window; flag anything trending.\n5. Customer-level: search charges/subscriptions by email when asked about one\n   customer.\n6. Cross-check with revenuecat (tileId \"revenuecat\") when the question spans\n   mobile IAP — Stripe alone under-counts app revenue.\n\n## Hard rules\n- Read-only: the Stripe MCP exposes no write tools; never imply you refunded or\n  changed anything.\n- Always state the currency and window with every figure. Never re-divide amounts\n  by 100.\n\n## Output format\nRequested figures in a small table with the window and currency, then a 2–3 bullet\nnarrative (what moved and why it matters).",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [
+        "revenue"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "chatwoot-inbox-zero",
+      "title": "Chatwoot inbox zero",
+      "description": "Burn the support queue down: classify, draft, batch-approve, resolve.",
+      "persona": "tiers: owner/manager · bundles: support",
+      "rank": 3,
+      "superAdminOnly": false,
+      "content": "# Skill: Chatwoot Inbox Zero\n\n## Goal\nGet the support inbox to zero fast: classify every open conversation, draft a reply\nor a close, batch the approvals, execute what's approved.\n\n## Steps\n1. chatwoot (tileId \"chatwoot\"): chatwoot_list_conversations status open for the\n   scope's accountId (tenant maps to the app-id). Oldest first.\n2. Classify each: quick-answer, needs-context, stale (no customer reply > 7 days),\n   spam, escalation.\n3. Quick-answers: draft the reply immediately (≤100 words, plain language).\n4. Needs-context: enrich first — nakama (tileId \"nakama\") player inspect for game\n   issues, questx (tileId \"quests\") redemption status for rewards, stripe\n   (tileId \"stripe\") charge search for billing.\n5. Stale: draft a gentle closing message. Spam: propose resolve without reply.\n6. Present ONE batch table of proposed actions and WAIT.\n7. Execute only approved rows: chatwoot_send_message and chatwoot_toggle_status;\n   report each result.\n\n## Hard rules\n- No message is sent and no status toggled without approval of that specific row.\n- Never promise refunds/compensation in drafts; escalate fraud, chargeback and\n  legal-threat conversations instead of drafting.\n\n## Output format\nBatch table: id | customer | waiting | class | draft (truncated) | proposed action.\nThen an approval prompt, and after execution a per-row result list.",
+      "starterPrompts": [],
+      "tiers": [
+        "owner",
+        "manager"
+      ],
+      "bundles": [
+        "support"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "grafana-oncall",
+      "title": "Grafana on-call",
+      "description": "Firing alerts triaged: what's real, what's noise, which dashboard proves it.",
+      "persona": "all tiers · bundles: engineering",
+      "rank": 3,
+      "superAdminOnly": false,
+      "content": "# Skill: Grafana On-Call\n\n## Goal\nTriage the alerting surface like an on-call engineer: what's firing, what's real,\nwhat's noise, and the exact dashboard/query that proves it. Diagnosis only.\n\n## Steps\n1. grafana (tileId \"grafana\"): grafana_alerts — list firing + pending alerts with\n   ages. Group duplicates by service.\n2. For each real alert: grafana_search for the owning dashboard, then\n   grafana_query_prometheus with a focused expr (error rate, saturation, latency)\n   for the last 3h vs 24h baseline. Hand out grafana_dashboard_url links.\n3. Classify: ACTIONABLE (breaching + user-visible), WATCH (breaching, contained),\n   NOISY (flapping/stale rule — recommend a threshold fix).\n4. For actionable alerts, check blast radius via the intelliverse gateway\n   (tileId \"intelliverse\") k8s pod/deployment status in the affected namespace.\n5. Recommend the next step per alert (owner, likely fix) — for remediation itself,\n   hand off to the incident-first-response skill.\n\n## Hard rules\n- Read-only: no silencing, no rule edits, no restarts from this skill.\n- Never declare an alert noise without showing the flapping/stale evidence.\n\n## Output format\nAlert table: alert | service | firing since | class | evidence link | next step.\nThen \"silence-worthy noise\" list with the suggested rule changes (not applied).",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [
+        "engineering"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "n8n-automation-ops",
+      "title": "n8n automation ops",
+      "description": "Workflow fleet health: failures, root causes, and gated activate/deactivate.",
+      "persona": "all tiers · bundles: engineering",
+      "rank": 3,
+      "superAdminOnly": false,
+      "content": "# Skill: n8n Automation Ops\n\n## Goal\nKeep the automation fleet healthy: which workflows fail, why, and what to pause or\nresume — with activation changes gated.\n\n## Steps\n1. n8n (tileId \"n8n\"): n8n_list_workflows{active:true} for the running fleet, then\n   n8n_list_executions{status:\"error\"} for recent failures.\n2. Per failing workflow: n8n_get_execution{id} for the failing node + error message;\n   n8n_get_workflow{id} to understand what the workflow feeds (many pipe into\n   content publishing, lead capture, notifications).\n3. Classify failures: credential/auth, upstream API change, data-shape, transient.\n4. Impact: state what each failing workflow SHOULD be producing and what's silently\n   not happening while it fails.\n5. Propose per workflow: leave running / n8n_deactivate_workflow (stop error spam) /\n   fix suggestion. WAIT for approval on any activation change.\n6. Execute only approved n8n_activate_workflow / n8n_deactivate_workflow calls and\n   verify with a fresh n8n_list_workflows.\n\n## Hard rules\n- n8n_activate_workflow and n8n_deactivate_workflow are WRITE — explicit per-workflow\n  approval in this chat first.\n- Never edit workflow definitions; propose the change for a human or the coding crew.\n\n## Output format\nFleet summary (active | failing | error rate) → failure table (workflow | failing\nnode | error class | impact | proposal) → approval ask → post-action verification.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [
+        "engineering"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "nakama-player-detective",
+      "title": "Nakama player detective",
+      "description": "One player, full story: profile, wallet, events, purchases — for support or fraud.",
+      "persona": "all tiers · bundles: support, content",
+      "rank": 3,
+      "superAdminOnly": false,
+      "content": "# Skill: Nakama Player Detective\n\n## Goal\nReconstruct one player's full story — identity, wallet, progression, events,\npurchases — for a support case or a fraud check. Read-only by default.\n\n## Steps\n1. nakama (tileId \"nakama\"): nakama_player_search{username} (or take a user_id\n   directly), then nakama_player_inspect{user_id} for the profile.\n2. Money trail: nakama_wallet_view{user_id} — balances plus the transaction ledger;\n   flag impossible earning velocity or unexplained grants.\n3. Timeline: nakama_events_timeline{user_id} — sessions, progression, purchases in\n   order; correlate with the complaint window.\n4. State: nakama_storage_list{collection} for the player's relevant collections\n   (inventory, progress, settings).\n5. Cross-system: questx (tileId \"quests\") redemption history for reward disputes;\n   revenuecat (tileId \"revenuecat\") subscription lookup by app user id for IAP\n   disputes.\n6. Conclude: what actually happened, with the evidence line per claim. If the case\n   needs compensation, PROPOSE the exact nakama_wallet_grant / nakama_mailbox_send\n   payload and WAIT.\n\n## Hard rules\n- Nakama analytics_retention_cohort and analytics_engagement_score are UNREGISTERED RPCs — NEVER call them. Always use analytics_retention_curves and analytics_churn_risk instead.\n- nakama_wallet_grant, nakama_mailbox_send and nakama_flag_toggle are WRITE —\n  explicit approval of the exact payload first. Investigation itself is read-only.\n- Present player PII minimally: ids and the fields relevant to the case only.\n\n## Output format\nPlayer card (id, created, last seen, wallet) → evidence timeline → verdict →\n(if warranted) proposed compensation payload + approval ask.",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [
+        "support",
+        "content"
+      ],
+      "appIds": [
+        "quizverse",
+        "questx",
+        "intelliverse"
+      ]
+    },
+    {
+      "id": "content-engine-sprint",
+      "title": "Content engine sprint",
+      "description": "Brief → pipeline run → creatives wired into store screenshots and ad campaigns, end to end.",
+      "persona": "tiers: owner/manager · bundles: content, growth",
+      "rank": 1,
+      "superAdminOnly": false,
+      "content": "# Skill: Content Engine Sprint\n\n## Goal\nTurn one creative brief into deployed assets end to end using the content-factory\nMCP (tileId \"content-factory\"): generate media with a pipeline, then wire the\noutputs into app store screenshots and/or live ad campaigns. Every write is gated.\n\n## Steps\n1. Collect the brief: target app (bundle_id via list_apps), brand (list_brands →\n   get_brand for voice/visual identity), what to produce, where it should land\n   (store screenshots, ad creatives, social).\n2. Pick the pipeline: trigger_pipeline supports video, ad, ad_banners,\n   viral_shorts, blog, song, music_video, short_movie, learning_series, comic,\n   character_2d/3d, script2video and more. Show the exact\n   {pipeline_type, args, brand_id, game_id, tags} config and WAIT — this is a\n   WRITE that consumes GPU/LLM budget.\n3. After approval, trigger and track: get_pipeline_task{task_id} until complete,\n   then get_pipeline_task_output{task_id}. Outputs live in S3 under\n   working_dir/{pipeline_type}/{run_id}/ — list_s3_objects{prefix} and\n   get_presigned_url{s3_key} to let the user preview before anything deploys.\n4. Wire to destinations (each its own gated write, only after the user has SEEN\n   the previews):\n   - Store screenshots: wire_run_to_screenshots{pipeline_type, run_id, bundle_id,\n     locale, platforms} (replace_existing false unless told otherwise).\n   - Ad creatives: wire_run_to_campaign{pipeline_type, run_id, provider,\n     campaign_id} — list_campaigns first to pick the target.\n   - Social: schedule_run_to_channels{task_id, channels} via the run lifecycle.\n5. Close the loop: set_run_lifecycle{task_id, lifecycle:\"published\"|\"scheduled\",\n   channels} so the run is tracked, and report where every asset landed.\n\n## Hard rules\n- trigger_pipeline, wire_run_to_*, schedule_run_to_channels, deploy_screenshots\n  are WRITE: explicit approval of the exact payload in THIS chat, one at a time.\n- Never deploy assets the user hasn't previewed via presigned URLs.\n- One pipeline run per approval — no speculative batch generation.\n\n## Output format\nBrief recap → proposed pipeline config (approval ask) → run status → preview\nlinks → per-destination wiring plan (approval ask each) → final \"what landed\nwhere\" table.",
+      "starterPrompts": [],
+      "tiers": [
+        "owner",
+        "manager"
+      ],
+      "bundles": [
+        "content",
+        "growth"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "content-pipeline-producer",
+      "title": "Content pipeline producer",
+      "description": "Pick the right content-factory pipeline, run it with brand context, track it, hand over outputs.",
+      "persona": "tiers: owner/manager · bundles: content",
+      "rank": 3,
+      "superAdminOnly": false,
+      "content": "# Skill: Content Pipeline Producer\n\n## Goal\nOperate the content-factory pipelines (tileId \"content-factory\") like a producer:\nchoose the right pipeline for the ask, run it with correct brand/game context,\ntrack it to completion, and hand over the outputs.\n\n## Steps\n1. Map the ask to a pipeline_type: long-form video → video / documentary /\n   tvseries; short social video → viral_shorts / short_movie; ads → ad /\n   ad_banners; audio/music → song / music_video / podcast_series / lyrics;\n   written → blog / ebook / comic; characters & interactive → character_2d /\n   character_3d / interactive_avatar / interactive_story; store ops →\n   app_store_deploy / screenshot_localize / asc_release / app_catalog_enrich.\n2. Context: list_brands → get_brand{brand_id} (voice, visual identity) or\n   list_games{game_id} for game content. Always pass brand_id/game_id so the\n   pipeline stays on-brand; add tags for later retrieval.\n3. Show the full trigger_pipeline config and WAIT for approval (it costs real\n   compute). Then trigger and report the returned task_id.\n4. Track: get_pipeline_task{task_id}; when done, get_pipeline_task_output.\n   For media, list_s3_objects{prefix:\"working_dir/{pipeline_type}/{run_id}/\"}\n   and get_presigned_url per asset so the user can view everything.\n5. Prior work first: before generating anything, list_pipeline_tasks{tag} —\n   if a recent run already covers the ask, offer its outputs instead.\n6. Mark intent: set_run_lifecycle{task_id, lifecycle:\"planned\"|\"unpublished\"} so\n   the run doesn't rot untracked.\n\n## Hard rules\n- trigger_pipeline is WRITE and costs money — explicit approval of the exact\n  config first, every time.\n- Reuse before regenerate: always check list_pipeline_tasks for an existing run.\n- Never mark a run \"published\" from this skill — publishing has its own gated\n  flow (content sign-off skill).\n\n## Output format\nPipeline recommendation + config → (approved) task_id → status updates →\noutput list with presigned preview links → suggested next step (sign-off,\nscreenshots, or campaign wiring).",
+      "starterPrompts": [],
+      "tiers": [
+        "owner",
+        "manager"
+      ],
+      "bundles": [
+        "content"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "content-signoff-queue",
+      "title": "Content sign-off queue",
+      "description": "Review generated content awaiting approval: preview, approve to peak-hour publish, or reject.",
+      "persona": "tiers: owner/manager · bundles: content",
+      "rank": 3,
+      "superAdminOnly": false,
+      "content": "# Skill: Content Sign-off Queue\n\n## Goal\nWork the content-factory approval queue (tileId \"content-factory\"): review every\npending item with real previews, then approve (auto-publishes at the next\npeak-hour slot via Postiz) or reject with a reason.\n\n## Steps\n1. list_approval_queue{status:\"pending\"} — the backlog, oldest first.\n2. Per item, build a real preview: get_pipeline_task_output{task_id}, plus\n   list_s3_objects + get_presigned_url for the media so the user can actually\n   watch/see what they're approving.\n3. Sanity-check each item against its channel: right aspect/format, on-brand\n   (get_brand), no placeholder text, title present.\n4. Present the review table and WAIT for per-item decisions.\n5. Execute only decided rows: approve_and_publish{task_id, action:\"approve\"}\n   (backend schedules the next peak-hour slot — 9AM/12PM/3PM/6PM/9PM ET) or\n   reject_content{queue_id, reason}.\n6. Confirm the schedule: get_publish_calendar for the coming week and\n   get_publish_history{limit:10} to show what just landed where.\n\n## Hard rules\n- approve_and_publish and reject_content are WRITE: explicit per-item approval\n  in THIS chat. Approving means it WILL be published — say so plainly.\n- Never approve an item the user hasn't previewed via the links you provided.\n- Rejections always carry a concrete reason (it feeds pipeline improvement).\n\n## Output format\nQueue table: queue_id | task_id | channel | title | preview link | check result |\nrecommendation. Then the approval ask, and after execution the updated publish\ncalendar for the week.",
+      "starterPrompts": [],
+      "tiers": [
+        "owner",
+        "manager"
+      ],
+      "bundles": [
+        "content"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "app-release-shipper",
+      "title": "App release shipper",
+      "description": "Ship a store release: snapshot, version, localized metadata, screenshots, review submission.",
+      "persona": "tiers: owner/manager · bundles: content",
+      "rank": 3,
+      "superAdminOnly": false,
+      "content": "# Skill: App Release Shipper\n\n## Goal\nShip an App Store / Play Store release through the content-factory App Release\nManager (tileId \"content-factory\") safely: snapshot first, then version,\nlocalized metadata, screenshots, and review submission — each step gated.\n\n## Steps\n1. Baseline: list_apps → get_app_full_status{bundle_id} (stores, campaigns,\n   analytics in one view) and get_release_dashboard for context.\n2. SAFETY FIRST: capture_snapshot{bundle_id} before touching anything — it's the\n   rollback point (restore_snapshot{bundle_id, snapshot_id, dry_run:true} to\n   preview a rollback later).\n3. Version: list_releases{bundle_id} for the current state, then propose\n   create_release{bundle_id, version, platform, release_notes}. WAIT.\n4. Metadata: get_app_localization{bundle_id}; for new locales\n   generate_localization / bulk_generate_localizations{bundle_id} (LLM-generated\n   — show the copy before update_localization pushes it), or\n   full_localize_and_deploy for the whole flow.\n5. Screenshots: list_screenshots{bundle_id}; deploy via deploy_screenshots\n   {bundle_id, locale, urls} (use get_presigned_url on S3 keys) or\n   wire_run_to_screenshots from a pipeline run.\n6. TestFlight lane when asked: list_builds → distribute_build_to_testflight,\n   set_what_to_test, submit_build_for_beta_review.\n7. Submit: submit_for_review{bundle_id, version, platforms}. For iOS rollouts\n   prefer create_phased_release, then control_phased_release to pause/resume.\n8. Verify: get_app{bundle_id} + diff_snapshots{bundle_id, snapshot_a, snapshot_b}\n   against the step-2 snapshot to show exactly what changed.\n\n## Hard rules\n- create_release, update_localization, deploy_screenshots, submit_for_review,\n  publish_app, update_store_listing, restore_snapshot (dry_run:false) and all\n  TestFlight writes are WRITE: explicit approval of the exact payload each time.\n- NEVER submit_for_review in the same approval as content changes — the user\n  reviews the final state first.\n- No snapshot = no writes. Step 2 is mandatory.\n\n## Output format\nCurrent-state summary → step-by-step plan with each pending write flagged →\nper-step execution results → final snapshot diff (\"what this release changed\").",
+      "starterPrompts": [],
+      "tiers": [
+        "owner",
+        "manager"
+      ],
+      "bundles": [
+        "content"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "ad-campaign-pilot",
+      "title": "Ad campaign pilot",
+      "description": "Launch, evaluate and rebalance ad campaigns across providers via the Ads Campaign Engine.",
+      "persona": "tiers: owner/manager · bundles: growth",
+      "rank": 3,
+      "superAdminOnly": false,
+      "content": "# Skill: Ad Campaign Pilot\n\n## Goal\nRun paid UA through the content-factory Ads Campaign Engine (tileId\n\"content-factory\"): launch across providers, evaluate what's working, and\nrebalance budget — with every spend-affecting call gated.\n\n## Steps\n1. Ground truth first: get_analytics_overview{date_range:\"last_30d\"},\n   get_analytics_by_provider, and get_app_ad_performance{bundle_id} for the\n   target app. list_campaigns for what's already live.\n2. Launching: prefer launch_smart_campaign{bundle_id, daily_budget, countries,\n   target_cpi} (starts on every connected provider, splits budget, the optimizer\n   reallocates later) over per-provider create_campaign. test_ad_provider first\n   if a provider's connection is in doubt.\n3. Creatives: wire_run_to_campaign from a content-factory pipeline run, or\n   upload_creative directly; generate_ad_copy{provider, campaign_id} for\n   headlines/descriptions/keywords.\n4. After 3–7 days of data: evaluate_campaign_performance{bundle_id} — per\n   provider verdicts vs target CPI. compare_campaigns for head-to-heads;\n   get_campaign_analytics / get_geo_analytics to drill in.\n5. Rebalance: optimize_budget{bundle_id} (SHOW the proposed reallocation before\n   applying), pause_campaign for money-losers, activate_campaign to resume.\n   get_optimization_history shows how past decisions played out.\n6. Report: generate_ad_report{report_type} → get_ad_report / export_report_csv\n   for a shareable artifact.\n\n## Hard rules\n- launch_smart_campaign, auto_pilot_campaign, create_full_campaign,\n  create_campaign, update_campaign, optimize_budget, pause/activate_campaign,\n  upload_creative and wire_run_to_campaign SPEND OR MOVE REAL MONEY: explicit\n  approval of budget, countries and target CPI in THIS chat before each call.\n- Never launch without stating the daily budget ceiling back to the user.\n- Don't evaluate on <3 days of data — say the data is too young instead.\n- Cross-check attributed results against appsflyer (tileId \"appsflyer\") when\n  the decision is big (kill/scale a provider).\n\n## Output format\nPerformance table (provider | spend | installs | CPI | CTR | verdict) →\nproposed actions with budget deltas (approval ask) → executed changes →\nnext-check date.",
+      "starterPrompts": [],
+      "tiers": [
+        "owner",
+        "manager"
+      ],
+      "bundles": [
+        "growth"
+      ],
+      "appIds": []
+    },
+    {
+      "id": "data-visualizer",
+      "title": "Data visualizer",
+      "description": "Turn any metric into a hosted chart, dashboard, animated page or short video, rendered inline in chat.",
+      "persona": "all tiers",
+      "rank": 2,
+      "superAdminOnly": false,
+      "content": "# Skill: Data visualizer\n\n## Goal\nTurn the user's ask (or data already in this chat) into a hosted visualization\nvia the viz renderer (tileId \"viz\"): a chart image, an interactive dashboard\npage, an animated HTML page, or a short MP4 — and show it inline in the chat.\n\n## Steps\n1. Get real numbers FIRST. If the user didn't paste data, pull it from the\n   relevant analytics MCPs before rendering anything: ga4 (traffic), gsc\n   (search), appsflyer/adjust (installs/ROAS), stripe/revenuecat (revenue),\n   nakama (retention/economy: analytics_retention_curves, analytics_churn_risk),\n   questx (rewards — label DAU/MAU \"ledger-proxy\"), aws (costs). Never chart\n   invented numbers; if data is unavailable, say so and ask for it.\n2. Pick the right tool on tileId \"viz\" (via admin_call_mcp):\n   - One chart as a picture → viz_render_image{title, chart:{type:\"bar|line|pie|\n     doughnut|radar\", title, labels:[...], series:[{label,data:[...]}]}}.\n   - Several charts + KPI stats → viz_render_dashboard{title, subtitle,\n     kpis:[{label,value,delta}], charts:[{title,chart},...], snapshot:true}.\n   - Interactive/animated page → viz_render_html{scene|chart|html}. Scene spec:\n     {title, aspect, scenes:[{heading, body, bullets, chart, durationSec}]}.\n   - Motion story (only when movement adds value) → viz_render_video{scene}.\n     Keep it ≤ 20s; each scene 3-5s.\n3. Compose thoughtfully: short titles, real deltas on KPIs, one idea per chart,\n   ≤ 6 charts per dashboard.\n4. The tool returns {ok, viz:true, type, url}. The chat renders it inline\n   automatically — additionally include the url as a markdown link in your\n   reply (\"Open full size / open in new tab\").\n5. If a render fails, the error names the failing renderer (chromium/ffmpeg/\n   remotion/s3) — report it plainly and fall back: video→html, html→image.\n\n## Hard rules\n- ALWAYS return the hosted URL in your reply — never claim an artifact exists\n  without its link.\n- Prefer static HTML (viz_render_html / viz_render_dashboard) for anything\n  interactive; use video ONLY when motion adds value (trends over time,\n  story-style summaries).\n- These tools only CREATE new artifacts (no mutations) — safe without write\n  confirmation, but still tell the user what you're rendering.\n- URLs are presigned and expire in ~7 days — mention that when the user wants\n  something permanent.\n- Remotion compositions that reference video clips can't render here; say the\n  content-factory Remotion service is required and offer a scene-spec video\n  instead.\n\n## Output format\nOne-line summary of what the data says → the inline artifact (rendered\nautomatically) → markdown link to open it in a new tab → offer a follow-up\n(different chart type, add series, make it a dashboard/video).",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [],
+      "appIds": []
+    },
+    {
+      "id": "qr-campaign-manager",
+      "title": "QR campaign manager",
+      "description": "Create styled QR codes, retarget smartlinks without reprinting, build landing pages, read scan analytics.",
+      "persona": "all tiers",
+      "rank": 2,
+      "superAdminOnly": false,
+      "content": "# Skill: QR campaign manager\n\n## Goal\nRun the full QR lifecycle on QR Studio (tileId \"qrstudio\" via admin_call_mcp):\ndesign and create codes, keep printed codes alive by retargeting their\nsmartlinks, attach hosted landing pages, and report on scans — with writes\nalways confirmed first.\n\n## Key concept\nDynamic QR types (website_url, app, menu, coupons, event, multiple_links, ...)\nencode a SMARTLINK (dl.intelli-verse-x.ai/<slug>), not the destination. The\nprinted code never changes; qr_update{targetUrl} repoints it any time. Static\ntypes (wifi, vcard, email, sms, ...) encode content directly and cannot be\nretargeted — say which kind fits before creating.\n\n## Steps\n1. Orient: qr_list (search by name/slug) → qr_get for detail. For analytics\n   scope, take tenantId from a listed row — qr_analytics_* ALWAYS need qrId or\n   tenantId (the service account is a cross-tenant admin with no tenant).\n2. Create: agree name, type, destination and styling first. Show a\n   qr_preview (no save) for styling decisions; then qr_create with the agreed\n   design {size, dots, corners, foreground/background, logo, frame}. For\n   batches, qr_bulk_create with CSV (name,type,target_url[,slug]) and one\n   shared design — confirm the row count before running.\n3. Show the result: qr_image_url returns a viewable PNG/SVG link the chat\n   renders inline; qr_download_url for a print-ready attachment.\n4. Landing pages: for dynamic QRs without a single destination URL,\n   qr_landing_upsert builds the hosted page (themeJson + ordered blocksJson:\n   heading, text, image, links, coupon, menu, event...). publish:true makes it\n   live at the smartlink. Preview the block structure with the user first.\n5. Measure: qr_scans_summary per code; qr_analytics_overview /\n   qr_analytics_timeseries / qr_analytics_breakdown{dimension: countries|\n   cities|devices|browsers|os|referrers|utm} for dashboards;\n   qr_analytics_export for raw CSV. Pair with the data-visualizer skill to\n   chart results.\n6. Integrate: qr_webhook_create pushes scan events to any HTTPS endpoint;\n   qr_apikey_create issues qrk_ keys for the public REST API (relay the\n   plaintext token immediately — it is shown exactly once).\n\n## Hard rules\n- qr_create / qr_update / qr_delete / qr_bulk_create / qr_landing_upsert /\n  qr_webhook_* / qr_apikey_* are WRITES — explicit user confirmation in THIS\n  chat, every time. qr_delete kills printed codes permanently; require the\n  user to name the code being deleted.\n- Never invent scan numbers — analytics come from the tools, scoped by\n  qrId/tenantId.\n- Suggest pausing (status:\"paused\") instead of deleting when a code might\n  come back.\n\n## Output format\nWhat exists / what changed → inline image link (for created/updated codes) →\nscan headline numbers → suggested next step (retarget, landing page, deeper\nanalytics).",
+      "starterPrompts": [],
+      "tiers": [],
+      "bundles": [],
+      "appIds": []
+    }
+  ]
+}

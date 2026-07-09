@@ -1,0 +1,348 @@
+{
+  "generatedAt": "2026-07-09T05:32:04.212Z",
+  "source": "admin-mcp/registry.json",
+  "items": [
+    {
+      "id": "notifuse",
+      "label": "Email & push campaigns",
+      "blurb": "Send marketing emails and push notifications, track opens.",
+      "group": "Talk to people",
+      "mcpUrl": "https://notifuse-mcp.intelli-verse-x.ai/mcp",
+      "domain": "notifuse-mcp.intelli-verse-x.ai",
+      "mcpAuthHint": "Bearer = Notifuse API key. Default key pre-wired in chat (workspace: intelliversex)."
+    },
+    {
+      "id": "whatsapp",
+      "label": "WhatsApp Business (OpenBSP)",
+      "blurb": "Send and reply on WhatsApp via the Evolution panel.",
+      "group": "Talk to people",
+      "mcpUrl": "https://openbsp-mcp.intelli-verse-x.ai/",
+      "domain": "openbsp-mcp.intelli-verse-x.ai",
+      "mcpAuthHint": "Bearer = OpenBSP API key. Default key pre-wired in chat."
+    },
+    {
+      "id": "fonoster",
+      "label": "Make / receive phone calls",
+      "blurb": "VoIP — outbound calls, inbound IVRs, recordings.",
+      "group": "Talk to people",
+      "mcpUrl": "https://fonoster-mcp.intelli-verse-x.ai/",
+      "domain": "fonoster-mcp.intelli-verse-x.ai",
+      "mcpAuthHint": "Bearer = accessKeyId:apiKey:apiSecret (Workspace → API Keys)"
+    },
+    {
+      "id": "postiz",
+      "label": "Schedule a social-media post (Postiz)",
+      "blurb": "Schedule on Instagram, X, LinkedIn, TikTok from one calendar.",
+      "group": "Talk to people",
+      "mcpUrl": "https://postiz-mcp.intelli-verse-x.ai/",
+      "domain": "postiz-mcp.intelli-verse-x.ai",
+      "mcpAuthHint": "Postiz wrapper MCP (org key baked in): postiz_list_integrations, postiz_list_posts, postiz_find_slot, postiz_create_post, postiz_upload_from_url, postiz_analytics. Use admin_call_mcp tileId 'postiz'."
+    },
+    {
+      "id": "twenty",
+      "label": "CRM — contacts & deals (Twenty)",
+      "blurb": "Track people, companies, and your sales pipeline.",
+      "group": "Talk to people",
+      "mcpUrl": "https://crm.intelli-verse-x.ai/mcp",
+      "domain": "crm.intelli-verse-x.ai",
+      "mcpAuthHint": "Bearer = Twenty API key (Settings → Developers → API Keys)"
+    },
+    {
+      "id": "chatwoot",
+      "label": "Shared inbox (Chatwoot)",
+      "blurb": "One inbox for email, chat, and social conversations with customers.",
+      "group": "Talk to people",
+      "mcpUrl": "https://chatwoot-mcp.intelli-verse-x.ai/",
+      "domain": "chatwoot-mcp.intelli-verse-x.ai",
+      "mcpAuthHint": "Bearer = Chatwoot access token (Profile → Access Token)"
+    },
+    {
+      "id": "beehiiv",
+      "label": "Newsletters (beehiiv)",
+      "blurb": "Grow and send newsletters; manage subscribers and segments.",
+      "group": "Talk to people",
+      "mcpUrl": "https://mcp.beehiiv.com/mcp",
+      "domain": "mcp.beehiiv.com",
+      "mcpAuthHint": "Official beehiiv MCP (OAuth). Self-hosted alt: beehiiv-mcp.intelli-verse-x.ai (Bearer = API key)"
+    },
+    {
+      "id": "telnyx",
+      "label": "Telephony & SMS APIs (Telnyx)",
+      "blurb": "Programmable voice, SMS, and numbers. Portal for config; MCP for agents.",
+      "group": "Talk to people",
+      "mcpUrl": "https://telnyx-mcp.intelli-verse-x.ai/",
+      "domain": "telnyx-mcp.intelli-verse-x.ai",
+      "mcpAuthHint": "Focused wrapper MCP (send SMS, numbers, balance, history). Default key pre-wired; override with Bearer."
+    },
+    {
+      "id": "stitch",
+      "label": "AI UI design (Google Stitch)",
+      "blurb": "Design app screens and web UIs from a text prompt — generate, iterate, export clean HTML/CSS or paste to Figma. Free Google Labs tool; the copilot can drive it via MCP once a key is connected.",
+      "group": "Make content",
+      "mcpUrl": "https://stitch.googleapis.com/mcp",
+      "domain": "stitch.googleapis.com",
+      "mcpAuthHint": "Google Stitch official hosted MCP. Auth header X-Goog-Api-Key = Stitch API key (stitch.withgoogle.com → account settings). Tools: list_projects, create_project, list_screens, get_screen, generate_screen_from_text, edit_screens. Use admin_call_mcp tileId 'stitch'."
+    },
+    {
+      "id": "qrstudio",
+      "label": "Generate QR codes",
+      "blurb": "Dynamic + static QR codes with designer styling, retargetable smartlinks, hosted landing pages and per-scan analytics.",
+      "group": "Make content",
+      "mcpUrl": "http://qr-mcp.aicart.svc.cluster.local/",
+      "domain": "qr-mcp.aicart.svc.cluster.local",
+      "mcpAuthHint": "Wrapper MCP (31 tools, full QR Studio coverage): qr_list/qr_get (start here), qr_create/qr_update/qr_delete (dynamic QRs stay retargetable after printing), qr_preview + qr_render (styled previews without saving), qr_bulk_create (CSV), qr_image_url/qr_download_url (S3 links), qr_landing_get/upsert (hosted landing pages), qr_webhooks_* (scan events), qr_scans_* + qr_analytics_overview/timeseries/breakdown/export (analytics — default to the house tenant; pass qrId or tenantId from a qr_list row to scope elsewhere), qr_apikeys_* (public REST keys), qr_asset_upload_presign/qr_asset_confirm/qr_assets_list/qr_asset_delete (logo + media uploads for designs and landing pages), qr_payload_build, qr_whoami, qr_health. Service-account JWT pre-wired; no token needed. In-cluster only — use admin_call_mcp tileId 'qrstudio'."
+    },
+    {
+      "id": "leantime",
+      "label": "Project plans (LeanTime)",
+      "blurb": "",
+      "group": "Plan & track work",
+      "mcpUrl": "https://leantime-mcp.intelli-verse-x.ai/rpc",
+      "domain": "leantime-mcp.intelli-verse-x.ai",
+      "mcpAuthHint": "Bearer = Leantime API key. Default key pre-wired in chat."
+    },
+    {
+      "id": "n8n",
+      "label": "Build an automation (n8n)",
+      "blurb": "Drag-and-drop workflow automation.",
+      "group": "Plan & track work",
+      "mcpUrl": "https://n8n-mcp.intelli-verse-x.ai/",
+      "domain": "n8n-mcp.intelli-verse-x.ai",
+      "mcpAuthHint": "Wrapper MCP: list/inspect workflows, activate/deactivate, inspect executions. Default scoped key pre-wired."
+    },
+    {
+      "id": "nakama-console",
+      "label": "Player accounts (Nakama Console)",
+      "blurb": "Find a player, ban / unban, look at leaderboards.",
+      "group": "Game ops",
+      "mcpUrl": "https://nakama-mcp.intelli-verse-x.ai/",
+      "domain": "nakama-mcp.intelli-verse-x.ai",
+      "mcpAuthHint": "Game-ops MCP (player inspect, wallets, flags, configs). Server-side admin auth pre-wired; no token needed."
+    },
+    {
+      "id": "quests",
+      "label": "Quests & rewards",
+      "blurb": "QuestX rewards economy — brands, quests, offers, redemptions, gift cards, fraud checks. Also drivable from the admin copilot chat (~120 MCP tools).",
+      "group": "Game ops",
+      "mcpUrl": "http://quests-api.quests-economy.svc.cluster.local:3002/mcp",
+      "domain": "quests-api.quests-economy.svc.cluster.local",
+      "mcpAuthHint": "No token needed. In-cluster only — reach it through admin-mcp's admin_call_mcp (tileId: quests)."
+    },
+    {
+      "id": "grafana",
+      "label": "System health dashboards (Grafana)",
+      "blurb": "Pending public ingress (issue #25).",
+      "group": "Measure & monitor",
+      "mcpUrl": "https://grafana-mcp.intelli-verse-x.ai/mcp",
+      "domain": "grafana-mcp.intelli-verse-x.ai",
+      "mcpAuthHint": "Official grafana/mcp-grafana (65 tools, session handshake): dashboards CRUD/search, datasources, PromQL (query_prometheus — pass startTime AND endTime, e.g. 'now'), LogQL via Grafana (query_loki_logs, list_loki_label_names/values, datasourceUid 'loki'), alert rules, annotations, folders, teams. Viewer SA token pre-wired."
+    },
+    {
+      "id": "loki",
+      "label": "Cluster logs (Loki)",
+      "blurb": "Search every pod's logs across the cluster — errors, crash loops, noisy services — straight from chat via LogQL or plain filters.",
+      "group": "Measure & monitor",
+      "mcpUrl": "http://loki-mcp.aicart.svc.cluster.local/mcp",
+      "domain": "loki-mcp.aicart.svc.cluster.local",
+      "mcpAuthHint": "Direct Loki MCP (42 tools, session handshake, fork of abl030/loki-mcp): loki_search_logs (no LogQL needed), loki_error_summary, loki_query_range/instant, labels/series discovery, index stats/volume, loki_get_overview. Mutations need confirm=true. In-cluster only — use admin_call_mcp tileId 'loki'."
+    },
+    {
+      "id": "aws-costs",
+      "label": "Cloud costs & infrastructure (AWS)",
+      "blurb": "Account spend by service, daily trend, month-end forecast, and EKS cluster/nodegroup state — ask the copilot, no console login needed.",
+      "group": "Measure & monitor",
+      "mcpUrl": "http://aws-mcp.aicart.svc.cluster.local/",
+      "domain": "aws-mcp.aicart.svc.cluster.local",
+      "mcpAuthHint": "Wrapper MCP: aws_cost_by_service, aws_cost_daily, aws_cost_forecast, aws_eks_list_clusters, aws_eks_list_nodegroups. s3-user IAM key pre-wired (read-only). In-cluster only — use admin_call_mcp tileId 'aws'. Deploys/restarts: intelliverse gateway k8s_* tools."
+    },
+    {
+      "id": "didit-kyc",
+      "label": "Identity verification (Didit)",
+      "blurb": "KYC/KYB sessions: who verified, who got declined, full decision details, and mint a hosted verification link for a user — ask the copilot, no dashboard login needed.",
+      "group": "Measure & monitor",
+      "mcpUrl": "http://didit-mcp.aicart.svc.cluster.local/",
+      "domain": "didit-mcp.aicart.svc.cluster.local",
+      "mcpAuthHint": "Wrapper MCP: didit_list_sessions (start here — filter by status/vendorData), didit_session_decision, didit_session_reviews (manual review activity), didit_list_workflows, didit_webhook_config, didit_billing_balance (credits), didit_create_session (mints a hosted verification link; uses credits), didit_setup_status. Application API key pre-wired; override with Bearer = Didit x-api-key. In-cluster only — use admin_call_mcp tileId 'didit'."
+    },
+    {
+      "id": "veriff-kyc",
+      "label": "Identity verification (Veriff)",
+      "blurb": "Verification session verdicts, extracted person data and PEP/sanctions screening by session id, plus new hosted verification links — ask the copilot.",
+      "group": "Measure & monitor",
+      "mcpUrl": "http://veriff-mcp.aicart.svc.cluster.local/",
+      "domain": "veriff-mcp.aicart.svc.cluster.local",
+      "mcpAuthHint": "Wrapper MCP: veriff_session_decision / veriff_session_person / veriff_watchlist_screening (by sessionId — Veriff has no list endpoint), veriff_session_media / veriff_session_attempts / veriff_attempt_media (captured document photos + videos), veriff_create_session, veriff_setup_status. Integration key pair pre-wired; override with Bearer = 'apiKey:sharedSecret'. If calls fail run veriff_setup_status — the integration may need activating in the Veriff portal. In-cluster only — use admin_call_mcp tileId 'veriff'."
+    },
+    {
+      "id": "stripe-revenue",
+      "label": "Payments revenue (Stripe)",
+      "blurb": "How much money came in: balance, revenue summary with fees and refunds, subscriptions, invoices, payouts and disputes — ask the copilot, no dashboard login needed.",
+      "group": "Measure & monitor",
+      "mcpUrl": "http://stripe-mcp.aicart.svc.cluster.local/",
+      "domain": "stripe-mcp.aicart.svc.cluster.local",
+      "mcpAuthHint": "Wrapper MCP (read-only): stripe_revenue_summary, stripe_balance, stripe_list_charges, stripe_list_subscriptions, stripe_list_invoices, stripe_list_payouts, stripe_list_refunds_disputes, stripe_list_customers, stripe_list_products_prices. Live secret key pre-wired. In-cluster only — use admin_call_mcp tileId 'stripe'."
+    },
+    {
+      "id": "revenuecat-revenue",
+      "label": "App-store revenue (RevenueCat)",
+      "blurb": "Mobile in-app purchases and subscriptions: MRR, active subscriptions, 28-day revenue, per-customer purchase history — ask the copilot, no dashboard login needed.",
+      "group": "Measure & monitor",
+      "mcpUrl": "http://revenuecat-mcp.aicart.svc.cluster.local/",
+      "domain": "revenuecat-mcp.aicart.svc.cluster.local",
+      "mcpAuthHint": "Wrapper MCP (read-only): revenuecat_list_projects (start here), revenuecat_overview_metrics (MRR/active subs/revenue), revenuecat_list_apps/products/entitlements/offerings, revenuecat_list_customers, revenuecat_get_customer. Secret key from revenuecat-mcp-secret. In-cluster only — use admin_call_mcp tileId 'revenuecat'."
+    },
+    {
+      "id": "dataviz",
+      "label": "Visualize anything (charts, dashboards, videos)",
+      "blurb": "Ask the copilot to visualize any metric: it renders hosted charts (PNG), interactive dashboards, animated HTML and short MP4 videos, and shows them inline in the chat.",
+      "group": "Measure & monitor",
+      "mcpUrl": "http://viz-mcp.aicart.svc.cluster.local/",
+      "domain": "viz-mcp.aicart.svc.cluster.local",
+      "mcpAuthHint": "Wrapper MCP (create-artifact only): viz_render_image (chart spec/HTML → PNG), viz_render_dashboard (KPIs + charts → hosted HTML page), viz_render_html (HTML/GSAP scene → hosted page), viz_render_video (scene spec → MP4). Every tool uploads to S3 and returns a servable URL — always show it. Gather metrics from the analytics MCPs first. In-cluster only — use admin_call_mcp tileId 'viz'."
+    },
+    {
+      "id": "appsflyer-attribution",
+      "label": "Mobile attribution (AppsFlyer)",
+      "blurb": "Where installs come from and what they're worth: campaign performance, ROAS, LTV, retention cohorts, SKAN, OneLink and Audiences — ask the copilot, no AppsFlyer login needed.",
+      "group": "Measure & monitor",
+      "mcpUrl": "https://mcp.appsflyer.com/auth/mcp",
+      "domain": "mcp.appsflyer.com",
+      "mcpAuthHint": "AppsFlyer official MCP (read-oriented): campaign performance, ROAS/LTV/retention cohorts, SKAN, SSOT metrics, OneLink templates, Audiences. Bearer = AppsFlyer MCP token (HQ → Security Center → AppsFlyer Tokens → MCP token); default or per-app token via connector request. Use admin_call_mcp tileId 'appsflyer'."
+    },
+    {
+      "id": "posthog",
+      "label": "Product analytics (PostHog)",
+      "blurb": "Insights, dashboards, HogQL queries, session replays, feature flags and error tracking — ask the copilot, no PostHog login needed.",
+      "group": "Measure & monitor",
+      "mcpUrl": "https://mcp.posthog.com/mcp",
+      "domain": "mcp.posthog.com",
+      "mcpAuthHint": "PostHog official hosted MCP. Bearer = personal API key (phx_..., Settings → Personal API keys); platform default via POSTHOG_MCP_TOKEN (secret posthog-mcp-secret). Use admin_call_mcp tileId 'posthog'."
+    },
+    {
+      "id": "adjust",
+      "label": "Mobile attribution (Adjust)",
+      "blurb": "Installs, ad spend, ROAS, retention cohorts and fraud stats by network/campaign from the Adjust Reports Service — ask the copilot, no Adjust login needed.",
+      "group": "Measure & monitor",
+      "mcpUrl": "http://adjust-mcp.aicart.svc.cluster.local/",
+      "domain": "adjust-mcp.aicart.svc.cluster.local",
+      "mcpAuthHint": "Wrapper MCP (read-only): adjust_apps_list (start here), adjust_report (dimensions × metrics × date range: installs, cost, ROAS by network/campaign), adjust_cohorts (retention_by_network / fraud_overview presets), adjust_filters_data (discover metric slugs). API token from adjust-mcp-secret. In-cluster only — use admin_call_mcp tileId 'adjust'."
+    },
+    {
+      "id": "quickbooks",
+      "label": "Accounting & books (QuickBooks)",
+      "blurb": "P&L, balance sheet, cash flow, expenses, invoices and customer balances straight from QuickBooks Online — ask the copilot, no QuickBooks login needed. Tax prep (TurboTax has no API) rides on this data.",
+      "group": "Measure & monitor",
+      "mcpUrl": "http://quickbooks-mcp.aicart.svc.cluster.local/",
+      "domain": "quickbooks-mcp.aicart.svc.cluster.local",
+      "mcpAuthHint": "Wrapper MCP (read-first): qb_profit_and_loss (start here), qb_balance_sheet, qb_cash_flow, qb_expenses_list, qb_invoices_list, qb_customers_list, qb_query (SELECT-only QBO SQL). OAuth refresh flow baked from quickbooks-mcp-secret. In-cluster only — use admin_call_mcp tileId 'quickbooks'."
+    },
+    {
+      "id": "ga4-analytics",
+      "label": "Web & app analytics (Google Analytics 4)",
+      "blurb": "Traffic per app-id: active users, sessions, top pages, traffic sources, events, realtime — ask the copilot with the app-id (quizverse, questx, ...), no GA login needed.",
+      "group": "Measure & monitor",
+      "mcpUrl": "http://ga4-mcp.aicart.svc.cluster.local/",
+      "domain": "ga4-mcp.aicart.svc.cluster.local",
+      "mcpAuthHint": "Wrapper MCP (app-id keyed): ga4_list_apps (start here), ga4_traffic_summary, ga4_top_pages, ga4_traffic_sources, ga4_events, ga4_countries, ga4_realtime. Every tool takes appId (quizverse, questx, ...). NOT ONBOARDED YET? Run ga4_setup_status — it returns step-by-step instructions, and property ids can be saved in-chat with ga4_onboard_app (persists, no restart). In-cluster only — use admin_call_mcp tileId 'ga4'."
+    },
+    {
+      "id": "gsc-search",
+      "label": "Google Search performance (Search Console)",
+      "blurb": "Organic search per app-id: clicks, impressions, top queries and pages, sitemaps, URL index checks — ask the copilot with the app-id, no Search Console login needed.",
+      "group": "Measure & monitor",
+      "mcpUrl": "http://gsc-mcp.aicart.svc.cluster.local/",
+      "domain": "gsc-mcp.aicart.svc.cluster.local",
+      "mcpAuthHint": "Wrapper MCP (app-id keyed): gsc_list_sites (start here), gsc_search_summary, gsc_top_queries, gsc_top_pages, gsc_by_country_device, gsc_sitemaps, gsc_inspect_url. Every tool takes appId (quizverse, questx, ...). NOT ONBOARDED YET? Run gsc_setup_status — it returns step-by-step instructions, and sites can be saved in-chat with gsc_onboard_app (persists, no restart). In-cluster only — use admin_call_mcp tileId 'gsc'."
+    },
+    {
+      "id": "appstore-insights",
+      "label": "Apple App Store data (App Store Connect)",
+      "blurb": "iOS fleet per app-id: release states, customer reviews, ratings, daily sales reports — ask the copilot with the app-id, no App Store Connect login needed.",
+      "group": "Measure & monitor",
+      "mcpUrl": "http://appstore-mcp.aicart.svc.cluster.local/",
+      "domain": "appstore-mcp.aicart.svc.cluster.local",
+      "mcpAuthHint": "Wrapper MCP (app-id keyed): appstore_list_apps (start here — live team apps + app-id mapping), appstore_app_overview, appstore_latest_reviews, appstore_ratings_summary, appstore_sales_report. Tools take appId (quizverse, questx, ...) or a raw appleAppId. ASC team key pre-wired. NOT ONBOARDED YET? Run appstore_setup_status; mappings save in-chat via appstore_onboard_app, sales unlock via appstore_set_vendor_number. In-cluster only — use admin_call_mcp tileId 'appstore'."
+    },
+    {
+      "id": "playstore-insights",
+      "label": "Google Play Console data",
+      "blurb": "Android fleet per app-id: Play Store reviews, IAP products, subscriptions, crash/ANR quality rates — ask the copilot with the app-id, no Play Console login needed.",
+      "group": "Measure & monitor",
+      "mcpUrl": "http://playstore-mcp.aicart.svc.cluster.local/",
+      "domain": "playstore-mcp.aicart.svc.cluster.local",
+      "mcpAuthHint": "Wrapper MCP (app-id keyed): playstore_list_apps (start here), playstore_latest_reviews, playstore_iap_products, playstore_subscriptions, playstore_crash_anr_rates. Tools take appId (quizverse, questx, ...) or a raw packageName. NOT ONBOARDED YET? Run playstore_setup_status — it returns step-by-step instructions, and packages can be saved in-chat with playstore_onboard_app (persists, no restart). In-cluster only — use admin_call_mcp tileId 'playstore'."
+    },
+    {
+      "id": "youtube-stats",
+      "label": "YouTube channel performance",
+      "blurb": "Subscribers, total views, top and newest videos with per-video stats for the house channel — ask the copilot, no YouTube login needed.",
+      "group": "Measure & monitor",
+      "mcpUrl": "http://youtube-mcp.aicart.svc.cluster.local/",
+      "domain": "youtube-mcp.aicart.svc.cluster.local",
+      "mcpAuthHint": "Wrapper MCP (read-only, public data): youtube_channel_stats (start here — defaults to the house channel), youtube_recent_videos, youtube_top_videos, youtube_video_stats, youtube_search_channel. Any public channelId can be passed. API key pre-wired. In-cluster only — use admin_call_mcp tileId 'youtube'."
+    },
+    {
+      "id": "admin-mcp",
+      "label": "Admin portal MCP",
+      "blurb": "MCP server over the tile registry: list tools, preflight, launch URLs, gateway to per-service MCPs.",
+      "group": "Agents",
+      "mcpUrl": "https://admin-mcp.intelli-verse-x.ai/",
+      "domain": "admin-mcp.intelli-verse-x.ai",
+      "mcpAuthHint": "Bearer = ADMIN_MCP_TOKEN (secret admin-mcp-token, ns aicart)"
+    },
+    {
+      "id": "gastown",
+      "label": "Coding crew (Gas Town)",
+      "blurb": "Autonomous AI engineers on our repositories — assign coding tasks from the copilot chat, watch crews and work batches live here.",
+      "group": "Agents",
+      "mcpUrl": "http://gastown.aicart.svc.cluster.local:8090/",
+      "domain": "gastown.aicart.svc.cluster.local",
+      "mcpAuthHint": "Wrapper MCP: gastown_list_repos, gastown_assign_coding_task, gastown_work_batches, gastown_completed_work. No token; in-cluster only — use admin_call_mcp tileId 'gastown'. Assigning spawns real coding agents that open PRs."
+    },
+    {
+      "id": "intelliverse-mcp",
+      "label": "Intelliverse MCP gateway",
+      "blurb": "What Cursor/Claude talk through; auto-refreshes IV service tokens.",
+      "group": "Agents",
+      "mcpUrl": "https://mcp.intelli-verse-x.ai/api/mcp",
+      "domain": "mcp.intelli-verse-x.ai",
+      "mcpAuthHint": "Bearer = Intelliverse MCP API key. Default key pre-wired in chat (~1300 platform tools)."
+    },
+    {
+      "id": "agent-mcp",
+      "label": "Streaming MCP server",
+      "blurb": "Python streamable-http MCP for long-running agent jobs.",
+      "group": "Agents",
+      "mcpUrl": "https://agent-mcp.intelli-verse-x.ai/mcp",
+      "domain": "agent-mcp.intelli-verse-x.ai",
+      "mcpAuthHint": "Content Factory agent MCP (pipeline runs, releases, ads, analytics). No token needed; session handshake handled by gateway."
+    },
+    {
+      "id": "documenso",
+      "label": "E-signatures & contracts (Documenso)",
+      "blurb": "Send documents for signature; optional signer payments via Stripe.",
+      "group": "Commerce",
+      "mcpUrl": "https://documenso-mcp.intelli-verse-x.ai/",
+      "domain": "documenso-mcp.intelli-verse-x.ai",
+      "mcpAuthHint": "Bearer = team-scoped Documenso API token (Settings → API Tokens; default wired in chat). Full lifecycle: documenso_use_template (formValues/prefillFields), documenso_upload_document (PDF), recipients/fields CRUD, send/resend, download, direct links, folders."
+    },
+    {
+      "id": "open-seo",
+      "label": "SEO research",
+      "blurb": "",
+      "group": "Make content",
+      "mcpUrl": "https://seo.toba-tech.ai/mcp",
+      "domain": "seo.toba-tech.ai",
+      "mcpAuthHint": "OpenSEO MCP: keyword research, SERP, domain overview, rank tracker. Self-hosted (no token)."
+    },
+    {
+      "id": "firecrawl",
+      "label": "Web scraping & research (Firecrawl)",
+      "blurb": "Read any webpage with AI: scrape pages to clean markdown, web search, whole-site crawls and structured data extraction — ask the copilot, no Firecrawl login needed.",
+      "group": "Make content",
+      "mcpUrl": "https://mcp.firecrawl.dev/v2/mcp",
+      "domain": "mcp.firecrawl.dev",
+      "mcpAuthHint": "Firecrawl official hosted MCP: firecrawl_scrape (URL → markdown), firecrawl_search (web/news/images), firecrawl_map (site URLs), firecrawl_crawl (multi-page), firecrawl_extract (structured data) + research tools. Bearer = Firecrawl API key (fc-...); platform default wired. Use admin_call_mcp tileId 'firecrawl'."
+    }
+  ]
+}

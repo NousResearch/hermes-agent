@@ -835,6 +835,40 @@ class TestGetDueJobs:
         next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
         assert next_dt > _hermes_now()
 
+    def test_idless_job_does_not_crash_or_block_sibling_jobs(self, tmp_cron_dir):
+        """A job missing its 'id' key must not crash the tick or freeze siblings.
+
+        Regression: jobs authored by a direct jobs.json edit (bypassing
+        create_job) sometimes used the key 'job_id' instead of 'id'. The logging
+        helpers evaluated ``job.get("name", job["id"])`` -- Python evaluates the
+        default argument ``job["id"]`` eagerly, so an id-less job raised
+        ``KeyError: 'id'`` mid-tick. That exception aborted
+        ``_get_due_jobs_locked()`` BEFORE ``save_jobs()`` ran, so every healthy
+        job's fast-forwarded next_run_at was computed in memory then discarded --
+        the whole profile's scheduler froze in a per-minute loop.
+        """
+        healthy = create_job(prompt="Healthy", schedule="every 1h")
+
+        jobs = load_jobs()
+        # Push the healthy job beyond its grace window so the fast-forward path
+        # (one of the id-less-crash sites) runs.
+        jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=35)).isoformat()
+        # A malformed record: no 'id' key, mirroring the real corruption.
+        jobs.append({
+            "name": "idless-job",
+            "schedule": {"kind": "cron", "expr": "0 4 * * *"},
+            "enabled": True,
+            "no_agent": True,
+            "next_run_at": None,
+        })
+        save_jobs(jobs)
+
+        # Must not raise KeyError.
+        due = get_due_jobs()
+
+        # The healthy sibling is still discovered despite the malformed neighbor.
+        assert any(d.get("id") == healthy["id"] for d in due)
+
 
     def test_long_execution_does_not_perpetually_defer(self, tmp_cron_dir, monkeypatch):
         """#33315: a recurring job whose runtime exceeds interval+grace must still

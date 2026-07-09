@@ -430,6 +430,7 @@ def build_tree(
     preview_limit: int = 3,
     hydrate: bool = False,
     is_junk_root: Optional[Callable[[str], bool]] = None,
+    session_project_overrides: Optional[dict[str, str]] = None,
 ) -> dict:
     """Build the authoritative project tree.
 
@@ -449,11 +450,16 @@ def build_tree(
     active_projects = [p for p in projects if not p.get("archived")]
     _junk = is_junk_root or (lambda _root: False)
     folder_index = _FolderIndex(active_projects)
+    project_by_id = {p["id"]: p for p in active_projects}
+    overrides = session_project_overrides or {}
 
     by_project: dict[str, list[dict]] = {}
     unowned: list[dict] = []
     for session in sessions:
-        owner = _project_for_session(session, folder_index, resolve)
+        sid = str(session.get("id") or "")
+        owner = project_by_id.get(overrides.get(sid) or "") if sid else None
+        if owner is None:
+            owner = _project_for_session(session, folder_index, resolve)
         if owner:
             by_project.setdefault(owner["id"], []).append(session)
         else:

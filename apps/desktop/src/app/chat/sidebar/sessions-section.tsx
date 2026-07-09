@@ -111,6 +111,7 @@ interface SidebarSessionsSectionProps {
   // True while the backend project tree is loading (overview skeleton).
   projectsLoading?: boolean
   onEnterProject?: (id: string) => void
+  onAssignSessionToProject?: (sessionId: string, projectId: string) => void
   // The entered project's flattened content: main-checkout sessions render
   // directly (no redundant repo/branch header); only linked worktrees nest.
   projectContent?: SidebarProjectTree
@@ -162,6 +163,7 @@ export function SidebarSessionsSection({
   projectOverviewPreviews,
   projectsLoading = false,
   onEnterProject,
+  onAssignSessionToProject,
   projectContent,
   projectRepoWorktrees,
   liveSessions,
@@ -269,6 +271,7 @@ export function SidebarSessionsSection({
       <Row
         activeProjectId={activeProjectId}
         key={project.id}
+        onAssignSession={onAssignSessionToProject}
         onEnter={onEnterProject}
         onNewSession={onNewSessionInWorkspace}
         previewSessions={project.path ? projectOverviewPreviews?.[project.path] : undefined}

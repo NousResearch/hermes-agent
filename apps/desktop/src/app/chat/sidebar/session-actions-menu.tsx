@@ -1,9 +1,18 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
+  ContextMenuTrigger
+} from '@/components/ui/context-menu'
 import { CopyButton } from '@/components/ui/copy-button'
 import {
   Dialog,
@@ -13,7 +22,15 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -21,6 +38,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { $projects, assignSessionToProject } from '@/store/projects'
 import { $activeSessionId, $selectedStoredSessionId, setSessions } from '@/store/session'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
@@ -83,6 +101,9 @@ interface SessionActions {
 }
 
 type MenuItem = typeof DropdownMenuItem | typeof ContextMenuItem
+type MenuSub = typeof DropdownMenuSub | typeof ContextMenuSub
+type MenuSubTrigger = typeof DropdownMenuSubTrigger | typeof ContextMenuSubTrigger
+type MenuSubContent = typeof DropdownMenuSubContent | typeof ContextMenuSubContent
 
 interface ItemSpec {
   className?: string
@@ -105,7 +126,19 @@ function useSessionActions({
 }: SessionActions) {
   const { t } = useI18n()
   const r = t.sidebar.row
+  const projects = useStore($projects)
   const [renameOpen, setRenameOpen] = useState(false)
+  const assignableProjects = projects.filter(project => !project.archived)
+
+  const moveToProject = async (projectId: string, label: string) => {
+    try {
+      triggerHaptic('selection')
+      await assignSessionToProject(sessionId, projectId)
+      notify({ durationMs: 2_000, kind: 'success', message: r.movedToProject(label) })
+    } catch (err) {
+      notifyError(err, r.moveToProjectFailed)
+    }
+  }
 
   const pinItem: ItemSpec = {
     disabled: !onPin,
@@ -187,7 +220,32 @@ function useSessionActions({
     </Item>
   )
 
-  const renderItems = (Item: MenuItem) => (
+  const renderMoveToProject = (Item: MenuItem, Sub: MenuSub, SubTrigger: MenuSubTrigger, SubContent: MenuSubContent) =>
+    assignableProjects.length ? (
+      <Sub key={r.moveToProject}>
+        <SubTrigger disabled={!sessionId}>
+          <Codicon name="folder-opened" size="0.875rem" />
+          <span>{r.moveToProject}</span>
+        </SubTrigger>
+        <SubContent className="w-48">
+          {assignableProjects.map(project => (
+            <Item key={project.id} onSelect={() => void moveToProject(project.id, project.name)}>
+              <Codicon name={project.icon || 'folder-library'} size="0.875rem" />
+              <span className="truncate">{project.name}</span>
+            </Item>
+          ))}
+        </SubContent>
+      </Sub>
+    ) : (
+      renderMenuItem(Item, {
+        disabled: true,
+        icon: 'folder-opened',
+        label: r.moveToProject,
+        onSelect: () => undefined
+      })
+    )
+
+  const renderItems = (Item: MenuItem, Sub: MenuSub, SubTrigger: MenuSubTrigger, SubContent: MenuSubContent) => (
     <>
       {renderMenuItem(Item, pinItem)}
       <CopyButton
@@ -200,7 +258,9 @@ function useSessionActions({
         onCopyError={err => notifyError(err, r.copyIdFailed)}
         text={sessionId}
       />
-      {items.map(spec => renderMenuItem(Item, spec))}
+      {items.slice(0, 4).map(spec => renderMenuItem(Item, spec))}
+      {renderMoveToProject(Item, Sub, SubTrigger, SubContent)}
+      {items.slice(4).map(spec => renderMenuItem(Item, spec))}
     </>
   )
 
@@ -236,7 +296,7 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
           className="w-40"
           sideOffset={sideOffset}
         >
-          {renderItems(DropdownMenuItem)}
+          {renderItems(DropdownMenuItem, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent)}
         </DropdownMenuContent>
       </DropdownMenu>
       {renameDialog}
@@ -257,7 +317,7 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
       <ContextMenu>
         <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
         <ContextMenuContent aria-label={t.sidebar.row.actionsFor(actions.title)} className="w-40">
-          {renderItems(ContextMenuItem)}
+          {renderItems(ContextMenuItem, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent)}
         </ContextMenuContent>
       </ContextMenu>
       {renameDialog}

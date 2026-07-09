@@ -134,6 +134,25 @@ def test_project_for_path_skips_archived(conn):
     assert pdb.project_for_path(conn, "/www/app/src").id == pid
 
 
+def test_assign_session_to_project_upserts_and_lists(conn):
+    first = pdb.create_project(conn, name="First", folders=["/first"])
+    second = pdb.create_project(conn, name="Second", folders=["/second"])
+
+    pdb.assign_session(conn, first, "s_123")
+    pdb.assign_session(conn, second, "s_123")
+
+    assert pdb.list_session_assignments(conn) == {"s_123": second}
+
+
+def test_project_delete_removes_session_assignments(conn):
+    pid = pdb.create_project(conn, name="Assigned", folders=["/assigned"])
+    pdb.assign_session(conn, pid, "s_123")
+
+    pdb.delete_project(conn, pid)
+
+    assert pdb.list_session_assignments(conn) == {}
+
+
 def test_active_pointer(conn):
     pid = pdb.create_project(conn, name="P")
     assert pdb.get_active_id(conn) is None

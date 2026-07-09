@@ -302,6 +302,12 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
   }
 }
 
+export async function assignSessionToProject(sessionId: string, projectId: string): Promise<void> {
+  await gatewayRequest('projects.assign_session', { id: projectId, session_id: sessionId })
+  markProjectsRpcSuccess()
+  await Promise.all([refreshProjects(), refreshProjectTree()])
+}
+
 // One filesystem scan per app run: the heavy disk walk happens once, the result
 // is cached in the backend, and later opens read the cache. Desktop-only (needs
 // the native crawler); elsewhere discovery falls back to session-derived repos.

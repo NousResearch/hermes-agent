@@ -202,6 +202,26 @@ def test_explicit_project_claims_sessions_and_beats_auto():
     assert any(p["id"] == "/www/other" and p["isAuto"] for p in tree["projects"])
 
 
+def test_manual_session_assignment_overrides_folder_membership():
+    target = _project("p_target", "Target", ["/target"])
+    natural = _project("p_natural", "Natural", ["/natural"])
+    session = _session("/natural/repo", branch="main", repo_root="/natural/repo")
+
+    tree = pt.build_tree(
+        [target, natural],
+        [session],
+        [],
+        resolve=None,
+        hydrate=True,
+        session_project_overrides={session["id"]: "p_target"},
+    )
+
+    by_id = {p["id"]: p for p in tree["projects"]}
+    assert by_id["p_target"]["sessionCount"] == 1
+    assert by_id["p_natural"]["sessionCount"] == 0
+    assert by_id["p_target"]["repos"][0]["groups"][0]["sessions"][0]["id"] == session["id"]
+
+
 def test_scoped_session_ids_is_union_of_placed_sessions():
     project = _project("p_app", "App", ["/www/app"])
     resolve = _resolver(

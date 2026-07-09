@@ -1388,6 +1388,7 @@ export interface McpServer {
   command: string | null;
   args: string[];
   env: Record<string, string>;
+  headers?: Record<string, string>;
   auth: string | null;
   enabled: boolean;
   tools: string[] | null;
@@ -1429,6 +1430,7 @@ export interface McpServerCreate {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  headers?: Record<string, string>;
   auth?: string;
 }
 

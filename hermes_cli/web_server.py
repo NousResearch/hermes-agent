@@ -10588,6 +10588,8 @@ class MCPServerCreate(BaseModel):
     args: List[str] = []
     # env: KEY=VALUE map for stdio servers (API keys, etc.)
     env: Dict[str, str] = {}
+    # headers: HTTP headers for HTTPS MCP servers (e.g. Authorization: Bearer <token>)
+    headers: Dict[str, str] = {}
     # auth: "oauth" | "header" | None
     auth: Optional[str] = None
     profile: Optional[str] = None
@@ -10619,6 +10621,7 @@ def _mcp_server_summary(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
         "command": cfg.get("command"),
         "args": list(cfg.get("args") or []),
         "env": _redact_mcp_env(cfg.get("env") or {}),
+        "headers": _redact_mcp_env(cfg.get("headers") or {}),
         "auth": cfg.get("auth"),
         "enabled": cfg.get("enabled", True) is not False,
         # Tool selection: list of enabled tool names, or None = all.
@@ -10667,6 +10670,8 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
         server_config["env"] = dict(body.env)
     if body.auth:
         server_config["auth"] = body.auth
+    if body.headers:
+        server_config["headers"] = dict(body.headers)
 
     try:
         with _profile_scope(body.profile or profile):

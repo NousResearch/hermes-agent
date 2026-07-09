@@ -79,6 +79,7 @@ export default function McpPage() {
   const [command, setCommand] = useState("");
   const [args, setArgs] = useState("");
   const [env, setEnv] = useState("");
+  const [headersStr, setHeadersStr] = useState("");
   const [creating, setCreating] = useState(false);
   const closeCreateModal = useCallback(() => setCreateModalOpen(false), []);
   const createModalRef = useModalBehavior({
@@ -156,6 +157,8 @@ export default function McpPage() {
       }
       const envMap = parseEnv(env);
       if (Object.keys(envMap).length) body.env = envMap;
+      const headerMap = parseEnv(headersStr);
+      if (Object.keys(headerMap).length) body.headers = headerMap;
 
       await api.addMcpServer(body);
       showToast("Add ✓", "success");
@@ -164,6 +167,7 @@ export default function McpPage() {
       setCommand("");
       setArgs("");
       setEnv("");
+      setHeadersStr("");
       setTransport("http");
       setCreateModalOpen(false);
       loadServers();
@@ -435,6 +439,19 @@ export default function McpPage() {
                 />
               </div>
 
+              {transport === "http" && (
+                <div className="grid gap-2">
+                  <Label htmlFor="mcp-headers">Headers (KEY=VALUE per line)</Label>
+                  <textarea
+                    id="mcp-headers"
+                    className="flex min-h-[80px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
+                    placeholder={"Authorization=Bearer my-token\nX-Custom=value"}
+                    value={headersStr}
+                    onChange={(e) => setHeadersStr(e.target.value)}
+                  />
+                </div>
+              )}
+
               <div className="flex justify-end">
                 <Button
                   className="uppercase"
@@ -561,6 +578,7 @@ export default function McpPage() {
 
         {servers.map((server) => {
           const envCount = Object.keys(server.env ?? {}).length;
+          const headerCount = Object.keys(server.headers ?? {}).length;
           const result = testResults[server.name];
 
           return (
@@ -600,6 +618,11 @@ export default function McpPage() {
                     {envCount > 0 && (
                       <span>
                         {envCount} env var{envCount === 1 ? "" : "s"}
+                      </span>
+                    )}
+                    {headerCount > 0 && (
+                      <span>
+                        {headerCount} header{headerCount === 1 ? "" : "s"}
                       </span>
                     )}
                   </div>

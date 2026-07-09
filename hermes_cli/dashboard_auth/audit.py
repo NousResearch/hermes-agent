@@ -54,9 +54,13 @@ class AuditEvent(enum.Enum):
 def _resolve_log_path() -> Path:
     """``$HERMES_HOME/logs/dashboard-auth.log`` with the standard fallback.
 
-    Mirrors ``hermes_constants.get_hermes_home`` semantics: env var wins,
-    else ``~/.hermes``. A local copy avoids an import cycle with the
-    middleware which lives below ``hermes_cli``.
+    Reads the env var directly (env wins, else ``~/.hermes``) instead of
+    calling ``hermes_constants.get_hermes_home``, to keep this audit-log path
+    resolver self-contained and import-light on a hot auth path. It still lands
+    in the right place: the process mirrors ``HT_HOME`` → ``HERMES_HOME`` at
+    startup and the ``~/.hermes → ~/.ht-ai-agent`` symlink bridges the default.
+    (There is no import cycle to avoid — ``hermes_constants`` imports only
+    ``ht_compat`` + stdlib, with no path back into ``hermes_cli``.)
     """
     home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
     return Path(home) / "logs" / "dashboard-auth.log"

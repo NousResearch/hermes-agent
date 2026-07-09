@@ -1,8 +1,10 @@
 # Phase 6 — Internal Identifier Rebrand (backward-compatible)
 
-**Status:** In progress — the alias foundation, entrypoint hardening, and the
-backward-compatible `~/.hermes` → `~/.ht-ai-agent` data-dir migration have
-landed; the Python module renames remain a deferred follow-up increment.
+**Status:** In progress — the alias foundation, entrypoint hardening, the
+backward-compatible `~/.hermes` → `~/.ht-ai-agent` data-dir migration, and the
+single-file module-name aliases (`ht_constants`, `ht_state`, `ht_time`,
+`ht_logging`, `ht_bootstrap`) have landed. Only the full internal *package*
+rename (`hermes_cli` → `ht_cli`, …) remains a deferred follow-up increment.
 
 Phase 6 rebrands the fork's **load-bearing internal identifiers** from the
 `Hermes` name to `HT`. Unlike Phases 1–5 (user-visible surfaces, safe to change
@@ -133,11 +135,18 @@ guard; the bare-default assertions in `tests/test_hermes_constants.py` and
 environment *directly* (bypassing `HT_HOME` and the profile contextvar override)
 now route through `get_hermes_home()` — `agent/secret_sources/_cache.py` and the
 node-bootstrap home in `hermes_cli/main.py`. Left as-is on purpose:
-`hermes_cli/dashboard_auth/audit.py` (deliberately dependency-free to avoid an
-early-import cycle) and the `except ImportError` fallbacks in `mcp_serve.py` /
-`tools/mcp_oauth.py` / `hermes_cli/slack_cli.py` (their *primary* path already
-uses `get_hermes_home()`; the hardcoded string only runs when the resolver
-can't be imported). The remaining hardcoded `~/.hermes` fallbacks in `scripts/`,
+`hermes_cli/dashboard_auth/audit.py` (kept import-light on a hot auth path; it
+reads the env directly, which stays correct via the startup `HT_HOME` →
+`HERMES_HOME` mirror and the `~/.hermes → ~/.ht-ai-agent` symlink — there is no
+import cycle to avoid, `hermes_constants` importing only `ht_compat` + stdlib),
+and the resolver-with-fallback sites whose *primary* path already calls
+`get_hermes_home()` and only drop to the hardcoded string if that call fails:
+`mcp_serve.py` / `tools/mcp_oauth.py` (guarded by `except ImportError`) and
+`hermes_cli/slack_cli.py` (a broader `except Exception`). One further direct
+read — the pre-import `_config_default_interface_early` probe in
+`hermes_cli/main.py`, which runs before the resolver is importable — is
+intentional and is bridged by the same symlink. The remaining hardcoded
+`~/.hermes` fallbacks in `scripts/`,
 `optional-skills/`, and some plugins are bridged by the `~/.hermes →
 ~/.ht-ai-agent` symlink for migrated and fresh installs, so they resolve to the
 same directory without a callsite change.

@@ -850,7 +850,77 @@ def _normalize_command_for_detection(command: str) -> str:
     # single space). Same de-obfuscation class as the backslash/empty-quote
     # handling above.
     command = re.sub(r'\$\{IFS\b[^}]*\}|\$IFS\b', ' ', command)
+    # Inline simple `NAME=value` assignments into later `$NAME`/`${NAME}`
+    # references in the same command. In any POSIX shell,
+    # `H=~/.bashrc; sed -i s/a/b/ $H` executes identically to
+    # `sed -i s/a/b/ ~/.bashrc` — the variable is expanded before the
+    # command runs. Because the sensitive-path and hardline patterns
+    # anchor on literal path/command text, leaving `$H` unresolved lets
+    # the exact same rm -rf /, sed -i ~/.bashrc, tee
+    # ~/.ssh/authorized_keys shapes those patterns exist to catch slip
+    # past every one of them. This is a best-effort, single-pass inlining
+    # of simple literal/quoted assignments (no command substitution or
+    # nested expansion in the value) — not a general shell variable
+    # resolver, and it deliberately does not touch `$IFS` (handled
+    # separately above) or any variable not assigned within this same
+    # command string (e.g. `$HOME` from the real environment is left
+    # alone, since resolving it would require actual shell context this
+    # detector does not have). Same de-obfuscation class as the
+    # backslash/empty-quote/$IFS handling above.
+    command = _inline_simple_var_assignments(command)
     return command
+
+
+def _inline_simple_var_assignments(command: str) -> str:
+    """Best-effort inlining of simple `NAME=value` shell assignments into
+    later `$NAME`/`${NAME}` references in the same command string. See the
+    call site in _normalize_command_for_detection() for the rationale."""
+    assignments: dict[str, str] = {}
+    # NAME=value at the start of the command or right after ; & | or a
+    # newline — command-position anchored, matching the style of other
+    # command-position patterns in this file. Value is a quoted string or
+    # a run of non-separator characters.
+    assign_re = re.compile(
+        r'(?:^|[;&|\n]\s*)(?:export\s+|local\s+|declare\s+(?:-[A-Za-z]+\s+)?)?'
+        r'([A-Za-z_][A-Za-z0-9_]*)='
+        r'''("[^"]*"|'[^']*'|[^\s;&|]+)'''
+    )
+    for m in assign_re.finditer(command):
+        name, value = m.group(1), m.group(2)
+        if name == "IFS":
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        assignments[name] = value
+    if not assignments:
+        return command
+
+    var_ref_re = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)')
+
+    def _resolve_ref(m: re.Match) -> str:
+        name = m.group(1) or m.group(2)
+        return assignments.get(name, m.group(0))
+
+    # Resolve chained indirection (`H2=$H` referencing an earlier
+    # `H=...`) by repeatedly re-substituting assignment VALUES against
+    # the growing assignments table, not just the final command text —
+    # a single pass over the command alone would leave `$H2` pointing at
+    # the still-unresolved literal text "$H" instead of the real path.
+    # Bounded iteration count guards against a circular reference
+    # (`A=$B; B=$A`) looping forever — real shell scripts don't chain
+    # variables deeply, so a handful of passes covers any real command,
+    # and this is a best-effort detector, not a full resolver.
+    for _ in range(5):
+        changed = False
+        for name, value in list(assignments.items()):
+            resolved = var_ref_re.sub(_resolve_ref, value)
+            if resolved != value:
+                assignments[name] = resolved
+                changed = True
+        if not changed:
+            break
+
+    return var_ref_re.sub(_resolve_ref, command)
 
 
 # Shell metacharacters, quotes, and whitespace that terminate a filesystem

@@ -1308,6 +1308,157 @@ class TestIFSWhitespaceBypass:
         assert dangerous is False
 
 
+class TestVariableIndirectionBypass:
+    """`H=~/.bashrc; sed -i s/a/b/ $H` executes identically to
+    `sed -i s/a/b/ ~/.bashrc` in any POSIX shell — the variable is
+    expanded before the command runs. Because the sensitive-path and
+    hardline patterns anchor on literal path/command text, leaving `$H`
+    unresolved lets the exact same shapes those patterns exist to catch
+    (in-place edits of shell rc/SSH files, redirects to sensitive paths,
+    even the command name itself) slip past every one of them.
+
+    The normalizer inlines simple `NAME=value` assignments into later
+    `$NAME`/`${NAME}` references in the same command before matching —
+    the same class of de-obfuscation as the existing $IFS handling.
+    """
+
+    def test_sed_in_place_via_variable_bashrc(self):
+        """`H=~/.bashrc; sed -i ... $H` must be caught the same way the
+        literal form already is."""
+        cmd = "H=~/.bashrc; sed -i s/a/b/ $H"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"Variable-indirected sed -i escaped detection: {cmd!r}"
+
+    def test_tee_via_variable_ssh_authorized_keys(self):
+        cmd = "F=~/.ssh/authorized_keys; echo x | tee $F"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"Variable-indirected tee escaped detection: {cmd!r}"
+
+    def test_redirect_via_variable_sensitive_path(self):
+        cmd = "G=/etc/passwd; echo x > $G"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"Variable-indirected redirect escaped detection: {cmd!r}"
+
+    def test_command_name_via_variable_rm_rf(self):
+        """Not just the argument — the command name itself can be
+        indirected. `a=rm; $a -rf /` must still hit the hardline floor."""
+        cmd = "a=rm; $a -rf /"
+        is_hardline, desc = detect_hardline_command(cmd)
+        assert is_hardline is True, f"Variable-indirected rm -rf / escaped hardline: {cmd!r}"
+
+    def test_braced_form_also_inlined(self):
+        """`${VAR}` (braced form) must be inlined the same as bare `$VAR`."""
+        cmd = "H=~/.bashrc; sed -i s/a/b/ ${H}"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_quoted_assignment_value_unquoted_before_substitution(self):
+        cmd = 'H="~/.bashrc"; sed -i s/a/b/ $H'
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_reassignment_uses_latest_value(self):
+        """If the same name is assigned more than once, the later
+        assignment (the one shell semantics would actually use) wins."""
+        cmd = "H=/tmp/safe; H=~/.bashrc; sed -i s/a/b/ $H"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_multiple_variables_in_one_command(self):
+        cmd = "A=~/.bashrc; B=~/.ssh/authorized_keys; sed -i s/x/y/ $A; cat k >> $B"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    # --- Must not create false positives on ordinary variable usage ---
+
+    def test_benign_variable_usage_not_flagged(self):
+        """Everyday variable usage that doesn't resolve to anything
+        sensitive must stay unflagged — this is a targeted inlining, not
+        a reason to distrust every command that happens to use a shell
+        variable."""
+        cmd = 'NAME=world; echo "hello $NAME"'
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_benign_directory_variable_not_flagged(self):
+        cmd = "DIR=/tmp/build; mkdir -p $DIR && cd $DIR"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_benign_url_variable_not_flagged(self):
+        cmd = "URL=https://example.com; curl $URL"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_real_home_env_var_without_local_assignment_untouched(self):
+        """`$HOME` from the real environment (not assigned within this
+        command string) must not be resolved — this detector has no
+        actual shell context to resolve real environment variables
+        against, and must not guess."""
+        cmd = "echo $HOME"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_ifs_assignment_not_double_handled(self):
+        """An explicit `IFS=...` assignment must not interfere with the
+        dedicated $IFS-collapse handling above; IFS is deliberately
+        excluded from generic variable inlining."""
+        cmd = 'IFS=x; echo hello'
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_chained_variable_indirection_resolved(self):
+        """`H2=$H` referencing an earlier `H=...` must resolve through the
+        chain to the real path, not stop at the still-unresolved literal
+        text "$H"."""
+        cmd = "H=~/.bashrc; H2=$H; sed -i s/a/b/ $H2"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"Chained variable indirection escaped detection: {cmd!r}"
+
+    def test_three_level_chain_resolved(self):
+        cmd = "A=~/.bashrc; B=$A; C=$B; sed -i s/a/b/ $C"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_circular_reference_does_not_hang(self):
+        """A circular reference (A=$B; B=$A) must terminate safely within
+        the bounded resolution loop, not hang or crash."""
+        cmd = "A=$B; B=$A; echo hi"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_export_prefixed_assignment_resolved(self):
+        cmd = "export H=~/.bashrc; sed -i s/a/b/ $H"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"export-prefixed assignment escaped detection: {cmd!r}"
+
+    def test_local_prefixed_assignment_resolved(self):
+        cmd = "local H=~/.bashrc; sed -i s/a/b/ $H"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_declare_prefixed_assignment_resolved(self):
+        cmd = "declare H=~/.bashrc; sed -i s/a/b/ $H"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_declare_with_flag_prefixed_assignment_resolved(self):
+        cmd = "declare -r H=~/.bashrc; sed -i s/a/b/ $H"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_command_substitution_in_value_not_resolved(self):
+        """A value containing command substitution ($(...)) is a known,
+        accepted limitation — statically resolving arbitrary command
+        substitution would require actually executing code, which this
+        detector will never do. Left unresolved (not flagged) is the
+        correct, safe failure mode: it does not widen any existing
+        bypass, it simply doesn't help with this specific case."""
+        cmd = "H=$(echo ~/.bashrc); sed -i s/a/b/ $H"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+
 class TestHeredocScriptExecution:
     """Script execution via heredoc bypasses the -e/-c flag patterns.
 

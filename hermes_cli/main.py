@@ -1615,7 +1615,10 @@ def _ensure_tui_node() -> None:
     if not helper.is_file():
         return
 
-    hermes_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    # Use the canonical resolver so this honors HT_HOME / the profile override /
+    # the ~/.ht-ai-agent default (Phase 6) instead of a legacy hardcoded fallback.
+    from hermes_constants import get_hermes_home
+    hermes_home = str(get_hermes_home())
     try:
         # Helper writes logs to stderr; we ask bash to print `command -v node`
         # on stdout once ensure_node succeeds. Subshell PATH edits don't leak

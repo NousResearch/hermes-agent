@@ -78,11 +78,15 @@ def resolve_cache_home(home_path: Optional[Path] = None) -> Path:
     """Resolve the Hermes home used for cache paths.
 
     ``home_path`` is whatever ``load_hermes_dotenv()`` already resolved;
-    falling back to ``$HERMES_HOME`` / ``~/.hermes`` keeps direct callers
-    (and tests that don't thread a home through) working.
+    falling back to the canonical resolver keeps direct callers (and tests that
+    don't thread a home through) working.
     """
     if home_path is None:
-        home_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+        # Route through the resolver so this honors HT_HOME, the profile
+        # contextvar override, and the ~/.ht-ai-agent default (Phase 6) instead
+        # of reading HERMES_HOME directly with a legacy hardcoded fallback.
+        from hermes_constants import get_hermes_home
+        home_path = get_hermes_home()
     return home_path
 
 

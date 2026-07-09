@@ -129,18 +129,39 @@ atomic migrate-with-rollback, fresh-provision, and every `maybe_migrate_home`
 guard; the bare-default assertions in `tests/test_hermes_constants.py` and
 `tests/test_hermes_home_profile_warning.py` were updated to the new default.
 
-**Follow-up (optional):** the hardcoded `~/.hermes` fallbacks in
-`scripts/`, `optional-skills/`, and some plugins are bridged by the symlink for
-migrated/fresh installs today; routing them through `get_hermes_home()` is a
-tidy-up that can happen anytime.
+**Fallback tidy-up:** the runtime sites that read `HERMES_HOME` from the
+environment *directly* (bypassing `HT_HOME` and the profile contextvar override)
+now route through `get_hermes_home()` — `agent/secret_sources/_cache.py` and the
+node-bootstrap home in `hermes_cli/main.py`. Left as-is on purpose:
+`hermes_cli/dashboard_auth/audit.py` (deliberately dependency-free to avoid an
+early-import cycle) and the `except ImportError` fallbacks in `mcp_serve.py` /
+`tools/mcp_oauth.py` / `hermes_cli/slack_cli.py` (their *primary* path already
+uses `get_hermes_home()`; the hardcoded string only runs when the resolver
+can't be imported). The remaining hardcoded `~/.hermes` fallbacks in `scripts/`,
+`optional-skills/`, and some plugins are bridged by the `~/.hermes →
+~/.ht-ai-agent` symlink for migrated and fresh installs, so they resolve to the
+same directory without a callsite change.
 
-## Deferred: Python module renames (`hermes_cli` → `ht_cli`, …)
+## Module-name aliases (`ht_*` → `hermes_*`) — safe subset landed
 
-The bulk of the ~12,300 occurrences, and purely internal — no user value, high
-churn. The backward-compatible way is a **shim**: create the new module and
-leave the old name re-exporting from it (so `import hermes_cli` and any pickled
-session state referencing the old module path keep working). This is a
-mechanical, self-contained pass best done in isolation with its own review.
+The HT-branded names for the **top-level single-file modules** are importable
+as aliases: `ht_constants`, `ht_state`, `ht_time`, `ht_logging`, `ht_bootstrap`.
+Each is a thin shim that replaces itself in `sys.modules` with the real
+`hermes_<name>` module, so `import ht_constants` and `import hermes_constants`
+return the **same object** — no duplicate module state, singletons, or
+isinstance surprises. `hermes_<name>` stays canonical (all internal code and any
+pickled references keep using it); the alias just makes the new name work too.
+They are declared in `[tool.setuptools] py-modules` so the wheel/image ship them
+(guarded by `tests/test_module_aliases.py`).
+
+**Deliberately not done — package aliasing / full internal rename.** Aliasing
+the `hermes_cli` **package** (and the ~12,300 internal references) is *not*
+safe as a thin shim: `import ht_cli.config` double-imports the submodule
+(`ht_cli.config is not hermes_cli.config`), duplicating module state. Doing it
+correctly needs a process-wide import hook (a `sys.meta_path` finder), which is
+real risk in the hot path of every import for essentially no user-visible gain —
+no code or user references the new module names. The full internal rename
+remains a large, low-value pass to do only if there's a concrete reason.
 
 ## Left unchanged on purpose
 

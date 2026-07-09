@@ -78,10 +78,15 @@ def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, 
     project = tmp_path / "project"
     scripts = project / "venv" / "Scripts"
     site_packages = project / "venv" / "Lib" / "site-packages"
+    pywin32_system32 = site_packages / "pywin32_system32"
+    win32 = site_packages / "win32"
+    win32_lib = win32 / "lib"
     hermes_home = tmp_path / "hermes-home"
     base = tmp_path / "uv" / "python" / "cpython-3.11-windows-x86_64-none"
     scripts.mkdir(parents=True)
     site_packages.mkdir(parents=True)
+    pywin32_system32.mkdir()
+    win32_lib.mkdir(parents=True)
     hermes_home.mkdir()
     base.mkdir(parents=True)
 
@@ -108,8 +113,12 @@ def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, 
     assert argv[:3] == [str(base_pythonw), "-m", "hermes_cli.main"]
     assert cwd == str(hermes_home.resolve())
     assert env_overlay["VIRTUAL_ENV"] == str(project / "venv")
-    assert str(project) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
-    assert str(site_packages) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
+    pythonpath = env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
+    assert str(project) in pythonpath
+    assert str(site_packages) in pythonpath
+    assert str(pywin32_system32) in pythonpath
+    assert str(win32) in pythonpath
+    assert str(win32_lib) in pythonpath
 
 
 class TestStableWindowsGatewayWorkingDir:
@@ -215,10 +224,15 @@ def test_gateway_cmd_script_uses_uv_safe_base_pythonw(monkeypatch, tmp_path):
     project = tmp_path / "project"
     scripts = project / "venv" / "Scripts"
     site_packages = project / "venv" / "Lib" / "site-packages"
+    pywin32_system32 = site_packages / "pywin32_system32"
+    win32 = site_packages / "win32"
+    win32_lib = win32 / "lib"
     hermes_home = tmp_path / "hermes-home"
     base = tmp_path / "uv" / "python" / "cpython-3.11-windows-x86_64-none"
     scripts.mkdir(parents=True)
     site_packages.mkdir(parents=True)
+    pywin32_system32.mkdir()
+    win32_lib.mkdir(parents=True)
     hermes_home.mkdir()
     base.mkdir(parents=True)
 
@@ -242,6 +256,9 @@ def test_gateway_cmd_script_uses_uv_safe_base_pythonw(monkeypatch, tmp_path):
     assert str(base_pythonw) in content
     assert f'set "VIRTUAL_ENV={project / "venv"}"' in content
     assert str(site_packages) in content
+    assert str(pywin32_system32) in content
+    assert str(win32) in content
+    assert str(win32_lib) in content
     assert str(venv_pythonw) not in content
 
 

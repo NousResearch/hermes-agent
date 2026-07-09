@@ -6,6 +6,7 @@ import {
   appendUniquePathEntries,
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
+  getWindowsVenvPythonPathEntries,
   normalizeHermesHomeRoot,
   pathEnvKey,
   POSIX_SANE_PATH_ENTRIES
@@ -98,6 +99,45 @@ test('Windows PATH casing and delimiter are preserved without POSIX sane entries
   assert.ok(env.Path.includes('\\venv\\Scripts;'))
   assert.ok(env.Path.includes(';C:\\Windows\\System32;C:\\Windows'))
   assert.equal(env.Path.includes('/opt/homebrew/bin'), false)
+})
+
+test('Windows venv PYTHONPATH includes pywin32 extension directories for base pythonw', () => {
+  const venvRoot = 'C:\\Users\\test\\AppData\\Local\\hermes\\hermes-agent\\venv'
+  const sitePackages = path.win32.join(venvRoot, 'Lib', 'site-packages')
+  const pywin32System32 = path.win32.join(sitePackages, 'pywin32_system32')
+  const win32 = path.win32.join(sitePackages, 'win32')
+  const win32Lib = path.win32.join(win32, 'lib')
+  const existingDirs = new Set([sitePackages, pywin32System32, win32, win32Lib])
+  const pythonPathEntries = getWindowsVenvPythonPathEntries(venvRoot, {
+    directoryExists: (entry: string) => existingDirs.has(entry),
+    pathModule: path.win32
+  })
+
+  assert.deepEqual(pythonPathEntries, [sitePackages, pywin32System32, win32, win32Lib])
+
+  const env = buildDesktopBackendEnv({
+    hermesHome: 'C:\\Users\\test\\AppData\\Local\\hermes',
+    pythonPathEntries: ['C:\\repo\\hermes-agent', ...pythonPathEntries],
+    venvRoot,
+    currentEnv: {
+      Path: 'C:\\Windows\\System32',
+      PYTHONPATH: 'C:\\existing\\pythonpath'
+    },
+    platform: 'win32',
+    pathModule: path.win32
+  })
+
+  assert.equal(
+    env.PYTHONPATH,
+    [
+      'C:\\repo\\hermes-agent',
+      sitePackages,
+      pywin32System32,
+      win32,
+      win32Lib,
+      'C:\\existing\\pythonpath'
+    ].join(';')
+  )
 })
 
 test('appendUniquePathEntries drops empty entries and keeps first occurrence', () => {

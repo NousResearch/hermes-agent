@@ -266,6 +266,99 @@ class TestLoadConfigParseFailure:
 
             assert not list(tmp_path.glob("config.yaml.corrupt.*.bak"))
 
+    def test_last_known_good_retained_within_process(self, tmp_path, capsys):
+        """Port of openai/codex#31188's invariant: a parse failure must not
+        silently replace the effective config (policy included) with
+        defaults when the process already loaded a good config.
+
+        Scenario: long-running gateway, user mid-edits config.yaml into
+        broken YAML. Before this fix the next load_config() dropped every
+        override — including ``approvals.deny`` security rules. Now the
+        last successfully loaded config keeps being served until the file
+        parses again.
+        """
+        import time
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            cfg = tmp_path / "config.yaml"
+            cfg.write_text(
+                "model:\n  default: test/custom-model\n"
+                "approvals:\n  deny:\n    - 'curl*evil.com*'\n"
+            )
+
+            good = load_config()
+            assert good["model"]["default"] == "test/custom-model"
+            assert good["approvals"]["deny"] == ["curl*evil.com*"]
+            capsys.readouterr()
+
+            # Corrupt the file (mtime must change to bust the cache)
+            time.sleep(0.05)
+            cfg.write_text("approvals:\n  deny: [unclosed\n  :::bad {{{\n")
+
+            after = load_config()
+            # Last-known-good retained — NOT defaults
+            assert after["model"]["default"] == "test/custom-model"
+            assert after["approvals"]["deny"] == ["curl*evil.com*"]
+            # Warning says we kept the previous config, not defaults
+            err = capsys.readouterr().err
+            assert "previously loaded config" in err
+
+    def test_last_known_good_recovers_after_fix(self, tmp_path):
+        """Fixing the YAML picks up the new content on the next load."""
+        import time
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            cfg = tmp_path / "config.yaml"
+            cfg.write_text("model:\n  default: test/first\n")
+            assert load_config()["model"]["default"] == "test/first"
+
+            time.sleep(0.05)
+            cfg.write_text("\tbroken:\n")
+            assert load_config()["model"]["default"] == "test/first"
+
+            time.sleep(0.05)
+            cfg.write_text("model:\n  default: test/second\n")
+            assert load_config()["model"]["default"] == "test/second"
+
+    def test_fresh_process_still_falls_back_to_defaults(self, tmp_path):
+        """With no last-known-good (fresh process for this path), a broken
+        config still falls back to DEFAULT_CONFIG as before."""
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text("\tbroken:\n")
+            # No prior good load for this path in _LAST_EXPANDED_CONFIG_BY_PATH
+            cfg_mod._LAST_EXPANDED_CONFIG_BY_PATH.pop(
+                str(tmp_path / "config.yaml"), None
+            )
+            config = load_config()
+            assert config["model"] == DEFAULT_CONFIG["model"]
+
+    def test_last_known_good_cached_no_rewarn_spam(self, tmp_path, capsys):
+        """Repeated loads of the same broken file serve the cached LKG and
+        don't re-warn (dedup on mtime/size still applies)."""
+        import time
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            cfg = tmp_path / "config.yaml"
+            cfg.write_text("model:\n  default: test/custom\n")
+            load_config()
+            time.sleep(0.05)
+            cfg.write_text("\tbroken:\n")
+
+            load_config()
+            capsys.readouterr()
+            second = load_config()
+            assert second["model"]["default"] == "test/custom"
+            assert capsys.readouterr().err == ""
+
 
 class TestSaveAndLoadRoundtrip:
     @staticmethod

@@ -1487,7 +1487,10 @@ class AIAgent:
         provider_lower = (self.provider or "").lower()
         if "glm" not in model_lower and provider_lower != "zai":
             return False
-        if "ollama" in self._base_url_lower or ":11434" in self._base_url_lower:
+        base = self._base_url_lower
+        if ":11434" in base or "localhost" in base or "127.0.0.1" in base:
+            return True
+        if "ollama" in base and "ollama.com" not in base and "ollama.ai" not in base:
             return True
         return provider_lower == "ollama"
 

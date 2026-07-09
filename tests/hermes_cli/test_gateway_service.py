@@ -2074,68 +2074,90 @@ class TestSystemUnitRefreshSyncsHermesHome:
         assert os.environ["HERMES_HOME"] == str(alice_hermes)
         assert gateway_cli.systemd_unit_is_current(system=True) is True
 
-    def test_systemd_restart_syncs_before_refresh(self, monkeypatch):
-        calls = []
+    def test_is_current_syncs_before_reading_unit(self, tmp_path, monkeypatch):
+        """CHOKEPOINT INVARIANT: systemd_unit_is_current() must adopt the
+        unit's pinned HERMES_HOME *before* it reads/compares the unit.
 
-        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: True)
-        monkeypatch.setattr(gateway_cli, "_require_root_for_system_service", lambda action: None)
-        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
-        monkeypatch.setattr(
-            gateway_cli,
-            "_sync_hermes_home_from_systemd_unit",
-            lambda system: calls.append(("sync", system)),
-        )
-        monkeypatch.setattr(
-            gateway_cli,
-            "refresh_systemd_unit_if_needed",
-            lambda system=False: calls.append(("refresh", system)),
-        )
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
-        monkeypatch.setattr(gateway_cli, "_systemd_main_pid", lambda system=False: None)
-        monkeypatch.setattr(
-            gateway_cli,
-            "_run_systemctl",
-            lambda args, **kwargs: calls.append(("systemctl", args))
-            or SimpleNamespace(returncode=0, stdout="", stderr=""),
-        )
-        monkeypatch.setattr(
-            gateway_cli,
-            "_wait_for_systemd_service_restart",
-            lambda system=False, previous_pid=None: True,
-        )
+        This is the single site that enforces sync-before-compare for every
+        path (refresh gates on it; status/install call it). If a future edit
+        moves the sync after the read (or drops it), this test fails.
+        """
+        order = []
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("[Unit]\n", encoding="utf-8")
 
-        gateway_cli.systemd_restart(system=True)
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
 
-        assert calls[0] == ("sync", True)
-        assert calls[1] == ("refresh", True)
+        real_read_text = Path.read_text
 
-    def test_systemd_start_syncs_before_refresh(self, monkeypatch):
-        calls = []
+        def tracking_sync(system):
+            order.append("sync")
 
-        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: True)
-        monkeypatch.setattr(gateway_cli, "_require_root_for_system_service", lambda action: None)
-        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
-        monkeypatch.setattr(
-            gateway_cli,
-            "_sync_hermes_home_from_systemd_unit",
-            lambda system: calls.append(("sync", system)),
-        )
-        monkeypatch.setattr(
-            gateway_cli,
-            "refresh_systemd_unit_if_needed",
-            lambda system=False: calls.append(("refresh", system)),
-        )
-        monkeypatch.setattr(
-            gateway_cli,
-            "_run_systemctl",
-            lambda args, **kwargs: calls.append(("systemctl", args))
-            or SimpleNamespace(returncode=0, stdout="", stderr=""),
-        )
+        def tracking_read_text(self, *a, **k):
+            if self == unit_path:
+                order.append("read")
+            return real_read_text(self, *a, **k)
 
-        gateway_cli.systemd_start(system=True)
+        monkeypatch.setattr(gateway_cli, "_sync_hermes_home_from_systemd_unit", tracking_sync)
+        monkeypatch.setattr(Path, "read_text", tracking_read_text)
+        # Avoid a real generate/compare — we only assert sync precedes read.
+        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda **k: "[Unit]\n")
+        monkeypatch.setattr(gateway_cli, "_read_systemd_user_from_unit", lambda p: None)
 
-        assert calls[0] == ("sync", True)
-        assert calls[1] == ("refresh", True)
+        gateway_cli.systemd_unit_is_current(system=True)
+
+        assert order, "systemd_unit_is_current did not run sync or read"
+        assert order[0] == "sync", f"sync must precede unit read; got {order}"
+        assert "read" in order and order.index("sync") < order.index("read")
+
+    def test_start_and_restart_delegate_sync_to_chokepoint(self, monkeypatch):
+        """start/restart must NOT pre-sync at the callsite — the sync is owned
+        by the systemd_unit_is_current chokepoint that refresh gates on. This
+        pins the single-chokepoint design so a future edit can't reintroduce a
+        redundant (or, worse, out-of-order) callsite sync.
+        """
+        for entry in ("systemd_start", "systemd_restart"):
+            calls = []
+            monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: True)
+            monkeypatch.setattr(gateway_cli, "_require_root_for_system_service", lambda action: None)
+            monkeypatch.setattr(
+                gateway_cli, "_require_service_installed", lambda action, system=False: None
+            )
+            monkeypatch.setattr(
+                gateway_cli,
+                "_sync_hermes_home_from_systemd_unit",
+                lambda system: calls.append("sync"),
+            )
+            monkeypatch.setattr(
+                gateway_cli,
+                "refresh_systemd_unit_if_needed",
+                lambda system=False: calls.append("refresh"),
+            )
+            monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+            monkeypatch.setattr(gateway_cli, "_systemd_main_pid", lambda system=False: None)
+            monkeypatch.setattr(
+                gateway_cli,
+                "_run_systemctl",
+                lambda args, **kwargs: calls.append("systemctl")
+                or SimpleNamespace(returncode=0, stdout="", stderr=""),
+            )
+            monkeypatch.setattr(
+                gateway_cli,
+                "_wait_for_systemd_service_restart",
+                lambda system=False, previous_pid=None: True,
+            )
+
+            getattr(gateway_cli, entry)(system=True)
+
+            # refresh runs; the callsite adds NO separate sync before it (the
+            # chokepoint inside refresh->is_current owns the sync). Here refresh
+            # is mocked out, so no "sync" should appear at all for the refresh
+            # phase — proving the callsite pre-sync was removed.
+            assert "refresh" in calls, f"{entry} must call refresh_systemd_unit_if_needed"
+            assert calls.count("sync") == 0, (
+                f"{entry} should delegate sync to the chokepoint, not pre-sync "
+                f"at the callsite; got {calls}"
+            )
 
 
 class TestHermesHomeForTargetUser:

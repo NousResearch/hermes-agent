@@ -2855,16 +2855,27 @@ def _normalize_launchd_plist_for_comparison(text: str) -> str:
 
 
 def systemd_unit_is_current(system: bool = False) -> bool:
+    # ── HERMES_HOME sync chokepoint ──────────────────────────────────────
+    # Every path that compares OR regenerates the unit funnels through here:
+    # ``refresh_systemd_unit_if_needed`` gates on this before rewriting, and
+    # ``systemd_status`` / ``systemd_install`` call it directly. Doing the
+    # sync here — and ONLY here — enforces the invariant "the operator's
+    # pinned HERMES_HOME is adopted before any compare/regenerate" at a single
+    # site, so a future callsite cannot regress it by forgetting to pre-sync.
+    #
+    # Under ``sudo hermes gateway … --system``, HERMES_HOME is often stripped
+    # and falls back to ``/root/.hermes``. Adopting the unit's pinned home
+    # first makes TimeoutStopSec / WorkingDirectory / HERMES_HOME comparisons
+    # use the real operator config — otherwise start/restart "refresh" rewrites
+    # a correct unit from root's defaults and ``status`` keeps warning forever.
+    # ``_sync_...`` is idempotent (early-returns once os.environ matches), so
+    # the mutation persists for callers that read runtime state after this
+    # (e.g. ``systemd_restart``'s post-refresh get_running_pid / drain-timeout).
+    _sync_hermes_home_from_systemd_unit(system=system)
+
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists():
         return False
-
-    # Under ``sudo hermes gateway … --system``, HERMES_HOME is often stripped
-    # and falls back to ``/root/.hermes``. Adopt the unit's pinned home first
-    # so TimeoutStopSec / WorkingDirectory / HERMES_HOME comparisons use the
-    # real operator config — otherwise start/restart "refresh" rewrites a
-    # correct unit from root's defaults and ``status`` keeps warning forever.
-    _sync_hermes_home_from_systemd_unit(system=system)
 
     installed = unit_path.read_text(encoding="utf-8")
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
@@ -2946,11 +2957,10 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     if not unit_path.exists():
         return False
 
-    # Sync before the current-check / regenerate path so a ``sudo`` shell
-    # does not bake root's config into a system unit that already pins the
-    # operator's HERMES_HOME. ``systemd_unit_is_current`` also syncs; doing
-    # it here keeps the write path safe even if that helper changes.
-    _sync_hermes_home_from_systemd_unit(system=system)
+    # The gate below funnels through ``systemd_unit_is_current``, which is the
+    # single HERMES_HOME-sync chokepoint (adopts the unit's pinned home before
+    # any compare/regenerate). No separate pre-sync needed here — and the env
+    # mutation it performs persists for the regenerate path below.
     if systemd_unit_is_current(system=system):
         return False
 
@@ -3139,8 +3149,11 @@ def systemd_install(
     scope_flag = " --system" if system else ""
 
     # Existing system units already pin HERMES_HOME; adopt it before any
-    # current-check / regenerate so ``sudo hermes gateway install --system``
-    # cannot "repair" a correct unit from root's config.
+    # regenerate. This pre-sync is NOT redundant with the systemd_unit_is_current
+    # chokepoint: the ``--force`` path below skips the is_current gate and calls
+    # generate_systemd_unit() directly (line ~3172), so without this a
+    # ``sudo hermes gateway install --system --force`` would bake /root/.hermes
+    # into an already-correct unit. Keep it to protect that bypass path.
     if unit_path.exists():
         _sync_hermes_home_from_systemd_unit(system=system)
 
@@ -3234,9 +3247,9 @@ def systemd_start(system: bool = False):
         # Raises UserSystemdUnavailableError with a remediation message.
         _preflight_user_systemd()
     _require_service_installed("start", system=system)
-    # Adopt the unit's HERMES_HOME before refresh so sudo system starts do not
-    # rewrite TimeoutStopSec / env from /root/.hermes.
-    _sync_hermes_home_from_systemd_unit(system=system)
+    # HERMES_HOME sync happens inside refresh_systemd_unit_if_needed's
+    # systemd_unit_is_current gate (the single chokepoint), and the unit is
+    # guaranteed to exist here by _require_service_installed, so the gate runs.
     refresh_systemd_unit_if_needed(system=system)
     _run_systemctl(["start", get_service_name()], system=system, check=True, timeout=30)
     print(f"✓ {_service_scope_label(system).capitalize()} service started")
@@ -3277,10 +3290,11 @@ def systemd_restart(system: bool = False):
     else:
         _preflight_user_systemd()
     _require_service_installed("restart", system=system)
-    # Sync BEFORE refresh. Under sudo, refreshing first used to regenerate the
-    # unit from /root/.hermes (wrong drain timeout / env), then sync for PID
-    # lookup — leaving ``status`` stuck on "service definition is outdated".
-    _sync_hermes_home_from_systemd_unit(system=system)
+    # HERMES_HOME sync happens inside refresh_systemd_unit_if_needed's
+    # systemd_unit_is_current gate (the single chokepoint). The unit exists
+    # here (_require_service_installed), so the gate runs and its os.environ
+    # mutation persists for the get_running_pid / drain-timeout reads below —
+    # no separate pre-sync needed.
     refresh_systemd_unit_if_needed(system=system)
     from gateway.status import get_running_pid
 
@@ -3381,8 +3395,6 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         print("✗ Gateway service is not installed")
         print(f"  Run: {'sudo ' if system else ''}hermes gateway install{scope_flag}")
         return
-
-    _sync_hermes_home_from_systemd_unit(system=system)
 
     if has_conflicting_systemd_units():
         print_systemd_scope_conflict_warning()

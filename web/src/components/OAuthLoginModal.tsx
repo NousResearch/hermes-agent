@@ -300,17 +300,14 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
                       <Copy className="h-4 w-4" />
                     )
                   }
-                  aria-label={t.oauth.copyCode ?? "Copy code"}
+                  aria-label={t.oauth.copyCode}
                 >
-                  {copyStatus === "copied"
-                    ? t.oauth.copied
-                    : (t.oauth.copyCode ?? "Copy code")}
+                  {copyStatus === "copied" ? t.oauth.copied : t.oauth.copyCode}
                 </Button>
               </div>
               {copyStatus === "failed" && (
                 <p className="text-xs text-destructive">
-                  {t.oauth.copyFailed ??
-                    "Could not copy automatically. Select the code and copy it manually."}
+                  {t.oauth.copyFailed}
                 </p>
               )}
               <a

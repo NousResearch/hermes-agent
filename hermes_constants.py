@@ -451,17 +451,28 @@ def find_hermes_node_executable(command: str) -> str | None:
     """Return a Hermes-managed Node/npm executable path, healing broken trees."""
     names = _candidate_node_command_names(command)
     broken_present = False
+    found_present = False
     for directory in iter_hermes_node_dirs():
         for name in names:
             candidate = directory / name
             if candidate.is_file() and (
                 sys.platform == "win32" or os.access(candidate, os.X_OK)
             ):
+                found_present = True
                 resolved = str(candidate)
                 if node_tool_runnable(resolved):
                     return resolved
                 broken_present = True
-    if broken_present and heal_hermes_managed_node():
+    # Heal when the requested tool is present-but-broken, OR entirely missing
+    # while the managed tree is otherwise present (a sibling tool such as
+    # ``node`` survives). A self-update clobber (``npm i -g npm``), partial
+    # symlink cleanup, or interrupted zip extraction can delete ``npm``/``npx``
+    # while leaving ``node`` behind — both are partial-tree states that
+    # heal_hermes_managed_node() repairs by redownloading the full tarball.
+    needs_heal = broken_present or (
+        not found_present and hermes_managed_node_tree_present()
+    )
+    if needs_heal and heal_hermes_managed_node():
         for directory in iter_hermes_node_dirs():
             for name in names:
                 candidate = directory / name

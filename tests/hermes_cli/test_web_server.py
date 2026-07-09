@@ -491,6 +491,55 @@ class TestWebServerEndpoints:
         assert fields["api_key"]["url"] == "https://app.honcho.dev"
         assert fields["baseUrl"]["kind"] == "text"
 
+    def test_declared_surface_serves_curated_hindsight_schema(self):
+        resp = self.client.get("/api/memory/providers/hindsight/config?surface=declared")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        fields = self._provider_field_map(data)
+        assert set(fields) == {"mode", "api_key", "api_url", "bank_id", "recall_budget"}
+        assert fields["mode"]["kind"] == "select"
+        assert fields["api_key"]["kind"] == "secret"
+
+    def test_declared_surface_hides_undeclared_providers(self):
+        resp = self.client.get("/api/memory/providers/honcho/config?surface=declared")
+
+        assert resp.status_code == 200
+        assert resp.json()["fields"] == []
+
+    def test_declared_surface_put_writes_config_and_secret(self):
+        from hermes_constants import get_hermes_home
+        from hermes_cli.config import load_env
+
+        resp = self.client.put(
+            "/api/memory/providers/hindsight/config?surface=declared",
+            json={
+                "values": {
+                    "mode": "local_external",
+                    "api_url": "http://localhost:8888",
+                    "api_key": "hs-declared-key",
+                }
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+        assert load_env()["HINDSIGHT_API_KEY"] == "hs-declared-key"
+
+        config_path = get_hermes_home() / "hindsight" / "config.json"
+        provider_config = json.loads(config_path.read_text(encoding="utf-8"))
+        assert provider_config["mode"] == "local_external"
+        assert provider_config["api_url"] == "http://localhost:8888"
+        assert "api_key" not in provider_config
+
+    def test_declared_surface_put_rejects_undeclared_provider(self):
+        resp = self.client.put(
+            "/api/memory/providers/honcho/config?surface=declared",
+            json={"values": {"api_key": "x"}},
+        )
+
+        assert resp.status_code == 404
+
     def test_all_listed_memory_provider_configs_fetch(self):
         resp = self.client.get("/api/memory")
 

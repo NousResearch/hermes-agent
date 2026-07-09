@@ -229,9 +229,17 @@ def test_review_fork_inherits_parent_toolset_config():
             review_skills=False,
         )
 
-    assert captured.get("enabled_toolsets") == agent.enabled_toolsets, (
+    # With the schema-level toolset narrowing (PR #61529), the review fork
+    # uses a restricted toolset (["memory", "skills"]) rather than inheriting
+    # the parent's full toolset. This prevents the fork from advertising tools
+    # that the runtime whitelist denies (issue #61521).
+    expected_toolsets = ["skills"]
+    if agent._memory_enabled or agent._user_profile_enabled:
+        expected_toolsets.insert(0, "memory")
+
+    assert captured.get("enabled_toolsets") == expected_toolsets, (
         f"enabled_toolsets mismatch: {captured.get('enabled_toolsets')!r} "
-        f"vs expected {agent.enabled_toolsets!r}"
+        f"vs expected {expected_toolsets!r}"
     )
     assert captured.get("disabled_toolsets") == agent.disabled_toolsets, (
         f"disabled_toolsets mismatch: {captured.get('disabled_toolsets')!r} "

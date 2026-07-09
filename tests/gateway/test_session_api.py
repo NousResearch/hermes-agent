@@ -113,7 +113,10 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
     )
 
     assert result["session_id"] == "request-session"
-    assert usage == {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    assert usage["input_tokens"] == 0
+    assert usage["output_tokens"] == 0
+    assert usage["total_tokens"] == 0
+    assert isinstance(usage.get("runtime"), dict)
     assert observed == {
         "task_id": "request-session",
         "context_session_id": "request-session",
@@ -438,3 +441,230 @@ async def test_session_header_rejected_without_api_key(adapter, session_db):
         assert resp.status == 403
         data = await resp.json()
         assert "X-Hermes-Session-Key requires API key" in data["error"]["message"]
+
+
+def _register_session_model_route(app, adapter):
+    app.router.add_post("/api/sessions/{session_id}/model", adapter._handle_session_model_lock)
+
+
+@pytest.mark.asyncio
+async def test_session_chat_builds_raw_provider_model_route_when_alias_missing(adapter, session_db):
+    session_id = session_db.create_session("route-session", "api_server")
+    mock_run = AsyncMock(
+        return_value=(
+            {
+                "final_response": "ok",
+                "session_id": session_id,
+                "runtime": {"provider": "nous", "model": "x-ai/grok-4.5", "route_source": "raw_request"},
+            },
+            {"total_tokens": 2, "runtime": {"provider": "nous", "model": "x-ai/grok-4.5"}},
+        )
+    )
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_resolve_route", return_value=None), patch.object(adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={
+                    "message": "hello",
+                    "provider": "nous",
+                    "model": "x-ai/grok-4.5",
+                    "require_model_lock": True,
+                },
+            )
+            assert resp.status == 200, await resp.text()
+            payload = await resp.json()
+
+    kwargs = mock_run.call_args.kwargs
+    assert kwargs["route"] == {"provider": "nous", "model": "x-ai/grok-4.5"}
+    assert payload["runtime"]["provider"] == "nous"
+    assert payload["runtime"]["model"] == "x-ai/grok-4.5"
+    assert payload["runtime"]["requested"]["model"] == "x-ai/grok-4.5"
+
+
+@pytest.mark.asyncio
+async def test_session_chat_passes_runtime_options_to_run_agent(adapter, session_db):
+    session_id = session_db.create_session("options-session", "api_server")
+    mock_run = AsyncMock(return_value=({"final_response": "ok", "session_id": session_id}, {}))
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_resolve_route", return_value=None), patch.object(adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={
+                    "message": "hello",
+                    "provider": "nous",
+                    "model": "x-ai/grok-4.5",
+                    "model_options": {
+                        "reasoning": {"enabled": True, "effort": "xhigh"},
+                        "service_tier": "priority",
+                        "fast": True,
+                    },
+                },
+            )
+            assert resp.status == 200, await resp.text()
+
+    kwargs = mock_run.call_args.kwargs
+    assert kwargs["runtime_options"] == {
+        "reasoning_config": {"enabled": True, "effort": "xhigh"},
+        "service_tier": "priority",
+    }
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_uses_same_runtime_lock(adapter, session_db):
+    session_id = session_db.create_session("stream-lock-session", "api_server")
+    captured = {}
+
+    async def fake_run(**kwargs):
+        captured.update(kwargs)
+        kwargs["stream_delta_callback"]("hi")
+        return (
+            {
+                "final_response": "hi",
+                "session_id": session_id,
+                "runtime": {
+                    "provider": "nous",
+                    "model": "x-ai/grok-4.5",
+                    "requested": {"provider": "nous", "model": "x-ai/grok-4.5"},
+                    "route_source": "raw_request",
+                },
+            },
+            {
+                "total_tokens": 1,
+                "runtime": {
+                    "provider": "nous",
+                    "model": "x-ai/grok-4.5",
+                    "requested": {"provider": "nous", "model": "x-ai/grok-4.5"},
+                },
+            },
+        )
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_resolve_route", return_value=None), patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={
+                    "message": "stream",
+                    "provider": "nous",
+                    "model": "x-ai/grok-4.5",
+                    "model_options": {"reasoning": {"enabled": False}},
+                    "require_model_lock": True,
+                },
+            )
+            assert resp.status == 200, await resp.text()
+            body = await resp.text()
+
+    assert captured["route"] == {"provider": "nous", "model": "x-ai/grok-4.5"}
+    assert captured["runtime_options"] == {"reasoning_config": {"enabled": False}}
+    assert "x-ai/grok-4.5" in body
+    assert "run.started" in body or "event: run.started" in body
+
+
+@pytest.mark.asyncio
+async def test_create_session_respects_browser_source_and_model_lock(adapter, session_db):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(
+            "/api/sessions",
+            json={
+                "id": "browser-lock-session",
+                "source": "hermes_browser",
+                "provider": "nous",
+                "model": "x-ai/grok-4.5",
+                "title": "Browser lock",
+                "system_prompt": "browser prompt",
+            },
+        )
+        assert resp.status == 201, await resp.text()
+        payload = await resp.json()
+
+    assert payload["session"]["source"] == "hermes_browser"
+    assert payload["session"]["model"] == "x-ai/grok-4.5"
+    row = session_db.get_session("browser-lock-session")
+    assert row["source"] == "hermes_browser"
+    assert row["model"] == "x-ai/grok-4.5"
+    import json as _json
+    model_config = row.get("model_config")
+    if isinstance(model_config, str):
+        model_config = _json.loads(model_config)
+    assert model_config["browser_model_lock"]["provider"] == "nous"
+    assert model_config["browser_model_lock"]["model"] == "x-ai/grok-4.5"
+
+
+@pytest.mark.asyncio
+async def test_session_model_lock_endpoint_persists_and_invalidates_prompt(adapter, session_db):
+    session_id = session_db.create_session(
+        "lock-endpoint-session",
+        "api_server",
+        model="gpt-5.5",
+        model_config={"_branched_from": "parent-session"},
+        system_prompt="Conversation started:\nModel: gpt-5.5\nProvider: openai-codex\n",
+    )
+    app = _create_session_app(adapter)
+    _register_session_model_route(app, adapter)
+    with patch.object(adapter, "_resolve_route", return_value=None):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/model",
+                json={
+                    "provider": "nous",
+                    "model": "x-ai/grok-4.5",
+                    "model_options": {"reasoning": {"enabled": True, "effort": "high"}},
+                    "require_model_lock": True,
+                },
+            )
+            assert resp.status == 200, await resp.text()
+            payload = await resp.json()
+
+    assert payload["object"] == "hermes.session.model_lock"
+    assert payload["runtime"]["requested"]["provider"] == "nous"
+    assert payload["runtime"]["model"] == "x-ai/grok-4.5"
+    assert payload["runtime"]["model_lock"] in {"accepted", "confirmed"}
+    row = session_db.get_session(session_id)
+    assert row["model"] == "x-ai/grok-4.5"
+    assert row["system_prompt"] is None
+    import json as _json
+    model_config = row.get("model_config")
+    if isinstance(model_config, str):
+        model_config = _json.loads(model_config)
+    assert model_config["_branched_from"] == "parent-session"
+    assert model_config["browser_model_lock"]["provider"] == "nous"
+
+
+@pytest.mark.asyncio
+async def test_require_model_lock_hard_fails_when_global_default_would_be_used(adapter, session_db, monkeypatch):
+    session_id = session_db.create_session("lock-fail-session", "api_server")
+    monkeypatch.setattr(adapter, "_model_name", "gpt-5.5")
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_resolve_route", return_value=None), patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+        async with TestClient(TestServer(app)) as cli:
+            # empty model + require_model_lock must not silently fall through
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={
+                    "message": "hello",
+                    "provider": "nous",
+                    "model": "",
+                    "require_model_lock": True,
+                },
+            )
+            assert resp.status in (400, 409), await resp.text()
+            body = await resp.json()
+            assert body["error"]["code"] in {"model_lock_unavailable", "invalid_model_lock", "missing_model"}
+    mock_run.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_capabilities_advertises_session_model_lock(adapter):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get("/v1/capabilities")
+        assert resp.status == 200
+        data = await resp.json()
+    assert data["features"]["session_model_lock"] is True
+    assert data["endpoints"]["session_model_lock"] == {
+        "method": "POST",
+        "path": "/api/sessions/{session_id}/model",
+    }

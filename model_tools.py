@@ -961,6 +961,35 @@ def _coerce_boolean(value: str):
     return value
 
 
+def validate_required_params(
+    tool_name: str, args: Dict[str, Any]
+) -> list[str]:
+    """Return a list of missing required parameter names.
+
+    Checks the tool's JSON Schema ``required`` array against the keys present
+    in *args*.  Returns an empty list when all required params are present
+    (or when no schema / no required array exists for the tool).
+
+    This runs after ``coerce_tool_args`` so type-mismatched values have already
+    been normalized — it only catches genuinely *missing* params that the model
+    omitted from its tool call, which currently surfaces as a confusing
+    ``KeyError`` or default-value-when-none-existed deep inside the tool
+    handler.
+    """
+    if not isinstance(args, dict) or not args and args != {}:
+        # args could be {} (valid: no required params or all optional).
+        # Only skip on non-dict.
+        if not isinstance(args, dict):
+            return []
+    schema = registry.get_schema(tool_name)
+    if not schema:
+        return []
+    required = (schema.get("parameters") or {}).get("required")
+    if not required or not isinstance(required, list):
+        return []
+    return [r for r in required if r not in args]
+
+
 def _tool_result_observer_fields(result: Any) -> tuple[str, Optional[str], Optional[str]]:
     try:
         parsed_result = json.loads(result) if isinstance(result, str) else result
@@ -1066,6 +1095,23 @@ def handle_function_call(
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
+
+    # Validate required parameters are present before dispatching.
+    # coerce_tool_args handles *type* mismatches; this catches genuinely
+    # *missing* required params that would otherwise surface as confusing
+    # KeyError or None-default behaviour deep inside the tool handler.
+    _missing = validate_required_params(function_name, function_args)
+    if _missing:
+        _hint = (
+            f"Missing required parameter(s): {', '.join(_missing)}. "
+            f"Please retry with all required parameters."
+        )
+        logger.info(
+            "validate_required_params: %s missing %s",
+            function_name, _missing,
+        )
+        return json.dumps({"error": _hint}, ensure_ascii=False)
+
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
 
     # ── Tool Search bridge dispatch ──────────────────────────────────

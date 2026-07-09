@@ -64,6 +64,7 @@ def _make_runner():
     runner._failed_platforms = {}
     runner.adapters = {}
     runner.delivery_router = MagicMock()
+    runner._handle_voice_channel_input = MagicMock()
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}

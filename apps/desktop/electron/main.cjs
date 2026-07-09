@@ -3,6 +3,7 @@ const {
   BrowserWindow,
   Menu,
   Notification,
+  Tray,
   clipboard,
   dialog,
   ipcMain,
@@ -429,6 +430,12 @@ const APP_ICON_PATHS = [
   path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
   path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png')
 ]
+const TRAY_ICON_PATHS = [
+  process.resourcesPath ? path.join(process.resourcesPath, 'icon.ico') : null,
+  path.join(APP_ROOT, 'assets', 'icon.ico'),
+  path.join(APP_ROOT, '..', 'assets', 'icon.ico'),
+  ...APP_ICON_PATHS
+].filter(Boolean)
 
 let rendererTitleBarTheme = null
 const terminalSessions = new Map()
@@ -772,6 +779,9 @@ function registerMediaProtocol() {
 }
 
 let mainWindow = null
+let tray = null
+let isQuitting = false
+let hasShownTrayHint = false
 let hermesProcess = null
 let connectionPromise = null
 // Additional per-profile backends, keyed by profile name. The PRIMARY backend
@@ -3351,6 +3361,56 @@ function fetchJson(url, token, options = {}) {
   })
 }
 
+function isLoopbackUrl(url) {
+  try {
+    const parsed = new URL(url)
+    return parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost' || parsed.hostname === '::1'
+  } catch {
+    return false
+  }
+}
+
+function isTransientBackendReadError(error) {
+  const code = typeof error?.code === 'string' ? error.code : ''
+  const message = String(error?.message || '')
+  return (
+    code === 'ECONNRESET' ||
+    code === 'ECONNREFUSED' ||
+    code === 'EPIPE' ||
+    /ECONNRESET|ECONNREFUSED|socket hang up/i.test(message)
+  )
+}
+
+function isRetryableApiRequest(url, options = {}) {
+  const method = String(options.method || 'GET').toUpperCase()
+  return isLoopbackUrl(url) && (method === 'GET' || method === 'HEAD')
+}
+
+async function fetchJsonWithStartupRetry(url, token, options = {}) {
+  if (!isRetryableApiRequest(url, options)) {
+    return fetchJson(url, token, options)
+  }
+
+  const delays = [250, 500, 1_000, 2_000]
+  let lastError = null
+  for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+    try {
+      return await fetchJson(url, token, options)
+    } catch (error) {
+      lastError = error
+      if (!isTransientBackendReadError(error) || attempt >= delays.length) {
+        throw error
+      }
+      rememberLog(
+        `[api] transient local backend ${error.code || error.message}; retrying ${url} in ${delays[attempt]}ms`
+      )
+      await new Promise(resolve => setTimeout(resolve, delays[attempt]))
+    }
+  }
+
+  throw lastError
+}
+
 function fetchPublicJson(url, options = {}) {
   // Credential-free JSON GET/POST for public gateway endpoints
   // (``/api/status``, ``/api/auth/providers``). Unlike ``fetchJson`` it sends
@@ -3994,6 +4054,77 @@ function registerPowerResumeListeners() {
 
 function getAppIconPath() {
   return APP_ICON_PATHS.find(fileExists)
+}
+
+function getTrayIconPath() {
+  return TRAY_ICON_PATHS.find(fileExists) || getAppIconPath()
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+    return
+  }
+  focusWindow(mainWindow)
+}
+
+function hideMainWindowToTray() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  schedulePersistWindowState.flush()
+  closePetOverlay()
+  mainWindow.hide()
+  if (!hasShownTrayHint) {
+    hasShownTrayHint = true
+    try {
+      if (Notification.isSupported()) {
+        new Notification({
+          title: APP_NAME,
+          body: 'Hermes is still running in the system tray. Right-click the tray icon to quit.'
+        }).show()
+      }
+    } catch {
+      // Best-effort hint only.
+    }
+  }
+}
+
+function quitFromTray() {
+  isQuitting = true
+  app.quit()
+}
+
+function buildTrayMenu() {
+  return Menu.buildFromTemplate([
+    {
+      label: `Open ${APP_NAME}`,
+      click: showMainWindow
+    },
+    {
+      label: 'Hide Window',
+      enabled: Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+      click: hideMainWindowToTray
+    },
+    { type: 'separator' },
+    {
+      label: `Quit ${APP_NAME}`,
+      click: quitFromTray
+    }
+  ])
+}
+
+function ensureTray() {
+  if (tray || IS_MAC) return tray
+
+  const iconPath = getTrayIconPath()
+  const icon = iconPath ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty()
+  tray = new Tray(icon)
+  tray.setToolTip(APP_NAME)
+  tray.setContextMenu(buildTrayMenu())
+  tray.on('click', showMainWindow)
+  tray.on('double-click', showMainWindow)
+  tray.on('right-click', () => tray?.setContextMenu(buildTrayMenu()))
+
+  return tray
 }
 
 function sendOpenUpdatesRequested() {
@@ -6030,7 +6161,13 @@ function createWindow() {
   mainWindow.on('moved', schedulePersistWindowState)
   mainWindow.on('maximize', schedulePersistWindowState)
   mainWindow.on('unmaximize', schedulePersistWindowState)
-  mainWindow.on('close', () => schedulePersistWindowState.flush())
+  mainWindow.on('close', event => {
+    schedulePersistWindowState.flush()
+    if (!IS_MAC && !isQuitting && !isQuittingForHandoff) {
+      event.preventDefault()
+      hideMainWindowToTray()
+    }
+  })
 
   // The overlay rides the main window — closing the app's primary window must
   // tear it down too (otherwise it strands as an orphan that blocks
@@ -6575,7 +6712,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
       timeoutMs
     })
   }
-  return fetchJson(url, connection.token, {
+  return fetchJsonWithStartupRetry(url, connection.token, {
     method: request?.method,
     body: request?.body,
     timeoutMs
@@ -7545,8 +7682,7 @@ function handleDeepLink(url) {
     return
   }
   try {
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.focus()
+    focusWindow(mainWindow)
     mainWindow.webContents.send('hermes:deep-link', payload)
     rememberLog(`[deeplink] delivered ${kind}/${name}`)
   } catch (err) {
@@ -7594,8 +7730,7 @@ if (!_gotSingleInstanceLock) {
     const url = _extractDeepLink(argv)
     if (url) handleDeepLink(url)
     else if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
+      showMainWindow()
     }
   })
 }
@@ -7620,6 +7755,7 @@ app.whenReady().then(() => {
   ensureWslWindowsFonts()
   configureSpellChecker()
   registerPowerResumeListeners()
+  ensureTray()
   createWindow()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
@@ -7662,6 +7798,12 @@ function configureSpellChecker() {
 }
 
 app.on('before-quit', () => {
+  isQuitting = true
+  if (tray) {
+    tray.destroy()
+    tray = null
+  }
+
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()

@@ -11,7 +11,7 @@ import {
   type TimelineSourceMessage
 } from './timeline-data'
 
-const MIN_ENTRIES = 4
+const MIN_ENTRIES = 2
 const VIEWPORT = '[data-slot="aui_thread-viewport"]'
 const HOVER_CLOSE_MS = 140
 
@@ -23,6 +23,8 @@ const ROW_CLASS =
 // the dropdown/select/dialog menus. We only own layout + the border/radius here.
 const POPOVER_SHELL =
   'absolute right-full top-1/2 z-50 max-h-[min(22rem,calc(100vh-8rem))] w-80 max-w-[min(20rem,calc(100vw-2rem))] -translate-y-1/2 overflow-x-hidden overflow-y-auto overscroll-contain rounded-lg border p-1 text-popover-foreground transition-[opacity,transform] duration-100 ease-out group-hover/timeline:transition-none'
+
+const cssEscape = (value: string) => globalThis.CSS?.escape?.(value) ?? value.replace(/[^a-zA-Z0-9_-]/g, '\\$&')
 
 function userPromptText(content: unknown): string {
   if (typeof content === 'string') {
@@ -103,7 +105,7 @@ function jumpScroll(viewport: HTMLElement, top: number, duration = 170): void {
 
 function scrollToPrompt(id: string) {
   const viewport = document.querySelector<HTMLElement>(VIEWPORT)
-  const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
+  const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${cssEscape(id)}"]`)
 
   if (!viewport || !node) {
     return
@@ -115,7 +117,7 @@ function scrollToPrompt(id: string) {
   jumpScroll(viewport, Math.max(0, top))
 }
 
-/** Right-edge prompt rail — hover previews, click to jump. ≥4 user turns only. */
+/** Right-edge prompt rail — hover previews, click to jump. ≥2 user turns only. */
 export const ThreadTimeline: FC = () => {
   const sourceSignature = useAuiState(s => {
     const rows: TimelineSourceMessage[] = []
@@ -190,7 +192,7 @@ export const ThreadTimeline: FC = () => {
       const top = viewport.getBoundingClientRect().top
 
       const offsets = entries.map(entry => {
-        const node = viewport.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(entry.id)}"]`)
+        const node = viewport.querySelector<HTMLElement>(`[data-message-id="${cssEscape(entry.id)}"]`)
 
         return node ? node.getBoundingClientRect().top - top : null
       })

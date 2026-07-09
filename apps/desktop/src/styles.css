@@ -308,8 +308,8 @@
     --dt-destructive-foreground: #ffffff;
     --dt-sidebar-bg: var(--ui-bg-sidebar);
     --dt-sidebar-border: var(--ui-stroke-secondary);
-    --dt-user-bubble: var(--ui-chat-bubble-background);
-    --dt-user-bubble-border: var(--ui-stroke-tertiary);
+    --dt-user-bubble: color-mix(in srgb, #2563eb 18%, var(--ui-chat-bubble-background));
+    --dt-user-bubble-border: color-mix(in srgb, #60a5fa 46%, var(--ui-stroke-secondary));
 
     --dt-font-sans:
       'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif,

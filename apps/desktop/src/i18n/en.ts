@@ -2223,6 +2223,10 @@ export const en: Translations = {
           ? 'Will resume when the background task finishes'
           : `Will resume when ${count} background tasks finish`,
       thinking: 'Thinking',
+      processTrace: 'Process trace',
+      processTraceRunning: 'running',
+      processTraceStepCount: count => `${count} ${count === 1 ? 'step' : 'steps'}`,
+      processTraceErrorCount: count => `${count} ${count === 1 ? 'error' : 'errors'}`,
       today: time => `Today, ${time}`,
       yesterday: time => `Yesterday, ${time}`,
       copy: 'Copy',

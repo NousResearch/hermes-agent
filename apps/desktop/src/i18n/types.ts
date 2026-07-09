@@ -1858,6 +1858,10 @@ export interface Translations {
       loadingResponse: string
       resumeWhenBackgroundDone: (count: number) => string
       thinking: string
+      processTrace: string
+      processTraceRunning: string
+      processTraceStepCount: (count: number) => string
+      processTraceErrorCount: (count: number) => string
       today: (time: string) => string
       yesterday: (time: string) => string
       copy: string

@@ -2135,6 +2135,10 @@ export const zhHant = defineLocale({
       resumeWhenBackgroundDone: count =>
         count === 1 ? '背景工作完成後將自動繼續' : `${count} 個背景工作完成後將自動繼續`,
       thinking: '思考中',
+      processTrace: '過程記錄',
+      processTraceRunning: '執行中',
+      processTraceStepCount: count => `${count} 步`,
+      processTraceErrorCount: count => `${count} 個錯誤`,
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,
       copy: '複製',

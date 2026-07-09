@@ -14,7 +14,11 @@ import {
   messageContentText,
   pickPrimaryPreviewTarget
 } from '@/components/assistant-ui/thread/content'
-import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
+import {
+  MESSAGE_RESPONSE_PARTS_COMPONENTS,
+  MESSAGE_TRACE_PARTS_COMPONENTS,
+  ProcessTraceDisclosure
+} from '@/components/assistant-ui/thread/message-parts'
 import { StreamStallIndicator } from '@/components/assistant-ui/thread/status'
 import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
@@ -102,7 +106,10 @@ export const AssistantMessage: FC<{
         data-slot="aui_assistant-message-content"
       >
         {/* Todos render in the composer status stack now, not inline. */}
-        <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
+        <ProcessTraceDisclosure hasVisibleText={hasVisibleText}>
+          <MessagePrimitive.Parts components={MESSAGE_TRACE_PARTS_COMPONENTS} />
+        </ProcessTraceDisclosure>
+        <MessagePrimitive.Parts components={MESSAGE_RESPONSE_PARTS_COMPONENTS} />
         {isRunning && <StreamStallIndicator />}
         {previewTargets.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">

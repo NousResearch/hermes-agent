@@ -1,5 +1,5 @@
 import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
-import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
+import { type ComponentProps, type FC, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
@@ -18,6 +18,126 @@ const ImageGenerateTool: FC<ToolCallMessagePartProps> = ({ args, result }) => {
   return (
     <div className="mt-1.5">
       <GeneratedImage aspectRatio={aspectRatio} result={result} />
+    </div>
+  )
+}
+
+const NullPart: FC = () => null
+
+type TracePart = {
+  isError?: boolean
+  result?: unknown
+  status?: { type?: string }
+  text?: string
+  type?: string
+}
+
+function resultFlag(result: unknown, key: string): unknown {
+  if (!result || typeof result !== 'object') {
+    return undefined
+  }
+
+  return (result as Record<string, unknown>)[key]
+}
+
+function traceSummary(parts: readonly TracePart[]) {
+  let reasoning = 0
+  let tools = 0
+  let failed = 0
+  let running = 0
+
+  for (const part of parts) {
+    if (part.type === 'reasoning') {
+      if (typeof part.text === 'string' && part.text.trim()) {
+        reasoning += 1
+      }
+
+      if (part.status?.type && part.status.type !== 'complete') {
+        running += 1
+      }
+
+      continue
+    }
+
+    if (part.type !== 'tool-call') {
+      continue
+    }
+
+    tools += 1
+
+    if (part.result === undefined) {
+      running += 1
+    }
+
+    if (part.isError || resultFlag(part.result, 'success') === false || resultFlag(part.result, 'error')) {
+      failed += 1
+    }
+  }
+
+  return `${failed}:${reasoning}:${running}:${tools}:${reasoning + tools}`
+}
+
+function parseTraceSummary(signature: string) {
+  const [failed = 0, reasoning = 0, running = 0, tools = 0, total = 0] = signature.split(':').map(Number)
+
+  return { failed, reasoning, running, tools, total }
+}
+
+export const ProcessTraceDisclosure: FC<{
+  children: ReactNode
+  hasVisibleText: boolean
+}> = ({ children, hasVisibleText }) => {
+  const { t } = useI18n()
+  const messageRunning = useAuiState(s => s.message.status?.type === 'running')
+  const summarySignature = useAuiState(s => traceSummary(s.message.parts as TracePart[]))
+  const summary = useMemo(() => parseTraceSummary(summarySignature), [summarySignature])
+  const [userOpen, setUserOpen] = useState<boolean | null>(null)
+  const defaultOpen = messageRunning || !hasVisibleText
+  const open = userOpen ?? defaultOpen
+
+  useEffect(() => {
+    if (messageRunning) {
+      setUserOpen(null)
+    }
+  }, [messageRunning])
+
+  const summaryText = useMemo(() => {
+    const parts = [t.assistant.thread.processTraceStepCount(summary.total)]
+
+    if (summary.failed > 0) {
+      parts.push(t.assistant.thread.processTraceErrorCount(summary.failed))
+    } else if (summary.running > 0) {
+      parts.push(t.assistant.thread.processTraceRunning)
+    }
+
+    return parts.join(' · ')
+  }, [summary.failed, summary.running, summary.total, t.assistant.thread])
+
+  if (summary.total === 0) {
+    return null
+  }
+
+  return (
+    <div
+      className="mb-1.5 text-[length:var(--conversation-tool-font-size)] text-(--ui-text-tertiary)"
+      data-slot="process-trace-disclosure"
+    >
+      <DisclosureRow onToggle={() => setUserOpen(!open)} open={open}>
+        <span className="flex min-w-0 items-baseline gap-1.5">
+          <span
+            className={cn(
+              'font-medium leading-(--conversation-line-height) text-(--ui-text-secondary)',
+              messageRunning && 'shimmer text-foreground/55'
+            )}
+          >
+            {t.assistant.thread.processTrace}
+          </span>
+          <span className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+            {summaryText}
+          </span>
+        </span>
+      </DisclosureRow>
+      {open && <div className="mt-0.5 grid min-w-0 max-w-full gap-(--tool-row-gap) pb-1 pl-0.5">{children}</div>}
     </div>
   )
 }
@@ -189,7 +309,7 @@ const ReasoningTextPart: FC<{ text: string; status?: { type: string } }> = ({ te
   )
 }
 
-// Module-level constant so the `components` prop on `MessagePrimitive.Parts`
+// Module-level constants so the `components` prop on `MessagePrimitive.Parts`
 // has a stable identity across renders. Without this every AssistantMessage
 // render would create a fresh `components` object, invalidating the memo on
 // `MessagePrimitivePartByIndex` and forcing every tool/reasoning child to
@@ -202,4 +322,20 @@ export const MESSAGE_PARTS_COMPONENTS = {
   Text: MarkdownText,
   ToolGroup: ToolGroupSlot,
   tools: { Fallback: ChainToolFallback }
+} as const
+
+export const MESSAGE_TRACE_PARTS_COMPONENTS = {
+  Reasoning: ReasoningTextPart,
+  ReasoningGroup: ReasoningAccordionGroup,
+  Text: NullPart,
+  ToolGroup: ToolGroupSlot,
+  tools: { Fallback: ChainToolFallback }
+} as const
+
+export const MESSAGE_RESPONSE_PARTS_COMPONENTS = {
+  Reasoning: NullPart,
+  ReasoningGroup: NullPart,
+  Text: MarkdownText,
+  ToolGroup: NullPart,
+  tools: { Fallback: NullPart }
 } as const

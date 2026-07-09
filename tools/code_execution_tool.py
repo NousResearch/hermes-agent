@@ -71,6 +71,7 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
 
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
 DEFAULT_TIMEOUT = 300        # 5 minutes
+DEFAULT_RPC_TIMEOUT = 300    # 5 minutes per sandbox tool call round-trip
 DEFAULT_MAX_TOOL_CALLS = 50
 MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
@@ -353,6 +354,7 @@ _sock = None
 # threads (e.g. ThreadPoolExecutor) would race on the shared socket and get
 # each other's responses. Serialize the entire send+recv round-trip.
 _call_lock = threading.Lock()
+_RPC_TIMEOUT = float(os.environ.get("HERMES_CODE_EXEC_RPC_TIMEOUT", "300"))
 ''' + _COMMON_HELPERS + '''\
 
 def _connect():
@@ -377,7 +379,7 @@ def _connect():
         else:
             _sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             _sock.connect(endpoint)
-        _sock.settimeout(300)
+        _sock.settimeout(_RPC_TIMEOUT)
     return _sock
 
 def _call(tool_name, args):
@@ -421,6 +423,7 @@ _seq = 0
 # invocations from multiple threads could allocate the same sequence number
 # and clobber each other's request files. Guard seq allocation with a lock.
 _seq_lock = threading.Lock()
+_RPC_TIMEOUT = float(os.environ.get("HERMES_CODE_EXEC_RPC_TIMEOUT", "300"))
 ''' + _COMMON_HELPERS + '''\
 
 def _call(tool_name, args):
@@ -448,11 +451,13 @@ def _call(tool_name, args):
     os.rename(tmp, req_file)
 
     # Wait for response with adaptive polling
-    deadline = time.monotonic() + 300  # 5-minute timeout per tool call
+    deadline = time.monotonic() + _RPC_TIMEOUT
     poll_interval = 0.05  # Start at 50ms
     while not os.path.exists(res_file):
         if time.monotonic() > deadline:
-            raise RuntimeError(f"RPC timeout: no response for {tool_name} after 300s")
+            raise RuntimeError(
+                f"RPC timeout: no response for {tool_name} after {_RPC_TIMEOUT:g}s"
+            )
         time.sleep(poll_interval)
         poll_interval = min(poll_interval * 1.2, 0.25)  # Back off to 250ms
 
@@ -924,6 +929,7 @@ def _execute_remote(
 
     _cfg = _load_config()
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
+    rpc_timeout = _get_rpc_timeout(_cfg)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
     session_tools = set(enabled_tools) if enabled_tools else set()
@@ -996,6 +1002,7 @@ def _execute_remote(
         env_prefix = (
             f"HERMES_RPC_DIR={shlex.quote(f'{sandbox_dir}/rpc')} "
             f"HERMES_RPC_TOKEN={shlex.quote(rpc_token)} "
+            f"HERMES_CODE_EXEC_RPC_TIMEOUT={shlex.quote(str(rpc_timeout))} "
             f"PYTHONDONTWRITEBYTECODE=1"
         )
         tz = os.getenv("HERMES_TIMEZONE", "").strip()
@@ -1187,6 +1194,7 @@ def execute_code(
     # Resolve config
     _cfg = _load_config()
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
+    rpc_timeout = _get_rpc_timeout(_cfg)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
     # Determine which tools the sandbox can call
@@ -1290,6 +1298,7 @@ def execute_code(
         child_env = _scrub_child_env(os.environ)
         child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
         child_env["HERMES_RPC_TOKEN"] = rpc_token
+        child_env["HERMES_CODE_EXEC_RPC_TIMEOUT"] = str(rpc_timeout)
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
         # Force UTF-8 for the child's stdio and default file encoding.
         #
@@ -1642,6 +1651,42 @@ def _load_config() -> dict:
         return cfg if isinstance(cfg, dict) else {}
     except Exception:
         return {}
+
+
+def _get_rpc_timeout(cfg: Optional[dict] = None) -> float:
+    """Return the per-tool-call RPC timeout for execute_code.
+
+    User-facing configuration lives at ``code_execution.rpc_timeout`` in
+    ``config.yaml``. The internal ``HERMES_CODE_EXEC_RPC_TIMEOUT`` env var is
+    only a transport bridge into the generated child stub.
+    """
+    cfg = _load_config() if cfg is None else cfg
+    raw_value = cfg.get("rpc_timeout", DEFAULT_RPC_TIMEOUT) if isinstance(cfg, dict) else DEFAULT_RPC_TIMEOUT
+
+    if isinstance(raw_value, bool):
+        logger.warning(
+            "Ignoring code_execution.rpc_timeout=%r (expected a positive number), falling back to %ss",
+            raw_value,
+            DEFAULT_RPC_TIMEOUT,
+        )
+        return float(DEFAULT_RPC_TIMEOUT)
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Ignoring code_execution.rpc_timeout=%r (expected a positive number), falling back to %ss",
+            raw_value,
+            DEFAULT_RPC_TIMEOUT,
+        )
+        return float(DEFAULT_RPC_TIMEOUT)
+    if value <= 0 or not value < float("inf"):
+        logger.warning(
+            "Ignoring code_execution.rpc_timeout=%r (expected a positive finite number), falling back to %ss",
+            raw_value,
+            DEFAULT_RPC_TIMEOUT,
+        )
+        return float(DEFAULT_RPC_TIMEOUT)
+    return value
 
 
 # ---------------------------------------------------------------------------

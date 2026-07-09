@@ -171,8 +171,11 @@ All limits are configurable via `config.yaml`:
 code_execution:
   mode: project      # project (default) | strict
   timeout: 300       # Max seconds per script (default: 300)
+  rpc_timeout: 300   # Max seconds per tool-call RPC round-trip (default: 300)
   max_tool_calls: 50 # Max tool calls per execution (default: 50)
 ```
+
+`timeout` and `rpc_timeout` protect different layers. `timeout` caps the whole script runtime. `rpc_timeout` caps a single Hermes tool-call round-trip inside the script. If you raise `timeout` for long-lived workflows that call tools slowly, raise `rpc_timeout` too.
 
 ## How Tool Calls Work Inside Scripts
 

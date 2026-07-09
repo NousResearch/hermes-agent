@@ -181,6 +181,35 @@ def test_outbound_only_when_no_endpoint(monkeypatch):
     assert relay.relay_connection_auth()[1] == "a" * 64
 
 
+def test_self_provision_reuses_one_gateway_config_snapshot(monkeypatch):
+    calls = {"n": 0}
+
+    def _fake_config():
+        calls["n"] += 1
+        return {
+            "gateway": {
+                "relay_url": "wss://connector.example/relay",
+                "relay_endpoint": "https://gw.example.com/inbound",
+                "relay_route_keys": ["guild-1", "guild-2"],
+                "relay_instance_id": "inst-abc",
+                "relay_wake_url": "https://gw.example.com/wake",
+            }
+        }
+
+    monkeypatch.setattr("gateway.run._load_gateway_config", _fake_config, raising=False)
+    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: "nas-token")
+    captured: dict = {}
+    monkeypatch.setattr(relay, "_post_provision", _stub_post(captured))
+
+    assert relay.self_provision_relay() is True
+    assert calls["n"] == 1
+    assert captured["provision_url"] == "https://connector.example/relay/provision"
+    assert captured["gateway_endpoint"] == "https://gw.example.com/inbound"
+    assert captured["route_keys"] == ["guild-1", "guild-2"]
+    assert captured["instance_id"] == "inst-abc"
+    assert captured["wake_url"] == "https://gw.example.com/wake"
+
+
 # ─────────────────── instance-id forwarding (Phase 6 Unit α) ───────────────────
 
 def test_forwards_instance_id_to_provision(monkeypatch):

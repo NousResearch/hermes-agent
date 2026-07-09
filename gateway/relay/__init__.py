@@ -18,8 +18,33 @@ that don't set it are unaffected — exactly the same shape as ``gateway.proxy_u
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 import os
 from typing import Optional
+
+_CONFIG_SNAPSHOT_UNSET = object()
+_RELAY_GATEWAY_CONFIG_SNAPSHOT: ContextVar[object] = ContextVar(
+    "relay_gateway_config_snapshot",
+    default=_CONFIG_SNAPSHOT_UNSET,
+)
+
+
+def _read_gateway_config() -> dict:
+    """Read gateway config once; absence or parse errors are treated as empty."""
+    try:
+        from gateway.run import _load_gateway_config  # late import to avoid cycle
+
+        cfg = _load_gateway_config()
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception:  # noqa: BLE001 - config absence/parse must never crash relay boot
+        return {}
+
+
+def _gateway_config() -> dict:
+    snapshot = _RELAY_GATEWAY_CONFIG_SNAPSHOT.get()
+    if snapshot is not _CONFIG_SNAPSHOT_UNSET:
+        return snapshot if isinstance(snapshot, dict) else {}
+    return _read_gateway_config()
 
 
 def relay_url() -> Optional[str]:
@@ -33,9 +58,7 @@ def relay_url() -> Optional[str]:
     if url:
         return url.rstrip("/")
     try:
-        from gateway.run import _load_gateway_config  # late import to avoid cycle
-
-        cfg = _load_gateway_config()
+        cfg = _gateway_config()
         url = (cfg.get("gateway") or {}).get("relay_url")
         url = (url or "").strip()
         if url:
@@ -136,9 +159,7 @@ def relay_connection_auth() -> tuple[Optional[str], Optional[str]]:
     secret = os.environ.get("GATEWAY_RELAY_SECRET", "").strip()
     if not (gateway_id and secret):
         try:
-            from gateway.run import _load_gateway_config  # late import to avoid cycle
-
-            cfg = (_load_gateway_config().get("gateway") or {})
+            cfg = (_gateway_config().get("gateway") or {})
             gateway_id = gateway_id or str(cfg.get("relay_id", "") or "").strip()
             secret = secret or str(cfg.get("relay_secret", "") or "").strip()
         except Exception:  # noqa: BLE001 - config absence/parse must never crash registration
@@ -163,9 +184,7 @@ def relay_endpoint() -> Optional[str]:
     url = os.environ.get("GATEWAY_RELAY_ENDPOINT", "").strip()
     if not url:
         try:
-            from gateway.run import _load_gateway_config  # late import to avoid cycle
-
-            cfg = (_load_gateway_config().get("gateway") or {})
+            cfg = (_gateway_config().get("gateway") or {})
             url = str(cfg.get("relay_endpoint", "") or "").strip()
         except Exception:  # noqa: BLE001 - config absence/parse must never crash boot
             url = ""
@@ -186,9 +205,7 @@ def relay_route_keys() -> list[str]:
     raw = os.environ.get("GATEWAY_RELAY_ROUTE_KEYS", "").strip()
     if not raw:
         try:
-            from gateway.run import _load_gateway_config  # late import to avoid cycle
-
-            cfg = (_load_gateway_config().get("gateway") or {})
+            cfg = (_gateway_config().get("gateway") or {})
             val = cfg.get("relay_route_keys", "")
             if isinstance(val, (list, tuple)):
                 return [str(k).strip() for k in val if str(k).strip()]
@@ -216,9 +233,7 @@ def relay_instance_id() -> Optional[str]:
     value = os.environ.get("GATEWAY_RELAY_INSTANCE_ID", "").strip()
     if not value:
         try:
-            from gateway.run import _load_gateway_config  # late import to avoid cycle
-
-            cfg = (_load_gateway_config().get("gateway") or {})
+            cfg = (_gateway_config().get("gateway") or {})
             value = str(cfg.get("relay_instance_id", "") or "").strip()
         except Exception:  # noqa: BLE001 - config absence/parse must never crash boot
             value = ""
@@ -247,9 +262,7 @@ def relay_wake_url() -> Optional[str]:
     value = os.environ.get("GATEWAY_RELAY_WAKE_URL", "").strip()
     if not value:
         try:
-            from gateway.run import _load_gateway_config  # late import to avoid cycle
-
-            cfg = (_load_gateway_config().get("gateway") or {})
+            cfg = (_gateway_config().get("gateway") or {})
             value = str(cfg.get("relay_wake_url", "") or "").strip()
         except Exception:  # noqa: BLE001 - config absence/parse must never crash boot
             value = ""
@@ -461,9 +474,7 @@ def _resolve_relay_identity_token() -> str:
     scope = os.environ.get("GATEWAY_RELAY_IDP_SCOPE", "").strip()
     if not token_url:
         try:
-            from gateway.run import _load_gateway_config  # late import to avoid cycle
-
-            idp = ((_load_gateway_config().get("gateway") or {}).get("idp") or {})
+            idp = ((_gateway_config().get("gateway") or {}).get("idp") or {})
             token_url = str(idp.get("token_url", "") or "").strip()
             client_id = client_id or str(idp.get("client_id", "") or "").strip()
             client_secret = client_secret or str(idp.get("client_secret", "") or "").strip()
@@ -552,38 +563,42 @@ def self_provision_relay() -> bool:
 
     logger = logging.getLogger("gateway.relay")
 
-    dial_url = relay_url()
-    if not dial_url:
-        return False
-
-    # Respect an already-present (pinned/stamped) secret — don't stomp it. This
-    # is also what makes a self-hosted, enrolled gateway skip self-provision.
-    existing_id, existing_secret = relay_connection_auth()
-    if existing_id and existing_secret:
-        logger.info("relay self-provision skipped: GATEWAY_RELAY_SECRET already set")
-        return False
-
+    snapshot_token = _RELAY_GATEWAY_CONFIG_SNAPSHOT.set(_read_gateway_config())
     try:
-        access_token = _resolve_relay_identity_token()
-    except Exception as exc:  # noqa: BLE001 - boot must survive a token failure
-        # No resolvable identity (e.g. a self-hosted box that hasn't enrolled and
-        # configured no IdP) -> nothing to provision with; skip quietly and boot.
-        logger.warning("relay self-provision skipped: could not resolve identity token (%s)", exc)
-        return False
+        dial_url = relay_url()
+        if not dial_url:
+            return False
 
-    identities = relay_platform_identities()
-    # gatewayId default mirrors the enroll CLI's hostname-based slug.
-    import socket
+        # Respect an already-present (pinned/stamped) secret — don't stomp it. This
+        # is also what makes a self-hosted, enrolled gateway skip self-provision.
+        existing_id, existing_secret = relay_connection_auth()
+        if existing_id and existing_secret:
+            logger.info("relay self-provision skipped: GATEWAY_RELAY_SECRET already set")
+            return False
 
-    try:
-        host = socket.gethostname().strip()
-    except Exception:  # noqa: BLE001
-        host = ""
-    gateway_id = os.environ.get("GATEWAY_RELAY_ID", "").strip() or f"gw-{host or 'hermes'}"
-    endpoint = relay_endpoint()
-    route_keys = relay_route_keys()
-    instance_id = relay_instance_id()
-    wake_url = relay_wake_url()
+        try:
+            access_token = _resolve_relay_identity_token()
+        except Exception as exc:  # noqa: BLE001 - boot must survive a token failure
+            # No resolvable identity (e.g. a self-hosted box that hasn't enrolled and
+            # configured no IdP) -> nothing to provision with; skip quietly and boot.
+            logger.warning("relay self-provision skipped: could not resolve identity token (%s)", exc)
+            return False
+
+        identities = relay_platform_identities()
+        # gatewayId default mirrors the enroll CLI's hostname-based slug.
+        import socket
+
+        try:
+            host = socket.gethostname().strip()
+        except Exception:  # noqa: BLE001
+            host = ""
+        gateway_id = os.environ.get("GATEWAY_RELAY_ID", "").strip() or f"gw-{host or 'hermes'}"
+        endpoint = relay_endpoint()
+        route_keys = relay_route_keys()
+        instance_id = relay_instance_id()
+        wake_url = relay_wake_url()
+    finally:
+        _RELAY_GATEWAY_CONFIG_SNAPSHOT.reset(snapshot_token)
 
     # Phase 1.5 (D-Q1.5c): provision EACH fronted platform under the SAME
     # gatewayId + the SAME (platform-less) per-gateway secret. The connector's

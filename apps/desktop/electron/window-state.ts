@@ -61,6 +61,7 @@ function onScreen(bounds, displays) {
     if (!a) {
       return false
     }
+
     const x = Math.min(bounds.x + bounds.width, a.x + a.width) - Math.max(bounds.x, a.x)
     const y = Math.min(bounds.y + bounds.height, a.y + a.height) - Math.max(bounds.y, a.y)
 

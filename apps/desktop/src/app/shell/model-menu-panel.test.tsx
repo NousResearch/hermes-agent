@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, findByText, fireEvent, render } from '@testing-library/react'
+import { cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
@@ -39,7 +39,8 @@ afterEach(() => {
 
 function renderPanel(onSelectModel = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(
+
+  const content = render(
     <QueryClientProvider client={client}>
       <DropdownMenu open>
         <DropdownMenuContent>
@@ -49,15 +50,15 @@ function renderPanel(onSelectModel = vi.fn()) {
     </QueryClientProvider>
   )
 
-  return onSelectModel
+  return { onSelectModel, content }
 }
 
 describe('ModelMenuPanel MoA presets', () => {
   it('selecting a MoA preset switches PERSISTENTLY via onSelectModel (not the one-shot dispatch)', async () => {
-    const onSelectModel = renderPanel()
+    const { content, onSelectModel } = renderPanel()
 
     // moaOptions is async (useQuery) — wait for the preset row to mount.
-    const row = await findByText(document.body, 'MoA: BeastMode')
+    const row = await content.findByText('MoA: BeastMode')
     fireEvent.click(row)
 
     // #54670: must route through the persistent model-switch path
@@ -69,30 +70,35 @@ describe('ModelMenuPanel MoA presets', () => {
   it('shows the check on the preset that matches the current moa selection', async () => {
     $currentProvider.set('moa')
     $currentModel.set('BeastMode')
-    renderPanel()
+    const { content } = renderPanel()
 
-    const row = await findByText(document.body, 'MoA: BeastMode')
+    const row = await content.findByText('MoA: BeastMode')
     // The check codicon renders as a sibling within the same row item.
     const item = row.closest('[role="menuitem"]') ?? row.parentElement
     expect(item?.querySelector('.codicon-check')).not.toBeNull()
   })
 
   it('keeps the virtual moa provider out of the main model groups (presets section only)', async () => {
-    renderPanel()
+    const { content } = renderPanel()
 
-    await findByText(document.body, 'MoA: BeastMode')
+    await content.findByText('MoA: BeastMode')
 
     // The provider group header would read "Mixture of Agents"; the presets
     // section header reads "MoA presets". Only the latter should exist.
+    // Radix DropdownMenu portals its content to document.body, so assert
+    // against the body (not content.container) to see the rendered items.
+
+    // eslint-disable-next-line no-restricted-globals
     expect(document.body.textContent).toContain('MoA presets')
+    // eslint-disable-next-line no-restricted-globals
     expect(document.body.textContent).not.toContain('Mixture of Agents')
   })
 
   it('renders presets from the catalog even before a session exists', async () => {
     $activeSessionId.set('')
-    const onSelectModel = renderPanel()
+    const { onSelectModel, content } = renderPanel()
 
-    const row = await findByText(document.body, 'MoA: BeastMode')
+    const row = await content.findByText('MoA: BeastMode')
     fireEvent.click(row)
 
     // Pre-session picks are UI state shipped on the next session.create — the

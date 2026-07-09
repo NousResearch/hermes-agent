@@ -9237,13 +9237,14 @@ def _session_latest_descendant(session_id: str, db):
     rows = []
     if conn is not None:
         raw_rows = conn.execute(
-            "SELECT id, parent_session_id, started_at FROM sessions"
+            "SELECT id, parent_session_id, started_at, source FROM sessions"
         ).fetchall()
         for row in raw_rows:
             rows.append({
                 "id": row_get(row, "id", 0),
                 "parent_session_id": row_get(row, "parent_session_id", 1),
                 "started_at": row_get(row, "started_at", 2),
+                "source": row_get(row, "source", 3),
             })
     else:
         rows = db.list_sessions_rich(limit=10000, offset=0)
@@ -9252,6 +9253,11 @@ def _session_latest_descendant(session_id: str, db):
     for row in rows:
         rid = row.get("id")
         parent = row.get("parent_session_id")
+        # Skip subagent sessions: delegation children are leaf workers,
+        # not conversational continuations.  Walking through them would
+        # redirect a resume to a completely different task context (#61045).
+        if row.get("source") == "subagent":
+            continue
         if rid and parent:
             children.setdefault(parent, []).append(row)
 

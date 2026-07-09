@@ -702,7 +702,7 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
     return headers
 
 
-def _to_openai_base_url(base_url: str) -> str:
+def _to_openai_base_url(base_url: str, api_mode: str = None) -> str:
     """Normalize an Anthropic-style base URL to OpenAI-compatible format.
 
     Some providers (MiniMax, MiniMax-CN) expose an ``/anthropic`` endpoint for
@@ -710,8 +710,16 @@ def _to_openai_base_url(base_url: str) -> str:
     completions.  The auxiliary client uses the OpenAI SDK, so it must hit the
     ``/v1`` surface.  Passing the raw ``inference_base_url`` causes requests to
     land on ``/anthropic/chat/completions`` — a 404.
+
+    When *api_mode* is ``"anthropic_messages"``, the caller intends to speak
+    the Anthropic wire protocol directly — the URL must **not** be rewritten.
+    Providers like Bailian (百炼) host Anthropic endpoints at sub-paths
+    (e.g. ``/apps/anthropic``) where the generic ``/v1`` substitution produces
+    an invalid URL (``/apps/v1``).
     """
     url = str(base_url or "").strip().rstrip("/")
+    if api_mode == "anthropic_messages":
+        return url
     if url.endswith("/anthropic"):
         # ZAI (open.bigmodel.cn) uses /api/anthropic for Anthropic wire
         # but /api/paas/v4 for OpenAI wire — the generic /v1 rewrite is wrong.
@@ -4612,7 +4620,7 @@ def resolve_provider_client(
         custom_base = ""
         custom_key = ""
         if explicit_base_url:
-            custom_base = _to_openai_base_url(explicit_base_url).strip()
+            custom_base = _to_openai_base_url(explicit_base_url, api_mode=api_mode).strip()
             custom_key = (
                 (explicit_api_key or "").strip()
                 or os.getenv("OPENAI_API_KEY", "").strip()
@@ -4740,7 +4748,7 @@ def resolve_provider_client(
                     openai_base = custom_base
                     raw_base_for_wrap = custom_base
                 else:
-                    openai_base = _to_openai_base_url(custom_base)
+                    openai_base = _to_openai_base_url(custom_base, api_mode=entry_api_mode)
                     raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
@@ -4882,12 +4890,12 @@ def resolve_provider_client(
             return None, None
 
         raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
-        base_url = _to_openai_base_url(raw_base_url)
+        base_url = _to_openai_base_url(raw_base_url, api_mode=api_mode)
         # Honour an explicit base_url override from the caller — used when a
         # fallback_model entry (or custom_providers lookup) routes through a
         # built-in provider name but targets a user-specified endpoint.
         if explicit_base_url:
-            base_url = _to_openai_base_url(explicit_base_url.strip().rstrip("/"))
+            base_url = _to_openai_base_url(explicit_base_url.strip().rstrip("/"), api_mode=api_mode)
 
         default_model = _get_aux_model_for_provider(provider)
         final_model = _normalize_resolved_model(model or default_model, provider)

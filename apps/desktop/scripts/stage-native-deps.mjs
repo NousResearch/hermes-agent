@@ -19,6 +19,7 @@ import {
   readdirSync,
   rmSync
 } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { isMain } from './utils.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -91,11 +92,6 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
   // lib/**/*.js — the JS surface node-pty's `main` points into.
   copyGlobByExt(join(srcRoot, 'lib'), join(destRoot, 'lib'), ['.js'])
 
-  // build/Release/* — present when node-pty was compiled locally
-  // (e.g. no prebuild available for this Electron ABI/platform combo).
-  // Some installs won't have this at all if prebuild-install succeeded.
-  copyBuildRelease(join(srcRoot, 'build/Release'), join(destRoot, 'build/Release'))
-
   // prebuilds/<platform>-<arch>/* — the prebuild-install payload for the
   // *target* we're packaging, not necessarily the host running this script.
   // Explicit extensions only, to skip the ~25MB of Windows .pdb symbols
@@ -117,13 +113,45 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
         cpSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
       }
     }
-  } else {
-    console.warn(
-      `[stage-native-deps] no prebuild found at prebuilds/${platform}-${arch} for node-pty. ` +
-        `If build/Release/* above is also empty, this target will fail at runtime. ` +
-        `Run "npx electron-rebuild -w node-pty" for this target, or check that ` +
-        `node-pty's published prebuilds cover ${platform}-${arch}.`
+  }
+
+  // build/Release/* — present when node-pty was compiled locally
+  // (e.g. no prebuild available for this Electron ABI/platform combo).
+  // Some installs won't have this at all if prebuild-install succeeded.
+  const buildReleaseDir = join(srcRoot, 'build/Release')
+  copyBuildRelease(buildReleaseDir, join(destRoot, 'build/Release'))
+
+  // If neither a prebuild nor build/Release produced a .node binary for this
+  // target, run electron-rebuild to compile one from source. This happens on
+  // CI (npm ci --ignore-scripts skips postinstall) and on platforms where
+  // node-pty doesn't publish prebuilds (e.g. linux-x64).
+  const stagedDirs = [
+    join(destRoot, 'prebuilds', `${platform}-${arch}`),
+    join(destRoot, 'build/Release')
+  ]
+  const hasNativeBinary = stagedDirs.some(dir => {
+    if (!existsSync(dir)) return false
+    return readdirSync(dir, { recursive: true }).some(name => String(name).endsWith('.node'))
+  })
+
+  if (!hasNativeBinary) {
+    console.log(
+      `[stage-native-deps] no prebuilt or compiled native binary for ${platform}-${arch}; ` +
+      `running electron-rebuild to compile from source...`
     )
+    const result = spawnSync(
+      process.execPath,
+      ['../../node_modules/.bin/electron-rebuild', '-f', '-w', 'node-pty'],
+      { cwd: projectRoot, stdio: 'inherit' }
+    )
+    if (result.status !== 0) {
+      throw new Error(
+        `electron-rebuild failed for ${platform}-${arch} (exit ${result.status}). ` +
+        `Cannot stage node-pty without a native binary.`
+      )
+    }
+    // Re-copy build/Release after electron-rebuild populated it.
+    copyBuildRelease(buildReleaseDir, join(destRoot, 'build/Release'))
   }
 
   console.log(`[stage-native-deps] staged node-pty (${platform}-${arch}) -> ${destRoot}`)

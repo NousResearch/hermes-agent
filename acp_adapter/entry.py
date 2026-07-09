@@ -216,6 +216,15 @@ def _run_setup_browser(assume_yes: bool = False) -> int:
 
 def main(argv: list[str] | None = None) -> None:
     """Entry point: load env, configure logging, run the ACP agent."""
+    # Phase 6 backward compat: mirror HERMES_*/HT_* env vars up front so both
+    # name spellings resolve and are inherited by subprocesses. This is the
+    # `hermes-acp` console-script entry. Idempotent + non-fatal.
+    try:
+        import os as _os
+        from ht_compat import mirror_brand_env
+        mirror_brand_env(_os.environ)
+    except Exception:
+        pass
     args = _parse_args(argv)
     if args.version:
         _print_version()

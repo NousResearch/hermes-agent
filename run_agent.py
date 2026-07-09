@@ -5830,6 +5830,17 @@ def main(
     Toolset Examples:
         - "research": Web search, extract, crawl + vision tools
     """
+    # Phase 6 backward compat: mirror HERMES_*/HT_* env vars so both name
+    # spellings resolve and are inherited by subprocesses. This is the
+    # `hermes-agent` console-script entry (called directly, bypassing the
+    # __main__ block), so wire it here. Idempotent + non-fatal — safe even when
+    # main() is invoked programmatically after the CLI already mirrored.
+    try:
+        import os as _os
+        from ht_compat import mirror_brand_env
+        mirror_brand_env(_os.environ)
+    except Exception:
+        pass
     print("🤖 AI Agent with Tool Calling")
     print("=" * 50)
     

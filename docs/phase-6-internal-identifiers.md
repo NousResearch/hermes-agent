@@ -35,8 +35,18 @@ enumerated table that would drift. It is:
 - **idempotent** — running twice changes nothing;
 - **bidirectional** — set either name, the other appears.
 
-It runs once at CLI startup (`hermes_cli/main.py:main`), so both names resolve
-process-wide and every spawned subprocess inherits both.
+It runs once at process startup — at every standalone entrypoint, not just the
+CLI — so both names resolve process-wide and every spawned subprocess inherits
+both:
+
+  * `hermes_cli/main.py:main` (the `ht` / `hermes` CLI; the gateway and MCP
+    server run in-process under it, so they are covered too),
+  * `run_agent.py:main` (the `hermes-agent` console script),
+  * `acp_adapter/entry.py:main` (the `hermes-acp` console script),
+  * `batch_runner.py` `__main__` (`python batch_runner.py`).
+
+Each uses the same guarded, idempotent call, so an `HT_*`-only environment works
+even when these are launched directly rather than as a child of the CLI.
 
 `ht_compat.resolve_env(name, default)` reads a single var honouring both
 spellings, with the new `HT_*` value winning when both are set. `hermes_constants`

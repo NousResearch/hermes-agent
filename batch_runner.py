@@ -1317,5 +1317,15 @@ def main(
 
 
 if __name__ == "__main__":
+    # Phase 6 backward compat: mirror HERMES_*/HT_* env vars before the run so
+    # both name spellings resolve and are inherited by worker subprocesses.
+    # This is batch_runner's direct-run entry (`python batch_runner.py`).
+    # Idempotent + non-fatal.
+    try:
+        import os as _os
+        from ht_compat import mirror_brand_env
+        mirror_brand_env(_os.environ)
+    except Exception:
+        pass
     fire.Fire(main)
 

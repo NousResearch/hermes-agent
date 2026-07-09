@@ -46,6 +46,7 @@ from tools.code_execution_tool import (
     EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
     _execute_remote,
+    _rpc_socket_dir,
 )
 
 
@@ -138,6 +139,25 @@ class TestHermesToolsGeneration(unittest.TestCase):
         src = generate_hermes_tools_module(["terminal"], transport="file")
         self.assertIn("_seq_lock = threading.Lock()", src)
         self.assertIn("with _seq_lock:", src)
+
+
+class TestRpcSocketPath(unittest.TestCase):
+    def test_long_tmpdir_falls_back_to_short_socket_dir_on_posix(self):
+        if sys.platform == "win32":
+            self.skipTest("Windows execute_code uses loopback TCP")
+
+        long_tmpdir = "/tmp/" + ("nested-" * 18)
+        sock_dir = _rpc_socket_dir(long_tmpdir)
+
+        self.assertEqual(sock_dir, "/tmp")
+        sock_path = os.path.join(sock_dir, f"hermes_rpc_{'a' * 32}.sock")
+        self.assertLess(len(sock_path.encode()), 104)
+
+    def test_short_tmpdir_is_used_for_rpc_socket_dir_on_posix(self):
+        if sys.platform == "win32":
+            self.skipTest("Windows execute_code uses loopback TCP")
+
+        self.assertEqual(_rpc_socket_dir("/tmp"), "/tmp")
 
 
 class TestExecuteCodeRemoteTempDir(unittest.TestCase):

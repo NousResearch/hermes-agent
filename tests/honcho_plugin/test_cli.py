@@ -409,6 +409,9 @@ class TestSetupWizardDeploymentShape:
         monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
         monkeypatch.setattr(honcho_cli, "_ensure_sdk_installed", lambda: True)
         monkeypatch.setattr(honcho_cli, "_write_config", lambda *a, **k: None)
+        # No network probe / environment sniffing in tests.
+        monkeypatch.setattr(honcho_cli, "_device_login_available", lambda: False)
+        monkeypatch.setattr(honcho_cli, "_headless", lambda: (False, True))
         # Gate detection is mocked so tests control whether the tree runs.
         # None → undetectable; list (possibly empty) → connected platforms.
         gw = None if gateway_platforms is None else list(gateway_platforms)
@@ -791,3 +794,121 @@ class TestMigratePinKey:
         block = {"pinUserPeer": True}
         assert honcho_cli._migrate_pin_key(block) is False
         assert block == {"pinUserPeer": True}
+
+
+class TestCmdSetupDeviceFlow:
+    """The cloud auth-method menu's device-code branch (RFC 8628)."""
+
+    def _run_setup(self, monkeypatch, tmp_path, *, answers, device_available=True,
+                   headless=(False, True), device_result=None, device_error=None):
+        """Run cmd_setup with the device flow stubbed; returns (cfg, calls, prompts)."""
+        import plugins.memory.honcho.cli as honcho_cli
+        import plugins.memory.honcho.oauth_flow as oauth_flow
+        from plugins.memory.honcho.oauth import OAuthCredential
+
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text("{}")
+        cfg = {"apiKey": "***"}
+
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: cfg)
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
+        monkeypatch.setattr(honcho_cli, "_ensure_sdk_installed", lambda: True)
+        monkeypatch.setattr(honcho_cli, "_write_config", lambda *a, **k: None)
+        monkeypatch.setattr(honcho_cli, "_gateway_platforms", lambda: [])
+        monkeypatch.setattr(honcho_cli, "_device_login_available", lambda: device_available)
+        monkeypatch.setattr(honcho_cli, "_headless", lambda: headless)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {"memory": {}}, raising=False,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.save_config", lambda c: None, raising=False,
+        )
+
+        class _FakeClientCfg:
+            def resolve_session_name(self):
+                return "hermes-test"
+            workspace_id = "hermes"
+            peer_name = "eri"
+            ai_peer = "hermetika"
+            observation_mode = "directional"
+            write_frequency = "async"
+            recall_mode = "hybrid"
+            session_strategy = "per-session"
+
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            lambda host=None: _FakeClientCfg(),
+        )
+        monkeypatch.setattr("plugins.memory.honcho.client.reset_honcho_client", lambda: None)
+        monkeypatch.setattr("plugins.memory.honcho.client.get_honcho_client", lambda hcfg: object())
+
+        calls: list[dict] = []
+        cred = OAuthCredential(
+            access_token="hch-at-x", refresh_token="hch-rt-x", expires_at=9_999_999_999,
+            client_id="hermes-agent", token_endpoint="http://x/oauth/token",
+            consent_peer_name="lyra",
+        )
+
+        def fake_device_flow(**kwargs):
+            calls.append(kwargs)
+            if device_error is not None:
+                raise device_error
+            return device_result or cred
+
+        monkeypatch.setattr(oauth_flow, "authorize_via_device_code", fake_device_flow)
+
+        prompts: list[tuple[str, str | None]] = []
+        answer_iter = iter(answers)
+        def _scripted_prompt(label, default=None, secret=False):
+            prompts.append((label, default))
+            try:
+                # Mirror the real _prompt: blank input falls back to the default.
+                return next(answer_iter) or (default or "")
+            except StopIteration:
+                return default if default is not None else ""
+        monkeypatch.setattr(honcho_cli, "_prompt", _scripted_prompt)
+
+        honcho_cli.cmd_setup(SimpleNamespace())
+        return cfg, calls, prompts
+
+    def test_device_choice_runs_flow_and_stores_grant(self, monkeypatch, tmp_path):
+        cfg, calls, _ = self._run_setup(monkeypatch, tmp_path, answers=["cloud", "device"])
+        assert len(calls) == 1
+        assert calls[0]["apply_config"] is False
+        assert calls[0]["source"] == "hermes-cli"
+        host = cfg["hosts"]["hermes"]
+        assert host["apiKey"] == "hch-at-x"
+        assert host["oauth"]["refreshToken"] == "hch-rt-x"
+        assert host["peerName"] == "lyra"
+
+    def test_headless_defaults_to_device(self, monkeypatch, tmp_path):
+        # Blank answer takes the prompt default, which flips to device on a
+        # remote/no-browser environment.
+        cfg, calls, prompts = self._run_setup(
+            monkeypatch, tmp_path, answers=["cloud", ""], headless=(True, False),
+        )
+        method_prompts = [p for p in prompts if "apikey" in p[0]]
+        assert method_prompts[0][1] == "device"
+        assert len(calls) == 1
+        assert calls[0]["open_url"] is None  # never auto-open a browser headless
+        assert cfg["hosts"]["hermes"]["apiKey"] == "hch-at-x"
+
+    def test_denied_device_flow_aborts_without_grant(self, monkeypatch, tmp_path):
+        from plugins.memory.honcho.oauth_flow import AccessDenied
+
+        cfg, calls, _ = self._run_setup(
+            monkeypatch, tmp_path, answers=["cloud", "device"],
+            device_error=AccessDenied("access_denied", "user denied"),
+        )
+        assert len(calls) == 1
+        assert "apiKey" not in cfg.get("hosts", {}).get("hermes", {})
+
+    def test_device_option_hidden_when_not_advertised(self, monkeypatch, tmp_path):
+        _, calls, prompts = self._run_setup(
+            monkeypatch, tmp_path, answers=["cloud", "device"], device_available=False,
+        )
+        method_prompts = [p for p in prompts if "OAuth or API key" in p[0]]
+        assert method_prompts and method_prompts[0][1] == "oauth"
+        assert calls == []  # 'device' answer falls through to the api-key path

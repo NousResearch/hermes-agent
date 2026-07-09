@@ -6,7 +6,7 @@ import type { SetTitlebarToolGroup, TitlebarTool } from '@/app/shell/titlebar-co
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
-import { Bug, ExternalLink, Pencil, RefreshCw, Search, X } from '@/lib/icons'
+import { Bug, ChevronLeft, ChevronRight, ExternalLink, Maximize, Pencil, RefreshCw, Search, Square, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $previewServerRestart, failPreviewServerRestart, type PreviewTarget } from '@/store/preview'
@@ -25,9 +25,13 @@ import { LocalFilePreview, PreviewEmptyState } from './preview-file'
 import { PREVIEW_RATIO_PRESETS, type PreviewRatioPreset, previewWidthForRatio } from './preview-sizing'
 
 type PreviewWebview = HTMLElement & {
+  canGoBack?: () => boolean
+  canGoForward?: () => boolean
   closeDevTools?: () => void
   findInPage?: (text: string, options?: { findNext?: boolean; forward?: boolean; matchCase?: boolean }) => number
   getURL?: () => string
+  goBack?: () => void
+  goForward?: () => void
   isDevToolsOpened?: () => boolean
   openDevTools?: () => void
   reload?: () => void
@@ -166,6 +170,7 @@ export function PreviewPane({
   const consoleShouldStickRef = useRef(true)
   const findInputRef = useRef<HTMLInputElement | null>(null)
   const hostRef = useRef<HTMLDivElement | null>(null)
+  const previewShellRef = useRef<HTMLElement | null>(null)
   const lastReloadRequestRef = useRef(reloadRequest)
   const lastRestartEventRef = useRef('')
   const previewContentRef = useRef<HTMLDivElement | null>(null)
@@ -184,6 +189,10 @@ export function PreviewPane({
   const [findOpen, setFindOpen] = useState(false)
   const [findQuery, setFindQuery] = useState('')
   const [findStatus, setFindStatus] = useState('')
+  const [previewFullscreenActive, setPreviewFullscreenActive] = useState(false)
+  const [previewHistory, setPreviewHistory] = useState(() => ({ entries: [target.url], index: 0 }))
+  const [canNavigateBack, setCanNavigateBack] = useState(false)
+  const [canNavigateForward, setCanNavigateForward] = useState(false)
   const [previewEngine, setPreviewEngine] = useState<PreviewEngine>('detecting')
   const [previewFrameWidth, setPreviewFrameWidth] = useState<number | null>(null)
   const [activeRatioLabel, setActiveRatioLabel] = useState<string | null>(null)
@@ -274,6 +283,45 @@ export function PreviewPane({
     }
   }, [isWebPreview])
 
+  const syncNavigationButtons = useCallback(
+    (history = previewHistory) => {
+      const webview = webviewRef.current
+
+      setCanNavigateBack(Boolean(webview?.canGoBack?.()) || history.index > 0)
+      setCanNavigateForward(Boolean(webview?.canGoForward?.()) || history.index < history.entries.length - 1)
+    },
+    [previewHistory]
+  )
+
+  const loadPreviewUrl = useCallback((nextUrl: string) => {
+    setLoadError(null)
+    setLoading(true)
+    setCurrentUrl(nextUrl)
+    setAddressDraft(nextUrl)
+
+    const webview = webviewRef.current
+
+    if (webview) {
+      webview.setAttribute('src', nextUrl)
+
+      if (webview instanceof HTMLIFrameElement) {
+        webview.src = nextUrl
+      }
+    }
+  }, [])
+
+  const pushPreviewHistory = useCallback((nextUrl: string) => {
+    setPreviewHistory(prev => {
+      if (prev.entries[prev.index] === nextUrl) {
+        return prev
+      }
+
+      const entries = [...prev.entries.slice(0, prev.index + 1), nextUrl]
+
+      return { entries, index: entries.length - 1 }
+    })
+  }, [])
+
   const applyPreviewRatio = useCallback((preset: PreviewRatioPreset) => {
     const height = previewContentRef.current?.getBoundingClientRect().height ?? 0
 
@@ -290,30 +338,63 @@ export function PreviewPane({
   }, [])
 
 
-  const navigatePreview = useCallback((rawAddress: string) => {
-    const nextUrl = normalizePreviewAddress(rawAddress)
+  const navigatePreview = useCallback(
+    (rawAddress: string) => {
+      const nextUrl = normalizePreviewAddress(rawAddress)
 
-    if (!nextUrl) {
-      setAddressDraft(currentUrl)
+      if (!nextUrl) {
+        setAddressDraft(currentUrl)
+
+        return
+      }
+
+      loadPreviewUrl(nextUrl)
+      pushPreviewHistory(nextUrl)
+    },
+    [currentUrl, loadPreviewUrl, pushPreviewHistory]
+  )
+
+  const goPreviewBack = useCallback(() => {
+    const webview = webviewRef.current
+
+    if (webview?.goBack && webview.canGoBack?.()) {
+      webview.goBack()
+      syncNavigationButtons()
 
       return
     }
 
-    setLoadError(null)
-    setLoading(true)
-    setCurrentUrl(nextUrl)
-    setAddressDraft(nextUrl)
+    if (previewHistory.index <= 0) {
+      return
+    }
 
+    const index = previewHistory.index - 1
+    const nextUrl = previewHistory.entries[index]
+
+    setPreviewHistory({ entries: previewHistory.entries, index })
+    loadPreviewUrl(nextUrl)
+  }, [loadPreviewUrl, previewHistory, syncNavigationButtons])
+
+  const goPreviewForward = useCallback(() => {
     const webview = webviewRef.current
 
-    if (webview) {
-      webview.setAttribute('src', nextUrl)
+    if (webview?.goForward && webview.canGoForward?.()) {
+      webview.goForward()
+      syncNavigationButtons()
 
-      if (webview instanceof HTMLIFrameElement) {
-        webview.src = nextUrl
-      }
+      return
     }
-  }, [currentUrl])
+
+    if (previewHistory.index >= previewHistory.entries.length - 1) {
+      return
+    }
+
+    const index = previewHistory.index + 1
+    const nextUrl = previewHistory.entries[index]
+
+    setPreviewHistory({ entries: previewHistory.entries, index })
+    loadPreviewUrl(nextUrl)
+  }, [loadPreviewUrl, previewHistory, syncNavigationButtons])
 
   const appendConsoleEntry = useCallback(
     (entry: Omit<ConsoleEntry, 'id'>) => {
@@ -336,6 +417,38 @@ export function PreviewPane({
 
     window.open(currentUrl, '_blank', 'noopener,noreferrer')
   }, [currentUrl])
+
+  const exitPreviewFullscreen = useCallback(async () => {
+    try {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        await document.exitFullscreen()
+      }
+    } finally {
+      setPreviewFullscreenActive(false)
+    }
+  }, [])
+
+  const togglePreviewFullscreen = useCallback(async () => {
+    if (previewFullscreenActive || document.fullscreenElement === previewShellRef.current) {
+      await exitPreviewFullscreen()
+
+      return
+    }
+
+    const shell = previewShellRef.current
+
+    if (!shell) {
+      return
+    }
+
+    try {
+      if (shell.requestFullscreen) {
+        await shell.requestFullscreen()
+      }
+    } finally {
+      setPreviewFullscreenActive(true)
+    }
+  }, [exitPreviewFullscreen, previewFullscreenActive])
 
   const focusAddressBar = useCallback(() => {
     addressInputRef.current?.focus()
@@ -426,48 +539,61 @@ export function PreviewPane({
     }
   }, [appendConsoleEntry, consoleState, copy, currentUrl, onRestartServer])
 
+  const hideAnnotations = useCallback(() => {
+    setAnnotationOverlayOpen(false)
+    appendConsoleEntry({ level: 1, message: 'Preview annotation overlay hidden.' })
+  }, [appendConsoleEntry])
+
   const toggleAnnotations = useCallback(() => {
     const next = !annotationOverlayOpen
 
-    setAnnotationOverlayOpen(next)
-    appendConsoleEntry({
-      level: 1,
-      message: next ? 'Preview annotation overlay enabled.' : 'Preview annotation overlay hidden.'
-    })
-  }, [annotationOverlayOpen, appendConsoleEntry])
+    if (!next) {
+      hideAnnotations()
+
+      return
+    }
+
+    setAnnotationOverlayOpen(true)
+    appendConsoleEntry({ level: 1, message: 'Preview annotation overlay enabled.' })
+  }, [annotationOverlayOpen, appendConsoleEntry, hideAnnotations])
+
+  const hideDebugOverlay = useCallback(() => {
+    webviewRef.current?.closeDevTools?.()
+    setDebugOverlayOpen(false)
+    setDevtoolsOpen(false)
+    consoleState.setOpen(false)
+    appendConsoleEntry({ level: 1, message: 'Preview debug hidden.' })
+  }, [appendConsoleEntry, consoleState])
 
   const toggleDebugOverlay = useCallback(() => {
     const webview = webviewRef.current
     const nativeDevToolsOpen = Boolean(devtoolsOpen || webview?.isDevToolsOpened?.())
     const next = !(debugOverlayOpen || nativeDevToolsOpen)
 
-    setDebugOverlayOpen(next)
+    if (!next) {
+      hideDebugOverlay()
+
+      return
+    }
+
+    setDebugOverlayOpen(true)
 
     if (webview?.openDevTools) {
-      if (next) {
-        webview.openDevTools()
-        setDevtoolsOpen(true)
-      } else {
-        webview.closeDevTools?.()
-        setDevtoolsOpen(false)
-      }
+      webview.openDevTools()
+      setDevtoolsOpen(true)
     } else {
       setDevtoolsOpen(false)
     }
 
-    if (next) {
-      consoleState.setOpen(true)
-    }
+    consoleState.setOpen(true)
 
     appendConsoleEntry({
       level: 1,
-      message: next
-        ? devtoolsAvailable
-          ? 'Preview debug opened. Native DevTools requested and the in-pane debug overlay is visible.'
-          : 'Preview debug overlay opened. Native DevTools are unavailable for this preview engine.'
-        : 'Preview debug hidden.'
+      message: devtoolsAvailable
+        ? 'Preview debug opened. Native DevTools requested and the in-pane debug overlay is visible.'
+        : 'Preview debug overlay opened. Native DevTools are unavailable for this preview engine.'
     })
-  }, [appendConsoleEntry, consoleState, debugOverlayOpen, devtoolsAvailable, devtoolsOpen])
+  }, [appendConsoleEntry, consoleState, debugOverlayOpen, devtoolsAvailable, devtoolsOpen, hideDebugOverlay])
 
   useEffect(() => {
     if (!setTitlebarToolGroup) {
@@ -497,6 +623,13 @@ export function PreviewPane({
               id: `${TITLEBAR_GROUP_ID}-devtools`,
               label: debugOverlayOpen || devtoolsOpen ? 'Hide preview debug' : 'Show preview debug',
               onSelect: toggleDebugOverlay
+            },
+            {
+              active: previewFullscreenActive,
+              icon: previewFullscreenActive ? <Square className="size-3.5" /> : <Maximize className="size-3.5" />,
+              id: `${TITLEBAR_GROUP_ID}-fullscreen`,
+              label: previewFullscreenActive ? 'Exit preview fullscreen' : 'Enter preview fullscreen',
+              onSelect: () => void togglePreviewFullscreen()
             }
           ]
         : [])
@@ -513,9 +646,11 @@ export function PreviewPane({
     debugOverlayOpen,
     devtoolsOpen,
     isWebPreview,
+    previewFullscreenActive,
     setTitlebarToolGroup,
     toggleAnnotations,
-    toggleDebugOverlay
+    toggleDebugOverlay,
+    togglePreviewFullscreen
   ])
 
   useEffect(() => {
@@ -547,6 +682,20 @@ export function PreviewPane({
   }, [findOpen])
 
   useEffect(() => {
+    syncNavigationButtons()
+  }, [previewHistory, syncNavigationButtons])
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setPreviewFullscreenActive(document.fullscreenElement === previewShellRef.current)
+    }
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange)
+
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange)
+  }, [])
+
+  useEffect(() => {
     if (!isWebPreview) {
       return
     }
@@ -554,6 +703,36 @@ export function PreviewPane({
     const handleKeyDown = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase()
       const modifier = event.ctrlKey || event.metaKey
+
+      if (event.key === 'Escape') {
+        if (findOpen) {
+          event.preventDefault()
+          closeFindBar()
+
+          return
+        }
+
+        if (annotationOverlayOpen) {
+          event.preventDefault()
+          hideAnnotations()
+
+          return
+        }
+
+        if (debugOverlayOpen || devtoolsOpen) {
+          event.preventDefault()
+          hideDebugOverlay()
+
+          return
+        }
+
+        if (previewFullscreenActive) {
+          event.preventDefault()
+          void exitPreviewFullscreen()
+
+          return
+        }
+      }
 
       if (modifier && key === 'f') {
         event.preventDefault()
@@ -578,7 +757,21 @@ export function PreviewPane({
     window.addEventListener('keydown', handleKeyDown)
 
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [focusAddressBar, isWebPreview, openFindBar, reloadPreview])
+  }, [
+    annotationOverlayOpen,
+    closeFindBar,
+    debugOverlayOpen,
+    devtoolsOpen,
+    exitPreviewFullscreen,
+    findOpen,
+    focusAddressBar,
+    hideAnnotations,
+    hideDebugOverlay,
+    isWebPreview,
+    openFindBar,
+    previewFullscreenActive,
+    reloadPreview
+  ])
 
   useEffect(() => {
     if (
@@ -755,6 +948,9 @@ export function PreviewPane({
     webviewRef.current = null
     setCurrentUrl(target.url)
     setAddressDraft(target.url)
+    setPreviewHistory({ entries: [target.url], index: 0 })
+    setCanNavigateBack(false)
+    setCanNavigateForward(false)
     setAnnotationOverlayOpen(false)
     setDebugOverlayOpen(false)
     setDevtoolsAvailable(false)
@@ -878,6 +1074,8 @@ export function PreviewPane({
         setLoadError(null)
         setCurrentUrl(detail.url)
         setAddressDraft(detail.url)
+        setCanNavigateBack(Boolean(webview.canGoBack?.()))
+        setCanNavigateForward(Boolean(webview.canGoForward?.()))
       }
     }
 
@@ -907,7 +1105,12 @@ export function PreviewPane({
     }
 
     const onStart = () => setLoading(true)
-    const onStop = () => setLoading(false)
+
+    const onStop = () => {
+      setLoading(false)
+      setCanNavigateBack(Boolean(webview.canGoBack?.()))
+      setCanNavigateForward(Boolean(webview.canGoForward?.()))
+    }
 
     webview.addEventListener('console-message', onConsole)
     webview.addEventListener('did-fail-load', onFail)
@@ -917,6 +1120,8 @@ export function PreviewPane({
     webview.addEventListener('did-stop-loading', onStop)
     host.appendChild(webview)
     webviewRef.current = webview
+    setCanNavigateBack(Boolean(webview.canGoBack?.()))
+    setCanNavigateForward(Boolean(webview.canGoForward?.()))
 
     return () => {
       webview.removeEventListener('console-message', onConsole)
@@ -930,7 +1135,14 @@ export function PreviewPane({
   }, [appendConsoleEntry, consoleState, copy, isWebPreview, target.url, webviewPartition])
 
   return (
-    <aside className="relative flex h-full w-full min-w-0 flex-col overflow-hidden bg-transparent text-muted-foreground">
+    <aside
+      className={cn(
+        'relative flex h-full w-full min-w-0 flex-col overflow-hidden bg-transparent text-muted-foreground',
+        previewFullscreenActive && 'fixed inset-0 z-[1000] h-screen w-screen bg-background shadow-2xl'
+      )}
+      data-preview-fullscreen={previewFullscreenActive ? '' : undefined}
+      ref={previewShellRef}
+    >
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {(!embedded || isWebPreview) && (
           <div className="pointer-events-none flex min-h-(--titlebar-height) items-center gap-1.5 border-b border-border/60 bg-background px-2 py-1">
@@ -960,6 +1172,28 @@ export function PreviewPane({
             </form>
             {isWebPreview && (
               <div aria-label="Preview browser controls" className="pointer-events-auto flex shrink-0 items-center gap-1">
+                <Tip label="Go back in preview">
+                  <button
+                    aria-label="Go back in preview"
+                    className="grid size-6 place-items-center rounded-sm border border-(--ui-stroke-quaternary) text-muted-foreground/85 transition-colors hover:border-(--ui-stroke-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring disabled:cursor-default disabled:opacity-45 disabled:hover:border-(--ui-stroke-quaternary) disabled:hover:bg-transparent disabled:hover:text-muted-foreground/85"
+                    disabled={!canNavigateBack}
+                    onClick={goPreviewBack}
+                    type="button"
+                  >
+                    <ChevronLeft className="size-3" />
+                  </button>
+                </Tip>
+                <Tip label="Go forward in preview">
+                  <button
+                    aria-label="Go forward in preview"
+                    className="grid size-6 place-items-center rounded-sm border border-(--ui-stroke-quaternary) text-muted-foreground/85 transition-colors hover:border-(--ui-stroke-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring disabled:cursor-default disabled:opacity-45 disabled:hover:border-(--ui-stroke-quaternary) disabled:hover:bg-transparent disabled:hover:text-muted-foreground/85"
+                    disabled={!canNavigateForward}
+                    onClick={goPreviewForward}
+                    type="button"
+                  >
+                    <ChevronRight className="size-3" />
+                  </button>
+                </Tip>
                 <Tip label="Reload preview">
                   <button
                     aria-label="Reload preview"
@@ -994,6 +1228,22 @@ export function PreviewPane({
                     type="button"
                   >
                     <Search className="size-3" />
+                  </button>
+                </Tip>
+                <Tip label={previewFullscreenActive ? 'Exit preview fullscreen' : 'Enter preview fullscreen'}>
+                  <button
+                    aria-label={previewFullscreenActive ? 'Exit preview fullscreen' : 'Enter preview fullscreen'}
+                    aria-pressed={previewFullscreenActive}
+                    className={cn(
+                      'grid size-6 place-items-center rounded-sm border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring',
+                      previewFullscreenActive
+                        ? 'border-(--ui-stroke-secondary) bg-(--chrome-action-hover) text-foreground'
+                        : 'border-(--ui-stroke-quaternary) text-muted-foreground/85 hover:border-(--ui-stroke-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+                    )}
+                    onClick={() => void togglePreviewFullscreen()}
+                    type="button"
+                  >
+                    {previewFullscreenActive ? <Square className="size-3" /> : <Maximize className="size-3" />}
                   </button>
                 </Tip>
               </div>
@@ -1178,8 +1428,17 @@ export function PreviewPane({
                 className="pointer-events-none absolute inset-0 z-10 overflow-hidden border border-sky-400/60 bg-sky-400/5 text-[0.625rem] font-semibold uppercase tracking-[0.12em] text-sky-100 shadow-[inset_0_0_0_1px_rgba(125,211,252,0.18)]"
                 data-preview-annotations=""
               >
-                <div className="absolute left-3 top-3 rounded-sm border border-sky-300/50 bg-black/65 px-2 py-1 text-sky-100 shadow-lg">
-                  Annotation overlay active
+                <div className="absolute left-3 top-3 flex items-center gap-2 rounded-sm border border-sky-300/50 bg-black/70 px-2 py-1 text-sky-100 shadow-lg">
+                  <button
+                    aria-label="Back to preview"
+                    className="pointer-events-auto inline-flex items-center gap-1 rounded-sm border border-sky-300/50 bg-sky-400/10 px-1.5 py-0.5 text-[0.625rem] font-bold normal-case tracking-normal text-sky-100 transition-colors hover:bg-sky-300/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-200"
+                    onClick={hideAnnotations}
+                    type="button"
+                  >
+                    <ChevronLeft className="size-3" />
+                    Back to preview
+                  </button>
+                  <span>Annotation overlay active</span>
                 </div>
                 <div className="absolute left-[18%] top-[18%] rounded-sm border border-sky-300/70 bg-black/70 px-1.5 py-0.5 text-sky-100">[1]</div>
                 <div className="absolute right-[18%] top-[26%] rounded-sm border border-sky-300/70 bg-black/70 px-1.5 py-0.5 text-sky-100">[2]</div>
@@ -1193,9 +1452,20 @@ export function PreviewPane({
                 className="pointer-events-auto absolute right-3 top-3 z-30 w-72 max-w-[calc(100%-1.5rem)] rounded-md border border-amber-400/40 bg-black/80 p-3 text-[0.6875rem] text-amber-50 shadow-2xl backdrop-blur"
                 data-preview-debug-overlay=""
               >
-                <div className="mb-2 flex items-center gap-2 text-[0.65rem] font-semibold uppercase tracking-[0.14em] text-amber-200">
-                  <Bug className="size-3" />
-                  Preview debug
+                <div className="mb-2 flex items-center justify-between gap-2 text-[0.65rem] font-semibold uppercase tracking-[0.14em] text-amber-200">
+                  <span className="inline-flex items-center gap-2">
+                    <Bug className="size-3" />
+                    Preview debug
+                  </span>
+                  <button
+                    aria-label="Back to preview"
+                    className="inline-flex items-center gap-1 rounded-sm border border-amber-300/40 bg-amber-300/10 px-1.5 py-0.5 text-[0.625rem] font-bold normal-case tracking-normal text-amber-50 transition-colors hover:bg-amber-300/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-200"
+                    onClick={hideDebugOverlay}
+                    type="button"
+                  >
+                    <ChevronLeft className="size-3" />
+                    Back to preview
+                  </button>
                 </div>
                 <dl className="grid grid-cols-[4.75rem_1fr] gap-x-2 gap-y-1 font-mono text-[0.65rem] normal-case tracking-normal text-amber-50/85">
                   <dt className="text-amber-200/70">Engine</dt>

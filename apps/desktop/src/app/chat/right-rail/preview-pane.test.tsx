@@ -9,7 +9,11 @@ import { PreviewPane } from './preview-pane'
 const ORIGINAL_INNER_WIDTH = window.innerWidth
 
 type PreviewTestWebview = HTMLElement & {
+  canGoBack?: ReturnType<typeof vi.fn>
+  canGoForward?: ReturnType<typeof vi.fn>
   findInPage?: ReturnType<typeof vi.fn>
+  goBack?: ReturnType<typeof vi.fn>
+  goForward?: ReturnType<typeof vi.fn>
   reload?: ReturnType<typeof vi.fn>
   stopFindInPage?: ReturnType<typeof vi.fn>
 }
@@ -87,7 +91,8 @@ describe('PreviewPane console state', () => {
     expect(latestTools.map((tool: { id: string }) => tool.id)).toEqual([
       'preview-annotate',
       'preview-console',
-      'preview-devtools'
+      'preview-devtools',
+      'preview-fullscreen'
     ])
 
     act(() => {
@@ -136,9 +141,13 @@ describe('PreviewPane console state', () => {
     )
 
     expect(screen.getByLabelText('Preview URL')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Go back in preview' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Go forward in preview' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Reload preview' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Open preview in browser' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Find in preview' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Enter preview fullscreen' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Show preview annotations' })).toBeTruthy()
   })
 
   it('opens preview find with Ctrl+F and reports iframe fallback limitations visibly', () => {
@@ -371,7 +380,105 @@ describe('PreviewPane console state', () => {
     expect((rendered.container.querySelector('[data-preview-browser-content]') as HTMLElement | null)?.style.width).toBe('')
   })
 
-  it('makes annotate and debug preview controls visibly toggle in iframe fallback mode', () => {
+  it('wires preview browser back and forward controls to Electron webview history APIs', () => {
+    const createdWebviews: PreviewTestWebview[] = []
+    const originalCreateElement = document.createElement.bind(document)
+
+    vi.spyOn(document, 'createElement').mockImplementation(((tagName: string, options?: ElementCreationOptions) => {
+      if (tagName.toLowerCase() !== 'webview') {
+        return originalCreateElement(tagName, options)
+      }
+
+      const webview = originalCreateElement('div') as PreviewTestWebview
+      webview.canGoBack = vi.fn(() => true)
+      webview.canGoForward = vi.fn(() => true)
+      webview.goBack = vi.fn()
+      webview.goForward = vi.fn()
+      webview.reload = vi.fn()
+      createdWebviews.push(webview)
+
+      return webview
+    }) as typeof document.createElement)
+
+    render(
+      <PreviewPane
+        embedded
+        setTitlebarToolGroup={vi.fn()}
+        target={{
+          kind: 'url',
+          label: 'Preview',
+          source: 'https://example.com/start',
+          url: 'https://example.com/start'
+        }}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Go back in preview' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Go forward in preview' }))
+
+    expect(createdWebviews[0]?.goBack).toHaveBeenCalledTimes(1)
+    expect(createdWebviews[0]?.goForward).toHaveBeenCalledTimes(1)
+  })
+
+  it('has an explicit fullscreen control that can be exited from the preview flow', async () => {
+    let fullscreenElement: Element | null = null
+
+    const requestFullscreen = vi.fn(function request(this: Element) {
+      fullscreenElement = this
+      document.dispatchEvent(new Event('fullscreenchange'))
+
+      return Promise.resolve()
+    })
+
+    const exitFullscreen = vi.fn(() => {
+      fullscreenElement = null
+      document.dispatchEvent(new Event('fullscreenchange'))
+
+      return Promise.resolve()
+    })
+
+    Object.defineProperty(HTMLElement.prototype, 'requestFullscreen', {
+      configurable: true,
+      value: requestFullscreen
+    })
+    Object.defineProperty(document, 'exitFullscreen', {
+      configurable: true,
+      value: exitFullscreen
+    })
+    Object.defineProperty(document, 'fullscreenElement', {
+      configurable: true,
+      get: () => fullscreenElement
+    })
+
+    render(
+      <PreviewPane
+        embedded
+        setTitlebarToolGroup={vi.fn()}
+        target={{
+          kind: 'url',
+          label: 'Preview',
+          source: 'http://localhost:5174',
+          url: 'http://localhost:5174'
+        }}
+      />
+    )
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Enter preview fullscreen' }))
+    })
+
+    expect(requestFullscreen).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'Exit preview fullscreen' })).toBeTruthy()
+
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'Escape' })
+    })
+
+    expect(exitFullscreen).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'Enter preview fullscreen' })).toBeTruthy()
+  })
+
+  it('provides visible back-out controls for preview overlays and menus', () => {
     const setTitlebarToolGroup = vi.fn()
 
     const rendered = render(
@@ -392,10 +499,26 @@ describe('PreviewPane console state', () => {
     expect(rendered.container.querySelector('[data-preview-annotations]')).toBeTruthy()
     expect(screen.getByLabelText('Preview annotation overlay active')).toBeTruthy()
 
+    fireEvent.click(screen.getByRole('button', { name: 'Back to preview' }))
+
+    expect(rendered.container.querySelector('[data-preview-annotations]')).toBeNull()
+
     fireEvent.click(screen.getByRole('button', { name: 'Show preview debug' }))
 
     expect(rendered.container.querySelector('[data-preview-debug-overlay]')).toBeTruthy()
     expect(screen.getByLabelText('Preview debug overlay')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to preview' }))
+
+    expect(rendered.container.querySelector('[data-preview-debug-overlay]')).toBeNull()
+    expect(screen.queryByText('Preview Console')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Find in preview' }))
+    expect(screen.getByLabelText('Find in preview text')).toBeTruthy()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+
+    expect(screen.queryByLabelText('Find in preview text')).toBeNull()
 
     const tools = setTitlebarToolGroup.mock.calls.at(-1)?.[1] ?? []
     expect(tools.map((tool: { id: string }) => tool.id)).toContain('preview-annotate')

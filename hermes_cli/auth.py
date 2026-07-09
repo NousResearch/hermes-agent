@@ -27,6 +27,7 @@ import ssl
 import stat
 import sys
 import base64
+import errno
 import hashlib
 import subprocess
 import threading
@@ -1158,6 +1159,16 @@ def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = N
         if dir_fd is not None:
             try:
                 os.fsync(dir_fd)
+            except OSError as exc:
+                # Some mounted filesystems reject directory fsync even though
+                # the auth file has already been fsynced and replaced.
+                if exc.errno not in (errno.EBADF, errno.EINVAL):
+                    raise
+                logger.debug(
+                    "auth store directory fsync unsupported for %s: %s",
+                    auth_file.parent,
+                    exc,
+                )
             finally:
                 os.close(dir_fd)
     finally:

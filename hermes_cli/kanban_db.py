@@ -2956,6 +2956,7 @@ def create_task(
     if (
         workspace_path is None
         and project_repo is None
+        and board_repo is None
         and workspace_kind in {"dir", "worktree"}
     ):
         board_slug = board if board else get_current_board()
@@ -3001,23 +3002,29 @@ def create_task(
                     if missing:
                         raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
 
-                # Project-linked worktree: a fresh worktree dir under the repo
-                # plus a deterministic branch (project slug + task id). Together
-                # these kill the random ``wt/<task-id>`` worker fallback and the
-                # unanchored ``.worktrees/<id>`` under the dispatcher's cwd.
-                if project_obj is not None and workspace_kind == "worktree":
-                    if project_repo and not workspace_path:
-                        workspace_path = os.path.join(
-                            project_repo, ".worktrees", task_id
+                # Project- or board-linked worktree: a fresh worktree dir under
+                # the anchor repo, ``<repo>/.worktrees/<task-id>``, keyed on the
+                # new task id. This kills the unanchored ``.worktrees/<id>``
+                # under the dispatcher's cwd. A project link additionally gets a
+                # deterministic branch (project slug + task id); a board link
+                # falls back to the worker's ``wt/<task-id>`` branch.
+                anchor_repo = project_repo or board_repo
+                if workspace_kind == "worktree" and anchor_repo and not workspace_path:
+                    workspace_path = os.path.join(
+                        anchor_repo, ".worktrees", task_id
+                    )
+                if (
+                    project_obj is not None
+                    and workspace_kind == "worktree"
+                    and not branch_name
+                ):
+                    # _pdb was imported above when project_obj was resolved.
+                    try:
+                        branch_name = _pdb.branch_name_for(
+                            project_obj, task_id, title=title or ""
                         )
-                    if not branch_name:
-                        # _pdb was imported above when project_obj was resolved.
-                        try:
-                            branch_name = _pdb.branch_name_for(
-                                project_obj, task_id, title=title or ""
-                            )
-                        except Exception:
-                            branch_name = None
+                    except Exception:
+                        branch_name = None
 
                 conn.execute(
                     """

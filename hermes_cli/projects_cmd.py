@@ -211,6 +211,12 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if proj is None:
         print("project: vanished after create", file=sys.stderr)
         return 2
+    # Creating a project already bound to a board must sync the board's
+    # ``default_workdir`` to the primary repo, exactly as ``bind-board`` does —
+    # otherwise the binding is inert and cards created on the board land in
+    # ephemeral scratch dirs instead of worktrees on the repo.
+    if args.board and args.board.strip():
+        _sync_board_default_workdir(proj, args.board)
     print(f"Created project {proj.slug} ({pid})")
     _print_project(proj)
     return 0

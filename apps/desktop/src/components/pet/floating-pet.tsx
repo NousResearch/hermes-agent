@@ -6,22 +6,14 @@ import { useOnProfileSwitch } from '@/app/hooks/use-on-profile-switch'
 import { useRouteOverlayActive } from '@/app/hooks/use-route-overlay-active'
 import { PetHeartField } from '@/components/chat/vibe-hearts'
 import { persistString, storedString } from '@/lib/storage'
-import {
-  $petAtRest,
-  $petInfo,
-  $petRoam,
-  $petRoamDir,
-  clearPetUnread,
-  type PetInfo,
-  petProfile,
-  setPetInfo
-} from '@/store/pet'
-import { resetPetGallery, setPetScale } from '@/store/pet-gallery'
+import { $petAtRest, $petBubble, $petControls, $petInfo, $petRoam, $petRoamDir, clearPetUnread, type PetInfo, petProfile, setPetInfo } from '@/store/pet'
+import { resetPetGallery, setPetEnabled, setPetScale } from '@/store/pet-gallery'
 import { $petOverlayActive, initPetOverlayBridge, popOutPet, restorePetOverlay } from '@/store/pet-overlay'
 import { $gatewayState } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
+import { PetBubble } from './pet-bubble'
 import { PetSprite, roamWalkRow } from './pet-sprite'
 import { usePetRoam } from './use-pet-roam'
 import { type PetZoomAnchor, usePetZoomGesture } from './use-pet-zoom-gesture'
@@ -119,6 +111,8 @@ export function FloatingPet() {
   const roamEnabled = useStore($petRoam)
   const atRest = useStore($petAtRest)
   const roamDir = useStore($petRoamDir)
+  const bubble = useStore($petBubble)
+  const controls = useStore($petControls)
   const routeOverlayOpen = useRouteOverlayActive()
 
   const [position, setPosition] = useState<Point>(loadPosition)
@@ -126,6 +120,7 @@ export function FloatingPet() {
   // The facing mirror lives on the sprite wrapper, not the container, so the
   // speech bubble (a container child) never renders flipped/backwards.
   const spriteWrapRef = useRef<HTMLDivElement | null>(null)
+  const [showHoverControls, setShowHoverControls] = useState(false)
   const petW = (info.frameW ?? 192) * (info.scale ?? 0.33)
   const petH = (info.frameH ?? 208) * (info.scale ?? 0.33)
   // Soft contact shadow, sized off the pet so every scale/species grounds the
@@ -408,6 +403,8 @@ export function FloatingPet() {
 
   return (
     <div
+      onMouseEnter={() => setShowHoverControls(true)}
+      onMouseLeave={() => setShowHoverControls(false)}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -437,6 +434,11 @@ export function FloatingPet() {
           zIndex: 0
         }}
       />
+      {bubble && (
+        <div style={{ marginBottom: 4, position: 'relative', zIndex: 2 }}>
+          <PetBubble />
+        </div>
+      )}
       <div
         ref={spriteWrapRef}
         style={{
@@ -451,6 +453,66 @@ export function FloatingPet() {
       {/* Hearts puff off the pet; its celebrate ("yay"/jump) pose is driven by
           burstVibeHearts's router. */}
       <PetHeartField petH={petH} petW={petW} />
+      {controls && showHoverControls && (
+        <div style={{ display: 'flex', gap: 2, position: 'absolute', right: 4, top: 4, zIndex: 3 }}>
+          <button
+            aria-label="Pop out pet"
+            onClick={e => {
+              e.stopPropagation()
+              const rect = containerRef.current?.getBoundingClientRect()
+
+              if (rect) {
+                popOutPet({ height: rect.height, width: rect.width, x: rect.left, y: rect.top })
+              }
+            }}
+            style={{
+              alignItems: 'center',
+              background: 'var(--ui-bg-elevated)',
+              border: '1px solid var(--ui-stroke-secondary)',
+              borderRadius: 8,
+              color: 'var(--foreground)',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              fontSize: 10,
+              fontWeight: 500,
+              height: 22,
+              justifyContent: 'center',
+              padding: '0 6px',
+              whiteSpace: 'nowrap'
+            }}
+            title="Pop out pet"
+            type="button"
+          >
+            Pop out
+          </button>
+          <button
+            aria-label="Hide pet"
+            onClick={e => {
+              e.stopPropagation()
+              void setPetEnabled(requestGateway, false)
+            }}
+            style={{
+              alignItems: 'center',
+              background: 'var(--ui-bg-elevated)',
+              border: '1px solid var(--ui-stroke-secondary)',
+              borderRadius: 8,
+              color: 'var(--ui-red)',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              fontSize: 10,
+              fontWeight: 500,
+              height: 22,
+              justifyContent: 'center',
+              padding: '0 6px',
+              whiteSpace: 'nowrap'
+            }}
+            title="Hide pet"
+            type="button"
+          >
+            Hide
+          </button>
+        </div>
+      )}
     </div>
   )
 }

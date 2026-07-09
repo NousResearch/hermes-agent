@@ -1248,8 +1248,11 @@ export interface Translations {
       editFoldersDesc: string
       editFoldersEmpty: string
       editFolderPick: string
-      editFolderSave: string
+            editFolderSave: string
       editFolderRevert: string
+      editFolderRemove: string
+      editFolderUnremove: string
+      editFolderRemoved: string
       editFolderConflict: string
       editFolderChanged: string
       editFoldersDone: string

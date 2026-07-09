@@ -27,15 +27,20 @@ import {
   generateProjectIdea,
   moveProjectFolder,
   pickProjectFolder,
+  removeProjectFolder,
   renameProject
 } from '@/store/projects'
 
 // Local-only edit state for the edit-folders dialog. Kept outside the atom so
-// the user can stage several folder moves before committing them in one shot —
-// the per-row optimistic cache update only fires on Save.
+// the user can stage several folder moves + removals before committing them in
+// one shot — the per-row optimistic cache update only fires on Save.
 interface FolderEdit {
   original: string
   current: string
+  // True when the user clicked the trash button on this row. Toggled back off
+  // by clicking the same button again (the icon swaps to "keep"). A `removed`
+  // row's `current` is unused — Save sends `projects.remove_folder` for it.
+  removed: boolean
 }
 
 // Single dialog mounted once in the sidebar; it renders create / rename /
@@ -73,7 +78,7 @@ export function ProjectDialog() {
       // and so a concurrent refresh can't sneak a fresh folder in mid-edit.
       if (mode === 'edit-folders') {
         const proj = projects.find(p2 => p2.id === state?.projectId)
-        setFolderEdits((proj?.folders ?? []).map(f => ({ original: f.path, current: f.path })))
+        setFolderEdits((proj?.folders ?? []).map(f => ({ original: f.path, current: f.path, removed: false })))
       } else {
         setFolderEdits([])
       }
@@ -150,6 +155,15 @@ export function ProjectDialog() {
     }
   }
 
+  // Toggle a row's `removed` flag. The button's icon flips between trash (active)
+  // and "discard"/undo (kept) so a quick second tap restores the row before
+  // Save commits the removal.
+  const toggleRemoveFolderEdit = (originalPath: string) => {
+    setFolderEdits(prev =>
+      prev.map(f => (f.original === originalPath ? { ...f, removed: !f.removed } : f))
+    )
+  }
+
   const submit = async () => {
     const trimmed = name.trim()
     const projectId = state?.projectId
@@ -171,19 +185,24 @@ export function ProjectDialog() {
       return
     }
 
-    // Commit staged folder moves in original-path order. We process them
-    // sequentially so the cache stays consistent: a later move's optimistic
-    // write sees the prior move's already-updated primary_path / repos.
-    // Backend `projects.move_folder` is idempotent for same-path, so an empty
-    // edit closes immediately.
+    // Commit staged folder moves + removals. Order matters: removals run first so
+    // they don't fight a same-row move for the path slot — a row can be both
+    // "moved" AND "removed" only if the user explicitly re-toggles (and we
+    // currently don't expose that combo, so in practice at most one operation
+    // targets each row). Backend `projects.move_folder` is idempotent for
+    // same-path, so an empty edit closes immediately.
     if (mode === 'edit-folders' && projectId) {
-      const moves = folderEdits.filter(f => f.original !== f.current)
-      if (!moves.length) {
+      const removals = folderEdits.filter(f => f.removed).map(f => f.original)
+      const moves = folderEdits.filter(f => !f.removed && f.original !== f.current)
+      if (!removals.length && !moves.length) {
         closeProjectDialog()
         return
       }
 
       await runSubmit(async () => {
+        for (const path of removals) {
+          await removeProjectFolder(projectId, path)
+        }
         for (const move of moves) {
           await moveProjectFolder(projectId, move.original, move.current)
         }
@@ -360,37 +379,42 @@ export function ProjectDialog() {
             ) : (
               <ul className="flex flex-col gap-1.5">
                 {folderEdits.map(edit => {
-                  const changed = edit.original !== edit.current
+                  const changed = !edit.removed && edit.original !== edit.current
                   // Collision: a staged `current` matches another row's `original`
                   // (the only case the backend can reject), or duplicates another
                   // row's staged `current` (would only happen across two rows
-                  // pointing at the same new path).
+                  // pointing at the same new path). Skipped for removed rows:
+                  // their `current` doesn't ship, so a stale collision flag
+                  // would just confuse the user.
                   const otherOriginals = new Set(
                     folderEdits.filter(o => o.original !== edit.original).map(o => o.original)
                   )
                   const otherCurrents = folderEdits
-                    .filter(o => o.original !== edit.original)
+                    .filter(o => o.original !== edit.original && !o.removed)
                     .map(o => o.current)
                   const collision =
-                    otherCurrents.includes(edit.current) ||
-                    (changed && otherOriginals.has(edit.current))
+                    !edit.removed &&
+                    (otherCurrents.includes(edit.current) ||
+                      (changed && otherOriginals.has(edit.current)))
                   return (
                     <li
                       className={cn(
-                        'flex items-center gap-2 rounded-md bg-(--ui-control-hover-background) px-2 py-1 text-[0.75rem]'
+                        'flex items-center gap-2 rounded-md bg-(--ui-control-hover-background) px-2 py-1 text-[0.75rem]',
+                        edit.removed && 'opacity-50'
                       )}
                       key={edit.original}
                     >
                       <Codicon
                         className="shrink-0 text-(--ui-text-tertiary)"
-                        name={changed ? 'arrow-right' : 'folder'}
+                        name={edit.removed ? 'trash' : changed ? 'arrow-right' : 'folder'}
                         size="0.75rem"
                       />
                       <div className="flex min-w-0 flex-1 flex-col">
                         <span
                           className={cn(
-                            'truncate text-(--ui-text-quaternary)',
-                            changed && 'line-through'
+                            'truncate',
+                            edit.removed ? 'text-(--ui-text-tertiary) line-through' : 'text-(--ui-text-quaternary)',
+                            changed && !edit.removed && 'line-through'
                           )}
                           title={edit.original}
                         >
@@ -413,17 +437,24 @@ export function ProjectDialog() {
                           {p.editFolderChanged}
                         </span>
                       )}
-                      <Button
-                        aria-label={p.editFolderPick}
-                        className="size-5 shrink-0 text-(--ui-text-quaternary) hover:text-foreground"
-                        disabled={submitting}
-                        onClick={() => void pickFolderEdit(edit.original)}
-                        size="icon-xs"
-                        type="button"
-                        variant="ghost"
-                      >
-                        <Codicon name="folder-opened" size="0.75rem" />
-                      </Button>
+                      {edit.removed && (
+                        <span className="shrink-0 text-[0.625rem] uppercase text-(--ui-text-tertiary)">
+                          {p.editFolderRemoved}
+                        </span>
+                      )}
+                      {!edit.removed && (
+                        <Button
+                          aria-label={p.editFolderPick}
+                          className="size-5 shrink-0 text-(--ui-text-quaternary) hover:text-foreground"
+                          disabled={submitting}
+                          onClick={() => void pickFolderEdit(edit.original)}
+                          size="icon-xs"
+                          type="button"
+                          variant="ghost"
+                        >
+                          <Codicon name="folder-opened" size="0.75rem" />
+                        </Button>
+                      )}
                       {changed && (
                         <Button
                           aria-label={p.editFolderRevert}
@@ -443,6 +474,20 @@ export function ProjectDialog() {
                           <Codicon name="discard" size="0.75rem" />
                         </Button>
                       )}
+                      <Button
+                        aria-label={edit.removed ? p.editFolderUnremove : p.editFolderRemove}
+                        className={cn(
+                          'size-5 shrink-0 hover:text-foreground',
+                          edit.removed ? 'text-(--ui-text-danger, #f48771)' : 'text-(--ui-text-quaternary)'
+                        )}
+                        disabled={submitting}
+                        onClick={() => toggleRemoveFolderEdit(edit.original)}
+                        size="icon-xs"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <Codicon name={edit.removed ? 'discard' : 'trash'} size="0.75rem" />
+                      </Button>
                     </li>
                   )
                 })}
@@ -464,9 +509,10 @@ export function ProjectDialog() {
             <Button
               disabled={
                 submitting ||
-                // Block Save when no edits were staged — submit() would close
-                // immediately, but a stray Enter shouldn't get a no-op reply.
-                (mode === 'edit-folders' && folderEdits.every(f => f.original === f.current))
+                // Block Save when no edits AND no removals were staged — submit
+                // would close immediately, but a stray Enter shouldn't no-op.
+                (mode === 'edit-folders' &&
+                  folderEdits.every(f => f.original === f.current && !f.removed))
               }
               onClick={() => void submit()}
               type="button"

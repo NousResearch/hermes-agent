@@ -612,6 +612,49 @@ export async function moveProjectFolder(id: string, oldPath: string, newPath: st
   reconcileProjects()
 }
 
+// Remove a folder from a project. Optimistic: drops the row from the cached
+// `folders` array, clears `primary_path` if the removed folder was primary,
+// and bumps the tree node's `path` off the removed primary so the sidebar
+// doesn't keep pointing at a row that just disappeared. The backend
+// `remove_folder` (via the JSON-RPC method) repoints the project's primary to
+// the next-oldest folder when the primary is removed; on a rollback the
+// server's repointed primary is what `reconcileProjects` then re-fetches, so
+// we don't try to guess it client-side.
+export async function removeProjectFolder(id: string, path: string): Promise<void> {
+  const snap = snapshotProjects()
+  const trimmed = path.trim()
+
+  if (!trimmed) {
+    throw new Error('folder path must not be empty')
+  }
+
+  $projects.set(
+    snap.projects.map(proj => {
+      if (proj.id !== id) return proj
+
+      const wasPrimary = proj.primary_path === trimmed
+      const folders = (proj.folders ?? []).filter(f => f.path !== trimmed)
+
+      return {
+        ...proj,
+        folders,
+        ...(wasPrimary && { primary_path: null })
+      }
+    })
+  )
+
+  if (snap.tree.some(node => node.id === id && node.path === trimmed)) {
+    // The removed row was the tree node's primary path. Clear it so the
+    // sidebar doesn't keep advertising a path that's gone; the tree refresh
+    // will refill it from the server (which has repointed to the next-oldest
+    // folder or null).
+    $projectTree.set(snap.tree.map(node => (node.id === id ? { ...node, path: null } : node)))
+  }
+
+  await persistOrRollback(snap, () => gatewayRequest('projects.remove_folder', { id, path: trimmed }))
+  reconcileProjects()
+}
+
 // True when the session currently open in the main pane belongs to `projectId`.
 // Used so deleting a project you have a session open from kicks you back to the
 // intro draft instead of stranding you in a now-orphaned view.

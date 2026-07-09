@@ -1206,7 +1206,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             ]
             
             # Run all tasks concurrently (semaphore limits actual concurrency)
-            await asyncio.gather(*tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
             
             # Remove status task
             progress.remove_task(status_task)

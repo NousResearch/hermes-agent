@@ -2943,6 +2943,37 @@ def _lmstudio_server_root(base_url: Optional[str]) -> Optional[str]:
     return root or None
 
 
+def _lmstudio_model_aliases(value: Any) -> set[str]:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return set()
+    aliases = {raw}
+    if "/" in raw:
+        aliases.add(raw.rsplit("/", 1)[1])
+    for alias in tuple(aliases):
+        if alias.endswith("-mtp"):
+            aliases.add(alias[: -len("-mtp")])
+    return aliases
+
+
+def _lmstudio_raw_model_matches(raw: dict, model: str) -> bool:
+    wanted = _lmstudio_model_aliases(model)
+    if not wanted:
+        return False
+    aliases: set[str] = set()
+    for key in ("key", "id", "selected_variant"):
+        aliases.update(_lmstudio_model_aliases(raw.get(key)))
+    variants = raw.get("variants")
+    if isinstance(variants, list):
+        for variant in variants:
+            if isinstance(variant, dict):
+                for key in ("key", "id", "name", "path"):
+                    aliases.update(_lmstudio_model_aliases(variant.get(key)))
+            else:
+                aliases.update(_lmstudio_model_aliases(variant))
+    return bool(wanted & aliases)
+
+
 def _lmstudio_request_headers(api_key: Optional[str] = None) -> dict:
     """Build HTTP headers for LM Studio native API requests."""
     headers = {"User-Agent": _HERMES_USER_AGENT}
@@ -3059,12 +3090,14 @@ def ensure_lmstudio_model_loaded(
     target_context_length: int,
     timeout: float = 120.0,
 ) -> Optional[int]:
-    """Ensure LM Studio has ``model`` loaded with at least ``target_context_length``.
+    """Ensure LM Studio has ``model`` loaded with sufficient context.
 
-    No-op when an instance is already loaded with sufficient context. Otherwise
-    POSTs ``/api/v1/models/load`` to (re)load with the target context, capped
-    at the model's ``max_context_length``. Returns the resolved loaded context
-    length, or ``None`` when the probe / load failed.
+    LM Studio stores downloaded models in its native ``/api/v1/models`` API,
+    while the OpenAI-compatible ``/v1/models`` surface may only expose the
+    currently loaded instance.  This helper uses the native API, unloads other
+    loaded chat models before loading a new target, lets LM Studio try its saved
+    load settings first, and only forces ``target_context_length`` when the
+    loaded instance reports a smaller context window.
     """
     server_root = _lmstudio_server_root(base_url)
     if not server_root:
@@ -3072,54 +3105,172 @@ def ensure_lmstudio_model_loaded(
 
     headers = _lmstudio_request_headers(api_key)
 
-    try:
-        raw_models = _lmstudio_fetch_raw_models(api_key=api_key, base_url=base_url, timeout=10)
-    except Exception:
-        raw_models = None
-    if raw_models is None:
+    def fetch_models() -> Optional[list[dict]]:
+        try:
+            raw_models = _lmstudio_fetch_raw_models(api_key=api_key, base_url=base_url, timeout=10)
+        except Exception:
+            raw_models = None
+        if raw_models is None:
+            return None
+        return [raw for raw in raw_models if isinstance(raw, dict)]
+
+    def find_target(raw_models: list[dict]) -> Optional[dict]:
+        for raw in raw_models:
+            if _lmstudio_raw_model_matches(raw, model):
+                return raw
         return None
 
-    target_entry = None
-    for raw in raw_models:
-        if not isinstance(raw, dict):
-            continue
-        if raw.get("key") == model or raw.get("id") == model:
-            target_entry = raw
-            break
+    def loaded_contexts(entry: dict) -> list[int]:
+        contexts: list[int] = []
+        for inst in entry.get("loaded_instances") or []:
+            cfg = inst.get("config") if isinstance(inst, dict) else None
+            loaded_ctx = cfg.get("context_length") if isinstance(cfg, dict) else None
+            if isinstance(loaded_ctx, int) and loaded_ctx > 0:
+                contexts.append(loaded_ctx)
+        return contexts
+
+    def loaded_instance_ids(entry: dict) -> list[str]:
+        ids: list[str] = []
+        for inst in entry.get("loaded_instances") or []:
+            if not isinstance(inst, dict):
+                continue
+            instance_id = str(inst.get("id") or "").strip()
+            if instance_id:
+                ids.append(instance_id)
+        return list(dict.fromkeys(ids))
+
+    def model_key(entry: dict) -> str:
+        return str(entry.get("key") or entry.get("id") or "").strip()
+
+    def unload_instance(instance_id: str) -> None:
+        body = json.dumps({"instance_id": instance_id}).encode()
+        unload_headers = dict(headers)
+        unload_headers["Content-Type"] = "application/json"
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                server_root + "/api/v1/models/unload",
+                data=body,
+                headers=unload_headers,
+                method="POST",
+            ),
+            timeout=min(timeout, 30.0),
+        ) as resp:
+            resp.read()
+
+    def unload_instances(instance_ids: list[str], *, strict: bool = False) -> bool:
+        success = True
+        for instance_id in instance_ids:
+            try:
+                unload_instance(instance_id)
+            except Exception:
+                success = False
+                if strict:
+                    break
+        return success
+
+    def load_model(model_id: str, context_length: Optional[int]) -> Optional[int]:
+        payload: dict[str, Any] = {"model": model_id, "echo_load_config": True}
+        if context_length is not None:
+            payload["context_length"] = context_length
+        body = json.dumps(payload).encode()
+        load_headers = dict(headers)
+        load_headers["Content-Type"] = "application/json"
+        try:
+            with urllib.request.urlopen(
+                urllib.request.Request(
+                    server_root + "/api/v1/models/load",
+                    data=body,
+                    headers=load_headers,
+                    method="POST",
+                ),
+                timeout=timeout,
+            ) as resp:
+                raw = resp.read()
+        except Exception:
+            return None
+        if raw:
+            try:
+                parsed = json.loads(raw.decode("utf-8"))
+                load_config = parsed.get("load_config") if isinstance(parsed, dict) else None
+                loaded_ctx = load_config.get("context_length") if isinstance(load_config, dict) else None
+                if isinstance(loaded_ctx, int) and loaded_ctx > 0:
+                    return loaded_ctx
+            except Exception:
+                pass
+        refreshed = fetch_models()
+        if refreshed:
+            for entry in refreshed:
+                if _lmstudio_raw_model_matches(entry, model_id):
+                    contexts = loaded_contexts(entry)
+                    if contexts:
+                        return max(contexts)
+                    break
+        return context_length if context_length is not None else None
+
+    def restore_previous_loaded_model(candidates: list[tuple[str, Optional[int]]]) -> None:
+        for previous_model, previous_context in candidates:
+            if not previous_model:
+                continue
+            try:
+                if load_model(previous_model, previous_context) is not None:
+                    return
+            except Exception:
+                pass
+
+    raw_models = fetch_models()
+    if raw_models is None:
+        return None
+    target_entry = find_target(raw_models)
     if target_entry is None:
         return None
 
-    max_ctx = target_entry.get("max_context_length")
-    if isinstance(max_ctx, int) and max_ctx > 0:
-        target_context_length = min(target_context_length, max_ctx)
+    target_model_id = model_key(target_entry) or model
 
-    for inst in target_entry.get("loaded_instances") or []:
-        cfg = inst.get("config") if isinstance(inst, dict) else None
-        loaded_ctx = cfg.get("context_length") if isinstance(cfg, dict) else None
-        if isinstance(loaded_ctx, int) and loaded_ctx >= target_context_length:
-            return loaded_ctx
-
-    body = json.dumps({
-        "model": model,
-        "context_length": target_context_length,
-    }).encode()
-    load_headers = dict(headers)
-    load_headers["Content-Type"] = "application/json"
-    try:
-        with urllib.request.urlopen(
-            urllib.request.Request(
-                server_root + "/api/v1/models/load",
-                data=body,
-                headers=load_headers,
-                method="POST",
-            ),
-            timeout=timeout,
-        ) as resp:
-            resp.read()
-    except Exception:
+    other_loaded_ids: list[str] = []
+    restore_candidates: list[tuple[str, Optional[int]]] = []
+    for raw in raw_models:
+        if raw is target_entry or _lmstudio_raw_model_matches(raw, model):
+            continue
+        if str(raw.get("type") or "").strip().lower() == "embedding":
+            continue
+        instance_ids = loaded_instance_ids(raw)
+        other_loaded_ids.extend(instance_ids)
+        if instance_ids:
+            contexts_for_restore = loaded_contexts(raw)
+            restore_candidates.append((
+                model_key(raw),
+                max(contexts_for_restore) if contexts_for_restore else None,
+            ))
+    if not unload_instances(list(dict.fromkeys(other_loaded_ids)), strict=True):
         return None
-    return target_context_length
 
+    contexts = loaded_contexts(target_entry)
+    if contexts and max(contexts) >= target_context_length:
+        return max(contexts)
+
+    target_loaded_ids = loaded_instance_ids(target_entry)
+    if target_loaded_ids and not unload_instances(target_loaded_ids, strict=True):
+        return max(contexts) if contexts else None
+
+    loaded_ctx = load_model(target_model_id, None)
+    if loaded_ctx is not None and loaded_ctx >= target_context_length:
+        return loaded_ctx
+
+    if loaded_ctx is not None and loaded_ctx < target_context_length:
+        refreshed = fetch_models()
+        if refreshed:
+            refreshed_target = find_target(refreshed)
+            if refreshed_target:
+                refreshed_target_ids = loaded_instance_ids(refreshed_target)
+                if refreshed_target_ids and not unload_instances(refreshed_target_ids, strict=True):
+                    return loaded_ctx
+        forced_ctx = load_model(target_model_id, target_context_length)
+        if forced_ctx is None:
+            restore_previous_loaded_model(restore_candidates)
+        return forced_ctx
+
+    restore_previous_loaded_model(restore_candidates)
+    return loaded_ctx
 
 def lmstudio_model_reasoning_options(
     model: str,

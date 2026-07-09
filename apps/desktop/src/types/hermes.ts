@@ -244,9 +244,22 @@ export interface ModelPricing {
   free: boolean
 }
 
+export interface LmStudioProviderMetadata {
+  available: boolean
+  base_url: string
+  downloaded_models?: number
+  error?: string
+  loaded_models?: number
+}
+
 export interface ModelOptionProvider {
   is_current?: boolean
   models?: string[]
+  lmstudio?: LmStudioProviderMetadata
+  /** OpenAI-compatible endpoint URL for custom/user-defined provider rows. */
+  api_url?: string
+  /** Alternate endpoint URL field used by some provider payloads. */
+  base_url?: string
   name: string
   slug: string
   total_models?: number

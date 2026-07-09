@@ -1527,6 +1527,44 @@ def list_authenticated_providers(
     def _can_probe_custom_provider(*, row_is_current: bool) -> bool:
         return bool(probe_custom_providers or (probe_current_custom_provider and row_is_current))
 
+    def _looks_like_lmstudio_endpoint(*values: Any) -> bool:
+        text = " ".join(str(value or "") for value in values).lower()
+        if re.search(r":1234(?:\D|$)", text):
+            return True
+        return any(
+            marker in text
+            for marker in (
+                "lmstudio",
+                "lm-studio",
+                "lm studio",
+            )
+        )
+
+    def _fetch_custom_endpoint_models(
+        api_key: str,
+        api_url: str,
+        *,
+        extra_headers: dict[str, str] | None = None,
+        lmstudio_hint: bool = False,
+    ) -> list[str]:
+        if lmstudio_hint:
+            try:
+                from hermes_cli.auth import AuthError
+                from hermes_cli.models import fetch_lmstudio_models
+
+                return fetch_lmstudio_models(
+                    api_key=api_key,
+                    base_url=api_url,
+                    timeout=1.5,
+                )
+            except AuthError:
+                return []
+            except Exception:
+                pass
+        from hermes_cli.models import fetch_api_models
+
+        return fetch_api_models(api_key, api_url, headers=extra_headers or None)
+
     # Effective base URLs of every built-in row we emit (normalized lower+rstrip).
     # Section 4 uses this to hide ``custom_providers`` entries that point at the
     # same endpoint as a built-in (e.g. a user-defined "my-dashscope" on
@@ -2045,16 +2083,17 @@ def list_authenticated_providers(
                     and _ep_url_norm == _current_base_url_norm
                 )
             )
+            _ep_lmstudio = _looks_like_lmstudio_endpoint(ep_name, display_name, api_url)
             should_probe = _can_probe_custom_provider(row_is_current=_ep_is_current) and bool(api_url) and discover and (
-                bool(api_key) or not has_explicit_models
+                bool(api_key) or not has_explicit_models or _ep_lmstudio
             )
             if should_probe:
                 try:
-                    from hermes_cli.models import fetch_api_models
-                    live_models = fetch_api_models(
+                    live_models = _fetch_custom_endpoint_models(
                         api_key,
                         api_url,
-                        headers=_extra_headers_from_config(ep_cfg) or None,
+                        extra_headers=_extra_headers_from_config(ep_cfg) or None,
+                        lmstudio_hint=_ep_lmstudio,
                     )
                     if live_models:
                         models_list = live_models
@@ -2106,9 +2145,12 @@ def list_authenticated_providers(
         _models = [current_model] if current_model else []
         if refresh or probe_current_custom_provider:
             try:
-                from hermes_cli.models import fetch_api_models
-
-                _live_models = fetch_api_models("", str(current_base_url).strip().rstrip("/"))
+                _base_url = str(current_base_url).strip().rstrip("/")
+                _live_models = _fetch_custom_endpoint_models(
+                    "",
+                    _base_url,
+                    lmstudio_hint=_looks_like_lmstudio_endpoint("custom", _base_url),
+                )
                 if _live_models:
                     _models = _live_models
             except Exception:
@@ -2312,20 +2354,20 @@ def list_authenticated_providers(
                 and _grp_url_norm == _current_base_url_norm
                 and _current_base_url_group_count == 1
             )
+            _grp_lmstudio = _looks_like_lmstudio_endpoint(slug, grp.get("name"), api_url)
             should_probe = (
                 _can_probe_custom_provider(row_is_current=_grp_is_current)
                 and bool(api_url)
-                and (bool(api_key) or not grp["models"])
+                and (bool(api_key) or not grp["models"] or _grp_lmstudio)
                 and grp.get("discover_models", True)
             )
             if should_probe:
                 try:
-                    from hermes_cli.models import fetch_api_models
-
-                    live_models = fetch_api_models(
+                    live_models = _fetch_custom_endpoint_models(
                         api_key,
                         api_url,
-                        headers=grp.get("extra_headers") or None,
+                        extra_headers=grp.get("extra_headers") or None,
+                        lmstudio_hint=_grp_lmstudio,
                     )
                     if live_models:
                         grp["models"] = live_models
@@ -2344,6 +2386,14 @@ def list_authenticated_providers(
             })
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())
+
+    for _row in results:
+        _slug = str(_row.get("slug", "")).strip().lower()
+        if _slug in {"lmstudio", "lm-studio"} and not _row.get("api_url"):
+            _lm_base = os.environ.get("LM_BASE_URL") or (
+                current_base_url if _current_provider_norm in {"lmstudio", "lm-studio"} else ""
+            ) or "http://127.0.0.1:1234/v1"
+            _row["api_url"] = str(_lm_base).strip().rstrip("/")
 
     # Surface a custom / uncurated model the user selected via the CLI.
     # Each row's model list is its curated/live catalog, so a model the user set

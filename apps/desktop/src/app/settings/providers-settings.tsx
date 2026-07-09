@@ -14,14 +14,14 @@ import {
 import { Button } from '@/components/ui/button'
 import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
-import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
+import { disconnectOAuthProvider, getGlobalModelOptions, listOAuthProviders } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
+import { Check, ChevronDown, ChevronRight, Cpu, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding'
-import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
+import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
+import type { EnvVarInfo, ModelOptionProvider, OAuthProvider } from '@/types/hermes'
 
 import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
@@ -122,12 +122,14 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
 // catalog below.
 function OAuthPicker({
   disconnecting,
+  localEndpoints,
   onDisconnect,
   onTerminalDisconnect,
   onWantApiKey,
   providers
 }: {
   disconnecting: null | string
+  localEndpoints: LocalEndpointOption[]
   onDisconnect: (provider: OAuthProvider) => void
   onTerminalDisconnect: (provider: OAuthProvider) => void
   onWantApiKey: () => void
@@ -172,6 +174,7 @@ function OAuthPicker({
         {p.intro}
       </p>
       {featured && <FeaturedProviderRow onSelect={select} provider={featured} />}
+      <LocalEndpointRows endpoints={localEndpoints} />
       {connected.length > 0 && (
         <>
           <GroupLabel>{p.connected}</GroupLabel>
@@ -296,6 +299,123 @@ function NoProviderKeys() {
   )
 }
 
+const endpointUrlFor = (provider: ModelOptionProvider) =>
+  (provider.api_url ?? provider.base_url ?? provider.lmstudio?.base_url ?? '').trim()
+
+const isLocalEndpointProvider = (provider: ModelOptionProvider) => {
+  const slug = provider.slug.toLowerCase()
+  const url = endpointUrlFor(provider)
+
+  return (
+    Boolean(url) &&
+    (Boolean(provider.lmstudio) ||
+      provider.is_user_defined ||
+      slug === 'custom' ||
+      slug === 'local' ||
+      slug === 'lmstudio' ||
+      slug === 'lm-studio' ||
+      slug.startsWith('custom:'))
+  )
+}
+
+const endpointMatches = (endpoint: LocalEndpointOption, q: string) =>
+  !q ||
+  [endpoint.name, endpoint.slug, endpoint.baseUrl, endpoint.modelCount ? `${endpoint.modelCount} models` : ''].some(
+    part => part.toLowerCase().includes(q)
+  )
+
+function useLocalEndpointOptions(): LocalEndpointOption[] {
+  const [endpoints, setEndpoints] = useState<LocalEndpointOption[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+
+    void getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false })
+      .then(res => {
+        if (cancelled) {
+          return
+        }
+
+        const byKey = new Map<string, LocalEndpointOption>()
+
+        for (const provider of res.providers ?? []) {
+          if (!isLocalEndpointProvider(provider)) {
+            continue
+          }
+
+          const baseUrl = endpointUrlFor(provider)
+          const key = baseUrl.toLowerCase() || provider.slug.toLowerCase()
+
+          const modelCount =
+            provider.lmstudio?.downloaded_models ?? provider.total_models ?? provider.models?.length ?? 0
+
+          const isLmStudio = Boolean(provider.lmstudio) || /(?:localhost|127\.0\.0\.1):1234/i.test(baseUrl)
+
+          byKey.set(key, {
+            baseUrl,
+            isCurrent: Boolean(provider.is_current),
+            isLmStudio,
+            modelCount,
+            name: provider.name,
+            slug: provider.slug
+          })
+        }
+
+        setEndpoints(
+          [...byKey.values()].sort((a, b) => Number(b.isCurrent) - Number(a.isCurrent) || a.name.localeCompare(b.name))
+        )
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setEndpoints([])
+        }
+      })
+
+    return () => void (cancelled = true)
+  }, [])
+
+  return endpoints
+}
+
+function LocalEndpointRows({ endpoints }: { endpoints: LocalEndpointOption[] }) {
+  if (endpoints.length === 0) {
+    return null
+  }
+
+  return (
+    <section className="grid gap-2">
+      <SettingsCategoryHeading count={String(endpoints.length)} icon={Cpu} title="Local endpoints" />
+      {endpoints.map(endpoint => (
+        <RowButton
+          className="group flex w-full items-center justify-between gap-3 rounded-[6px] px-3 py-2.5 text-left transition-colors hover:bg-(--ui-control-hover-background)"
+          key={`${endpoint.slug}:${endpoint.baseUrl}`}
+          onClick={() => startManualLocalEndpoint(`Configure ${endpoint.name}.`)}
+        >
+          <div className="min-w-0">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="truncate text-[length:var(--conversation-text-font-size)] font-semibold">
+                {endpoint.name}
+              </span>
+              {endpoint.isCurrent ? (
+                <span className="inline-flex shrink-0 items-center gap-1 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                  <Check className="size-3" />
+                  current
+                </span>
+              ) : null}
+            </div>
+            <p className="mt-1 truncate font-mono text-xs leading-5 text-muted-foreground">{endpoint.baseUrl}</p>
+            <p className="mt-0.5 text-xs leading-5 text-muted-foreground/80">
+              {endpoint.isLmStudio ? 'LM Studio REST' : 'OpenAI-compatible endpoint'}
+              {endpoint.modelCount ? ` - ${endpoint.modelCount} model${endpoint.modelCount === 1 ? '' : 's'}` : ''}
+            </p>
+          </div>
+          <ChevronRight className="size-4 shrink-0 text-muted-foreground transition group-hover:text-foreground" />
+        </RowButton>
+      ))}
+    </section>
+  )
+}
+
 export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSettingsProps) {
   const { t } = useI18n()
   const { rowProps, vars } = useEnvCredentials()
@@ -304,6 +424,7 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
   const [disconnecting, setDisconnecting] = useState<null | string>(null)
   // Free-text filter for the API-keys view (provider name / env-var key / desc).
   const [keyQuery, setKeyQuery] = useState('')
+  const localEndpoints = useLocalEndpointOptions()
   // The onboarding overlay owns the OAuth flow. Watch its `manual` flag so we
   // re-read connection state when the user finishes (or dismisses) a sign-in
   // they launched from this page — otherwise the cards keep their stale status.
@@ -411,9 +532,13 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
         })
       : keyGroups
 
+    const visibleLocalEndpoints = localEndpoints.filter(endpoint => endpointMatches(endpoint, q))
+    const hasAnyProviderConfig = keyGroups.length > 0 || localEndpoints.length > 0
+    const hasVisibleProviderConfig = visibleGroups.length > 0 || visibleLocalEndpoints.length > 0
+
     return (
       <SettingsContent>
-        {keyGroups.length > 0 ? (
+        {hasAnyProviderConfig ? (
           <div className="grid gap-3">
             <SearchField
               aria-label={t.settings.providers.searchKeys}
@@ -422,18 +547,23 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
               placeholder={t.settings.providers.searchKeys}
               value={keyQuery}
             />
-            {visibleGroups.length > 0 ? (
-              <div className="grid gap-2">
-                {visibleGroups.map(group => (
-                  <ProviderKeyRows
-                    expanded={openProvider === group.name}
-                    group={group}
-                    key={group.name}
-                    onExpand={() => setOpenProvider(group.name)}
-                    onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
-                    rowProps={rowProps}
-                  />
-                ))}
+            {hasVisibleProviderConfig ? (
+              <div className="grid gap-4">
+                <LocalEndpointRows endpoints={visibleLocalEndpoints} />
+                {visibleGroups.length > 0 ? (
+                  <div className="grid gap-2">
+                    {visibleGroups.map(group => (
+                      <ProviderKeyRows
+                        expanded={openProvider === group.name}
+                        group={group}
+                        key={group.name}
+                        onExpand={() => setOpenProvider(group.name)}
+                        onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
+                        rowProps={rowProps}
+                      />
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : (
               <div className="grid min-h-24 place-items-center px-4 py-6 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
@@ -452,6 +582,7 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
     <SettingsContent>
       <OAuthPicker
         disconnecting={disconnecting}
+        localEndpoints={localEndpoints}
         onDisconnect={provider => void handleDisconnect(provider)}
         onTerminalDisconnect={handleTerminalDisconnect}
         onWantApiKey={() => onViewChange('keys')}
@@ -459,6 +590,15 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
       />
     </SettingsContent>
   )
+}
+
+interface LocalEndpointOption {
+  baseUrl: string
+  isCurrent: boolean
+  isLmStudio: boolean
+  modelCount: number
+  name: string
+  slug: string
 }
 
 interface ProviderKeyGroup {

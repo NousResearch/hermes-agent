@@ -719,6 +719,123 @@ def test_lmstudio_picker_skips_probe_when_not_configured(monkeypatch):
     assert "base_url" not in captured
 
 
+
+def test_user_provider_lmstudio_endpoint_uses_native_catalog_without_key(monkeypatch):
+    """LM Studio custom endpoints should use /api/v1/models, not /v1/models.
+
+    The OpenAI-compatible endpoint only lists loaded models, while LM Studio's
+    native REST endpoint lists downloaded models too. This path covers
+    ``providers:`` entries from config.yaml.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_lmstudio_models(api_key=None, base_url=None, timeout=5.0):
+        calls.append((api_key, base_url, timeout))
+        return ["qwen/qwen3.6-27b-mtp", "qwen/qwen3.6-35b-a3b"]
+
+    def fake_fetch_api_models(*args, **kwargs):
+        raise AssertionError("LM Studio endpoints must not use /v1/models discovery")
+
+    monkeypatch.setattr("hermes_cli.models.fetch_lmstudio_models", fake_fetch_lmstudio_models)
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    providers = list_authenticated_providers(
+        current_provider="local",
+        current_base_url="http://localhost:1234/v1",
+        current_model="qwen/qwen3.6-27b-mtp",
+        user_providers={
+            "local": {
+                "name": "Local",
+                "base_url": "http://localhost:1234/v1",
+                "model": "qwen/qwen3.6-27b-mtp",
+            }
+        },
+        custom_providers=[],
+        probe_custom_providers=False,
+        probe_current_custom_provider=True,
+        max_models=50,
+    )
+
+    row = next(p for p in providers if p["slug"] == "local")
+    assert calls == [("", "http://localhost:1234/v1", 1.5)]
+    assert row["models"] == ["qwen/qwen3.6-27b-mtp", "qwen/qwen3.6-35b-a3b"]
+    assert row["is_current"] is True
+
+
+def test_custom_provider_lmstudio_endpoint_uses_native_catalog_without_key(monkeypatch):
+    """Section-4 custom_providers should also discover unloaded LM Studio models."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_lmstudio_models(api_key=None, base_url=None, timeout=5.0):
+        calls.append((api_key, base_url, timeout))
+        return ["qwen/qwen3.6-27b-mtp", "qwen/qwen3.6-35b-a3b"]
+
+    def fake_fetch_api_models(*args, **kwargs):
+        raise AssertionError("LM Studio endpoints must not use /v1/models discovery")
+
+    monkeypatch.setattr("hermes_cli.models.fetch_lmstudio_models", fake_fetch_lmstudio_models)
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    providers = list_authenticated_providers(
+        current_provider="custom:local",
+        current_base_url="http://192.168.1.10:1234/v1",
+        current_model="qwen/qwen3.6-27b-mtp",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Local",
+                "base_url": "http://192.168.1.10:1234/v1",
+                "model": "qwen/qwen3.6-27b-mtp",
+            }
+        ],
+        probe_custom_providers=False,
+        probe_current_custom_provider=True,
+        max_models=50,
+    )
+
+    row = next(p for p in providers if p["slug"] == "custom:local")
+    assert calls == [("", "http://192.168.1.10:1234/v1", 1.5)]
+    assert row["models"] == ["qwen/qwen3.6-27b-mtp", "qwen/qwen3.6-35b-a3b"]
+    assert row["is_current"] is True
+
+
+def test_custom_provider_lmstudio_discover_models_false_keeps_explicit_subset(monkeypatch):
+    """Users can still opt out of LM Studio discovery with discover_models: false."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    def fake_fetch_lmstudio_models(*args, **kwargs):
+        raise AssertionError("discover_models: false must skip LM Studio discovery")
+
+    monkeypatch.setattr("hermes_cli.models.fetch_lmstudio_models", fake_fetch_lmstudio_models)
+
+    providers = list_authenticated_providers(
+        current_provider="custom:local",
+        current_base_url="http://localhost:1234/v1",
+        current_model="qwen/qwen3.6-27b-mtp",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Local",
+                "base_url": "http://localhost:1234/v1",
+                "discover_models": False,
+                "model": "qwen/qwen3.6-27b-mtp",
+            }
+        ],
+        probe_custom_providers=False,
+        probe_current_custom_provider=True,
+        max_models=50,
+    )
+
+    row = next(p for p in providers if p["slug"] == "custom:local")
+    assert row["models"] == ["qwen/qwen3.6-27b-mtp"]
+
 def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch):
     """Custom providers with api_key + base_url should prefer live /models.
 

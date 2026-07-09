@@ -37,12 +37,15 @@ import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import {
+  PTY_CONNECTING_TIMEOUT_MS,
   PTY_RECONNECT_INPUT_MESSAGE,
+  PTY_RESUME_RECONNECT_THROTTLE_MS,
   type PtyConnectionState,
   shouldBlockPtyInput,
   shouldReconnectPtyOnPageResume,
 } from "@/lib/pty-reconnect";
 import {
+  MOBILE_REPLACEMENT_WINDOW_MS,
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
 } from "@/lib/pty-mobile-input";
@@ -172,6 +175,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const forceFreshPtyRef = useRef(false);
   const blockedInputNoticeRef = useRef(false);
   const lastResumeReconnectAtRef = useRef(0);
+  // True from the moment the connect effect begins until the socket resolves
+  // (open or close). Guards the page-resume reconnect against firing during
+  // the async ticket/URL await gap where wsRef.current is not yet assigned.
+  const connectInFlightRef = useRef(false);
+  const connectingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ptyInputLineRef = useRef("");
   const mobileReplacementInputUntilRef = useRef(0);
   const [ptyState, setPtyState] =
@@ -618,11 +626,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             isMobileLike,
           )
         ) {
-          mobileReplacementInputUntilRef.current = Date.now() + 350;
+          mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
         }
       };
       const markCompositionEnd = () => {
-        mobileReplacementInputUntilRef.current = Date.now() + 350;
+        mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
       };
 
       textarea.addEventListener("beforeinput", markReplacementInput, true);
@@ -761,6 +769,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let onResizeDisposable: { dispose(): void } | null = null;
     const forceFresh = forceFreshPtyRef.current;
     forceFreshPtyRef.current = false;
+    // A connect attempt is now in flight — set synchronously (before the async
+    // socket-open IIFE below awaits its ticket URL) so a page-resume event in
+    // that gap doesn't fire a redundant reconnect (wsRef isn't assigned yet).
+    connectInFlightRef.current = true;
+    const clearConnectingTimer = () => {
+      if (connectingTimerRef.current) {
+        clearTimeout(connectingTimerRef.current);
+        connectingTimerRef.current = null;
+      }
+    };
     const scheduleReconnect = (code: number) => {
       if (reconnectTimerRef.current) {
         return;
@@ -793,9 +811,26 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
+      // W2 (NS-591): a mobile socket can wedge in CONNECTING after a radio
+      // handoff and never fire onclose, so neither the resume predicate nor
+      // scheduleReconnect can recover it. Force-close if it hasn't opened
+      // within the budget; the resulting onclose routes into scheduleReconnect.
+      clearConnectingTimer();
+      connectingTimerRef.current = setTimeout(() => {
+        connectingTimerRef.current = null;
+        if (wsRef.current === ws && ws.readyState === WebSocket.CONNECTING) {
+          try {
+            ws.close();
+          } catch {
+            /* already tearing down */
+          }
+        }
+      }, PTY_CONNECTING_TIMEOUT_MS);
 
     ws.onopen = () => {
       clearReconnectTimer();
+      clearConnectingTimer();
+      connectInFlightRef.current = false;
       reconnectAttemptRef.current = 0;
       setBanner(null);
       setLastCloseCode(null);
@@ -842,6 +877,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     ws.onclose = (ev) => {
       wsRef.current = null;
+      connectInFlightRef.current = false;
+      clearConnectingTimer();
       if (unmounting) {
         return;
       }
@@ -998,6 +1035,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (settleRaf1) cancelAnimationFrame(settleRaf1);
       if (settleRaf2) cancelAnimationFrame(settleRaf2);
       clearReconnectTimer();
+      clearConnectingTimer();
+      connectInFlightRef.current = false;
       // Phase 5.3: ``ws`` is local to the IIFE that opens it (the gated-mode
       // ticket fetch makes the open async). The cleanup runs at the outer
       // effect's top level so it can't reach into that scope — close via
@@ -1082,10 +1121,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         online,
         socketReadyState,
         ptyState: ptyStateRef.current,
+        connectInFlight: connectInFlightRef.current,
       })
     ) {
       const now = Date.now();
-      if (now - lastResumeReconnectAtRef.current < 1000) {
+      if (now - lastResumeReconnectAtRef.current < PTY_RESUME_RECONNECT_THROTTLE_MS) {
         return;
       }
       lastResumeReconnectAtRef.current = now;

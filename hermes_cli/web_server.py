@@ -10231,7 +10231,7 @@ async def create_cron_job(body: CronJobCreate, profile: str = "default"):
 
 
 @app.get("/api/cron/delivery-targets")
-async def get_cron_delivery_targets():
+async def get_cron_delivery_targets(profile: Optional[str] = None):
     """Delivery targets the cron dropdown should offer.
 
     Always includes the implicit ``local`` option. Beyond that, the list is
@@ -10240,6 +10240,10 @@ async def get_cron_delivery_targets():
     configured platform that hasn't set its cron home channel is still returned
     with ``home_target_set: false`` so the UI can surface it as "configure a
     home channel first" rather than hiding it.
+
+    When ``profile`` query param is provided, returns targets for that profile's
+    gateway config instead of the default profile (used for non-multiplex mode
+    or when the dropdown is for a profile-specific cron job).
     """
     targets = [
         {
@@ -10249,12 +10253,26 @@ async def get_cron_delivery_targets():
             "home_env_var": None,
         }
     ]
+    override_token = None
     try:
         from cron.scheduler import cron_delivery_targets
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+        # If a profile is requested, temporarily override HERMES_HOME
+        # so cron_delivery_targets() loads that profile's gateway config
+        if profile:
+            profile_dir = _resolve_profile_dir(profile)
+            override_token = set_hermes_home_override(profile_dir)
 
         targets.extend(cron_delivery_targets())
+    except HTTPException:
+        # Propagate profile validation errors (404/400)
+        raise
     except Exception:
         _log.exception("GET /api/cron/delivery-targets failed")
+    finally:
+        if override_token is not None:
+            reset_hermes_home_override(override_token)
     return {"targets": targets}
 
 

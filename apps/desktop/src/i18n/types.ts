@@ -1905,11 +1905,19 @@ export interface Translations {
       notReady: string
       gatewayDisconnected: string
       sendFailed: string
+      responsePendingTitle: string
+      responsePendingMessage: string
+      responseExpiredTitle: string
+      responseExpiredMessage: string
       loadingQuestion: string
       other: string
       placeholder: string
       skip: string
       continueLabel: string
+      selected: string
+      selectedCount: (count: number) => string
+      multiSelectHint: string
+      selectSelected: string
     }
     tool: {
       code: string

@@ -117,8 +117,6 @@ def _apply_yaml_config(yaml_cfg: dict, platform_cfg: dict) -> Optional[dict]:
 class _TurnWindow:
     """Mutable state for one utterance's reply window."""
 
-    __slots__ = ("chunks", "satellite_id")
-
     def __init__(self, satellite_id: Optional[str]):
         self.chunks: list = []
         self.satellite_id = satellite_id
@@ -316,13 +314,11 @@ class HAConversationAdapter(BasePlatformAdapter):
             await asyncio.sleep(self._ack_after)
         except asyncio.CancelledError:
             return
-        await respond(self._ack_text())
-
-    def _ack_text(self) -> str:
-        if self._announce_mode == "off":
-            return ("I'm still working on that. I'll keep the answer in our "
-                    "conversation.")
-        return "I'm still working on that. I'll announce the answer when it's ready."
+        await respond(
+            "I'm still working on that. I'll keep the answer in our conversation."
+            if self._announce_mode == "off"
+            else "I'm still working on that. I'll announce the answer when it's ready."
+        )
 
     # -- outbound: agent -> HA ---------------------------------------------------
     async def send(
@@ -346,8 +342,6 @@ class HAConversationAdapter(BasePlatformAdapter):
         must never play in Room B — falling back to mode routing otherwise.
         The session transcript already holds the text either way.
         """
-        if self._announce_mode == "off":
-            return
         await self._announce(text, entity=window.satellite_id)
 
     async def _announce(self, text: str, *, entity: Optional[str]) -> SendResult:

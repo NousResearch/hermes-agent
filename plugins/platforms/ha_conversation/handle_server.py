@@ -99,7 +99,7 @@ class _Handler(AsyncEventHandler):
                 frame = NotHandled() if text is None else Handled(text=text)
                 try:
                     await self.write_event(frame.event())
-                except (ConnectionError, OSError):
+                except OSError:
                     # HA gave up (pipeline timeout/restart): reply undeliverable.
                     return False
                 return True
@@ -156,7 +156,6 @@ class HandleServer:
                 logger.exception("[ha_conversation] connection handler failed")
             finally:
                 self._connections.discard(conn_state)
-                writer.close()
 
         self._server = await asyncio.start_server(
             _client_connected, self._bind_host, self._requested_port

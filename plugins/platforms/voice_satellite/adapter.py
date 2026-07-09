@@ -175,7 +175,6 @@ class VoiceSatelliteAdapter(BasePlatformAdapter):
                 int(cfg.get("port", 10700)),
                 on_pipeline_start=self._on_pipeline_start,
                 on_audio_chunk=self._on_audio_chunk,
-                on_played=self._on_played,
                 on_disconnect=self._on_link_disconnect,
                 tts_sample_rate=int(cfg.get("tts_sample_rate", self._tts_sample_rate)),
             )
@@ -247,16 +246,6 @@ class VoiceSatelliteAdapter(BasePlatformAdapter):
             )
             self._transcribe_tasks.add(task)
             task.add_done_callback(self._transcribe_tasks.discard)
-
-    async def _on_played(self, name: str) -> None:
-        """Satellite acknowledged that queued audio finished playing.
-
-        No-op: ``play_tts`` already marks the turn machine's
-        playback-done once the stream write completes (M1). This hook
-        exists so ``SatelliteLink`` always has a callback to invoke for
-        the wyoming "played" event; M2 may use it for follow-up-window
-        timing.
-        """
 
     async def _abort_turn(self, name: str) -> None:
         self._machines[name].to_idle()

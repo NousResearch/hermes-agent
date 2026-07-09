@@ -34,7 +34,7 @@ class SatelliteLink:
         *,
         on_pipeline_start: Callable[[str], Awaitable[None]],
         on_audio_chunk: Callable[[str, bytes, float, int], Awaitable[None]],
-        on_played: Callable[[str], Awaitable[None]],
+        on_played: Optional[Callable[[str], Awaitable[None]]] = None,
         on_disconnect: Optional[Callable[[str], Awaitable[None]]] = None,
         tts_sample_rate: int = 22050,
         reconnect_max_delay: float = 60.0,
@@ -147,7 +147,8 @@ class SatelliteLink:
                 self.snd_rate = int(snd_format["rate"])
             await self._on_pipeline_start(self.name)
         elif Played.is_type(event.type):
-            await self._on_played(self.name)
+            if self._on_played is not None:
+                await self._on_played(self.name)
         # detection / streaming-started / streaming-stopped etc.: no-op in M1
 
     async def _write(self, event) -> None:

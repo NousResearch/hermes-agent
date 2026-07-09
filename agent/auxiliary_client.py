@@ -1838,6 +1838,27 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 continue
 
             raw_base_url = _pool_runtime_base_url(entry, pconfig.inference_base_url) or pconfig.inference_base_url
+            # Z.AI manual-pool entries may carry a base_url baked in at
+            # `hermes auth add` time, before the user knew the right
+            # endpoint for Coding Plan keys. Re-resolve through
+            # `_resolve_zai_base_url` so the cached `detected_endpoint`
+            # from auth.json wins when available, and the probe runs on
+            # first use otherwise. This brings manual-pool parity with
+            # the env-seeded path fixed in commit 9e844160f.
+            if provider_id == "zai":
+                try:
+                    from hermes_cli.auth import _resolve_zai_base_url as _zrb
+                    _zai_token = _pool_runtime_api_key(entry) or ""
+                    raw_base_url = _zrb(
+                        _zai_token,
+                        raw_base_url,
+                        os.getenv("GLM_BASE_URL", "").strip().rstrip("/"),
+                    ) or raw_base_url
+                except Exception:
+                    logger.debug(
+                        "Z.AI: base_url re-resolution failed, using entry.base_url=%s",
+                        raw_base_url,
+                    )
             base_url = _to_openai_base_url(raw_base_url)
             model = _get_aux_model_for_provider(provider_id) or None
             if model is None:
@@ -2824,11 +2845,44 @@ def _is_payment_error(exc: Exception) -> bool:
     Vertex AI "quota exceeded") are functionally equivalent to credit
     exhaustion — the provider cannot serve the request until the quota
     resets — and should trigger the same provider-fallback logic.
+
+    EXCEPTION: Z.AI GLM Coding Plan errors are per-key rolling quotas
+    (e.g. 1113 "Insufficient balance or no resource package", 1308
+    "Usage limit reached for 5 hour"), not wallet-billing exhaustion.
+    The credential pool rotation layer should handle them — a single
+    exhausted key must rotate, not trigger a global provider fallback
+    that takes the whole pool offline. These codes are therefore
+    explicitly excluded from payment-error classification when they
+    originate from ``api.z.ai`` (including the ``/api/coding/paas/v4``
+    endpoint used for Coding Plan subscriptions).
     """
     status = getattr(exc, "status_code", None)
     if status == 402:
+        # HTTP 402 is unambiguous payment-required — classify as payment
+        # error regardless of message body. Z.AI's 1113/1308 surface as
+        # status 429 / 400 with code fields, not bare 402, so this guard
+        # does not interfere with the Coding Plan exclusion below.
         return True
     err_lower = str(exc).lower()
+    # Z.AI Coding Plan per-key rolling quotas are NOT payment errors.
+    # These errors should trigger pool rotation (try next key) rather
+    # than provider fallback (which takes the whole pool offline).
+    # Codes 1113 ("Insufficient balance or no resource package") and
+    # 1308 ("Usage limit reached for 5 hour") are rolling quotas, not
+    # billing issues.
+    if (
+        "api.z.ai" in err_lower
+        or "z.ai/api/coding" in err_lower
+        or ("zhipuai" in err_lower and "coding" in err_lower)
+    ):
+        if "1113" in err_lower:
+            return False
+        if "1308" in err_lower:
+            return False
+        if "no resource package" in err_lower:
+            return False
+        if "usage limit reached" in err_lower:
+            return False
     # OpenRouter and other providers include "credits" or "afford" in 402 bodies,
     # but sometimes wrap them in 429 or other codes.
     # Daily quota exhaustion from Bedrock, Vertex AI, and similar providers
@@ -5411,6 +5465,14 @@ def resolve_vision_provider_client(
     # while the OpenAI wire handles it correctly.
     if requested == "zai" and not resolved_base_url:
         zai_openai_urls = [
+            # Z.AI GLM Coding Plan endpoints first: subscription keys
+            # (id.secret.* format) authenticate here and return 1113
+            # "no resource package" on the metered endpoint. Probing
+            # coding first lets vision helpers pick the right route
+            # without going through credential-pool rotation.
+            "https://api.z.ai/api/coding/paas/v4",
+            "https://open.bigmodel.cn/api/coding/paas/v4",
+            # Metered fallbacks for non-Coding-Plan keys.
             "https://open.bigmodel.cn/api/paas/v4",
             "https://api.z.ai/api/paas/v4",
         ]

@@ -9161,6 +9161,12 @@ def _decode_attach_base64(raw: str, *, mime_prefix: str) -> bytes | None:
     if m:
         cleaned = m.group(1)
     cleaned = _re.sub(r"\s+", "", cleaned)
+    # Add canonical padding for unpadded-but-decodable payloads (remainder 2 or 3).
+    remainder = len(cleaned) % 4
+    if remainder:
+        if remainder == 1:
+            return None  # impossible length remainder
+        cleaned += "=" * (4 - remainder)
     try:
         return _base64.b64decode(cleaned, validate=True)
     except Exception:

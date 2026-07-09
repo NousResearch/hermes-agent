@@ -36,6 +36,7 @@ from tools.registry import tool_error
 
 from .temporal_parse import created_at_in_window, parse_temporal_window
 from . import qmd_recall
+from . import gbrain_recall
 
 logger = logging.getLogger(__name__)
 
@@ -615,6 +616,11 @@ class Mem0MemoryProvider(MemoryProvider):
         self._prefetch_join_timeout_s = 10.0
         self._qmd_cfg = qmd_recall.load_qmd_config(None)
         self._qmd_enabled = False
+        # Phase 2b: gbrain document-leg state (flag-gated QMD replacement, default off).
+        self._gbrain_cfg = gbrain_recall.load_gbrain_config(None)
+        self._gbrain_enabled = False
+        self._gbrain_prefetch_enabled = False
+        self._gbrain_search_enabled = False
         # Circuit breaker state
         self._consecutive_failures = 0
         self._breaker_open_until = 0.0
@@ -1144,6 +1150,29 @@ class Mem0MemoryProvider(MemoryProvider):
         self._qmd_search_enabled = self._qmd_enabled and self._truthy(
             self._qmd_cfg.get("search_enabled", True)
         )
+        # Phase 2b: gbrain document leg — a flag-gated ALTERNATIVE backend for the
+        # document lanes (prefetch + mem0_search `docs`). Read from the `mem0_gbrain`
+        # (fallback `gbrain`) block of the SAME config surface the qmd block lives in.
+        # Default OFF (deploy is inert). When enabled, it REPLACES the QMD leg —
+        # one retrieval leg per turn, never both — via the effective-gate derivation
+        # below; when disabled every gate is False and behavior is byte-identical
+        # to today.
+        self._gbrain_cfg = gbrain_recall.load_gbrain_config(
+            self._config.get("mem0_gbrain", self._config.get("gbrain"))
+        )
+        self._gbrain_enabled = self._truthy(self._gbrain_cfg.get("enabled", False))
+        self._gbrain_prefetch_enabled = self._gbrain_enabled and self._truthy(
+            self._gbrain_cfg.get("prefetch_enabled", True)
+        )
+        self._gbrain_search_enabled = self._gbrain_enabled and self._truthy(
+            self._gbrain_cfg.get("search_enabled", True)
+        )
+        # One-leg-per-lane rule: gbrain, when on for a lane, SUPERSEDES QMD for that
+        # lane (QMD stays configured + untouched for instant rollback).
+        if self._gbrain_prefetch_enabled:
+            self._qmd_prefetch_enabled = False
+        if self._gbrain_search_enabled:
+            self._qmd_search_enabled = False
         # W3-TEMPORAL (tau_m created_at window) — plugin-side, config-gated, reversible
         # (INV-4). Off by default so deploy is inert until the flag flips. When on,
         # mem0_search detects a temporal expression, resolves it to a created_at
@@ -1420,6 +1449,27 @@ class Mem0MemoryProvider(MemoryProvider):
             logger.debug("QMD prefetch leg failed: %s", e)
             return []
 
+    def _gbrain_pointers(self, query: str, *, limit: int, deadline_s: float) -> list:
+        """Run the read-only gbrain document leg (Phase 2b). Same contract as
+        _qmd_pointers: returns [{file,title,score,line,docid}] pointers, and is
+        degraded-safe — ANY failure (serve down, auth broken, deadline hit) -> []
+        so a down gbrain never breaks a turn and never falls back to blocking."""
+        if not self._gbrain_enabled:
+            return []
+        cfg = self._gbrain_cfg
+        try:
+            return gbrain_recall.gbrain_search(
+                query,
+                limit=int(limit),
+                min_score=float(cfg.get("min_score", 0.5)),
+                deadline_s=float(deadline_s),
+                url=str(cfg.get("url") or "http://127.0.0.1:8199"),
+                creds_path=str(cfg.get("creds_path") or "~/gbrain/.gbrain/rail-client.env"),
+            )
+        except Exception as e:  # belt-and-suspenders; gbrain_search already swallows
+            logger.debug("gbrain prefetch leg failed: %s", e)
+            return []
+
     def _prefetch_executor_for_submit(self) -> ThreadPoolExecutor:
         if self._prefetch_executor is None:
             self._prefetch_executor = _DaemonThreadPoolExecutor(
@@ -1581,6 +1631,39 @@ class Mem0MemoryProvider(MemoryProvider):
                                 self._prefetch_qmd = block
             except Exception as e:
                 logger.debug("QMD prefetch leg failed: %s", e)
+
+            # Phase 2b: gbrain document leg — the flag-gated REPLACEMENT for the QMD
+            # leg above (mutually exclusive: enabling gbrain forces
+            # _qmd_prefetch_enabled False at init, so exactly one leg runs per turn).
+            # Same budget discipline (INV-4a/INV-7): skipped when mem0 overran its
+            # budget; deadline is min(own deadline, join-ceiling remainder); same
+            # intent gate. Degraded-safe end to end.
+            try:
+                if self._gbrain_prefetch_enabled:
+                    gb_budget = float(self._gbrain_cfg.get("mem0_budget_s", 6.0))
+                    gb_elapsed = time.monotonic() - t_start
+                    gb_deadline = float(self._gbrain_cfg.get("total_deadline_s", 4.0))
+                    gb_remaining = float(self._prefetch_join_timeout_s) - gb_elapsed - 0.25
+                    gb_eff_deadline = min(gb_deadline, gb_remaining)
+                    if (
+                        gb_elapsed <= gb_budget
+                        and gb_eff_deadline >= 0.5
+                        and qmd_recall.is_lookup_intent(
+                            run_query, int(self._gbrain_cfg.get("intent_min_tokens", 1))
+                        )
+                    ):
+                        gb_hits = self._gbrain_pointers(
+                            run_query,
+                            limit=int(self._gbrain_cfg.get("prefetch_limit", 3)),
+                            deadline_s=gb_eff_deadline,
+                        )
+                        gb_block = gbrain_recall.render_gbrain_block(gb_hits)
+                        if gb_block:
+                            with self._prefetch_lock:
+                                if epoch == self._prefetch_epoch:
+                                    self._prefetch_qmd = gb_block
+            except Exception as e:
+                logger.debug("gbrain prefetch leg failed: %s", e)
 
         def _run_latest(first_query: str, epoch: int):
             run_query = first_query
@@ -1906,6 +1989,17 @@ class Mem0MemoryProvider(MemoryProvider):
                     limit=int(self._qmd_cfg.get("search_limit", 5)),
                     deadline_s=float(self._qmd_cfg.get("qmd_total_deadline_s", 4.0)),
                 ) if self._qmd_search_enabled else []
+                # Phase 2b: gbrain replacement for the docs fan-out. Mutually
+                # exclusive with QMD (gate derivation at init forces
+                # _qmd_search_enabled False when gbrain owns this lane), so at
+                # most ONE document backend is queried per call. Same additive
+                # `docs` contract: off/empty -> no key, byte-identical reply.
+                if self._gbrain_search_enabled:
+                    qmd_docs = self._gbrain_pointers(
+                        query,
+                        limit=int(self._gbrain_cfg.get("search_limit", 5)),
+                        deadline_s=float(self._gbrain_cfg.get("total_deadline_s", 4.0)),
+                    )
                 if not results:
                     if qmd_docs:
                         return json.dumps({"result": "No relevant memories found.", "docs": qmd_docs})

@@ -192,7 +192,7 @@ def build_async_dispatched_header(record: Dict[str, Any]) -> str:
 
     head = f"🔀 Delegate task — {n} agent" + ("" if n == 1 else "s")
 
-    profile = record.get("profile")
+    profile = record.get("header_profile") or record.get("profile")
     if profile not in (None, "", [], {}):
         head += " · profile: " + _inline_code(profile)
     else:

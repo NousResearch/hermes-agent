@@ -941,6 +941,27 @@ def _expand_reserved_profile_task_items(task_list: List[Dict[str, Any]], top_pro
     return expanded
 
 
+def _dispatched_profile(top_profile: Optional[str], expanded_task_items: List[Dict[str, Any]]) -> Optional[str]:
+    """Return a profile label when every source task used the same profile."""
+    profile = _normalize_profile_name(top_profile)
+    if profile:
+        return profile
+
+    profiles = []
+    for task_item in expanded_task_items:
+        if not isinstance(task_item, dict):
+            return None
+        profile = task_item.get("dual_review_profile") or task_item.get("dual_plan_profile")
+        if not profile:
+            task = task_item.get("task")
+            profile = task.get("profile") if isinstance(task, dict) else None
+        profiles.append(_normalize_profile_name(profile))
+
+    if profiles and profiles[0] and all(profile == profiles[0] for profile in profiles):
+        return profiles[0]
+    return None
+
+
 # Backward-compatible alias: existing callers/tests import this name. The unified
 # expander is a strict superset (dual-review behavior byte-identical, plus the
 # from_dual_plan / dual_plan_profile keys), so the alias keeps the dual-review
@@ -3867,6 +3888,8 @@ def delegate_task(
             ):
                 _header_toolsets = list(_explicit[0])
 
+        _header_profile = _dispatched_profile(top_profile, expanded_task_items)
+
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
             context=context,
@@ -3883,6 +3906,7 @@ def delegate_task(
             children=_child_records,
             routing=_routing,
             profile=top_profile,
+            header_profile=_header_profile,
             header_toolsets=_header_toolsets,
         )
 

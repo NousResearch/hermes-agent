@@ -491,6 +491,36 @@ def test_batch_completion_event_carries_profile():
     assert build_async_dispatched_header(evt) == "🔀 Delegate task — 2 agents · profile: `dual-review`"
 
 
+def test_batch_completion_event_carries_header_profile():
+    did = ad.new_delegation_id()
+
+    def runner():
+        return {
+            "results": [{"task_index": 0, "status": "completed", "summary": "a", "duration_seconds": 1.0}],
+            "total_duration_seconds": 1.0,
+        }
+
+    res = ad.dispatch_async_delegation_batch(
+        delegation_id=did,
+        goals=["g0"],
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="",
+        runner=runner,
+        profile=None,
+        header_profile="dual-review",
+        children=[{"task_index": 0, "subagent_id": "s0", "goal": "g0", "profile": "reviewer-codex", "model": "m"}],
+        max_async_children=3,
+    )
+
+    assert res == {"status": "dispatched", "delegation_id": did}
+    evt = _drain_one()
+    assert evt is not None
+    assert evt.get("header_profile") == "dual-review"
+
+
 def test_batch_completion_event_carries_header_toolsets():
     """Regression: per-task (not top-level) toolsets must still surface on the
     pinned header via `header_toolsets`.

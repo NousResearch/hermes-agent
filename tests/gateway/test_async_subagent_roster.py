@@ -726,6 +726,20 @@ def test_dispatched_header_prefers_header_toolsets_over_resolved():
         "🔀 Delegate task — 2 agents · profile: `none`"
 
 
+def test_dispatched_header_prefers_per_task_profile():
+    record = {
+        "profile": None,
+        "header_profile": "dual-review",
+        "children": [
+            {"task_index": 0, "subagent_id": "s0", "goal": "g0"},
+            {"task_index": 1, "subagent_id": "s1", "goal": "g1"},
+        ],
+    }
+
+    assert build_async_dispatched_header(record) == \
+        "🔀 Delegate task — 2 agents · profile: `dual-review`"
+
+
 # ── Fix A: profile must PERSIST in roster rows (now BELOW the pinned header) ──
 # Regression for "I don't see the profile anymore, only the Subagents part":
 # the profile is a per-row cell so it shows in running, partial-done, AND

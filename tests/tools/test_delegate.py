@@ -3887,5 +3887,23 @@ def test_build_child_agent_creates_context_pointer_before_spawn_event(tmp_path):
     finally:
         db.close()
 
+
+def test_dispatched_profile_uses_uniform_per_task_profile():
+    from tools.delegate_tool import _dispatched_profile
+
+    dual_review_items = [
+        {"task": {"profile": "reviewer-codex"}, "dual_review_profile": "dual-review"},
+        {"task": {"profile": "reviewer-opus"}, "dual_review_profile": "dual-review"},
+    ]
+    mixed_items = [
+        {"task": {"profile": "coder"}, "dual_review_profile": None},
+        {"task": {"profile": ""}, "dual_review_profile": None},
+    ]
+
+    assert _dispatched_profile(None, dual_review_items) == "dual-review"
+    assert _dispatched_profile(None, mixed_items) is None
+    assert _dispatched_profile("coder", dual_review_items) == "coder"
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -76,25 +76,6 @@ _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 WATCHDOG_STALE_SECONDS_DEFAULT = 900
 
 
-def _rate_limit_allows_turn(conversation_id: str) -> bool:
-    """Per-minute turn guard for the watchdog re-drive (Lane R) — gated, default OFF.
-
-    Delegates to the jb_outbound rate-limit module (the same token-bucket the egress chokepoint
-    uses, family ``"turns"``, keyed on the mission's conversationId). Returns ``True`` (allow) when
-    the plugin is absent or the kill-switch is off, so the watchdog behaves EXACTLY as before unless
-    ``JB_RATE_LIMIT_ENABLED=1``. Any import/decision error fails open — a throttle must never crash
-    the sweep, and the outbound gate still enforces "rien ne part sans accord" regardless.
-    """
-    try:
-        from plugins.jb_outbound import rate_limit
-    except Exception:
-        return True
-    try:
-        return rate_limit.make_decision("turns", conversation_id)
-    except Exception:
-        return True
-
-
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
@@ -12543,9 +12524,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return {"scanned": 0, "kicked": []}
 
         try:
-            rows = db.list_meta_prefix("goal:")
+            # Seam partagé avec GET /v1/goals — vit dans gateway/platforms/api_server.py
+            # (fichier additif déclaré) depuis F2 : hermes_state.py est redevenu identique upstream.
+            from gateway.platforms.api_server import list_goal_meta
+
+            rows = list_goal_meta(db)
         except Exception as exc:
-            logger.debug("watchdog: list_meta_prefix failed: %s", exc)
+            logger.debug("watchdog: list_goal_meta failed: %s", exc)
             return {"scanned": 0, "kicked": []}
 
         adapter = self.adapters.get(Platform.API_SERVER)
@@ -12604,15 +12589,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 default_max_turns=self._goal_max_turns_from_config(),
             ).next_continuation_prompt()
             if not prompt:
-                continue
-
-            # Per-minute turn guard (Lane R) — gated, default OFF. When enabled, a runaway
-            # re-drive storm for one mission is throttled: the token bucket for this instance
-            # (keyed on conversationId) refuses the kick and we skip it this sweep, rather than
-            # queueing/deferring it. This NEVER opens a turn; it only adds a refusal path. The
-            # outbound gate (jb_outbound) is untouched — a re-driven turn still only PROPOSES.
-            if not _rate_limit_allows_turn(conversation_id):
-                logger.info("watchdog: re-drive rate-limited for %s — skipped this sweep", conversation_id)
                 continue
 
             event = MessageEvent(

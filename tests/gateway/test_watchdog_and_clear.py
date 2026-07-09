@@ -239,16 +239,20 @@ class TestWatchdogSweep:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Per-minute turn guard (Lane R) — gated, default OFF
+# Re-drive inconditionnel (F2 : le throttle « turns » gated est SUPPRIMÉ —
+# décision founder 2026-07-09, jamais armé en flotte ; le budget max_turns
+# du goal reste le seul garde-fou anti-emballement, testé plus haut)
 # ──────────────────────────────────────────────────────────────────────
 
 
-class TestWatchdogTurnRateLimit:
+class TestWatchdogRedriveUnconditional:
     @pytest.mark.asyncio
-    async def test_off_by_default_redrives_every_sweep(self, hermes_home, monkeypatch):
-        """Without JB_RATE_LIMIT_ENABLED, repeated sweeps of the same stale goal
-        re-drive every time (the throttle is purely opt-in — current behavior)."""
-        monkeypatch.delenv("JB_RATE_LIMIT_ENABLED", raising=False)
+    async def test_redrives_every_sweep(self, hermes_home, monkeypatch):
+        """Repeated sweeps of the same stale goal re-drive every time — the throttle
+        path no longer exists (F2 removed the core→plugin rate_limit import; the
+        goal's max_turns budget is the anti-runaway guard). Even a leftover
+        JB_RATE_LIMIT_ENABLED=1 in a box .env must have NO effect on the sweep."""
+        monkeypatch.setenv("JB_RATE_LIMIT_ENABLED", "1")  # inerte par construction
         _set_goal("mission:stale", status="active", turns_used=1, last_turn_at=_STALE)
 
         adapter = _make_adapter()
@@ -258,29 +262,6 @@ class TestWatchdogTurnRateLimit:
             result = await runner._watchdog_sweep()
             assert result["kicked"] == ["mission:stale"]
         assert adapter.handle_message.await_count == 5
-
-    @pytest.mark.asyncio
-    async def test_enabled_throttles_redrive_storm(self, hermes_home, monkeypatch):
-        """With the kill-switch on and TURNS_RPM=1 (burst 1.0 → capacity 1), only the
-        FIRST sweep re-drives the stale mission; subsequent sweeps in the same minute are
-        rate-limited and skipped (a refusal path, never a deferral/queue)."""
-        monkeypatch.setenv("JB_RATE_LIMIT_ENABLED", "1")
-        monkeypatch.setenv("JB_RATE_LIMIT_TURNS_RPM", "1")
-        monkeypatch.setenv("JB_RATE_LIMIT_BURST_RATIO", "1.0")
-        _set_goal("mission:stale", status="active", turns_used=1, last_turn_at=_STALE)
-
-        adapter = _make_adapter()
-        runner = _runner_with_adapter(adapter)
-
-        first = await runner._watchdog_sweep()
-        assert first["kicked"] == ["mission:stale"]
-
-        # Same minute, bucket now empty → the next sweeps skip the kick (no re-drive).
-        for _ in range(4):
-            again = await runner._watchdog_sweep()
-            assert again["scanned"] == 1
-            assert again["kicked"] == []  # throttled, not deferred
-        adapter.handle_message.assert_awaited_once()  # re-driven exactly once
 
 
 # ──────────────────────────────────────────────────────────────────────

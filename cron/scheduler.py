@@ -2363,10 +2363,11 @@ def run_job(
 ) -> tuple[bool, str, str, Optional[str]]:
     """Execute a single cron job (greffe Jean-Billie : attribution + signaux d'activité).
 
-    [jb merge v2026.7.7.2] Wrapper re-greffé sur le nouveau ``run_job`` upstream (renommé
-    ``_run_job_impl`` ci-dessous, y compris son nouveau paramètre ``defer_agent_teardown``,
-    transmis tel quel). Les hooks jb sont best-effort, double-gardés : ils ne doivent en
-    AUCUN cas bloquer ni faire échouer le job. Sans plugin chargé : comportement stock.
+    Wrapper autour du ``run_job`` upstream (renommé ``_run_job_impl`` ci-dessous, paramètre
+    ``defer_agent_teardown`` transmis tel quel). Les hooks jb sont best-effort, double-gardés :
+    ils ne doivent en AUCUN cas bloquer ni faire échouer le job. Sans plugin chargé :
+    comportement stock. Hunk cœur DÉCLARÉ (allowlist jb) : pas de hook cycle-de-vie cron natif
+    — candidat à une PR upstream ``pre/post_cron_job`` (décision différée post-F2).
     """
     jb_hooks = _jb_job_hooks()
     if jb_hooks is None:

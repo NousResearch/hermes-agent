@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 def register(ctx) -> None:
     """Point d'entrée appelé par le PluginManager de Hermes au chargement."""
-    from . import listener, delegation_activity, produce
+    from . import listener, delegation_activity, produce, request_connection
     from .middleware import make_middleware
 
     ctx.register_middleware("tool_execution", make_middleware())
@@ -40,6 +40,43 @@ def register(ctx) -> None:
         ),
         check_fn=produce.check_creer_support_requirements,
         emoji="🎨",
+    )
+    # Outil « request_tool_connection » (capacité B) : l'agent DEMANDE un outil manquant, le
+    # control-plane répond en white-label (lien de branchement self-service). Toolset « messaging »
+    # CONSERVÉ à l'identique : c'est l'entrée explicite de l'allowlist `platform_toolsets` du bundle
+    # qui l'expose (toolset registre, résolu dynamiquement) — F2 : sortie de _HERMES_CORE_TOOLS,
+    # zéro patch du cœur. check_fn = même garde que le plugin → invisible hors box.
+    ctx.register_tool(
+        name="request_tool_connection",
+        toolset="messaging",
+        schema=request_connection.REQUEST_TOOL_CONNECTION_SCHEMA,
+        handler=lambda args, **kw: request_connection.request_tool_connection(
+            capability=args.get("capability", "")
+        ),
+        check_fn=request_connection.check_request_tool_connection_requirements,
+        emoji="🔌",
+    )
+    # Aux task « goal_judge » (juge de mission DONE/CONTINUE des missions managées) : déclarée
+    # ICI via le seam natif (F2 — le bloc DEFAULT_CONFIG.auxiliary.goal_judge du cœur est résorbé,
+    # config.py est redevenu identique upstream). Le pont natif (agent/auxiliary_client.py,
+    # _get_auxiliary_task_config) fusionne ces defaults SOUS config.yaml auxiliary.goal_judge
+    # (l'utilisateur gagne), et la tâche apparaît dans le picker « Configure auxiliary models ».
+    # Defaults = les valeurs neutres historiques : provider auto (= modèle principal),
+    # max_tokens 4096 (= DEFAULT_JUDGE_MAX_TOKENS natif de goals.py), timeout 30
+    # (= _DEFAULT_AUX_TIMEOUT natif) — comportement inchangé même sans override opérateur.
+    ctx.register_auxiliary_task(
+        "goal_judge",
+        display_name="Juge de mission",
+        description="verdict DONE/CONTINUE des missions de fond (goals)",
+        defaults={
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "max_tokens": 4096,
+            "timeout": 30,
+            "extra_body": {},
+        },
     )
     listener.start()  # idempotent, loopback-only, no-op si JB_DECISION_PUSH_URL absent
     logger.info(

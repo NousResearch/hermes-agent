@@ -373,6 +373,33 @@ def check_api_server_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
+def list_goal_meta(db: Any, prefix: str = "goal:") -> List[tuple]:
+    """Énumère les lignes ``(key, value)`` de ``state_meta`` dont la clé commence par ``prefix``.
+
+    Seam de lecture des missions managées Jean-Billie (``GET /v1/goals`` ici, sweep du watchdog
+    dans gateway/run.py). Vit dans CE fichier (additif déclaré) plutôt qu'en méthode de
+    ``SessionDB`` : F2 a résorbé le patch cœur ``hermes_state.py`` — l'upstream n'expose aucun
+    énumérateur public de ``state_meta`` (seulement get/set), on atteint donc ``_lock``/``_conn``
+    en connaissance de cause. Table ``state_meta (key, value)`` = surface stable (schéma versionné) ;
+    le test de contrat ``test_jb_contracts.py`` épingle ce seam contre une vraie ``SessionDB``.
+    Les métacaractères LIKE du préfixe sont échappés (un préfixe fixe type ``"goal:"`` matche
+    littéralement). Lecture seule.
+    """
+    pattern = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    with db._lock:  # noqa: SLF001 — voir docstring (pas d'énumérateur public upstream)
+        rows = db._conn.execute(  # noqa: SLF001
+            "SELECT key, value FROM state_meta WHERE key LIKE ? ESCAPE '\\' ORDER BY key",
+            (pattern,),
+        ).fetchall()
+    out: List[tuple] = []
+    for row in rows:
+        if isinstance(row, sqlite3.Row):
+            out.append((row["key"], row["value"]))
+        else:
+            out.append((row[0], row[1]))
+    return out
+
+
 class ResponseStore:
     """
     SQLite-backed LRU store for Responses API state.
@@ -1752,7 +1779,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
 
         data = []
-        for key, value in db.list_meta_prefix("goal:"):
+        for key, value in list_goal_meta(db):
             try:
                 g = json.loads(value) if value else {}
             except (ValueError, TypeError):

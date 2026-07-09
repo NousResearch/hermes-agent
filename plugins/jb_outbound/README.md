@@ -64,6 +64,31 @@ Documents. L'URL signée revient à l'agent, qui la partage **telle quelle** dan
 - Toolset plugin `jb_studio` (activé par défaut sur toutes les plateformes, désactivable via
   `hermes tools`).
 
+## Outil « request_tool_connection » (demander un outil manquant) — greffe F2
+
+Vivait dans `tools/request_tool_connection.py` (fichier additif du cœur) ; depuis F2 (2026-07-09)
+le module vit ICI (`request_connection.py`) et s'enregistre par le même seam (`ctx.register_tool`).
+Quand il MANQUE un outil pour accomplir une demande, l'agent envoie une INTENTION en langage
+naturel au daemon loopback (`/v1/request-connection`) ; le control-plane répond en white-label
+(souvent un lien de branchement self-service que le CLIENT clique lui-même — rien ne part vers un
+tiers).
+
+- Toolset **« messaging » conservé à l'identique** : c'est l'entrée explicite de l'allowlist
+  `platform_toolsets` émise par le bundle (lane S, monorepo) qui expose l'outil — toolset
+  REGISTRE (aucune entrée statique dans `toolsets.py`), résolu dynamiquement. Ne pas le renommer
+  sans synchroniser le config-generator du monorepo.
+- Gated `JB_DECISION_PUSH_URL` (`check_fn`) ; daemon injoignable → réponse franche `unavailable`.
+
+## Aux task « goal_judge » (juge de mission) — greffe F2
+
+Le juge DONE/CONTINUE des missions de fond est **natif** (`hermes_cli/goals.py`) ; seule sa
+CONFIG l'était par un bloc `DEFAULT_CONFIG.auxiliary.goal_judge` patché dans le cœur. Depuis F2,
+le plugin la déclare via `ctx.register_auxiliary_task("goal_judge", defaults={…})` : le pont natif
+fusionne ces defaults SOUS `config.yaml auxiliary.goal_judge` (l'opérateur garde la main), et la
+tâche apparaît dans le picker « Configure auxiliary models ». Defaults = valeurs neutres alignées
+sur les fallbacks natifs (`provider: auto`, `max_tokens: 4096`, `timeout: 30`) — comportement
+identique avec ou sans plugin.
+
 ## Rate-limit « burst » (deux verrous, défaut OFF)
 
 Deux garde-fous de débit **additifs**, activés par `JB_RATE_LIMIT_ENABLED=1` (défaut OFF → comportement

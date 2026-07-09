@@ -18,8 +18,9 @@ Covered seams:
 * (b) INTERFACE — the ``hermes_cli.goals`` surface gateway/run.py calls:
   ``GoalManager`` ctor/method signatures, ``GoalState`` fields +
   ``from_json``/``to_json``, the store seam (``_get_session_db()`` →
-  ``list_meta_prefix("goal:")`` → ``(key, value)`` rows), the module
-  functions (``load_goal``/``save_goal``/``clear_goal``), and the
+  ``list_goal_meta(db)`` (gateway/platforms/api_server.py, F2) →
+  ``(key, value)`` rows), the module functions
+  (``load_goal``/``save_goal``/``clear_goal``), and the
   decision-dict shape the post-turn continuation hook consumes.
 * (d) SHAPE — the GET /v1/goals response the fleet daemon decodes
   (jb-daemon ``forkGoals``: top-level ``data`` array + camelCase fields
@@ -201,7 +202,7 @@ class TestGoalManagerInterface:
     * ``mgr.is_active()`` — idempotent re-arm + continuation guard
     * ``mgr.next_continuation_prompt()`` — watchdog re-drive prompt
     * ``mgr.evaluate_after_turn(text, user_initiated=True)`` → decision dict
-    * ``goals._get_session_db()`` → ``db.list_meta_prefix("goal:")`` — sweep enumeration
+    * ``goals._get_session_db()`` → ``list_goal_meta(db)`` — sweep enumeration (seam F2)
     * ``GoalState.from_json`` + ``.status``/``.turns_used``/``.max_turns``/``.last_turn_at``
     """
 
@@ -282,19 +283,23 @@ class TestGoalManagerInterface:
         )
         assert clone.last_turn_at == 456.0
 
-    def test_store_seam_list_meta_prefix_rows(self, hermes_home):
-        """The sweep's enumeration seam: ``_get_session_db()`` yields a store
-        whose ``list_meta_prefix("goal:")`` returns ``(key, json)`` rows that
-        include a goal persisted through ``save_goal``."""
+    def test_store_seam_list_goal_meta_rows(self, hermes_home):
+        """The sweep's enumeration seam (F2 : ``list_goal_meta`` vit dans
+        gateway/platforms/api_server.py — fichier additif — au lieu d'une méthode
+        patchée sur ``SessionDB``) : ``_get_session_db()`` yields a store on which
+        ``list_goal_meta(db)`` returns ``(key, json)`` rows that include a goal
+        persisted through ``save_goal``. Pins the private-attr reach-in
+        (``db._lock``/``db._conn`` + table ``state_meta``) against a REAL SessionDB
+        so an upstream rename breaks HERE, not silently on a box."""
         from hermes_cli import goals
+        from gateway.platforms.api_server import list_goal_meta
 
         _seed_goal("mission:seam")
 
         db = goals._get_session_db()
         assert db is not None
-        rows = db.list_meta_prefix("goal:")
-        rows = list(rows)
-        assert rows, "list_meta_prefix('goal:') returned no rows"
+        rows = list(list_goal_meta(db))
+        assert rows, "list_goal_meta(db) returned no rows"
         for row in rows:
             assert isinstance(row, tuple) and len(row) == 2
             key, value = row
@@ -304,6 +309,20 @@ class TestGoalManagerInterface:
         stored = json.loads(by_key["goal:mission:seam"])
         assert stored["status"] == "active"
         assert stored["turns_used"] == 3
+
+    def test_list_goal_meta_escapes_like_metacharacters(self, hermes_home):
+        """Un préfixe contenant ``%``/``_`` matche LITTÉRALEMENT (échappement LIKE) :
+        une clé ``goal_x`` ne doit pas être ramenée par le préfixe ``goal_`` élargi
+        en jokers — ni ``goalAx`` par un ``_`` interprété."""
+        from hermes_cli import goals
+        from gateway.platforms.api_server import list_goal_meta
+
+        db = goals._get_session_db()
+        assert db is not None
+        db.set_meta("pre_fix:one", "1")
+        db.set_meta("preAfix:two", "2")  # matcherait « pre_fix » si « _ » restait un joker
+        rows = dict(list_goal_meta(db, prefix="pre_fix:"))
+        assert rows == {"pre_fix:one": "1"}
 
     def test_decision_dict_shape_on_inactive_goal(self, hermes_home):
         """The post-turn hook consumes ``decision.get("message")``,

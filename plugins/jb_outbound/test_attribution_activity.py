@@ -238,7 +238,9 @@ def test_scheduler_run_job_pose_contexte_et_signale(posts, tmp_path, monkeypatch
 
     seen = {}
 
-    def _fake_impl(job):
+    def _fake_impl(job, defer_agent_teardown=False):
+        # `defer_agent_teardown` : kwarg upstream v0.18 (toujours passé par run_job) — accepté
+        # pour coller à la vraie signature de _run_job_impl, sans effet sur ce test.
         seen["ctx"] = job_context.current()  # visible PENDANT l'exécution du job
         return True, "doc", "réponse", None
 
@@ -259,7 +261,11 @@ def test_scheduler_run_job_echec_signale_error(posts, tmp_path, monkeypatch):
 
     import cron.scheduler as scheduler
 
-    monkeypatch.setattr(scheduler, "_run_job_impl", lambda job: (False, "doc", "", "boom"))
+    monkeypatch.setattr(
+        scheduler,
+        "_run_job_impl",
+        lambda job, defer_agent_teardown=False: (False, "doc", "", "boom"),
+    )
     result = scheduler.run_job(_job())
 
     assert result[0] is False

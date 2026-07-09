@@ -151,7 +151,7 @@ def test_register_enregistre_l_outil(on_box):
     """Le plugin enregistre creer_support via ctx.register_tool (zéro patch du cœur)."""
     import jb_outbound
 
-    calls = {"tools": [], "middleware": [], "hooks": []}
+    calls = {"tools": [], "middleware": [], "hooks": [], "aux": []}
 
     class FakeCtx:
         def register_tool(self, **kw):
@@ -162,6 +162,9 @@ def test_register_enregistre_l_outil(on_box):
 
         def register_hook(self, name, cb):
             calls["hooks"].append(name)
+
+        def register_auxiliary_task(self, key, **kw):
+            calls["aux"].append(key)
 
     jb_outbound.register(FakeCtx())
     names = [t["name"] for t in calls["tools"]]

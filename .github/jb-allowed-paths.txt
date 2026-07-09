@@ -1,18 +1,18 @@
 # ============================================================================
-# Confinement du fork Jean-Billie — allowlist de chemins (lane F1)
+# Confinement du fork Jean-Billie — allowlist de chemins (lane F1, état F2)
 # ============================================================================
 #
 # RÈGLE : toute la divergence du fork vit dans plugins/jb_outbound/ plus les
-# quelques fichiers additifs déclarés ci-dessous. Zéro NOUVEAU patch du cœur
-# Hermes. Toute PR qui modifie un fichier hors de cette liste échoue en CI
+# quelques fichiers déclarés ci-dessous. Zéro NOUVEAU patch du cœur Hermes.
+# Toute PR qui modifie un fichier hors de cette liste échoue en CI
 # (workflow .github/workflows/jb-guard.yml, script scripts/jb_guard_paths.py).
 #
 # Échappatoire : poser le label « jb-core-approved » sur la PR (le job passe
-# avec un avertissement). C'est la voie prévue pour les PR de RÉSORPTION des
-# patchs cœur historiques : le garde-fou empêche d'en AJOUTER, pas de les
-# supprimer. ATTENTION : le label reste actif toute la vie de la PR (les
-# steps de contrôle sont sautées tant qu'il est posé) — le RETIRER si la PR
-# continue après le patch cœur approuvé, pour ré-armer le garde.
+# avec un avertissement). C'est la voie prévue pour les PR qui touchent la
+# dette cœur DÉCLARÉE ci-dessous (la maintenir, la résorber) — le garde-fou
+# empêche d'en AJOUTER, pas d'en retirer. ATTENTION : le label reste actif
+# toute la vie de la PR (les steps de contrôle sont sautées tant qu'il est
+# posé) — le RETIRER si la PR continue après le patch cœur approuvé.
 #
 # AUTO-PROTECTION du garde (anti-neutralisation) : les fichiers du garde-fou
 # lui-même —
@@ -31,16 +31,42 @@
 # sans label (piste future : n'autoriser que les AJOUTS de tests via
 # git diff --name-status).
 #
-# Patchs cœur HISTORIQUES — dette à résorber (F2/F3) — ne PAS ajouter ici :
-#   gateway/run.py
-#   cron/scheduler.py
-#   tools/delegate_tool.py
-#   hermes_cli/config.py
-#   hermes_state.py
-#   hermes_cli/subcommands/mcp.py
-#   toolsets.py
-#   Dockerfile        (toléré ci-dessous le temps de la résorption)
-#   pyproject.toml    (idem)
+# ----------------------------------------------------------------------------
+# DETTE CŒUR DÉCLARÉE (état F2, 2026-07-09) — diff exact vs v2026.7.7.2.
+# Ces fichiers restent HORS allowlist : les toucher exige « jb-core-approved ».
+# Ne pas ÉTENDRE ces hunks sans nécessité ; re-vérifier à chaque rebase mensuel.
+#
+#   gateway/run.py (+~190)
+#       Watchdog des missions managées : constante stale + resolver config
+#       (goals.watchdog_stale_seconds, clé HORS DEFAULT_CONFIG, fallback local)
+#       + _watchdog_sweep (re-drive à froid via handle_message, POST
+#       /v1/watchdog-tick) ; ancre conversationId (_goal_anchor_for_source +
+#       2 points de câblage) pour survivre à la rotation de session.
+#       Raison : aucun hook de maintenance/périodique natif côté plugins.
+#   cron/scheduler.py (+52)
+#       Wrapper run_job → hooks d'attribution jb (job_context), best-effort,
+#       stock sans plugin. Raison : aucun hook cycle-de-vie cron natif ;
+#       candidat n°1 à une PR upstream pre/post_cron_job (différé post-F2).
+#   tools/delegate_tool.py (+~37)
+#       Plumbing du param « department » (schéma + kwargs des hooks
+#       subagent_start/stop + tag de l'agent enfant) — consommé par le plugin
+#       (delegation_activity). Additif au tool natif.
+#   hermes_cli/mcp_config.py (+44) et hermes_cli/subcommands/mcp.py (+16)
+#       Sous-commande read-only « hermes mcp probe » (sonde MCP du fleet
+#       daemon, stdout JSON, zéro écriture). Raison : register_cli_command
+#       natif = commande top-level (changement d'appel côté daemon pour zéro
+#       gain) ; ré-évaluer au rebase.
+#   scripts/release.py (+2)         AUTHOR_MAP (2 auteurs upstream).
+#   .github/workflows/build-push.yml (+148, jb-owned)  CI image GHCR.
+#   uv.lock                          Lockfile (suivit pyproject) — sous label
+#                                    à dessein (surface supply-chain).
+#
+# RÉSORBÉ PAR F2 (2026-07-09) — ne PAS ré-introduire :
+#   toolsets.py          (request_tool_connection → register_tool du plugin)
+#   hermes_state.py      (list_meta_prefix → list_goal_meta, api_server.py)
+#   hermes_cli/config.py (goal_judge → register_auxiliary_task du plugin ;
+#                         watchdog_stale_seconds → fallback local du sweep)
+#   imports cœur→plugin  (throttle « turns » du watchdog SUPPRIMÉ)
 #
 # Syntaxe : un glob par ligne. « ** » traverse les répertoires (« a/**/b »
 # matche aussi « a/b ») ; « * » et « ? » restent dans un segment. Lignes
@@ -53,12 +79,14 @@ plugins/jb_outbound/**
 # Nos tests jb (additifs). Trou assumé : couvre aussi les tests upstream.
 tests/**
 
-# Fichiers additifs déclarés (n'existent pas upstream).
+# Surface du CONTRAT MANAGÉ (fichier MIXTE upstream+jb depuis 0.18 : upstream a
+# introduit sa propre plateforme api_server ; notre diff = +229 : handlers
+# arm/goals/watchdog-tick/clear, list_goal_meta, authorization_is_upstream).
+# Reste allowlisté car c'est LE seam actif du contrat daemon↔fork — n'y toucher
+# QUE pour ce contrat, jamais pour patcher du comportement upstream.
 gateway/platforms/api_server.py
-tools/request_tool_connection.py
-hermes_cli/mcp_config.py
 
-# Dette tolérée le temps de la résorption (F2/F3) — voir en-tête.
+# Dette tolérée (fork-owned, build/deps) — voir en-tête.
 Dockerfile
 pyproject.toml
 

@@ -7205,7 +7205,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         ``sessions/saved/`` directory stays browsable by name once a user
         accumulates more than a handful of files (#61278). Title resolution:
 
-          1. DB-cached title (auto-titled earlier orset via ``/title``).
+          1. DB-cached title (auto-titled earlier or set via ``/title``).
           2. Fallback ``generate_title`` call (cheap, with a 5s timeout);
              on failure, ``title`` falls through to ``null`` rather than
              dropping the snapshot.

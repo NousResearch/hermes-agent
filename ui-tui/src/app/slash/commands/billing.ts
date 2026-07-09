@@ -5,6 +5,7 @@ import type {
   BillingMutationResponse,
   BillingStateResponse
 } from '../../../gatewayTypes.js'
+import { translate } from '../../../i18n/index.js'
 import { openExternalUrl } from '../../../lib/openExternalUrl.js'
 import type { BillingOverlayCtx } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
@@ -15,11 +16,13 @@ const POLL_INTERVAL_MS = 2000
 const POLL_CAP_MS = 5 * 60 * 1000
 
 type Sys = (text: string) => void
+type Translator = (key: Parameters<typeof translate>[1], vars?: Record<string, string | number>) => string
 
 /** Map a typed billing error envelope to user-facing copy + portal funnel. */
 const renderBillingError = (
   sys: Sys,
   ctx: SlashRunCtx,
+  tr: Translator,
   env: {
     error?: string
     message?: string
@@ -32,20 +35,17 @@ const renderBillingError = (
 
   switch (env.error) {
     case 'insufficient_scope':
-      armStepUp(sys, ctx)
+      armStepUp(sys, ctx, tr)
 
       return
 
     case 'no_payment_method':
-      sys(
-        '💳 No saved card for terminal charges yet. Set one up on the portal ' +
-          "(one-time credit buys don't save a reusable card)."
-      )
+      sys(tr('billing.error.noPaymentMethod'))
 
       break
 
     case 'cli_billing_disabled':
-      sys('🔴 Terminal billing is turned off for this org — an admin must enable it on the portal.')
+      sys(tr('billing.error.cliBillingDisabled'))
 
       break
     case 'monthly_cap_exceeded': {
@@ -53,37 +53,37 @@ const renderBillingError = (
       const remaining = env.payload?.remainingUsd
       sys(
         remaining != null
-          ? `🔴 Monthly spend cap reached — $${remaining} headroom left.`
-          : '🔴 Monthly spend cap reached.'
+          ? tr('billing.error.monthlyCapExceededRemaining', { remaining })
+          : tr('billing.error.monthlyCapExceeded')
       )
 
       break
     }
 
     case 'rate_limited': {
-      const mins = env.retry_after ? ` (try again in ~${Math.max(1, Math.round(env.retry_after / 60))} min)` : ''
-      sys(`🟡 Too many charges right now${mins}. This isn't a payment failure.`)
+      const mins = env.retry_after ? Math.max(1, Math.round(env.retry_after / 60)) : null
+      sys(mins ? tr('billing.error.rateLimitedWithRetry', { minutes: mins }) : tr('billing.error.rateLimited'))
 
       break
     }
 
     default:
-      sys(`🔴 ${env.message || env.error || 'Billing request failed.'}`)
+      sys(tr('billing.error.generic', { message: env.message || env.error || tr('billing.error.requestFailed') }))
   }
 
   if (portal) {
-    sys(`Portal: ${portal}`)
+    sys(tr('billing.portalLine', { url: portal }))
   }
 }
 
 /** 403 insufficient_scope → arm a ConfirmReq that runs the lazy step-up. */
-const armStepUp = (sys: Sys, ctx: SlashRunCtx): void => {
-  sys('💳 Terminal billing needs an extra permission (billing:manage).')
+const armStepUp = (sys: Sys, ctx: SlashRunCtx, tr: Translator): void => {
+  sys(tr('billing.stepUp.needsPermission'))
   patchOverlayState({
     confirm: {
-      cancelLabel: 'Not now',
-      confirmLabel: 'Re-authorize',
-      detail: 'An org admin/owner must tick "Allow terminal billing" in the portal.',
+      cancelLabel: tr('billing.stepUp.cancel'),
+      confirmLabel: tr('billing.stepUp.confirm'),
+      detail: tr('billing.stepUp.detail'),
       onConfirm: () => {
         // session_id lets the gateway route the billing.step_up.verification
         // event (the verification link) back to this session — the device flow
@@ -97,30 +97,27 @@ const armStepUp = (sys: Sys, ctx: SlashRunCtx): void => {
                 // kill-switch (cli_billing_enabled) is a separate gate. Re-fetch
                 // /state so we don't over-promise "enabled" when a charge would
                 // still hit cli_billing_disabled.
-                sys('✅ Billing permission granted.')
+                sys(tr('billing.stepUp.granted'))
                 ctx.gateway
                   .rpc<BillingStateResponse>('billing.state', {})
                   .then(
                     ctx.guarded<BillingStateResponse>(s => {
                       if (s.cli_billing_enabled) {
-                        sys('Run /billing again to continue.')
+                        sys(tr('billing.runAgain'))
                       } else {
-                        sys(
-                          '🟡 Permission granted, but terminal billing is still turned off ' +
-                            'for this org. Enable it in the portal, then run /billing again.'
-                        )
+                        sys(tr('billing.stepUp.grantedButDisabled'))
 
                         if (s.portal_url) {
-                          sys(`Portal: ${s.portal_url}`)
+                          sys(tr('billing.portalLine', { url: s.portal_url }))
                         }
                       }
                     })
                   )
                   .catch(() => {
-                    sys('Run /billing again to continue.')
+                    sys(tr('billing.runAgain'))
                   })
               } else {
-                sys('🟡 Terminal billing was not granted (an admin must tick the box).')
+                sys(tr('billing.stepUp.notGranted'))
               }
             })
           )
@@ -129,16 +126,16 @@ const armStepUp = (sys: Sys, ctx: SlashRunCtx): void => {
             // is still authorizing in the browser. A reject here is NOT a hard
             // failure — the grant (if it lands) is persisted gateway-side; tell
             // the user to re-run /billing rather than reporting an error.
-            sys('🟡 Still waiting on approval — finish in the browser, then run /billing again.')
+            sys(tr('billing.stepUp.stillWaiting'))
           })
       },
-      title: 'Grant terminal billing access?'
+      title: tr('billing.stepUp.title')
     }
   })
 }
 
 /** Poll a charge to a terminal state (settled/failed/timeout). Non-blocking. */
-const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: string | null): void => {
+const pollCharge = (sys: Sys, ctx: SlashRunCtx, tr: Translator, chargeId: string, portalUrl?: string | null): void => {
   const start = Date.now()
 
   const tick = (): void => {
@@ -159,32 +156,31 @@ const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: st
               return
             }
 
-            sys(`🔴 Could not check the charge: ${r.message || r.error || 'error'}`)
+            sys(
+              tr('billing.charge.couldNotCheck', { message: r.message || r.error || tr('billing.error.genericError') })
+            )
 
             return
           }
 
           if (r.status === 'settled') {
-            sys(`✅ ${r.amount_usd ? `$${r.amount_usd}` : 'Credits'} added.`)
+            sys(r.amount_usd ? tr('billing.charge.addedAmount', { amount: r.amount_usd }) : tr('billing.charge.added'))
 
             return
           }
 
           if (r.status === 'failed') {
-            renderChargeFailed(sys, r.reason, portalUrl)
+            renderChargeFailed(sys, tr, r.reason, portalUrl)
 
             return
           }
 
           // pending → keep polling until the 5-min cap, then call it a timeout.
           if (Date.now() - start >= POLL_CAP_MS) {
-            sys(
-              '🟡 Still processing after 5 minutes — this is a timeout, not a failure. ' +
-                'Check /billing or the portal shortly.'
-            )
+            sys(tr('billing.charge.timeout'))
 
             if (portalUrl) {
-              sys(`Portal: ${portalUrl}`)
+              sys(tr('billing.portalLine', { url: portalUrl }))
             }
 
             return
@@ -199,53 +195,53 @@ const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: st
   tick()
 }
 
-const renderChargeFailed = (sys: Sys, reason?: string | null, portalUrl?: string | null): void => {
+const renderChargeFailed = (sys: Sys, tr: Translator, reason?: string | null, portalUrl?: string | null): void => {
   switch ((reason || '').trim()) {
     case 'authentication_required':
-      sys('🔴 Your bank requires verification (3DS). Complete it on the portal to finish this purchase.')
+      sys(tr('billing.charge.authRequired'))
 
       break
 
     case 'payment_method_expired':
-      sys('🔴 Your card has expired. Update it on the portal.')
+      sys(tr('billing.charge.cardExpired'))
 
       break
 
     case 'card_declined':
-      sys('🔴 Your card was declined. Try another card on the portal.')
+      sys(tr('billing.charge.cardDeclined'))
 
       break
 
     default:
-      sys(`🔴 The charge didn't go through (${reason || 'processing_error'}).`)
+      sys(tr('billing.charge.failed', { reason: reason || 'processing_error' }))
   }
 
   // Funnel to the portal after any failure (parity with cli.py _billing_portal_hint).
   if (portalUrl) {
-    sys(`Portal: ${portalUrl}`)
+    sys(tr('billing.portalLine', { url: portalUrl }))
   }
 }
 
 /** Validate a custom amount against state bounds + 2dp, mirroring the server. */
-const validateAmount = (raw: string, s: BillingStateResponse): { amount?: string; error?: string } => {
+const validateAmount = (raw: string, s: BillingStateResponse, tr: Translator): { amount?: string; error?: string } => {
   const cleaned = raw.trim().replace(/^\$/, '').trim()
 
   if (!cleaned || !/^\d+(\.\d{1,2})?$/.test(cleaned)) {
-    return { error: 'Enter a dollar amount, e.g. 100 (max 2 decimal places).' }
+    return { error: tr('billing.validate.amountFormat') }
   }
 
   const value = Number(cleaned)
 
   if (!(value > 0)) {
-    return { error: 'Amount must be greater than $0.' }
+    return { error: tr('billing.validate.amountPositive') }
   }
 
   if (s.min_usd != null && value < Number(s.min_usd)) {
-    return { error: `Minimum is $${s.min_usd}.` }
+    return { error: tr('billing.validate.minimum', { amount: s.min_usd }) }
   }
 
   if (s.max_usd != null && value > Number(s.max_usd)) {
-    return { error: `Maximum is $${s.max_usd}.` }
+    return { error: tr('billing.validate.maximum', { amount: s.max_usd }) }
   }
 
   return { amount: cleaned }
@@ -256,7 +252,7 @@ const validateAmount = (raw: string, s: BillingStateResponse): { amount?: string
  * and emit transcript lines.  Keeps ALL RPC + error-mapping logic here
  * (single source of truth) — the overlay only renders + routes keys.
  */
-const buildOverlayCtx = (ctx: SlashRunCtx, sys: Sys, s: BillingStateResponse): BillingOverlayCtx => ({
+const buildOverlayCtx = (ctx: SlashRunCtx, sys: Sys, s: BillingStateResponse, tr: Translator): BillingOverlayCtx => ({
   applyAutoReload: (enabled, threshold, topUp) =>
     ctx.gateway
       .rpc<BillingMutationResponse>('billing.auto_reload', {
@@ -270,7 +266,7 @@ const buildOverlayCtx = (ctx: SlashRunCtx, sys: Sys, s: BillingStateResponse): B
         }
 
         if (r) {
-          renderBillingError(sys, ctx, r)
+          renderBillingError(sys, ctx, tr, r)
         }
 
         return false
@@ -281,15 +277,15 @@ const buildOverlayCtx = (ctx: SlashRunCtx, sys: Sys, s: BillingStateResponse): B
         return false
       }),
   charge: (amount: string) => {
-    sys('💳 Charge submitted — confirming settlement…')
+    sys(tr('billing.charge.submitted'))
     ctx.gateway
       .rpc<BillingChargeResponse>('billing.charge', { amount_usd: amount })
       .then(
         ctx.guarded<BillingChargeResponse>(r => {
           if (r.ok && r.charge_id) {
-            pollCharge(sys, ctx, r.charge_id, s.portal_url)
+            pollCharge(sys, ctx, tr, r.charge_id, s.portal_url)
           } else {
-            renderBillingError(sys, ctx, r)
+            renderBillingError(sys, ctx, tr, r)
           }
         })
       )
@@ -297,10 +293,10 @@ const buildOverlayCtx = (ctx: SlashRunCtx, sys: Sys, s: BillingStateResponse): B
   },
   openPortal: (url: string) => {
     openExternalUrl(url)
-    sys(`Opening portal: ${url}`)
+    sys(tr('billing.openingPortal', { url }))
   },
   sys,
-  validate: (raw: string) => validateAmount(raw, s)
+  validate: (raw: string) => validateAmount(raw, s, tr)
 })
 
 export const billingCommands: SlashCommand[] = [
@@ -311,20 +307,21 @@ export const billingCommands: SlashCommand[] = [
     // fetches state and opens the interactive overlay (CLI/TUI parity).
     run: (_arg, ctx) => {
       const sys: Sys = ctx.transcript.sys
+      const tr: Translator = (key, vars) => translate(ctx.ui.locale, key, vars)
 
       ctx.gateway
         .rpc<BillingStateResponse>('billing.state', {})
         .then(
           ctx.guarded<BillingStateResponse>(s => {
             if (!s.logged_in) {
-              sys('💳 Not logged into Nous Portal — run /portal to log in, then /billing.')
+              sys(tr('billing.notLoggedIn'))
 
               return
             }
 
             patchOverlayState({
               billing: {
-                ctx: buildOverlayCtx(ctx, sys, s),
+                ctx: buildOverlayCtx(ctx, sys, s, tr),
                 pendingCharge: null,
                 screen: 'overview',
                 state: s

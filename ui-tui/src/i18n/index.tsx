@@ -39,7 +39,7 @@ const CATALOGS: Record<Locale, LangPack> = {
   ga,
   pt,
   ru,
-  hu,
+  hu
 }
 
 const getPack = (locale: Locale): LangPack => CATALOGS[locale] ?? en
@@ -106,7 +106,7 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   ukrainisch: 'uk',
   'uk-ua': 'uk',
   українська: 'uk',
-  'zh-hant': 'zh-hant',
+  'zh-hant': 'zh-hant'
 }
 
 // ── Locale-specific transient trail patterns ───────────────────
@@ -128,23 +128,38 @@ const interpolate = (template: string, vars: Record<string, string | number> = {
   template.replace(/\{(\w+)\}/g, (_m, key: string) => String(vars[key] ?? `{${key}}`))
 
 export const normalizeLocale = (value: unknown): Locale => {
-  if (typeof value !== 'string') {return 'en'}
+  if (typeof value !== 'string') {
+    return 'en'
+  }
+
   const raw = value.trim().toLowerCase().replace(/_/g, '-').replace(/\s+/g, '-')
 
-  if (!raw) {return 'en'}
+  if (!raw) {
+    return 'en'
+  }
 
   // Direct matches against the supported set.
-  if ((LOCALES as readonly string[]).includes(raw)) {return raw as Locale}
+  if ((LOCALES as readonly string[]).includes(raw)) {
+    return raw as Locale
+  }
 
   const alias = LOCALE_ALIASES[raw]
-  if (alias) {return alias}
+
+  if (alias) {
+    return alias
+  }
 
   // Chinese is limited to two explicit language choices here. Do not collapse
   // extra zh-* values to Simplified/Traditional.
-  if (raw.startsWith('zh-')) {return 'en'}
+  if (raw.startsWith('zh-')) {
+    return 'en'
+  }
 
   const primary = raw.split('-', 1)[0]
-  if ((LOCALES as readonly string[]).includes(primary)) {return primary as Locale}
+
+  if ((LOCALES as readonly string[]).includes(primary)) {
+    return primary as Locale
+  }
 
   return 'en'
 }
@@ -171,7 +186,7 @@ const defaultApi: I18nApi = {
   t: (key, vars) => translate('en', key, vars),
   tStatus: status => translateStatus('en', status),
   toolVerb: name => getToolVerb('en', name),
-  verbs: en.verbs,
+  verbs: en.verbs
 }
 
 const I18nContext = createContext<I18nApi>(defaultApi)
@@ -183,7 +198,7 @@ export function I18nProvider({ children, locale }: { children: ReactNode; locale
       t: (key, vars) => translate(locale, key, vars),
       tStatus: status => translateStatus(locale, status),
       toolVerb: name => getToolVerb(locale, name),
-      verbs: getThinkingVerbs(locale),
+      verbs: getThinkingVerbs(locale)
     }),
     [locale]
   )
@@ -204,5 +219,4 @@ export const toolsetLabel = (raw: string, locale: Locale): string => {
 
 /** Whether the language pack prefers ellipsis over padding for status-bar verbs.
  *  Language-agnostic — each pack declares its own verbStyle. */
-export const shouldEllipsisVerb = (locale: Locale): boolean =>
-  getPack(locale).verbStyle === 'ellipsis'
+export const shouldEllipsisVerb = (locale: Locale): boolean => getPack(locale).verbStyle === 'ellipsis'

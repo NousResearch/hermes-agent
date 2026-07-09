@@ -28,7 +28,10 @@ import {
 } from '../components/activeSessionSwitcher.js'
 import type { SessionActiveItem } from '../gatewayTypes.js'
 import type { SessionListItem } from '../gatewayTypes.js'
+import { translate } from '../i18n/index.js'
 import { DEFAULT_THEME } from '../theme.js'
+
+const zhT = (key: Parameters<typeof translate>[1], vars?: Record<string, string | number>) => translate('zh', key, vars)
 
 describe('session orchestrator helpers', () => {
   it('labels live sessions compactly for tight overlays', () => {
@@ -43,6 +46,13 @@ describe('session orchestrator helpers', () => {
     expect(orchestratorContextHint(true)).toBe('New row: type prompt · Enter start · Tab model')
     expect(orchestratorGlobalHotkeyHint).toBe('↑↓ move · Ctrl+N new · Ctrl+R refresh · Esc close')
     expect(orchestratorGlobalHotkeyHint.length).toBeLessThanOrEqual(56)
+  })
+
+  it('can render helper copy through the active locale catalog', () => {
+    expect(activeSessionCountLabel(2, zhT)).toBe('2 个实时会话')
+    expect(sessionsCountLabel(2, 7, zhT)).toBe('2 个实时 · 7 个可恢复')
+    expect(orchestratorContextHint(true, zhT)).toBe('新会话： 输入提示词 · Enter 开始 · Tab 模型')
+    expect(draftModelDisplayLabel('', zhT)).toBe('当前/默认')
   })
 
   it('assigns themed colors consistently to orchestrator labels and hotkeys', () => {
@@ -62,12 +72,11 @@ describe('session orchestrator helpers', () => {
       { role: 'hotkey', text: 'Tab' },
       { role: 'text', text: ' model' }
     ])
-    expect(orchestratorGlobalHotkeyHintSegments.filter(s => s.role === 'hotkey').map(s => s.text)).toEqual([
-      '↑↓',
-      'Ctrl+N',
-      'Ctrl+R',
-      'Esc'
-    ])
+    expect(
+      orchestratorGlobalHotkeyHintSegments()
+        .filter(s => s.role === 'hotkey')
+        .map(s => s.text)
+    ).toEqual(['↑↓', 'Ctrl+N', 'Ctrl+R', 'Esc'])
     expect(orchestratorHintSegmentColor(DEFAULT_THEME, 'hotkey')).toBe(DEFAULT_THEME.color.accent)
     expect(orchestratorHintSegmentColor(DEFAULT_THEME, 'label')).toBe(DEFAULT_THEME.color.label)
     expect(orchestratorHintSegmentColor(DEFAULT_THEME, 'text')).toBe(DEFAULT_THEME.color.muted)

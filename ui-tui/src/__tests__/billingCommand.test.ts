@@ -68,7 +68,8 @@ const buildCtx = (results: Record<string, unknown>) => {
     guardedErr: vi.fn(),
     sid: 'sid-1',
     stale: () => false,
-    transcript: { page: vi.fn(), panel: vi.fn(), sys }
+    transcript: { page: vi.fn(), panel: vi.fn(), sys },
+    ui: { locale: 'en' }
   }
 
   const run = async (arg: string) => {

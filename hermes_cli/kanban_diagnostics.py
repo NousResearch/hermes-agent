@@ -531,6 +531,9 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     Accepts the legacy ``spawn_failure_threshold`` config key for
     back-compat.
     """
+    if _task_field(task, "status") == "done":
+        return []
+
     threshold = _positive_int(cfg.get(
         "failure_threshold",
         cfg.get("spawn_failure_threshold", 3),
@@ -649,7 +652,15 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
     total failures) so the operator gets a crash-specific heads-up
     before the unified rule kicks in. Suppresses itself when the
     unified rule is also about to fire, to avoid double-flagging.
+
+    A task-level manual completion resolves the operator-visible crash-loop
+    even if no successful ``task_runs`` row was written. Without this guard,
+    historical crashed runs keep completed tasks in the dashboard's
+    "tasks need attention" strip forever.
     """
+    if _task_field(task, "status") == "done":
+        return []
+
     failure_threshold = int(cfg.get(
         "failure_threshold",
         cfg.get("spawn_failure_threshold", 3),
@@ -722,7 +733,6 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
         count=consecutive,
         data={"consecutive_crashes": consecutive, "last_error": last_err},
     )]
-
 
 def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Task has been in ``blocked`` status for too long without a comment.

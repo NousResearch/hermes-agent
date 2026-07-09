@@ -137,7 +137,10 @@ JUDGE_SYSTEM_PROMPT = (
     "busy-work because the agent can't progress until the async thing "
     "finishes.\n\n"
     "CONTINUE — not done, and there is a concrete next step the agent can "
-    "take right now. This is the default when in doubt.\n\n"
+    "take right now. This is the default when in doubt. Also choose CONTINUE "
+    "when a structured closure report says a bounded phase is complete but "
+    "the standing goal state remains_open; phase closure is not goal "
+    "completion.\n\n"
     "Reply ONLY with a single JSON object on one line. Shapes:\n"
     '{"verdict": "done", "reason": "<one sentence>"}\n'
     '{"verdict": "continue", "reason": "<one sentence>"}\n'
@@ -833,6 +836,37 @@ def _render_background_block(background_processes: Optional[List[Dict[str, Any]]
     return JUDGE_BACKGROUND_BLOCK_TEMPLATE.format(background_lines="\n".join(lines))
 
 
+
+def _long_horizon_remains_open_override(last_response: str) -> Optional[str]:
+    """Return a continue reason for structured long-horizon phase reports.
+
+    Some durable project loops report bounded phase closure separately from the
+    standing goal state, e.g. ``phase_closure: complete`` together with
+    ``standing_goal_state: remains_open``. The generic judge rubric treats
+    completion/block/no-next-step language as DONE, which incorrectly clears
+    these long-horizon goals. When the agent explicitly labels the standing
+    goal as remaining open in that structured report, keep the loop active
+    instead of asking the generic judge to reinterpret that state.
+    """
+    if not last_response:
+        return None
+    has_phase_closure = re.search(
+        r"^\s*phase_closure\s*[:=]\s*\S.*$",
+        last_response,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    has_remaining_standing_goal = re.search(
+        r"^\s*standing_goal_state\s*[:=]\s*remains_open\s*$",
+        last_response,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    if has_phase_closure and has_remaining_standing_goal:
+        return (
+            "structured closure report says "
+            "standing_goal_state=remains_open; bounded phase closure is not goal completion"
+        )
+    return None
+
 def judge_goal(
     goal: str,
     last_response: str,
@@ -876,6 +910,11 @@ def judge_goal(
     if not last_response.strip():
         # No substantive reply this turn — almost certainly not done yet.
         return "continue", "empty response (nothing to evaluate)", False, None
+
+    long_horizon_reason = _long_horizon_remains_open_override(last_response)
+    if long_horizon_reason:
+        logger.info("goal judge: forced continue for long-horizon phase closure")
+        return "continue", long_horizon_reason, False, None
 
     try:
         from agent.auxiliary_client import get_auxiliary_extra_body, get_text_auxiliary_client

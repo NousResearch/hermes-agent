@@ -210,7 +210,7 @@ export function FloatingPet() {
   })
 
   // Wire the overlay control channel once, only in the primary window — the
-  // pop-out overlay belongs to it (main.cjs positions it against the main
+  // pop-out overlay belongs to it (main.ts positions it against the main
   // window and routes control messages back to it).
   useEffect(() => {
     if (isSecondaryWindow()) {

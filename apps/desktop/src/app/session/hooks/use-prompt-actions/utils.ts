@@ -142,7 +142,7 @@ export async function readFileDataUrlForAttach(filePath: string): Promise<string
 }
 
 // The readFileDataUrl IPC base64-loads the whole file into memory and is
-// hard-capped (DATA_URL_READ_MAX_BYTES, 16 MB) in electron/hardening.cjs, which
+// hard-capped (DATA_URL_READ_MAX_BYTES, 16 MB) in electron/hardening.ts, which
 // rejects with a raw "file is too large (N bytes; limit M bytes)" string. In
 // remote mode every attachment's bytes go through that read, so a big file
 // surfaces that internal message verbatim in the failure toast. Translate it

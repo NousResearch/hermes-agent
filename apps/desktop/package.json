@@ -6,17 +6,17 @@
   "description": "Native desktop shell for Hermes Agent.",
   "author": "Nous Research",
   "type": "module",
-  "main": "electron/main.cjs",
+  "main": "dist/electron-main.mjs",
   "engines": {
     "node": "^20.19.0 || >=22.12.0"
   },
   "scripts": {
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
     "dev:fake-boot": "cross-env HERMES_DESKTOP_BOOT_FAKE=1 HERMES_DESKTOP_BOOT_FAKE_STEP_MS=650 npm run dev",
-    "dev:renderer": "node scripts/assert-root-install.cjs && vite --host 127.0.0.1 --port 5174",
-    "dev:electron": "wait-on http://127.0.0.1:5174 && cross-env XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron .",
-    "profile:main": "wait-on http://127.0.0.1:5174 && cross-env XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron --inspect=9229 .",
-    "profile:main:cpu": "wait-on http://127.0.0.1:5174 && cross-env XCURSOR_SIZE=24 NODE_OPTIONS=--cpu-prof HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron .",
+    "dev:renderer": "node scripts/assert-root-install.mjs && vite --host 127.0.0.1 --port 5174",
+    "dev:electron": "wait-on http://127.0.0.1:5174 && cross-env XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 NODE_OPTIONS=tsx electron electron/main.ts",
+    "profile:main": "wait-on http://127.0.0.1:5174 && cross-env XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 NODE_OPTIONS=tsx electron --inspect=9229 electron/main.ts",
+    "profile:main:cpu": "wait-on http://127.0.0.1:5174 && cross-env XCURSOR_SIZE=24 NODE_OPTIONS=--cpu-prof NODE_OPTIONS=tsx HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron electron/main.ts",
     "start": "npm run build && electron .",
     "build": "node scripts/assert-root-install.cjs && node scripts/write-build-stamp.cjs && node scripts/stage-native-deps.cjs && tsc -b && vite build && npm run postbuild",
     "postbuild": "node scripts/assert-dist-built.cjs",
@@ -40,10 +40,10 @@
     "typecheck": "tsc -p . --noEmit",
     "lint": "eslint src/ electron/",
     "lint:fix": "eslint src/ electron/ --fix",
-    "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'electron/**/*.{js,cjs}' 'vite.config.ts'",
+    "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'electron/**/*.ts' 'vite.config.ts'",
     "fix": "npm run lint:fix && npm run fmt",
     "test:ui": "vitest run --environment jsdom",
-    "preview": "node scripts/assert-root-install.cjs && vite preview --host 127.0.0.1 --port 4174"
+    "preview": "node scripts/assert-root-install.mjs && vite preview --host 127.0.0.1 --port 4174"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.12.28",
@@ -116,12 +116,13 @@
     "web-haptics": "^0.0.6"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.6",
     "@eslint/js": "^9.39.4",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/react": "^16.3.2",
     "@types/d3-force": "^3.0.10",
     "@types/hast": "^3.0.4",
-    "@types/node": "^24.13.2",
+    "@types/node": "^22.20.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@typescript-eslint/eslint-plugin": "^8.59.1",
@@ -131,6 +132,7 @@
     "cross-env": "^10.1.0",
     "electron": "40.10.2",
     "electron-builder": "^26.8.1",
+    "esbuild": "^0.28.1",
     "eslint": "^9.39.4",
     "eslint-plugin-perfectionist": "^5.9.0",
     "eslint-plugin-react": "^7.37.5",
@@ -140,6 +142,7 @@
     "jsdom": "^29.1.1",
     "prettier": "^3.8.3",
     "rcedit": "^5.0.2",
+    "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vite": "^8.0.10",
     "vitest": "^4.1.5",
@@ -166,21 +169,16 @@
     "files": [
       "dist/**",
       "assets/**",
-      "electron/**",
       "public/**",
       "package.json"
     ],
-    "beforeBuild": "scripts/before-build.cjs",
-    "beforePack": "scripts/before-pack.cjs",
-    "afterPack": "scripts/after-pack.cjs",
+    "beforeBuild": "scripts/before-build.mjs",
+    "beforePack": "scripts/before-pack.mjs",
+    "afterPack": "scripts/after-pack.mjs",
     "extraResources": [
       {
         "from": "build/install-stamp.json",
         "to": "install-stamp.json"
-      },
-      {
-        "from": "build/native-deps",
-        "to": "native-deps"
       },
       {
         "from": "assets/icon.ico",
@@ -188,7 +186,7 @@
       }
     ],
     "asar": true,
-    "afterSign": "scripts/notarize.cjs",
+    "afterSign": "scripts/notarize.mjs",
     "asarUnpack": [
       "**/*.node",
       "**/prebuilds/**",

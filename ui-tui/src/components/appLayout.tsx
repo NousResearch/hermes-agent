@@ -166,6 +166,18 @@ const TranscriptPane = memo(function TranscriptPane({
     [transcript.historyItems]
   )
 
+  // Inline dashboard chat renders into the host terminal's primary screen so
+  // xterm.js native scrollback can retain transcript rows.  Virtual-history
+  // spacers are only valid in the finite-height alt-screen ScrollBox; in
+  // inline mode those spacers become thousands of physical blank rows and can
+  // roll the real transcript out of xterm's scrollback, leaving resumed long
+  // sessions visually blank.  Do not "fix" that by capping to the last N
+  // items: that makes older text genuinely absent.  In inline mode render the
+  // actual transcript rows and suppress only the synthetic spacer rows.
+  const visibleRows = INLINE_MODE
+    ? transcript.virtualRows
+    : transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end)
+
   return (
     <>
       <ScrollBox
@@ -181,9 +193,9 @@ const TranscriptPane = memo(function TranscriptPane({
         stickyScroll
       >
         <Box flexDirection="column" paddingX={1}>
-          {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
+          {!INLINE_MODE && transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
 
-          {transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (
+          {visibleRows.map(row => (
             <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
               {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
                 <Box marginTop={1}>
@@ -227,7 +239,7 @@ const TranscriptPane = memo(function TranscriptPane({
             </Box>
           ))}
 
-          {transcript.virtualHistory.bottomSpacer > 0 ? <Box height={transcript.virtualHistory.bottomSpacer} /> : null}
+          {!INLINE_MODE && transcript.virtualHistory.bottomSpacer > 0 ? <Box height={transcript.virtualHistory.bottomSpacer} /> : null}
 
           <StreamingAssistant
             cols={bodyCols}

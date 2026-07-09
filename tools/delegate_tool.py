@@ -2746,9 +2746,6 @@ def delegate_task(
             except Exception:
                 logger.debug("subagent_stop hook invocation failed", exc_info=True)
 
-        # [jb merge v2026.7.7.2] Notre ancienne boucle subagent_stop de tête de fonction est
-        # SUPPRIMÉE : upstream l'a déplacée plus haut (voir « Fire subagent_stop hooks once per
-        # child » ci-dessus) et nos kwargs child_subagent_id/child_department y sont réinjectés.
         # Fold the aggregated child cost into the parent's session total.  This is
         # additive — each delegate_task call contributes its own children — so
         # nested orchestrator→worker trees roll up naturally: each layer's own
@@ -3415,8 +3412,6 @@ DELEGATE_TASK_SCHEMA = {
                     "the sub-task for the live team view and multi-role attribution."
                 ),
             },
-            # [jb merge v2026.7.7.2] acp_command/acp_args ne sont PLUS exposés au modèle
-            # (upstream les masque via _MODEL_HIDDEN_TASK_FIELDS) — entrée retirée du schéma.
             "background": {
                 "type": "boolean",
                 "description": (

@@ -225,36 +225,43 @@ def test_allowlist_reelle_perimetre(capsys):
 
     autorises = [
         "plugins/jb_outbound/deep/mod.py",
+        "plugins/jb_outbound/request_connection.py",  # F2 : entré au plugin (ex tools/)
         "tests/test_jb_guard_paths.py",
-        "gateway/platforms/api_server.py",
-        "tools/request_tool_connection.py",
-        "hermes_cli/mcp_config.py",
+        "gateway/platforms/api_server.py",  # seam du contrat managé (MIXTE upstream+jb)
         "Dockerfile",
         "pyproject.toml",
         "tasks/notes.md",
     ]
     assert guard.find_offenders(autorises, patterns) == []
 
-    # Revue I4 : plus de .github/** — les workflows UPSTREAM sont protégés.
+    # Revue I4 : plus de .github/** — les workflows UPSTREAM sont protégés
+    # (et build-push.yml, jb-owned, reste volontairement sous label).
     # Revue B1 : les fichiers du garde et scripts/ sont hors allowlist.
+    # F2 : uv.lock sous label à dessein (surface supply-chain) ;
+    # tools/request_tool_connection.py n'existe plus (déplacé au plugin).
     refuses_perimetre = [
         ".github/workflows/lint.yml",
         ".github/workflows/tests.yml",
         ".github/workflows/jb-guard.yml",
+        ".github/workflows/build-push.yml",
         ".github/jb-allowed-paths.txt",
         "scripts/jb_guard_paths.py",
         "scripts/release.py",
+        "uv.lock",
+        "tools/request_tool_connection.py",
     ]
     assert guard.find_offenders(refuses_perimetre, patterns) == refuses_perimetre
 
-    # Les patchs cœur historiques restent REFUSÉS (dette F2/F3, échappatoire
-    # = label jb-core-approved).
+    # La dette cœur DÉCLARÉE reste REFUSÉE (la toucher = label jb-core-approved),
+    # et les fichiers RÉSORBÉS par F2 (toolsets, hermes_state, config) restent
+    # refusés aussi : les ré-introduire exigerait le label, à dessein.
     refuses_coeur = [
         "gateway/run.py",
         "cron/scheduler.py",
         "tools/delegate_tool.py",
         "hermes_cli/config.py",
         "hermes_state.py",
+        "hermes_cli/mcp_config.py",
         "hermes_cli/subcommands/mcp.py",
         "toolsets.py",
     ]

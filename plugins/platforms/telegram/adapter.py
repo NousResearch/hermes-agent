@@ -8330,7 +8330,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_text = None
 
         # Strip TOOLCALL markup leaked from bot replies (#61217)
-        if reply_to_text:
+        if isinstance(reply_to_text, str) and reply_to_text:
             reply_to_text = _TOOLCALL_RE.sub('', reply_to_text).strip()
 
         # Per-channel/topic ephemeral prompt

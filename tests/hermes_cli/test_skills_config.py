@@ -86,6 +86,30 @@ class TestSaveDisabledSkills:
         assert "skills" in config
         assert "disabled" in config["skills"]
 
+    @patch("hermes_cli.skills_config.save_config")
+    def test_platform_save_excludes_global_disabled(self, mock_save):
+        from hermes_cli.skills_config import save_disabled_skills
+        # skills_command reads the UNION (global | platform) and passes it back
+        # here. Only the platform-specific delta may be persisted — the global
+        # disable must NOT be copied into the platform_disabled list, or it
+        # stays pinned there even after a later global re-enable.
+        config = {"skills": {"disabled": ["global-skill"]}}
+        save_disabled_skills(config, {"global-skill", "tg-skill"}, platform="telegram")
+        assert config["skills"]["platform_disabled"]["telegram"] == ["tg-skill"]
+
+    @patch("hermes_cli.skills_config.save_config")
+    def test_platform_re_enable_after_global_reenable(self, mock_save):
+        from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
+        # Disable a skill globally, then configure telegram (which reads the
+        # union and saves it back).
+        config = {"skills": {"disabled": ["global-skill"]}}
+        union = get_disabled_skills(config, platform="telegram")  # {"global-skill"}
+        save_disabled_skills(config, union, platform="telegram")
+        # Now re-enable the skill globally. Because the platform list only holds
+        # its delta (empty here), the effective telegram set clears too.
+        config["skills"]["disabled"] = []
+        assert get_disabled_skills(config, platform="telegram") == set()
+
 
 # ---------------------------------------------------------------------------
 # _is_skill_disabled

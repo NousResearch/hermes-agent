@@ -3897,6 +3897,75 @@ class TestAuxiliaryPoolRotationRetry:
         mock_fallback.assert_not_called()
 
 
+class TestAnthropicAuxiliaryReasoningTranslation:
+    """Native Anthropic aux adapters must receive normalized Hermes reasoning.
+
+    MoA slot reasoning is carried through call_llm as a Hermes
+    ``reasoning_config``. The native Anthropic Messages path cannot consume the
+    generic OpenAI-style ``extra_body.reasoning`` fallback, so assert the final
+    ``messages.create`` kwargs contain Anthropic's provider-aware wire shape.
+    """
+
+    @staticmethod
+    def _build_adapter(model="claude-fable-5"):
+        from agent.auxiliary_client import _AnthropicCompletionsAdapter
+
+        captured = {}
+
+        class _Messages:
+            def create(self, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="text", text="ok")],
+                    stop_reason="end_turn",
+                    usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                )
+
+        real_client = SimpleNamespace(messages=_Messages())
+        return _AnthropicCompletionsAdapter(real_client, model), captured
+
+    def test_reasoning_config_reaches_native_anthropic_wire_kwargs(self):
+        adapter, captured = self._build_adapter()
+
+        adapter.create(
+            model="claude-fable-5",
+            messages=[{"role": "user", "content": "hi"}],
+            _reasoning_config={"enabled": True, "effort": "medium"},
+        )
+
+        assert captured["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert captured["output_config"] == {"effort": "medium"}
+        assert "extra_body" not in captured
+
+    def test_build_call_kwargs_private_reasoning_only_for_anthropic_messages(self):
+        anthropic_kwargs = _build_call_kwargs(
+            "anthropic",
+            "claude-fable-5",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url="https://api.anthropic.com/v1",
+        )
+        assert anthropic_kwargs["_reasoning_config"] == {"enabled": True, "effort": "medium"}
+
+        proxy_kwargs = _build_call_kwargs(
+            "custom",
+            "claude-fable-5",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url="https://example.test/anthropic/v1",
+        )
+        assert proxy_kwargs["_reasoning_config"] == {"enabled": True, "effort": "medium"}
+
+        openai_wire_kwargs = _build_call_kwargs(
+            "custom",
+            "gpt-compatible",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url="https://example.test/v1",
+        )
+        assert "_reasoning_config" not in openai_wire_kwargs
+
+
 class TestCodexAdapterReasoningTranslation:
     """Verify _CodexCompletionsAdapter translates extra_body.reasoning
     into the Responses API's top-level reasoning + include fields, matching

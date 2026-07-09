@@ -102,8 +102,7 @@ def get_hermes_home() -> Path:
         except Exception:
             pass  # Profile dir missing — fall through to default.
 
-    _cached_home = fallback_home
-    return _cached_home
+    return fallback_home
 
 
 def get_default_hermes_root() -> Path:

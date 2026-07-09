@@ -46,8 +46,20 @@ class TestModuleSurface:
             "vision_analyze",
             "image_generate",
             "skill_view",
+            "codex_exec",
         ):
             assert required in EXPOSED_TOOLS, f"missing {required!r}"
+
+    def test_codex_exec_publishes_real_mcp_schema(self):
+        import agent.transports.hermes_tools_mcp_server as m
+
+        server = m._build_server()
+        tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
+
+        schema = tools["codex_exec"].parameters
+        assert "kwargs" not in schema.get("properties", {})
+        assert {"task", "cwd", "sandbox"} <= set(schema.get("properties", {}))
+        assert schema.get("required") == ["task"]
 
     def test_agent_loop_tools_not_exposed(self):
         """delegate_task / memory / session_search / todo require the

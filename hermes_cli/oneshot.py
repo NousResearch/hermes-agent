@@ -49,10 +49,24 @@ def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
     return [item for item in normalized if item] or None
 
 
+def _discover_registry_toolsets() -> None:
+    """Import self-registering built-in tools so dynamic toolsets validate."""
+    try:
+        from tools.registry import discover_builtin_tools
+
+        discover_builtin_tools()
+    except Exception:
+        # Explicit --toolsets validation should still handle static toolsets,
+        # plugin discovery, and MCP names even if optional tool imports fail.
+        pass
+
+
 def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | None, str | None]:
     normalized = _normalize_toolsets(toolsets)
     if normalized is None:
         return None, None
+
+    _discover_registry_toolsets()
 
     try:
         from toolsets import validate_toolset

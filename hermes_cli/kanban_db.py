@@ -6792,9 +6792,11 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         human review rather than immediately re-spawning.
 
     ``"active_pr"``
-        A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        A GitHub PR URL appears in the latest relevant task activity (within
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds). A prior worker already opened a
+        PR; re-spawning risks a duplicate PR on the same task. Later operator
+        feedback or an explicit unblock supersedes the handoff and allows the
+        review/fix rerun.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -6860,14 +6862,64 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     ).fetchone():
         return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # 4. GitHub PR URL in recent task activity — prior worker already opened
+    #    a PR, so an immediate respawn would duplicate the review handoff.
+    #    Later human/operator activity (review feedback, or an explicit unblock)
+    #    supersedes that handoff and means the task is intentionally ready for a
+    #    follow-up run.  Use the most recent PR URL comment as the watermark.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+    latest_pr_comment = None
+    superseding_pr_terms = (
+        "review feedback",
+        "feedback on",
+        "left review",
+        "merged pr",
+        "pr merged",
+        "closed pr",
+        "pr closed",
+        "unblock",
+        "now passes",
+    )
+    for comment in conn.execute(
+        "SELECT id, author, body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? "
+        "ORDER BY created_at DESC, id DESC",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+        body = comment["body"] or ""
+        if not _RESPAWN_GUARD_PR_URL_RE.search(body):
+            continue
+        if any(term in body.lower() for term in superseding_pr_terms):
+            continue
+        latest_pr_comment = comment
+        break
+    if latest_pr_comment is not None:
+        pr_ts = int(latest_pr_comment["created_at"])
+        pr_id = int(latest_pr_comment["id"])
+        pr_author = latest_pr_comment["author"]
+
+        later_operator_comment = conn.execute(
+            "SELECT id FROM task_comments "
+            "WHERE task_id = ? "
+            "  AND (created_at > ? OR (created_at = ? AND id > ?)) "
+            "  AND author != ? "
+            "ORDER BY created_at ASC, id ASC LIMIT 1",
+            (task_id, pr_ts, pr_ts, pr_id, pr_author),
+        ).fetchone()
+        if later_operator_comment is not None:
+            return None
+
+        later_unblock = conn.execute(
+            "SELECT id FROM task_events "
+            "WHERE task_id = ? AND kind IN ('unblocked', 'promoted_manual') "
+            "  AND created_at > ? "
+            "ORDER BY created_at ASC, id ASC LIMIT 1",
+            (task_id, pr_ts),
+        ).fetchone()
+        if later_unblock is not None:
+            return None
+
+        return "active_pr"
 
     return None
 

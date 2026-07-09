@@ -8,6 +8,27 @@ from pathlib import Path
 from unittest.mock import patch
 
 
+def _stat_with_fake_owner(fake_target_path, fake_uid, fake_gid, real_stat):
+    """Build a side_effect for os.stat that returns a stat-like object with
+    the given uid/gid when the path matches ``fake_target_path``, and
+    delegates to the real os.stat for everything else.
+
+    Used to simulate "HERMES_DIR is owned by a different user" in tests
+    of _coerce_owner without needing CAP_CHOWN. The code under test only
+    reads ``.st_uid`` and ``.st_gid`` off the result, so a SimpleNamespace
+    is enough.
+    """
+    from types import SimpleNamespace
+    target = os.fspath(fake_target_path)
+
+    def _wrapped(path, *args, **kwargs):
+        if os.fspath(path) == target:
+            return SimpleNamespace(st_uid=fake_uid, st_gid=fake_gid)
+        return real_stat(path, *args, **kwargs)
+
+    return _wrapped
+
+
 class TestCronFilePermissions(unittest.TestCase):
     """Verify cron files get secure permissions."""
 
@@ -55,6 +76,62 @@ class TestCronFilePermissions(unittest.TestCase):
 
             file_mode = stat.S_IMODE(os.stat(jobs_file).st_mode)
             self.assertEqual(file_mode, 0o600)
+
+    @unittest.skipUnless(hasattr(os, "getuid"), "POSIX only")
+    def test_coerce_owner_called_with_hermes_dir_uid_gid(self):
+        """Verify _coerce_owner passes the HERMES_DIR owner's uid/gid to
+        os.chown on POSIX systems. Uses a recorder so we don't require
+        CAP_CHOWN in the test process."""
+        jobs_file = Path(self.tmpdir) / "sentinel.json"
+        jobs_file.touch()
+        fake_uid = 12345
+        fake_gid = 23456
+        recorded = []
+
+        with patch("cron.jobs.HERMES_DIR", self.tmpdir), \
+             patch("os.stat", side_effect=_stat_with_fake_owner(self.tmpdir, fake_uid, fake_gid, os.stat)), \
+             patch("os.chown", side_effect=lambda p, u, g: recorded.append((os.fspath(p), u, g))):
+            from cron.jobs import _coerce_owner
+            _coerce_owner(jobs_file)
+
+        self.assertEqual(len(recorded), 1, "os.chown should be called exactly once")
+        self.assertEqual(recorded[0][1], fake_uid)
+        self.assertEqual(recorded[0][2], fake_gid)
+
+    @unittest.skipUnless(hasattr(os, "getuid"), "POSIX only")
+    def test_coerce_owner_no_op_when_hermes_dir_missing(self):
+        """If HERMES_DIR does not exist (extremely unusual), _coerce_owner
+        must not raise. Best-effort semantics, never breaks the write."""
+        missing = Path(self.tmpdir) / "does_not_exist"
+        target = Path(self.tmpdir) / "sentinel.json"
+        target.touch()
+        chown_called = []
+
+        with patch("cron.jobs.HERMES_DIR", missing), \
+             patch("os.chown", side_effect=lambda *a, **k: chown_called.append(a)):
+            from cron.jobs import _coerce_owner
+            _coerce_owner(target)  # should not raise
+
+        self.assertEqual(chown_called, [], "os.chown must not be called when HERMES_DIR is missing")
+
+    @unittest.skipUnless(hasattr(os, "getuid"), "POSIX only")
+    def test_coerce_owner_swallows_permission_error(self):
+        """If os.chown raises PermissionError (we lack CAP_CHOWN), _coerce_owner
+        must not propagate the exception. The write still succeeded; we just
+        couldn't fix the ownership. Better to log later than to break the save."""
+        jobs_file = Path(self.tmpdir) / "sentinel.json"
+        jobs_file.touch()
+        fake_uid = 12345
+        fake_gid = 23456
+
+        def deny_chown(*args, **kwargs):
+            raise PermissionError("test: missing CAP_CHOWN")
+
+        with patch("cron.jobs.HERMES_DIR", self.tmpdir), \
+             patch("os.stat", side_effect=_stat_with_fake_owner(self.tmpdir, fake_uid, fake_gid, os.stat)), \
+             patch("os.chown", side_effect=deny_chown):
+            from cron.jobs import _coerce_owner
+            _coerce_owner(jobs_file)  # must not raise
 
     def test_save_job_output_sets_0600(self):
         output_dir = Path(self.tmpdir) / "output"

@@ -787,12 +787,40 @@ def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
             os.fsync(f.fileno())
         atomic_replace(tmp_path, JOBS_FILE)
         _secure_file(JOBS_FILE)
+        _coerce_owner(JOBS_FILE)
     except BaseException:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
         raise
+
+
+def _coerce_owner(path: Path):
+    """chown ``path`` to the gateway user's expected uid/gid.
+
+    Background: when a process running as a different user (e.g. a one-off
+    ``docker exec`` from a host root shell, or an interactive agent session
+    running as root) writes jobs.json, the file inherits that user's
+    ownership. The gateway then can no longer read it, falls back to the
+    built-in defaults, and silently loses every cron override the user has
+    configured (issue #17144).
+
+    The gateway user's uid/gid is the owner of HERMES_DIR — set at install
+    time and stable. We stat that and chown the new file to match. First-run
+    safety: if HERMES_DIR does not exist (extremely unusual) or stat fails
+    on a non-POSIX platform, we no-op rather than break the write.
+    """
+    try:
+        target_stat = os.stat(HERMES_DIR)
+    except (OSError, NotImplementedError):
+        return
+    try:
+        os.chown(path, target_stat.st_uid, target_stat.st_gid)
+    except (OSError, NotImplementedError, PermissionError):
+        # Either not POSIX, or we lack CAP_CHOWN. The chown is best-effort;
+        # the file is still written and chmod'd correctly.
+        pass
 
 
 def save_jobs(jobs: List[Dict[str, Any]]):

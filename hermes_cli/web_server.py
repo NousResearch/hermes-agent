@@ -389,6 +389,16 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
     "localhost", "127.0.0.1", "::1",
 })
 
+# Hosts trusted by Cloudflare Tunnel forwarding — when the request comes
+# through the tunnel, the tunnel rewrites (or doesn't rewrite) the Host
+# header to a value the gateway didn't bind for. Allow these so the
+# tunnel + Cloudflare Access + Hermes dashboard flow works end-to-end.
+# See memory note 2026-07-08: "for resources on theporadas.com, 6631182039
+# uses Cloudflare Access One-time PIN for authentication."
+_TUNNEL_TRUSTED_HOSTS: frozenset = frozenset({
+    "hermes.theporadas.com",
+})
+
 
 def should_require_auth(host: str, allow_public: bool = False) -> bool:
     """Return True iff the dashboard auth gate must be active.
@@ -450,7 +460,16 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     # Loopback bind: accept the loopback names
     bound_lc = bound_host.lower()
     if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+        if host_only in _LOOPBACK_HOST_VALUES:
+            return True
+        # Tunnel-trusted hosts (e.g. hermes.theporadas.com when behind a
+        # Cloudflare Tunnel) are also accepted when the gateway is bound
+        # to loopback. The cloudflared tunnel does not always rewrite
+        # the Host header to a loopback value, and we want the public
+        # hostname to work through the tunnel.
+        if host_only in _TUNNEL_TRUSTED_HOSTS:
+            return True
+        return False
 
     # Explicit non-loopback bind: require exact host match
     return host_only == bound_lc

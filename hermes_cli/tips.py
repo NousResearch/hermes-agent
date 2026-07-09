@@ -41,6 +41,8 @@ TIPS = [
     "/profile shows which profile is active and its home directory.",
     "/config shows your current configuration at a glance.",
     "/stop kills all running background processes spawned by the agent.",
+    "/moa <prompt> runs a Mixture-of-Agents turn — 2 reference models (gpt-5.5 + deepseek-v4-pro) feed an aggregator (claude-opus-4.8) for harder multi-perspective reasoning. Higher cost, much better answers.",
+    "/moa --preset <name> uses a different MoA preset (see `hermes moa list`).",
 
     # --- @ Context References ---
     "@file:path/to/file.py injects file contents directly into your message.",

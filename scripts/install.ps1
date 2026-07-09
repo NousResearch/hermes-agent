@@ -1612,7 +1612,7 @@ function Install-Venv {
     # each stage runs in its own powershell.exe, so the fallback the `python`
     # stage picked (e.g. 3.12 when 3.11 is absent) did NOT propagate into this
     # fresh process -- $PythonVersion is back at its "3.11" default.  Trusting it
-    # here made `uv venv venv --python 3.11` fail with exit 2 on machines without
+    # here made `uv venv .venv --python 3.11` fail with exit 2 on machines without
     # 3.11 even though the `python` stage reported success (issue #50769).
     $resolved = Resolve-AvailablePythonVersion
     if ($resolved -and $resolved -ne $PythonVersion) {
@@ -1629,7 +1629,7 @@ function Install-Venv {
     # them, so a task the user deliberately disabled is never re-armed.
     $gatewayTasksDisabled = @()
     try {
-    if (Test-Path "venv") {
+    if (Test-Path ".venv") {
         Write-Info "Virtual environment already exists, recreating..."
         # On Windows, native Python extensions (e.g. _bcrypt.pyd, tornado's
         # speedups.pyd) are loaded as DLLs by any running hermes process.
@@ -1689,7 +1689,7 @@ function Install-Venv {
             # the window between one kill pass and the delete. Each pass re-
             # enumerates; three consecutive clean passes (or the attempt cap)
             # ends the loop.
-            $venvPrefix = [System.IO.Path]::GetFullPath((Join-Path $InstallDir "venv")).TrimEnd('\') + '\'
+            $venvPrefix = [System.IO.Path]::GetFullPath((Join-Path $InstallDir ".venv")).TrimEnd('\') + '\'
             $cleanPasses = 0
             for ($sweep = 0; $sweep -lt 10 -and $cleanPasses -lt 3; $sweep++) {
                 $found = 0
@@ -1716,10 +1716,10 @@ function Install-Venv {
         # one immediately even if some straggler still holds a .pyd from the
         # old tree; the renamed dir is deleted best-effort (now, and by the
         # cleanup pass below on the NEXT install if a handle outlives this one).
-        $staleName = "venv.stale.{0}" -f (Get-Date -Format "yyyyMMddHHmmss")
+        $staleName = "..venv.stale.{0}" -f (Get-Date -Format "yyyyMMddHHmmss")
         $renamed = $false
         try {
-            Rename-Item -Path "venv" -NewName $staleName -ErrorAction Stop
+            Rename-Item -Path ".venv" -NewName $staleName -ErrorAction Stop
             $renamed = $true
         } catch {
             Write-Warn "Could not rename venv aside ($($_.Exception.Message)); falling back to in-place delete"
@@ -1730,20 +1730,20 @@ function Install-Venv {
                 Write-Warn "Old venv parked at $staleName (a process still holds files in it); it will be cleaned up on the next install"
             }
         } else {
-            Remove-Item -Recurse -Force "venv" -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force ".venv" -ErrorAction SilentlyContinue
             # A killed process can take a moment to release its file handles, so a
             # first Remove-Item may still hit a locked .pyd. Retry once after a short
             # pause before giving up and letting the stage fail loudly.
-            if (Test-Path "venv") {
+            if (Test-Path ".venv") {
                 Start-Sleep -Seconds 2
-                Remove-Item -Recurse -Force "venv"
+                Remove-Item -Recurse -Force ".venv"
             }
         }
     }
 
     # Clean up parked venvs from previous installs whose handles have since
     # been released. Best-effort — a still-held tree just stays for next time.
-    Get-ChildItem -Directory -Filter "venv.stale.*" -ErrorAction SilentlyContinue | ForEach-Object {
+    Get-ChildItem -Directory -Filter ".venv.stale.*" -ErrorAction SilentlyContinue | ForEach-Object {
         Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue
     }
     
@@ -1751,7 +1751,7 @@ function Install-Venv {
     # normal progress such as "Using CPython ..." on stderr; under Windows
     # PowerShell 5.1 with EAP=Stop that stderr is a NativeCommandError unless
     # we temporarily relax EAP and trust $LASTEXITCODE for real failures.
-    Invoke-NativeWithRelaxedErrorAction { & $UvCmd venv venv --python $PythonVersion }
+    Invoke-NativeWithRelaxedErrorAction { & $UvCmd venv .venv --python $PythonVersion }
     # Relaxing EAP above means a *genuine* uv-venv failure (exit != 0) no longer
     # aborts on its own. Capture $LASTEXITCODE immediately and fail fast, so the
     # `venv` stage can't falsely report success (and Invoke-Stage can't emit
@@ -1768,7 +1768,7 @@ function Install-Venv {
     # -- building Rust transitives that have no wheel for that version from
     # source via maturin, which fails. Pinning UV_PYTHON to the interpreter we
     # just created forces every subsequent uv command onto it.
-    $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+    $venvPythonExe = Join-Path $InstallDir ".venv\Scripts\python.exe"
     if (Test-Path $venvPythonExe) {
         $env:UV_PYTHON = $venvPythonExe
     }
@@ -1799,7 +1799,7 @@ function Install-Dependencies {
     
     if (-not $NoVenv) {
         # Tell uv to install into our venv (no activation needed)
-        $env:VIRTUAL_ENV = "$InstallDir\venv"
+        $env:VIRTUAL_ENV = "$InstallDir\.venv"
     }
 
     # Re-pin UV_PYTHON to the venv interpreter. Install-Venv already does this,
@@ -1810,7 +1810,7 @@ function Install-Dependencies {
     # tiers below recreate the venv at 3.14 and fail the maturin source build
     # (no cp314 wheels yet).
     if (-not $NoVenv) {
-        $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+        $venvPythonExe = Join-Path $InstallDir ".venv\Scripts\python.exe"
         if (Test-Path $venvPythonExe) {
             $env:UV_PYTHON = $venvPythonExe
         }
@@ -1842,7 +1842,7 @@ function Install-Dependencies {
         # empty and producing the broken state where `hermes.exe` exists
         # in the wrong directory and imports fail with ModuleNotFoundError.
         # (Mirrors the same flag in scripts/install.sh::install_deps.)
-        $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
+        $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\.venv"
         Invoke-NativeWithRelaxedErrorAction { & $UvCmd sync --extra all --locked }
         if ($LASTEXITCODE -eq 0) {
             Write-Success "Main package installed (hash-verified via uv.lock)"
@@ -1880,7 +1880,7 @@ function Install-Dependencies {
 
     # Parse [project.optional-dependencies].all from pyproject.toml.
     # tomllib is stdlib on Python 3.11+ which the bootstrap guarantees.
-    $pythonExeForParse = if (-not $NoVenv) { "$InstallDir\venv\Scripts\python.exe" } else { (& $UvCmd python find $PythonVersion) }
+    $pythonExeForParse = if (-not $NoVenv) { "$InstallDir\.venv\Scripts\python.exe" } else { (& $UvCmd python find $PythonVersion) }
     $allExtras = @()
     if (Test-Path $pythonExeForParse) {
         $parsed = & $pythonExeForParse -c @"
@@ -1940,9 +1940,9 @@ except Exception:
     # We probe via the venv's own python so a misdirected sync is caught
     # here, not 30 seconds later when the user runs `hermes`.
     if (-not $NoVenv) {
-        $venvPython = "$InstallDir\venv\Scripts\python.exe"
+        $venvPython = "$InstallDir\.venv\Scripts\python.exe"
         if (-not (Test-Path $venvPython)) {
-            throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, manually: cd '$InstallDir'; Remove-Item -Recurse -Force venv,.venv; uv venv venv --python $PythonVersion; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
+            throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, manually: cd '$InstallDir'; Remove-Item -Recurse -Force .venv,.venv; uv venv .venv --python $PythonVersion; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\.venv'; uv sync --extra all --locked"
         }
         # Relax EAP=Stop while running the import probe.  Python writes
         # deprecation warnings and import-system info to stderr; under
@@ -1958,11 +1958,11 @@ except Exception:
         if ($importExitCode -ne 0) {
             $sibling = "$InstallDir\.venv"
             $hint = if (Test-Path $sibling) {
-                "Detected sibling .venv\ at $sibling -- uv synced there instead of venv\. Recover with: cd '$InstallDir'; Remove-Item -Recurse -Force venv; Move-Item .venv venv"
+                "Detected sibling .venv\. Recover with: cd '$InstallDir'; Remove-Item -Recurse -Force .venv"
             } else {
-                "Recover with: cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
+                "Recover with: cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\.venv'; uv sync --extra all --locked"
             }
-            throw "Baseline imports failed in $InstallDir\venv (dotenv/openai/rich/prompt_toolkit). The install completed but dependencies are not in the venv. $hint"
+            throw "Baseline imports failed in $InstallDir\.venv (dotenv/openai/rich/prompt_toolkit). The install completed but dependencies are not in the venv. $hint"
         }
         Write-Success "Baseline imports verified in venv"
     }
@@ -1972,7 +1972,7 @@ except Exception:
         # materialise the .exe (file lock during self-update, distlib edge case).
         # Catch it here so a fresh install/update does not finish with a broken
         # `hermes` command while hermes-agent.exe / hermes-acp.exe exist
-        $scriptsDir = Join-Path $InstallDir "venv\Scripts"
+        $scriptsDir = Join-Path $InstallDir ".venv\Scripts"
         $pythonExe = Join-Path $scriptsDir "python.exe"
         if ((Test-Path $scriptsDir) -and (Test-Path $pythonExe)) {
             $scriptNames = & $pythonExe -c @"
@@ -1991,7 +1991,7 @@ print(','.join(scripts))
                 if ($missing.Count -gt 0) {
                     Write-Warn "Console entry point(s) missing: $($missing -join ', ')"
                     Write-Info "Reinstalling entry points..."
-                    $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
+                    $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\.venv"
                     Invoke-NativeWithRelaxedErrorAction { & $UvCmd pip install --reinstall -e . }
                     $stillMissing = @()
                     foreach ($name in $expected) {
@@ -2013,7 +2013,7 @@ print(','.join(scripts))
     # users hit and lazy-import errors from `hermes dashboard` are confusing.
     # If tier 1 failed (the common case), [web] was still picked up by tiers
     # 2-3; only tier 4 leaves you without it.
-    $pythonExe = if (-not $NoVenv) { "$InstallDir\venv\Scripts\python.exe" } else { (& $UvCmd python find $PythonVersion) }
+    $pythonExe = if (-not $NoVenv) { "$InstallDir\.venv\Scripts\python.exe" } else { (& $UvCmd python find $PythonVersion) }
     if (Test-Path $pythonExe) {
         $webOk = $false
         $webServerSyntaxOk = $false
@@ -2059,7 +2059,7 @@ function Set-PathVariable {
     if ($NoVenv) {
         $hermesBin = "$InstallDir"
     } else {
-        $hermesBin = "$InstallDir\venv\Scripts"
+        $hermesBin = "$InstallDir\.venv\Scripts"
     }
     
     # Add the venv Scripts dir to user PATH so hermes is globally available
@@ -2238,7 +2238,7 @@ You are Hermes Agent, an intelligent AI assistant created by Nous Research. You 
     
     # Seed bundled skills into $HermesHome\skills (manifest-based, one-time per skill)
     Write-Info "Syncing bundled skills to $HermesHome\skills ..."
-    $pythonExe = "$InstallDir\venv\Scripts\python.exe"
+    $pythonExe = "$InstallDir\.venv\Scripts\python.exe"
     if (Test-Path $pythonExe) {
         try {
             & $pythonExe "$InstallDir\tools\skills_sync.py" 2>$null
@@ -2926,7 +2926,7 @@ function Install-PlatformSdks {
         return
     }
 
-    $pythonExe = "$InstallDir\venv\Scripts\python.exe"
+    $pythonExe = "$InstallDir\.venv\Scripts\python.exe"
     if (-not (Test-Path $pythonExe)) {
         Write-Warn "Skipping platform-SDK verification: $pythonExe not found"
         return
@@ -3036,7 +3036,7 @@ function Invoke-SetupWizard {
 
     # Run hermes setup using the venv Python directly (no activation needed)
     if (-not $NoVenv) {
-        & ".\venv\Scripts\python.exe" -m hermes_cli.main setup
+        & ".\.venv\Scripts\python.exe" -m hermes_cli.main setup
     } else {
         python -m hermes_cli.main setup
     }
@@ -3057,7 +3057,7 @@ function Start-GatewayIfConfigured {
 
     if (-not $hasMessaging) { return }
 
-    $hermesCmd = "$InstallDir\venv\Scripts\hermes.exe"
+    $hermesCmd = "$InstallDir\.venv\Scripts\hermes.exe"
     if (-not (Test-Path $hermesCmd)) {
         $hermesCmd = "hermes"
     }

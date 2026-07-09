@@ -4424,7 +4424,7 @@ def _clear_bytecode_cache(root: Path) -> int:
         dirnames[:] = [
             d
             for d in dirnames
-            if d not in {"venv", ".venv", "node_modules", ".git", ".worktrees"}
+            if d not in {".venv", "node_modules", ".git", ".worktrees"}
         ]
         if os.path.basename(dirpath) == "__pycache__":
             try:
@@ -4735,7 +4735,7 @@ def _nixos_build_env() -> dict[str, str] | None:
         return None
 
     # Tier 1: fast path — hermes venv python3, no nix-shell overhead
-    for venv_name in ("venv", ".venv"):
+    for venv_name in (".venv",):
         venv_python = PROJECT_ROOT / venv_name / "bin" / "python3"
         if venv_python.exists():
             return {**os.environ, "PYTHON": str(venv_python)}
@@ -6271,7 +6271,7 @@ def _update_via_zip(args):
                     break
 
         # Copy updated files over existing installation, preserving venv/node_modules/.git
-        preserve = {"venv", "node_modules", ".git", ".env"}
+        preserve = {".venv", "node_modules", ".git", ".env"}
         update_count = 0
         for item in os.listdir(extracted):
             if item in preserve:
@@ -6317,7 +6317,7 @@ def _update_via_zip(args):
     if not uv_bin:
         uv_bin = _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / ".venv")}
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
@@ -7095,7 +7095,7 @@ def _recover_from_interrupted_install() -> None:
 
             uv_bin = ensure_uv()
             if uv_bin:
-                uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+                uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / ".venv")}
                 if _is_termux_env(uv_env):
                     uv_env.pop("PYTHONPATH", None)
                     uv_env.pop("PYTHONHOME", None)
@@ -7180,7 +7180,7 @@ def _is_windows() -> bool:
 
 def _venv_scripts_dir() -> Path | None:
     """Return the venv Scripts directory if we're running inside the project venv."""
-    venv_dir = PROJECT_ROOT / "venv"
+    venv_dir = PROJECT_ROOT / ".venv"
     if not venv_dir.is_dir():
         return None
     scripts = venv_dir / ("Scripts" if _is_windows() else "bin")
@@ -8797,7 +8797,7 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     Returns ``(healthy, detail)``. Never raises; unknown states report
     healthy so a probe failure can't force needless reinstalls.
     """
-    venv_dir = PROJECT_ROOT / "venv"
+    venv_dir = PROJECT_ROOT / ".venv"
     python_name = "python.exe" if _is_windows() else "python"
     bin_dir = "Scripts" if _is_windows() else "bin"
     venv_python = venv_dir / bin_dir / python_name
@@ -8878,7 +8878,7 @@ def _detect_venv_python_processes(
     except Exception:
         return []
 
-    venv_dir = PROJECT_ROOT / "venv"
+    venv_dir = PROJECT_ROOT / ".venv"
     try:
         venv_prefix = str(venv_dir.resolve()).lower().rstrip(os.sep) + os.sep
     except OSError:
@@ -9690,7 +9690,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         check=False,
                     )
                 if repair_uv:
-                    repair_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+                    repair_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / ".venv")}
                     _install_python_dependencies_with_optional_fallback(
                         [repair_uv, "pip"], env=repair_env, group="all"
                     )
@@ -9874,7 +9874,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         install_group = "all"
 
         if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / ".venv")}
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)

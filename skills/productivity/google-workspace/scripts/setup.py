@@ -141,7 +141,7 @@ def install_deps():
         "On environments without pip (e.g. Nix, or the Hermes Docker image's "
         "uv-managed venv), install the optional extra instead:"
     )
-    print("  pip install 'hermes-agent[google]'")
+    print("  pip install 'ht-ai-agent[google]'")
     print(f"Or manually: {sys.executable} -m pip install {' '.join(REQUIRED_PACKAGES)}")
     return False
 

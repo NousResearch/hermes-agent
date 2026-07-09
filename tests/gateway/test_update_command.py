@@ -59,7 +59,7 @@ class TestHandleUpdateCommand:
             result = await runner._handle_update_command(event)
 
         assert "managed by Homebrew" in result
-        assert "brew upgrade hermes-agent" in result
+        assert "brew upgrade ht-ai-agent" in result
         mock_popen.assert_not_called()  # must return before reaching Popen
 
     @pytest.mark.asyncio

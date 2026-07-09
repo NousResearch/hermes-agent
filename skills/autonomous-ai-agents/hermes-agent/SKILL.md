@@ -49,7 +49,7 @@ Good verification targets:
 # See https://github.com/uaixo/awesome-hermes-agent for install instructions
 
 # Or via PyPI (ships the TUI bundle + shell launcher)
-pip install hermes-agent       # or: uv pip install hermes-agent
+pip install ht-ai-agent       # or: uv pip install ht-ai-agent
 
 # Interactive chat (default surface; set display.interface: tui to launch the Ink TUI instead)
 ht

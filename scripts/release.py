@@ -2056,7 +2056,11 @@ def _update_acp_registry_versions(semver: str) -> None:
         manifest["version"] = semver
         uvx = manifest.get("distribution", {}).get("uvx", {})
         if "package" in uvx:
-            uvx["package"] = f"hermes-agent[acp]=={semver}"
+            # Preserve the distribution name + extras already declared in the
+            # manifest (e.g. ``ht-ai-agent[acp]``); only bump the version pin so
+            # this stays correct across a rebrand without hardcoding the name.
+            base = uvx["package"].split("==", 1)[0]
+            uvx["package"] = f"{base}=={semver}"
         # Preserve trailing newline + 2-space indent the file already uses.
         ACP_REGISTRY_MANIFEST.write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"

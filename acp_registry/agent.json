@@ -3,14 +3,18 @@
   "name": "HT AI Agent",
   "version": "0.18.2",
   "description": "HT AI Agent: self-improving open-source AI agent with ACP editor integration, persistent memory, skills, and rich tool support.",
-  "repository": "https://github.com/NousResearch/hermes-agent",
+  "repository": "https://github.com/uaixo/awesome-hermes-agent",
   "website": "https://github.com/uaixo/awesome-hermes-agent",
-  "authors": ["Nous Research"],
+  "authors": [
+    "Nous Research"
+  ],
   "license": "MIT",
   "distribution": {
     "uvx": {
-      "package": "hermes-agent[acp]==0.18.2",
-      "args": ["hermes-acp"]
+      "package": "ht-ai-agent[acp]==0.18.2",
+      "args": [
+        "hermes-acp"
+      ]
     }
   }
 }

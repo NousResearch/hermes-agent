@@ -268,7 +268,7 @@ class TestPackaging:
 
     def test_bedrock_is_not_eager_installed_by_all_extra(self):
         extras = self._optional_dependencies()
-        assert "hermes-agent[bedrock]" not in extras["all"]
+        assert "ht-ai-agent[bedrock]" not in extras["all"]
 
 
 # ---------------------------------------------------------------------------

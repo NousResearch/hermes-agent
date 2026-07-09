@@ -349,7 +349,7 @@ def get_managed_update_command() -> Optional[str]:
     """Return the preferred upgrade command for a managed install."""
     managed_system = get_managed_system()
     if managed_system == "Homebrew":
-        return "brew upgrade hermes-agent"
+        return "brew upgrade ht-ai-agent"
     if managed_system == "NixOS":
         return _NIX_UPDATE_MSG
     return None
@@ -522,7 +522,7 @@ def recommended_update_command_for_method(method: str) -> str:
     if method == "nixos":
         return _NIX_UPDATE_MSG
     if method == "homebrew":
-        return "brew upgrade hermes-agent"
+        return "brew upgrade ht-ai-agent"
     if method == "docker":
         return "docker pull nousresearch/hermes-agent:latest"
     if method == "pip":
@@ -660,7 +660,7 @@ def format_managed_message(action: str = "modify this Hermes installation") -> s
             f"Cannot {action}: this Hermes installation is managed by Homebrew "
             f"(HERMES_MANAGED={env_hint}).\n"
             "Use:\n"
-            "  brew upgrade hermes-agent"
+            "  brew upgrade ht-ai-agent"
         )
 
     return (

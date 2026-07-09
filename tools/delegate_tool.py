@@ -3086,8 +3086,9 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     _NATIVE_SDK_PROVIDERS = {"bedrock", "vertex", "google", "google-genai"}
     _provider_lower = (configured_provider or "").strip().lower()
     _is_native_sdk_provider = _provider_lower in _NATIVE_SDK_PROVIDERS
+    _requires_runtime_provider_auth = _provider_lower in {"nous", "nous-research"}
 
-    if configured_base_url and not _is_native_sdk_provider:
+    if configured_base_url and not _is_native_sdk_provider and not _requires_runtime_provider_auth:
         # When delegation.api_key is not set, return None so _build_child_agent
         # falls back to the parent agent's API key via the credential inheritance
         # path (effective_api_key = override_api_key or parent_api_key). This

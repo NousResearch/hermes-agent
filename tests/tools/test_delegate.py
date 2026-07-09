@@ -1118,6 +1118,40 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["api_key"], "local-key")
         self.assertEqual(creds["api_mode"], "chat_completions")
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_nous_provider_wins_over_base_url_for_runtime_auth(self, mock_resolve):
+        """provider=nous must use runtime auth even when base_url is configured.
+
+        Reverse-engineer had delegation.provider=nous plus the Nous inference
+        base_url and a stale delegation.api_key. Treating that as a direct
+        custom endpoint bypassed the valid Nous credential resolver and made
+        subagents 401 while the default profile could call hy3 normally.
+        """
+        parent = _make_mock_parent(depth=0)
+        mock_resolve.return_value = {
+            "model": "tencent/hy3:free",
+            "provider": "nous",
+            "base_url": "https://inference-api.nousresearch.com/v1",
+            "api_key": "fresh-runtime-key",
+            "api_mode": "chat_completions",
+        }
+        cfg = {
+            "model": "tencent/hy3:free",
+            "provider": "nous",
+            "base_url": "https://inference-api.nousresearch.com/v1",
+            "api_key": "stale-explicit-key",
+        }
+
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        mock_resolve.assert_called_once_with(
+            requested="nous", target_model="tencent/hy3:free"
+        )
+        self.assertEqual(creds["provider"], "nous")
+        self.assertEqual(creds["base_url"], "https://inference-api.nousresearch.com/v1")
+        self.assertEqual(creds["api_key"], "fresh-runtime-key")
+        self.assertEqual(creds["api_mode"], "chat_completions")
+
     def test_direct_endpoint_auto_detects_anthropic_messages_suffix(self):
         # Issue #10213: Azure AI Foundry exposes Anthropic-compatible models at
         # a /anthropic URL suffix. Subagents must pick anthropic_messages

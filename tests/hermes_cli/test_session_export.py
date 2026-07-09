@@ -2,6 +2,10 @@ import json
 import sys
 
 from hermes_cli.session_export import export_record_count, render_sessions_export
+from hermes_cli.session_export_html import (
+    _generate_messages_html,
+    generate_multi_session_html_export,
+)
 
 
 def _sample_session():
@@ -111,6 +115,42 @@ def test_full_markdown_renderer_collapses_tool_output_and_filters_system():
     assert "<details><summary>read_file</summary>" in rendered
     assert "```text\ndef redirect_after_login(): pass\n```" in rendered
     assert "hidden system context" not in rendered
+
+
+def test_html_export_escapes_tool_call_names():
+    payload = '<img src=x onerror="alert(document.domain)">'
+
+    rendered = _generate_messages_html(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": payload, "arguments": "<b>x</b>"},
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert payload not in rendered
+    assert '&lt;img src=x onerror=&quot;alert(document.domain)&quot;&gt;' in rendered
+    assert "&lt;b&gt;x&lt;/b&gt;" in rendered
+
+
+def test_html_export_uses_csp_without_inline_event_handlers():
+    first = _sample_session()
+    second = {**_sample_session(), "id": "sess-456", "title": "Second session"}
+
+    rendered = generate_multi_session_html_export([first, second])
+
+    assert "Content-Security-Policy" in rendered
+    assert "script-src 'nonce-" in rendered
+    assert "<script nonce=" in rendered
+    assert "onclick=" not in rendered
 
 
 def test_export_record_count_switches_unit_for_prompt_only_exports():

@@ -583,6 +583,25 @@ def test_base_gateway_replies_to_triggering_message_for_telegram_dm_topic():
     assert _reply_anchor_for_event(event) == "463"
 
 
+def test_base_gateway_replies_to_triggering_message_for_telegram_forum_topic():
+    """Forum/supergroup topics should quote the triggering message for UX.
+
+    Topic placement still uses ``message_thread_id`` metadata; the reply
+    anchor is independent visual context in multi-person topics.
+    """
+    event = SimpleNamespace(
+        message_id="9001",
+        reply_to_message_id=None,
+        source=SimpleNamespace(
+            platform=Platform.TELEGRAM,
+            chat_type="group",
+            thread_id="42",
+        ),
+    )
+
+    assert _reply_anchor_for_event(event) == "9001"
+
+
 @pytest.mark.asyncio
 async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegram_dm_topic(monkeypatch, tmp_path):
     """GatewayRunner's duplicate thread metadata must match the base helper."""
@@ -644,6 +663,65 @@ async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegra
         "direct_messages_topic_id": "20197",
         "telegram_reply_to_message_id": "463",
     }
+
+
+@pytest.mark.asyncio
+async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegram_forum_topic(monkeypatch, tmp_path):
+    """Forum topic busy-acks should quote the triggering message like normal replies."""
+    from gateway import run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    GatewayRunner = gateway_run.GatewayRunner
+
+    class BusyAdapter:
+        def __init__(self):
+            self._pending_messages = {}
+            self.calls = []
+
+        async def _send_with_retry(self, **kwargs):
+            self.calls.append(kwargs)
+            return SendResult(success=True, message_id="ack-1")
+
+    class BusyAgent:
+        def interrupt(self, _text):
+            return None
+
+        def get_activity_summary(self):
+            return {}
+
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001234567890",
+        chat_type="group",
+        thread_id="42",
+        user_id="user-1",
+        user_id_alt=None,
+        chat_id_alt=None,
+    )
+    event = MessageEvent(
+        text="busy follow-up",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="9001",
+    )
+    session_key = build_session_key(source)
+    adapter = BusyAdapter()
+
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._running_agents = {session_key: BusyAgent()}
+    runner._running_agents_ts = {}
+    runner._pending_messages = {}
+    runner._busy_ack_ts = {}
+    runner._draining = False
+    runner._busy_input_mode = "interrupt"
+    runner._is_user_authorized = lambda _source: True
+
+    assert await runner._handle_active_session_busy_message(event, session_key) is True
+
+    assert adapter.calls
+    assert adapter.calls[0]["reply_to"] == "9001"
+    assert adapter.calls[0]["metadata"] == {"thread_id": "42"}
 
 
 @pytest.mark.asyncio

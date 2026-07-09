@@ -5787,6 +5787,81 @@ def cmd_gui(args: argparse.Namespace):
     sys.exit(launch_result.returncode)
 
 
+_DASHBOARD_SERVER_SUBCOMMANDS = frozenset({"dashboard", "serve"})
+
+# Pre-subcommand flags that consume a separate value token ("--profile ops",
+# "-p ops"). Mirrors the value-flag handling in ``_apply_profile_override()``;
+# keep the two in sync. A value-taking flag missing from this set makes the
+# scan below read the flag's value as the subcommand and not match — a false
+# negative (the process survives, exactly as before this matcher existed),
+# never a false kill. Optional-value flags (``-c``/``--continue``) are
+# deliberately absent: treating them as bare flags is correct for every real
+# server launch line.
+_CMDLINE_VALUE_FLAGS = frozenset({
+    "-p", "--profile",
+    "-z", "--oneshot",
+    "-m", "--model",
+    "--provider",
+    "-t", "--toolsets",
+    "-r", "--resume",
+    "-s", "--skills",
+    "--usage-file",
+})
+
+
+def _cmdline_matches_dashboard_server(command: str) -> bool:
+    """True if *command* launches the ``hermes dashboard``/``serve`` server.
+
+    Used by ``_find_stale_dashboard_pids`` on both the POSIX (ps) and
+    Windows (wmic) scan branches. The previous detection matched adjacent
+    substrings ("hermes_cli.main dashboard"), which missed any launch with
+    flags between the program and the subcommand — most importantly the
+    Hermes Desktop backend pool, spawned one-per-profile as
+    ``python -m hermes_cli.main --profile <name> dashboard --no-open``.
+    Those backends survived ``hermes update`` indefinitely, serving stale
+    code against the freshly updated frontend bundle.
+
+    Matching rule: find the Hermes program token (a ``hermes`` /
+    ``hermes.exe`` executable, ``-m hermes_cli.main``, or a
+    ``hermes_cli/main.py`` script path), then take the first positional
+    token after it — skipping flags and the values of known value-taking
+    flags — and require it to be ``dashboard`` or ``serve``.
+    First-positional-only keeps the promise of the old explicit patterns:
+    a cmdline that merely *mentions* dashboard/serve (a chat session about
+    dashboards, a profile literally named "dashboard") never matches,
+    because this result is used to kill.
+    """
+    tokens = command.split()
+    prog_index = None
+    for i, raw in enumerate(tokens):
+        # wmic reports quoted executable paths when they contain spaces.
+        tok = raw.strip('"')
+        base = tok.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if base in ("hermes", "hermes.exe"):
+            prog_index = i
+            break
+        if tok == "hermes_cli.main" and i > 0 and tokens[i - 1] == "-m":
+            prog_index = i
+            break
+        if tok.replace("\\", "/").endswith("hermes_cli/main.py"):
+            prog_index = i
+            break
+    if prog_index is None:
+        return False
+
+    j = prog_index + 1
+    while j < len(tokens):
+        tok = tokens[j]
+        if tok in _CMDLINE_VALUE_FLAGS:
+            j += 2
+            continue
+        if tok.startswith("-"):
+            j += 1
+            continue
+        return tok in _DASHBOARD_SERVER_SUBCOMMANDS
+    return False
+
+
 def _find_stale_dashboard_pids(
     *,
     exclude_pids: set[int] | None = None,
@@ -5814,19 +5889,14 @@ def _find_stale_dashboard_pids(
     backend process; ``_kill_stale_dashboard_processes`` reads it and
     passes it here.  (#37532)
 
+    Detection matches ``hermes dashboard`` and — because the headless
+    backend (``hermes serve``) is the same long-lived server under a
+    different command name — ``hermes serve``, including launches with
+    flags before the subcommand (``--profile <name>``); see
+    ``_cmdline_matches_dashboard_server`` for the exact rule.
+
     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
     """
-    patterns = [
-        "hermes dashboard",
-        "hermes_cli.main dashboard",
-        "hermes_cli/main.py dashboard",
-        # The headless backend (`hermes serve`) is the same long-lived server
-        # under a different command name — the desktop app spawns it. Reap it
-        # on update for the same frontend/backend-mismatch reason.
-        "hermes serve",
-        "hermes_cli.main serve",
-        "hermes_cli/main.py serve",
-    ]
     self_pid = os.getpid()
     dashboard_pids: list[int] = []
 
@@ -5863,7 +5933,7 @@ def _find_stale_dashboard_pids(
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
                     if (
-                        any(p in current_cmd for p in patterns)
+                        _cmdline_matches_dashboard_server(current_cmd)
                         and int(pid_str) != self_pid
                     ):
                         try:
@@ -5871,12 +5941,12 @@ def _find_stale_dashboard_pids(
                         except ValueError:
                             pass
         else:
-            # Linux / macOS: scan the process table via ps and match against
-            # the same explicit patterns list used on Windows.  Using ps
-            # (rather than `pgrep -f "hermes.*dashboard"`) keeps us consistent
-            # with `hermes_cli.gateway._scan_gateway_pids` and avoids the
-            # greedy regex matching unrelated cmdlines that merely contain
-            # both words (e.g. a chat session discussing "dashboard").
+            # Linux / macOS: scan the process table via ps and match with
+            # the same matcher used on Windows.  Using ps (rather than
+            # `pgrep -f "hermes.*dashboard"`) keeps us consistent with
+            # `hermes_cli.gateway._scan_gateway_pids` and avoids a greedy
+            # regex matching unrelated cmdlines that merely contain both
+            # words (e.g. a chat session discussing "dashboard").
             result = subprocess.run(
                 ["ps", "-A", "-o", "pid=,command="],
                 capture_output=True,
@@ -5896,7 +5966,7 @@ def _find_stale_dashboard_pids(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if _cmdline_matches_dashboard_server(command) and pid != self_pid:
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []

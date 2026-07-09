@@ -14,14 +14,14 @@ description: "Реализуйте планы через субагентов `d
 
 | | |
 |---|---|
-| Источник | Встроенный (устанавливается по умолчанию) |
-| Путь | `skills/software-development/subagent-driven-development` |
+| Источник | Опциональный — устанавливается командой `hermes skills install official/software-development/subagent-driven-development` |
+| Путь | `optional-skills/software-development/subagent-driven-development` |
 | Версия | `1.1.0` |
 | Автор | Hermes Agent (адаптировано из obra/superpowers) |
 | Лицензия | MIT |
 | Платформы | linux, macos, windows |
 | Теги | `delegation`, `subagent`, `implementation`, `workflow`, `parallel` |
-| Связанные навыки | [`планы внедрения`](/docs/user-guide/skills/bundled/software-development/software-development-writing-plans), [`запрос проверки кода`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review), [`разработка через тестирование`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development) |
+| Связанные навыки | [`plan`](/docs/user-guide/skills/bundled/software-development/software-development-plan), [`запрос проверки кода`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review), [`разработка через тестирование`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development) |
 
 ## Справка: полный `SKILL.md`
 
@@ -40,7 +40,7 @@ description: "Реализуйте планы через субагентов `d
 ## Когда использовать
 
 Используйте этот навык, когда:
-- У вас есть план внедрения (из навыка `writing-plans` или из требований пользователя)
+- У вас есть план внедрения (из навыка `plan` или из требований пользователя)
 - Задачи в основном независимы
 - Важны качество и соответствие спецификации
 - Нужна автоматическая проверка между задачами
@@ -272,10 +272,10 @@ git add -A && git commit -m "feat: complete [feature name] implementation"
 
 ## Интеграция с другими навыками
 
-### С `writing-plans`
+### С `plan`
 
-Этот навык ВЫПОЛНЯЕТ планы, созданные навыком `writing-plans`:
-1. Требования пользователя → `writing-plans` → план внедрения
+Этот навык ВЫПОЛНЯЕТ планы, созданные навыком `plan`:
+1. Требования пользователя → `plan` → план внедрения
 2. План внедрения → `subagent-driven-development` → рабочий код
 
 ### С `test-driven-development`

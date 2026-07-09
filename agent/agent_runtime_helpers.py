@@ -1810,8 +1810,16 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # Without this guard the old provider's URL (e.g. Ollama's localhost
         # address) would persist silently after switching to a cloud provider
         # that returns an empty base_url string.
+        #
+        # When a non-empty stale base_url (e.g. https://ollama.com/v1 from a
+        # prior session) leaks across providers, the new provider's API key is
+        # silently sent to the old endpoint — credential mis-routing (#61296).
+        # Guard: if base_url is empty AND the provider changed, explicitly
+        # clear the stale URL so it doesn't contaminate the new client.
         if base_url:
             agent.base_url = base_url
+        elif old_provider != new_provider:
+            agent.base_url = ""
         agent.api_mode = api_mode
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(agent, "_transport_cache"):

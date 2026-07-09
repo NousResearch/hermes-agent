@@ -4631,16 +4631,23 @@ def run_conversation(
                         if clean:
                             agent._vprint(f"  ┊ 💬 {clean}")
                 
-                # Pop thinking-only prefill message(s) before appending
-                # (tool-call path — same rationale as the final-response path).
+                # Pop internal retry scaffolding before appending tool-call
+                # turns. Clarify choice nudges can legitimately be followed
+                # by a real clarify tool call; once that happens, the dead
+                # Markdown attempt and synthetic nudge must not become durable
+                # transcript context.
                 _had_prefill = False
                 while (
                     messages
                     and isinstance(messages[-1], dict)
-                    and messages[-1].get("_thinking_prefill")
+                    and (
+                        messages[-1].get("_thinking_prefill")
+                        or messages[-1].get("_clarify_choice_guard_synthetic")
+                    )
                 ):
+                    _was_prefill = bool(messages[-1].get("_thinking_prefill"))
                     messages.pop()
-                    _had_prefill = True
+                    _had_prefill = _had_prefill or _was_prefill
 
                 # Reset prefill counter when tool calls follow a prefill
                 # recovery.  Without this, the counter accumulates across
@@ -5121,6 +5128,7 @@ def run_conversation(
                         messages[-1].get("_thinking_prefill")
                         or messages[-1].get("_empty_recovery_synthetic")
                         or messages[-1].get("_empty_terminal_sentinel")
+                        or messages[-1].get("_clarify_choice_guard_synthetic")
                     )
                 ):
                     messages.pop()
@@ -5223,6 +5231,72 @@ def run_conversation(
                                  agent._pre_verify_nudges)
                     continue
 
+                _clarify_guard_valid_tools = getattr(agent, "valid_tool_names", set())
+                try:
+                    from agent.clarify_choice_guard import (
+                        clarify_choice_guard_action,
+                    )
+
+                    _clarify_guard_action, _clarify_guard_payload = (
+                        clarify_choice_guard_action(
+                            final_response,
+                            valid_tool_names=_clarify_guard_valid_tools,
+                            platform=getattr(agent, "platform", "") or "",
+                            attempts=getattr(agent, "_clarify_choice_guard_nudges", 0),
+                        )
+                    )
+                except Exception:
+                    logger.exception("clarify choice hard-gate check failed")
+                    _clarify_raw_text = final_response or ""
+                    _clarify_text = _clarify_raw_text.casefold()
+                    _clarify_maybe_dead_menu = (
+                        "clarify" in set(_clarify_guard_valid_tools or ())
+                        and (
+                            "```select" in _clarify_text
+                            or "## 다음" in _clarify_raw_text
+                            or "## 승인" in _clarify_raw_text
+                            or "## 선택" in _clarify_raw_text
+                            or "## 범위" in _clarify_raw_text
+                            or "## next" in _clarify_text
+                            or "## approval" in _clarify_text
+                            or "## choice" in _clarify_text
+                            or "## scope" in _clarify_text
+                        )
+                    )
+                    if _clarify_maybe_dead_menu:
+                        _clarify_guard_action, _clarify_guard_payload = "block", (
+                            "Clarify hard gate failed while inspecting a possible "
+                            "Markdown-only choice response. To avoid showing dead "
+                            "choice UI, this response was blocked. Please retry."
+                        )
+                    else:
+                        _clarify_guard_action, _clarify_guard_payload = "allow", None
+
+                if _clarify_guard_action == "nudge" and _clarify_guard_payload:
+                    agent._clarify_choice_guard_nudges = (
+                        getattr(agent, "_clarify_choice_guard_nudges", 0) + 1
+                    )
+                    final_msg["finish_reason"] = "clarify_choice_required"
+                    final_msg["_clarify_choice_guard_synthetic"] = True
+                    messages.append(final_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": _clarify_guard_payload,
+                        "_clarify_choice_guard_synthetic": True,
+                    })
+                    agent._session_messages = messages
+                    logger.debug(
+                        "clarify choice hard-gate nudge issued (attempt %d)",
+                        agent._clarify_choice_guard_nudges,
+                    )
+                    continue
+
+                if _clarify_guard_action == "block" and _clarify_guard_payload:
+                    final_response = _clarify_guard_payload
+                    final_msg["content"] = final_response
+                    final_msg["finish_reason"] = "clarify_choice_blocked"
+
+                agent._clarify_choice_guard_nudges = 0
                 messages.append(final_msg)
                 
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"

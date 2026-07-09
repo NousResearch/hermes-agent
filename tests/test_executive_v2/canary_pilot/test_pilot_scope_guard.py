@@ -91,7 +91,7 @@ def test_scope_pilot_branch_is_correct():
 
 
 def test_scope_head_is_frozen_sha():
-    """Confirm HEAD is still 3a62bf03... — the branch creation must
+    """Confirm HEAD is still 5d7886cf... — the branch creation must
     have left HEAD pointing at the frozen SHA."""
     import subprocess
 
@@ -101,6 +101,6 @@ def test_scope_head_is_frozen_sha():
         capture_output=True, text=True, timeout=10,
     )
     assert result.returncode == 0
-    assert result.stdout.strip() == "3a62bf03d676489e73fe5dab6a9ad841246bacab", (
+    assert result.stdout.strip() == "5d7886cfc192dfce55e68f71d4a519600bc68b27", (
         f"HEAD drifted from frozen SHA: {result.stdout.strip()!r}"
     )

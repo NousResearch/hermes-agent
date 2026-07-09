@@ -174,6 +174,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_QUIET",
     "HERMES_TOOL_PROGRESS",
     "HERMES_TOOL_PROGRESS_MODE",
+    "HERMES_LANGUAGE",
     "HERMES_MAX_ITERATIONS",
     "HERMES_SESSION_PLATFORM",
     "HERMES_SESSION_CHAT_ID",
@@ -189,6 +190,27 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_INFERENCE_MODEL",
     "HERMES_INFERENCE_PROVIDER",
     "HERMES_TUI_PROVIDER",
+    # TUI/browser-dashboard runtime knobs are test behavior, not ambient
+    # developer-machine state. Tests that need them set should opt in.
+    "HERMES_TUI",
+    "HERMES_TUI_ACTIVE_SESSION_FILE",
+    "HERMES_TUI_BACKGROUND",
+    "HERMES_TUI_CHECKPOINTS",
+    "HERMES_TUI_DASHBOARD",
+    "HERMES_TUI_DIR",
+    "HERMES_TUI_DISABLE_MOUSE",
+    "HERMES_TUI_GATEWAY_NO_FLUSH",
+    "HERMES_TUI_GATEWAY_URL",
+    "HERMES_TUI_INLINE",
+    "HERMES_TUI_LIGHT",
+    "HERMES_TUI_MAX_TURNS",
+    "HERMES_TUI_NO_EARLY_DISABLE",
+    "HERMES_TUI_PASS_SESSION_ID",
+    "HERMES_TUI_RESUME",
+    "HERMES_TUI_SIDECAR_URL",
+    "HERMES_TUI_SKILLS",
+    "HERMES_TUI_THEME",
+    "HERMES_TUI_TOOLSETS",
     "HERMES_MANAGED",
     "HERMES_MANAGED_DIR",
     "HERMES_DEV",
@@ -365,6 +387,10 @@ def _hermetic_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("TZ", "UTC")
     monkeypatch.setenv("LANG", "C.UTF-8")
     monkeypatch.setenv("LC_ALL", "C.UTF-8")
+    # User-facing strings are locale-aware. Keep baseline tests in English so
+    # a developer's real display.language cannot rewrite hard-coded contract
+    # assertions; i18n tests opt into other languages explicitly.
+    monkeypatch.setenv("HERMES_LANGUAGE", "en")
     monkeypatch.setenv("PYTHONHASHSEED", "0")
 
     # 4b. Disable AWS IMDS lookups. Without this, any test that ends up

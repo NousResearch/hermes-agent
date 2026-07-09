@@ -1620,25 +1620,6 @@ DEFAULT_CONFIG = {
             "timeout": 600,
             "extra_body": {},
         },
-        # Goal judge — the DONE/CONTINUE verdict that drives standing-goal
-        # (/goal) and managed-mission continuation. "auto" = use the main chat
-        # model; route to a cheap, strict-JSON model (e.g. openrouter
-        # google/gemini-3-flash-preview) so a weak judge doesn't burn the turn
-        # budget on unparseable prose. Defaults here are inert — behavior is
-        # unchanged from the prior hardcoded defaults unless an operator
-        # overrides. ``max_tokens`` caps the judge reply (it only emits a tiny
-        # JSON verdict); see hermes_cli/goals.py ``_goal_judge_max_tokens``.
-        # [jb merge v2026.7.7.2] bloc conservé tel quel ; monitor/background_review/
-        # moa_* ci-dessous = nouveaux blocs upstream (absents de notre base).
-        "goal_judge": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "max_tokens": 4096,
-            "timeout": 30,
-            "extra_body": {},
-        },
         # Monitor — urgency/importance classifier used by the important-mail
         # monitor catalog automation (cron/scripts/classify_items.py). Scores
         # candidate items 0-10 against the user's criteria so only above-
@@ -2226,12 +2207,6 @@ DEFAULT_CONFIG = {
         # negatives (goal actually done but judge says continue) and
         # unbounded model spend on fuzzy / unachievable goals.
         "max_turns": 20,
-        # Managed-mission watchdog (POST /v1/watchdog-tick): a goal whose last
-        # turn finished more than this many seconds ago is considered STALE and
-        # gets one continuation turn re-driven. Must stay well above a normal
-        # turn so the watchdog never double-drives a mission that is merely
-        # mid-turn. Default 15 min.
-        "watchdog_stale_seconds": 900,
     },
 
     # Mixture of Agents — named presets used by /moa. A preset is an execution

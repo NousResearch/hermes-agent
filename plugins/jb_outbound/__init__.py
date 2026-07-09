@@ -56,6 +56,28 @@ def register(ctx) -> None:
         check_fn=request_connection.check_request_tool_connection_requirements,
         emoji="🔌",
     )
+    # Aux task « goal_judge » (juge de mission DONE/CONTINUE des missions managées) : déclarée
+    # ICI via le seam natif (F2 — le bloc DEFAULT_CONFIG.auxiliary.goal_judge du cœur est résorbé,
+    # config.py est redevenu identique upstream). Le pont natif (agent/auxiliary_client.py,
+    # _get_auxiliary_task_config) fusionne ces defaults SOUS config.yaml auxiliary.goal_judge
+    # (l'utilisateur gagne), et la tâche apparaît dans le picker « Configure auxiliary models ».
+    # Defaults = les valeurs neutres historiques : provider auto (= modèle principal),
+    # max_tokens 4096 (= DEFAULT_JUDGE_MAX_TOKENS natif de goals.py), timeout 30
+    # (= _DEFAULT_AUX_TIMEOUT natif) — comportement inchangé même sans override opérateur.
+    ctx.register_auxiliary_task(
+        "goal_judge",
+        display_name="Juge de mission",
+        description="verdict DONE/CONTINUE des missions de fond (goals)",
+        defaults={
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "max_tokens": 4096,
+            "timeout": 30,
+            "extra_body": {},
+        },
+    )
     listener.start()  # idempotent, loopback-only, no-op si JB_DECISION_PUSH_URL absent
     logger.info(
         "jb_outbound: interception d'envoi active (proposition → validation → exécution)"

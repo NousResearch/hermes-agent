@@ -60,7 +60,7 @@ def test_register_enregistre_l_outil(on_box):
     """Le plugin enregistre request_tool_connection via ctx.register_tool (zéro patch du cœur)."""
     import jb_outbound
 
-    calls = {"tools": [], "middleware": [], "hooks": []}
+    calls = {"tools": [], "middleware": [], "hooks": [], "aux": []}
 
     class FakeCtx:
         def register_tool(self, **kw):
@@ -71,6 +71,9 @@ def test_register_enregistre_l_outil(on_box):
 
         def register_hook(self, name, cb):
             calls["hooks"].append(name)
+
+        def register_auxiliary_task(self, key, **kw):
+            calls["aux"].append({"key": key, **kw})
 
     jb_outbound.register(FakeCtx())
     names = [t["name"] for t in calls["tools"]]
@@ -84,6 +87,47 @@ def test_register_enregistre_l_outil(on_box):
     # Handler : round-trip minimal sans réseau (intention vide → refus local).
     out = json.loads(tool["handler"]({"capability": ""}))
     assert out == {"error": "intention requise"}
+
+
+def test_register_declare_l_aux_task_goal_judge(on_box):
+    """F2 : le juge de mission est déclaré via le seam natif register_auxiliary_task —
+    le bloc DEFAULT_CONFIG.auxiliary.goal_judge du cœur est résorbé. Les defaults déclarés
+    doivent rester ALIGNÉS sur les fallbacks natifs (DEFAULT_JUDGE_MAX_TOKENS,
+    _DEFAULT_AUX_TIMEOUT) pour que le comportement soit identique avec ou sans plugin."""
+    import jb_outbound
+
+    calls = {"aux": []}
+
+    class FakeCtx:
+        def register_tool(self, **kw):
+            pass
+
+        def register_middleware(self, kind, cb):
+            pass
+
+        def register_hook(self, name, cb):
+            pass
+
+        def register_auxiliary_task(self, key, **kw):
+            calls["aux"].append({"key": key, **kw})
+
+    jb_outbound.register(FakeCtx())
+    assert [a["key"] for a in calls["aux"]] == ["goal_judge"]
+    aux = calls["aux"][0]
+    assert aux["display_name"] and aux["description"]
+
+    from hermes_cli.goals import DEFAULT_JUDGE_MAX_TOKENS
+    from agent.auxiliary_client import _DEFAULT_AUX_TIMEOUT
+
+    defaults = aux["defaults"]
+    assert defaults["provider"] == "auto"
+    assert defaults["max_tokens"] == DEFAULT_JUDGE_MAX_TOKENS
+    assert defaults["timeout"] == _DEFAULT_AUX_TIMEOUT
+    # goal_judge n'est PAS un builtin (_AUX_TASKS) : le seam plugin est le bon véhicule,
+    # et la garde builtin_keys de register_auxiliary_task ne le refusera pas.
+    from hermes_cli.main import _AUX_TASKS
+
+    assert "goal_judge" not in {k for k, _n, _d in _AUX_TASKS}
 
 
 def test_toolset_messaging_resolu_depuis_le_registre():

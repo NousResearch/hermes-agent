@@ -12092,6 +12092,10 @@ def cmd_dashboard(args):
             print("  Pre-build first:  npm install --workspace web && npm run build -w web")
             print("  Or unset HERMES_WEB_DIST to build and use the default web UI dist.")
             sys.exit(1)
+        # Write the expanded path back: web_server reads HERMES_WEB_DIST raw
+        # at import (no expanduser), so a validated "~/dist" would otherwise
+        # pass here and still 404 there.
+        os.environ["HERMES_WEB_DIST"] = str(_dist_root)
         print(f"→ Using web dist from HERMES_WEB_DIST: {_dist_root}")
 
     # Discover and load plugins so any DashboardAuthProvider plugin

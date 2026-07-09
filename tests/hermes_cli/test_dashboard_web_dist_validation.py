@@ -111,3 +111,26 @@ def test_env_dist_with_index_starts_server(main_mod, monkeypatch, tmp_path):
 
     assert len(started) == 1
     assert builds == []
+
+
+def test_env_dist_tilde_expanded_for_web_server(main_mod, monkeypatch, tmp_path):
+    """A '~/...' HERMES_WEB_DIST must be written back expanded so
+    web_server's raw os.environ read serves the validated path."""
+    _wire_common(main_mod, monkeypatch)
+    home = tmp_path / "home"
+    dist = home / "mydist"
+    dist.mkdir(parents=True)
+    (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HERMES_WEB_DIST", "~/mydist")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.web_server",
+        types.SimpleNamespace(start_server=lambda **k: None),
+    )
+
+    main_mod.cmd_dashboard(_args())
+
+    import os
+    assert os.environ["HERMES_WEB_DIST"] == str(dist)

@@ -1770,6 +1770,9 @@ DEFAULT_CONFIG = {
         # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
+        # Ring the terminal bell when a command is waiting for approval.
+        # null => inherit bell_on_complete; set true/false to control separately.
+        "bell_on_approval": None,
         # Stream the model's reasoning/thinking live before the response.
         # Default ON: on thinking models the reasoning phase can run tens of
         # seconds, and with this off the user stares at a spinner the whole

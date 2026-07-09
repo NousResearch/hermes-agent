@@ -128,6 +128,25 @@ class TestReasoningCommand:
         assert "takes effect on next message" in result
 
     @pytest.mark.asyncio
+    async def test_handle_reasoning_command_accepts_shared_max_effort(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        runner._reasoning_config = {"enabled": True, "effort": "medium"}
+
+        result = await runner._handle_reasoning_command(_make_event("/reasoning max --global"))
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert saved["agent"]["reasoning_effort"] == "max"
+        assert runner._reasoning_config == {"enabled": True, "effort": "max"}
+        assert "saved to config" in result
+
+    @pytest.mark.asyncio
     async def test_handle_reasoning_command_defaults_to_session_only(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()

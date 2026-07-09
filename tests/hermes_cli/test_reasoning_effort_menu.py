@@ -12,14 +12,15 @@ def test_reasoning_menu_orders_minimal_before_low(monkeypatch):
     monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", _fake_radiolist)
 
     selected = _prompt_reasoning_effort_selection(
-        ["low", "minimal", "medium", "high"],
+        ["max", "low", "minimal", "medium", "high"],
         current_effort="medium",
     )
 
     assert selected == "medium"
-    assert captured["items"][:4] == [
+    assert captured["items"][:5] == [
         "minimal",
         "low",
         "medium  ← currently in use",
         "high",
+        "max",
     ]

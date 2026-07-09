@@ -38,6 +38,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
+from hermes_constants import VALID_REASONING_EFFORTS
 from hermes_cli.config import atomic_config_write, cfg_get, clear_model_endpoint_credentials
 from utils import (
     atomic_json_write,
@@ -2729,7 +2730,7 @@ class GatewaySlashCommandsMixin:
             return t("gateway.reasoning.reset_done")
         if effort == "none":
             parsed = {"enabled": False}
-        elif effort in {"minimal", "low", "medium", "high", "xhigh"}:
+        elif effort in VALID_REASONING_EFFORTS:
             parsed = {"enabled": True, "effort": effort}
         else:
             return t(

@@ -218,23 +218,19 @@ class TestFeishuFallbackThreadRouting:
         # Verify message.reply was called (not message.create)
         mock_client.im.v1.message.reply.assert_called_once()
 
-        # The reply request should have the thread_id as receive_id
+        # The reply request should have the thread_id as message_id
         call_args = mock_client.im.v1.message.reply.call_args[0][0]
-        # Lark SDK builder exposes .body; the in-tree fallback exposes .request_body.
+        # message_id on the reply request is the thread_id
+        msg_id = getattr(call_args, "message_id", None)
+        assert msg_id == "omt_topic_abc", (
+            f"Expected message_id='omt_topic_abc', got '{msg_id}'"
+        )
+        # The request body should have reply_in_thread=True
         body = getattr(call_args, "body", None) or getattr(call_args, "request_body", None)
         assert body is not None, "request has neither .body nor .request_body"
-        # receive_id should be the thread_id
-        receive_id = getattr(body, "receive_id", None)
-        if receive_id is None and isinstance(body, str):
-            import json as _json
-            receive_id = _json.loads(body).get("receive_id")
-        assert receive_id == "omt_topic_abc", (
-            f"Expected receive_id='omt_topic_abc', got '{receive_id}'"
-        )
-        # And receive_id_type must be 'thread_id', not 'chat_id'
-        receive_id_type = getattr(call_args, "receive_id_type", None)
-        assert receive_id_type == "thread_id", (
-            f"Expected receive_id_type='thread_id', got '{receive_id_type}'"
+        reply_in_thread = getattr(body, "reply_in_thread", None)
+        assert reply_in_thread is True, (
+            f"Expected reply_in_thread=True, got '{reply_in_thread}'"
         )
 
     @pytest.mark.asyncio

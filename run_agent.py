@@ -3317,6 +3317,26 @@ class AIAgent:
                 self._memory_manager.shutdown_all()
             except Exception:
                 pass
+        # ── Plugin hook: on_session_end ────────────────────────────────────
+        # Emit the lifecycle boundary hook for plugin consumers (e.g. the
+        # memory archive indexer). This is the unified session close path used
+        # by the CLI, gateway session expiry, oneshot, and /reset — so a single
+        # emit here covers all of them. No archive logic lives here; listeners
+        # only read transcripts. TUI and ACP fire this hook on their own close
+        # paths and do NOT route through this method, so there is no double
+        # emit. Hook failure must never block shutdown.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_session_end",
+                session_id=self.session_id or "",
+                completed=True,
+                interrupted=False,
+                model=getattr(self, "model", None),
+                platform=getattr(self, "platform", None) or "",
+            )
+        except Exception:
+            logger.debug("on_session_end plugin hook failed during shutdown", exc_info=True)
         # Notify context engine of session end (flush DAG, close DBs, etc.)
         if hasattr(self, "context_compressor") and self.context_compressor:
             try:

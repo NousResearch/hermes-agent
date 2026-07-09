@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from hermes_constants import get_hermes_home
 
+from hermes_cli.plugins import invoke_hook
+
 import copy
 import json
 import logging
@@ -367,12 +369,14 @@ class SessionManager:
 
     def cleanup(self) -> None:
         """Remove all sessions (memory and database) and clear task-specific cwd overrides."""
+        closed_ids: list[str] = []
         with self._lock:
             session_ids = list(self._sessions.keys())
             self._sessions.clear()
         for session_id in session_ids:
             _clear_task_cwd(session_id)
             self._delete_persisted(session_id)
+            closed_ids.append(session_id)
         # Also remove any DB-only ACP sessions not currently in memory.
         db = self._get_db()
         if db is not None:
@@ -382,8 +386,20 @@ class SessionManager:
                     sid = row["id"]
                     _clear_task_cwd(sid)
                     db.delete_session(sid)
+                    closed_ids.append(sid)
             except Exception:
                 logger.debug("Failed to cleanup ACP sessions from DB", exc_info=True)
+        # Emit the session-end hook consistently with TUI/CLI/gateway close
+        # paths. The memory subsystem listens (on_session_end) to enqueue the
+        # raw transcript for indexing; this close path stays free of any
+        # archive logic. Listeners tolerate missing transcripts (ACP persists
+        # to state.db, not sessions/<id>.jsonl).
+        for sid in closed_ids:
+            try:
+                invoke_hook("on_session_end", session_id=sid, completed=True,
+                            interrupted=False, model=None, platform="acp")
+            except Exception:
+                logger.debug("on_session_end emit failed for ACP session %s", sid, exc_info=True)
 
     def save_session(self, session_id: str) -> None:
         """Persist the current state of a session to the database.

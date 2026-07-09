@@ -46,6 +46,7 @@ def _make_agent_openrouter():
     agent._fallback_chain = []
     agent._fallback_model = None
     agent._config_context_length = None
+    agent._codex_reasoning_replay_enabled = True
 
     return agent
 
@@ -73,6 +74,7 @@ def _make_agent_anthropic():
     agent._fallback_chain = []
     agent._fallback_model = None
     agent._config_context_length = None
+    agent._codex_reasoning_replay_enabled = True
 
     return agent
 
@@ -202,3 +204,49 @@ def test_successful_switch_still_works_after_rollback_refactor():
     assert agent.provider == "openrouter"
     assert agent.api_key == "or-key-new"
     assert agent.client is new_client
+
+
+def test_switch_model_resets_codex_reasoning_replay_flag():
+    """When switching into codex_responses (xai-oauth, openai-codex), the
+    replay flag must be (re)enabled so Grok/xAI cross-turn reasoning works.
+    Switching away should not leave stale state for future codex use.
+    """
+    agent = _make_agent_openrouter()
+    agent._codex_reasoning_replay_enabled = False  # simulate previous disable
+
+    new_client = MagicMock()
+    agent._create_openai_client = lambda *_a, **_kw: new_client
+
+    with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
+        # Switch to xai-oauth / codex
+        agent.switch_model(
+            new_model="grok-4",
+            new_provider="xai-oauth",
+            api_key="xai-key",
+            base_url="https://api.x.ai/v1",
+            api_mode="codex_responses",
+        )
+
+    assert agent._codex_reasoning_replay_enabled is True
+    assert agent.api_mode == "codex_responses"
+
+    # Now switch away to non-codex
+    agent._create_openai_client = lambda *_a, **_kw: MagicMock()
+    agent.switch_model(
+        new_model="claude-sonnet-4-5",
+        new_provider="anthropic",
+        api_key="sk-ant",
+        base_url="https://api.anthropic.com",
+        api_mode="anthropic_messages",
+    )
+
+    # Flag is now irrelevant (not codex), but switching back should re-enable
+    agent.switch_model(
+        new_model="grok-4",
+        new_provider="xai-oauth",
+        api_key="xai-key2",
+        base_url="https://api.x.ai/v1",
+        api_mode="codex_responses",
+    )
+
+    assert agent._codex_reasoning_replay_enabled is True

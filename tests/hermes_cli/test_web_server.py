@@ -4749,6 +4749,22 @@ class TestModelContextLength:
         result = _normalize_config_for_web({"model": "anthropic/claude-sonnet-4"})
         assert result["model"] == "anthropic/claude-sonnet-4"
         assert result["model_context_length"] == 0
+        assert result["model_lmstudio_unload_policy"] == "always"
+
+    def test_normalize_extracts_lmstudio_unload_policy_from_dict(self):
+        """normalize should surface the LM Studio unload policy from model dict."""
+        from hermes_cli.web_server import _normalize_config_for_web
+
+        cfg = {
+            "model": {
+                "default": "qwen/qwen3.6-35b-a3b",
+                "provider": "lmstudio",
+                "lmstudio_unload_policy": "never",
+            }
+        }
+        result = _normalize_config_for_web(cfg)
+        assert result["model"] == "qwen/qwen3.6-35b-a3b"
+        assert result["model_lmstudio_unload_policy"] == "never"
 
     def test_normalize_dict_without_context_length_yields_zero(self):
         """normalize should default to 0 when model dict has no context_length."""
@@ -4848,6 +4864,58 @@ class TestModelContextLength:
         })
         assert isinstance(result["model"], dict)
         assert result["model"]["context_length"] == 32000
+
+    def test_denormalize_writes_lmstudio_unload_policy_into_model_dict(self):
+        """denormalize should write non-default LM Studio unload policy."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {"default": "qwen/qwen3.6-35b-a3b", "provider": "lmstudio"}
+        })
+
+        result = _denormalize_config_from_web({
+            "model": "qwen/qwen3.6-35b-a3b",
+            "model_lmstudio_unload_policy": "never",
+        })
+        assert isinstance(result["model"], dict)
+        assert result["model"]["lmstudio_unload_policy"] == "never"
+        assert "model_lmstudio_unload_policy" not in result
+
+    def test_denormalize_default_lmstudio_unload_policy_is_removed(self):
+        """denormalize should omit the default LM Studio unload policy."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "qwen/qwen3.6-35b-a3b",
+                "provider": "lmstudio",
+                "lmstudio_unload_policy": "never",
+            }
+        })
+
+        result = _denormalize_config_from_web({
+            "model": "qwen/qwen3.6-35b-a3b",
+            "model_lmstudio_unload_policy": "always",
+        })
+        assert isinstance(result["model"], dict)
+        assert "lmstudio_unload_policy" not in result["model"]
+
+    def test_denormalize_upgrades_bare_string_for_lmstudio_unload_policy(self):
+        """non-default LM Studio policy should upgrade bare string model config."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({"model": "qwen/qwen3.6-35b-a3b"})
+
+        result = _denormalize_config_from_web({
+            "model": "qwen/qwen3.6-35b-a3b",
+            "model_lmstudio_unload_policy": "never",
+        })
+        assert isinstance(result["model"], dict)
+        assert result["model"]["default"] == "qwen/qwen3.6-35b-a3b"
+        assert result["model"]["lmstudio_unload_policy"] == "never"
 
 
 class TestDenormalizeProviderSwitch:
@@ -4960,10 +5028,23 @@ class TestModelContextLengthSchema:
         model_idx = keys.index("model")
         assert keys[model_idx + 1] == "model_context_length"
 
+    def test_schema_lmstudio_unload_policy_after_context_length(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        keys = list(CONFIG_SCHEMA.keys())
+        ctx_idx = keys.index("model_context_length")
+        assert keys[ctx_idx + 1] == "model_lmstudio_unload_policy"
+
     def test_schema_model_context_length_is_number(self):
         from hermes_cli.web_server import CONFIG_SCHEMA
         entry = CONFIG_SCHEMA["model_context_length"]
         assert entry["type"] == "number"
+        assert "category" in entry
+
+    def test_schema_lmstudio_unload_policy_is_select(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        entry = CONFIG_SCHEMA["model_lmstudio_unload_policy"]
+        assert entry["type"] == "select"
+        assert entry["options"] == ["always", "never"]
         assert "category" in entry
 
 

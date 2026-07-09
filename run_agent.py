@@ -756,7 +756,11 @@ class AIAgent:
             except Exception as exc:
                 logger.debug("context engine bind_session_state during reset: %s", exc)
 
-    def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
+    def _ensure_lmstudio_runtime_loaded(
+        self,
+        config_context_length: Optional[int] = None,
+        previous_model: Optional[str] = None,
+    ) -> None:
         """
         Preload the LM Studio model with at least Hermes' minimum context.
         """
@@ -776,12 +780,31 @@ class AIAgent:
                 return
         try:
             from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
-            from hermes_cli.models import ensure_lmstudio_model_loaded
+            from hermes_cli.models import (
+                ensure_lmstudio_model_loaded,
+                normalize_lmstudio_unload_policy,
+            )
             if config_context_length is None:
                 config_context_length = getattr(self, "_config_context_length", None)
             target_ctx = max(config_context_length or 0, MINIMUM_CONTEXT_LENGTH)
+            unload_policy = "always"
+            try:
+                from hermes_cli.config import load_config_readonly
+                cfg = load_config_readonly() or {}
+                model_cfg = cfg.get("model") if isinstance(cfg, dict) else None
+                if isinstance(model_cfg, dict):
+                    unload_policy = normalize_lmstudio_unload_policy(
+                        model_cfg.get("lmstudio_unload_policy")
+                    )
+            except Exception:
+                unload_policy = "always"
             loaded_ctx = ensure_lmstudio_model_loaded(
-                self.model, self.base_url, api_key, target_ctx,
+                self.model,
+                self.base_url,
+                api_key,
+                target_ctx,
+                unload_policy=unload_policy,
+                previous_model=previous_model,
             )
             if loaded_ctx:
                 # Push into the live compressor so the status bar reflects the

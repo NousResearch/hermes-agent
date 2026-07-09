@@ -621,6 +621,12 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Context window override (0 = auto-detect from model metadata)",
         "category": "general",
     },
+    "model_lmstudio_unload_policy": {
+        "type": "select",
+        "description": "Whether LM Studio unloads other loaded chat models before switching",
+        "category": "general",
+        "options": ["always", "never"],
+    },
     "terminal.backend": {
         "type": "select",
         "description": "Terminal execution backend",
@@ -813,14 +819,17 @@ def _build_schema_from_config(
 CONFIG_SCHEMA = _build_schema_from_config(DEFAULT_CONFIG)
 
 # Inject virtual fields that don't live in DEFAULT_CONFIG but are surfaced
-# by the normalize/denormalize cycle.  Insert model_context_length right after
-# the "model" key so it renders adjacent in the frontend.
-_mcl_entry = _SCHEMA_OVERRIDES["model_context_length"]
+# by the normalize/denormalize cycle.  Insert model settings right after the
+# "model" key so they render adjacent in the frontend.
+_model_virtual_entries = {
+    "model_context_length": _SCHEMA_OVERRIDES["model_context_length"],
+    "model_lmstudio_unload_policy": _SCHEMA_OVERRIDES["model_lmstudio_unload_policy"],
+}
 _ordered_schema: Dict[str, Dict[str, Any]] = {}
 for _k, _v in CONFIG_SCHEMA.items():
     _ordered_schema[_k] = _v
     if _k == "model":
-        _ordered_schema["model_context_length"] = _mcl_entry
+        _ordered_schema.update(_model_virtual_entries)
 CONFIG_SCHEMA = _ordered_schema
 
 
@@ -4249,18 +4258,24 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     from DEFAULT_CONFIG where ``model`` is a string, but user configs often have the
     dict form.  Normalize to the string form so the frontend schema matches.
 
-    Also surfaces ``model_context_length`` as a top-level field so the web UI can
-    display and edit it.  A value of 0 means "auto-detect".
+    Also surfaces model-specific virtual fields as top-level entries so the web
+    UI can display and edit them without losing model subkeys.
     """
+    from hermes_cli.models import normalize_lmstudio_unload_policy
+
     config = dict(config)  # shallow copy
     model_val = config.get("model")
     if isinstance(model_val, dict):
-        # Extract context_length before flattening the dict
+        # Extract virtual model fields before flattening the dict.
         ctx_len = model_val.get("context_length", 0)
         config["model"] = model_val.get("default", model_val.get("name", ""))
         config["model_context_length"] = ctx_len if isinstance(ctx_len, int) else 0
+        config["model_lmstudio_unload_policy"] = normalize_lmstudio_unload_policy(
+            model_val.get("lmstudio_unload_policy")
+        )
     else:
         config["model_context_length"] = 0
+        config["model_lmstudio_unload_policy"] = "always"
     return config
 
 
@@ -5738,17 +5753,22 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     stripped from the GET response.  The frontend only sees model as a flat
     string; the rest is preserved transparently.
 
-    Also handles ``model_context_length`` — writes it back into the model dict
-    as ``context_length``.  A value of 0 or absent means "auto-detect" (omitted
-    from the dict so get_model_context_length() uses its normal resolution).
+    Also handles virtual model fields. ``model_context_length`` writes back as
+    ``context_length``; a value of 0 or absent means "auto-detect" and is
+    omitted from the dict so get_model_context_length() uses normal resolution.
     """
+    from hermes_cli.models import normalize_lmstudio_unload_policy
+
     config = dict(config)
     # Remove any _model_meta that might have leaked in (shouldn't happen
     # with the stripped GET response, but be defensive)
     config.pop("_model_meta", None)
 
-    # Extract and remove model_context_length before processing model
+    # Extract and remove virtual model fields before processing model.
     ctx_override = config.pop("model_context_length", 0)
+    lmstudio_unload_policy = normalize_lmstudio_unload_policy(
+        config.pop("model_lmstudio_unload_policy", "always")
+    )
     if not isinstance(ctx_override, int):
         try:
             ctx_override = int(ctx_override)
@@ -5794,14 +5814,20 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
                     disk_model["context_length"] = ctx_override
                 else:
                     disk_model.pop("context_length", None)
+                if lmstudio_unload_policy == "always":
+                    disk_model.pop("lmstudio_unload_policy", None)
+                else:
+                    disk_model["lmstudio_unload_policy"] = lmstudio_unload_policy
                 config["model"] = disk_model
             # Model was previously a bare string — upgrade to dict if
-            # user is setting a context_length override
-            elif ctx_override > 0:
-                config["model"] = {
-                    "default": model_val,
-                    "context_length": ctx_override,
-                }
+            # user is setting a model-scoped override.
+            elif ctx_override > 0 or lmstudio_unload_policy != "always":
+                model_dict = {"default": model_val}
+                if ctx_override > 0:
+                    model_dict["context_length"] = ctx_override
+                if lmstudio_unload_policy != "always":
+                    model_dict["lmstudio_unload_policy"] = lmstudio_unload_policy
+                config["model"] = model_dict
         except Exception:
             pass  # can't read disk config — just use the string form
     return config

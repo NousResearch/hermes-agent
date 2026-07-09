@@ -851,6 +851,15 @@ Alternatively, use the CLI: `lms load model-name --context-length 64000`
 You can use the CLI to estimate if the model will fit: `lms load model-name --context-length 64000 --estimate-only`
 
 To set persistent per-model defaults: My Models tab → gear icon on the model → set context size.
+
+**Model switching:** By default, when switching between LM Studio models on the same endpoint, Hermes asks LM Studio to unload the previously selected Hermes model before loading the new one. It only sends an unload request for a matching loaded instance, so downloaded-only models and unrelated resident models are left alone. This avoids accidental VRAM overcommit on single-GPU systems when switching between large local models. If you intentionally keep the previous LM Studio model resident, opt out in `config.yaml`:
+
+```yaml
+model:
+  provider: lmstudio
+  default: qwen/qwen3.6-35b-a3b
+  lmstudio_unload_policy: "never"  # default: "always"
+```
 :::
 
 **Tool calling:** Supported since LM Studio 0.3.6. Models with native tool-calling training (Qwen 2.5, Llama 3.x, Mistral, Hermes) are auto-detected and shown with a tool badge. Other models use a generic fallback that may be less reliable.
@@ -1150,6 +1159,15 @@ model:
   default: "qwen3.5:9b"
   base_url: "http://localhost:8080/v1"
   context_length: 131072  # tokens
+```
+
+For LM Studio, `model.lmstudio_unload_policy` controls whether Hermes unloads the previously selected LM Studio chat model before switching on the same endpoint. The default is `"always"` to avoid VRAM overcommit; set `"never"` if your machine can keep multiple models loaded and you want LM Studio to manage memory:
+
+```yaml
+model:
+  provider: lmstudio
+  default: qwen/qwen3.6-35b-a3b
+  lmstudio_unload_policy: "never"
 ```
 
 For custom endpoints, you can also set context length per model:

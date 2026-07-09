@@ -63,6 +63,16 @@ model:
   #
   # context_length: 131072
   #
+  # LM Studio model switching policy:
+  #   always - default; unload the previous Hermes-selected LM Studio chat
+  #            model before loading the selected one on the same endpoint. This
+  #            avoids accidental VRAM overcommit on single-GPU systems.
+  #   never  - leave the previous LM Studio chat model resident and let LM
+  #            Studio attempt the load. Use this if your machine can keep
+  #            multiple models loaded or you manage memory yourself.
+  #
+  # lmstudio_unload_policy: "always"
+  #
   # max_tokens: OUTPUT cap — maximum tokens the model may generate per response.
   #   Unrelated to how long your conversation history can be.
   #   The OpenAI-standard name "max_tokens" is a misnomer; Anthropic's native

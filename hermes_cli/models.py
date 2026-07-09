@@ -29,6 +29,31 @@ COPILOT_EDITOR_VERSION = "vscode/1.104.1"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 
+LMSTUDIO_UNLOAD_POLICY_ALWAYS = "always"
+LMSTUDIO_UNLOAD_POLICY_NEVER = "never"
+LMSTUDIO_UNLOAD_POLICIES = {
+    LMSTUDIO_UNLOAD_POLICY_ALWAYS,
+    LMSTUDIO_UNLOAD_POLICY_NEVER,
+}
+
+
+def normalize_lmstudio_unload_policy(value: Any) -> str:
+    """Normalize the LM Studio model-switch unload policy.
+
+    ``always`` is the conservative default: unload the previous Hermes-selected
+    LM Studio chat model before loading the selected model. ``never`` is an
+    explicit opt-out for users who intentionally keep that previous model
+    resident while switching.
+    """
+    if isinstance(value, bool):
+        return LMSTUDIO_UNLOAD_POLICY_ALWAYS if value else LMSTUDIO_UNLOAD_POLICY_NEVER
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if normalized in {"", "auto", "safe", "unload", "unload_first", "always_unload"}:
+        return LMSTUDIO_UNLOAD_POLICY_ALWAYS
+    if normalized in {"never", "keep", "keep_loaded", "keep_others", "preserve"}:
+        return LMSTUDIO_UNLOAD_POLICY_NEVER
+    return LMSTUDIO_UNLOAD_POLICY_ALWAYS
+
 
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
 # (model_id, display description shown in menus)
@@ -2974,6 +2999,40 @@ def _lmstudio_raw_model_matches(raw: dict, model: str) -> bool:
     return bool(wanted & aliases)
 
 
+def _lmstudio_previous_model_aliases(value: Any) -> set[str]:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return set()
+    aliases = {raw}
+    if "/" in raw:
+        namespace, name = raw.rsplit("/", 1)
+        namespace_tail = namespace.rsplit("/", 1)[-1]
+        if namespace_tail and name.startswith(namespace_tail):
+            aliases.add(name)
+    for alias in tuple(aliases):
+        if alias.endswith("-mtp"):
+            aliases.add(alias[: -len("-mtp")])
+    return aliases
+
+
+def _lmstudio_raw_model_matches_previous(raw: dict, model: str) -> bool:
+    wanted = _lmstudio_previous_model_aliases(model)
+    if not wanted:
+        return False
+    aliases: set[str] = set()
+    for key in ("key", "id", "selected_variant"):
+        aliases.update(_lmstudio_previous_model_aliases(raw.get(key)))
+    variants = raw.get("variants")
+    if isinstance(variants, list):
+        for variant in variants:
+            if isinstance(variant, dict):
+                for key in ("key", "id", "name", "path"):
+                    aliases.update(_lmstudio_previous_model_aliases(variant.get(key)))
+            else:
+                aliases.update(_lmstudio_previous_model_aliases(variant))
+    return bool(wanted & aliases)
+
+
 def _lmstudio_request_headers(api_key: Optional[str] = None) -> dict:
     """Build HTTP headers for LM Studio native API requests."""
     headers = {"User-Agent": _HERMES_USER_AGENT}
@@ -3089,15 +3148,18 @@ def ensure_lmstudio_model_loaded(
     api_key: Optional[str],
     target_context_length: int,
     timeout: float = 120.0,
+    unload_policy: str = LMSTUDIO_UNLOAD_POLICY_ALWAYS,
+    previous_model: Optional[str] = None,
 ) -> Optional[int]:
     """Ensure LM Studio has ``model`` loaded with sufficient context.
 
     LM Studio stores downloaded models in its native ``/api/v1/models`` API,
     while the OpenAI-compatible ``/v1/models`` surface may only expose the
-    currently loaded instance.  This helper uses the native API, unloads other
-    loaded chat models before loading a new target, lets LM Studio try its saved
-    load settings first, and only forces ``target_context_length`` when the
-    loaded instance reports a smaller context window.
+    currently loaded instance.  This helper uses the native API, optionally
+    unloads the previous Hermes-selected LM Studio model when requested before
+    loading a new target, lets LM Studio try its saved load settings first, and
+    only forces ``target_context_length`` when the loaded instance reports a
+    smaller context window.
     """
     server_root = _lmstudio_server_root(base_url)
     if not server_root:
@@ -3225,24 +3287,34 @@ def ensure_lmstudio_model_loaded(
         return None
 
     target_model_id = model_key(target_entry) or model
+    unload_policy = normalize_lmstudio_unload_policy(unload_policy)
+    unloaded_previous_model = False
 
-    other_loaded_ids: list[str] = []
+    previous_loaded_ids: list[str] = []
     restore_candidates: list[tuple[str, Optional[int]]] = []
-    for raw in raw_models:
-        if raw is target_entry or _lmstudio_raw_model_matches(raw, model):
-            continue
-        if str(raw.get("type") or "").strip().lower() == "embedding":
-            continue
-        instance_ids = loaded_instance_ids(raw)
-        other_loaded_ids.extend(instance_ids)
-        if instance_ids:
-            contexts_for_restore = loaded_contexts(raw)
-            restore_candidates.append((
-                model_key(raw),
-                max(contexts_for_restore) if contexts_for_restore else None,
-            ))
-    if not unload_instances(list(dict.fromkeys(other_loaded_ids)), strict=True):
-        return None
+    previous_model_key = str(previous_model or "").strip()
+    if unload_policy == LMSTUDIO_UNLOAD_POLICY_ALWAYS and previous_model_key:
+        for raw in raw_models:
+            if raw is target_entry or _lmstudio_raw_model_matches(raw, model):
+                continue
+            if not _lmstudio_raw_model_matches_previous(raw, previous_model_key):
+                continue
+            if str(raw.get("type") or "").strip().lower() == "embedding":
+                continue
+            instance_ids = loaded_instance_ids(raw)
+            previous_loaded_ids.extend(instance_ids)
+            if instance_ids:
+                contexts_for_restore = loaded_contexts(raw)
+                restore_candidates.append((
+                    model_key(raw),
+                    max(contexts_for_restore) if contexts_for_restore else None,
+                ))
+        unique_previous_loaded_ids = list(dict.fromkeys(previous_loaded_ids))
+        if unique_previous_loaded_ids and not unload_instances(
+            unique_previous_loaded_ids, strict=True
+        ):
+            return None
+        unloaded_previous_model = bool(unique_previous_loaded_ids)
 
     contexts = loaded_contexts(target_entry)
     if contexts and max(contexts) >= target_context_length:
@@ -3265,12 +3337,14 @@ def ensure_lmstudio_model_loaded(
                 if refreshed_target_ids and not unload_instances(refreshed_target_ids, strict=True):
                     return loaded_ctx
         forced_ctx = load_model(target_model_id, target_context_length)
-        if forced_ctx is None:
+        if forced_ctx is None and unloaded_previous_model:
             restore_previous_loaded_model(restore_candidates)
         return forced_ctx
 
-    restore_previous_loaded_model(restore_candidates)
+    if unloaded_previous_model:
+        restore_previous_loaded_model(restore_candidates)
     return loaded_ctx
+
 
 def lmstudio_model_reasoning_options(
     model: str,

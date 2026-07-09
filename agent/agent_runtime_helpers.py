@@ -1770,6 +1770,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
     old_model = agent.model
     old_provider = agent.provider
+    old_base_url = getattr(agent, "base_url", "")
 
     # ── Snapshot all fields the swap+rebuild can mutate ──
     # If the rebuild raises (bad API key, network error, build_anthropic_client
@@ -1968,7 +1969,15 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     )
 
     # ── LM Studio: preload before probing context length ──
-    agent._ensure_lmstudio_runtime_loaded()
+    def _endpoint_identity(value: object) -> str:
+        return re.sub(r"/v1/?$", "", str(value or "").strip().rstrip("/")).lower()
+
+    old_endpoint = _endpoint_identity(old_base_url)
+    new_endpoint = _endpoint_identity(getattr(agent, "base_url", ""))
+    previous_lmstudio_model = (
+        old_model if old_model and old_endpoint and old_endpoint == new_endpoint else None
+    )
+    agent._ensure_lmstudio_runtime_loaded(previous_model=previous_lmstudio_model)
 
     # ── Update context compressor ──
     if hasattr(agent, "context_compressor") and agent.context_compressor:

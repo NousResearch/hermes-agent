@@ -3,10 +3,9 @@ import { atom } from 'nanostores'
 /**
  * Per-session input history browse state.
  *
- * The user-text ring is **derived from the live session messages** on each
- * keypress — it is not mirrored anywhere. This keeps a single source of truth
- * and avoids the entire class of seeding/dedup bugs that come from trying to
- * keep a parallel ring in sync with submit/queue/voice paths.
+ * The user-text ring is **derived from the live session messages** and cached
+ * per immutable messages snapshot. This keeps a single source of truth while
+ * avoiding repeated O(n) scans during ArrowUp/ArrowDown history browsing.
  *
  * We only persist the cursor and the saved draft:
  *   - `cursor` — index into the derived user-text ring (0 = newest, larger = older).
@@ -20,6 +19,10 @@ export interface SessionBrowseState {
 }
 
 const $perSessionBrowse = atom<Record<string, SessionBrowseState>>({})
+const userHistoryCache = new WeakMap<
+  readonly { role: string }[],
+  { getText: unknown; history: string[] }
+>()
 
 function ensure(sessionId: string): SessionBrowseState {
   const all = { ...$perSessionBrowse.get() }
@@ -50,6 +53,12 @@ export function deriveUserHistory<T extends { role: string }>(
   messages: readonly T[],
   getText: (m: T) => string
 ): string[] {
+  const cached = userHistoryCache.get(messages)
+
+  if (cached?.getText === getText) {
+    return cached.history
+  }
+
   const out: string[] = []
 
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -65,6 +74,8 @@ export function deriveUserHistory<T extends { role: string }>(
       out.push(t)
     }
   }
+
+  userHistoryCache.set(messages, { getText, history: out })
 
   return out
 }

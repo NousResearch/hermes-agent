@@ -27,6 +27,28 @@ describe('deriveUserHistory', () => {
 
     expect(deriveUserHistory(messages, m => m.text)).toEqual(['second', 'first'])
   })
+
+  it('reuses the derived ring for the same messages snapshot', () => {
+    const messages = [MSG('user', 'first'), MSG('assistant', 'hi'), MSG('user', 'second')]
+    let calls = 0
+    const getText = (m: (typeof messages)[number]) => {
+      calls += 1
+      return m.text
+    }
+
+    const first = deriveUserHistory(messages, getText)
+    const second = deriveUserHistory(messages, getText)
+
+    expect(second).toBe(first)
+    expect(calls).toBe(2)
+  })
+
+  it('recomputes when the caller provides a new messages snapshot', () => {
+    const getText = (m: ReturnType<typeof MSG>) => m.text
+
+    expect(deriveUserHistory([MSG('user', 'first')], getText)).toEqual(['first'])
+    expect(deriveUserHistory([MSG('user', 'first'), MSG('user', 'second')], getText)).toEqual(['second', 'first'])
+  })
 })
 
 describe('browseBackward', () => {

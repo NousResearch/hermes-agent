@@ -473,8 +473,8 @@ export function ChatBar({
     }
 
     // ArrowUp/ArrowDown navigate, in priority order: the queue (edit entries in
-    // place) then sent-message history. The history ring is derived from live
-    // session messages each press — single source of truth, no mirror.
+    // place) then sent-message history. The history ring is derived from cached
+    // live-message snapshots — single source of truth, no mirror.
     if (event.key === 'ArrowUp') {
       const currentDraft = draftRef.current
 

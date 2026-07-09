@@ -13,7 +13,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { Download, Loader2, PawPrint, Pencil, Trash2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
-import { $petInfo, $petRoam, setPetRoam } from '@/store/pet'
+import { $petBubble, $petControls, $petInfo, $petRoam, setPetBubble, setPetControls, setPetRoam } from '@/store/pet'
 import {
   $petBusy,
   $petGallery,
@@ -55,6 +55,8 @@ export function PetSettings() {
   const busySlug = useStore($petBusy)
   const petInfo = useStore($petInfo)
   const roam = useStore($petRoam)
+  const bubble = useStore($petBubble)
+  const controls = useStore($petControls)
   const [query, setQuery] = useState('')
   const [confirmDelete, setConfirmDelete] = useState<GalleryPet | null>(null)
   const [renameTarget, setRenameTarget] = useState<GalleryPet | null>(null)
@@ -298,6 +300,46 @@ export function PetSettings() {
             }
             description={copy.roamDesc}
             title={copy.roamTitle}
+          />
+        )}
+
+        {enabled && (
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  setPetBubble(id === 'on')
+                  triggerHaptic('crisp')
+                }}
+                options={[
+                  { id: 'off', label: copy.off },
+                  { id: 'on', label: copy.on }
+                ]}
+                value={bubble ? 'on' : 'off'}
+              />
+            }
+            description={copy.bubbleDesc}
+            title={copy.bubbleTitle}
+          />
+        )}
+
+        {enabled && (
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  setPetControls(id === 'on')
+                  triggerHaptic('crisp')
+                }}
+                options={[
+                  { id: 'off', label: copy.off },
+                  { id: 'on', label: copy.on }
+                ]}
+                value={controls ? 'on' : 'off'}
+              />
+            }
+            description={copy.controlsDesc}
+            title={copy.controlsTitle}
           />
         )}
       </div>

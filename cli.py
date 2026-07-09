@@ -7200,10 +7200,61 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         every message is already persisted incrementally to the SQLite session
         DB, so the live session remains resumable via ``hermes --resume <id>``
         regardless of whether the user ever runs ``/save``.
+
+        Snapshots include a top-level ``title`` field so the
+        ``sessions/saved/`` directory stays browsable by name once a user
+        accumulates more than a handful of files (#61278). Title resolution:
+
+          1. DB-cached title (auto-titled earlier orset via ``/title``).
+          2. Fallback ``generate_title`` call (cheap, with a 5s timeout);
+             on failure, ``title`` falls through to ``null`` rather than
+             dropping the snapshot.
         """
+        from agent.title_generator import (
+            first_exchange_snippets,
+            generate_title,
+        )
+
         if not self.conversation_history:
             print("(;_;) No conversation to save.")
             return
+
+        # 1. Cached DB title wins — no extra LLM round-trip.
+        title = None
+        session_db = getattr(self, "_session_db", None)
+        if session_db and self.session_id:
+            try:
+                cached = session_db.get_session_title(self.session_id)
+                if cached:
+                    title = cached.strip() or None
+            except Exception:
+                title = None
+
+        # 2. No cached title? Try a fresh LLM generate_title. Failures
+        # collapse to None so the snapshot still ships with ``title: null``.
+        if not title:
+            try:
+                first_user, first_assistant = first_exchange_snippets(
+                    self.conversation_history
+                )
+                if first_user or first_assistant:
+                    generated = generate_title(
+                        first_user,
+                        first_assistant,
+                        timeout=5.0,
+                    )
+                    if generated:
+                        title = generated.strip() or None
+                        if session_db and self.session_id and title:
+                            # Persist so subsequent /save calls skip the LLM.
+                            try:
+                                session_db.set_session_title(self.session_id, title)
+                            except Exception:
+                                # Uniqueness clash / DB error — keep the title
+                                # for this snapshot only, never crash.
+                                pass
+            except Exception:
+                title = None
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         saved_dir = get_hermes_home() / "sessions" / "saved"
@@ -7220,9 +7271,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     "model": self.model,
                     "session_id": self.session_id,
                     "session_start": self.session_start.isoformat(),
+                    "title": title,
                     "messages": self.conversation_history,
                 }, f, indent=2, ensure_ascii=False)
             print(f"(^_^)v Conversation snapshot saved to: {path}")
+            if title:
+                print(f"       Title: {title}")
             if self.session_id:
                 print(f"       Resume the live session with: hermes --resume {self.session_id}")
         except Exception as e:

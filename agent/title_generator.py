@@ -34,6 +34,37 @@ _TITLE_PROMPT_PINNED_LANGUAGE = (
 )
 
 
+def first_exchange_snippets(messages, max_chars: int = 500) -> tuple[str, str]:
+    """Return ``(first_user_message, first_assistant_message)`` from a
+    conversation-history list, truncated to ``max_chars`` each.
+
+    Shared helper for any caller that wants to surface a snapshot's title —
+    used by the classic CLI ``/save`` handler and the gateway
+    ``session.save`` RPC (#61278). Defensive against multimodal / tool
+    blocks: collapses list-blocks into a space-joined concatenation of
+    ``text`` fields and skips rows whose ``content`` is not a string
+    after that flatten.
+    """
+    first_user = ""
+    first_assistant = ""
+    for msg in messages or []:
+        role = (msg or {}).get("role")
+        content = (msg or {}).get("content")
+        if isinstance(content, list):
+            content = " ".join(
+                str(b.get("text", "")) for b in content if isinstance(b, dict)
+            )
+        if not isinstance(content, str):
+            continue
+        if role == "user" and not first_user:
+            first_user = content[:max_chars]
+        elif role == "assistant" and not first_assistant:
+            first_assistant = content[:max_chars]
+        if first_user and first_assistant:
+            break
+    return first_user, first_assistant
+
+
 def _title_language() -> str:
     """Return configured title language, or empty string to match the user."""
     try:

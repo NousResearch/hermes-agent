@@ -7983,6 +7983,47 @@ def _(rid, params: dict) -> dict:
             else ""
         )
 
+    # Resolve the snapshot title the same way the classic CLI ``/save``
+    # does (#61278): DB-cached title wins, otherwise ask
+    # ``generate_title`` with a short timeout. Failures collapse to None
+    # so the snapshot still ships with ``title: null`` rather than
+    # failing the RPC.
+    title = None
+    session_db = getattr(agent, "_session_db", None)
+    if session_db and session_id:
+        try:
+            cached = session_db.get_session_title(session_id)
+            if cached:
+                title = cached.strip() or None
+        except Exception:
+            title = None
+    if not title:
+        try:
+            from agent.title_generator import (
+                first_exchange_snippets,
+                generate_title,
+            )
+
+            first_user, first_assistant = first_exchange_snippets(messages)
+            if first_user or first_assistant:
+                generated = generate_title(first_user, first_assistant, timeout=5.0)
+                if generated:
+                    title = generated.strip() or None
+                    if (
+                        session_db
+                        and session_id
+                        and title
+                        and hasattr(session_db, "set_session_title")
+                    ):
+                        try:
+                            session_db.set_session_title(session_id, title)
+                        except Exception:
+                            # Uniqueness clash / DB error — keep the title
+                            # for this snapshot only.
+                            pass
+        except Exception:
+            title = None
+
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(
@@ -7991,13 +8032,14 @@ def _(rid, params: dict) -> dict:
                     "session_id": session_id,
                     "session_start": session_start,
                     "system_prompt": getattr(agent, "_cached_system_prompt", "") or "",
+                    "title": title,
                     "messages": messages,
                 },
                 f,
                 indent=2,
                 ensure_ascii=False,
             )
-        return _ok(rid, {"file": str(path)})
+        return _ok(rid, {"file": str(path), "title": title})
     except Exception as e:
         return _err(rid, 5011, str(e))
 

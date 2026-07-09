@@ -186,3 +186,71 @@ class TestVolcEngineXmlPollution:
         # rest of the pipeline (fuzzy match at 0.7 cutoff) can still
         # recover the obvious target.
         assert repair('"terminal"') == "terminal"
+
+
+class TestMcpPrefixRepair:
+    """Models (notably GLM) sometimes emit MCP tool names without the
+    full ``mcp__<server>__`` prefix, e.g. ``list_memory_projects``
+    instead of ``mcp__basic_memory__list_memory_projects``. The repair
+    routine must map the bare suffix back to the full MCP tool name.
+
+    Covers two sub-cases:
+    - Bare suffix (no ``__``): ``list_memory_projects``
+    - Partial prefix (has ``__`` but missing ``mcp__``): ``basic_memory__list_memory_projects``
+    """
+
+    MCP_VALID = {
+        "todo",
+        "web_search",
+        "mcp__basic_memory__list_memory_projects",
+        "mcp__basic_memory__write_note",
+        "mcp__zotero__search_items",
+        "mcp__zotero__add_by_doi",
+    }
+
+    @pytest.fixture
+    def mcp_repair(self):
+        from run_agent import AIAgent
+        stub = SimpleNamespace(valid_tool_names=self.MCP_VALID)
+        return AIAgent._repair_tool_call.__get__(stub, AIAgent)
+
+    # --- Case 1: bare suffix (model dropped entire mcp__server__ prefix) ---
+
+    def test_bare_suffix_matches_mcp_tool(self, mcp_repair):
+        assert mcp_repair("list_memory_projects") == "mcp__basic_memory__list_memory_projects"
+
+    def test_bare_suffix_different_server(self, mcp_repair):
+        assert mcp_repair("search_items") == "mcp__zotero__search_items"
+
+    def test_bare_suffix_with_underscores_in_name(self, mcp_repair):
+        assert mcp_repair("add_by_doi") == "mcp__zotero__add_by_doi"
+
+    def test_non_mcp_tool_unaffected(self, mcp_repair):
+        assert mcp_repair("todo") == "todo"
+
+    def test_unknown_bare_name_returns_none(self, mcp_repair):
+        assert mcp_repair("nonexistent_mcp_tool") is None
+
+    # --- Case 2: partial prefix (model kept server__tool, dropped mcp__) ---
+
+    def test_partial_prefix_prepends_mcp(self, mcp_repair):
+        assert mcp_repair("basic_memory__list_memory_projects") == "mcp__basic_memory__list_memory_projects"
+
+    def test_partial_prefix_different_server(self, mcp_repair):
+        assert mcp_repair("zotero__search_items") == "mcp__zotero__search_items"
+
+    def test_partial_prefix_unknown_returns_none(self, mcp_repair):
+        assert mcp_repair("unknown_server__no_such_tool") is None
+
+    # --- Ambiguity guard: same bare suffix on two servers ---
+
+    def test_ambiguous_bare_suffix_skips_repair(self):
+        """When two MCP servers expose the same tool suffix, repair must
+        skip (return None) rather than guessing non-deterministically."""
+        from run_agent import AIAgent
+        ambiguous = SimpleNamespace(valid_tool_names={
+            "mcp__server_a__search",
+            "mcp__server_b__search",
+        })
+        repair = AIAgent._repair_tool_call.__get__(ambiguous, AIAgent)
+        assert repair("search") is None

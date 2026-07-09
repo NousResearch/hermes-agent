@@ -2380,6 +2380,39 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
         if c and c in agent.valid_tool_names:
             return c
 
+    # MCP tool prefix repair: some models (notably GLM) emit MCP tool
+    # names without the full ``mcp__<server>__`` prefix — e.g.
+    # ``list_memory_projects`` instead of
+    # ``mcp__basic_memory__list_memory_projects``.  Two sub-cases:
+    #
+    # 1. Bare suffix — model dropped the entire prefix:
+    #    ``list_memory_projects`` → ``mcp__basic_memory__list_memory_projects``
+    # 2. Partial prefix — model kept ``server__tool`` but dropped ``mcp__``:
+    #    ``basic_memory__list_memory_projects`` → same full name
+    #
+    # For case 1 we only attempt when the emitted name has no ``__``
+    # (otherwise it might be a partially-correct prefix for fuzzy match).
+    # For case 2 a simple ``mcp__`` prepend is unambiguous.
+    #
+    # When multiple MCP servers expose the same bare tool name, we skip
+    # repair (can't determine which server the model meant) and let the
+    # fuzzy matcher / error-retry path handle it.
+    if "__" not in lowered:
+        mcp_matches: list[str] = []
+        for vn in agent.valid_tool_names:
+            if not vn.startswith("mcp__"):
+                continue
+            parts = vn.split("__", 2)
+            if len(parts) == 3 and parts[2] in (lowered, normalized):
+                mcp_matches.append(vn)
+        if len(mcp_matches) == 1:
+            return mcp_matches[0]
+    else:
+        # Case 2: model emitted ``server__tool`` — try prepending ``mcp__``.
+        mcp_prefixed = f"mcp__{lowered}"
+        if mcp_prefixed in agent.valid_tool_names:
+            return mcp_prefixed
+
     # Fuzzy match as last resort.
     matches = get_close_matches(lowered, agent.valid_tool_names, n=1, cutoff=0.7)
     if matches:

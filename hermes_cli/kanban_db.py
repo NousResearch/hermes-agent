@@ -6789,7 +6789,9 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     ``"recent_success"``
         A completed run exists within ``_RESPAWN_GUARD_SUCCESS_WINDOW``
         seconds.  Useful work already succeeded for this task; wait for
-        human review rather than immediately re-spawning.
+        human review rather than immediately re-spawning. Bypassed when an
+        explicit re-queue event (status change, promote, unblock, reclaim)
+        arrives AFTER that completion — that's a deliberate re-run request.
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
@@ -6852,13 +6854,29 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         return "blocker_auth"
 
     # 3. Completed run within guard window — proof of recent success.
+    #    Exception: an explicit re-queue AFTER that success (an operator
+    #    dragging done→ready, a dependency re-promotion, an unblock, a
+    #    reclaim) is a deliberate "run it again" — honor it instead of
+    #    deferring. Without this, a manual done→ready just sits there,
+    #    silently held by the guard, until the window elapses.
     cutoff = now - _RESPAWN_GUARD_SUCCESS_WINDOW
-    if conn.execute(
-        "SELECT id FROM task_runs "
-        "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ?",
+    recent_completed = conn.execute(
+        "SELECT ended_at FROM task_runs "
+        "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ? "
+        "ORDER BY ended_at DESC LIMIT 1",
         (task_id, cutoff),
-    ).fetchone():
-        return "recent_success"
+    ).fetchone()
+    if recent_completed:
+        completed_at = int(recent_completed["ended_at"] or 0)
+        requeued_after = conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND created_at >= ? "
+            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
+            "LIMIT 1",
+            (task_id, completed_at),
+        ).fetchone()
+        if not requeued_after:
+            return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW

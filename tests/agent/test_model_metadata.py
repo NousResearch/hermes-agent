@@ -30,6 +30,7 @@ from agent.model_metadata import (
     save_context_length,
     fetch_model_metadata,
     _MODEL_CACHE_TTL,
+    estimate_request_tokens_rough,
 )
 
 
@@ -118,6 +119,54 @@ class TestEstimateMessagesTokensRough:
         ]}
         result = estimate_messages_tokens_rough([msg])
         assert result < 5000
+
+
+class TestEstimateRequestTokensRough:
+    def test_caches_tools_estimate(self):
+        messages = [{"role": "user", "content": "hello"}]
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "description": "Run a command",
+                    "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+                },
+            }
+        ]
+
+        # json.dumps is used for params sizing; ensure the tools estimate is cached
+        # so repeated calls don't keep re-serializing the same schema list.
+        with patch("agent.model_metadata.json.dumps", wraps=__import__("json").dumps) as dumps:
+            estimate_request_tokens_rough(messages, system_prompt="x" * 8, tools=tools)
+            estimate_request_tokens_rough(messages, system_prompt="x" * 8, tools=tools)
+            assert dumps.call_count == 1
+
+    def test_tools_cache_is_bounded(self):
+        # A long-lived process builds many transient tool lists; the cache must
+        # not grow without bound. Feed more distinct lists than the cap and
+        # confirm the cache never exceeds it.
+        import agent.model_metadata as mm
+
+        mm._TOOLS_TOKENS_CACHE.clear()
+        cap = mm._TOOLS_TOKENS_CACHE_MAX
+        # Keep references so ids are not recycled mid-loop, forcing distinct keys.
+        held = []
+        for i in range(cap + 50):
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": f"tool_{i}",
+                        "description": "d",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ]
+            held.append(tools)
+            mm._estimate_tools_tokens_rough(tools)
+            assert len(mm._TOOLS_TOKENS_CACHE) <= cap
+        assert len(mm._TOOLS_TOKENS_CACHE) == cap
 
 
 # =========================================================================

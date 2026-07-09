@@ -4995,3 +4995,114 @@ class TestThreadContextUnverifiedTagging:
         # Renders successfully without trust tag (exception → unknown trust).
         assert "U_X: hello" in content
         assert "[unverified]" not in content
+
+
+# ---------------------------------------------------------------------------
+# TestThreadContextAppMessages
+# ---------------------------------------------------------------------------
+
+
+class TestThreadContextAppMessages:
+    """App-posted messages (Alertmanager, Grafana, CI bots) frequently carry
+    their content in ``attachments``/``blocks`` with an empty top-level
+    ``text``. Thread-context must fall back to those so, e.g., an alert that
+    started the thread the bot was asked to investigate is not dropped."""
+
+    @staticmethod
+    def _make_replies(messages):
+        return AsyncMock(return_value={"messages": messages})
+
+    @pytest.mark.asyncio
+    async def test_attachment_only_parent_is_included(self, adapter):
+        """Alertmanager-style parent: empty text, content in a legacy attachment."""
+        adapter._thread_context_cache.clear()
+        messages = [
+            {  # parent posted by the Alertmanager app: text="" , content in attachment
+                "ts": "100.0",
+                "bot_id": "B_ALERTMGR",
+                "subtype": "bot_message",
+                "username": "Alertmanager",
+                "text": "",
+                "attachments": [
+                    {
+                        "fallback": "[FIRING:1] KubeJobFailed cluster-01 "
+                        "batch-job-123456",
+                        "color": "danger",
+                    }
+                ],
+            },
+            {"ts": "101.0", "user": "U_BOB", "text": "<@U_BOT> investigate"},
+        ]
+        adapter._app.client.conversations_replies = self._make_replies(messages)
+
+        with patch.object(
+            adapter, "_resolve_user_name",
+            new=AsyncMock(side_effect=lambda uid, **_: uid),
+        ):
+            content = await adapter._fetch_thread_context(
+                channel_id="C1", thread_ts="100.0", current_ts="999.0",
+            )
+
+        # The alert text (previously dropped) is now present in the context.
+        assert "KubeJobFailed" in content
+        assert "batch-job-123456" in content
+        assert "[thread parent]" in content
+
+    @pytest.mark.asyncio
+    async def test_blocks_only_message_is_included(self, adapter):
+        """Block Kit message with empty text falls back to block text."""
+        adapter._thread_context_cache.clear()
+        messages = [
+            {"ts": "100.0", "user": "U_BOB", "text": "kickoff"},
+            {
+                "ts": "101.0",
+                "bot_id": "B_CI",
+                "subtype": "bot_message",
+                "username": "CI",
+                "text": "",
+                "blocks": [
+                    {
+                        "type": "rich_text",
+                        "elements": [
+                            {
+                                "type": "rich_text_section",
+                                "elements": [
+                                    {"type": "text", "text": "deploy #42 succeeded"}
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+        ]
+        adapter._app.client.conversations_replies = self._make_replies(messages)
+
+        with patch.object(
+            adapter, "_resolve_user_name",
+            new=AsyncMock(side_effect=lambda uid, **_: uid),
+        ):
+            content = await adapter._fetch_thread_context(
+                channel_id="C1", thread_ts="100.0", current_ts="999.0",
+            )
+
+        assert "deploy #42 succeeded" in content
+
+    @pytest.mark.asyncio
+    async def test_message_without_any_text_is_skipped(self, adapter):
+        """A message with no text/blocks/attachments is still skipped (no crash)."""
+        adapter._thread_context_cache.clear()
+        messages = [
+            {"ts": "100.0", "user": "U_BOB", "text": "hello"},
+            {"ts": "101.0", "bot_id": "B_X", "subtype": "bot_message", "text": ""},
+        ]
+        adapter._app.client.conversations_replies = self._make_replies(messages)
+
+        with patch.object(
+            adapter, "_resolve_user_name",
+            new=AsyncMock(side_effect=lambda uid, **_: uid),
+        ):
+            content = await adapter._fetch_thread_context(
+                channel_id="C1", thread_ts="100.0", current_ts="999.0",
+            )
+
+        assert "hello" in content  # the real message survives; empty bot msg dropped

@@ -3171,7 +3171,16 @@ class SessionDB:
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (
                     SELECT s.id, s.id FROM sessions s {where_sql}
-                    UNION ALL
+                    -- UNION (not UNION ALL) dedups the working set so a
+                    -- corrupted parent_session_id chain that loops back on
+                    -- itself (a -> b -> a) terminates instead of recursing
+                    -- forever. Mirrors the _session_latest_descendant fix
+                    -- (#39140-adjacent) for the structurally identical
+                    -- parent-chain-walk hazard; a legitimate acyclic chain
+                    -- never produces a duplicate (root_id, cur_id) pair
+                    -- (parent_session_id is single-valued), so this is a
+                    -- no-op for correct data.
+                    UNION
                     SELECT c.root_id, child.id
                     FROM chain c
                     JOIN sessions parent ON parent.id = c.cur_id

@@ -3994,6 +3994,48 @@ class TestExcludeSources:
         assert "s2" not in ids
         assert "s3" not in ids
 
+    def test_list_sessions_rich_survives_corrupted_compression_cycle(self, db):
+        """Regression: the recursive 'chain' CTE must dedup (UNION) so a
+        corrupted compression-continuation chain that loops (a -> b -> a)
+        terminates instead of recursing forever like UNION ALL would.
+
+        Mirrors test_latest_descendant_survives_parent_cycle
+        (tests/hermes_cli/test_web_server.py, #39140-adjacent) for the
+        structurally identical parent-chain-walk hazard in
+        list_sessions_rich's own recursive compression-chain CTE, which is
+        a separate query from _session_latest_descendant's and was not
+        covered by that fix.
+        """
+        db.create_session("cyc-a", "cli")
+        db.create_session("cyc-b", "cli", parent_session_id="cyc-a")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET end_reason='compression' WHERE id IN ('cyc-a', 'cyc-b')"
+            )
+            # Corrupt the chain into a 2-cycle: cyc-a now also claims cyc-b
+            # as its parent (cyc-a -> cyc-b -> cyc-a), mirroring the sibling
+            # test's corruption of a linear chain into a loop.
+            db._conn.execute(
+                "UPDATE sessions SET parent_session_id='cyc-b' WHERE id='cyc-a'"
+            )
+            db._conn.commit()
+
+        # The core regression property: the call returns at all (bounded
+        # time) instead of hanging forever walking the corrupted cycle.
+        # order_by_last_active=True is required to reach the recursive
+        # chain CTE at all -- it is only built in that code path.
+        # include_children=True is required for cyc-a/cyc-b (both have
+        # parent_session_id set) to even enter the CTE seed -- otherwise
+        # _LISTABLE_CHILD_SQL excludes them before recursion ever starts.
+        # The exact projection of a cyclic compression chain is undefined
+        # (there is no valid "latest tip" for data that can never occur
+        # from normal operation), so this only asserts termination and a
+        # well-formed result, not a specific row.
+        sessions = db.list_sessions_rich(
+            source="cli", limit=20, order_by_last_active=True, include_children=True
+        )
+        assert isinstance(sessions, list)
+
     def test_search_messages_excludes_tool_source(self, db):
         db.create_session("s1", "cli")
         db.append_message("s1", "user", "Python deployment question")

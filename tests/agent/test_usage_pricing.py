@@ -218,6 +218,55 @@ def test_nous_portal_pricing_preserves_vendor_prefixed_model_ids(monkeypatch):
     assert float(entry.output_cost_per_million) == 125.0
 
 
+def test_anthropic_fable_5_pricing_entry_exists(monkeypatch):
+    """Direct Anthropic Fable 5 should use the official pricing snapshot."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *a, **kw: {},
+    )
+
+    entry = get_pricing_entry(
+        "claude-fable-5",
+        provider="anthropic",
+        base_url="https://api.anthropic.com",
+    )
+
+    assert entry is not None
+    assert entry.source == "official_docs_snapshot"
+    assert entry.source_url == "https://platform.claude.com/docs/en/about-claude/pricing"
+    assert entry.pricing_version == "anthropic-pricing-2026-06"
+    assert float(entry.input_cost_per_million) == 10.0
+    assert float(entry.output_cost_per_million) == 50.0
+    assert float(entry.cache_read_cost_per_million) == 1.0
+    assert float(entry.cache_write_cost_per_million) == 12.5
+
+
+def test_anthropic_fable_5_estimate_usage_cost(monkeypatch):
+    """Fable 5 sessions should get estimated dollars, not unknown cost."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *a, **kw: {},
+    )
+
+    result = estimate_usage_cost(
+        "claude-fable-5",
+        CanonicalUsage(
+            input_tokens=1_000_000,
+            output_tokens=500_000,
+            cache_read_tokens=100_000,
+            cache_write_tokens=20_000,
+        ),
+        provider="anthropic",
+        base_url="https://api.anthropic.com",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    # 1M input × $10/M + 500K output × $50/M + 100K cache reads × $1/M
+    # + 20K cache writes × $12.50/M = $10 + $25 + $0.10 + $0.25 = $35.35.
+    assert float(result.amount_usd) == 35.35
+
+
 def test_deepseek_v4_pro_pricing_entry_exists():
     """Regression test: deepseek-v4-pro must have a pricing entry.
 

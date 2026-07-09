@@ -183,6 +183,12 @@ async def auth_login(request: Request, provider: str, next: str = ""):
             status_code=404,
             detail=f"Unknown provider: {provider!r}",
         )
+    # Password providers don't support the OAuth redirect flow — redirect
+    # to /login where the password form is rendered instead of 500'ing.
+    if getattr(p, "supports_password", False):
+        from urllib.parse import quote
+        next_arg = f"?next={quote(next, safe='')}" if next else ""
+        return RedirectResponse(url=f"/login{next_arg}", status_code=302)
 
     try:
         ls = p.start_login(redirect_uri=_redirect_uri(request))

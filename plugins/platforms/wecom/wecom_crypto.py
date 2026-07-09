@@ -15,7 +15,6 @@ import struct
 from typing import Optional
 from xml.etree import ElementTree as ET
 
-from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 
@@ -94,7 +93,7 @@ class WXBizMsgCrypt:
         except Exception as exc:
             raise DecryptError(f"invalid base64 payload: {exc}") from exc
         try:
-            cipher = Cipher(algorithms.AES(self.key), modes.CBC(self.iv), backend=default_backend())
+            cipher = Cipher(algorithms.AES(self.key), modes.CBC(self.iv))
             decryptor = cipher.decryptor()
             padded = decryptor.update(cipher_text) + decryptor.finalize()
             plain = PKCS7Encoder.decode(padded)
@@ -129,7 +128,7 @@ class WXBizMsgCrypt:
             msg_len = struct.pack("I", socket.htonl(len(raw)))
             payload = random_prefix + msg_len + raw + self.receive_id.encode("utf-8")
             padded = PKCS7Encoder.encode(payload)
-            cipher = Cipher(algorithms.AES(self.key), modes.CBC(self.iv), backend=default_backend())
+            cipher = Cipher(algorithms.AES(self.key), modes.CBC(self.iv))
             encryptor = cipher.encryptor()
             encrypted = encryptor.update(padded) + encryptor.finalize()
             return base64.b64encode(encrypted).decode("utf-8")

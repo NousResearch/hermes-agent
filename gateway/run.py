@@ -39,9 +39,12 @@ import signal
 import tempfile
 import threading
 import time
+import zipfile
+import xml.etree.ElementTree as ET
 import sqlite3
 from collections import OrderedDict
 from contextvars import copy_context
+from importlib import import_module
 from pathlib import Path
 from datetime import datetime
 from typing import Callable, Dict, Optional, Any, List, Union
@@ -2056,6 +2059,177 @@ def _build_media_placeholder(event) -> str:
         else:
             parts.append(f"[User sent a file: {url}]")
     return "\n".join(parts)
+
+
+def _stringify_spreadsheet_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    text = str(value).replace("\r", " ").replace("\n", " ").strip()
+    return re.sub(r"\s+", " ", text)
+
+
+def _render_spreadsheet_rows(rows: list[list[Any]], max_chars: int = 6000) -> str:
+    rendered: list[str] = []
+    used = 0
+    for row in rows:
+        line = "\t".join(_stringify_spreadsheet_cell(cell) for cell in row).rstrip()
+        if not line:
+            continue
+        if used + len(line) + 1 > max_chars:
+            rendered.append("... [spreadsheet preview truncated]")
+            break
+        rendered.append(line)
+        used += len(line) + 1
+    return "\n".join(rendered)
+
+
+def _summarize_xlsx_document(path: str, display_name: str) -> str:
+    try:
+        load_workbook = getattr(import_module("openpyxl"), "load_workbook")
+    except Exception as exc:
+        return f"[Excel parse skipped: openpyxl is not available ({type(exc).__name__}).]"
+
+    max_sheets = 4
+    max_rows = 25
+    max_cols = 16
+    parts = [
+        f"[The user sent an Excel spreadsheet: '{display_name}'.",
+        f"The file is saved at: {path}.",
+        "Parsed workbook preview below. Use the saved file path for deeper analysis if needed.]",
+    ]
+    try:
+        workbook = load_workbook(path, read_only=True, data_only=True)
+        try:
+            sheet_names = workbook.sheetnames
+            parts.append(f"Sheets: {', '.join(sheet_names[:12])}")
+            if len(sheet_names) > 12:
+                parts.append(f"... plus {len(sheet_names) - 12} more sheet(s)")
+            for sheet_name in sheet_names[:max_sheets]:
+                sheet = workbook[sheet_name]
+                dimensions = f"{sheet.max_row or '?'} rows x {sheet.max_column or '?'} cols"
+                rows: list[list[Any]] = []
+                for row in sheet.iter_rows(max_row=max_rows, max_col=max_cols, values_only=True):
+                    values = list(row)
+                    if any(_stringify_spreadsheet_cell(cell) for cell in values):
+                        rows.append(values)
+                parts.append(f"\nSheet: {sheet_name} ({dimensions})")
+                preview = _render_spreadsheet_rows(rows)
+                parts.append(preview if preview else "[empty preview]")
+        finally:
+            workbook.close()
+    except Exception as exc:
+        return (
+            f"[The user sent an Excel spreadsheet: '{display_name}'. "
+            f"The file is saved at: {path}. "
+            f"Automatic parsing failed: {type(exc).__name__}: {exc}.]"
+        )
+
+    text = "\n".join(parts)
+    return text[:12000] + ("\n... [spreadsheet summary truncated]" if len(text) > 12000 else "")
+
+
+def _summarize_xls_document(path: str, display_name: str) -> str:
+    try:
+        open_workbook = getattr(import_module("xlrd"), "open_workbook")
+    except Exception as exc:
+        return f"[Excel parse skipped: xlrd is not available ({type(exc).__name__}).]"
+
+    max_sheets = 4
+    max_rows = 25
+    max_cols = 16
+    parts = [
+        f"[The user sent an Excel spreadsheet: '{display_name}'.",
+        f"The file is saved at: {path}.",
+        "Parsed workbook preview below. Use the saved file path for deeper analysis if needed.]",
+    ]
+    try:
+        workbook = open_workbook(path, on_demand=True)
+        try:
+            sheet_names = workbook.sheet_names()
+            parts.append(f"Sheets: {', '.join(sheet_names[:12])}")
+            if len(sheet_names) > 12:
+                parts.append(f"... plus {len(sheet_names) - 12} more sheet(s)")
+            for sheet_name in sheet_names[:max_sheets]:
+                sheet = workbook.sheet_by_name(sheet_name)
+                rows: list[list[Any]] = []
+                for row_idx in range(min(sheet.nrows, max_rows)):
+                    values = sheet.row_values(row_idx, 0, min(sheet.ncols, max_cols))
+                    if any(_stringify_spreadsheet_cell(cell) for cell in values):
+                        rows.append(values)
+                parts.append(f"\nSheet: {sheet_name} ({sheet.nrows} rows x {sheet.ncols} cols)")
+                preview = _render_spreadsheet_rows(rows)
+                parts.append(preview if preview else "[empty preview]")
+        finally:
+            workbook.release_resources()
+    except Exception as exc:
+        return (
+            f"[The user sent an Excel spreadsheet: '{display_name}'. "
+            f"The file is saved at: {path}. "
+            f"Automatic parsing failed: {type(exc).__name__}: {exc}.]"
+        )
+
+    text = "\n".join(parts)
+    return text[:12000] + ("\n... [spreadsheet summary truncated]" if len(text) > 12000 else "")
+
+
+def _docx_collect_text(node: ET.Element) -> str:
+    ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    lines: list[str] = []
+
+    for child in list(node):
+        if child.tag == f"{ns}p":
+            text = "".join(t.text or "" for t in child.iter(f"{ns}t")).strip()
+            if text:
+                lines.append(re.sub(r"\s+", " ", text))
+        elif child.tag == f"{ns}tbl":
+            table_rows: list[str] = []
+            for row in child.iter(f"{ns}tr"):
+                cells = []
+                for cell in row.iter(f"{ns}tc"):
+                    cell_text = " ".join(
+                        "".join(t.text or "" for t in p.iter(f"{ns}t")).strip()
+                        for p in cell.iter(f"{ns}p")
+                    )
+                    cell_text = re.sub(r"\s+", " ", cell_text).strip()
+                    cells.append(cell_text)
+                row_text = "\t".join(cells).rstrip()
+                if row_text:
+                    table_rows.append(row_text)
+            if table_rows:
+                lines.append("\n".join(table_rows))
+        else:
+            nested = _docx_collect_text(child)
+            if nested:
+                lines.append(nested)
+
+    return "\n".join(line for line in lines if line)
+
+
+def _summarize_docx_document(path: str, display_name: str) -> str:
+    parts = [
+        f"[The user sent a Word document: '{display_name}'.",
+        f"The file is saved at: {path}.",
+        "Extracted text preview below. Use the saved file path for deeper analysis if needed.]",
+    ]
+    try:
+        with zipfile.ZipFile(path) as archive:
+            document_xml = archive.read("word/document.xml")
+        root = ET.fromstring(document_xml)
+        body = root.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}body")
+        content = _docx_collect_text(body or root).strip()
+    except Exception as exc:
+        return (
+            f"[The user sent a Word document: '{display_name}'. "
+            f"The file is saved at: {path}. "
+            f"Automatic parsing failed: {type(exc).__name__}: {exc}.]"
+        )
+
+    if not content:
+        content = "[No extractable text found in the Word document preview.]"
+    text = "\n".join(parts) + "\n" + content
+    return text[:12000] + ("\n... [Word document summary truncated]" if len(text) > 12000 else "")
 
 
 def _build_document_context_note(display_name: str, agent_path: str, mtype: str) -> str:
@@ -10523,8 +10697,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ):
                     continue
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
+                _ext = os.path.splitext(path)[1].lower()
                 if mtype in {"", "application/octet-stream"}:
-                    _ext = os.path.splitext(path)[1].lower()
                     if _ext in _TEXT_EXTENSIONS:
                         mtype = "text/plain"
                     else:
@@ -10541,6 +10715,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 parts = basename.split("_", 2)
                 display_name = parts[2] if len(parts) >= 3 else basename
                 display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+
+                if _ext in {".xlsx", ".xls"}:
+                    spreadsheet_context = (
+                        _summarize_xlsx_document(path, display_name)
+                        if _ext == ".xlsx"
+                        else _summarize_xls_document(path, display_name)
+                    )
+                    message_text = f"{spreadsheet_context}\n\n{message_text}"
+                    continue
+
+                if _ext == ".docx":
+                    docx_context = _summarize_docx_document(path, display_name)
+                    message_text = f"{docx_context}\n\n{message_text}"
+                    continue
 
                 # Translate host cache path to in-container path if running under Docker backend.
                 # This ensures the agent receives a path it can open inside its sandbox, as the

@@ -516,6 +516,8 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
+    if platform_name == "dingtalk" and target_ref.startswith("cid"):
+        return target_ref, None, True
     if platform_name == "yuanbao":
         match = _YUANBAO_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -668,14 +670,36 @@ async def _send_via_adapter(
                     metadata["publish_topic"] = chat_id
                 if not metadata:
                     metadata = None
-                result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+                last_result = None
+                if chunk:
+                    result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+                    if not result.success:
+                        return {"error": f"Adapter send failed: {result.error}"}
+                    last_result = result
+                for media_item in media_files or []:
+                    media_path = media_item[0] if isinstance(media_item, tuple) else media_item
+                    if not hasattr(adapter, "send_document"):
+                        return {
+                            "error": (
+                                f"Live adapter for platform '{platform_name}' "
+                                "does not support native document delivery"
+                            )
+                        }
+                    result = await adapter.send_document(
+                        chat_id=chat_id,
+                        file_path=media_path,
+                        metadata=metadata,
+                    )
+                    if not result.success:
+                        return {"error": f"Adapter media send failed: {result.error}"}
+                    last_result = result
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 return {"error": f"Plugin platform send failed: {e}"}
-            if result.success:
-                return {"success": True, "message_id": result.message_id}
-            return {"error": f"Adapter send failed: {result.error}"}
+            if last_result is not None:
+                return {"success": True, "message_id": last_result.message_id}
+            return {"success": True}
 
     entry = None
     try:
@@ -905,6 +929,25 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- DingTalk: native file support via running gateway adapter ---
+    if platform == Platform.DINGTALK and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_via_adapter(
+                platform,
+                pconfig,
+                chat_id,
+                chunk,
+                thread_id=thread_id,
+                media_files=media_files if is_last else None,
+                force_document=force_document,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- WhatsApp: native media attachment support via the registry's
     # standalone_sender_fn (plugins/platforms/whatsapp/adapter.py::_standalone_send).
     # The plugin uploads each file through the local Baileys bridge /send-media
@@ -936,7 +979,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, dingtalk and whatsapp; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -944,7 +987,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, dingtalk and whatsapp"
         )
 
     last_result = None

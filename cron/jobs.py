@@ -594,7 +594,10 @@ def _compute_grace_seconds(schedule: dict) -> int:
     if kind == "cron" and HAS_CRONITER:
         try:
             now = _hermes_now()
-            cron = croniter(schedule["expr"], now)
+            cron_expr = schedule.get("expr") or schedule.get("expression")
+            if not cron_expr:
+                return MIN_GRACE
+            cron = croniter(cron_expr, now)
             first = cron.get_next(datetime)
             second = cron.get_next(datetime)
             period_seconds = int((second - first).total_seconds())
@@ -629,13 +632,16 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         return next_run.isoformat()
 
     elif schedule["kind"] == "cron":
+        cron_expr = schedule.get("expr") or schedule.get("expression")
+        if not cron_expr:
+            return None
         if not HAS_CRONITER:
             logger.warning(
                 "Cannot compute next run for cron schedule %r: 'croniter' is "
                 "not installed. croniter is a core dependency as of v0.9.x; "
                 "reinstall hermes-agent or run 'pip install croniter' in your "
                 "runtime env.",
-                schedule.get("expr"),
+                cron_expr,
             )
             return None
         # Use last_run_at as the croniter base when available, consistent
@@ -645,7 +651,7 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         base_time = now
         if last_run_at:
             base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
-        cron = croniter(schedule["expr"], base_time)
+        cron = croniter(cron_expr, base_time)
         next_run = cron.get_next(datetime)
         return next_run.isoformat()
 

@@ -118,12 +118,53 @@ try:
 except ImportError:
     FEISHU_AVAILABLE = False
     lark = None  # type: ignore[assignment]
+    P2ImMessageMessageReadV1 = None  # type: ignore[assignment]
     CallBackCard = None  # type: ignore[assignment]
     P2CardActionTriggerResponse = None  # type: ignore[assignment]
     EventDispatcherHandler = None  # type: ignore[assignment]
     FeishuWSClient = None  # type: ignore[assignment]
     FEISHU_DOMAIN = None  # type: ignore[assignment]
     LARK_DOMAIN = None  # type: ignore[assignment]
+
+    class AccessTokenType:  # type: ignore[no-redef]
+        TENANT = "tenant"
+
+    class HttpMethod:  # type: ignore[no-redef]
+        GET = "GET"
+
+    class _FallbackSdkBuilder:
+        def __init__(self) -> None:
+            self._values: Dict[str, Any] = {}
+
+        def __getattr__(self, name: str):
+            def _setter(value: Any) -> "_FallbackSdkBuilder":
+                self._values[name] = value
+                return self
+            return _setter
+
+        def build(self) -> SimpleNamespace:
+            return SimpleNamespace(**self._values)
+
+    class _FallbackSdkModel:
+        @classmethod
+        def builder(cls) -> _FallbackSdkBuilder:
+            return _FallbackSdkBuilder()
+
+    GetApplicationRequest = _FallbackSdkModel  # type: ignore[assignment]
+    CreateFileRequest = _FallbackSdkModel  # type: ignore[assignment]
+    CreateFileRequestBody = _FallbackSdkModel  # type: ignore[assignment]
+    CreateImageRequest = _FallbackSdkModel  # type: ignore[assignment]
+    CreateImageRequestBody = _FallbackSdkModel  # type: ignore[assignment]
+    CreateMessageRequest = _FallbackSdkModel  # type: ignore[assignment]
+    CreateMessageRequestBody = _FallbackSdkModel  # type: ignore[assignment]
+    GetChatRequest = _FallbackSdkModel  # type: ignore[assignment]
+    GetMessageRequest = _FallbackSdkModel  # type: ignore[assignment]
+    GetMessageResourceRequest = _FallbackSdkModel  # type: ignore[assignment]
+    ReplyMessageRequest = _FallbackSdkModel  # type: ignore[assignment]
+    ReplyMessageRequestBody = _FallbackSdkModel  # type: ignore[assignment]
+    UpdateMessageRequest = _FallbackSdkModel  # type: ignore[assignment]
+    UpdateMessageRequestBody = _FallbackSdkModel  # type: ignore[assignment]
+    BaseRequest = _FallbackSdkModel  # type: ignore[assignment]
 
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None

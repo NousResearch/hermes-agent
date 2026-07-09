@@ -44,12 +44,10 @@ except ImportError:  # pragma: no cover - dependency gate
     AIOHTTP_AVAILABLE = False
 
 try:
-    from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
     CRYPTO_AVAILABLE = True
 except ImportError:  # pragma: no cover - dependency gate
-    default_backend = None  # type: ignore[assignment]
     Cipher = None  # type: ignore[assignment]
     algorithms = None  # type: ignore[assignment]
     modes = None  # type: ignore[assignment]
@@ -177,13 +175,13 @@ def _pkcs7_pad(data: bytes, block_size: int = 16) -> bytes:
 
 
 def _aes128_ecb_encrypt(plaintext: bytes, key: bytes) -> bytes:
-    cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
+    cipher = Cipher(algorithms.AES(key), modes.ECB())
     encryptor = cipher.encryptor()
     return encryptor.update(_pkcs7_pad(plaintext)) + encryptor.finalize()
 
 
 def _aes128_ecb_decrypt(ciphertext: bytes, key: bytes) -> bytes:
-    cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
+    cipher = Cipher(algorithms.AES(key), modes.ECB())
     decryptor = cipher.decryptor()
     padded = decryptor.update(ciphertext) + decryptor.finalize()
     if not padded:

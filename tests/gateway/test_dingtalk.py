@@ -333,14 +333,14 @@ class TestSend:
         assert result.error and "do not support local image uploads" in result.error
 
     @pytest.mark.asyncio
-    async def test_send_document_returns_explicit_unsupported_error(self):
+    async def test_send_document_missing_file_returns_file_not_found(self):
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
 
         result = await adapter.send_document("chat-123", "/tmp/demo.pdf")
 
         assert result.success is False
-        assert result.error and "do not support local file attachments" in result.error
+        assert result.error and "File not found" in result.error
 
 
 # ---------------------------------------------------------------------------
@@ -1169,3 +1169,83 @@ class TestDingTalkAdapterAICards:
         mock_card_sdk.deliver_card_with_options_async.assert_called_once()
         mock_card_sdk.streaming_update_with_options_async.assert_called_once()
         assert result.success is True
+
+
+# ---------------------------------------------------------------------------
+# File/document transfer
+# ---------------------------------------------------------------------------
+
+
+class TestDingTalkFileMedia:
+
+    def test_file_content_download_code_maps_to_document(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from gateway.platforms.base import MessageType
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        msg = SimpleNamespace(
+            message_type="file",
+            file_content={"downloadCode": "download-code-1", "fileName": "report.xlsx"},
+            rich_text_content=None,
+            rich_text=None,
+            image_content=None,
+            picture_url=None,
+        )
+
+        msg_type, media_urls, media_types = adapter._extract_media(msg)
+
+        assert msg_type == MessageType.DOCUMENT
+        assert media_urls == ["download-code-1"]
+        assert media_types == ["application/octet-stream"]
+
+    @pytest.mark.asyncio
+    async def test_upload_uses_header_signature_protocol_and_dingtalk_storage(self, tmp_path):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+
+        uploaded = {}
+        file_path = tmp_path / "report.md"
+        file_path.write_text("hello", encoding="utf-8")
+
+        class FakeStorageSdk:
+            async def get_file_upload_info_with_options_async(self, space_id, request, headers, runtime):
+                uploaded["space_id"] = space_id
+                uploaded["protocol"] = request.protocol
+                uploaded["storage_driver"] = request.option.storage_driver
+                uploaded["multipart"] = request.multipart
+                return SimpleNamespace(
+                    body=SimpleNamespace(
+                        upload_key="upload-key-1",
+                        header_signature_info=SimpleNamespace(
+                            resource_urls=["https://upload.example/object"],
+                            headers={"x-test": "1"},
+                        ),
+                    )
+                )
+
+            async def commit_file_with_options_async(self, space_id, request, headers, runtime):
+                uploaded["commit_name"] = request.name
+                uploaded["commit_upload_key"] = request.upload_key
+                return SimpleNamespace(body=SimpleNamespace(dentry=SimpleNamespace(id="dentry-1")))
+
+        http_client = SimpleNamespace(
+            put=AsyncMock(return_value=SimpleNamespace(raise_for_status=lambda: None))
+        )
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._storage_sdk = FakeStorageSdk()
+        adapter._http_client = http_client
+
+        dentry_id = await adapter._upload_file_to_dingtalk_space(
+            space_id="space-1",
+            parent_id="0",
+            token="token",
+            union_id="union-1",
+            file_path=str(file_path),
+            file_name="report.md",
+        )
+
+        assert dentry_id == "dentry-1"
+        assert uploaded["protocol"] == "HEADER_SIGNATURE"
+        assert uploaded["storage_driver"] == "DINGTALK"
+        assert uploaded["multipart"] is False
+        assert uploaded["commit_upload_key"] == "upload-key-1"
+        http_client.put.assert_awaited_once()

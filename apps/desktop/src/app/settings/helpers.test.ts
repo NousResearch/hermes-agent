@@ -175,4 +175,74 @@ describe('settings helpers', () => {
       expect(opts).toContain('xai')
     })
   })
+
+  describe('enumOptionsFor — display.personality merges agent.personalities (#61312)', () => {
+    it('returns the 14 built-in personalities when config has none', () => {
+      const opts = enumOptionsFor('display.personality', '', {} as HermesConfigRecord)
+      expect(opts).toEqual([
+        '',
+        'helpful',
+        'concise',
+        'technical',
+        'creative',
+        'teacher',
+        'kawaii',
+        'catgirl',
+        'pirate',
+        'shakespeare',
+        'surfer',
+        'noir',
+        'uwu',
+        'philosopher',
+        'hype'
+      ])
+    })
+
+    it('appends a single custom personality from agent.personalities', () => {
+      const opts = enumOptionsFor('display.personality', '', {
+        agent: {
+          personalities: {
+            bug_hunter: 'You are a bug bounty hunter. …'
+          }
+        }
+      } as unknown as HermesConfigRecord)
+      expect(opts).toContain('bug_hunter')
+      expect(opts).toContain('helpful') // the built-ins remain
+    })
+
+    it('appends multiple custom personalities and de-duplicates', () => {
+      const opts = enumOptionsFor('display.personality', '', {
+        agent: {
+          personalities: {
+            bug_hunter: 'You are a bug bounty hunter. …',
+            chef: 'You are a chef. …',
+            pentester: 'pentest the world' // also appears hardcoded in JS bundles
+          }
+        }
+      } as unknown as HermesConfigRecord)
+      // Custom names appear once each.
+      expect(opts?.filter((name) => name === 'bug_hunter')).toHaveLength(1)
+      expect(opts?.filter((name) => name === 'chef')).toHaveLength(1)
+      expect(opts?.filter((name) => name === 'pentester')).toHaveLength(1)
+      // Built-ins remain present.
+      expect(opts).toContain('helpful')
+    })
+
+    it('preserves the current personality even if neither built-in nor custom', () => {
+      // The user hand-typed 'inherited-from-old-config' in a previous session;
+      // the runtime must keep it visible so the dropdown doesn't go blank.
+      const opts = enumOptionsFor('display.personality', 'inherited-from-old-config', {} as HermesConfigRecord)
+      expect(opts).toContain('inherited-from-old-config')
+      expect(opts).toContain('helpful')
+    })
+
+    it('treats agent.personalities as a non-object as if it were empty', () => {
+      // A misconfigured config.yaml could surface a list/string instead of a
+      // dict. The dropdown must not crash or surface [object Object].
+      const opts = enumOptionsFor('display.personality', '', {
+        agent: { personalities: ['not-a-dict'] as unknown }
+      } as unknown as HermesConfigRecord)
+      expect(opts).toContain('helpful')
+    })
+  })
 })

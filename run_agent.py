@@ -4474,9 +4474,82 @@ class AIAgent:
         if merged:
             self._client_kwargs["default_headers"] = merged
 
+    def _credential_entry_compatible(self, entry) -> bool:
+        """Whether a pool entry may be swapped into this agent at all.
+
+        ``_swap_credential`` applies the entry's api_key AND base_url, so a
+        cross-provider entry silently retargets the agent to a different
+        host while ``self.provider`` still names the resolved provider —
+        the ``provider=anthropic base_url=https://openrouter.ai/api/v1``
+        mismatch behind #61195 (same class as #7833/#33088/#33163).  Those
+        earlier fixes each guarded ONE caller (recover, restore); this
+        check lives at the single choke point every rotation flows
+        through, so new call sites (e.g. the delegate startup lease) are
+        covered by construction.
+
+        Entries without a usable provider string are treated as unscoped
+        and allowed — matching the pool-level guard semantics in
+        ``recover_with_credential_pool``.
+        """
+        entry_provider = getattr(entry, "provider", None)
+        if not isinstance(entry_provider, str) or not entry_provider.strip():
+            return True
+        entry_provider = entry_provider.strip().lower()
+        agent_provider = (getattr(self, "provider", "") or "").strip().lower()
+        if not agent_provider or entry_provider == agent_provider:
+            return True
+        # Custom endpoints: the agent carries the generic ``custom`` label
+        # while pool entries are keyed ``custom:<name>`` — same comparison
+        # as recover_with_credential_pool / restore_primary (#56885).
+        if agent_provider == "custom" and entry_provider.startswith("custom:"):
+            try:
+                from agent.credential_pool import get_custom_provider_pool_key
+
+                agent_key = (
+                    get_custom_provider_pool_key(getattr(self, "base_url", "") or "")
+                    or ""
+                ).strip().lower()
+                return bool(agent_key) and agent_key == entry_provider
+            except Exception:
+                return False
+        return False
+
     def _swap_credential(self, entry) -> None:
+        if not self._credential_entry_compatible(entry):
+            logger.warning(
+                "Refusing credential swap: pool entry provider %r does not "
+                "match agent provider %r — applying it would retarget "
+                "base_url away from %s (#61195)",
+                getattr(entry, "provider", None),
+                self.provider,
+                self.base_url,
+            )
+            return
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
+        # When delegation.base_url is explicitly configured, that endpoint is
+        # authoritative for this child agent: rotation may swap KEYS, but a
+        # pool entry's own base_url must not retarget the request away from
+        # the endpoint the user pinned in config (#61195).  The pin is
+        # provider-scoped so a later provider switch (fallback chain) is
+        # unaffected.
+        _pin = getattr(self, "_delegation_endpoint_pin", None)
+        if _pin:
+            _pin_provider, _pin_base = _pin
+            if (
+                _pin_base
+                and (self.provider or "") == (_pin_provider or "")
+                and isinstance(runtime_base, str)
+                and runtime_base.rstrip("/") != _pin_base.rstrip("/")
+            ):
+                logger.info(
+                    "Delegation endpoint pin: keeping explicitly configured "
+                    "base_url %s (pool entry %s carries %s); rotating key only",
+                    _pin_base,
+                    getattr(entry, "id", "?"),
+                    runtime_base,
+                )
+                runtime_base = _pin_base
 
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token

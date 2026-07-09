@@ -1058,6 +1058,10 @@ def _build_child_agent(
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # True when override_base_url came from an explicit delegation.base_url
+    # config entry — the endpoint is then authoritative for this child and
+    # credential-pool rotation must not retarget it (#61195).
+    pin_base_url: bool = False,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1352,6 +1356,14 @@ def _build_child_agent(
     parent_sid = getattr(parent_agent, "session_id", None)
     if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
         child._session_init_model_config["_delegate_from"] = parent_sid
+
+    # When delegation.base_url is explicitly configured it is authoritative
+    # for this child: _swap_credential rotates keys but keeps this endpoint,
+    # instead of letting a pool entry's base_url retarget the request back
+    # to the parent's provider (#61195).  Scoped to the resolved provider so
+    # a later fallback-chain provider switch is unaffected.
+    if pin_base_url and override_base_url:
+        child._delegation_endpoint_pin = (effective_provider, effective_base_url)
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -2502,6 +2514,7 @@ def delegate_task(
                 override_api_mode=creds["api_mode"],
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
+                pin_base_url=bool(creds.get("base_url_pinned")),
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -3070,12 +3083,30 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         if configured_api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
             api_mode = configured_api_mode
 
+        if api_key is None and provider == "anthropic":
+            # Direct api.anthropic.com endpoint with no delegation.api_key:
+            # the parent may run a different provider (e.g. openrouter), and
+            # inheriting its key is a guaranteed 401 here.  Prefer the user's
+            # own Anthropic credential — the same resolver init_agent uses
+            # for native Anthropic — and only fall back to parent inheritance
+            # when none exists (#61195).
+            try:
+                from agent.anthropic_adapter import resolve_anthropic_token
+
+                api_key = resolve_anthropic_token() or None
+            except Exception:
+                api_key = None
+
         return {
             "model": configured_model,
             "provider": provider,
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
+            # An explicit delegation.base_url is authoritative for the child:
+            # credential-pool rotation may swap keys but must not retarget
+            # the endpoint (#61195).  Consumed by _build_child_agent.
+            "base_url_pinned": True,
         }
 
     if not configured_provider:

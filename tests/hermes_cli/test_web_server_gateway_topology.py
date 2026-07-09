@@ -173,6 +173,40 @@ class TestCollectProfileGatewayTopology:
 # /api/status wiring
 # ---------------------------------------------------------------------------
 
+def test_gateway_liveness_for_home_uses_explicit_profile_paths(tmp_path, monkeypatch):
+    runtime = {"gateway_state": "running", "pid": 4242}
+    calls = {}
+
+    def fake_get_running_pid_cached(pid_path, *, cleanup_stale=True):
+        calls["pid_path"] = pid_path
+        calls["cleanup_stale"] = cleanup_stale
+        return None
+
+    def fake_read_runtime_status(path=None):
+        calls["runtime_path"] = path
+        return runtime
+
+    def fake_get_runtime_status_running_pid(payload, *, expected_home=None):
+        calls["expected_home"] = expected_home
+        assert payload is runtime
+        return 4242
+
+    monkeypatch.setattr(web_server, "get_running_pid_cached", fake_get_running_pid_cached)
+    monkeypatch.setattr(web_server, "read_runtime_status", fake_read_runtime_status)
+    monkeypatch.setattr(web_server, "get_runtime_status_running_pid", fake_get_runtime_status_running_pid)
+
+    pid, payload = web_server._gateway_liveness_for_home(tmp_path)
+
+    assert pid == 4242
+    assert payload is runtime
+    assert calls == {
+        "pid_path": tmp_path / "gateway.pid",
+        "cleanup_stale": False,
+        "runtime_path": tmp_path / "gateway_state.json",
+        "expected_home": tmp_path,
+    }
+
+
 class TestStatusEndpointTopology:
     @pytest.fixture(autouse=True)
     def _setup_client(self, monkeypatch, _isolate_hermes_home):

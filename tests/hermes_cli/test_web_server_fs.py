@@ -85,6 +85,127 @@ def test_fs_read_text_matches_preview_shape_and_truncates(client, tmp_path, monk
     }
 
 
+def test_fs_list_hides_sensitive_credential_paths(client, tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "visible.txt").write_text("ok")
+    (root / ".env").write_text("SECRET=do-not-leak")
+    (root / "auth.json").write_text("{}")
+    (root / "mcp-tokens").mkdir()
+    (root / "mcp-tokens" / "server.json").write_text("{}")
+    (root / ".ssh").mkdir()
+    (root / ".ssh" / "id_ed25519").write_text("SECRET=do-not-leak")
+    (root / ".aws").mkdir()
+    (root / ".aws" / "credentials").write_text("SECRET=do-not-leak")
+    (root / ".npmrc").write_text("//registry.example/:_authToken=secret")
+
+    response = client.get("/api/fs/list", params={"path": str(root)})
+
+    assert response.status_code == 200
+    names = {entry["name"] for entry in response.json()["entries"]}
+    assert names == {"visible.txt"}
+
+
+def test_fs_read_text_rejects_sensitive_files(client, tmp_path):
+    sensitive_paths = [
+        ".env",
+        ".env.local",
+        "auth.json",
+        "mcp-tokens/server.json",
+        "pairing/telegram.json",
+        ".ssh/id_ed25519",
+        ".netrc",
+        ".npmrc",
+        ".pypirc",
+        ".aws/credentials",
+        ".kube/config",
+        ".docker/config.json",
+        ".gnupg/private-keys-v1.d/keygrip.key",
+    ]
+    for rel in sensitive_paths:
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("SECRET=do-not-leak")
+
+        response = client.get("/api/fs/read-text", params={"path": str(target)})
+
+        assert response.status_code == 403, rel
+
+
+def test_fs_read_data_url_rejects_sensitive_files(client, tmp_path):
+    for rel in [".env", ".ssh/id_rsa", ".aws/credentials"]:
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("SECRET=do-not-leak")
+
+        response = client.get("/api/fs/read-data-url", params={"path": str(target)})
+
+        assert response.status_code == 403, rel
+
+
+def test_fs_write_text_rejects_sensitive_files(client, tmp_path):
+    for rel in [".env", ".ssh/id_ed25519", ".netrc", ".aws/credentials"]:
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("SECRET=old")
+
+        response = client.post(
+            "/api/fs/write-text",
+            json={"path": str(target), "content": "SECRET=new"},
+        )
+
+        assert response.status_code == 403, rel
+        assert target.read_text() == "SECRET=old"
+
+
+def test_fs_read_text_rejects_sensitive_symlink_target(client, tmp_path):
+    secret = tmp_path / ".env"
+    secret.write_text("SECRET=do-not-leak")
+    link = tmp_path / "visible-link"
+    try:
+        link.symlink_to(secret)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+
+    response = client.get("/api/fs/read-text", params={"path": str(link)})
+
+    assert response.status_code == 403
+
+
+def test_fs_read_data_url_rejects_sensitive_symlink_target(client, tmp_path):
+    secret = tmp_path / ".ssh" / "id_ed25519"
+    secret.parent.mkdir()
+    secret.write_text("SECRET=do-not-leak")
+    link = tmp_path / "visible-key"
+    try:
+        link.symlink_to(secret)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+
+    response = client.get("/api/fs/read-data-url", params={"path": str(link)})
+
+    assert response.status_code == 403
+
+
+def test_fs_write_text_rejects_sensitive_symlink_target(client, tmp_path):
+    secret = tmp_path / ".ssh" / "id_ed25519"
+    secret.parent.mkdir()
+    secret.write_text("SECRET=old")
+    link = tmp_path / "visible-key"
+    try:
+        link.symlink_to(secret)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={"path": str(link), "content": "SECRET=new"},
+    )
+
+    assert response.status_code == 403
+    assert secret.read_text() == "SECRET=old"
+
+
 def test_fs_read_text_rejects_source_over_cap(client, tmp_path, monkeypatch):
     monkeypatch.setattr(web_server, "_FS_TEXT_SOURCE_MAX_BYTES", 4)
     target = tmp_path / "large.txt"

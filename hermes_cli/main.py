@@ -5824,6 +5824,88 @@ def cmd_gui(args: argparse.Namespace):
     sys.exit(launch_result.returncode)
 
 
+def _cmdline_runs_dashboard_server(command: str) -> bool:
+    """Return True for real Hermes dashboard/serve process command lines.
+
+    Global CLI flags can legally appear before the subcommand, e.g.
+    ``python -m hermes_cli.main -p default dashboard``. A plain substring
+    search for ``"hermes_cli.main dashboard"`` misses that shape, while a
+    greedy ``hermes.*dashboard`` regex catches unrelated chat prompts and shell
+    wrappers. Parse only the *executed program* shape we understand, then identify
+    the first non-option Hermes subcommand after the launcher.
+    """
+    try:
+        tokens = shlex.split(command, posix=(sys.platform != "win32"))
+    except ValueError:
+        tokens = command.split()
+    if not tokens:
+        return False
+
+    def _base(token: str) -> str:
+        cleaned = token.strip("\"'").replace("\\", "/")
+        return cleaned.rsplit("/", 1)[-1].lower()
+
+    def _norm(token: str) -> str:
+        return token.strip("\"'").replace("\\", "/").lower()
+
+    i = 0
+    # Support simple env-prefix launchers such as
+    # ``HERMES_HOME=/x hermes dashboard`` or ``env HERMES_HOME=/x hermes ...``.
+    if _base(tokens[i]) == "env":
+        i += 1
+    while i < len(tokens) and "=" in tokens[i] and not tokens[i].startswith("-"):
+        i += 1
+    if i >= len(tokens):
+        return False
+
+    first_base = _base(tokens[i])
+    first_norm = _norm(tokens[i])
+    if first_base in {"hermes", "hermes.exe"}:
+        arg_start = i + 1
+    elif first_base.startswith("python"):
+        if i + 2 < len(tokens) and tokens[i + 1] == "-m" and tokens[i + 2] == "hermes_cli.main":
+            arg_start = i + 3
+        elif i + 1 < len(tokens) and _norm(tokens[i + 1]).endswith("hermes_cli/main.py"):
+            arg_start = i + 2
+        elif i + 1 < len(tokens) and _base(tokens[i + 1]) in {"hermes", "hermes.exe"}:
+            # Console-script wrapper as seen in some venv process tables:
+            # ``python /venv/bin/hermes -p default dashboard``.
+            arg_start = i + 2
+        else:
+            return False
+    elif first_norm == "hermes_cli.main" or first_norm.endswith("hermes_cli/main.py"):
+        arg_start = i + 1
+    else:
+        # Do not scan arbitrary shell wrappers such as
+        # ``bash -lc '... hermes dashboard ...'``; matching those would make
+        # status/stop double-count the supervising shell and the real listener.
+        return False
+
+    options_with_values = {
+        "-p", "--profile", "-m", "--model", "--provider", "-t", "--toolsets",
+        "-s", "--skills", "--resume", "-r", "--continue", "-c", "--source",
+        "--personality", "--workdir", "--config", "--env",
+    }
+    j = arg_start
+    while j < len(tokens):
+        token = tokens[j]
+        if token in {"dashboard", "serve"}:
+            return True
+        if token.startswith("-"):
+            if token in options_with_values and j + 1 < len(tokens):
+                j += 2
+                continue
+            # --flag=value consumes its value in the same token; boolean flags
+            # simply fall through to the next token.
+            j += 1
+            continue
+        # First non-option token is another Hermes subcommand (e.g. chat) or a
+        # positional for a wrapper we do not understand; avoid matching later
+        # prompt text that merely contains "dashboard".
+        return False
+    return False
+
+
 def _find_stale_dashboard_pids(
     *,
     exclude_pids: set[int] | None = None,
@@ -5853,17 +5935,6 @@ def _find_stale_dashboard_pids(
 
     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
     """
-    patterns = [
-        "hermes dashboard",
-        "hermes_cli.main dashboard",
-        "hermes_cli/main.py dashboard",
-        # The headless backend (`hermes serve`) is the same long-lived server
-        # under a different command name — the desktop app spawns it. Reap it
-        # on update for the same frontend/backend-mismatch reason.
-        "hermes serve",
-        "hermes_cli.main serve",
-        "hermes_cli/main.py serve",
-    ]
     self_pid = os.getpid()
     dashboard_pids: list[int] = []
 
@@ -5899,14 +5970,12 @@ def _find_stale_dashboard_pids(
                     current_cmd = line[len("CommandLine=") :]
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
-                    if (
-                        any(p in current_cmd for p in patterns)
-                        and int(pid_str) != self_pid
-                    ):
-                        try:
-                            dashboard_pids.append(int(pid_str))
-                        except ValueError:
-                            pass
+                    try:
+                        pid = int(pid_str)
+                    except ValueError:
+                        continue
+                    if _cmdline_runs_dashboard_server(current_cmd) and pid != self_pid:
+                        dashboard_pids.append(pid)
         else:
             # Linux / macOS: scan the process table via ps and match against
             # the same explicit patterns list used on Windows.  Using ps
@@ -5933,7 +6002,7 @@ def _find_stale_dashboard_pids(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if _cmdline_runs_dashboard_server(command) and pid != self_pid:
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []

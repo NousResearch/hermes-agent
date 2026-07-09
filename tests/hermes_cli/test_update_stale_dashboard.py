@@ -21,6 +21,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from hermes_cli.main import (
+    _cmdline_runs_dashboard_server,
     _find_stale_dashboard_pids,
     _kill_stale_dashboard_processes,
     _warn_stale_dashboard_processes,  # back-compat alias
@@ -45,6 +46,7 @@ def _refresh_bindings_against_live_module():
     ordering within the worker.  The fix lives in the test module because
     the two pollutants above are load-bearing for their own tests.
     """
+    global _cmdline_runs_dashboard_server
     global _find_stale_dashboard_pids
     global _kill_stale_dashboard_processes
     global _warn_stale_dashboard_processes
@@ -53,6 +55,7 @@ def _refresh_bindings_against_live_module():
     if live is None:
         live = importlib.import_module("hermes_cli.main")
 
+    _cmdline_runs_dashboard_server = live._cmdline_runs_dashboard_server
     _find_stale_dashboard_pids = live._find_stale_dashboard_pids
     _kill_stale_dashboard_processes = live._kill_stale_dashboard_processes
     _warn_stale_dashboard_processes = live._warn_stale_dashboard_processes
@@ -100,6 +103,62 @@ class TestFindStaleDashboardPids:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout=_ps_line(12345, "python3 -m hermes_cli.main dashboard --port 9119") + "\n",
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == [12345]
+
+    def test_matches_dashboard_with_global_profile_flag_before_subcommand(self):
+        """Regression: profile/model flags can appear before ``dashboard``.
+
+        The old substring matcher missed the real launch shape
+        ``python -m hermes_cli.main -p default dashboard ...``, leaving stale
+        backends alive after updates.
+        """
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=_ps_line(
+                    12345,
+                    "python3 -m hermes_cli.main -p default dashboard --port 9119",
+                ) + "\n",
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == [12345]
+
+    def test_matches_serve_with_global_flags_before_subcommand(self):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=_ps_line(
+                    12345,
+                    "hermes --profile desktop --provider openrouter serve --port 9120",
+                ) + "\n",
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == [12345]
+
+    def test_matches_venv_console_script_under_python(self):
+        assert _cmdline_runs_dashboard_server(
+            "/usr/local/lib/hermes-agent/venv/bin/python3 "
+            "/usr/local/lib/hermes-agent/venv/bin/hermes -p default dashboard --port 9119"
+        )
+
+    def test_matches_windows_hermes_path(self):
+        assert _cmdline_runs_dashboard_server(
+            r"C:\\Users\\a\\AppData\\Local\\Programs\\Hermes\\hermes.exe --profile desktop dashboard"
+        )
+
+    def test_shell_wrapper_that_mentions_dashboard_is_not_matched(self):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(
+                        22222,
+                        "bash -lc 'cd /usr/local/lib/hermes-agent && hermes -p default dashboard --port 9119'",
+                    ),
+                    _ps_line(12345, "hermes -p default dashboard --port 9119"),
+                ]) + "\n",
                 stderr="",
             )
             assert _find_stale_dashboard_pids() == [12345]

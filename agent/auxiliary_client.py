@@ -1934,7 +1934,11 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
 
     or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
     if not or_key:
-        _mark_provider_unhealthy("openrouter", ttl=60)
+        # No key configured at all — permanently unavailable, not a
+        # transient payment error. Use the full unhealthy TTL (600s)
+        # so we don't retry every 60s and spam errors.log with WARNINGs
+        # for a provider the user never configured (#59974).
+        _mark_provider_unhealthy("openrouter")
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return _create_openai_client(api_key=or_key, base_url=OPENROUTER_BASE_URL,
@@ -1978,7 +1982,9 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
             "Auxiliary Nous client unavailable: no Nous authentication found "
             "(run: hermes auth)."
         )
-        _mark_provider_unhealthy("nous", ttl=60)
+        # Permanently unavailable — use full TTL (600s) to avoid log spam
+        # from retrying every 60s for a provider the user never configured.
+        _mark_provider_unhealthy("nous")
         return None, None
     if runtime is None and nous:
         logger.debug(

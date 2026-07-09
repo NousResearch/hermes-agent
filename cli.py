@@ -15935,7 +15935,50 @@ def main(
                     missing_display,
                     ", ".join(loaded_skills),
                 )
+                # Surface the skip on the kanban board so the card author
+                # knows the worker ran without their intended skill context,
+                # rather than only having this in the worker log file (#59764).
+                kanban_task_id = os.environ.get("HERMES_KANBAN_TASK", "")
+                if kanban_task_id:
+                    try:
+                        from hermes_cli import kanban_db as _kb
+                        conn = _kb.connect()
+                        try:
+                            _kb.add_comment(
+                                conn, kanban_task_id,
+                                f"[worker] Skipped unknown skills: {missing_display}. "
+                                f"Running with: {', '.join(loaded_skills)}.",
+                            )
+                        finally:
+                            conn.close()
+                    except Exception:
+                        pass
             else:
+                # When running as a kanban worker (HERMES_KANBAN_TASK set),
+                # all skills missing is a card-configuration error, not a
+                # transient failure. Block the task with a structured reason
+                # instead of raising ValueError — otherwise the dispatcher
+                # retries and the worker crashes on every spawn (#59764).
+                kanban_task_id = os.environ.get("HERMES_KANBAN_TASK", "")
+                if kanban_task_id:
+                    reason = (
+                        f"Worker missing all required skills: {missing_display}. "
+                        f"Install the skills on profile or update the card."
+                    )
+                    try:
+                        from hermes_cli import kanban_db as _kb
+                        conn = _kb.connect()
+                        try:
+                            _kb.block_task(
+                                conn, kanban_task_id,
+                                reason=reason,
+                                kind="capability",
+                            )
+                        finally:
+                            conn.close()
+                    except Exception:
+                        pass
+                    sys.exit(0)
                 raise ValueError(f"Unknown skill(s): {missing_display}")
         if skills_prompt:
             cli.system_prompt = "\n\n".join(

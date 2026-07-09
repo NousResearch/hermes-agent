@@ -2678,7 +2678,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
         thread_id = self._resolve_thread_id(
             reply_to=None, metadata=metadata, chat_id=chat_id,
         )
-        body: Dict[str, Any] = {"text": "Hermes is thinking…"}
+        body: Dict[str, Any] = {
+            "text": getattr(self.config, "typing_status_text", None)
+            or "Hermes is thinking…"
+        }
         if thread_id:
             body["thread"] = {"name": thread_id}
 

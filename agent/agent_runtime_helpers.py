@@ -1759,6 +1759,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
     old_model = agent.model
     old_provider = agent.provider
+    old_base_url = agent.base_url
 
     # ── Snapshot all fields the swap+rebuild can mutate ──
     # If the rebuild raises (bad API key, network error, build_anthropic_client
@@ -1810,8 +1811,30 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # Without this guard the old provider's URL (e.g. Ollama's localhost
         # address) would persist silently after switching to a cloud provider
         # that returns an empty base_url string.
+        #
+        # Refinement over #52727 — the original guard only blocks the empty
+        # case. When the caller repeats the OLD provider's URL alongside a
+        # NEW provider, that bypasses the truthy check and cross-wires the
+        # agent (new provider's API key → old provider's endpoint,
+        # silent credential mis-routing). Reject the equal-and-provider-
+        # changed combination and fall back to the empty default so the new
+        # provider set_next_api_call_base_url() resolves from registry (#61296).
         if base_url:
-            agent.base_url = base_url
+            old_norm = (old_provider or "").strip().lower()
+            new_norm = (new_provider or "").strip().lower()
+            same_provider = bool(old_norm) and old_norm == new_norm
+            same_url = bool(old_base_url) and base_url == old_base_url
+            if same_url and not same_provider:
+                # Caller passed the OLD provider's URL while switching to
+                # a different provider. Treat as stale; don't trust it.
+                logger.info(
+                    "switch_model: dropping stale base_url=%r inherited from "
+                    "old provider %r while switching to %r (#61296)",
+                    base_url, old_provider, new_provider,
+                )
+                agent.base_url = ""
+            else:
+                agent.base_url = base_url
         agent.api_mode = api_mode
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(agent, "_transport_cache"):

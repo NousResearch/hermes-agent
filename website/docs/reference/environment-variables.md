@@ -727,9 +727,13 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `CODEX_HOME` | When [Codex app-server runtime](../user-guide/features/codex-app-server-runtime) is enabled, override the directory Codex CLI reads its config + auth from (default: `~/.codex`). Hermes' migration writes the managed block to `<CODEX_HOME>/config.toml`. |
 | `HERMES_KANBAN_TASK` | Set by the kanban dispatcher when spawning a worker (task UUID). Workers and the spawned `hermes-tools` MCP subprocess inherit it so kanban tools gate correctly. Don't set manually. |
 | `HERMES_API_TIMEOUT` | LLM API call timeout in seconds (default: `1800`) |
+| `HERMES_API_MAX_RETRIES` | Optional positive integer maximum API attempts before surfacing failure (default: `3`) |
 | `HERMES_API_CALL_STALE_TIMEOUT` | Non-streaming stale-call timeout in seconds (default: `90`). Auto-disabled for local providers when left unset, and may scale upward for very large contexts. Also configurable via `providers.<id>.stale_timeout_seconds` or `providers.<id>.models.<model>.stale_timeout_seconds` in `config.yaml`. |
 | `HERMES_STREAM_READ_TIMEOUT` | Streaming socket read timeout in seconds (default: `120`). Auto-increased to `HERMES_API_TIMEOUT` for local providers. Increase if local LLMs time out during long code generation. |
 | `HERMES_STREAM_STALE_TIMEOUT` | Stale stream detection timeout in seconds (default: `180`). Auto-disabled for local providers. Triggers connection kill if no chunks arrive within this window. |
+| `HERMES_CODEX_TOOL_LIMIT` | Optional positive integer cap on tools sent to the OpenAI Codex Responses backend. Unset/`0` keeps the full tool list. |
+| `HERMES_CODEX_TOOL_PRIORITY` | Optional comma-separated tool names to keep first when `HERMES_CODEX_TOOL_LIMIT` is set, for example `terminal,read_file,search_files,send_message`. |
+| `HERMES_CODEX_TOOL_CHAR_BUDGET` | Optional positive integer character budget for the serialized Codex Responses tool payload. Unset/`0` keeps the full payload. |
 | `HERMES_STREAM_RETRIES` | Number of mid-stream reconnect attempts on transient network errors (default: `3`). |
 | `HERMES_STREAM_STALE_GIVEUP` | Cross-turn circuit breaker: after this many consecutive stale kills (streaming or non-streaming) with no completed response, abort each call immediately with an actionable error instead of re-waiting out the stale timeout (default: `5`, `0` disables). Resets on any completed response, `/model` switch, fallback activation, or turn-start primary restore. |
 | `HERMES_AGENT_TIMEOUT` | Gateway inactivity timeout for a running agent in seconds (default: `1800`, 30 minutes). Resets on every tool call and streamed token. Set to `0` to disable. |

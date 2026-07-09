@@ -7,10 +7,14 @@ streaming, or the _run_codex_stream() call path.
 
 import hashlib
 import json
+import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
+
+logger = logging.getLogger(__name__)
 
 
 def _content_cache_key(instructions: str, tools: Optional[List[Dict[str, Any]]]) -> Optional[str]:
@@ -44,6 +48,84 @@ def _content_cache_key(instructions: str, tools: Optional[List[Dict[str, Any]]])
     content = f"{instructions or ''}\x00{tools_part}"
     digest = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:24]
     return f"pck_{digest}"
+
+
+def _env_positive_int(name: str) -> Optional[int]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Ignoring invalid %s=%r; expected a positive integer", name, raw)
+        return None
+    return value if value > 0 else None
+
+
+def _codex_tool_priority_names() -> List[str]:
+    raw = os.getenv("HERMES_CODEX_TOOL_PRIORITY", "").strip()
+    if not raw:
+        return []
+    names: List[str] = []
+    seen = set()
+    for item in raw.split(","):
+        name = item.strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
+def _budget_codex_response_tools(tools: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
+    """Optionally reduce Codex Responses tool payload size for OAuth-backed frontends."""
+    if not tools:
+        return tools
+
+    limit = _env_positive_int("HERMES_CODEX_TOOL_LIMIT")
+    char_budget = _env_positive_int("HERMES_CODEX_TOOL_CHAR_BUDGET")
+    if limit is None and char_budget is None:
+        return tools
+
+    remaining_by_name = {
+        tool.get("name"): tool
+        for tool in tools
+        if isinstance(tool.get("name"), str)
+    }
+    ordered: List[Dict[str, Any]] = []
+    for name in _codex_tool_priority_names():
+        tool = remaining_by_name.pop(name, None)
+        if tool is not None:
+            ordered.append(tool)
+    priority_names = {tool.get("name") for tool in ordered}
+    ordered.extend(tool for tool in tools if tool.get("name") not in priority_names)
+
+    selected: List[Dict[str, Any]] = []
+    for tool in ordered:
+        if limit is not None and len(selected) >= limit:
+            break
+        candidate = selected + [tool]
+        if char_budget is not None:
+            encoded_len = len(
+                json.dumps(candidate, separators=(",", ":"), ensure_ascii=False)
+            )
+            if encoded_len > char_budget:
+                if not selected:
+                    selected.append(tool)
+                continue
+        selected.append(tool)
+
+    if not selected:
+        selected = ordered[:1]
+    if len(selected) < len(tools):
+        logger.info(
+            "Codex tool payload reduced from %d to %d tools (limit=%s, char_budget=%s)",
+            len(tools),
+            len(selected),
+            limit if limit is not None else "none",
+            char_budget if char_budget is not None else "none",
+        )
+    return selected
 
 
 class ResponsesApiTransport(ProviderTransport):
@@ -166,6 +248,8 @@ class ResponsesApiTransport(ProviderTransport):
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
         response_tools = _responses_tools(tools)
+        if is_codex_backend:
+            response_tools = _budget_codex_response_tools(response_tools)
 
         # xAI server-side web search.
         #

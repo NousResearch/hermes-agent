@@ -367,6 +367,160 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "extra_body" not in kwargs
 
 
+def test_build_api_kwargs_codex_honors_tool_limit_with_priority(monkeypatch):
+    monkeypatch.setenv("HERMES_CODEX_TOOL_LIMIT", "3")
+    monkeypatch.setenv("HERMES_CODEX_TOOL_PRIORITY", "terminal,read_file,send_message")
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "browser_click",
+                "description": "Click.",
+                "parameters": {"type": "object"},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read.",
+                "parameters": {"type": "object"},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal",
+                "description": "Run.",
+                "parameters": {"type": "object"},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "send_message",
+                "description": "Send.",
+                "parameters": {"type": "object"},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "description": "Write.",
+                "parameters": {"type": "object"},
+            },
+        },
+    ]
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    assert [tool["name"] for tool in kwargs["tools"]] == [
+        "terminal",
+        "read_file",
+        "send_message",
+    ]
+
+
+def test_build_api_kwargs_codex_tool_limit_is_opt_in(monkeypatch):
+    monkeypatch.delenv("HERMES_CODEX_TOOL_LIMIT", raising=False)
+    monkeypatch.delenv("HERMES_CODEX_TOOL_CHAR_BUDGET", raising=False)
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "browser_click",
+                "description": "Click.",
+                "parameters": {"type": "object"},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read.",
+                "parameters": {"type": "object"},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal",
+                "description": "Run.",
+                "parameters": {"type": "object"},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "send_message",
+                "description": "Send.",
+                "parameters": {"type": "object"},
+            },
+        },
+    ]
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "Ping"}])
+
+    assert [tool["name"] for tool in kwargs["tools"]] == [
+        "browser_click",
+        "read_file",
+        "terminal",
+        "send_message",
+    ]
+
+
+def test_build_api_kwargs_codex_honors_tool_char_budget(monkeypatch):
+    monkeypatch.setenv("HERMES_CODEX_TOOL_CHAR_BUDGET", "360")
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "small_one",
+                "description": "a",
+                "parameters": {"type": "object"},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "small_two",
+                "description": "b",
+                "parameters": {"type": "object"},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "large_three",
+                "description": "x" * 500,
+                "parameters": {"type": "object"},
+            },
+        },
+    ]
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "Ping"}])
+
+    assert [tool["name"] for tool in kwargs["tools"]] == ["small_one", "small_two"]
+
+
+def test_api_max_retries_can_be_lowered_by_env(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    assert agent._api_max_retries == 3
+
+    monkeypatch.setenv("HERMES_API_MAX_RETRIES", "1")
+    tuned = _build_agent(monkeypatch)
+    assert tuned._api_max_retries == 1
+
+
 def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):
     """'minimal' reasoning effort is clamped to 'low' on the Responses API.
 

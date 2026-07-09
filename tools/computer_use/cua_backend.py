@@ -477,7 +477,13 @@ def _parse_key_combo(keys: str) -> Tuple[Optional[str], List[str]]:
 
     parts = [p.strip().lower() for p in re.split(r'[+\-]', keys) if p.strip()]
     modifiers = []
-    key = None
+    # A trailing '+' or '-' is the key being pressed, not a combo separator
+    # (e.g. 'cmd+-'/'ctrl+-' zoom-out, 'ctrl++' zoom-in, bare '-'). re.split
+    # consumes it as a delimiter and would otherwise drop it, leaving key=None
+    # so key() reports "Could not parse key". Seed it here; a real non-modifier
+    # token in the loop still wins.
+    stripped = keys.strip()
+    key = stripped[-1] if stripped and stripped[-1] in "+-" else None
     for part in parts:
         normalized = KEY_ALIASES.get(part, part)
         if normalized in MODIFIER_NAMES:

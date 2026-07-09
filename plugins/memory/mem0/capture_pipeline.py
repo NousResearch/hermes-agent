@@ -86,6 +86,7 @@ class CapturePipeline:
         alert_fn: Optional[Callable[[str], None]] = None,
         queue_path: Optional[str] = None,
         expected_gate_version: Optional[str] = None,  # None => the code-pinned PINNED_GATE_VERSION
+        router: Optional[Any] = None,   # Arm-B capture router (Phase 2.5); None => flag OFF (no-op)
     ):
         try:
             from .capture_queue import CaptureQueue
@@ -126,6 +127,7 @@ class CapturePipeline:
             write_filters=write_filters,
             breaker_open_fn=breaker_open_fn,
             alert_fn=self._alert,
+            router=router,
         )
         self._started = False
         self._lock = threading.Lock()

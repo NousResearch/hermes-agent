@@ -108,6 +108,7 @@ class CaptureDrainWorker:
         max_attempts: int = 5,
         breaker_open_fn: Optional[Callable[[], bool]] = None,
         alert_fn: Optional[Callable[[str], None]] = None,
+        router: Optional[Any] = None,
     ):
         self._q = queue
         self._add = add_fn
@@ -124,6 +125,11 @@ class CaptureDrainWorker:
         self._max_attempts = max_attempts
         self._breaker_open = breaker_open_fn or (lambda: False)
         self._alert = alert_fn or (lambda m: logger.error("mem0 capture alert: %s", m))
+        # Arm-B two-pass capture router (Phase 2.5), flag-gated: None => today's behavior EXACTLY
+        # (byte-identical). When injected, it runs ADDITIVELY after the unchanged mem0 add() path:
+        # two dedicated extraction passes -> deterministic class router -> world/event facts staged
+        # to disk. It NEVER touches mem0 and is fully fail-soft (a router error never fails a turn).
+        self._router = router
         # Scrub failures never dead-letter (a secret must not be abandoned): requeue indefinitely
         # with a capped backoff, and escalate once at this attempt threshold.
         self._scrub_backoff_cap_s = 3600.0
@@ -298,9 +304,35 @@ class CaptureDrainWorker:
         if self._scrub_written_or_requeue(key, row, require_rows=bool(added_count)):
             return True
 
+        # ARM-B ROUTER (Phase 2.5), flag-gated + ADDITIVE + fail-soft. The mem0 add() above already
+        # handled the preference/ops_state facts (unchanged path). Here — only when a router is wired
+        # (flag ON) — the two dedicated passes extract world/event facts and stage them to disk. This
+        # runs AFTER the row's mem0 write+scrub is proven clean and BEFORE mark_done, but a router
+        # failure must NEVER requeue or fail the turn: the mem0 write is already durable and complete.
+        self._maybe_route(key, payload, messages)
+
         self._q.mark_done(key)
         self.stats["drained"] += 1
         return True
+
+    def _maybe_route(self, key, payload, messages) -> None:
+        """Invoke the Arm-B router for this turn if one is wired (flag ON). Fully fail-soft: any
+        error is swallowed (the mem0 write path is already complete and durable). No-op when the
+        router is None -> byte-identical to today."""
+        if self._router is None:
+            return
+        try:
+            session = payload.get("session_id") or "default"
+            res = self._router.route_turn(
+                payload.get("user", ""), payload.get("assistant", ""),
+                turn_id=key[:16], session=session, ts=payload.get("ts"))
+            if res.get("error"):
+                logger.warning("capture-router: turn %s routed with extract error: %s",
+                               key[:16], res["error"])
+        except Exception as e:
+            logger.warning("capture-router: routing failed for turn %s (mem0 write unaffected): %s",
+                           key[:16], e)
+
 
     def _scrub_written_or_requeue(self, key, row, *, require_rows: bool = False) -> bool:
         """Deterministically scrub the rows written for `key` and FORGET any secret-bearing one.

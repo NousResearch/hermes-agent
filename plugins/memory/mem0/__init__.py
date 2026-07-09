@@ -1734,6 +1734,28 @@ class Mem0MemoryProvider(MemoryProvider):
         except Exception:
             return self._capture
 
+    def _build_capture_router(self):
+        """Build the Arm-B two-pass capture router from the `mem0_capture_router` sub-block of
+        mem0.json, or return None if the flag is absent/off (default OFF -> byte-identical to today).
+        Degrade-safe: any import/construction error -> None (router disabled, drain worker unchanged).
+
+        The router runs ADDITIVELY on top of the unchanged mem0 write path and NEVER writes to mem0;
+        it stages world/event facts to disk while `staging_mode` is true (default). No new env var:
+        the flag + all knobs live in mem0.json; the bridge secrets come from 1Password via `op read`
+        exactly as the codex-/gemini-bridge launchers resolve them."""
+        try:
+            from . import capture_router
+        except ImportError:  # flat import (unit tests with PYTHONPATH=<dir>)
+            try:
+                import capture_router  # type: ignore
+            except Exception:
+                return None
+        try:
+            return capture_router.build_router_from_config(self._config or {})
+        except Exception as e:
+            logger.warning("mem0 capture-router build failed (router disabled): %s", e)
+            return None
+
     def _get_capture_pipeline(self):
         """Lazy-build the A-lite capture pipeline (queue + drain worker + gate-version guard +
         cross-process bgr interlock). Composed, not inlined — see capture_pipeline.py. Built once,
@@ -1819,6 +1841,9 @@ class Mem0MemoryProvider(MemoryProvider):
                 model=str(self._config.get("capture_model", "gpt-5.4-mini")),
                 breaker_open_fn=self._is_breaker_open,
                 alert_fn=lambda m: logger.warning("MEM0-CAPTURE-ALERT %s", m),
+                # Arm-B two-pass capture router (Phase 2.5), flag-gated via mem0.json
+                # `mem0_capture_router.enabled` (default OFF). None => byte-identical to today.
+                router=self._build_capture_router(),
             )
             self._capture_pipeline = pipe
             return pipe

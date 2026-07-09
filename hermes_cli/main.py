@@ -148,7 +148,17 @@ def _wants_tui_early(argv: "list[str] | None" = None) -> bool:
     """Earliest TUI decision, usable before argparse/config imports.
 
     Precedence: explicit ``--cli`` wins (forces classic REPL), then
-    ``--tui``/``HERMES_TUI=1``, then ``display.interface`` in config.
+    explicit ``--tui``/``HERMES_TUI=1``, then a real-TTY gate (a
+    non-interactive stdio can't host the Ink UI, so ambient config never
+    boots it there), then ``display.interface`` in config.
+
+    The TTY gate is load-bearing for headless spawners — kanban workers,
+    cron jobs, pipes run ``hermes … chat -q`` with stdio on a pipe. This
+    is the earliest launch decision (it runs before ``cmd_chat`` /
+    ``_resolve_use_tui``), so a ``display.interface: tui`` default used to
+    boot the TUI here — whose no-TTY bail-out exits 0 without doing the
+    task → "protocol violation" on every attempt. An explicit ``--tui``
+    still reaches the informative bail-out.
     """
     if argv is None:
         argv = sys.argv[1:]
@@ -156,6 +166,11 @@ def _wants_tui_early(argv: "list[str] | None" = None) -> bool:
         return False
     if os.environ.get("HERMES_TUI") == "1" or "--tui" in argv:
         return True
+    try:
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            return False
+    except Exception:
+        return False
     return _config_default_interface_early() == "tui"
 
 

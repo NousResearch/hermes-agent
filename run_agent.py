@@ -3920,6 +3920,7 @@ class AIAgent:
         *,
         verify: Any = True,
         keepalive_expiry: float = 20.0,
+        request_timeout: float | None = None,
     ) -> Any:
         """Build an httpx.Client with proactive idle-connection reaping.
 
@@ -3946,6 +3947,19 @@ class AIAgent:
         pooled reuse reliably hits a dead connection (see issue #61461,
         opencode-go).  Non-zero (default 20.0) keeps the proactive reaper.
 
+        ``request_timeout`` overrides the read timeout for this client.  When
+        ``None`` (default) the read timeout is unbounded (``read=None``) which
+        is correct for SSE streaming.  Callers pass a finite value (e.g. the
+        provider's configured ``request_timeout_seconds`` or a per-model
+        reasoning floor) for providers whose models produce a long pre-first-
+        token gap (deep reasoning models) — see issue #61461 where
+        opencode-go + deepseek-v4-flash needs a multi-minute read window or
+        the OpenAI SDK's default 60s read timeout cuts the stream.  Note the
+        OpenAI SDK ignores a top-level ``timeout=`` argument when a custom
+        ``http_client`` is supplied, so the read window MUST be baked into
+        the client's own ``httpx.Timeout`` (which is what this parameter
+        does).
+
         ``verify`` carries per-provider ``ssl_ca_cert`` / ``ssl_verify`` and
         ``HERMES_CA_BUNDLE`` settings.  It is passed on the client AND on
         the plain no-proxy mounts (a mounted transport owns the SSL context
@@ -3969,10 +3983,12 @@ class AIAgent:
                 keepalive_expiry=keepalive_expiry,
             )
 
-            # Timeouts: generous read=None for SSE streaming endpoints.
+            # Timeouts: read=None for SSE streaming by default; callers pass a
+            # finite request_timeout for providers whose models take minutes
+            # before the first content token (deep reasoning, opencode-go).
             _timeout = _httpx.Timeout(
                 connect=15.0,
-                read=None,
+                read=request_timeout,  # None = unbounded; finite = wall clock
                 write=15.0,
                 pool=10.0,
             )

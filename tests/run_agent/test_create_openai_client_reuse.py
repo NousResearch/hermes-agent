@@ -227,19 +227,33 @@ def test_force_close_tcp_sockets_descends_httpcore_1_connection_wrapper():
 
 def test_opencode_go_disables_keepalive_pooling():
     """opencode-go / opencode-zen must build its httpx client with
-    keepalive_expiry=0.0 so every request opens a fresh connection.
+    keepalive_expiry=0.0 (clean connection per request) and a non-None
+    request_timeout (elevated read ceiling for reasoning models).
 
     Regression guard for #61461: opencode-go sits behind a reverse proxy
     that drops idle connections at ~30s; httpx's keepalive pool then reuses
     those dead connections and the next request hangs until the proxy's
     timeout fires (~30s). Disabling pooling forces the cold (~3s) path.
-    Other providers keep the 20s idle reaper (CLOSE-WAIT prevention).
+
+    Second timeout: reasoning models need 65–77s before first content
+    token; we bake a high read timeout into the httpx client's own
+    httpx.Timeout (the OpenAI SDK ignores a top-level timeout= argument
+    when a custom http_client is supplied).
     """
     calls: list = []
 
-    def _fake_build_keepalive(base_url="", *, verify=True, keepalive_expiry=20.0):
-        calls.append({"base_url": base_url, "keepalive_expiry": keepalive_expiry})
-        # Return a throwaway stand-in so create_openai_client can attach it.
+    def _fake_build_keepalive(
+        base_url="",
+        *,
+        verify=True,
+        keepalive_expiry=20.0,
+        request_timeout=None,
+    ):
+        calls.append({
+            "base_url": base_url,
+            "keepalive_expiry": keepalive_expiry,
+            "request_timeout": request_timeout,
+        })
         return SimpleNamespace(close=lambda: None)
 
     agent = AIAgent(
@@ -272,14 +286,32 @@ def test_opencode_go_disables_keepalive_pooling():
         f"opencode-go must disable keepalive pooling (keepalive_expiry=0.0), "
         f"got {calls[0]['keepalive_expiry']}"
     )
+    assert isinstance(calls[0]["request_timeout"], (int, float)), (
+        f"opencode-go must set a finite request_timeout for reasoning models, "
+        f"got {calls[0]['request_timeout']!r}"
+    )
+    assert calls[0]["request_timeout"] > 60, (
+        f"opencode-go request_timeout must exceed the OpenAI SDK default (60s) "
+        f"to cover deep reasoning gaps, got {calls[0]['request_timeout']}"
+    )
 
 
 def test_other_providers_keep_keepalive_reaper():
     """Non-opencode providers keep the 20s idle reaper (default)."""
     calls: list = []
 
-    def _fake_build_keepalive(base_url="", *, verify=True, keepalive_expiry=20.0):
-        calls.append({"base_url": base_url, "keepalive_expiry": keepalive_expiry})
+    def _fake_build_keepalive(
+        base_url="",
+        *,
+        verify=True,
+        keepalive_expiry=20.0,
+        request_timeout=None,
+    ):
+        calls.append({
+            "base_url": base_url,
+            "keepalive_expiry": keepalive_expiry,
+            "request_timeout": request_timeout,
+        })
         return SimpleNamespace(close=lambda: None)
 
     agent = AIAgent(

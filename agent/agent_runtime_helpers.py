@@ -2194,22 +2194,45 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 from hermes_state import format_session_db_unavailable
                 return _finish_agent_tool(json.dumps({"success": False, "error": format_session_db_unavailable()}), next_args)
             from tools.session_search_tool import session_search as _session_search
-            return _finish_agent_tool(
-                _session_search(
-                    query=next_args.get("query", ""),
-                    role_filter=next_args.get("role_filter"),
-                    limit=next_args.get("limit", 3),
-                    session_id=next_args.get("session_id"),
-                    around_message_id=next_args.get("around_message_id"),
-                    window=next_args.get("window", 5),
-                    sort=next_args.get("sort"),
-                    profile=next_args.get("profile"),
-                    db_path=next_args.get("db_path"),
-                    db=session_db,
-                    current_session_id=agent.session_id,
-                ),
-                next_args,
+            result = _session_search(
+                query=next_args.get("query", ""),
+                role_filter=next_args.get("role_filter"),
+                limit=next_args.get("limit", 3),
+                session_id=next_args.get("session_id"),
+                around_message_id=next_args.get("around_message_id"),
+                window=next_args.get("window", 5),
+                sort=next_args.get("sort"),
+                profile=next_args.get("profile"),
+                db_path=next_args.get("db_path"),
+                db=session_db,
+                current_session_id=agent.session_id,
             )
+            # Fire transform_tool_result hooks so claude_search plugin can inject
+            try:
+                from hermes_cli.plugins import has_hook, invoke_hook
+                if has_hook("transform_tool_result"):
+                    hook_results = invoke_hook(
+                        "transform_tool_result",
+                        tool_name="session_search",
+                        args=next_args,
+                        result=result,
+                        task_id="",
+                        session_id=agent.session_id or "",
+                        tool_call_id="",
+                        turn_id="",
+                        api_request_id="",
+                        duration_ms=0,
+                        status=None,
+                        error_type=None,
+                        error_message=None,
+                    )
+                    for hook_result in hook_results:
+                        if isinstance(hook_result, str):
+                            result = hook_result
+                            break
+            except Exception:
+                pass
+            return _finish_agent_tool(result, next_args)
     elif function_name == "memory":
         def _execute(next_args: dict) -> Any:
             target = next_args.get("target", "memory")

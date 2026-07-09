@@ -1,0 +1,5 @@
+name: meta-ai-provider
+kind: model-provider
+version: 1.0.0
+description: Meta Model API — Muse Spark (OpenAI-compatible)
+author: Nous Research

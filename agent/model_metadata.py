@@ -264,7 +264,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek-chat": 1_000_000,
     "deepseek-reasoner": 1_000_000,
     "deepseek": 128000,
-    # Meta
+    # Meta — Muse Spark (Model API) ships with a 1M context window.
+    # Longer key before the generic "llama" Meta catch-all so muse-spark-*
+    # model IDs resolve correctly via longest-substring matching.
+    "muse-spark": 1_048_576,
     "llama": 131072,
     # Qwen — specific model families before the catch-all.
     # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/

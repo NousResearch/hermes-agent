@@ -41,6 +41,7 @@ class TestProviderRegistry:
         ("minimax-cn", "MiniMax (China)", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
         ("gmi", "GMI Cloud", "api_key"),
+        ("meta-ai", "Meta Model API", "api_key"),
     ])
     def test_provider_registered(self, provider_id, name, auth_type):
         assert provider_id in PROVIDER_REGISTRY
@@ -105,6 +106,15 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("GMI_API_KEY",)
         assert pconfig.base_url_env_var == "GMI_BASE_URL"
 
+    def test_meta_ai_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["meta-ai"]
+        assert pconfig.api_key_env_vars == (
+            "MODEL_API_KEY",
+            "META_API_KEY",
+            "META_MODEL_API_KEY",
+        )
+        assert pconfig.base_url_env_var == "META_BASE_URL"
+
     def test_huggingface_env_vars(self):
         pconfig = PROVIDER_REGISTRY["huggingface"]
         assert pconfig.api_key_env_vars == ("HF_TOKEN",)
@@ -120,6 +130,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
         assert PROVIDER_REGISTRY["gmi"].inference_base_url == "https://api.gmi-serving.com/v1"
+        assert PROVIDER_REGISTRY["meta-ai"].inference_base_url == "https://api.meta.ai/v1"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
 
     def test_oauth_providers_unchanged(self):
@@ -143,6 +154,7 @@ PROVIDER_ENV_VARS = (
     "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
     "GMI_API_KEY", "GMI_BASE_URL",
+    "MODEL_API_KEY", "META_API_KEY", "META_MODEL_API_KEY", "META_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
     "NOUS_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
     "OPENAI_BASE_URL", "HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH",
@@ -177,6 +189,21 @@ class TestResolveProvider:
 
     def test_explicit_gmi(self):
         assert resolve_provider("gmi") == "gmi"
+
+    def test_explicit_meta_ai(self):
+        assert resolve_provider("meta-ai") == "meta-ai"
+
+    def test_alias_meta(self):
+        assert resolve_provider("meta") == "meta-ai"
+
+    def test_alias_muse(self):
+        assert resolve_provider("muse") == "meta-ai"
+
+    def test_alias_llama_api(self):
+        assert resolve_provider("llama-api") == "meta-ai"
+
+    def test_alias_model_api(self):
+        assert resolve_provider("model-api") == "meta-ai"
 
     def test_alias_glm(self):
         assert resolve_provider("glm") == "zai"

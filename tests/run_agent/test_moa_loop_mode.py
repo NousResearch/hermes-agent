@@ -392,6 +392,51 @@ def test_reference_messages_fresh_user_turn_ends_on_that_user():
     assert view[-1] == {"role": "user", "content": "q2 current"}
 
 
+def test_reference_messages_flattens_content_blocks_to_text():
+    """Multimodal content-block messages must preserve their prompt text.
+
+    Regression: a user turn whose ``content`` is a list of blocks (the
+    OpenAI/Anthropic multimodal shape produced whenever an image/file is
+    attached) was flattened to "" by the old ``isinstance(content, str) else
+    ''`` guard, silently discarding the instruction. Lax providers tolerated
+    the empty turn; strict ones (Z.AI GLM) 400'd with "未正常接收到prompt参数".
+    The advisory view must extract the text blocks and drop non-text ones.
+    """
+    from agent.moa_loop import _reference_messages
+
+    messages = [
+        {"role": "system", "content": "sys"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "explain binary search"},
+                {"type": "image_url", "image_url": {"url": "data:..."}},
+            ],
+        },
+    ]
+
+    view = _reference_messages(messages)
+    # Fresh user turn: preserved, text extracted, image block dropped.
+    assert view == [{"role": "user", "content": "explain binary search"}]
+    assert view[-1]["content"].strip(), "prompt text must not be empty"
+
+
+def test_flatten_content_text_shapes():
+    """_flatten_content_text handles str, block lists, image-only, and None."""
+    from agent.moa_loop import _flatten_content_text
+
+    assert _flatten_content_text("hi") == "hi"
+    assert (
+        _flatten_content_text(
+            [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]
+        )
+        == "a\nb"
+    )
+    # Image-only content carries no advisory text.
+    assert _flatten_content_text([{"type": "image_url", "image_url": {"url": "x"}}]) == ""
+    assert _flatten_content_text(None) == ""
+
+
 def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
     """Each reference call gets the advisory-role system prompt first.
 

@@ -426,6 +426,42 @@ def _render_tool_calls(tool_calls: Any) -> str:
     return "\n".join(lines)
 
 
+def _flatten_content_text(content: Any) -> str:
+    """Flatten a message ``content`` field to plain text for the advisory view.
+
+    ``content`` may be a plain string OR a list of content blocks (the
+    OpenAI/Anthropic multimodal shape, e.g. ``[{"type": "text", "text": ...},
+    {"type": "image_url", ...}]``) whenever the user attached an image/file or
+    the turn carries multiple parts. The advisory view is text-only, so we
+    concatenate every block's text and drop non-text blocks (images, etc.).
+
+    Returning ``""`` for a list that carries no text is intentional (a pure
+    image turn has no advisory text). The bug this fixes: treating ANY
+    non-string content as ``""`` silently discarded the prompt text of every
+    content-block message, so references saw an empty turn — tolerated by lax
+    providers (deepseek, MiniMax) but rejected by strict ones (Z.AI GLM →
+    ``400 未正常接收到prompt参数``), and in both cases the reference lost the
+    actual instruction. Mirrors the text-extraction pattern used elsewhere in
+    the codebase (context_compressor, the provider adapters).
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                text = block.get("text")
+                if not isinstance(text, str):
+                    # Some shapes nest the string under "content".
+                    text = block.get("content") if isinstance(block.get("content"), str) else None
+                if isinstance(text, str) and text:
+                    parts.append(text)
+            elif isinstance(block, str) and block:
+                parts.append(block)
+        return "\n".join(parts)
+    return ""
+
+
 _ADVISORY_INSTRUCTION = (
     "[The conversation above is the current state of the task. Give your "
     "most intelligent judgement: what is going on, what should happen next, "
@@ -470,7 +506,7 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for msg in messages:
         role = msg.get("role")
         content = msg.get("content")
-        text = content if isinstance(content, str) else ""
+        text = _flatten_content_text(content)
 
         if role == "system":
             continue
@@ -517,8 +553,10 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if last_user_content is not None:
             return [{"role": "user", "content": last_user_content}]
         for msg in reversed(messages):
-            if msg.get("role") == "user" and isinstance(msg.get("content"), str):
-                return [{"role": "user", "content": msg["content"]}]
+            if msg.get("role") == "user":
+                fallback = _flatten_content_text(msg.get("content"))
+                if fallback.strip():
+                    return [{"role": "user", "content": fallback}]
     return rendered
 
 

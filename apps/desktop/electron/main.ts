@@ -436,11 +436,20 @@ const WINDOW_BUTTON_POSITION = {
 // (pure + unit-testable); computeNativeOverlayWidth() applies it per platform.
 // It's only the pre-layout fallback — the renderer measures the exact overlay
 // width live via the Window Controls Overlay API.
-const APP_ICON_PATHS = [
-  path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
-  path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
-  path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png')
-]
+const APP_ICON_PATHS = IS_WINDOWS
+  ? [
+      // electron-builder copies assets/icon.ico to resources/icon.ico. Use the
+      // native Windows icon for BrowserWindow/taskbar identity; the executable
+      // resource icon alone does not set a window's small/large icons.
+      path.join(process.resourcesPath, 'icon.ico'),
+      // Local `electron .` runs do not have electron-builder's resources tree.
+      path.join(APP_ROOT, 'assets', 'icon.ico')
+    ]
+  : [
+      path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
+      path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
+      path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png')
+    ]
 
 let rendererTitleBarTheme = null
 const terminalSessions = new Map()
@@ -713,15 +722,15 @@ function previewFileMetadata(filePath, mimeType) {
 
 app.setName(APP_NAME)
 
-// Windows toast notifications silently no-op unless an AppUserModelID is set:
-// `new Notification().show()` returns without error and nothing appears. The
-// AUMID must match the installed Start Menu shortcut's AUMID, which
-// electron-builder derives from the build `appId` (com.nousresearch.hermes) —
-// keep this string in sync with package.json `build.appId`. macOS/Linux don't
-// need this, so gate it on Windows. (Fixes: desktop approval/turn notifications
-// never firing on Windows.)
+// Windows toast notifications silently no-op unless an AppUserModelID is set.
+// Packaged builds must match electron-builder's appId and Start Menu shortcut.
+// Local Electron runs need a separate identity: if electron.exe claims the
+// production AUMID, Windows can register an "Electron" shortcut for Hermes'
+// taskbar group and permanently override the packaged app's Nous icon.
 if (IS_WINDOWS) {
-  app.setAppUserModelId('com.nousresearch.hermes')
+  app.setAppUserModelId(
+    app.isPackaged ? 'com.nousresearch.hermes' : 'com.nousresearch.hermes.dev'
+  )
 }
 
 // Seed the native About panel with the live Hermes version. This is refreshed
@@ -4547,8 +4556,20 @@ function registerPowerResumeListeners() {
   }
 }
 
-function getAppIconPath() {
-  return APP_ICON_PATHS.find(fileExists)
+function getAppIcon() {
+  for (const iconPath of APP_ICON_PATHS) {
+    if (!fileExists(iconPath)) {
+      continue
+    }
+
+    const icon = nativeImage.createFromPath(iconPath)
+
+    if (!icon.isEmpty()) {
+      return icon
+    }
+  }
+
+  return undefined
 }
 
 function sendOpenUpdatesRequested() {
@@ -6555,7 +6576,7 @@ function spawnSecondaryWindow({
   watch,
   newSession
 }: { sessionId?: string; watch?: boolean; newSession?: boolean } = {}) {
-  const icon = getAppIconPath()
+  const icon = getAppIcon()
 
   const win = new BrowserWindow({
     width: SESSION_WINDOW_MIN_WIDTH,
@@ -6759,7 +6780,7 @@ function closePetOverlay() {
 }
 
 function createWindow() {
-  const icon = getAppIconPath()
+  const icon = getAppIcon()
   const savedWindowState = readWindowState()
   mainWindow = new BrowserWindow({
     ...computeWindowOptions(savedWindowState, screen.getAllDisplays()),

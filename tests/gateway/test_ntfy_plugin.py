@@ -158,6 +158,7 @@ class TestNtfyAdapterInit:
         assert adapter._stream_task is None
         assert adapter._http_client is None
         assert adapter._seen_messages == {}
+        assert adapter._last_seen_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -1000,6 +1001,52 @@ class TestFatalErrorPropagation:
         assert adapter._fatal_error_code == "ntfy_topic_not_found"
         assert "missing-topic" in adapter._fatal_error_message
         assert adapter._fatal_error_retryable is False
+
+
+class TestStreamReplayCursor:
+    """The ntfy stream must request cached messages after reconnecting."""
+
+    def test_consume_stream_passes_since_after_message_seen(self):
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
+        adapter._last_seen_id = "ntfy-msg-1"
+        adapter._running = True
+        adapter._http_client = MagicMock()
+
+        class _Response:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            async def aiter_lines(self):
+                if False:
+                    yield ""
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=_Response())
+        mock_cm.__aexit__ = AsyncMock(return_value=None)
+        adapter._http_client.stream = MagicMock(return_value=mock_cm)
+
+        fake_httpx = MagicMock()
+        fake_httpx.Timeout = MagicMock()
+        with patch.object(_ntfy, "httpx", fake_httpx):
+            _run(adapter._consume_stream("https://ntfy.example/t/json", {}))
+
+        params = adapter._http_client.stream.call_args.kwargs["params"]
+        assert params == {"poll": "false", "since": "ntfy-msg-1"}
+
+    def test_on_message_records_last_seen_id_after_dedup_accepts(self):
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
+        adapter.handle_message = AsyncMock()
+
+        _run(adapter._on_message({
+            "event": "message",
+            "id": "ntfy-msg-2",
+            "topic": "t",
+            "message": "hello",
+        }))
+
+        assert adapter._last_seen_id == "ntfy-msg-2"
 
 
 class TestTruncateHelper:

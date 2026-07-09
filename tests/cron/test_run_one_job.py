@@ -31,7 +31,7 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         calls.append(("deliver", job["id"]))
         return None
 
-    def fake_mark(jid, ok, err=None, delivery_error=None):
+    def fake_mark(jid, ok, err=None, delivery_error=None, trigger="scheduled"):
         calls.append(("mark", jid, ok))
 
     monkeypatch.setattr(s, "run_job", fake_run_job)
@@ -64,6 +64,68 @@ def test_run_one_job_success_sequence(monkeypatch):
     assert ok is True
     assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
     assert calls[-1] == ("mark", "j2", True)
+
+
+def test_manual_trigger_is_tagged_and_excluded_from_repeat_budget(monkeypatch):
+    """A job fired with trigger_source='manual' (via trigger_job/`hermes cron
+    run`) tags the saved output header AND passes trigger='manual' to
+    mark_job_run so the run is unambiguous and does not consume the repeat
+    budget. Regression guard for the 2026-07-09 incident where manual debug
+    re-runs looked identical to scheduler double-fires."""
+    saved = {}
+    marked = {}
+
+    monkeypatch.setattr(
+        s, "run_job",
+        lambda job: (True, "# Cron Job: t\n\n**Run Time:** now\n\nbody", "resp", None),
+    )
+    monkeypatch.setattr(
+        s, "save_job_output",
+        lambda jid, out: saved.update(jid=jid, out=out) or f"/tmp/{jid}.txt",
+    )
+    monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
+    monkeypatch.setattr(
+        s, "mark_job_run",
+        lambda jid, ok, err=None, delivery_error=None, trigger="scheduled": marked.update(
+            jid=jid, trigger=trigger
+        ),
+    )
+
+    ok = s.run_one_job({"id": "jm", "name": "t", "trigger_source": "manual"})
+
+    assert ok is True
+    assert marked["trigger"] == "manual"
+    assert "**Trigger:** manual" in saved["out"]
+    # header line inserted immediately before Run Time, once
+    assert saved["out"].count("**Trigger:**") == 1
+
+
+def test_scheduled_fire_is_untagged(monkeypatch):
+    """A normal scheduled fire (no trigger_source) leaves the output header
+    unchanged and reports trigger='scheduled' — byte-identical to pre-change
+    behavior for the common path."""
+    saved = {}
+    marked = {}
+    monkeypatch.setattr(
+        s, "run_job",
+        lambda job: (True, "# Cron Job: t\n\n**Run Time:** now\n\nbody", "resp", None),
+    )
+    monkeypatch.setattr(
+        s, "save_job_output",
+        lambda jid, out: saved.update(out=out) or f"/tmp/{jid}.txt",
+    )
+    monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
+    monkeypatch.setattr(
+        s, "mark_job_run",
+        lambda jid, ok, err=None, delivery_error=None, trigger="scheduled": marked.update(
+            trigger=trigger
+        ),
+    )
+
+    s.run_one_job({"id": "js", "name": "t"})
+
+    assert marked["trigger"] == "scheduled"
+    assert "**Trigger:**" not in saved["out"]
 
 
 def test_run_one_job_silent_skips_delivery(monkeypatch):
@@ -110,7 +172,7 @@ def test_run_one_job_exception_marks_failure(monkeypatch):
     marks = []
     monkeypatch.setattr(
         s, "mark_job_run",
-        lambda jid, ok, err=None, delivery_error=None: marks.append((jid, ok)),
+        lambda jid, ok, err=None, delivery_error=None, trigger="scheduled": marks.append((jid, ok)),
     )
 
     ok = s.run_one_job({"id": "j6", "name": "t"})

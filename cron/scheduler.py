@@ -2761,7 +2761,18 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
     failure is recorded via ``mark_job_run``), False only if processing raised.
     """
     try:
+        # How this fire was initiated: "manual" (out-of-band via trigger_job/
+        # `hermes cron run`) vs "scheduled" (ticker fired it at its cron time).
+        # Tag the saved output header and thread it to mark_job_run so a manual
+        # debug run is unambiguous and doesn't consume the repeat budget.
+        trigger = job.get("trigger_source") or "scheduled"
+
         success, output, final_response, error = run_job(job)
+
+        if trigger != "scheduled" and isinstance(output, str) and "**Run Time:**" in output:
+            output = output.replace(
+                "**Run Time:**", f"**Trigger:** {trigger}\n**Run Time:**", 1
+            )
 
         output_file = save_job_output(job["id"], output)
         if verbose:
@@ -2800,12 +2811,14 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             success = False
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-        mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+        mark_job_run(job["id"], success, error, delivery_error=delivery_error,
+                     trigger=trigger)
         return True
 
     except Exception as e:
         logger.error("Error processing job %s: %s", job['id'], e)
-        mark_job_run(job["id"], False, str(e))
+        mark_job_run(job["id"], False, str(e),
+                     trigger=(job.get("trigger_source") or "scheduled"))
         return False
 
 

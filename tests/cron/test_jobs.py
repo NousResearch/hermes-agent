@@ -498,6 +498,36 @@ class TestMarkJobRun:
         # Job should be removed after hitting repeat limit
         assert get_job(job["id"]) is None
 
+    def test_manual_run_does_not_increment_completed(self, tmp_cron_dir):
+        # A manual (out-of-band) run must not consume the repeat budget —
+        # otherwise operator debug re-runs silently exhaust a finite schedule
+        # and misreport how many SCHEDULED fires occurred.
+        job = create_job(prompt="Test", schedule="every 1h")
+        mark_job_run(job["id"], success=True, trigger="manual")
+        updated = get_job(job["id"])
+        assert updated["repeat"]["completed"] == 0
+        assert updated["last_status"] == "ok"
+        assert updated["last_trigger"] == "manual"
+        # a subsequent scheduled fire still counts
+        mark_job_run(job["id"], success=True)
+        assert get_job(job["id"])["repeat"]["completed"] == 1
+
+    def test_manual_run_never_deletes_finite_repeat_job(self, tmp_cron_dir):
+        # A one-shot (repeat=1) job triggered manually must survive — the manual
+        # run is not the scheduled occurrence the repeat limit counts.
+        job = create_job(prompt="Once", schedule="30m", repeat=1)
+        mark_job_run(job["id"], success=True, trigger="manual")
+        assert get_job(job["id"]) is not None
+
+    def test_manual_run_clears_trigger_source_marker(self, tmp_cron_dir):
+        # trigger_job stamps trigger_source='manual'; mark_job_run must clear it
+        # so it can't be mistaken for a pending scheduled fire next tick.
+        from cron.jobs import update_job
+        job = create_job(prompt="Test", schedule="every 1h")
+        update_job(job["id"], {"trigger_source": "manual"})
+        mark_job_run(job["id"], success=True, trigger="manual")
+        assert "trigger_source" not in get_job(job["id"])
+
     def test_repeat_negative_one_is_infinite(self, tmp_cron_dir):
         # LLMs often pass repeat=-1 to mean "infinite/forever".
         # The job must NOT be deleted after runs when repeat <= 0.

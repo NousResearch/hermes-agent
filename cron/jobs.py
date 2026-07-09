@@ -1131,7 +1131,13 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Schedule a job to run on the next scheduler tick. Accepts a job ID or name."""
+    """Schedule a job to run on the next scheduler tick. Accepts a job ID or name.
+
+    Marks the fire as ``trigger_source="manual"`` so the ticker records it as a
+    manual run (tagged in the output header, excluded from the repeat budget)
+    rather than an indistinguishable scheduled fire. The marker is cleared by
+    ``mark_job_run`` once the run completes.
+    """
     job = resolve_job_ref(job_id)
     if not job:
         return None
@@ -1143,6 +1149,7 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
             "paused_at": None,
             "paused_reason": None,
             "next_run_at": _hermes_now().isoformat(),
+            "trigger_source": "manual",
         },
     )
 
@@ -1171,16 +1178,26 @@ def remove_job(job_id: str) -> bool:
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+                 delivery_error: Optional[str] = None, trigger: str = "scheduled"):
     """
     Mark a job as having been run.
-    
+
     Updates last_run_at, last_status, increments completed count,
     computes next_run_at, and auto-deletes if repeat limit reached.
 
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
+
+    ``trigger`` records HOW the run was initiated: ``"scheduled"`` (the ticker
+    fired it at its cron/interval time) or ``"manual"`` (an operator ran it
+    out-of-band via ``trigger_job``/``hermes cron run``). A manual run does NOT
+    consume the repeat budget (``repeat.completed`` is left untouched) so an
+    operator debugging a job can't silently exhaust a finite-``times`` schedule
+    or make the counter misreport how many scheduled fires occurred — the exact
+    ambiguity that made an overnight debug re-run look like a scheduler
+    double-fire. The trigger is persisted as ``last_trigger`` for observability.
     """
+    manual = trigger != "scheduled"
     with _jobs_lock():
         jobs = load_jobs()
         for i, job in enumerate(jobs):
@@ -1189,16 +1206,22 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_run_at"] = now
                 job["last_status"] = "ok" if success else "error"
                 job["last_error"] = error if not success else None
+                job["last_trigger"] = trigger
+                # A manual fire consumed the one-shot next_run_at that
+                # trigger_job set; clear the marker so it isn't mistaken for a
+                # pending scheduled fire on the next tick.
+                job.pop("trigger_source", None)
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
                 # Clear any external-fire claim so a re-armed recurring job can
                 # be claimed again on its next fire (Phase 4C CAS).
                 job["fire_claim"] = None
-                
-                # Increment completed count
-                if job.get("repeat"):
+
+                # Increment completed count — SCHEDULED fires only. A manual
+                # out-of-band run must not eat the repeat budget.
+                if job.get("repeat") and not manual:
                     job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
-                    
+
                     # Check if we've hit the repeat limit
                     times = job["repeat"].get("times")
                     completed = job["repeat"]["completed"]

@@ -449,6 +449,35 @@ export function PetOverlayApp() {
               <Mail style={{ height: 13, width: 13 }} />
             </button>
           )}
+
+          {/* Close button: pop the pet back into the window. Always visible. */}
+          <button
+            aria-label="Hide pet"
+            onClick={() => window.hermesDesktop?.petOverlay?.control({ type: 'hide' })}
+            onPointerDown={e => e.stopPropagation()}
+            onPointerUp={e => e.stopPropagation()}
+            style={{
+              alignItems: 'center',
+              background: 'var(--ui-bg-elevated)',
+              border: '1px solid var(--ui-stroke-secondary)',
+              borderRadius: 999,
+              boxShadow: '0 4px 14px rgba(0,0,0,0.22)',
+              color: 'var(--ui-text-tertiary)',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              height: 22,
+              justifyContent: 'center',
+              left: 0,
+              padding: 0,
+              position: 'absolute',
+              top: 0,
+              width: 22
+            }}
+            title="Hide pet"
+            type="button"
+          >
+            ✕
+          </button>
         </div>
       </div>
     </div>

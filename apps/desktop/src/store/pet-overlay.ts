@@ -56,6 +56,7 @@ export type PetOverlayControl =
   | { type: 'open-app' }
   | { type: 'toggle-app' }
   | { type: 'scale'; scale: number }
+  | { type: 'hide' }
 
 // Persisted across restarts: was the pet popped out, and where on the desktop
 // did the user leave it. Keyed v1; bump if the bounds shape ever changes.
@@ -277,6 +278,9 @@ export function initPetOverlayBridge(): () => void {
       // focused the window before forwarding this) and mark it read.
       clearPetUnread()
       openAppHandler?.()
+    } else if (payload?.type === 'hide') {
+      // Close button: pop the pet back into the window.
+      popInPet()
     }
   })
 

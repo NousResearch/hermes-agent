@@ -1,8 +1,8 @@
 export const PREVIEW_RAIL_MIN_WIDTH = '18rem'
-// Wide enough for desktop/ultrawide responsive checks while still leaving an
-// escape hatch for the main chat column on normal displays. Manual drag and
-// preset buttons both pass through PaneShell's min/max clamp.
-export const PREVIEW_RAIL_MAX_WIDTH = '90vw'
+// Keep the docked rail itself bounded like an editor side panel. Responsive
+// presets size the inner preview frame, not this PaneShell track, so a stale
+// persisted desktop/ultrawide width cannot let the preview consume the chat.
+export const PREVIEW_RAIL_MAX_WIDTH = '42rem'
 
 const INTRINSIC = `clamp(${PREVIEW_RAIL_MIN_WIDTH}, 36vw, 32rem)`
 

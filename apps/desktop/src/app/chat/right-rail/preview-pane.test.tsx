@@ -77,7 +77,11 @@ describe('PreviewPane console state', () => {
 
     expect(iframe).toBeInstanceOf(HTMLIFrameElement)
     expect(iframe?.getAttribute('src')).toBe('http://localhost:5174')
-    expect(latestTools.map((tool: { id: string }) => tool.id)).not.toContain('preview-devtools')
+    expect(latestTools.map((tool: { id: string }) => tool.id)).toEqual([
+      'preview-annotate',
+      'preview-console',
+      'preview-devtools'
+    ])
 
     act(() => {
       iframe?.dispatchEvent(new Event('load'))
@@ -110,7 +114,7 @@ describe('PreviewPane console state', () => {
     expect(input.value).toBe('https://example.org/docs')
   })
 
-  it('offers responsive preview width presets without replacing manual pane resizing', () => {
+  it('offers responsive preview viewport presets without resizing the outer pane', () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1600 })
 
     const rendered = render(
@@ -147,18 +151,59 @@ describe('PreviewPane console state', () => {
       })
     })
 
-    expect(screen.getByRole('button', { name: 'Set preview to Fold 6:5' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Set preview to iPhone 9:16' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Set preview to Desktop 16:9' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Set preview to Ultrawide 21:9' })).toBeTruthy()
+    const frame = rendered.container.querySelector('[data-preview-frame]') as HTMLElement | null
 
-    fireEvent.click(screen.getByRole('button', { name: 'Set preview to Desktop 16:9' }))
+    expect(frame).toBeInstanceOf(HTMLElement)
+    expect(screen.getByRole('button', { name: 'Fit preview to pane' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Set preview viewport to Fold 6:5' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Set preview viewport to iPhone 9:16' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Set preview viewport to Desktop 16:9' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Set preview viewport to Ultrawide 21:9' })).toBeTruthy()
 
-    expect($paneStates.get().preview?.widthOverride).toBe(1280)
+    fireEvent.click(screen.getByRole('button', { name: 'Set preview viewport to Desktop 16:9' }))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Set preview to iPhone 9:16' }))
+    expect($paneStates.get().preview?.widthOverride).toBeUndefined()
+    expect(frame?.style.width).toBe('1280px')
 
-    expect($paneStates.get().preview?.widthOverride).toBe(405)
+    fireEvent.click(screen.getByRole('button', { name: 'Set preview viewport to iPhone 9:16' }))
+
+    expect($paneStates.get().preview?.widthOverride).toBeUndefined()
+    expect(frame?.style.width).toBe('405px')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fit preview to pane' }))
+
+    expect(frame?.style.width).toBe('100%')
+  })
+
+  it('makes annotate and debug preview controls visibly toggle in iframe fallback mode', () => {
+    const setTitlebarToolGroup = vi.fn()
+
+    const rendered = render(
+      <PreviewPane
+        embedded
+        setTitlebarToolGroup={setTitlebarToolGroup}
+        target={{
+          kind: 'url',
+          label: 'Preview',
+          source: 'http://localhost:5174',
+          url: 'http://localhost:5174'
+        }}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show preview annotations' }))
+
+    expect(rendered.container.querySelector('[data-preview-annotations]')).toBeTruthy()
+    expect(screen.getByLabelText('Preview annotation overlay active')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show preview debug' }))
+
+    expect(rendered.container.querySelector('[data-preview-debug-overlay]')).toBeTruthy()
+    expect(screen.getByLabelText('Preview debug overlay')).toBeTruthy()
+
+    const tools = setTitlebarToolGroup.mock.calls.at(-1)?.[1] ?? []
+    expect(tools.map((tool: { id: string }) => tool.id)).toContain('preview-annotate')
+    expect(tools.map((tool: { id: string }) => tool.id)).toContain('preview-devtools')
   })
 
   it('scopes Electron preview webview storage to the active chat session', () => {

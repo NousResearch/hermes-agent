@@ -1,16 +1,14 @@
 import { useStore } from '@nanostores/react'
-import type { PointerEvent as ReactPointerEvent } from 'react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { SetTitlebarToolGroup, TitlebarTool } from '@/app/shell/titlebar-controls'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
-import { Bug } from '@/lib/icons'
+import { Bug, Pencil } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { PREVIEW_PANE_ID } from '@/store/layout'
 import { notify, notifyError } from '@/store/notifications'
-import { setPaneWidthOverride } from '@/store/panes'
 import { $previewServerRestart, failPreviewServerRestart, type PreviewTarget } from '@/store/preview'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
@@ -34,6 +32,8 @@ type PreviewWebview = HTMLElement & {
   reload?: () => void
   reloadIgnoringCache?: () => void
 }
+
+type PreviewEngine = 'detecting' | 'electron-webview' | 'iframe-fallback' | 'local-file'
 
 interface PreviewPaneProps {
   embedded?: boolean
@@ -173,8 +173,13 @@ export function PreviewPane({
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const [currentUrl, setCurrentUrl] = useState(target.url)
   const [addressDraft, setAddressDraft] = useState(target.url)
+  const [annotationOverlayOpen, setAnnotationOverlayOpen] = useState(false)
+  const [debugOverlayOpen, setDebugOverlayOpen] = useState(false)
   const [devtoolsAvailable, setDevtoolsAvailable] = useState(false)
   const [devtoolsOpen, setDevtoolsOpen] = useState(false)
+  const [previewEngine, setPreviewEngine] = useState<PreviewEngine>('detecting')
+  const [previewFrameWidth, setPreviewFrameWidth] = useState<number | null>(null)
+  const [activeRatioLabel, setActiveRatioLabel] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<PreviewLoadErrorState | null>(null)
   const [localReloadKey, setLocalReloadKey] = useState(0)
@@ -184,6 +189,11 @@ export function PreviewPane({
 
   const previewLabel =
     target.label && target.label.replace(/\/$/, '') !== currentLabel.replace(/\/$/, '') ? target.label : currentLabel
+
+  const previewFrameStyle = useMemo<CSSProperties>(
+    () => ({ width: previewFrameWidth === null ? '100%' : `${previewFrameWidth}px` }),
+    [previewFrameWidth]
+  )
 
   const restartingServer =
     previewServerRestart?.status === 'running' &&
@@ -258,7 +268,16 @@ export function PreviewPane({
   const applyPreviewRatio = useCallback((preset: PreviewRatioPreset) => {
     const height = previewContentRef.current?.getBoundingClientRect().height ?? 0
 
-    setPaneWidthOverride(PREVIEW_PANE_ID, previewWidthForRatio({ height, ratio: preset.ratio }))
+    // A responsive preset should size the page viewport inside the preview pane,
+    // not mutate the PaneShell track. Mutating the outer pane was what made the
+    // preview spill across the chat surface after choosing desktop/ultrawide.
+    setPreviewFrameWidth(previewWidthForRatio({ height, ratio: preset.ratio }))
+    setActiveRatioLabel(`${preset.label} ${preset.ratioLabel}`)
+  }, [])
+
+  const fitPreviewToPane = useCallback(() => {
+    setPreviewFrameWidth(null)
+    setActiveRatioLabel(null)
   }, [])
 
 
@@ -330,23 +349,48 @@ export function PreviewPane({
     }
   }, [appendConsoleEntry, consoleState, copy, currentUrl, onRestartServer])
 
-  const toggleDevTools = useCallback(() => {
+  const toggleAnnotations = useCallback(() => {
+    const next = !annotationOverlayOpen
+
+    setAnnotationOverlayOpen(next)
+    appendConsoleEntry({
+      level: 1,
+      message: next ? 'Preview annotation overlay enabled.' : 'Preview annotation overlay hidden.'
+    })
+  }, [annotationOverlayOpen, appendConsoleEntry])
+
+  const toggleDebugOverlay = useCallback(() => {
     const webview = webviewRef.current
+    const nativeDevToolsOpen = Boolean(devtoolsOpen || webview?.isDevToolsOpened?.())
+    const next = !(debugOverlayOpen || nativeDevToolsOpen)
 
-    if (!webview?.openDevTools) {
-      return
-    }
+    setDebugOverlayOpen(next)
 
-    if (webview.isDevToolsOpened?.()) {
-      webview.closeDevTools?.()
+    if (webview?.openDevTools) {
+      if (next) {
+        webview.openDevTools()
+        setDevtoolsOpen(true)
+      } else {
+        webview.closeDevTools?.()
+        setDevtoolsOpen(false)
+      }
+    } else {
       setDevtoolsOpen(false)
-
-      return
     }
 
-    webview.openDevTools()
-    setDevtoolsOpen(true)
-  }, [])
+    if (next) {
+      consoleState.setOpen(true)
+    }
+
+    appendConsoleEntry({
+      level: 1,
+      message: next
+        ? devtoolsAvailable
+          ? 'Preview debug opened. Native DevTools requested and the in-pane debug overlay is visible.'
+          : 'Preview debug overlay opened. Native DevTools are unavailable for this preview engine.'
+        : 'Preview debug hidden.'
+    })
+  }, [appendConsoleEntry, consoleState, debugOverlayOpen, devtoolsAvailable, devtoolsOpen])
 
   useEffect(() => {
     if (!setTitlebarToolGroup) {
@@ -357,23 +401,26 @@ export function PreviewPane({
       ...(isWebPreview
         ? [
             {
+              active: annotationOverlayOpen,
+              icon: <Pencil className="size-3.5" />,
+              id: `${TITLEBAR_GROUP_ID}-annotate`,
+              label: annotationOverlayOpen ? 'Hide preview annotations' : 'Show preview annotations',
+              onSelect: toggleAnnotations
+            },
+            {
               active: consoleOpen,
               icon: <PreviewConsoleTitlebarIcon consoleState={consoleState} />,
               id: `${TITLEBAR_GROUP_ID}-console`,
               label: consoleOpen ? copy.hideConsole : copy.showConsole,
               onSelect: () => consoleState.setOpen(open => !open)
             },
-            ...(devtoolsAvailable
-              ? [
-                  {
-                    active: devtoolsOpen,
-                    icon: <Bug />,
-                    id: `${TITLEBAR_GROUP_ID}-devtools`,
-                    label: devtoolsOpen ? copy.hideDevTools : copy.openDevTools,
-                    onSelect: toggleDevTools
-                  }
-                ]
-              : [])
+            {
+              active: debugOverlayOpen || devtoolsOpen,
+              icon: <Bug />,
+              id: `${TITLEBAR_GROUP_ID}-devtools`,
+              label: debugOverlayOpen || devtoolsOpen ? 'Hide preview debug' : 'Show preview debug',
+              onSelect: toggleDebugOverlay
+            }
           ]
         : [])
     ]
@@ -381,7 +428,18 @@ export function PreviewPane({
     setTitlebarToolGroup(TITLEBAR_GROUP_ID, tools)
 
     return () => setTitlebarToolGroup(TITLEBAR_GROUP_ID, [])
-  }, [consoleOpen, consoleState, copy, devtoolsAvailable, devtoolsOpen, isWebPreview, setTitlebarToolGroup, toggleDevTools])
+  }, [
+    annotationOverlayOpen,
+    consoleOpen,
+    consoleState,
+    copy,
+    debugOverlayOpen,
+    devtoolsOpen,
+    isWebPreview,
+    setTitlebarToolGroup,
+    toggleAnnotations,
+    toggleDebugOverlay
+  ])
 
   useEffect(() => {
     if (!consoleOpen) {
@@ -573,8 +631,11 @@ export function PreviewPane({
     webviewRef.current = null
     setCurrentUrl(target.url)
     setAddressDraft(target.url)
+    setAnnotationOverlayOpen(false)
+    setDebugOverlayOpen(false)
     setDevtoolsAvailable(false)
     setDevtoolsOpen(false)
+    setPreviewEngine(isWebPreview ? 'detecting' : 'local-file')
     setLoadError(null)
     consoleState.reset()
     setLoading(true)
@@ -586,7 +647,7 @@ export function PreviewPane({
     }
 
     const webview = document.createElement('webview') as PreviewWebview
-    webview.className = 'flex h-full w-full flex-1 bg-transparent'
+    webview.className = 'h-full w-full bg-transparent'
     webview.setAttribute('partition', webviewPartition)
     webview.setAttribute('src', target.url)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
@@ -599,7 +660,7 @@ export function PreviewPane({
     if (!supportsElectronWebview) {
       const iframe = document.createElement('iframe') as HTMLIFrameElement & PreviewWebview
 
-      iframe.className = 'flex h-full w-full flex-1 border-0 bg-background'
+      iframe.className = 'h-full w-full border-0 bg-background'
       iframe.setAttribute('allow', 'clipboard-read; clipboard-write; fullscreen; microphone; camera')
       iframe.setAttribute('referrerpolicy', 'no-referrer')
       iframe.src = target.url
@@ -635,6 +696,7 @@ export function PreviewPane({
       iframe.addEventListener('error', onIframeError)
       host.appendChild(iframe)
       webviewRef.current = iframe
+      setPreviewEngine('iframe-fallback')
       appendConsoleEntry({
         level: 1,
         message: 'Browser preview fallback active; Electron webview console and DevTools are unavailable in browser mode.'
@@ -651,7 +713,8 @@ export function PreviewPane({
       }
     }
 
-    setDevtoolsAvailable(true)
+    setPreviewEngine('electron-webview')
+    setDevtoolsAvailable(typeof webview.openDevTools === 'function')
 
     const onConsole = (event: Event) => {
       const detail = event as Event & {
@@ -766,54 +829,160 @@ export function PreviewPane({
             </form>
             {isWebPreview && (
               <div aria-label="Preview responsive sizes" className="pointer-events-auto flex shrink-0 items-center gap-1">
-                {PREVIEW_RATIO_PRESETS.map(preset => (
-                  <Tip key={preset.id} label={`Set preview to ${preset.label} ${preset.ratioLabel}`}>
-                    <button
-                      aria-label={`Set preview to ${preset.label} ${preset.ratioLabel}`}
-                      className="h-5 rounded-sm border border-(--ui-stroke-quaternary) px-1.5 text-[0.625rem] font-medium leading-none text-muted-foreground/85 transition-colors hover:border-(--ui-stroke-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
-                      onClick={() => applyPreviewRatio(preset)}
-                      type="button"
-                    >
-                      {preset.ratioLabel}
-                    </button>
-                  </Tip>
-                ))}
+                <Tip label="Fit preview to pane">
+                  <button
+                    aria-label="Fit preview to pane"
+                    className={cn(
+                      'h-5 rounded-sm border px-1.5 text-[0.625rem] font-medium leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring',
+                      previewFrameWidth === null
+                        ? 'border-(--ui-stroke-secondary) bg-(--chrome-action-hover) text-foreground'
+                        : 'border-(--ui-stroke-quaternary) text-muted-foreground/85 hover:border-(--ui-stroke-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+                    )}
+                    onClick={fitPreviewToPane}
+                    type="button"
+                  >
+                    Fit
+                  </button>
+                </Tip>
+                {PREVIEW_RATIO_PRESETS.map(preset => {
+                  const label = `${preset.label} ${preset.ratioLabel}`
+                  const active = activeRatioLabel === label
+
+                  return (
+                    <Tip key={preset.id} label={`Set preview viewport to ${label}`}>
+                      <button
+                        aria-label={`Set preview viewport to ${label}`}
+                        aria-pressed={active}
+                        className={cn(
+                          'h-5 rounded-sm border px-1.5 text-[0.625rem] font-medium leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring',
+                          active
+                            ? 'border-(--ui-stroke-secondary) bg-(--chrome-action-hover) text-foreground'
+                            : 'border-(--ui-stroke-quaternary) text-muted-foreground/85 hover:border-(--ui-stroke-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+                        )}
+                        onClick={() => applyPreviewRatio(preset)}
+                        type="button"
+                      >
+                        {preset.ratioLabel}
+                      </button>
+                    </Tip>
+                  )
+                })}
+              </div>
+            )}
+            {isWebPreview && (
+              <div aria-label="Preview tools" className="pointer-events-auto flex shrink-0 items-center gap-1">
+                <Tip label={annotationOverlayOpen ? 'Hide preview annotations' : 'Show preview annotations'}>
+                  <button
+                    aria-label={annotationOverlayOpen ? 'Hide preview annotations' : 'Show preview annotations'}
+                    aria-pressed={annotationOverlayOpen}
+                    className={cn(
+                      'grid size-6 place-items-center rounded-sm border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring',
+                      annotationOverlayOpen
+                        ? 'border-sky-400/70 bg-sky-400/15 text-sky-200'
+                        : 'border-(--ui-stroke-quaternary) text-muted-foreground/85 hover:border-(--ui-stroke-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+                    )}
+                    onClick={toggleAnnotations}
+                    type="button"
+                  >
+                    <Pencil className="size-3" />
+                  </button>
+                </Tip>
+                <Tip label={debugOverlayOpen || devtoolsOpen ? 'Hide preview debug' : 'Show preview debug'}>
+                  <button
+                    aria-label={debugOverlayOpen || devtoolsOpen ? 'Hide preview debug' : 'Show preview debug'}
+                    aria-pressed={debugOverlayOpen || devtoolsOpen}
+                    className={cn(
+                      'grid size-6 place-items-center rounded-sm border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring',
+                      debugOverlayOpen || devtoolsOpen
+                        ? 'border-amber-400/70 bg-amber-400/15 text-amber-200'
+                        : 'border-(--ui-stroke-quaternary) text-muted-foreground/85 hover:border-(--ui-stroke-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+                    )}
+                    onClick={toggleDebugOverlay}
+                    type="button"
+                  >
+                    <Bug className="size-3" />
+                  </button>
+                </Tip>
               </div>
             )}
           </div>
         )}
 
         <div
-          className="pointer-events-auto relative min-h-0 flex-1 overflow-hidden bg-transparent"
+          className="pointer-events-auto relative min-h-0 flex-1 overflow-auto bg-transparent overscroll-contain [contain:paint]"
           data-preview-viewport=""
           ref={previewContentRef}
         >
           <div
-            className={cn(
-              'absolute inset-0 flex bg-transparent',
-              (!isWebPreview || loadError) && 'pointer-events-none opacity-0'
+            className="relative h-full min-h-full max-w-none shrink-0 overflow-hidden bg-transparent"
+            data-preview-frame=""
+            style={previewFrameStyle}
+          >
+            <div
+              className={cn(
+                'absolute inset-0 flex bg-transparent',
+                (!isWebPreview || loadError) && 'pointer-events-none opacity-0'
+              )}
+              ref={hostRef}
+            />
+            {!isWebPreview && <LocalFilePreview reloadKey={localReloadKey} target={target} />}
+            {loadError && (
+              <PreviewLoadError
+                consoleHeight={consoleOpen ? consoleHeight : 0}
+                error={loadError}
+                onRestartServer={target.kind === 'url' && onRestartServer ? () => void restartServer() : undefined}
+                onRetry={reloadPreview}
+                restarting={restartingServer}
+              />
             )}
-            ref={hostRef}
-          />
-          {!isWebPreview && <LocalFilePreview reloadKey={localReloadKey} target={target} />}
-          {loadError && (
-            <PreviewLoadError
-              consoleHeight={consoleOpen ? consoleHeight : 0}
-              error={loadError}
-              onRestartServer={target.kind === 'url' && onRestartServer ? () => void restartServer() : undefined}
-              onRetry={reloadPreview}
-              restarting={restartingServer}
-            />
-          )}
 
-          {isWebPreview && consoleOpen && (
-            <PreviewConsolePanel
-              consoleBodyRef={consoleBodyRef}
-              consoleShouldStickRef={consoleShouldStickRef}
-              consoleState={consoleState}
-              startConsoleResize={startConsoleResize}
-            />
-          )}
+            {isWebPreview && annotationOverlayOpen && (
+              <div
+                aria-label="Preview annotation overlay active"
+                className="pointer-events-none absolute inset-0 z-10 overflow-hidden border border-sky-400/60 bg-sky-400/5 text-[0.625rem] font-semibold uppercase tracking-[0.12em] text-sky-100 shadow-[inset_0_0_0_1px_rgba(125,211,252,0.18)]"
+                data-preview-annotations=""
+              >
+                <div className="absolute left-3 top-3 rounded-sm border border-sky-300/50 bg-black/65 px-2 py-1 text-sky-100 shadow-lg">
+                  Annotation overlay active
+                </div>
+                <div className="absolute left-[18%] top-[18%] rounded-sm border border-sky-300/70 bg-black/70 px-1.5 py-0.5 text-sky-100">[1]</div>
+                <div className="absolute right-[18%] top-[26%] rounded-sm border border-sky-300/70 bg-black/70 px-1.5 py-0.5 text-sky-100">[2]</div>
+                <div className="absolute bottom-[24%] left-[46%] rounded-sm border border-sky-300/70 bg-black/70 px-1.5 py-0.5 text-sky-100">[3]</div>
+              </div>
+            )}
+
+            {isWebPreview && debugOverlayOpen && (
+              <div
+                aria-label="Preview debug overlay"
+                className="pointer-events-auto absolute right-3 top-3 z-30 w-72 max-w-[calc(100%-1.5rem)] rounded-md border border-amber-400/40 bg-black/80 p-3 text-[0.6875rem] text-amber-50 shadow-2xl backdrop-blur"
+                data-preview-debug-overlay=""
+              >
+                <div className="mb-2 flex items-center gap-2 text-[0.65rem] font-semibold uppercase tracking-[0.14em] text-amber-200">
+                  <Bug className="size-3" />
+                  Preview debug
+                </div>
+                <dl className="grid grid-cols-[4.75rem_1fr] gap-x-2 gap-y-1 font-mono text-[0.65rem] normal-case tracking-normal text-amber-50/85">
+                  <dt className="text-amber-200/70">Engine</dt>
+                  <dd>{previewEngine}</dd>
+                  <dt className="text-amber-200/70">Native</dt>
+                  <dd>{devtoolsAvailable ? 'DevTools available' : 'DevTools unavailable'}</dd>
+                  <dt className="text-amber-200/70">Frame</dt>
+                  <dd>{previewFrameWidth === null ? 'fit pane' : `${previewFrameWidth}px${activeRatioLabel ? ` (${activeRatioLabel})` : ''}`}</dd>
+                  <dt className="text-amber-200/70">URL</dt>
+                  <dd className="truncate" title={currentUrl}>{compactUrl(currentUrl)}</dd>
+                </dl>
+              </div>
+            )}
+
+            {isWebPreview && consoleOpen && (
+              <PreviewConsolePanel
+                consoleBodyRef={consoleBodyRef}
+                consoleShouldStickRef={consoleShouldStickRef}
+                consoleState={consoleState}
+                startConsoleResize={startConsoleResize}
+              />
+            )}
+          </div>
         </div>
       </div>
     </aside>

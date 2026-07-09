@@ -323,6 +323,17 @@ platforms:
 | `platforms.slack.extra.rich_blocks` | `false` | 为 `true` 时，Agent 消息会渲染为 [Block Kit](https://docs.slack.dev/block-kit/) 区块（标题、分隔线、真正的嵌套列表以及原生表格）。始终附带纯文本回退。超出 Slack 限制的表格会回退为对齐的等宽文本。无需重新安装应用——这仅是发送端的改动。 |
 | `platforms.slack.extra.cron_continuable_surface` | `"thread"` | [可继续 cron 任务](../features/cron.md)的投递方式。`"thread"` 为每次投递新建专用话题（默认）；`"in_channel"` 直接平铺投递到频道时间线。使用 `in_channel` 时需搭配 `reply_in_thread: false`（及 `require_mention: false`），纯文本回复即可继续任务。 |
 
+### 入站文档大小限制
+
+Slack 文档默认限制为 20 MiB。Hermes 会同时检查 Slack 声明的大小和
+实际流式响应正文，因此缺失或不准确的元数据无法绕过限制。请在
+`gateway` 下配置：
+
+```yaml
+gateway:
+  max_inbound_document_bytes: 20971520  # 20 MiB；设为 0 可禁用限制
+```
+
 ### 会话隔离
 
 ```yaml

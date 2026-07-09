@@ -1386,8 +1386,13 @@ class TestIncomingDocumentHandling:
         assert msg_event.media_types == ["application/zip"]
 
     @pytest.mark.asyncio
-    async def test_oversized_document_skipped(self, adapter):
-        """A document over 20MB should be skipped."""
+    async def test_oversized_document_skipped(self, adapter, monkeypatch):
+        """The default 20 MiB cap skips metadata-known oversized documents."""
+        monkeypatch.setattr(
+            _slack_mod,
+            "get_inbound_document_max_bytes",
+            lambda: 20 * 1024 * 1024,
+        )
         event = self._make_event(
             files=[
                 {
@@ -1402,6 +1407,191 @@ class TestIncomingDocumentHandling:
 
         msg_event = adapter.handle_message.call_args[0][0]
         assert len(msg_event.media_urls) == 0
+        assert "[Slack attachment notice]" in msg_event.text
+        assert "huge.pdf" in msg_event.text
+        assert "exceeds" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_document_accepted_when_cap_raised(self, adapter, monkeypatch):
+        monkeypatch.setattr(
+            _slack_mod,
+            "get_inbound_document_max_bytes",
+            lambda: 128 * 1024 * 1024,
+        )
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
+            dl.return_value = b"%PDF-1.7 big"
+            event = self._make_event(
+                files=[
+                    {
+                        "mimetype": "application/pdf",
+                        "name": "huge.pdf",
+                        "url_private_download": "https://files.slack.com/huge.pdf",
+                        "size": 25 * 1024 * 1024,
+                    }
+                ]
+            )
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.DOCUMENT
+        assert len(msg_event.media_urls) == 1
+        dl.assert_awaited_once_with(
+            "https://files.slack.com/huge.pdf",
+            team_id="",
+            max_bytes=128 * 1024 * 1024,
+        )
+
+    @pytest.mark.asyncio
+    async def test_unknown_size_document_is_capped_while_streaming(
+        self,
+        adapter,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(
+            _slack_mod,
+            "get_inbound_document_max_bytes",
+            lambda: 20 * 1024 * 1024,
+        )
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
+            dl.return_value = b"small"
+            event = self._make_event(
+                files=[
+                    {
+                        "mimetype": "application/pdf",
+                        "name": "unknown.pdf",
+                        "url_private_download": "https://files.slack.com/unknown.pdf",
+                    }
+                ]
+            )
+            await adapter._handle_slack_message(event)
+
+        assert adapter.handle_message.call_args[0][0].media_urls
+        dl.assert_awaited_once_with(
+            "https://files.slack.com/unknown.pdf",
+            team_id="",
+            max_bytes=20 * 1024 * 1024,
+        )
+
+    @pytest.mark.asyncio
+    async def test_zero_cap_allows_unknown_size_document(self, adapter, monkeypatch):
+        monkeypatch.setattr(
+            _slack_mod,
+            "get_inbound_document_max_bytes",
+            lambda: 0,
+        )
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
+            dl.return_value = b"unlimited"
+            event = self._make_event(
+                files=[
+                    {
+                        "mimetype": "application/pdf",
+                        "name": "unknown.pdf",
+                        "url_private_download": "https://files.slack.com/unknown.pdf",
+                    }
+                ]
+            )
+            await adapter._handle_slack_message(event)
+
+        assert adapter.handle_message.call_args[0][0].media_urls
+        dl.assert_awaited_once_with(
+            "https://files.slack.com/unknown.pdf",
+            team_id="",
+            max_bytes=0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_actual_body_over_cap_surfaces_notice(self, adapter, monkeypatch):
+        monkeypatch.setattr(
+            _slack_mod,
+            "get_inbound_document_max_bytes",
+            lambda: 20,
+        )
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
+            dl.return_value = b"x" * 21
+            event = self._make_event(
+                text="please read this",
+                files=[
+                    {
+                        "mimetype": "application/pdf",
+                        "name": "lying-size.pdf",
+                        "url_private_download": "https://files.slack.com/lying.pdf",
+                        "size": 1,
+                    }
+                ],
+            )
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert not msg_event.media_urls
+        assert "please read this" in msg_event.text
+        assert "lying-size.pdf" in msg_event.text
+        assert "21 bytes" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_oversized_attachment_does_not_mutate_command(
+        self,
+        adapter,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(
+            _slack_mod,
+            "get_inbound_document_max_bytes",
+            lambda: 20 * 1024 * 1024,
+        )
+        event = self._make_event(
+            text="!stop",
+            files=[
+                {
+                    "mimetype": "application/pdf",
+                    "name": "huge.pdf",
+                    "url_private_download": "https://files.slack.com/huge.pdf",
+                    "size": 25 * 1024 * 1024,
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/stop"
+        assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.get_command() == "stop"
+
+    @pytest.mark.asyncio
+    async def test_limit_notice_neutralizes_slack_broadcast_filename(
+        self,
+        adapter,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(
+            _slack_mod,
+            "get_inbound_document_max_bytes",
+            lambda: 20 * 1024 * 1024,
+        )
+        event = self._make_event(
+            files=[
+                {
+                    "mimetype": "application/pdf",
+                    "name": "<!channel>.pdf",
+                    "url_private_download": "https://files.slack.com/huge.pdf",
+                    "size": 25 * 1024 * 1024,
+                }
+            ]
+        )
+
+        await adapter._handle_slack_message(event)
+
+        text = adapter.handle_message.call_args[0][0].text
+        assert "<!channel>" not in text
+        assert "&lt;!channel&gt;.pdf" in text
 
     @pytest.mark.asyncio
     async def test_document_download_error_handled(self, adapter):

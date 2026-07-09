@@ -2911,6 +2911,10 @@ DEFAULT_CONFIG = {
         # adapter. ``0`` disables the cap. Default 128 MiB.
         "max_inbound_media_bytes": 134217728,
 
+        # Maximum bytes buffered for one inbound document attachment. The
+        # default preserves Slack's historical 20 MiB cap; set 0 to disable.
+        "max_inbound_document_bytes": 20971520,
+
         # When false (default), any file path the agent emits is delivered
         # as a native attachment as long as it isn't under the credential /
         # system-path denylist (/etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,

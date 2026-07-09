@@ -52,6 +52,7 @@ from gateway.platforms.base import (
     safe_url_for_log,
     cache_document_from_bytes,
     cache_video_from_bytes,
+    get_inbound_document_max_bytes,
 )
 
 try:  # sibling module; support both package and flat plugin-dir import
@@ -61,6 +62,37 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
 
 
 logger = logging.getLogger(__name__)
+
+
+class _SlackDownloadTooLarge(ValueError):
+    """Raised when a streamed Slack document crosses its configured cap."""
+
+    def __init__(self, actual_bytes: int, max_bytes: int):
+        self.actual_bytes = actual_bytes
+        self.max_bytes = max_bytes
+        super().__init__(
+            f"Slack document is too large ({actual_bytes} bytes > {max_bytes} bytes)"
+        )
+
+
+def _escape_slack_notice_label(value: Any) -> str:
+    """Render an untrusted filename as inert Slack inline code."""
+    label = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value or "this attachment")).strip()
+    label = (label or "this attachment")[:200].replace("`", "ˋ")
+    escaped = (
+        label.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+    return f"`{escaped}`"
+
+
+def _document_limit_notice(filename: Any, actual_bytes: int, max_bytes: int) -> str:
+    return (
+        f"Attachment {_escape_slack_notice_label(filename)} skipped: "
+        f"{actual_bytes} bytes exceeds the inbound Slack document limit "
+        f"({max_bytes} bytes). Ask the sender to shrink or split the file."
+    )
 
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
@@ -3083,19 +3115,38 @@ class SlackAdapter(BasePlatformAdapter):
                     # tools.
                     in_allowlist = ext in SUPPORTED_DOCUMENT_TYPES
 
-                    # Check file size (Slack limit: 20 MB for bots)
-                    file_size = f.get("size", 0)
-                    MAX_DOC_BYTES = 20 * 1024 * 1024
-                    if not file_size or file_size > MAX_DOC_BYTES:
-                        logger.warning(
-                            "[Slack] Document too large or unknown size: %s", file_size
+                    # Slack metadata is only a preflight optimization. The
+                    # downloader enforces the same cap against streamed body
+                    # bytes, so missing or inaccurate size metadata is safe.
+                    max_doc_bytes = get_inbound_document_max_bytes()
+                    raw_file_size = f.get("size")
+                    try:
+                        file_size = int(raw_file_size)
+                    except (TypeError, ValueError, OverflowError):
+                        file_size = 0
+                    if max_doc_bytes and file_size > max_doc_bytes:
+                        notice = _document_limit_notice(
+                            original_filename or "document",
+                            file_size,
+                            max_doc_bytes,
                         )
+                        attachment_notices.append(notice)
+                        logger.warning("[Slack] %s", notice)
                         continue
 
                     # Download and cache
                     raw_bytes = await self._download_slack_file_bytes(
-                        url, team_id=team_id
+                        url,
+                        team_id=team_id,
+                        max_bytes=max_doc_bytes,
                     )
+                    # Test doubles and future alternate downloaders must obey
+                    # the same acceptance boundary as the production stream.
+                    if max_doc_bytes and len(raw_bytes) > max_doc_bytes:
+                        raise _SlackDownloadTooLarge(
+                            len(raw_bytes),
+                            max_doc_bytes,
+                        )
                     cached_path = cache_document_from_bytes(
                         raw_bytes, original_filename or f"document{ext or '.bin'}"
                     )
@@ -3128,6 +3179,14 @@ class SlackAdapter(BasePlatformAdapter):
                         except UnicodeDecodeError:
                             pass  # Binary content, skip injection
 
+                except _SlackDownloadTooLarge as e:
+                    notice = _document_limit_notice(
+                        original_filename or "document",
+                        e.actual_bytes,
+                        e.max_bytes,
+                    )
+                    attachment_notices.append(notice)
+                    logger.warning("[Slack] %s", notice)
                 except Exception as e:  # pragma: no cover - defensive logging
                     detail = self._describe_slack_download_failure(e, file_obj=f)
                     if detail:
@@ -3141,7 +3200,7 @@ class SlackAdapter(BasePlatformAdapter):
                             exc_info=True,
                         )
 
-        if attachment_notices:
+        if attachment_notices and msg_type != MessageType.COMMAND:
             notice_block = "[Slack attachment notice]\n" + "\n".join(
                 f"- {n}" for n in attachment_notices
             )
@@ -4102,8 +4161,18 @@ class SlackAdapter(BasePlatformAdapter):
                         continue
                     raise
 
-    async def _download_slack_file_bytes(self, url: str, team_id: str = "") -> bytes:
-        """Download a Slack file and return raw bytes, with retry."""
+    async def _download_slack_file_bytes(
+        self,
+        url: str,
+        team_id: str = "",
+        *,
+        max_bytes: Optional[int] = None,
+    ) -> bytes:
+        """Download a Slack file, optionally enforcing a streamed byte cap.
+
+        ``max_bytes=None`` preserves the existing buffered video path. Passing
+        an integer opts into streaming; zero streams without a size limit.
+        """
         import httpx
 
         bot_token = (
@@ -4112,24 +4181,105 @@ class SlackAdapter(BasePlatformAdapter):
             else self.config.token
         )
 
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        headers = {"Authorization": f"Bearer {bot_token}"}
+        if max_bytes is not None:
+            headers["Accept-Encoding"] = "identity"
+
+        async with httpx.AsyncClient(
+            timeout=30.0,
+            # Auto-follow can buffer redirect bodies. Capped document reads
+            # follow manually so every accepted body is streamed explicitly.
+            follow_redirects=max_bytes is None,
+        ) as client:
             for attempt in range(3):
                 try:
-                    response = await client.get(
-                        url,
-                        headers={"Authorization": f"Bearer {bot_token}"},
-                    )
-                    response.raise_for_status()
-                    ct = response.headers.get("content-type", "")
-                    if "text/html" in ct:
-                        raise ValueError(
-                            "Slack returned HTML instead of file bytes "
-                            f"(content-type: {ct}); "
-                            "check bot token scopes and file permissions"
+                    if max_bytes is None:
+                        response = await client.get(url, headers=headers)
+                        response.raise_for_status()
+                        ct = response.headers.get("content-type", "")
+                        if "text/html" in ct:
+                            raise ValueError(
+                                "Slack returned HTML instead of file bytes "
+                                f"(content-type: {ct}); "
+                                "check bot token scopes and file permissions"
+                            )
+                        return response.content
+
+                    limit = max(0, max_bytes)
+                    request = client.build_request("GET", url, headers=headers)
+                    redirect_count = 0
+                    while True:
+                        response = await client.send(
+                            request,
+                            stream=True,
+                            follow_redirects=False,
                         )
-                    return response.content
+                        try:
+                            if response.has_redirect_location:
+                                if redirect_count >= client.max_redirects:
+                                    raise httpx.TooManyRedirects(
+                                        "Exceeded maximum allowed redirects",
+                                        request=request,
+                                    )
+                                next_request = response.next_request
+                                if next_request is None:
+                                    response.raise_for_status()
+                                    raise ValueError(
+                                        "Slack returned an unusable redirect response"
+                                    )
+                                request = next_request
+                                redirect_count += 1
+                                continue
+
+                            response.raise_for_status()
+                            ct = response.headers.get("content-type", "")
+                            if "text/html" in ct:
+                                raise ValueError(
+                                    "Slack returned HTML instead of file bytes "
+                                    f"(content-type: {ct}); "
+                                    "check bot token scopes and file permissions"
+                                )
+
+                            content_encoding = (
+                                response.headers.get("content-encoding", "")
+                                .strip()
+                                .lower()
+                            )
+                            if content_encoding not in {"", "identity"}:
+                                raise ValueError(
+                                    "Slack returned unexpected Content-Encoding "
+                                    f"{content_encoding!r} despite "
+                                    "Accept-Encoding: identity"
+                                )
+
+                            content_length = response.headers.get("content-length")
+                            if limit and content_length:
+                                try:
+                                    declared_size = int(content_length)
+                                except (TypeError, ValueError, OverflowError):
+                                    logger.debug(
+                                        "Ignoring invalid Slack Content-Length: %r",
+                                        content_length,
+                                    )
+                                else:
+                                    if declared_size > limit:
+                                        raise _SlackDownloadTooLarge(
+                                            declared_size,
+                                            limit,
+                                        )
+
+                            chunks: List[bytes] = []
+                            total = 0
+                            async for chunk in response.aiter_bytes():
+                                total += len(chunk)
+                                if limit and total > limit:
+                                    raise _SlackDownloadTooLarge(total, limit)
+                                chunks.append(chunk)
+                            return b"".join(chunks)
+                        finally:
+                            await response.aclose()
                 except (
-                    httpx.TimeoutException,
+                    httpx.TransportError,
                     httpx.HTTPStatusError,
                     ValueError,
                 ) as exc:

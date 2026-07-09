@@ -369,6 +369,17 @@ platforms:
 | `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
 | `platforms.slack.extra.cron_continuable_surface` | `"thread"` | Delivery surface for [continuable cron jobs](../features/cron.md#flat-in-channel-continuation-slack). `"thread"` opens a dedicated thread per delivery (default); `"in_channel"` delivers flat into the channel timeline. Pair `in_channel` with `reply_in_thread: false` (and `require_mention: false`) so a plain channel reply continues the job. |
 
+### Inbound document size limit
+
+Slack documents are capped at 20 MiB by default. Hermes checks both Slack's
+declared size and the actual streamed response body, so missing or inaccurate
+metadata cannot bypass the limit. Configure the cap under `gateway`:
+
+```yaml
+gateway:
+  max_inbound_document_bytes: 20971520  # 20 MiB; 0 disables the cap
+```
+
 ### Session Isolation
 
 ```yaml

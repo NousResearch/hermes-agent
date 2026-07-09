@@ -9,6 +9,7 @@ import asyncio
 import inspect
 import ipaddress
 import logging
+import math
 import os
 import random
 import re
@@ -616,6 +617,43 @@ def get_inbound_media_max_bytes() -> int:
         return int(gw["max_inbound_media_bytes"])
     except (TypeError, ValueError):
         return DEFAULT_INBOUND_MEDIA_MAX_BYTES
+
+
+# Documents use a separate cap because their typical size profile differs
+# from image/audio/video payloads. Slack is the first consumer; other adapters
+# retain their protocol-specific limits.
+DEFAULT_INBOUND_DOCUMENT_MAX_BYTES = 20 * 1024 * 1024
+
+
+def get_inbound_document_max_bytes() -> int:
+    """Return ``gateway.max_inbound_document_bytes`` from config.yaml.
+
+    The historical 20 MiB Slack limit remains the default. Zero or a negative
+    value disables the cap; invalid values fall back to the default.
+    """
+    try:
+        from hermes_cli.config import load_config as _load_config
+
+        cfg = _load_config()
+    except Exception:
+        return DEFAULT_INBOUND_DOCUMENT_MAX_BYTES
+    gateway_cfg = cfg.get("gateway", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(gateway_cfg, dict):
+        return DEFAULT_INBOUND_DOCUMENT_MAX_BYTES
+    raw = gateway_cfg.get("max_inbound_document_bytes")
+    if raw is None or raw == "":
+        return DEFAULT_INBOUND_DOCUMENT_MAX_BYTES
+    try:
+        if isinstance(raw, bool):
+            raise ValueError("boolean is not a byte count")
+        if isinstance(raw, float) and (
+            not math.isfinite(raw) or not raw.is_integer()
+        ):
+            raise ValueError("byte count must be a finite integer")
+        parsed = int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_INBOUND_DOCUMENT_MAX_BYTES
+    return max(0, parsed)
 
 
 def validate_inbound_media_size(

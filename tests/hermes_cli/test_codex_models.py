@@ -4,6 +4,17 @@ from unittest.mock import patch
 from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
 
 
+CHATGPT_REJECTED_CODEX_PRO_SLUGS = {
+    "gpt-5.6-sol-pro",
+    "gpt-5.6-terra-pro",
+    "gpt-5.6-luna-pro",
+}
+
+
+def test_curated_codex_defaults_exclude_chatgpt_rejected_pro_slugs():
+    assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(DEFAULT_CODEX_MODELS)
+
+
 def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch):
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir(parents=True, exist_ok=True)
@@ -75,6 +86,20 @@ def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypat
         "gpt-5.4",
         "gpt-5.3-codex-spark",
     ]
+
+
+def test_forward_compat_models_exclude_chatgpt_rejected_pro_slugs(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.codex_models._fetch_models_from_api",
+        lambda access_token: ["gpt-5.5"],
+    )
+
+    models = get_codex_model_ids(access_token="codex-access-token")
+
+    assert "gpt-5.6-sol" in models
+    assert "gpt-5.6-terra" in models
+    assert "gpt-5.6-luna" in models
+    assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(models)
 
 
 def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):

@@ -239,7 +239,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "starlette==1.0.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
     ),
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace).
-    "tool.trace_upload": ("huggingface-hub==1.2.3",),
+    # Keep compatible with Hindsight's transformers runtime when both share a venv.
+    "tool.trace_upload": ("huggingface-hub>=1.5.0,<2",),
 }
 
 

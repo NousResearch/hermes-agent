@@ -3347,14 +3347,20 @@ def _session_info(agent, session: dict | None = None) -> dict:
     try:
         from tools.approval import (
             _YOLO_MODE_FROZEN,
-            _get_approval_mode,
             is_session_yolo_enabled,
         )
 
-        session_yolo = (
-            bool(is_session_yolo_enabled(session_key)) if session_key else False
-        )
-        yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or _get_approval_mode() == "off"
+        session_key = (session or {}).get("session_key")
+        session_yolo = bool(is_session_yolo_enabled(session_key)) if session_key else False
+        # YOLO badge reflects ONLY a real approval-bypass: the process-start
+        # --yolo flag (frozen) or an explicit per-session `/yolo on`. Do NOT OR
+        # in `_get_approval_mode() == "off"`: a global `approvals.mode: off`
+        # config means "don't prompt for approvals", which is a separate concept
+        # from YOLO (per-session bypass). Conflating them lit the TUI's ⚠ YOLO
+        # badge permanently for anyone who set approvals.mode: off (note YAML
+        # parses bare `off` as False, which _normalize_approval_mode maps back to
+        # "off"), even though /yolo was never enabled.
+        yolo = bool(_YOLO_MODE_FROZEN) or session_yolo
     except Exception:
         yolo = False
     info: dict = {

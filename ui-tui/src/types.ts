@@ -165,6 +165,7 @@ export interface SessionInfo {
   update_command?: string
   usage?: Usage
   version?: string
+  yolo?: boolean
 }
 
 export interface Usage {

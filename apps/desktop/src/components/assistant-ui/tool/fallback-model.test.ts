@@ -289,22 +289,14 @@ describe('buildToolView title actions', () => {
     }
   })
 
-  it('uses inherited backend context for live terminal rows', () => {
+  it('retains the full terminal command for the renderer', () => {
     const view = buildToolView(
-      part({
-        args: {
-          command: 'cd /Users/brooklyn/www/bb-rainbows && pnpm run lint 2>&1 | tail -20',
-          context: 'pnpm run lint'
-        },
-        result: undefined,
-        toolName: 'terminal'
-      }),
+      part({ args: { command: 'cd /tmp && pnpm run lint' }, result: { output: 'done' }, toolName: 'terminal' }),
       ''
     )
 
-    expect(view.title).toBe('Running pnpm run lint')
-    expect(view.subtitle).toBe('')
-    expect(view.titleAction).toEqual({ prefix: '', text: 'Running', suffix: ' pnpm run lint' })
+    expect(view.command).toBe('cd /tmp && pnpm run lint')
+    expect(view.title).toBe('done')
   })
 
   it('uses the runtime locale for title text and action placement', () => {

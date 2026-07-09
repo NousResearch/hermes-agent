@@ -535,6 +535,14 @@ function ToolEntry({ part }: ToolEntryProps) {
               // informational output there.
               <div className="max-w-full text-xs leading-relaxed text-(--ui-text-secondary)">
                 {view.detailLabel && <p className={TOOL_SECTION_LABEL_CLASS}>{view.detailLabel}</p>}
+                {view.command && (
+                  <div className="max-w-full text-xs leading-relaxed text-(--ui-text-secondary)">
+                    <p className={TOOL_SECTION_LABEL_CLASS}>Command</p>
+                    <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere')}>
+                      {view.command}
+                    </pre>
+                  </div>
+                )}
                 {view.stdout && (
                   <div className="space-y-0.5">
                     {view.stderr && <p className={TOOL_SECTION_LABEL_CLASS}>stdout</p>}

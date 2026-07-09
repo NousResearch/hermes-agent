@@ -954,6 +954,7 @@ function toolSubtitle(
 
   if (toolName === 'terminal' || toolName === 'execute_code') {
     const output = firstStringField(resultRecord, ['output', 'stdout', 'stderr'])
+    const command = firstStringField(argsRecord, ['command', 'code']) || contextValue(argsRecord)
 
     const lines = Array.isArray(resultRecord.lines)
       ? resultRecord.lines.filter((line): line is string => typeof line === 'string').join('\n')
@@ -971,8 +972,6 @@ function toolSubtitle(
         return compactPreview(firstMeaningfulLine, 160)
       }
     }
-
-    const command = firstStringField(argsRecord, ['context', 'preview', 'command', 'code']) || contextValue(argsRecord)
 
     return command ? '' : 'Executed command'
   }
@@ -1393,6 +1392,7 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   // messages (npm progress, git hints), so we deliberately don't paint
   // stderr destructively even though it's tagged.
   const rendersAnsi = part.toolName === 'terminal' || part.toolName === 'execute_code'
+  const command = rendersAnsi ? firstStringField(argsRecord, ['command', 'code']) || contextValue(argsRecord) : undefined
   const stdout = rendersAnsi ? firstStringField(resultRecord, ['stdout']) : ''
   const stderrRaw = rendersAnsi ? firstStringField(resultRecord, ['stderr']) : ''
   // Only attach stderr when the backend actually returned it as its own
@@ -1401,6 +1401,7 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   const hasSplitStreams = rendersAnsi && (Boolean(stdout) || Boolean(stderrRaw))
 
   return {
+    command: command ? command : undefined,
     countLabel: resultCount ? formatCountLabel(resultCount) : undefined,
     detail,
     detailLabel: error ? 'Error details' : toolDetailLabel(part.toolName),

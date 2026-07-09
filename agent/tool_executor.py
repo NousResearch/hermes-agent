@@ -1327,6 +1327,31 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('read_terminal', function_args, tool_duration, result=function_result)}")
+        elif function_name == "browser_action_request":
+            def _execute(next_args: dict) -> Any:
+                from tools.browser_action_tool import browser_action_request as _browser_action_request
+                return _browser_action_request(
+                    action_type=next_args.get("action_type") or next_args.get("type", ""),
+                    target=next_args.get("target"),
+                    url=next_args.get("url"),
+                    value=next_args.get("value") or next_args.get("text"),
+                    direction=next_args.get("direction"),
+                    request_id=next_args.get("request_id") or next_args.get("requestId"),
+                    wait_for_result=next_args.get("wait_for_result", True),
+                    timeout=next_args.get("timeout", 300),
+                    callback=getattr(agent, "browser_action_callback", None),
+                )
+            function_result, function_args = _run_agent_tool_execution_middleware(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                execute=_execute,
+            )
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('browser_action_request', function_args, tool_duration, result=function_result)}")
         elif function_name == "delegate_task":
             tasks_arg = function_args.get("tasks")
             if tasks_arg and isinstance(tasks_arg, list):

@@ -4767,6 +4767,308 @@ def test_session_steer_errors_when_agent_has_no_steer_method():
     assert resp["error"]["code"] == 4010
 
 
+def test_browser_action_request_emits_validated_event(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    server._sessions["sid"] = _session()
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "browser.action.request",
+                "params": {
+                    "session_id": "sid",
+                    "request_id": "req-1",
+                    "action": {
+                        "type": "click",
+                        "target": {"selector": "#save"},
+                        "url": "https://docs.example/path?token=secret",
+                    },
+                },
+            }
+        )
+    finally:
+        session = server._sessions.pop("sid", None)
+
+    assert session is not None
+    assert resp["result"]["status"] == "requested"
+    assert resp["result"]["request_id"] == "req-1"
+    assert resp["result"]["action"]["url"] == "https://docs.example/"
+    assert resp["result"]["action"]["requiresApproval"] is True
+    assert session["browser_action_requests"]["req-1"]["status"] == "requested"
+    assert events == [
+        (
+            "browser.action.requested",
+            "sid",
+            {"request_id": "req-1", "action": resp["result"]["action"]},
+        )
+    ]
+
+
+def test_browser_action_request_rejects_restricted_and_unsupported_actions():
+    server._sessions["sid"] = _session()
+    try:
+        restricted = server.handle_request(
+            {
+                "id": "1",
+                "method": "browser.action.request",
+                "params": {
+                    "session_id": "sid",
+                    "action": {"type": "openUrl", "url": "https://bank.example/login"},
+                },
+            }
+        )
+        unsupported = server.handle_request(
+            {
+                "id": "2",
+                "method": "browser.action.request",
+                "params": {"session_id": "sid", "action": {"type": "submitForm"}},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert restricted["error"]["message"] == "restricted_url"
+    assert unsupported["error"]["message"] == "unsupported_action"
+
+
+def test_browser_action_request_rejects_duplicate_and_caps_pending():
+    server._sessions["sid"] = _session(
+        browser_action_requests={
+            "existing": {"status": "requested", "created_at": 1000, "action": {"type": "scroll"}},
+            **{
+                f"req-{idx}": {"status": "requested", "created_at": 1000, "action": {"type": "scroll"}}
+                for idx in range(server._BROWSER_ACTION_MAX_PENDING - 1)
+            },
+        }
+    )
+    try:
+        duplicate = server.handle_request(
+            {
+                "id": "1",
+                "method": "browser.action.request",
+                "params": {
+                    "session_id": "sid",
+                    "request_id": "existing",
+                    "action": {"type": "scroll"},
+                },
+            }
+        )
+        capped = server.handle_request(
+            {
+                "id": "2",
+                "method": "browser.action.request",
+                "params": {
+                    "session_id": "sid",
+                    "request_id": "new-one",
+                    "action": {"type": "scroll"},
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert duplicate["error"]["message"] == "request_id already pending"
+    assert capped["error"]["code"] == 4290
+    assert capped["error"]["message"] == "too many pending browser action requests"
+
+
+def test_browser_action_result_expires_stale_pending_requests(monkeypatch):
+    monkeypatch.setattr(server.time, "time", lambda: 2000.0)
+    server._sessions["sid"] = _session(
+        browser_action_requests={
+            "old": {
+                "status": "requested",
+                "created_at": 2000.0 - server._BROWSER_ACTION_PENDING_TTL_SECONDS - 1,
+                "action": {"type": "scroll"},
+            }
+        }
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "browser.action.result",
+                "params": {"request_id": "old", "result": {"ok": True, "actionType": "scroll"}},
+            }
+        )
+        session = server._sessions["sid"]
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["error"]["message"] == "browser action request is expired"
+    assert session["browser_action_requests"]["old"]["status"] == "expired"
+    assert session["browser_action_results"]["old"] == {"ok": False, "reason": "expired"}
+
+
+def test_browser_action_result_records_denied_and_blocked_statuses():
+    server._sessions["sid"] = _session(
+        browser_action_requests={
+            "deny": {"status": "requested", "created_at": 1000, "action": {"type": "click"}},
+            "block": {"status": "requested", "created_at": 1000, "action": {"type": "openUrl"}},
+        }
+    )
+    try:
+        denied = server.handle_request(
+            {
+                "id": "1",
+                "method": "browser.action.result",
+                "params": {"request_id": "deny", "result": {"ok": False, "reason": "denied_by_user"}},
+            }
+        )
+        blocked = server.handle_request(
+            {
+                "id": "2",
+                "method": "browser.action.result",
+                "params": {"request_id": "block", "result": {"ok": False, "reason": "restricted_url"}},
+            }
+        )
+        session = server._sessions["sid"]
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert denied["result"]["ok"] is True
+    assert blocked["result"]["ok"] is True
+    assert session["browser_action_requests"]["deny"]["status"] == "denied"
+    assert session["browser_action_requests"]["block"]["status"] == "blocked"
+
+
+def test_browser_action_result_records_ack_without_echoing_data_url(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    server._sessions["sid"] = _session(
+        browser_action_requests={
+            "req-1": {"status": "requested", "action": {"type": "screenshot"}}
+        }
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "browser.action.result",
+                "params": {
+                    "request_id": "req-1",
+                    "result": {
+                        "ok": True,
+                        "actionType": "screenshot",
+                        "mimeType": "image/png",
+                        "dataUrl": "data:image/png;base64,SECRET_PIXELS",
+                    },
+                },
+            }
+        )
+        session = server._sessions["sid"]
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert session is not None
+    assert resp["result"]["ok"] is True
+    assert resp["result"]["result"] == {
+        "ok": True,
+        "actionType": "screenshot",
+        "mimeType": "image/png",
+        "hasDataUrl": True,
+    }
+    assert "dataUrl" not in json.dumps(resp)
+    assert session["browser_action_requests"]["req-1"]["status"] == "completed"
+    assert session["browser_action_results"]["req-1"]["hasDataUrl"] is True
+    assert events == [
+        (
+            "browser.action.result",
+            "sid",
+            {"request_id": "req-1", "result": resp["result"]["result"]},
+        )
+    ]
+
+
+def test_browser_action_tool_callback_requests_and_waits_for_sanitized_result(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setattr(server.time, "sleep", lambda _seconds: None)
+    server._sessions["sid"] = _session()
+
+    def complete_result():
+        deadline = time.time() + 1
+        while time.time() < deadline:
+            if "req-tool" in server._sessions["sid"].get("browser_action_requests", {}):
+                server.handle_request(
+                    {
+                        "id": "result",
+                        "method": "browser.action.result",
+                        "params": {
+                            "session_id": "sid",
+                            "request_id": "req-tool",
+                            "result": {
+                                "ok": True,
+                                "actionType": "screenshot",
+                                "mimeType": "image/png",
+                                "dataUrl": "data:image/png;base64,SECRET_PIXELS",
+                            },
+                        },
+                    }
+                )
+                return
+
+    thread = threading.Thread(target=complete_result)
+    try:
+        thread.start()
+        raw = server._browser_action_request_tool_callback(
+            "sid",
+            action={"type": "screenshot", "requestId": "req-tool"},
+            wait_for_result=True,
+            timeout=1,
+        )
+        thread.join(timeout=1)
+        session = server._sessions["sid"]
+    finally:
+        server._sessions.pop("sid", None)
+
+    payload = json.loads(raw)
+    assert payload == {
+        "ok": True,
+        "status": "completed",
+        "request_id": "req-tool",
+        "result": {
+            "ok": True,
+            "actionType": "screenshot",
+            "mimeType": "image/png",
+            "hasDataUrl": True,
+        },
+    }
+    assert "dataUrl" not in raw
+    assert session["browser_action_requests"]["req-tool"]["status"] == "completed"
+    assert events[0][0] == "browser.action.requested"
+    assert events[-1][0] == "browser.action.result"
+
+
+def test_browser_action_request_tool_uses_injected_callback():
+    from tools.browser_action_tool import browser_action_request
+
+    seen = {}
+
+    def callback(**kwargs):
+        seen.update(kwargs)
+        return json.dumps({"ok": True, "status": "requested", "request_id": "tool-1"})
+
+    raw = browser_action_request(
+        action_type="scroll",
+        direction="down",
+        request_id="tool-1",
+        wait_for_result=False,
+        callback=callback,
+    )
+
+    assert json.loads(raw) == {"ok": True, "status": "requested", "request_id": "tool-1"}
+    assert seen["action"] == {"type": "scroll", "direction": "down", "requestId": "tool-1"}
+    assert seen["wait_for_result"] is False
+
+
 def test_session_info_includes_mcp_servers(monkeypatch):
     fake_status = [
         {"name": "github", "transport": "http", "tools": 12, "connected": True},
@@ -8222,6 +8524,28 @@ def test_slash_worker_close_reaps_zombie_and_closes_fds():
     assert calls["kill"] == 1
     assert calls["wait"] >= 2  # reaped after both terminate and kill
     assert calls["stdin"] == calls["stdout"] == calls["stderr"] == 1
+
+
+def test_emit_approval_request_adds_id_for_external_card_rendering(monkeypatch):
+    emitted = []
+
+    monkeypatch.setattr(server, "_emit", lambda event, sid, payload: emitted.append((event, sid, payload)))
+
+    server._emit_approval_request(
+        "live-session-1",
+        {
+            "command": "execute_code <<'PY'\nprint('hi')\nPY",
+            "description": "execute_code script execution",
+            "pattern_key": "execute_code",
+        },
+    )
+
+    assert emitted[0][0] == "approval.request"
+    assert emitted[0][1] == "live-session-1"
+    payload = emitted[0][2]
+    assert payload["id"].startswith("approval-")
+    assert payload["description"] == "execute_code script execution"
+    assert payload["pattern_key"] == "execute_code"
 
 
 def test_close_session_by_id_is_idempotent_and_full(monkeypatch):

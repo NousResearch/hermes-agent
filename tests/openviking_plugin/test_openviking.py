@@ -1356,8 +1356,9 @@ class TestOpenVikingBrowse:
 class TestOpenVikingMemoryUriBuilder:
     """Regression tests for _build_memory_uri — fixes #36969.
 
-    OpenViking's current memory layout stores peer-scoped memories under
-    viking://user/peers/{peer_id}/...
+    OpenViking user memories live under the configured user namespace. The
+    agent/peer ID is request actor identity, not the storage namespace for
+    viking_remember files.
     """
 
     def _make_provider(self, user="alice", agent="coder"):
@@ -1366,19 +1367,52 @@ class TestOpenVikingMemoryUriBuilder:
         p._agent = agent
         return p
 
-    def test_uri_layout_includes_peer_segment(self):
-        """URI must contain /peers/{peer_id}/ between user and memories."""
+    def test_uri_layout_uses_configured_user_namespace(self):
+        """URI must use /user/{user}/memories, not /user/peers/{agent}/memories."""
         p = self._make_provider(user="alice", agent="coder")
         uri = p._build_memory_uri("preferences")
-        assert uri.startswith("viking://user/peers/coder/memories/preferences/mem_")
+        assert uri.startswith("viking://user/alice/memories/preferences/mem_")
+        assert "/peers/" not in uri
         assert uri.endswith(".md")
 
-    def test_uri_uses_configured_peer_not_default(self):
-        """_agent value is the OpenViking actor peer ID, not hardcoded to 'hermes'."""
+    def test_uri_ignores_actor_peer_for_storage_namespace(self):
+        """_agent is the OpenViking actor peer ID, not the memory storage namespace."""
         p = self._make_provider(user="alice", agent="research-bot")
         uri = p._build_memory_uri("entities")
-        assert "/peers/research-bot/" in uri
+        assert uri.startswith("viking://user/alice/memories/entities/mem_")
+        assert "/peers/research-bot/" not in uri
         assert "/peers/hermes/" not in uri
+
+    def test_tool_remember_posts_user_scoped_memory_uri(self):
+        """viking_remember must write memory context, not peer-scoped resources."""
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            def post(self, path, payload=None, **kwargs):
+                self.calls.append((path, payload or {}))
+                return {"result": {"written_bytes": 12}}
+
+        p = self._make_provider(user="alice", agent="research-bot")
+        p._client = FakeClient()
+
+        result = json.loads(p._tool_remember({"content": "remember this", "category": "event"}))
+
+        assert result["status"] == "stored"
+        assert p._client.calls == [
+            (
+                "/api/v1/content/write",
+                {
+                    "uri": p._client.calls[0][1]["uri"],
+                    "content": "remember this",
+                    "mode": "create",
+                },
+            )
+        ]
+        uri = p._client.calls[0][1]["uri"]
+        assert uri.startswith("viking://user/alice/memories/events/mem_")
+        assert "/peers/" not in uri
 
     def test_uri_slug_is_twelve_hex_chars_and_unique(self):
         """Slug must be 12 hex chars and differ between calls."""

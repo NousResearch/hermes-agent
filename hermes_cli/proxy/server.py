@@ -169,6 +169,21 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
                 return await _send_upstream(active_cred)
             except RuntimeError as exc:
                 return _json_error(500, str(exc)), None
+            except asyncio.TimeoutError:
+                # aiohttp's own sock_connect/sock_read timeout errors (e.g.
+                # ServerTimeoutError) subclass *both* asyncio.TimeoutError and
+                # aiohttp.ClientError, so this must be checked first or every
+                # real timeout would be swallowed by the ClientError branch
+                # below and misreported as upstream_unreachable instead of
+                # upstream_timeout.
+                return (
+                    _json_error(
+                        504,
+                        "upstream request timed out",
+                        code="upstream_timeout",
+                    ),
+                    None,
+                )
             except aiohttp.ClientError as exc:
                 logger.warning("proxy: upstream connection failed: %s", exc)
                 return (
@@ -176,15 +191,6 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
                         502,
                         f"upstream connection failed: {exc}",
                         code="upstream_unreachable",
-                    ),
-                    None,
-                )
-            except asyncio.TimeoutError:
-                return (
-                    _json_error(
-                        504,
-                        "upstream request timed out",
-                        code="upstream_timeout",
                     ),
                     None,
                 )

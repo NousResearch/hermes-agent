@@ -882,7 +882,14 @@ def test_server_returns_502_when_upstream_unreachable():
 
 
 def test_server_returns_504_when_upstream_times_out():
-    """A hung upstream (sock_connect/sock_read timeout) must surface as 504."""
+    """A hung upstream (sock_connect/sock_read timeout) must surface as 504.
+
+    Raises aiohttp.ServerTimeoutError rather than a bare asyncio.TimeoutError:
+    that's what aiohttp's own sock_connect/sock_read timeouts actually raise,
+    and it subclasses *both* asyncio.TimeoutError and aiohttp.ClientError, so
+    it's the case that would previously have been misrouted to the 502
+    branch if the two except clauses in _open_upstream were ordered wrong.
+    """
     async def run():
         adapter = FakeAdapter("http://unused.example/v1")
         proxy_runner, proxy_base = await _start_runner(create_app(adapter))
@@ -891,7 +898,7 @@ def test_server_returns_504_when_upstream_times_out():
 
         async def _raise_timeout(self, method, url, *args, **kwargs):
             if "unused.example" in str(url):
-                raise asyncio.TimeoutError()
+                raise aiohttp.ServerTimeoutError("simulated upstream timeout")
             return await original_request(self, method, url, *args, **kwargs)
 
         try:

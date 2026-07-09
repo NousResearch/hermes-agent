@@ -15479,11 +15479,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from tools.process_registry import format_process_notification, process_registry as _pr_check
                 if agent_notify and not _pr_check.is_completion_consumed(session_id):
                     from tools.ansi_strip import strip_ansi
+                    from tools.process_registry import format_completion_output
                     _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
-                    # Truncate at line boundaries so notifications never start
-                    # mid-line (fixes #23284). Keep the last ~2000 chars but
-                    # snap to the nearest preceding newline, then prepend a
-                    # truncation marker when output was cut.
+                    # Mirror process_registry tail semantics (last 2000 chars)
+                    # but avoid a truncated fragment that starts mid-line: trim to
+                    # the first newline within the kept tail when possible and mark
+                    # truncation explicitly.
                     _LIMIT = 2000
                     if len(_raw) > _LIMIT:
                         _tail = _raw[-_LIMIT:]
@@ -15558,6 +15559,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         new_output = redact_terminal_output(
                             new_output, getattr(session, "command", "") or ""
                         )
+                    from tools.process_registry import format_completion_output
+                    new_output = format_completion_output(new_output, for_agent=False)
                     message_text = (
                         f"[Background process {session_id} finished with exit code {session.exit_code}~ "
                         f"Here's the final output:\n{new_output}]"

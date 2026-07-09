@@ -6,7 +6,7 @@ import { useOnProfileSwitch } from '@/app/hooks/use-on-profile-switch'
 import { useRouteOverlayActive } from '@/app/hooks/use-route-overlay-active'
 import { PetHeartField } from '@/components/chat/vibe-hearts'
 import { persistString, storedString } from '@/lib/storage'
-import { $petAtRest, $petBubble, $petControls, $petInfo, $petRoam, $petRoamDir, clearPetUnread, type PetInfo, petProfile, setPetInfo } from '@/store/pet'
+import { $petAtRest, $petBubble, $petControls, $petDismissed, $petInfo, $petRoam, $petRoamDir, clearPetUnread, type PetInfo, petProfile, setPetInfo } from '@/store/pet'
 import { resetPetGallery, setPetScale } from '@/store/pet-gallery'
 import { $petOverlayActive, initPetOverlayBridge, popOutPet, restorePetOverlay } from '@/store/pet-overlay'
 import { $gatewayState } from '@/store/session'
@@ -186,6 +186,17 @@ export function FloatingPet() {
             current.spritesheetRevision &&
             current.spritesheetRevision === next.spritesheetRevision
           ) {
+            return
+          }
+
+          // User clicked Hide — don't re-enable the pet from a stale poll
+          // response.  Once the gateway confirms the disabled state we clear
+          // the flag and let the poll through.
+          if ($petDismissed.get()) {
+            if (!next.enabled) {
+              $petDismissed.set(false)
+            }
+
             return
           }
 
@@ -491,6 +502,7 @@ export function FloatingPet() {
             aria-label="Hide pet"
             onClick={e => {
               e.stopPropagation()
+              $petDismissed.set(true)
               setPetInfo({ enabled: false })
             }}
             onPointerDown={e => e.stopPropagation()}

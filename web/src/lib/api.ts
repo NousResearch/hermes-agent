@@ -2223,6 +2223,21 @@ export interface SessionSearchResult {
   source: string | null;
   model: string | null;
   session_started: number | null;
+  // Enriched fields, populated server-side from the same columns
+  // SessionInfo exposes, so search results can be rendered as full
+  // rows without depending on whether the session is on the current
+  // page of the unfiltered list. Absent/null if the backend couldn't
+  // resolve the session (defensive; should not normally happen).
+  title?: string | null;
+  started_at?: number | null;
+  ended_at?: number | null;
+  last_active?: number | null;
+  is_active?: boolean;
+  message_count?: number;
+  tool_call_count?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  preview?: string | null;
 }
 
 export interface SessionSearchResponse {

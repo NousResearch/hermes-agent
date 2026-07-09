@@ -3392,6 +3392,55 @@ class SessionDB:
             s["preview"] = ""
         return s
 
+    def get_sessions_rich_by_ids(
+        self, session_ids: List[str], compact_rows: bool = True
+    ) -> Dict[str, Dict[str, Any]]:
+        """Batch-fetch enriched session rows (preview, last_active, message_count,
+        tool_call_count, token counts, etc.) for an exact set of session ids.
+
+        Same enrichment as ``_get_session_rich_row`` / ``list_sessions_rich``
+        (preview + last_active subqueries), but keyed by id with no compression-
+        chain walk or pagination -- callers that already resolved lineage tips
+        (e.g. session search) just need the tip rows' full fields, not another
+        recursive resolution. Returns a dict of {id: row}; ids with no matching
+        session are simply absent from the result.
+        """
+        ids = [sid for sid in dict.fromkeys(session_ids) if sid]
+        if not ids:
+            return {}
+        _sel = self._compact_session_cols() if compact_rows else "s.*"
+        placeholders = ", ".join("?" for _ in ids)
+        query = f"""
+            SELECT {_sel},
+                COALESCE(
+                    (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                     FROM messages m
+                     WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                     ORDER BY m.timestamp, m.id LIMIT 1),
+                    ''
+                ) AS _preview_raw,
+                COALESCE(
+                    (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                    s.started_at
+                ) AS last_active
+            FROM sessions s
+            WHERE s.id IN ({placeholders})
+        """
+        with self._lock:
+            cursor = self._conn.execute(query, ids)
+            rows = cursor.fetchall()
+        result: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            s = dict(row)
+            raw = s.pop("_preview_raw", "").strip()
+            if raw:
+                text = raw[:60]
+                s["preview"] = text + ("..." if len(raw) > 60 else "")
+            else:
+                s["preview"] = ""
+            result[s["id"]] = s
+        return result
+
     # =========================================================================
     # Message storage
     # =========================================================================

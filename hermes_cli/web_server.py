@@ -4231,7 +4231,36 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
                         "session_started": m.get("session_started"),
                     },
                 )
-            return {"results": list(seen.values())}
+
+            # Enrich each surfaced result with the same fields the plain
+            # session list exposes (title, message_count, is_active, etc.)
+            # so the dashboard's Sessions tab can render search results
+            # directly as full rows instead of only matching them against
+            # whatever page happens to be locally loaded.
+            results = list(seen.values())
+            enriched = db.get_sessions_rich_by_ids(
+                [r["session_id"] for r in results]
+            )
+            now = time.time()
+            for r in results:
+                extra = enriched.get(r["session_id"])
+                if not extra:
+                    continue
+                r["title"] = extra.get("title")
+                r["started_at"] = extra.get("started_at")
+                r["ended_at"] = extra.get("ended_at")
+                r["last_active"] = extra.get("last_active")
+                r["is_active"] = (
+                    extra.get("ended_at") is None
+                    and (now - (extra.get("last_active") or extra.get("started_at") or 0)) < 300
+                )
+                r["message_count"] = extra.get("message_count", 0)
+                r["tool_call_count"] = extra.get("tool_call_count", 0)
+                r["input_tokens"] = extra.get("input_tokens", 0)
+                r["output_tokens"] = extra.get("output_tokens", 0)
+                r["preview"] = extra.get("preview")
+
+            return {"results": results}
         finally:
             db.close()
     except HTTPException:

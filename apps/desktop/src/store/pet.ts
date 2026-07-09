@@ -173,6 +173,30 @@ export const setPetRoam = (on: boolean) => {
 }
 
 /**
+ * Opt-in: show the activity status bubble above the in-window pet. Pure
+ * desktop-client preference, stored in localStorage like roam.
+ */
+const BUBBLE_KEY = 'hermes.desktop.pet-bubble.v1'
+export const $petBubble = atom<boolean>(storedBoolean(BUBBLE_KEY, true))
+
+export const setPetBubble = (on: boolean) => {
+  $petBubble.set(on)
+  persistBoolean(BUBBLE_KEY, on)
+}
+
+/**
+ * Opt-in: show hover controls (hide, pop out) on the in-window pet. Pure
+ * desktop-client preference, stored in localStorage like roam.
+ */
+const CONTROLS_KEY = 'hermes.desktop.pet-controls.v1'
+export const $petControls = atom<boolean>(storedBoolean(CONTROLS_KEY, true))
+
+export const setPetControls = (on: boolean) => {
+  $petControls.set(on)
+  persistBoolean(CONTROLS_KEY, on)
+}
+
+/**
  * The pose the roam loop is currently driving: `run` while walking a surface,
  * `jump` while hopping/falling between surfaces, or `null` at rest. Surfaced
  * through `$petState` (below) so the canvas animates the wander without any prop

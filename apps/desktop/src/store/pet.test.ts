@@ -3,11 +3,15 @@ import { describe, expect, it } from 'vitest'
 import {
   $petActivity,
   $petAtRest,
+  $petBubble,
+  $petControls,
   $petMotion,
   $petState,
   derivePetState,
   flashPetActivity,
-  setPetActivity
+  setPetActivity,
+  setPetBubble,
+  setPetControls
 } from './pet'
 
 describe('derivePetState', () => {
@@ -72,6 +76,27 @@ describe('roam motion', () => {
     expect($petState.get()).toBe('idle')
 
     $petActivity.set({})
+  })
+})
+
+describe('pet bubble and controls prefs', () => {
+  it('defaults to on for both bubble and controls', () => {
+    expect($petBubble.get()).toBe(true)
+    expect($petControls.get()).toBe(true)
+  })
+
+  it('setPetBubble toggles the atom', () => {
+    setPetBubble(false)
+    expect($petBubble.get()).toBe(false)
+    setPetBubble(true)
+    expect($petBubble.get()).toBe(true)
+  })
+
+  it('setPetControls toggles the atom', () => {
+    setPetControls(false)
+    expect($petControls.get()).toBe(false)
+    setPetControls(true)
+    expect($petControls.get()).toBe(true)
   })
 })
 

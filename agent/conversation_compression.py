@@ -792,6 +792,7 @@ def compress_context(
                             model=agent.model,
                             model_config=agent._session_init_model_config,
                             parent_session_id=old_session_id,
+                            user_id=getattr(agent, "_user_id", None),
                         )
                     except Exception as _cs_err:
                         # The child row could not be created (e.g. FK constraint,

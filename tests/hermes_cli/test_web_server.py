@@ -1883,6 +1883,44 @@ class TestWebServerEndpoints:
         # Should contain known env var names
         assert any(k.endswith("_API_KEY") or k.endswith("_TOKEN") for k in data.keys())
 
+    def test_get_execution_artifacts_scopes_by_user_and_run(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.record_execution_artifact(
+                run_id="dashboard-run",
+                execution_id="exec-a",
+                user_id="user-a",
+                source="specialist",
+                artifact_type="stdout",
+                content="visible artifact",
+            )
+            db.record_execution_artifact(
+                run_id="dashboard-run",
+                execution_id="exec-b",
+                user_id="user-b",
+                source="specialist",
+                artifact_type="stdout",
+                content="other user artifact",
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get(
+            "/api/execution-artifacts?run_id=dashboard-run&user_id=user-a"
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["run_id"] == "dashboard-run"
+        assert data["user_id"] == "user-a"
+        assert data["total"] == 1
+        assert data["artifacts"][0]["execution_id"] == "exec-a"
+        assert data["artifacts"][0]["content_preview"] == "visible artifact"
+        assert data["artifacts"][0]["parser_status"] == "pending"
+        assert data["artifacts"][0]["visibility_status"] == "pending"
+
     def test_get_env_vars_marks_channel_managed_keys(self):
         from hermes_cli.web_server import _channel_managed_env_keys
 

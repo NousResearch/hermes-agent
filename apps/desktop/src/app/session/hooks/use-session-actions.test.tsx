@@ -579,6 +579,7 @@ function ResumeHarness({
   sessionStateByRuntimeIdRef?: MutableRefObject<Map<string, ClientSessionState>>
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+  const sessionStatesRef = sessionStateByRuntimeIdRef ?? ref(new Map<string, ClientSessionState>())
 
   const actions = useSessionActions({
     activeSessionId: null,
@@ -594,10 +595,12 @@ function ResumeHarness({
     runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRef ?? ref(new Map<string, string>()),
     selectedStoredSessionId,
     selectedStoredSessionIdRef: ref<string | null>(selectedStoredSessionId),
-    sessionStateByRuntimeIdRef: sessionStateByRuntimeIdRef ?? ref(new Map<string, ClientSessionState>()),
+    sessionStateByRuntimeIdRef: sessionStatesRef,
     syncSessionStateToView: vi.fn(),
-    updateSessionState: (sessionId, updater) => {
-      const next = updater({} as ClientSessionState)
+    updateSessionState: (sessionId, updater, storedSessionId) => {
+      const current = sessionStatesRef.current.get(sessionId) ?? createClientSessionState(storedSessionId ?? null)
+      const next = updater(current)
+      sessionStatesRef.current.set(sessionId, next)
       onStateUpdate?.(sessionId, next)
 
       return next
@@ -751,6 +754,7 @@ describe('resumeSession failure recovery', () => {
           message_count: storedMessages.length,
           messages: storedMessages,
           running: true,
+          turn_started_at: 1_700_000_000,
           inflight: {
             user: 'current prompt',
             assistant: 'partial answer',
@@ -780,6 +784,7 @@ describe('resumeSession failure recovery', () => {
     expect(renderedMessages).toContain('current prompt')
     expect(renderedMessages).toContain('partial answer')
     expect(renderedMessages).toContain('newest prompt')
+    expect(resumedState?.turnStartedAt).toBe(1_700_000_000_000)
   })
 
   it('uses the continuation projection when resume rotates an equal-length stored transcript', async () => {
@@ -1239,6 +1244,64 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(methods).not.toContain('session.resume')
     expect(getSessionMessages).toHaveBeenCalledWith('stored-A', undefined)
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
+  })
+
+  it('restores the warm reconnect turn clock from session.activate', async () => {
+    const turnStartedAtSeconds = 1_700_000_123
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+    const cachedState = clientState('stored-A')
+    cachedState.busy = true
+    cachedState.turnStartedAt = null
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', cachedState]])
+    }
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          session_id: 'rt-A',
+          session_key: 'stored-A',
+          resumed: 'stored-A',
+          message_count: 0,
+          messages: [],
+          running: true,
+          turn_started_at: turnStartedAtSeconds,
+          inflight: {
+            user: 'current prompt',
+            assistant: 'partial answer',
+            streaming: true
+          },
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-A' } as never)
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, state) => (resumedState = state)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    expect(resumedState).toMatchObject({
+      awaitingResponse: true,
+      busy: true,
+      turnStartedAt: turnStartedAtSeconds * 1000
+    })
+    expect(JSON.stringify(resumedState?.messages)).toContain('partial answer')
   })
 
   it('repairs an idle warm cache from a divergent equal-length persisted transcript', async () => {

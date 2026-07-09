@@ -380,10 +380,16 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
                   return state
                 }
 
+                // Prefer the gateway-reported turn_started_at so the timer
+                // survives session switches and session.info heartbeats.
+                const gatewayTurnStartedAt =
+                  typeof payload!.turn_started_at === 'number' && payload!.turn_started_at > 0
+                    ? payload!.turn_started_at * 1000
+                    : null
                 return {
                   ...state,
                   busy,
-                  turnStartedAt: state.turnStartedAt ?? Date.now()
+                  turnStartedAt: state.turnStartedAt ?? gatewayTurnStartedAt ?? Date.now()
                 }
               }
 

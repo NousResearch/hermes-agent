@@ -336,6 +336,13 @@ export function useTerminalSession({
   // Snapshot the revive buffer once: live snapshots feed updateTerminalReviveBuffer
   // and would otherwise re-arm replay on every store-driven re-render.
   const initialReviveBufferRef = useRef(reviveBuffer)
+  // Set on the first real user keystroke this session. A session where nothing
+  // was ever typed has nothing worth persisting — cleanReviveSnapshot can't
+  // reliably strip its own idle prompt for shells with no blank line before it
+  // (e.g. default PowerShell), so persisting an untyped session re-saves that
+  // duplicated prompt and it compounds on every relaunch. Gating on real
+  // activity leaves any previously-persisted history untouched instead.
+  const hasSessionActivityRef = useRef(false)
   const shellNameRef = useRef('shell')
   const selectionLabelRef = useRef('')
   const selectionRef = useRef('')
@@ -480,7 +487,7 @@ export function useTerminalSession({
     let lastSnapshotAt = 0
 
     const persistSnapshot = () => {
-      if (disposed) {
+      if (disposed || !hasSessionActivityRef.current) {
         return
       }
 
@@ -640,6 +647,7 @@ export function useTerminalSession({
     })
 
     const dataDisposable = term.onData(data => {
+      hasSessionActivityRef.current = true
       const id = sessionIdRef.current
 
       if (id) {

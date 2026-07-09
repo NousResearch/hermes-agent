@@ -17,6 +17,7 @@ import type {
   EnvVarInfo,
   HermesConfig,
   HermesConfigRecord,
+  ImageGenerationOptionsResponse,
   LogsResponse,
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
@@ -87,6 +88,9 @@ export type {
   GatewayReadyPayload,
   HermesConfig,
   HermesConfigRecord,
+  ImageGenerationModelOption,
+  ImageGenerationOptionsResponse,
+  ImageGenerationProviderOption,
   LogsResponse,
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
@@ -585,6 +589,22 @@ export function selectToolsetProvider(
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
     method: 'PUT',
     body: { provider }
+  })
+}
+
+export function getImageGenerationOptions(): Promise<ImageGenerationOptionsResponse> {
+  return window.hermesDesktop.api<ImageGenerationOptionsResponse>({
+    ...profileScoped(),
+    path: '/api/tools/image-generation/options'
+  })
+}
+
+export function selectImageGeneration(provider: string, model?: string): Promise<ImageGenerationOptionsResponse> {
+  return window.hermesDesktop.api<ImageGenerationOptionsResponse>({
+    ...profileScoped(),
+    path: '/api/tools/image-generation/selection',
+    method: 'PUT',
+    body: { provider, model }
   })
 }
 

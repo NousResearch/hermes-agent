@@ -14,9 +14,11 @@ import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
+import { $browserCurrentSessionHasBrowser, $browserCurrentTitle, $browserCurrentUrl } from '@/store/browser'
 import {
   $panesFlipped,
   $rightRailActiveTabId,
+  RIGHT_RAIL_BROWSER_TAB_ID,
   RIGHT_RAIL_PREVIEW_TAB_ID,
   type RightRailTabId,
   selectRightRailTab
@@ -33,6 +35,7 @@ import {
 } from '@/store/preview'
 import { $dirtyPreviewUrls } from '@/store/preview-edit'
 
+import { BrowserPane } from './browser-pane'
 import { PreviewPane } from './preview-pane'
 
 export const PREVIEW_RAIL_MIN_WIDTH = '18rem'
@@ -51,13 +54,24 @@ interface ChatPreviewRailProps {
   setTitlebarToolGroup?: SetTitlebarToolGroup
 }
 
-interface RailTab {
+interface BrowserRailTab {
+  id: typeof RIGHT_RAIL_BROWSER_TAB_ID
+  label: string
+}
+
+interface PreviewRailTab {
   id: RightRailTabId
   label: string
   target: PreviewTarget
 }
 
-function tabLabelFor(target: PreviewTarget): string {
+type RailTab = BrowserRailTab | PreviewRailTab
+
+function isPreviewRailTab(tab: RailTab): tab is PreviewRailTab {
+  return 'target' in tab
+}
+
+function tabLabelFor(target: Pick<PreviewTarget, 'label' | 'path' | 'source' | 'url'>): string {
   const value = target.label || target.path || target.source || target.url
   const tail = value.split(/[\\/]/).filter(Boolean).at(-1)
 
@@ -72,18 +86,23 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   const filePreviewTabs = useStore($filePreviewTabs)
   const previewTarget = useStore($previewTarget)
   const dirtyPreviewUrls = useStore($dirtyPreviewUrls)
+  const browserOpen = useStore($browserCurrentSessionHasBrowser)
+  const browserTitle = useStore($browserCurrentTitle)
+  const browserUrl = useStore($browserCurrentUrl)
+
+  const browserLabel = browserTitle || (browserUrl === 'about:blank' ? 'Browser' : tabLabelFor({ label: browserUrl, source: browserUrl, url: browserUrl }))
 
   const tabs = useMemo<readonly RailTab[]>(
     () => [
+      ...(browserOpen ? [{ id: RIGHT_RAIL_BROWSER_TAB_ID, label: browserLabel } as RailTab] : []),
       ...(previewTarget
         ? [{ id: RIGHT_RAIL_PREVIEW_TAB_ID, label: t.preview.tab, target: previewTarget } as RailTab]
         : []),
       ...filePreviewTabs.map(({ id, target }) => ({ id, label: tabLabelFor(target), target }) as RailTab)
     ],
-    [filePreviewTabs, previewTarget, t.preview.tab]
+    [browserLabel, browserOpen, filePreviewTabs, previewTarget, t.preview.tab]
   )
-
-  const activeTab = tabs.find(tab => tab.id === activeTabId) ?? tabs[0]
+  const activeTab = tabs.find(tab => tab.id === activeTabId) ?? tabs[0] ?? null
 
   useEffect(() => {
     if (activeTab && activeTab.id !== activeTabId) {
@@ -119,7 +138,9 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
             const active = tab.id === activeTab.id
             const hasOthers = tabs.length > 1
             const hasTabsToRight = index < tabs.length - 1
-            const dirty = Boolean(dirtyPreviewUrls[tab.target.url])
+            const previewTab = isPreviewRailTab(tab)
+            const dirty = previewTab && Boolean(dirtyPreviewUrls[tab.target.url])
+            const tipLabel = previewTab ? tab.target.path || tab.target.url || tab.label : browserUrl
 
             return (
               <ContextMenu key={tab.id}>
@@ -151,7 +172,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                     {active && (
                       <span aria-hidden="true" className="absolute inset-x-0 top-0 h-px bg-(--ui-stroke-primary)" />
                     )}
-                    <Tip label={tab.target.path || tab.target.url || tab.label}>
+                    <Tip label={tipLabel}>
                       <button
                         aria-selected={active}
                         className="flex h-full min-w-0 max-w-full items-center overflow-hidden pl-3 pr-2 text-left outline-none"
@@ -215,13 +236,17 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        <PreviewPane
-          embedded
-          onRestartServer={isPreview ? onRestartServer : undefined}
-          reloadRequest={previewReloadRequest}
-          setTitlebarToolGroup={setTitlebarToolGroup}
-          target={activeTab.target}
-        />
+        {isPreviewRailTab(activeTab) ? (
+          <PreviewPane
+            embedded
+            onRestartServer={isPreview ? onRestartServer : undefined}
+            reloadRequest={previewReloadRequest}
+            setTitlebarToolGroup={setTitlebarToolGroup}
+            target={activeTab.target}
+          />
+        ) : (
+          <BrowserPane setTitlebarToolGroup={setTitlebarToolGroup} />
+        )}
       </div>
     </aside>
   )

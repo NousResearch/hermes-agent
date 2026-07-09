@@ -1,0 +1,1 @@
+"""Hermes Desktop capability packages."""

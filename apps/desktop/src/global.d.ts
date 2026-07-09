@@ -195,8 +195,42 @@ declare global {
         // returns the most-installed themes.
         searchMarketplace: (query: string) => Promise<DesktopMarketplaceSearchItem[]>
       }
+      // Built-in right-rail browser controls. Allows backend / slash / agent
+      // flows to open and drive the in-app browser pane (separate from the
+      // core agent-browser + CDP tools, but can be synced later).
+      browser?: {
+        open: (url?: string, sessionId?: string) => Promise<void>
+        navigate: (url: string, sessionId?: string) => Promise<void>
+        getState?: (sessionId?: string) => Promise<DesktopBrowserState>
+        updateState?: (patch: Partial<DesktopBrowserState>) => Promise<DesktopBrowserState>
+        reload?: (sessionId?: string) => Promise<void>
+        goBack?: (sessionId?: string) => Promise<void>
+        goForward?: (sessionId?: string) => Promise<void>
+        onDrive?: (callback: (payload: DesktopBrowserDrivePayload) => void) => () => void
+        onState?: (callback: (state: DesktopBrowserState) => void) => () => void
+        // Future: capture, etc. for agent snapshots / vision in-pane.
+      }
     }
   }
+}
+
+export type DesktopBrowserDriveAction = 'goBack' | 'goForward' | 'navigate' | 'open' | 'reload'
+
+export interface DesktopBrowserDrivePayload {
+  action: DesktopBrowserDriveAction
+  sessionId?: string
+  title?: string
+  url?: string
+}
+
+export interface DesktopBrowserState {
+  canGoBack?: boolean
+  canGoForward?: boolean
+  loading?: boolean
+  sessionId?: string
+  title?: string
+  updatedAt?: number
+  url?: string
 }
 
 export interface DesktopMarketplaceSearchItem {

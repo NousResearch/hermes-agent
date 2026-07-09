@@ -139,6 +139,7 @@ const MessagingView = lazy(async () => ({ default: (await import('./messaging'))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
+const VideoStudioView = lazy(async () => ({ default: (await import('./video-studio')).VideoStudioView }))
 
 // Latest cron-job sessions surfaced in the collapsed "Cron jobs" section. The
 // Cron sessions are written by a background scheduler tick (the desktop
@@ -1047,7 +1048,7 @@ export function DesktopController() {
   // Other sidebars docked as real columns on the terminal's rail. Force-collapsed
   // hover-reveal overlays (narrow window) don't take a column, so they don't count.
   const railColumnOpen =
-    (chatOpen && Boolean(previewTarget || filePreviewTarget) && previewPaneOpen) ||
+    (chatOpen && previewPaneOpen) ||
     (chatOpen && !narrowViewport && fileBrowserOpen) ||
     (chatOpen && Boolean(currentCwd.trim()) && !narrowViewport && reviewOpen)
 
@@ -1057,7 +1058,7 @@ export function DesktopController() {
 
   const previewPane = (
     <Pane
-      disabled={!chatOpen || (!previewTarget && !filePreviewTarget)}
+      disabled={!chatOpen}
       id={PREVIEW_PANE_ID}
       key="preview"
       maxWidth={PREVIEW_RAIL_MAX_WIDTH}
@@ -1162,7 +1163,7 @@ export function DesktopController() {
       mainOverlays={mainOverlays}
       onOpenSettings={openSettings}
       overlays={overlays}
-      previewPaneOpen={chatOpen && Boolean(previewTarget || filePreviewTarget)}
+      previewPaneOpen={chatOpen && previewPaneOpen}
       statusbarItems={statusbarItems}
       terminalPaneOpen={terminalSidebarOpen}
       titlebarTools={titlebarToolGroups.flat.right}
@@ -1209,6 +1210,14 @@ export function DesktopController() {
               </Suspense>
             }
             path="artifacts"
+          />
+          <Route
+            element={
+              <Suspense fallback={null}>
+                <VideoStudioView setStatusbarItemGroup={setStatusbarItemGroup} />
+              </Suspense>
+            }
+            path="video-studio"
           />
           <Route element={null} path="cron" />
           <Route element={null} path="profiles" />

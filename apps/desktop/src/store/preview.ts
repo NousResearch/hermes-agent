@@ -2,9 +2,11 @@ import { atom, computed } from 'nanostores'
 
 import { persistentAtom } from '@/lib/persisted'
 
+import { closeCurrentBrowserSession, hasCurrentBrowserSession, showBrowserRailForSession } from './browser'
 import {
   $rightRailActiveTabId,
   PREVIEW_PANE_ID,
+  RIGHT_RAIL_BROWSER_TAB_ID,
   RIGHT_RAIL_PREVIEW_TAB_ID,
   type RightRailTabId,
   selectRightRailTab
@@ -416,10 +418,12 @@ export function dismissPreviewTarget() {
   $previewTarget.set(null)
 
   if ($rightRailActiveTabId.get() === RIGHT_RAIL_PREVIEW_TAB_ID) {
-    selectRightRailTab($filePreviewTabs.get()[0]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
+    selectRightRailTab(
+      $filePreviewTabs.get()[0]?.id ?? (hasCurrentBrowserSession() ? RIGHT_RAIL_BROWSER_TAB_ID : RIGHT_RAIL_PREVIEW_TAB_ID)
+    )
   }
 
-  setPaneOpen(PREVIEW_PANE_ID, $filePreviewTabs.get().length > 0)
+  setPaneOpen(PREVIEW_PANE_ID, hasCurrentBrowserSession() || $filePreviewTabs.get().length > 0)
 }
 
 function closeFilePreviewTab(tabId: RightRailTabId) {
@@ -439,15 +443,30 @@ function closeFilePreviewTab(tabId: RightRailTabId) {
   $filePreviewTabs.set(next)
 
   if ($rightRailActiveTabId.get() === tabId) {
-    selectRightRailTab(next[Math.min(index, next.length - 1)]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
+    selectRightRailTab(
+      next[Math.min(index, next.length - 1)]?.id ??
+        ($previewTarget.get()
+          ? RIGHT_RAIL_PREVIEW_TAB_ID
+          : hasCurrentBrowserSession()
+            ? RIGHT_RAIL_BROWSER_TAB_ID
+            : RIGHT_RAIL_PREVIEW_TAB_ID)
+    )
   }
 
-  if (next.length === 0 && !$previewTarget.get()) {
+  if (next.length === 0 && !$previewTarget.get() && !hasCurrentBrowserSession()) {
     setPaneOpen(PREVIEW_PANE_ID, false)
   }
 }
 
 export function closeRightRailTab(tabId: RightRailTabId) {
+  if (tabId === RIGHT_RAIL_BROWSER_TAB_ID) {
+    closeCurrentBrowserSession()
+    selectRightRailTab($previewTarget.get() ? RIGHT_RAIL_PREVIEW_TAB_ID : $filePreviewTabs.get()[0]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
+    setPaneOpen(PREVIEW_PANE_ID, Boolean($previewTarget.get() || $filePreviewTabs.get().length > 0))
+
+    return
+  }
+
   if (tabId === RIGHT_RAIL_PREVIEW_TAB_ID) {
     if ($previewTarget.get()) {
       dismissPreviewTarget()
@@ -465,7 +484,7 @@ export const closeActiveRightRailTab = () => closeRightRailTab($rightRailActiveT
 // the file tabs in their stored order. Mirrors `ChatPreviewRail`'s `tabs` memo
 // so "close others / to the right" act on what the user actually sees.
 function rightRailTabOrder(): RightRailTabId[] {
-  const ids: RightRailTabId[] = []
+  const ids: RightRailTabId[] = hasCurrentBrowserSession() ? [RIGHT_RAIL_BROWSER_TAB_ID] : []
 
   if ($previewTarget.get()) {
     ids.push(RIGHT_RAIL_PREVIEW_TAB_ID)
@@ -505,12 +524,40 @@ export function closeRightRailTabsToRight(tabId: RightRailTabId) {
 
 /** Dismisses the active preview + every file tab so the rail pane unmounts. */
 export function closeRightRail() {
+  closeCurrentBrowserSession()
+
   if ($previewTarget.get()) {
     dismissPreviewTarget()
   }
 
   $filePreviewTabs.set([])
   setPaneOpen(PREVIEW_PANE_ID, false)
+}
+
+export function restoreRightRailForSession(sessionId: string | null | undefined) {
+  const record = getSessionPreviewRecord(sessionId)
+
+  if (record) {
+    setPreviewTarget(record.normalized)
+
+    return
+  }
+
+  setPreviewTarget(null)
+
+  if (showBrowserRailForSession(sessionId)) {
+    return
+  }
+
+  if ($filePreviewTabs.get().length > 0) {
+    setPaneOpen(PREVIEW_PANE_ID, true)
+    selectRightRailTab($filePreviewTabs.get()[0]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
+
+    return
+  }
+
+  setPaneOpen(PREVIEW_PANE_ID, false)
+  selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
 }
 
 export function clearSessionPreviewRegistry() {

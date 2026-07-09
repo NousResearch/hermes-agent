@@ -74,6 +74,36 @@ function normalizeHermesHomeRoot(hermesHome, { pathModule = pathModuleForPlatfor
   return resolved
 }
 
+function isPathUnderRoot(candidate, root, { pathModule = pathModuleForPlatform(process.platform), caseSensitive = true } = {}) {
+  if (!candidate || !root) return false
+  let resolvedCandidate = pathModule.resolve(String(candidate))
+  let resolvedRoot = pathModule.resolve(String(root))
+  if (!caseSensitive) {
+    resolvedCandidate = resolvedCandidate.toLowerCase()
+    resolvedRoot = resolvedRoot.toLowerCase()
+  }
+  const rootPrefix = resolvedRoot.endsWith(pathModule.sep) ? resolvedRoot : `${resolvedRoot}${pathModule.sep}`
+  return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(rootPrefix)
+}
+
+function isEphemeralPath(candidate, {
+  platform = process.platform,
+  pathModule = pathModuleForPlatform(platform),
+  tempRoots
+} = {}) {
+  if (!candidate) return false
+  const roots = tempRoots || (platform === 'win32'
+    ? [process.env.TEMP, process.env.TMP]
+    : ['/tmp', '/private/tmp', '/var/tmp'])
+  const caseSensitive = platform !== 'win32'
+  return roots.filter(Boolean).some(root => isPathUnderRoot(candidate, root, { pathModule, caseSensitive }))
+}
+
+function packagedHermesHomeFromUserData(userDataDir, { pathModule = pathModuleForPlatform(process.platform) } = {}) {
+  if (!userDataDir) return userDataDir
+  return pathModule.join(pathModule.resolve(String(userDataDir)), 'hermes-home')
+}
+
 function buildDesktopBackendEnv({
   hermesHome,
   pythonPathEntries = [],
@@ -104,6 +134,8 @@ module.exports = {
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
   delimiterForPlatform,
+  isEphemeralPath,
   normalizeHermesHomeRoot,
+  packagedHermesHomeFromUserData,
   pathEnvKey
 }

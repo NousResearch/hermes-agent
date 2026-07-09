@@ -3359,6 +3359,34 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
         _emit("tool.start", sid, payload)
 
 
+def _browser_drive_payload_from_tool(
+    name: str,
+    args: dict | None,
+    parsed_result: object,
+) -> dict[str, object] | None:
+    """Translate agent browser tool completions into desktop rail commands."""
+    if name not in {"browser_back", "browser_navigate"}:
+        return None
+
+    result = parsed_result if isinstance(parsed_result, dict) else {}
+    if result.get("success") is not True:
+        return None
+
+    url = result.get("url")
+    if not isinstance(url, str) or not url:
+        url = (args or {}).get("url")
+
+    if not isinstance(url, str) or not url:
+        return {"action": "goBack"} if name == "browser_back" else None
+
+    payload: dict[str, object] = {"action": "navigate", "url": url}
+    title = result.get("title")
+    if isinstance(title, str) and title:
+        payload["title"] = title
+
+    return payload
+
+
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
     payload = {"tool_id": tool_call_id, "name": name, "args": args}
     session = _sessions.get(sid)
@@ -3404,6 +3432,9 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         pass
     if _tool_progress_enabled(sid) or payload.get("inline_diff"):
         _emit("tool.complete", sid, payload)
+    browser_drive_payload = _browser_drive_payload_from_tool(name, args, payload.get("result"))
+    if browser_drive_payload:
+        _emit("browser.drive", sid, browser_drive_payload)
 
 
 def _on_tool_progress(

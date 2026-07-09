@@ -1533,6 +1533,17 @@ export const en: Translations = {
     snippetsDesc: 'Pick a starter prompt to drop into the composer.',
     dropFiles: 'Drop files to attach',
     dropSession: 'Drop to link this chat',
+    imageGeneration: {
+      title: 'Image generation',
+      loading: 'Loading image backends…',
+      noProviders: 'No image backends found.',
+      active: 'Active',
+      restartRequired: 'Start a new chat or /reset so the agent sees the image tool.',
+      setupRequired: 'Setup required',
+      textOnly: 'Text to image',
+      imageEditing: 'Text + image editing',
+      switchFailed: 'Could not switch image generation backend'
+    },
     snippets: {
       codeReview: {
         label: 'Code review',

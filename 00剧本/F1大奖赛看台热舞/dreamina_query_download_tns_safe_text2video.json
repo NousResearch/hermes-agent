@@ -1,0 +1,25 @@
+{
+  "submit_id": "f44c120a-0655-4e54-9bdf-ecec23e6ca2d",
+  "gen_status": "success",
+  "result_json": {
+    "images": [],
+    "videos": [
+      {
+        "path": "/Users/ruoyu/Documents/diannao/hermes-agent/00剧本/F1大奖赛看台热舞/video/f44c120a-0655-4e54-9bdf-ecec23e6ca2d_video_1.mp4",
+        "fps": 24,
+        "width": 720,
+        "height": 1280,
+        "format": "mp4",
+        "duration": 15.042
+      }
+    ]
+  },
+  "credit_count": 165,
+  "queue_info": {
+    "queue_idx": 0,
+    "priority": 1,
+    "queue_status": "Finish",
+    "queue_length": 0,
+    "debug_info": "{\"have_no_dreamina_queue_name\":false,\"dreamina_matrix_queue_name\":\"dreamina_fusion_video40_vision\",\"dreamina_matrix_req_key\":\"DreaminaFusion:Video40_Vision_t2v_720p\",\"dreamina_matrix_second_req_key\":\"\",\"have_no_queue_name\":true,\"queue_name\":\"\",\"matrix_req_key\":\"\",\"matrix_second_req_key\":\"\"}"
+  }
+}

@@ -382,6 +382,32 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     assert "result_text" not in events[1][2]
 
 
+def test_browser_tool_complete_emits_desktop_browser_drive(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "browser-sync-test",
+        {"tool_progress_mode": "off", "tool_started_at": {}},
+    )
+
+    server._on_tool_complete(
+        "browser-sync-test",
+        "tool-1",
+        "browser_navigate",
+        {"url": "https://example.com"},
+        json.dumps({"success": True, "title": "Example", "url": "https://example.com/"}),
+    )
+
+    assert (
+        "browser.drive",
+        "browser-sync-test",
+        {"action": "navigate", "title": "Example", "url": "https://example.com/"},
+    ) in events
+
+
 def test_dispatch_rejects_non_object_request():
     resp = server.dispatch([])
 

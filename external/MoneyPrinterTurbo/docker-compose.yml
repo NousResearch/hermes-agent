@@ -1,0 +1,24 @@
+x-common-volumes: &common-volumes
+  - ./:/MoneyPrinterTurbo
+
+services:
+  webui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: "moneyprinterturbo-webui"
+    ports:
+      - "127.0.0.1:8501:8501"
+    command: [ "streamlit", "run", "./webui/Main.py","--browser.serverAddress=127.0.0.1","--server.enableCORS=True","--browser.gatherUsageStats=False","--server.showEmailPrompt=False" ]
+    volumes: *common-volumes
+    restart: always
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: "moneyprinterturbo-api"
+    ports:
+      - "127.0.0.1:8080:8080"
+    command: [ "python3", "main.py" ]
+    volumes: *common-volumes
+    restart: always

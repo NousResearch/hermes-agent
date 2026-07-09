@@ -1,0 +1,14 @@
+{
+  "name": "MoneyPrinterTurbo",
+  "upstream_url": "https://github.com/harry0703/MoneyPrinterTurbo",
+  "upstream_readme": "https://github.com/harry0703/MoneyPrinterTurbo/blob/main/README-en.md",
+  "vendored_path": "external/MoneyPrinterTurbo",
+  "commit": "63113a3",
+  "license": "MIT",
+  "integration_owner": "Hermes Desktop Video Studio",
+  "notes": [
+    "Vendored as a Desktop capability dependency, not as Hermes Agent Core code.",
+    "Do not commit external/MoneyPrinterTurbo/config.toml, storage outputs, virtualenvs, caches, or generated media.",
+    "Hermes Desktop and MCP integrations should call the capability adapter instead of importing upstream internals directly."
+  ]
+}

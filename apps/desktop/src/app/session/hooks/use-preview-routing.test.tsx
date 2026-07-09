@@ -3,13 +3,16 @@ import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { assistantTextPart, type ChatMessage } from '@/lib/chat-messages'
+import { $browserCurrentState, openBrowserRail, resetBrowserRegistryForTests } from '@/store/browser'
+import { $rightRailActiveTabId, PREVIEW_PANE_ID, RIGHT_RAIL_BROWSER_TAB_ID, RIGHT_RAIL_PREVIEW_TAB_ID } from '@/store/layout'
+import { $paneOpen } from '@/store/panes'
 import {
   $previewTarget,
   clearSessionPreviewRegistry,
   type PreviewTarget,
   registerSessionPreview
 } from '@/store/preview'
-import { $currentCwd, $messages } from '@/store/session'
+import { $activeSessionId, $currentCwd, $messages, $selectedStoredSessionId } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
 import { usePreviewRouting } from './use-preview-routing'
@@ -37,8 +40,18 @@ function previewTarget(source: string): PreviewTarget {
 
 let handleEvent: (event: RpcEvent) => void = () => undefined
 
-function PreviewRoutingHarness({ onEvent }: { onEvent: (handler: (event: RpcEvent) => void) => void }) {
-  const activeSessionIdRef = useRef<string | null>('session-1')
+function PreviewRoutingHarness({
+  activeSessionId = 'session-1',
+  onEvent,
+  routedSessionId = 'session-1',
+  selectedStoredSessionId = null
+}: {
+  activeSessionId?: string | null
+  onEvent: (handler: (event: RpcEvent) => void) => void
+  routedSessionId?: string | null
+  selectedStoredSessionId?: string | null
+}) {
+  const activeSessionIdRef = useRef<string | null>(activeSessionId)
 
   const routing = usePreviewRouting({
     activeSessionIdRef,
@@ -46,8 +59,8 @@ function PreviewRoutingHarness({ onEvent }: { onEvent: (handler: (event: RpcEven
     currentCwd: '/work',
     currentView: 'chat',
     requestGateway: vi.fn(),
-    routedSessionId: 'session-1',
-    selectedStoredSessionId: null
+    routedSessionId,
+    selectedStoredSessionId
   })
 
   useEffect(() => {
@@ -59,6 +72,9 @@ function PreviewRoutingHarness({ onEvent }: { onEvent: (handler: (event: RpcEven
 
 describe('usePreviewRouting', () => {
   beforeEach(() => {
+    resetBrowserRegistryForTests()
+    $activeSessionId.set('session-1')
+    $selectedStoredSessionId.set(null)
     $currentCwd.set('/work')
     $messages.set([])
     $previewTarget.set(null)
@@ -76,6 +92,9 @@ describe('usePreviewRouting', () => {
 
   afterEach(() => {
     cleanup()
+    resetBrowserRegistryForTests()
+    $activeSessionId.set(null)
+    $selectedStoredSessionId.set(null)
     $messages.set([])
     $previewTarget.set(null)
     window.localStorage.clear()
@@ -139,6 +158,27 @@ describe('usePreviewRouting', () => {
     act(() => handleEvent({ payload: { path: './dist/index.html' }, session_id: 'session-1', type: 'tool.complete' }))
 
     expect($previewTarget.get()).toBeNull()
-    expect(window.localStorage.getItem('hermes.desktop.sessionPreviews.v1')).toBeNull()
+    expect(JSON.parse(window.localStorage.getItem('hermes.desktop.sessionPreviews.v1') ?? '{}')).toEqual({})
+  })
+
+  it('routes active browser drive events to the browser rail', () => {
+    render(
+      <PreviewRoutingHarness
+        onEvent={handler => {
+          handleEvent = handler
+        }}
+      />
+    )
+
+    act(() =>
+      handleEvent({
+        payload: { action: 'navigate', title: 'Example', url: 'https://example.com/' },
+        session_id: 'session-1',
+        type: 'browser.drive'
+      })
+    )
+
+    expect($browserCurrentState.get()).toMatchObject({ title: 'Example', url: 'https://example.com/' })
+    expect($rightRailActiveTabId.get()).toBe(RIGHT_RAIL_BROWSER_TAB_ID)
   })
 })

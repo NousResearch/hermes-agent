@@ -289,6 +289,104 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+def _fastapi_from_aiohttp_response(response: Any) -> Response:
+    """Adapt the MoneyPrinter aiohttp adapter response for the dashboard backend."""
+    body = getattr(response, "body", None)
+    if body is None:
+        text = getattr(response, "text", "") or ""
+        body = text.encode("utf-8")
+    headers = {
+        key: value
+        for key, value in dict(getattr(response, "headers", {}) or {}).items()
+        if key.lower() not in {"content-length", "transfer-encoding"}
+    }
+    return Response(
+        content=body,
+        headers=headers,
+        media_type=getattr(response, "content_type", None) or "application/json",
+        status_code=int(getattr(response, "status", 200)),
+    )
+
+
+def _moneyprinter_adapter():
+    from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+    return moneyprinter_adapter
+
+
+@app.get("/api/capabilities/moneyprinter/health")
+async def api_moneyprinter_health():
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().health())
+
+
+@app.post("/api/capabilities/moneyprinter/service/start")
+async def api_moneyprinter_start():
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().start_service())
+
+
+@app.get("/api/capabilities/moneyprinter/config")
+async def api_moneyprinter_get_config():
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().get_config())
+
+
+@app.post("/api/capabilities/moneyprinter/config")
+async def api_moneyprinter_save_config(request: Request):
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().save_config(request))
+
+
+@app.post("/api/capabilities/moneyprinter/videos")
+async def api_moneyprinter_create_video(request: Request):
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().create_video(request))
+
+
+@app.get("/api/capabilities/moneyprinter/materials")
+async def api_moneyprinter_list_materials():
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().list_local_materials())
+
+
+@app.post("/api/capabilities/moneyprinter/materials")
+async def api_moneyprinter_upload_material(request: Request):
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().upload_local_material(request))
+
+
+@app.post("/api/capabilities/moneyprinter/scripts")
+async def api_moneyprinter_generate_script(request: Request):
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().generate_script(request))
+
+
+@app.post("/api/capabilities/moneyprinter/terms")
+async def api_moneyprinter_generate_terms(request: Request):
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().generate_terms(request))
+
+
+@app.get("/api/capabilities/moneyprinter/outputs")
+async def api_moneyprinter_list_outputs():
+    status, payload = await _moneyprinter_adapter().list_outputs_data()
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(payload, status_code=status)
+
+
+@app.get("/api/capabilities/moneyprinter/tasks")
+async def api_moneyprinter_list_tasks():
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().list_tasks())
+
+
+@app.get("/api/capabilities/moneyprinter/tasks/{task_id}")
+async def api_moneyprinter_get_task(task_id: str):
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().get_task(task_id))
+
+
+@app.delete("/api/capabilities/moneyprinter/tasks/{task_id}")
+async def api_moneyprinter_delete_task(task_id: str):
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().delete_task(task_id))
+
+
+@app.get("/api/capabilities/moneyprinter/{kind}/{file_path:path}")
+async def api_moneyprinter_media(kind: str, file_path: str):
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().proxy_media(kind, file_path))
+
 # ---------------------------------------------------------------------------
 # Endpoints that do NOT require the session token.  Everything else under
 # /api/ is gated by the auth middleware below.
@@ -11579,6 +11677,281 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
         "providers": providers,
         "active_provider": active_provider,
     }
+
+
+def _image_generation_provider_id(provider: Dict[str, Any]) -> str:
+    """Stable row id for the Desktop image-generation picker."""
+    if provider.get("managed_nous_feature") == "image_gen":
+        backend = provider.get("imagegen_backend") or provider.get("image_gen_plugin_name") or "managed"
+        return f"nous:{backend}"
+    if provider.get("image_gen_plugin_name"):
+        return str(provider["image_gen_plugin_name"])
+    if provider.get("imagegen_backend"):
+        return str(provider["imagegen_backend"])
+    return str(provider.get("name") or "").strip()
+
+
+def _image_generation_catalog_for_provider(provider: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Return ``(model_catalog, default_model)`` for an image-gen provider row."""
+    plugin_name = provider.get("image_gen_plugin_name")
+    if plugin_name:
+        from hermes_cli.tools_config import _plugin_image_gen_catalog
+
+        return _plugin_image_gen_catalog(str(plugin_name))
+
+    backend_name = provider.get("imagegen_backend")
+    if backend_name:
+        from hermes_cli.tools_config import IMAGEGEN_BACKENDS
+
+        backend = IMAGEGEN_BACKENDS.get(str(backend_name))
+        if backend:
+            return backend["catalog_fn"]()
+
+    return {}, None
+
+
+def _image_generation_provider_available(provider: Dict[str, Any], config: Dict[str, Any]) -> bool:
+    """Best-effort availability check for picker affordances; never raises."""
+    managed_feature = provider.get("managed_nous_feature")
+    if managed_feature == "image_gen":
+        try:
+            from hermes_cli.tools_config import get_nous_subscription_features
+
+            features = get_nous_subscription_features(config, force_fresh=False)
+            feature = features.features.get("image_gen")
+            return bool(feature and (feature.available or feature.managed_by_nous))
+        except Exception:
+            return False
+
+    plugin_name = provider.get("image_gen_plugin_name")
+    if plugin_name:
+        try:
+            from agent.image_gen_registry import get_provider
+            from hermes_cli.plugins import _ensure_plugins_discovered
+
+            _ensure_plugins_discovered()
+            plugin = get_provider(str(plugin_name))
+            return bool(plugin and plugin.is_available())
+        except Exception:
+            return False
+
+    if provider.get("imagegen_backend") == "fal":
+        try:
+            from hermes_cli.config import get_env_value
+
+            return bool(get_env_value("FAL_KEY"))
+        except Exception:
+            return bool(os.environ.get("FAL_KEY"))
+
+    env_vars = provider.get("env_vars") or []
+    if not env_vars:
+        return True
+    try:
+        from hermes_cli.config import get_env_value
+
+        return all(bool(get_env_value(item.get("key", ""))) for item in env_vars)
+    except Exception:
+        return False
+
+
+def _image_generation_model_capabilities(
+    provider: Dict[str, Any],
+    model_id: str,
+    meta: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Return model capability hints for the Desktop picker."""
+    _ = model_id
+    plugin_name = provider.get("image_gen_plugin_name")
+    if plugin_name:
+        try:
+            from agent.image_gen_registry import get_provider
+            from hermes_cli.plugins import _ensure_plugins_discovered
+
+            _ensure_plugins_discovered()
+            plugin = get_provider(str(plugin_name))
+            caps = plugin.capabilities() if plugin else {}
+            return {
+                "modalities": list(caps.get("modalities") or ["text"]),
+                "max_reference_images": int(caps.get("max_reference_images") or 0),
+            }
+        except Exception:
+            return {"modalities": ["text"], "max_reference_images": 0}
+
+    if meta.get("edit_endpoint"):
+        return {
+            "modalities": ["text", "image"],
+            "max_reference_images": int(meta.get("max_reference_images") or 1),
+        }
+    return {"modalities": ["text"], "max_reference_images": 0}
+
+
+def _build_image_generation_options(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the Desktop image-generation picker payload from live config."""
+    from hermes_cli.config import get_env_value
+    from hermes_cli.tools_config import (
+        TOOL_CATEGORIES,
+        _get_platform_tools,
+        _is_provider_active,
+        _visible_providers,
+    )
+
+    raw_image_cfg = config.get("image_gen")
+    image_cfg = raw_image_cfg if isinstance(raw_image_cfg, dict) else {}
+    current_model_raw = str(image_cfg.get("model") or "")
+    providers: List[Dict[str, Any]] = []
+    active_provider: Optional[Dict[str, Any]] = None
+    active_model = current_model_raw
+
+    cat = TOOL_CATEGORIES["image_gen"]
+    for provider in _visible_providers(cat, config, force_fresh=True):
+        catalog, default_model = _image_generation_catalog_for_provider(provider)
+        is_active = _is_provider_active(provider, config, force_fresh=True)
+        provider_id = _image_generation_provider_id(provider)
+        available = _image_generation_provider_available(provider, config)
+        env_vars = provider.get("env_vars") or []
+        configured = bool(
+            is_active
+            or available
+            or not env_vars
+            or all(bool(get_env_value(item.get("key", ""))) for item in env_vars)
+        )
+
+        models = []
+        for model_id, meta in catalog.items():
+            meta = meta if isinstance(meta, dict) else {}
+            caps = _image_generation_model_capabilities(provider, str(model_id), meta)
+            models.append({
+                "id": str(model_id),
+                "display": str(meta.get("display") or model_id),
+                "speed": str(meta.get("speed") or ""),
+                "strengths": str(meta.get("strengths") or ""),
+                "price": str(meta.get("price") or ""),
+                "modalities": caps.get("modalities") or ["text"],
+                "max_reference_images": caps.get("max_reference_images") or 0,
+            })
+
+        row = {
+            "id": provider_id,
+            "name": provider.get("name") or provider_id,
+            "badge": provider.get("badge", ""),
+            "tag": provider.get("tag", ""),
+            "available": available,
+            "configured": configured,
+            "is_active": is_active,
+            "requires_nous_auth": bool(provider.get("requires_nous_auth")),
+            "use_gateway": bool(provider.get("managed_nous_feature")),
+            "default_model": default_model or "",
+            "models": models,
+        }
+        providers.append(row)
+
+        if is_active and active_provider is None:
+            active_provider = row
+            if current_model_raw not in catalog and default_model:
+                active_model = str(default_model)
+
+    enabled_toolsets = set(_get_platform_tools(config, "cli", include_default_mcp_servers=False))
+    if active_provider is None and providers:
+        configured_provider = str(image_cfg.get("provider") or "fal")
+        gateway_selected = bool(image_cfg.get("use_gateway"))
+        fallback_provider_id = "nous:fal" if configured_provider == "fal" and gateway_selected else configured_provider
+        active_provider = next(
+            (
+                provider
+                for provider in providers
+                if provider["id"] == fallback_provider_id
+            ),
+            None,
+        )
+        if active_provider and not active_model:
+            active_model = str(active_provider.get("default_model") or "")
+
+    return {
+        "enabled": "image_gen" in enabled_toolsets,
+        "provider": active_provider.get("name") if active_provider else "",
+        "provider_id": active_provider.get("id") if active_provider else "",
+        "model": active_model,
+        "providers": providers,
+        # Provider/model config is read at tool-call time. Enabling the toolset
+        # still requires a fresh session before the model sees the new schema.
+        "requires_new_session": "image_gen" not in enabled_toolsets,
+    }
+
+
+@app.get("/api/tools/image-generation/options")
+async def get_image_generation_options(profile: Optional[str] = None):
+    """Return provider + model choices for the Desktop composer image picker."""
+    with _profile_scope(profile):
+        config = load_config()
+        return _build_image_generation_options(config)
+
+
+class ImageGenerationSelection(BaseModel):
+    provider: str
+    model: Optional[str] = None
+    profile: Optional[str] = None
+
+
+@app.put("/api/tools/image-generation/selection")
+async def select_image_generation(body: ImageGenerationSelection, profile: Optional[str] = None):
+    """Persist image-generation provider/model selection from Desktop."""
+    from hermes_cli.tools_config import (
+        TOOL_CATEGORIES,
+        _get_platform_tools,
+        _save_platform_tools,
+        _visible_providers,
+        apply_provider_selection,
+    )
+
+    target = (body.provider or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="provider is required")
+
+    with _profile_scope(body.profile or profile):
+        config = load_config()
+        providers = _visible_providers(TOOL_CATEGORIES["image_gen"], config, force_fresh=True)
+        provider = next(
+            (
+                provider
+                for provider in providers
+                if provider.get("name") == target or _image_generation_provider_id(provider) == target
+            ),
+            None,
+        )
+        if provider is None:
+            raise HTTPException(status_code=400, detail=f"Unknown image generation provider: {target}")
+
+        catalog, default_model = _image_generation_catalog_for_provider(provider)
+        requested_model = (body.model or "").strip()
+        if not requested_model:
+            requested_model = str(default_model or "")
+        if requested_model and catalog and requested_model not in catalog:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown image generation model for {provider.get('name')}: {requested_model}",
+            )
+
+        try:
+            apply_provider_selection("image_gen", str(provider.get("name") or target), config)
+        except KeyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc).strip('"'))
+
+        img_cfg = config.setdefault("image_gen", {})
+        if not isinstance(img_cfg, dict):
+            img_cfg = {}
+            config["image_gen"] = img_cfg
+        if requested_model:
+            img_cfg["model"] = requested_model
+
+        enabled = set(_get_platform_tools(config, "cli", include_default_mcp_servers=False))
+        was_enabled = "image_gen" in enabled
+        enabled.add("image_gen")
+        _save_platform_tools(config, "cli", enabled)
+
+        refreshed = load_config()
+        result = _build_image_generation_options(refreshed)
+        result["requires_new_session"] = not was_enabled
+        return result
 
 
 class ToolsetProviderSelect(BaseModel):

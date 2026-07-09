@@ -1,0 +1,450 @@
+[app]
+video_source = "pexels" # "pexels" or "pixabay"
+
+# 是否隐藏配置面板
+hide_config = false
+
+# Azure TTS V1(edge_tts) 单次流式请求超时时间，单位秒。
+# 网络异常、服务端限流或 voice 与文本语言不匹配时，edge_tts 可能长期卡住。
+# 默认 30 秒可避免 WebUI 任务无反馈；慢网络或代理环境可适当调大。
+# 设置为 0 表示禁用超时。
+edge_tts_timeout = 30
+
+# 是否校验外部 API 和素材下载的 TLS 证书。
+# 默认必须开启，避免 Pexels/Pixabay API key 和下载素材被中间人攻击篡改。
+# 只有在企业代理或自签证书环境明确需要时，才临时改为 false。
+tls_verify = true
+
+# Pexels API Key
+# Register at https://www.pexels.com/api/ to get your API key.
+# You can use multiple keys to avoid rate limits.
+# For example: pexels_api_keys = ["123adsf4567adf89","abd1321cd13efgfdfhi"]
+# Use straight ASCII double quotes around each key. Smart quotes copied from rich text will break TOML parsing.
+# 请使用英文半角双引号包裹每个 Key；从富文本复制来的弯引号会导致 TOML 解析失败。
+# 特别注意格式，Key 用英文双引号括起来，多个Key用逗号隔开
+pexels_api_keys = []
+
+# Pixabay API Key
+# Register at https://pixabay.com/api/docs/ to get your API key.
+# You can use multiple keys to avoid rate limits.
+# For example: pixabay_api_keys = ["123adsf4567adf89","abd1321cd13efgfdfhi"]
+# Use straight ASCII double quotes around each key. Smart quotes copied from rich text will break TOML parsing.
+# 请使用英文半角双引号包裹每个 Key；从富文本复制来的弯引号会导致 TOML 解析失败。
+# 特别注意格式，Key 用英文双引号括起来，多个Key用逗号隔开
+pixabay_api_keys = []
+
+# Coverr API Key
+# Register at https://coverr.co/developers?ctx=header_navigation to get your API key instantly.
+# Free tier (Demo) is limited to 50 requests/hour — sufficient for a few
+# video tasks per hour. Upgrade to Pro/Ultimate subscription for 2000/hour.
+# Coverr provides free HD/4K stock videos (subject to Coverr license terms,
+# see https://coverr.co/license), mostly 16:9 landscape; if
+# you generate 9:16 short-form videos, prefer Pexels/Pixabay as primary
+# and use Coverr to widen the catalog for landscape/cinematic content.
+# You can use multiple keys to avoid rate limits.
+# For example: coverr_api_keys = ["123adsf4567adf89","abd1321cd13efgfdfhi"]
+# Use straight ASCII double quotes around each key. Smart quotes copied from rich text will break TOML parsing.
+# 请使用英文半角双引号包裹每个 Key；从富文本复制来的弯引号会导致 TOML 解析失败。
+# 特别注意格式，Key 用英文双引号括起来，多个Key用逗号隔开
+coverr_api_keys = []
+
+# TwelveLabs API Key (optional) — https://twelvelabs.io
+# TwelveLabs (可选) 视频理解 / 多模态嵌入集成。
+# Enables two opt-in features:
+#   * Marengo (multimodal embeddings) semantically reorders the auto-generated
+#     search terms by relevance to your video subject, so the most on-topic
+#     B-roll is downloaded first when the timeline budget is tight.
+#   * Pegasus (video understanding) can QA / describe a clip from its URL.
+# Leave empty to keep MoneyPrinterTurbo's behavior completely unchanged.
+# Configure a TwelveLabs API key from the TwelveLabs dashboard (https://twelvelabs.io) and install the
+# optional dependency with `uv sync --extra twelvelabs`.
+# Register at https://playground.twelvelabs.io to get your API key.
+# You can use multiple keys to avoid rate limits.
+# For example: twelvelabs_api_keys = ["tlk_123adsf4567","tlk_abd1321cd13ef"]
+# 请使用英文半角双引号包裹每个 Key；从富文本复制来的弯引号会导致 TOML 解析失败。
+twelvelabs_api_keys = []
+
+# Reorder search terms by Marengo relevance before downloading footage.
+# Requires twelvelabs_api_keys above. Ignored in "match materials to script"
+# mode, where term order is intentionally the script's narrative order.
+twelvelabs_rerank_terms = false
+
+# Optional model overrides (defaults shown).
+# twelvelabs_marengo_model = "marengo3.0"
+# twelvelabs_pegasus_model = "pegasus1.5"
+
+# 支持的提供商 (Supported providers):
+#   openai
+#   aihubmix   (OpenAI-compatible AI model gateway)
+#   aimlapi     (OpenAI-compatible multi-model AI API)
+#   moonshot    (月之暗面)
+#   azure
+#   qwen        (通义千问)
+#   deepseek
+#   gemini
+#   ollama
+#   g4f        (disabled by default; set enable_g4f=true only after accepting its risks)
+#   oneapi
+#   cloudflare
+#   minimax
+#   evolink    (OpenAI-compatible multi-model AI gateway)
+#   volcengine (VolcEngine Ark OpenAI-compatible API)
+#   mimo       (Xiaomi MiMo)
+#   ernie       (文心一言)
+#   modelscope  (魔搭社区)
+#   litellm     (100+ providers via LiteLLM gateway)
+llm_provider = "openai"
+
+########## Pollinations AI Settings
+# Visit https://pollinations.ai/ to learn more
+# API Key is optional - leave empty for public access
+pollinations_api_key = ""
+# Base URL for Pollinations API.
+# Leave empty to use the default endpoint (https://text.pollinations.ai/openai).
+# Note: the old "https://pollinations.ai/api/v1" endpoint no longer accepts
+# requests (returns 405 Method Not Allowed), so only set this if you have a
+# working custom endpoint.
+pollinations_base_url = ""
+# Default model for text generation
+pollinations_model_name = "openai-fast"
+
+########## Ollama Settings
+# No need to set it unless you want to use your own proxy
+ollama_base_url = ""
+# Check your available models at https://ollama.com/library
+ollama_model_name = ""
+
+########## OpenAI API Key
+# Get your API key at https://platform.openai.com/api-keys
+# 也可以填写兼容 OpenAI Chat Completions 协议的供应商密钥，
+# 例如 OpenRouter 这类提供自定义 base_url 的平台。
+openai_api_key = ""
+# No need to set it unless you want to use your own proxy
+# 如果使用兼容 OpenAI 接口的平台，请在这里填写对应的 base_url。
+openai_base_url = ""
+# Check your available models at https://platform.openai.com/account/limits
+# 如果使用兼容供应商，请填写该平台要求的模型 ID。
+openai_model_name = "gpt-4o-mini"
+
+########## AIHubMix API Key
+# AIHubMix is OpenAI-compatible and can use one API key to access multiple models.
+# Visit https://aihubmix.com to register and get your API key.
+aihubmix_api_key = ""
+aihubmix_base_url = "https://aihubmix.com/v1"
+aihubmix_model_name = "gpt-5.4-mini"
+
+########## AIML API Key
+# AIML API is OpenAI-compatible and can use one API key to access multiple model families.
+# Visit https://aimlapi.com/app/keys to create your API key.
+aimlapi_api_key = ""
+aimlapi_base_url = "https://api.aimlapi.com/v1"
+aimlapi_model_name = "openai/gpt-4o-mini"
+
+########## Moonshot API Key
+# Visit https://platform.moonshot.cn/console/api-keys to get your API key.
+moonshot_api_key = ""
+moonshot_base_url = "https://api.moonshot.cn/v1"
+moonshot_model_name = "moonshot-v1-8k"
+
+########## OneAPI API Key
+# Visit https://github.com/songquanpeng/one-api to get your API key
+oneapi_api_key = ""
+oneapi_base_url = ""
+oneapi_model_name = ""
+
+########## G4F
+# g4f relies on reverse-engineered third-party endpoints and is not recommended
+# for production. Prefer official APIs, OpenAI-compatible providers, LiteLLM,
+# Ollama, or local inference.
+# If you still need it, install the optional dependency with:
+#   uv sync --extra g4f
+enable_g4f = false
+# Visit https://github.com/xtekky/gpt4free to get more details
+# Supported model list: https://github.com/xtekky/gpt4free/blob/main/g4f/models.py
+g4f_model_name = "gpt-3.5-turbo"
+
+########## Azure API Key
+# Visit https://learn.microsoft.com/zh-cn/azure/ai-services/openai/ to get more details
+# API documentation: https://learn.microsoft.com/zh-cn/azure/ai-services/openai/reference
+azure_api_key = ""
+azure_base_url = ""
+azure_model_name = "gpt-35-turbo"        # replace with your model deployment name
+azure_api_version = "2024-02-15-preview"
+
+########## Gemini API Key
+gemini_api_key = ""
+gemini_model_name = "gemini-2.5-flash"
+
+########## Grok API Key
+grok_api_key = ""
+grok_model_name = "grok-4.3"
+grok_base_url = "https://api.x.ai/v1"
+
+########## Groq API Key
+# Visit https://console.groq.com/keys to get your api keys
+# API documentation: https://console.groq.com/docs/api-reference
+# Available models: https://console.groq.com/docs/api-reference#models-list
+groq_api_key = ""
+groq_model_name = "llama-3.3-70b-versatile"
+groq_base_url = "https://api.groq.com/openai/v1"
+
+########## Qwen API Key
+# Visit https://dashscope.console.aliyun.com/apiKey to get your API key
+# Visit below links to get more details
+# https://tongyi.aliyun.com/qianwen/
+# https://help.aliyun.com/zh/dashscope/developer-reference/model-introduction
+qwen_api_key = ""
+qwen_model_name = "qwen-max"
+
+
+########## MiniMax API Key
+# Visit https://platform.minimax.io or https://platform.minimaxi.com to get your API key
+# MiniMax API is OpenAI-compatible
+# Available models: MiniMax-M3 (default), MiniMax-M2.7, MiniMax-M2.7-highspeed
+# If your API key returns 401 on api.minimax.io, try the China endpoint: https://api.minimaxi.com/v1
+minimax_api_key = ""
+minimax_base_url = "https://api.minimax.io/v1"
+minimax_model_name = "MiniMax-M3"
+
+########## EvoLink API Key
+# EvoLink is an OpenAI-compatible gateway for language models.
+# Visit https://evolink.ai/dashboard/keys to get your API key.
+# API documentation: https://docs.evolink.ai/en/api-manual/language-series
+# Available models include gpt-5.5, gpt-5.4, gpt-5.2, deepseek-v4-flash, deepseek-v4-pro, gemini-3.1-pro, and doubao-seed-2.0-pro.
+evolink_api_key = ""
+evolink_base_url = "https://direct.evolink.ai/v1"
+evolink_model_name = "gpt-5.5"
+
+########## VolcEngine Ark API Key
+# VolcEngine Ark provides an OpenAI-compatible Chat Completions API.
+# Create an API key in the VolcEngine Ark console and use a model ID that is
+# enabled for your account.
+volcengine_api_key = ""
+volcengine_base_url = "https://ark.cn-beijing.volces.com/api/v3"
+volcengine_model_name = "doubao-seed-2-1-turbo-260628"
+
+########## Xiaomi MiMo API Key
+# Xiaomi MiMo API is OpenAI-compatible.
+# Visit https://platform.xiaomimimo.com/docs/zh-CN/quick-start/first-api-call to get more details.
+mimo_api_key = ""
+mimo_base_url = "https://api.xiaomimimo.com/v1"
+mimo_model_name = "mimo-v2.5-pro"
+# Xiaomi MiMo TTS uses the same API key and base_url as MiMo LLM.
+mimo_tts_model_name = "mimo-v2.5-tts"
+# Optional natural language style prompt for MiMo TTS.
+mimo_tts_style_prompt = "请用自然、清晰、适合短视频旁白的语气朗读。"
+
+########## DeepSeek API Key
+# Visit https://platform.deepseek.com/api_keys to get your API key
+deepseek_api_key = ""
+deepseek_base_url = "https://api.deepseek.com"
+deepseek_model_name = "deepseek-chat"
+
+
+########## ModelScope API Key
+# Visit https://modelscope.cn/docs/model-service/API-Inference/intro to get your API key
+# And note that you need to bind your Alibaba Cloud account before using the API.
+modelscope_api_key = ""
+modelscope_base_url = "https://api-inference.modelscope.cn/v1/"
+modelscope_model_name = "Qwen/Qwen3-32B"
+
+########## LiteLLM (AI Gateway — 100+ providers)
+# LiteLLM routes to any LLM provider via a unified interface.
+# Use this for providers not directly supported above: Anthropic (native API),
+# AWS Bedrock, Google Vertex AI, Cohere, Mistral, Together AI, etc.
+# Visit https://docs.litellm.ai/docs/providers for the full list.
+#
+# LiteLLM reads provider API keys from environment variables automatically:
+#   OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, AWS_ACCESS_KEY_ID, etc.
+# Set the appropriate env var for your chosen provider before running.
+#
+# Model name in LiteLLM format: "provider/model-name"
+# Examples: "openai/gpt-4o", "anthropic/claude-sonnet-4-20250514",
+#           "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+#           "gemini/gemini-2.5-flash", "ollama/llama3"
+litellm_model_name = "openai/gpt-4o-mini"
+
+# Subtitle Provider, "edge" or "whisper"
+# If empty, the subtitle will not be generated
+subtitle_provider = "edge"
+
+#
+# ImageMagick
+#
+# Once you have installed it, ImageMagick will be automatically detected, except on Windows!
+# On Windows, for example "C:\Program Files (x86)\ImageMagick-7.1.1-Q16-HDRI\magick.exe"
+# Download from https://imagemagick.org/archive/binaries/ImageMagick-7.1.1-29-Q16-x64-static.exe
+
+# imagemagick_path = "C:\\Program Files (x86)\\ImageMagick-7.1.1-Q16\\magick.exe"
+
+
+#
+# FFMPEG
+#
+# 通常情况下，ffmpeg 会被自动下载，并且会被自动检测到。
+# 但是如果你的环境有问题，无法自动下载，可能会遇到如下错误：
+#   RuntimeError: No ffmpeg exe could be found.
+#   Install ffmpeg on your system, or set the IMAGEIO_FFMPEG_EXE environment variable.
+# 此时你可以手动下载 ffmpeg 并设置 ffmpeg_path，下载地址：https://www.gyan.dev/ffmpeg/builds/
+
+# Under normal circumstances, ffmpeg is downloaded automatically and detected automatically.
+# However, if there is an issue with your environment that prevents automatic downloading, you might encounter the following error:
+#   RuntimeError: No ffmpeg exe could be found.
+#   Install ffmpeg on your system, or set the IMAGEIO_FFMPEG_EXE environment variable.
+# In such cases, you can manually download ffmpeg and set the ffmpeg_path, download link: https://www.gyan.dev/ffmpeg/builds/
+
+# ffmpeg_path = "C:\\Users\\harry\\Downloads\\ffmpeg.exe"
+
+# 视频编码器。默认 libx264 最稳定；高级用户可以尝试硬件编码器提升速度。
+# 如果当前 FFmpeg 或硬件驱动不支持所选编码器，程序会自动回退到 libx264。
+# 可选值: "libx264", "h264_nvenc", "h264_amf", "h264_qsv", "h264_mf", "h264_videotoolbox"
+# video_codec = "libx264"
+
+# Video encoder. libx264 is the safest default; advanced users can try hardware encoders.
+# If the selected encoder is not supported by the current FFmpeg or driver, the app falls back to libx264.
+# Available values: "libx264", "h264_nvenc", "h264_amf", "h264_qsv", "h264_mf", "h264_videotoolbox"
+# video_codec = "libx264"
+#########################################################################################
+
+# 当视频生成成功后，API服务提供的视频下载接入点，默认为当前服务的地址和监听端口
+# 比如 http://127.0.0.1:8080/tasks/6357f542-a4e1-46a1-b4c9-bf3bd0df5285/final-1.mp4
+# 如果你需要使用域名对外提供服务（一般会用nginx做代理），则可以设置为你的域名
+# 比如 https://xxxx.com/tasks/6357f542-a4e1-46a1-b4c9-bf3bd0df5285/final-1.mp4
+# endpoint="https://xxxx.com"
+
+# When the video is successfully generated, the API service provides a download endpoint for the video, defaulting to the service's current address and listening port.
+# For example, http://127.0.0.1:8080/tasks/6357f542-a4e1-46a1-b4c9-bf3bd0df5285/final-1.mp4
+# If you need to provide the service externally using a domain name (usually done with nginx as a proxy), you can set it to your domain name.
+# For example, https://xxxx.com/tasks/6357f542-a4e1-46a1-b4c9-bf3bd0df5285/final-1.mp4
+# endpoint="https://xxxx.com"
+endpoint = ""
+
+
+# Video material storage location
+# material_directory = ""                    # Indicates that video materials will be downloaded to the default folder, the default folder is ./storage/cache_videos under the current project
+# material_directory = "/user/harry/videos"  # Indicates that video materials will be downloaded to a specified folder
+# material_directory = "task"                # Indicates that video materials will be downloaded to the current task's folder, this method does not allow sharing of already downloaded video materials
+
+# 视频素材存放位置
+# material_directory = ""                    #表示将视频素材下载到默认的文件夹，默认文件夹为当前项目下的 ./storage/cache_videos
+# material_directory = "/user/harry/videos"  #表示将视频素材下载到指定的文件夹中
+# material_directory = "task"                #表示将视频素材下载到当前任务的文件夹中，这种方式无法共享已经下载的视频素材
+
+material_directory = ""
+
+# Used for state management of the task.
+# Redis is expected to be private to this app. Do not expose it to untrusted
+# writers, because task state is deserialized for compatibility with existing
+# records.
+enable_redis = false
+redis_host = "localhost"
+redis_port = 6379
+redis_db = 0
+redis_password = ""
+
+# 文生视频时的最大并发任务数
+max_concurrent_tasks = 5
+
+# 并发任务已满后的最大排队任务数，超过后接口返回 429，避免匿名请求无限堆积
+max_queued_tasks = 100
+
+
+[whisper]
+# Only effective when subtitle_provider is "whisper"
+
+# Run on GPU with FP16
+# model = WhisperModel(model_size, device="cuda", compute_type="float16")
+
+# Run on GPU with INT8
+# model = WhisperModel(model_size, device="cuda", compute_type="int8_float16")
+
+# Run on CPU with INT8
+# model = WhisperModel(model_size, device="cpu", compute_type="int8")
+
+# recommended model_size: "large-v3"
+model_size = "large-v3"
+# if you want to use GPU, set device="cuda"
+device = "CPU"
+compute_type = "int8"
+
+
+[proxy]
+### Use a proxy to access the Pexels API
+### Format: "http://<username>:<password>@<proxy>:<port>"
+### Example: "http://user:pass@proxy:1234"
+### Doc: https://requests.readthedocs.io/en/latest/user/advanced/#proxies
+
+# http = "http://10.10.1.10:3128"
+# https = "http://10.10.1.10:1080"
+
+[azure]
+# Azure Speech API Key
+# Get your API key at https://portal.azure.com/#view/Microsoft_Azure_ProjectOxford/CognitiveServicesHub/~/SpeechServices
+speech_key = ""
+speech_region = ""
+
+[siliconflow]
+# SiliconFlow API Key
+# Get your API key at https://siliconflow.cn
+api_key = ""
+
+[elevenlabs]
+# ElevenLabs API Key
+# Get your API key at https://elevenlabs.io/app/settings/api-keys
+# Mark voices as favorites in the ElevenLabs voice library to make them appear here.
+api_key = ""
+# Model: eleven_multilingual_v2 | eleven_flash_v2_5 | eleven_v3
+model_id = "eleven_multilingual_v2"
+
+[ui]
+# UI related settings
+# 是否隐藏日志信息
+# Whether to hide logs in the UI
+hide_log = false
+
+# 字幕位置设置 (Subtitle position settings)
+# 可选值 (Available values): "top", "center", "bottom", "custom"
+# subtitle_position = "custom"
+# 自定义位置，表示离顶部的百分比 (0-100)，仅当 subtitle_position = "custom" 时生效
+# Custom position as percentage from top (0-100), only effective when subtitle_position = "custom"
+# custom_position = 70.0
+
+########## Upload-Post (Cross-post to TikTok/Instagram/YouTube Shorts)
+# Upload-Post allows you to automatically cross-post generated videos to TikTok, Instagram and YouTube Shorts.
+# Visit https://upload-post.com to create an account and get your API key.
+# API Documentation: https://docs.upload-post.com
+
+# Enable/disable Upload-Post integration
+upload_post_enabled = false
+
+# Your Upload-Post API key
+upload_post_api_key = ""
+
+# Your Upload-Post username
+upload_post_username = ""
+
+# Platforms to cross-post to (options: "tiktok", "instagram", "youtube")
+upload_post_platforms = ["tiktok", "instagram"]
+
+# Automatically cross-post videos after generation (if false, you'll need to call the API manually)
+upload_post_auto_upload = false
+
+# YouTube Shorts privacy status (options: "public", "unlisted", "private")
+upload_post_youtube_privacy_status = "public"
+
+# Chatterbox TTS (self-hosted, OpenAI-compatible) ##########################
+# Chatterbox (https://github.com/resemble-ai/chatterbox, MIT) is an open-source,
+# locally hosted TTS model with zero-shot voice cloning — a self-hostable
+# alternative to ElevenLabs. Run a server that exposes an OpenAI-compatible
+# endpoint at POST {base_url}/audio/speech (e.g. devnen/Chatterbox-TTS-Server
+# or travisvn/chatterbox-tts-api), then set base_url below. In the WebUI pick
+# "Chatterbox TTS" as the TTS server, or via the API pass a voice_name like
+# "chatterbox:<voice>". Subtitles use the full-text fallback (no word-level
+# timestamps); set subtitle_provider = "whisper" for tighter sync.
+[chatterbox]
+# Defaults target travisvn/chatterbox-tts-api running locally on port 4123.
+base_url = "http://127.0.0.1:4123/v1"
+api_key = ""
+model_id = "chatterbox"
+# Voices exposed by your server; shown in the WebUI dropdown as chatterbox:<name>
+voices = ["default-Female"]

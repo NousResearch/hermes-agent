@@ -46,10 +46,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
-    from aiohttp import web
+    from aiohttp import ClientSession, web
     AIOHTTP_AVAILABLE = True
 except ImportError:
     AIOHTTP_AVAILABLE = False
+    ClientSession = None  # type: ignore[assignment]
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
@@ -849,6 +850,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
+        # Optional Desktop capability sidecar: MoneyPrinterTurbo runs as a
+        # separate Python service and is only proxied here for Video Studio.
+        self._moneyprinter_process: Optional[asyncio.subprocess.Process] = None
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
         # Concurrency cap shared across all agent-serving endpoints
         # (/v1/chat/completions, /v1/responses, /v1/runs). Read from
@@ -1441,6 +1445,126 @@ class APIServerAdapter(BasePlatformAdapter):
             "platform": "api_server",
             "data": data,
         })
+
+    # ------------------------------------------------------------------
+    # /api/capabilities/moneyprinter — Desktop Video Studio adapter API
+    # ------------------------------------------------------------------
+
+    async def _handle_moneyprinter_health(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.health()
+
+    async def _handle_moneyprinter_start(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.start_service()
+
+    async def _handle_moneyprinter_get_config(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.get_config()
+
+    async def _handle_moneyprinter_save_config(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.save_config(request)
+
+    async def _handle_moneyprinter_create_video(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.create_video(request)
+
+    async def _handle_moneyprinter_list_materials(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.list_local_materials()
+
+    async def _handle_moneyprinter_upload_material(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.upload_local_material(request)
+
+    async def _handle_moneyprinter_generate_script(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.generate_script(request)
+
+    async def _handle_moneyprinter_generate_terms(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.generate_terms(request)
+
+    async def _handle_moneyprinter_list_outputs(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        status, payload = await moneyprinter_adapter.list_outputs_data()
+        return web.json_response(payload, status=status)
+
+    async def _handle_moneyprinter_list_tasks(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.list_tasks()
+
+    async def _handle_moneyprinter_get_task(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.get_task(str(request.match_info.get("task_id", "")))
+
+    async def _handle_moneyprinter_delete_task(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.delete_task(str(request.match_info.get("task_id", "")))
+
+    async def _handle_moneyprinter_media(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.proxy_media(
+            str(request.match_info.get("kind", "")),
+            str(request.match_info.get("file_path", "")),
+        )
 
     # ------------------------------------------------------------------
     # /api/sessions — thin client/session resource API
@@ -4582,6 +4706,22 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
+            # Desktop capabilities: Video Studio / MoneyPrinterTurbo adapter.
+            # These routes proxy a sidecar service and do not mutate Hermes Agent Core.
+            self._app.router.add_get("/api/capabilities/moneyprinter/health", self._handle_moneyprinter_health)
+            self._app.router.add_post("/api/capabilities/moneyprinter/service/start", self._handle_moneyprinter_start)
+            self._app.router.add_get("/api/capabilities/moneyprinter/config", self._handle_moneyprinter_get_config)
+            self._app.router.add_post("/api/capabilities/moneyprinter/config", self._handle_moneyprinter_save_config)
+            self._app.router.add_post("/api/capabilities/moneyprinter/videos", self._handle_moneyprinter_create_video)
+            self._app.router.add_get("/api/capabilities/moneyprinter/materials", self._handle_moneyprinter_list_materials)
+            self._app.router.add_post("/api/capabilities/moneyprinter/materials", self._handle_moneyprinter_upload_material)
+            self._app.router.add_post("/api/capabilities/moneyprinter/scripts", self._handle_moneyprinter_generate_script)
+            self._app.router.add_post("/api/capabilities/moneyprinter/terms", self._handle_moneyprinter_generate_terms)
+            self._app.router.add_get("/api/capabilities/moneyprinter/outputs", self._handle_moneyprinter_list_outputs)
+            self._app.router.add_get("/api/capabilities/moneyprinter/tasks", self._handle_moneyprinter_list_tasks)
+            self._app.router.add_get("/api/capabilities/moneyprinter/tasks/{task_id}", self._handle_moneyprinter_get_task)
+            self._app.router.add_delete("/api/capabilities/moneyprinter/tasks/{task_id}", self._handle_moneyprinter_delete_task)
+            self._app.router.add_get("/api/capabilities/moneyprinter/{kind:stream|download}/{file_path:.*}", self._handle_moneyprinter_media)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

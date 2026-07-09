@@ -2,14 +2,15 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect } from 'react'
 
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
+import { type BrowserDriveAction, type BrowserDrivePayload, driveBrowser } from '@/store/browser'
 import {
   $previewTarget,
   $sessionPreviewRegistry,
   beginPreviewServerRestart,
   completePreviewServerRestart,
-  getSessionPreviewRecord,
   progressPreviewServerRestart,
   requestPreviewReload,
+  restoreRightRailForSession,
   setPreviewTarget
 } from '@/store/preview'
 import { $currentCwd } from '@/store/session'
@@ -39,6 +40,23 @@ function activePreviewSessionId(
   return selectedStoredSessionId || routedSessionId || activeSessionIdRef.current || ''
 }
 
+const BROWSER_DRIVE_ACTIONS = new Set<BrowserDriveAction>(['goBack', 'goForward', 'navigate', 'open', 'reload'])
+
+function browserDrivePayload(payload: unknown): BrowserDrivePayload | null {
+  const record = asRecord(payload)
+  const action = typeof record.action === 'string' ? record.action : ''
+
+  if (!BROWSER_DRIVE_ACTIONS.has(action as BrowserDriveAction)) {
+    return null
+  }
+
+  return {
+    action: action as BrowserDriveAction,
+    ...(typeof record.title === 'string' ? { title: record.title } : {}),
+    ...(typeof record.url === 'string' ? { url: record.url } : {})
+  }
+}
+
 export function usePreviewRouting({
   activeSessionIdRef,
   baseHandleGatewayEvent,
@@ -62,9 +80,7 @@ export function usePreviewRouting({
       return
     }
 
-    const record = getSessionPreviewRecord(previewSessionId)
-
-    setPreviewTarget(record?.normalized ?? null)
+    restoreRightRailForSession(previewSessionId)
   }, [currentView, previewRegistry, previewSessionId])
 
   const restartPreviewServer = useCallback(
@@ -112,6 +128,16 @@ export function usePreviewRouting({
 
         if (typeof task_id === 'string' && task_id) {
           progressPreviewServerRestart(task_id, typeof text === 'string' ? text : '')
+        }
+      } else if (event.type === 'browser.drive') {
+        if (event.session_id && event.session_id !== activeSessionIdRef.current) {
+          return
+        }
+
+        const payload = browserDrivePayload(event.payload)
+
+        if (payload) {
+          driveBrowser({ ...payload, sessionId: event.session_id || activeSessionIdRef.current || undefined })
         }
       }
 

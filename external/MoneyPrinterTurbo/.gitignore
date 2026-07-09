@@ -1,0 +1,39 @@
+.DS_Store
+/config.toml
+/storage/
+/.idea/
+/app/services/__pycache__
+/app/__pycache__/
+/app/config/__pycache__/
+/app/models/__pycache__/
+/app/utils/__pycache__/
+/*/__pycache__/*
+.vscode
+/**/.streamlit
+__pycache__
+logs/
+
+node_modules
+# VuePress 默认临时文件目录
+/sites/docs/.vuepress/.temp
+# VuePress 默认缓存目录
+/sites/docs/.vuepress/.cache
+# VuePress 默认构建生成的静态文件目录
+/sites/docs/.vuepress/dist
+# 模型目录
+/models/
+./models/*
+
+venv/
+.venv
+
+# Debug and test files
+CLAUDE.md
+debug/
+debug_*.py
+test_*.py
+!test/services/test_*.py
+streamlit.log
+.codegraph
+/docs/superpowers
+.understand-anything

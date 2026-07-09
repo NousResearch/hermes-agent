@@ -1245,6 +1245,17 @@ export interface Translations {
     snippets: Record<string, { label: string; description: string; text: string }>
     dropFiles: string
     dropSession: string
+    imageGeneration: {
+      title: string
+      loading: string
+      noProviders: string
+      active: string
+      restartRequired: string
+      setupRequired: string
+      textOnly: string
+      imageEditing: string
+      switchFailed: string
+    }
   }
 
   statusStack: {

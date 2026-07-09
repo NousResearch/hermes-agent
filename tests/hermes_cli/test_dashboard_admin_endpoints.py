@@ -981,6 +981,69 @@ class TestToolsConfigEndpoints:
         assert body["has_category"] is True
         assert isinstance(body["providers"], list)
 
+    def test_image_generation_options_shape(self):
+        r = self.client.get("/api/tools/image-generation/options")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert set(body) >= {
+            "enabled",
+            "provider",
+            "provider_id",
+            "model",
+            "providers",
+            "requires_new_session",
+        }
+        assert isinstance(body["providers"], list) and body["providers"]
+        provider = body["providers"][0]
+        assert set(provider) >= {
+            "id",
+            "name",
+            "badge",
+            "tag",
+            "available",
+            "configured",
+            "is_active",
+            "requires_nous_auth",
+            "use_gateway",
+            "default_model",
+            "models",
+        }
+
+    def test_select_image_generation_provider_and_model(self):
+        from hermes_cli.config import load_config
+
+        options = self.client.get("/api/tools/image-generation/options").json()
+        provider = next(
+            (item for item in options["providers"] if item.get("models")),
+            options["providers"][0],
+        )
+        model = provider["models"][0]["id"] if provider.get("models") else provider.get("default_model")
+
+        r = self.client.put(
+            "/api/tools/image-generation/selection",
+            json={"provider": provider["id"], "model": model},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["enabled"] is True
+        assert body["model"] == model
+
+        cfg = load_config()
+        assert "image_gen" in cfg
+        assert cfg["image_gen"]["model"] == model
+        if provider["id"] == "nous:fal":
+            assert cfg["image_gen"]["use_gateway"] is True
+        else:
+            assert cfg["image_gen"]["provider"] == provider["id"]
+        assert "image_gen" in cfg["platform_toolsets"]["cli"]
+
+    def test_select_image_generation_unknown_provider_400(self):
+        r = self.client.put(
+            "/api/tools/image-generation/selection",
+            json={"provider": "not-a-real-image-provider"},
+        )
+        assert r.status_code == 400
+
     def test_unknown_toolset_config_400(self):
         r = self.client.get("/api/tools/toolsets/not_a_toolset/config")
         assert r.status_code == 400

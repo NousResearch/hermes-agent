@@ -214,5 +214,29 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   themes: {
     fetchMarketplace: id => ipcRenderer.invoke('hermes:vscode-theme:fetch', id),
     searchMarketplace: query => ipcRenderer.invoke('hermes:vscode-theme:search', query)
+  },
+  browser: {
+    // Drive the in-app right-rail browser (BrowserPane in chat/right-rail).
+    // These are the control surface for "built-in browser" development.
+    // The actual <webview> logic stays in the renderer (browser-pane + store).
+    // Backend / Python can invoke these via the desktop bridge to open/navigate
+    // the visible pane and keep it in sync with agent browser actions.
+    open: (url, sessionId) => ipcRenderer.invoke('hermes:browser:open', url, sessionId),
+    navigate: (url, sessionId) => ipcRenderer.invoke('hermes:browser:navigate', url, sessionId),
+    getState: sessionId => ipcRenderer.invoke('hermes:browser:getState', sessionId),
+    updateState: patch => ipcRenderer.invoke('hermes:browser:updateState', patch),
+    reload: sessionId => ipcRenderer.invoke('hermes:browser:reload', sessionId),
+    goBack: sessionId => ipcRenderer.invoke('hermes:browser:goBack', sessionId),
+    goForward: sessionId => ipcRenderer.invoke('hermes:browser:goForward', sessionId),
+    onDrive: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:browser:drive', listener)
+      return () => ipcRenderer.removeListener('hermes:browser:drive', listener)
+    },
+    onState: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:browser:state', listener)
+      return () => ipcRenderer.removeListener('hermes:browser:state', listener)
+    }
   }
 })

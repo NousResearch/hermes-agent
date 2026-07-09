@@ -111,6 +111,8 @@ docs/superpowers/*
 # also created in-repo when an agent operates in this checkout). Plans, audit
 # logs, and per-session caches are never artifacts of the codebase.
 .hermes/
+.hermes-dev-home/
+.hermes-desktop-user-data/
 
 # Desktop/bootstrap install marker written into the managed checkout root by the
 # bootstrap installer. It is Hermes-managed runtime state, never a code change —
@@ -137,6 +139,17 @@ RELEASE_v*.md
 # Desktop demo-run scratch output (hermes writes demo/*.txt during recorded
 # walkthroughs). Throwaway artifacts, never part of the app.
 apps/desktop/demo/
+
+# Vendored MoneyPrinterTurbo runtime state. The source under
+# external/MoneyPrinterTurbo is intentionally tracked for the Video Studio
+# capability, but local config, dependency installs, caches, and generated media
+# must never be committed.
+external/MoneyPrinterTurbo/config.toml
+external/MoneyPrinterTurbo/storage/
+external/MoneyPrinterTurbo/.venv/
+external/MoneyPrinterTurbo/.pytest_cache/
+external/MoneyPrinterTurbo/**/__pycache__/
+external/MoneyPrinterTurbo/**/*.pyc
 
 # PR infographics are rendered locally and embedded in PR descriptions via the
 # image-provider (fal.media) URL — they are NEVER committed to the repo. The

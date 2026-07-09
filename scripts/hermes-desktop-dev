@@ -1,0 +1,310 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  SOURCE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$SOURCE_DIR/$SOURCE"
+done
+ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+SESSION="${HERMES_DESKTOP_DEV_SESSION:-hermes-desktop-dev}"
+PORT="${HERMES_DESKTOP_DEV_PORT:-5174}"
+ALLOW_TMP="${HERMES_DESKTOP_ALLOW_TMP:-0}"
+COMMAND_NAME="$(basename "$0")"
+PACKAGE_PRODUCT_NAME="${HERMES_DESKTOP_PACKAGE_PRODUCT_NAME:-Hermes Dev}"
+PACKAGE_EXECUTABLE_NAME="${HERMES_DESKTOP_PACKAGE_EXECUTABLE_NAME:-$PACKAGE_PRODUCT_NAME}"
+PACKAGE_APP_ID="${HERMES_DESKTOP_PACKAGE_APP_ID:-dev.ruoyu.hermes.desktop}"
+case "$(uname -s)" in
+  Darwin)
+    DEFAULT_DATA_ROOT="$HOME/Library/Application Support/$PACKAGE_PRODUCT_NAME"
+    ;;
+  Linux)
+    DEFAULT_DATA_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}/$PACKAGE_PRODUCT_NAME"
+    ;;
+  *)
+    DEFAULT_DATA_ROOT="$ROOT/.hermes-desktop-dev"
+    ;;
+esac
+DATA_ROOT="${HERMES_DESKTOP_DATA_ROOT:-$DEFAULT_DATA_ROOT}"
+HERMES_HOME_DIR="${HERMES_HOME:-$DATA_ROOT/hermes-home}"
+USER_DATA_DIR="${HERMES_DESKTOP_USER_DATA_DIR:-$DATA_ROOT}"
+
+usage() {
+  cat <<EOF
+Usage: $COMMAND_NAME [start|restart|status|stop|attach|logs|pack|open-packaged|install-command]
+
+Starts and packages the isolated Hermes Desktop development app.
+
+State:
+  HERMES_HOME=$HERMES_HOME_DIR
+  HERMES_DESKTOP_USER_DATA_DIR=$USER_DATA_DIR
+  HERMES_DESKTOP_HERMES_ROOT=$ROOT
+
+Package identity:
+  productName=$PACKAGE_PRODUCT_NAME
+  appId=$PACKAGE_APP_ID
+
+Commands:
+  start             Start the dev Electron app in tmux
+  restart           Restart the dev Electron app
+  status            Show renderer, tmux, and session DB status
+  stop              Stop the dev tmux session
+  attach            Attach to the dev tmux logs
+  logs              Print recent dev tmux logs
+  pack              Build an unpacked desktop app with electron-builder
+  open-packaged     Open the packaged .app with this fixed isolated state
+  install-command   Install/update ~/.local/bin/hermes-dev-desktop
+EOF
+}
+
+is_tmp_path() {
+  case "$1" in
+    /tmp|/tmp/*|/private/tmp|/private/tmp/*|/var/tmp|/var/tmp/*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+guard_persistent_paths() {
+  if [ "$ALLOW_TMP" = "1" ]; then
+    return 0
+  fi
+
+  local failed=0
+  if is_tmp_path "$HERMES_HOME_DIR"; then
+    echo "Refusing to use temporary HERMES_HOME: $HERMES_HOME_DIR" >&2
+    failed=1
+  fi
+  if is_tmp_path "$USER_DATA_DIR"; then
+    echo "Refusing to use temporary HERMES_DESKTOP_USER_DATA_DIR: $USER_DATA_DIR" >&2
+    failed=1
+  fi
+
+  if [ "$failed" -ne 0 ]; then
+    cat >&2 <<EOF
+
+This launcher is for persistent Hermes Desktop development history.
+Use the repo-local defaults, or set HERMES_DESKTOP_ALLOW_TMP=1 only for disposable tests.
+EOF
+    exit 64
+  fi
+}
+
+port_owner() {
+  lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true
+}
+
+tmux_exists() {
+  tmux has-session -t "$SESSION" 2>/dev/null
+}
+
+wait_for_renderer() {
+  local attempt
+  for attempt in {1..60}; do
+    if curl -fsS "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
+show_status() {
+  echo "Hermes desktop dev session: $SESSION"
+  if tmux_exists; then
+    echo "tmux: running"
+  else
+    echo "tmux: not running"
+  fi
+  echo
+  echo "Renderer port $PORT:"
+  port_owner || true
+  echo
+  echo "Isolated state:"
+  echo "  HERMES_HOME=$HERMES_HOME_DIR"
+  echo "  HERMES_DESKTOP_USER_DATA_DIR=$USER_DATA_DIR"
+  echo "  HERMES_DESKTOP_HERMES_ROOT=$ROOT"
+  if is_tmp_path "$HERMES_HOME_DIR" || is_tmp_path "$USER_DATA_DIR"; then
+    echo
+    echo "WARNING: one of the configured state paths is under /tmp. That history is not persistent."
+  fi
+  if [ -f "$HERMES_HOME_DIR/state.db" ]; then
+    echo
+    echo "Session database:"
+    sqlite3 "$HERMES_HOME_DIR/state.db" \
+      "select 'sessions=' || count(*) from sessions; select 'messages=' || count(*) from messages;" \
+      2>/dev/null || true
+  fi
+}
+
+start() {
+  guard_persistent_paths
+  mkdir -p "$HERMES_HOME_DIR" "$USER_DATA_DIR"
+
+  if tmux_exists; then
+    echo "Hermes desktop dev is already running in tmux session '$SESSION'."
+    show_status
+    echo
+    echo "Attach with: tmux attach -t $SESSION"
+    return 0
+  fi
+
+  local owner
+  owner="$(port_owner)"
+  if [ -n "$owner" ]; then
+    echo "Port $PORT is already in use. Stop that process or run:"
+    echo "  ./scripts/hermes-desktop-dev restart"
+    echo
+    echo "$owner"
+    return 1
+  fi
+
+  tmux new-session -d -s "$SESSION" -c "$ROOT" \
+    "env -u ELECTRON_RUN_AS_NODE HERMES_HOME='$HERMES_HOME_DIR' HERMES_DESKTOP_USER_DATA_DIR='$USER_DATA_DIR' HERMES_DESKTOP_HERMES_ROOT='$ROOT' npm --workspace apps/desktop run dev"
+
+  if wait_for_renderer; then
+    echo "Hermes Desktop dev started."
+    echo "Renderer: http://127.0.0.1:$PORT/"
+    echo "Attach logs: tmux attach -t $SESSION"
+    echo
+    show_status
+  else
+    echo "Hermes Desktop dev did not become ready in time."
+    echo "Recent logs:"
+    tmux capture-pane -pt "$SESSION" -S -80 || true
+    return 1
+  fi
+}
+
+stop() {
+  if tmux_exists; then
+    tmux kill-session -t "$SESSION"
+    echo "Stopped tmux session '$SESSION'."
+  else
+    echo "No tmux session '$SESSION' is running."
+  fi
+}
+
+install_command() {
+  mkdir -p "$HOME/.local/bin"
+  ln -sf "$ROOT/scripts/hermes-desktop-dev" "$HOME/.local/bin/hermes-dev-desktop"
+  echo "Installed: $HOME/.local/bin/hermes-dev-desktop"
+  echo "Use: hermes-dev-desktop start"
+}
+
+pack_app() {
+  guard_persistent_paths
+  mkdir -p "$HERMES_HOME_DIR" "$USER_DATA_DIR"
+  cd "$ROOT"
+  env \
+    HERMES_HOME="$HERMES_HOME_DIR" \
+    HERMES_DESKTOP_USER_DATA_DIR="$USER_DATA_DIR" \
+    HERMES_DESKTOP_HERMES_ROOT="$ROOT" \
+    npm --workspace apps/desktop run build
+  env \
+    HERMES_HOME="$HERMES_HOME_DIR" \
+    HERMES_DESKTOP_USER_DATA_DIR="$USER_DATA_DIR" \
+    HERMES_DESKTOP_HERMES_ROOT="$ROOT" \
+    npm --workspace apps/desktop run builder -- \
+      --dir \
+      -c.appId="$PACKAGE_APP_ID" \
+      -c.productName="$PACKAGE_PRODUCT_NAME" \
+      -c.executableName="$PACKAGE_EXECUTABLE_NAME" \
+      -c.artifactName="${PACKAGE_PRODUCT_NAME// /-}-\${version}-\${os}-\${arch}.\${ext}" \
+      -c.mac.extendInfo.CFBundleDisplayName="$PACKAGE_PRODUCT_NAME" \
+      -c.mac.extendInfo.CFBundleExecutable="$PACKAGE_EXECUTABLE_NAME" \
+      -c.mac.extendInfo.CFBundleName="$PACKAGE_PRODUCT_NAME" \
+      -c.dmg.title="Install $PACKAGE_PRODUCT_NAME" \
+      -c.nsis.shortcutName="$PACKAGE_PRODUCT_NAME" \
+      -c.nsis.uninstallDisplayName="$PACKAGE_PRODUCT_NAME"
+}
+
+find_packaged_app() {
+  if [ -n "${HERMES_DESKTOP_APP:-}" ]; then
+    echo "$HERMES_DESKTOP_APP"
+    return 0
+  fi
+
+  local release_dir="$ROOT/apps/desktop/release"
+  if [ ! -d "$release_dir" ]; then
+    return 1
+  fi
+  find "$release_dir" -maxdepth 3 -type d \( -name "$PACKAGE_PRODUCT_NAME.app" -o -name "Hermes.app" \) | sort | head -n 1
+}
+
+open_packaged() {
+  guard_persistent_paths
+
+  local app_path
+  app_path="$(find_packaged_app || true)"
+  local executable_path="$app_path/Contents/MacOS/$PACKAGE_EXECUTABLE_NAME"
+  if [ -z "$app_path" ] || [ ! -x "$executable_path" ]; then
+    cat >&2 <<EOF
+Packaged $PACKAGE_PRODUCT_NAME.app was not found.
+
+Run first:
+  $COMMAND_NAME pack
+
+Or set:
+  HERMES_DESKTOP_APP=/absolute/path/to/$PACKAGE_PRODUCT_NAME.app $COMMAND_NAME open-packaged
+EOF
+    return 1
+  fi
+
+  mkdir -p "$HERMES_HOME_DIR" "$USER_DATA_DIR"
+  local log_path="$ROOT/.hermes-desktop-packaged.log"
+  env -u ELECTRON_RUN_AS_NODE \
+    HERMES_HOME="$HERMES_HOME_DIR" \
+    HERMES_DESKTOP_USER_DATA_DIR="$USER_DATA_DIR" \
+    HERMES_DESKTOP_HERMES_ROOT="$ROOT" \
+    "$executable_path" >"$log_path" 2>&1 &
+
+  echo "Opened packaged Hermes Desktop."
+  echo "App: $app_path"
+  echo "Log: $log_path"
+  echo
+  show_status
+}
+
+cmd="${1:-start}"
+case "$cmd" in
+  start)
+    start
+    ;;
+  restart)
+    stop
+    start
+    ;;
+  status)
+    show_status
+    ;;
+  stop)
+    stop
+    ;;
+  attach)
+    tmux attach -t "$SESSION"
+    ;;
+  logs)
+    tmux capture-pane -pt "$SESSION" -S -200
+    ;;
+  pack)
+    pack_app
+    ;;
+  open-packaged)
+    open_packaged
+    ;;
+  install-command)
+    install_command
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

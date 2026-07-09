@@ -44,6 +44,7 @@ import {
   Zap
 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { openBrowserRail } from '@/store/browser'
 import { $repoWorktrees } from '@/store/coding-status'
 import {
   $commandPaletteOpen,
@@ -346,6 +347,13 @@ export function CommandPalette() {
             keywords: ['terminal', 'shell', 'console'],
             label: t.keybinds.actions['view.showTerminal'],
             run: () => setTerminalTakeover(true)
+          },
+          {
+            icon: Globe,
+            id: 'view-browser',
+            keywords: ['browser', 'web', 'right rail', 'preview', 'open browser', '内置浏览器'],
+            label: 'Open Browser',
+            run: () => openBrowserRail()
           },
           {
             action: 'nav.settings',

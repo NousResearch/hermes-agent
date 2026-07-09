@@ -1,0 +1,87 @@
+name: 🐛 Bug | Bug Report
+description: 报告错误或异常问题 | Report an error or unexpected behavior
+title: "[Bug]: "
+labels:
+  - bug
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **提交问题前，请确保您已阅读以下文档：[Getting Started (English)](https://github.com/harry0703/MoneyPrinterTurbo/blob/main/README-en.md#system-requirements-) 或 [快速开始 (中文)](https://github.com/harry0703/MoneyPrinterTurbo/blob/main/README.md#%E5%BF%AB%E9%80%9F%E5%BC%80%E5%A7%8B-)。**
+        
+        **Before submitting an issue, please make sure you've read the following documentation: [Getting Started (English)](https://github.com/harry0703/MoneyPrinterTurbo/blob/main/README-en.md#system-requirements-) or [快速开始 (Chinese)](https://github.com/harry0703/MoneyPrinterTurbo/blob/main/README.md#%E5%BF%AB%E9%80%9F%E5%BC%80%E5%A7%8B-).**
+        
+  - type: textarea
+    attributes:
+      label: 问题描述 | Current Behavior
+      description: |
+        描述您遇到的问题
+        Describe the issue you're experiencing
+      placeholder: |
+        当我执行...操作时，程序出现了...问题
+        When I perform..., the program shows...
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 重现步骤 | Steps to Reproduce
+      description: |
+        详细描述如何重现此问题
+        Describe in detail how to reproduce this issue
+      placeholder: |
+        1. 打开...
+        2. 点击...
+        3. 出现错误...
+        
+        1. Open...
+        2. Click on...
+        3. Error occurs...
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 错误日志 | Error Logs
+      description: |
+        请提供相关错误信息或日志（注意不要包含敏感信息）
+        Please provide any error messages or logs (be careful not to include sensitive information)
+      placeholder: |
+        错误信息、日志或截图...
+        Error messages, logs, or screenshots...
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Python 版本 | Python Version
+      description: |
+        您使用的 Python 版本
+        The Python version you're using
+      placeholder: v3.13.0, v3.10.0, etc.
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: 操作系统 | Operating System
+      description: |
+        您的操作系统信息
+        Your operating system information
+      placeholder: macOS 14.1, Windows 11, Ubuntu 22.04, etc.
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: MoneyPrinterTurbo 版本 | Version
+      description: |
+        您使用的 MoneyPrinterTurbo 版本
+        The version of MoneyPrinterTurbo you're using
+      placeholder: v1.2.2, etc.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 补充信息 | Additional Information
+      description: |
+        其他对解决问题有帮助的信息（如截图、视频等）
+        Any other information that might help solve the issue (screenshots, videos, etc.)
+    validations:
+      required: false

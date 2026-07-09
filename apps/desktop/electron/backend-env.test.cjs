@@ -7,7 +7,9 @@ const {
   appendUniquePathEntries,
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
+  isEphemeralPath,
   normalizeHermesHomeRoot,
+  packagedHermesHomeFromUserData,
   pathEnvKey
 } = require('./backend-env.cjs')
 
@@ -77,6 +79,33 @@ test('normalizeHermesHomeRoot maps profile homes back to the global Hermes root'
     'C:\\Users\\test\\AppData\\Local\\hermes'
   )
   assert.equal(normalizeHermesHomeRoot('/Users/test/.hermes', { pathModule: path.posix }), '/Users/test/.hermes')
+})
+
+test('isEphemeralPath detects temporary desktop state roots', () => {
+  assert.equal(isEphemeralPath('/tmp/hermes-agent-desktop-dev-home', { platform: 'darwin', pathModule: path.posix }), true)
+  assert.equal(
+    isEphemeralPath('/private/tmp/hermes-agent-desktop-dev-home', { platform: 'darwin', pathModule: path.posix }),
+    true
+  )
+  assert.equal(
+    isEphemeralPath('/Users/test/project/.hermes-dev-home', { platform: 'darwin', pathModule: path.posix }),
+    false
+  )
+  assert.equal(
+    isEphemeralPath('C:\\Users\\test\\AppData\\Local\\Temp\\hermes', {
+      platform: 'win32',
+      pathModule: path.win32,
+      tempRoots: ['C:\\Users\\test\\AppData\\Local\\Temp']
+    }),
+    true
+  )
+})
+
+test('packagedHermesHomeFromUserData keeps packaged desktop state app-local', () => {
+  assert.equal(
+    packagedHermesHomeFromUserData('/Users/test/Library/Application Support/Hermes', { pathModule: path.posix }),
+    '/Users/test/Library/Application Support/Hermes/hermes-home'
+  )
 })
 
 test('Windows PATH casing and delimiter are preserved without POSIX sane entries', () => {

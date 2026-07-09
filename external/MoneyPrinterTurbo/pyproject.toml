@@ -1,0 +1,52 @@
+# 说明：
+# 1. 主依赖来源统一收敛到 pyproject.toml。
+# 2. 运行环境通过 uv.lock 固定，避免不同机器解析出不同版本组合。
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "moneyprinterturbo"
+version = "1.3.0"
+description = "Generate short videos from prompts, local assets, subtitles, and TTS."
+readme = "README-en.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "MIT" }
+dependencies = [
+    "moviepy==2.2.1",
+    "streamlit==1.58.0",
+    "edge-tts==7.2.7",
+    "fastapi==0.136.3",
+    "uvicorn==0.32.1",
+    "openai==2.24.0",
+    "faster-whisper==1.1.0",
+    "loguru==0.7.3",
+    "google-generativeai==0.8.6",
+    "dashscope==1.20.14",
+    "azure-cognitiveservices-speech==1.41.1",
+    "redis==5.2.0",
+    "python-multipart==0.0.27",
+    "pyyaml==6.0.3",
+    "requests==2.33.1",
+    "socksio==1.0.0",
+    "pydub==0.25.1",
+    "litellm==1.86.2",
+]
+
+[project.optional-dependencies]
+g4f = [
+    "g4f==0.5.2.2",
+]
+# Optional TwelveLabs (https://twelvelabs.io) video-understanding/embedding
+# integration. Only needed when `twelvelabs_api_keys` is configured; install
+# with `uv sync --extra twelvelabs`.
+twelvelabs = [
+    "twelvelabs>=1.2.8",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.uv]
+# 当前项目以应用运行形态为主，不作为可发布的 Python 包安装。
+package = false

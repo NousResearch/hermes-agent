@@ -8,6 +8,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
+import { openBrowserRail } from '@/store/browser'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
 import { toggleKeybindPanel } from '@/store/keybinds'
 import {
@@ -111,6 +112,15 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   // Static system tools — always pinned to the screen's right edge.
   const systemTools: TitlebarTool[] = [
+    {
+      icon: <Codicon name="globe" />,
+      id: 'browser',
+      label: 'Open Browser',
+      onSelect: () => {
+        triggerHaptic('open')
+        openBrowserRail()
+      }
+    },
     {
       active: hapticsMuted,
       icon: <Codicon name={hapticsMuted ? 'mute' : 'unmute'} />,

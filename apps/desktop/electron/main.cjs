@@ -42,7 +42,12 @@ const { waitForDashboardPortAnnouncement } = require('./backend-ready.cjs')
 const { dashboardFallbackArgs, sourceDeclaresServe } = require('./backend-command.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
-const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
+const {
+  buildDesktopBackendEnv,
+  isEphemeralPath,
+  normalizeHermesHomeRoot,
+  packagedHermesHomeFromUserData
+} = require('./backend-env.cjs')
 const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readWslWindowsClipboardImage } = require('./wsl-clipboard-image.cjs')
 const { nativeOverlayWidth: computeNativeOverlayWidth } = require('./titlebar-overlay-width.cjs')
@@ -284,7 +289,8 @@ if (INSTALL_STAMP) {
 //
 // Defaults:
 //   Windows: %LOCALAPPDATA%\hermes (matches install.ps1)
-//   macOS / Linux: ~/.hermes (matches install.sh)
+//   macOS / Linux dev mode: ~/.hermes (matches install.sh)
+//   macOS / Linux packaged app: app userData/hermes-home
 //
 // Special case for Windows: if the user has a legacy ~/.hermes directory
 // (e.g., from a prior pip install or a manual setup) AND no
@@ -297,6 +303,9 @@ if (INSTALL_STAMP) {
 function resolveHermesHome() {
   if (process.env.HERMES_HOME) return normalizeHermesHomeRoot(process.env.HERMES_HOME)
   if (USER_DATA_OVERRIDE) return path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home')
+  if (IS_PACKAGED && !IS_WINDOWS && process.env.HERMES_DESKTOP_SHARE_CLI_HOME !== '1') {
+    return packagedHermesHomeFromUserData(app.getPath('userData'))
+  }
   if (IS_WINDOWS) {
     // A GUI app launched from Explorer inherits the environment block captured
     // at login, so a HERMES_HOME set via `setx` AFTER login is invisible in
@@ -319,6 +328,13 @@ function resolveHermesHome() {
 }
 
 const HERMES_HOME = resolveHermesHome()
+
+if (isEphemeralPath(HERMES_HOME)) {
+  console.error(
+    `[hermes] WARNING: resolved HERMES_HOME is inside temporary storage (${HERMES_HOME}). ` +
+      'Use a persistent HERMES_HOME or HERMES_DESKTOP_USER_DATA_DIR to preserve desktop chats.'
+  )
+}
 
 function hermesManagedNodePathEntries() {
   // NOTE: keep this ordering in sync with iter_hermes_node_dirs() in
@@ -6669,6 +6685,122 @@ ipcMain.handle('hermes:openExternal', (_event, url) => {
   if (!openExternalUrl(url)) {
     throw new Error('Invalid external URL')
   }
+})
+
+// Built-in browser drive handlers (for right-rail BrowserPane).
+// These send to the renderer so the TS store and <webview> can react.
+const DEFAULT_BROWSER_SESSION_ID = 'draft'
+
+function browserSessionKey(sessionId) {
+  return typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : DEFAULT_BROWSER_SESSION_ID
+}
+
+function defaultBrowserRailState(sessionId) {
+  return {
+    canGoBack: false,
+    canGoForward: false,
+    loading: false,
+    sessionId,
+    title: '',
+    updatedAt: Date.now(),
+    url: 'about:blank'
+  }
+}
+
+let browserRailStates = {
+  [DEFAULT_BROWSER_SESSION_ID]: defaultBrowserRailState(DEFAULT_BROWSER_SESSION_ID)
+}
+
+function browserRailStateFor(sessionId) {
+  const key = browserSessionKey(sessionId)
+
+  return browserRailStates[key] || defaultBrowserRailState(key)
+}
+
+function parseBrowserRequest(value, sessionId) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return {
+      sessionId: browserSessionKey(value.sessionId || sessionId),
+      url: typeof value.url === 'string' ? value.url : undefined
+    }
+  }
+
+  return {
+    sessionId: browserSessionKey(sessionId),
+    url: typeof value === 'string' ? value : undefined
+  }
+}
+
+let browserRailState = {
+  canGoBack: false,
+  canGoForward: false,
+  loading: false,
+  sessionId: DEFAULT_BROWSER_SESSION_ID,
+  title: '',
+  updatedAt: Date.now(),
+  url: 'about:blank'
+}
+
+function sanitizeBrowserStatePatch(patch) {
+  const input = patch && typeof patch === 'object' ? patch : {}
+  const out = {}
+
+  if (typeof input.url === 'string') out.url = input.url
+  if (typeof input.title === 'string') out.title = input.title
+  if (typeof input.sessionId === 'string') out.sessionId = input.sessionId
+  if (typeof input.loading === 'boolean') out.loading = input.loading
+  if (typeof input.canGoBack === 'boolean') out.canGoBack = input.canGoBack
+  if (typeof input.canGoForward === 'boolean') out.canGoForward = input.canGoForward
+
+  return out
+}
+
+function updateBrowserRailState(sender, patch) {
+  const sanitized = sanitizeBrowserStatePatch(patch)
+  const sessionId = browserSessionKey(sanitized.sessionId)
+
+  browserRailState = {
+    ...browserRailStateFor(sessionId),
+    ...sanitized,
+    sessionId,
+    updatedAt: Date.now()
+  }
+  browserRailStates = { ...browserRailStates, [sessionId]: browserRailState }
+  sender?.send?.('hermes:browser:state', browserRailState)
+
+  return browserRailState
+}
+
+ipcMain.handle('hermes:browser:open', (event, url, sessionId) => {
+  const request = parseBrowserRequest(url, sessionId)
+  const payload = { action: 'open', sessionId: request.sessionId, url: request.url || undefined }
+  updateBrowserRailState(event.sender, { sessionId: request.sessionId, ...(payload.url ? { url: payload.url } : {}) })
+  event.sender.send('hermes:browser:drive', payload)
+})
+
+ipcMain.handle('hermes:browser:navigate', (event, url, sessionId) => {
+  const request = parseBrowserRequest(url, sessionId)
+  const payload = { action: 'navigate', sessionId: request.sessionId, url: request.url || '' }
+  if (payload.url) updateBrowserRailState(event.sender, { sessionId: request.sessionId, url: payload.url })
+  event.sender.send('hermes:browser:drive', payload)
+})
+
+ipcMain.handle('hermes:browser:getState', (_event, sessionId) => browserRailStateFor(sessionId))
+
+ipcMain.handle('hermes:browser:updateState', (event, patch) => {
+  return updateBrowserRailState(event.sender, patch)
+})
+
+ipcMain.handle('hermes:browser:reload', (event, sessionId) => {
+  event.sender.send('hermes:browser:drive', { action: 'reload', sessionId: browserSessionKey(sessionId) })
+})
+
+ipcMain.handle('hermes:browser:goBack', (event, sessionId) => {
+  event.sender.send('hermes:browser:drive', { action: 'goBack', sessionId: browserSessionKey(sessionId) })
+})
+
+ipcMain.handle('hermes:browser:goForward', (event, sessionId) => {
+  event.sender.send('hermes:browser:drive', { action: 'goForward', sessionId: browserSessionKey(sessionId) })
 })
 
 ipcMain.handle('hermes:openPreviewInBrowser', async (_event, url) => {

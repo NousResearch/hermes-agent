@@ -685,6 +685,41 @@ export interface ToolsetConfig {
   active_provider: string | null
 }
 
+export type ImageGenerationModality = 'text' | 'image' | (string & {})
+
+export interface ImageGenerationModelOption {
+  id: string
+  display: string
+  speed: string
+  strengths: string
+  price: string
+  modalities: ImageGenerationModality[]
+  max_reference_images: number
+}
+
+export interface ImageGenerationProviderOption {
+  id: string
+  name: string
+  badge: string
+  tag: string
+  available: boolean
+  configured: boolean
+  is_active: boolean
+  requires_nous_auth: boolean
+  use_gateway: boolean
+  default_model: string
+  models: ImageGenerationModelOption[]
+}
+
+export interface ImageGenerationOptionsResponse {
+  enabled: boolean
+  provider: string
+  provider_id: string
+  model: string
+  providers: ImageGenerationProviderOption[]
+  requires_new_session: boolean
+}
+
 /** Shape of `GET /api/tools/computer-use/status`.
  *
  *  cua-driver runs on macOS, Windows, and Linux. `ready` is the single OS-aware

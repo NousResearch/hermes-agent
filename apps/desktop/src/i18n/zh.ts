@@ -1712,6 +1712,17 @@ export const zh: Translations = {
     snippetsDesc: '选择一个起始提示词放入输入框。',
     dropFiles: '拖放文件以附加',
     dropSession: '拖放以链接此对话',
+    imageGeneration: {
+      title: '图片生成',
+      loading: '正在加载图片后端…',
+      noProviders: '没有找到图片后端。',
+      active: '当前使用',
+      restartRequired: '开始新对话或 /reset 后，Agent 才能看到图片工具。',
+      setupRequired: '需要配置',
+      textOnly: '文生图',
+      imageEditing: '文生图 + 图片编辑',
+      switchFailed: '无法切换图片生成后端'
+    },
     snippets: {
       codeReview: {
         label: '代码审查',

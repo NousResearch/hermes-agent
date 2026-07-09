@@ -457,11 +457,27 @@ def _apply_profile_override() -> None:
         if Path(hermes_home_env).parent.name == "profiles":
             return
 
-    # 2. Resolve profile from -p flag and set HERMES_HOME.
-    # (active_profile file is now read directly by get_hermes_home() —
-    #  see hermes_constants.py.  This keeps profile selection self-contained
-    #  so subprocesses that do NOT inherit HERMES_HOME still land in the
-    #  correct directory.  Issue #18594.)
+    # 2. If no explicit -p flag, check active_profile in the hermes root.
+    # get_hermes_home() also reads active_profile as a safety net for
+    # subprocesses that do NOT inherit HERMES_HOME (issue #18594), but
+    # setting the env var here is still important: many code paths read
+    # os.environ["HERMES_HOME"] directly without going through
+    # get_hermes_home().
+    if profile_name is None and not os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
+        try:
+            from hermes_constants import get_default_hermes_root
+
+            active_path = get_default_hermes_root() / "active_profile"
+            if active_path.exists():
+                name = active_path.read_text().strip()
+                if name and name != "default":
+                    profile_name = name
+                    consume = 0  # don't strip anything from argv
+        except (UnicodeDecodeError, OSError):
+            pass  # corrupted file, skip
+
+    # 3. If we found a profile (from -p flag or active_profile), resolve
+    #    and set HERMES_HOME.
     if profile_name is not None:
         try:
             from hermes_cli.profiles import resolve_profile_env

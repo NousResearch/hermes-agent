@@ -3570,7 +3570,17 @@ def _ensure_mcp_loop():
     with _lock:
         if _mcp_loop is not None and _mcp_loop.is_running():
             return
-        _mcp_loop = asyncio.new_event_loop()
+        # On Windows the default event loop is the ProactorEventLoop, whose
+        # subprocess-pipe reads hang the MCP stdio_client handshake (the
+        # `initialize` request is sent but its response is never surfaced,
+        # so discovery times out and no MCP tools register). The
+        # SelectorEventLoop reads stdio subprocess pipes correctly. Use it
+        # explicitly for the dedicated MCP loop thread on Windows, matching
+        # the win32 SelectorEventLoop handling in cli.py and web_server.py.
+        if sys.platform == "win32":
+            _mcp_loop = asyncio.SelectorEventLoop()
+        else:
+            _mcp_loop = asyncio.new_event_loop()
         _mcp_loop.set_exception_handler(_mcp_loop_exception_handler)
         _mcp_thread = threading.Thread(
             target=_mcp_loop.run_forever,

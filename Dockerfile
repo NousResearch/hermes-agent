@@ -335,6 +335,15 @@ ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
 RUN mkdir -p /opt/data
 VOLUME [ "/opt/data" ]
 
+# Normalize CRLF -> LF on repo-sourced s6-rc + cont-init + docker shell scripts.
+# Windows checkouts with core.autocrlf=true bake CRLF into these files; s6-rc-compile
+# then rejects "longrun\r" (fatal: invalid type) and "#!/bin/sh\r" breaks the run/finish
+# scripts, so the gateway + dashboard services never start. Idempotent: LF files are
+# unchanged. Covers everything copied from docker/ regardless of the build host's
+# line-ending settings.
+RUN find /etc/s6-overlay/s6-rc.d /etc/cont-init.d /opt/hermes/docker -type f \
+        -exec sed -i 's/\r$//' {} + 2>/dev/null || true
+
 # ---------- cloudflared (hermes tunnel) ----------
 # `hermes tunnel` spawns cloudflared to expose user-built local services to
 # the internet on per-user noit2.com subdomains via a Cloudflare named tunnel.

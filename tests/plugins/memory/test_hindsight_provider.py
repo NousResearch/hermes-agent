@@ -646,11 +646,20 @@ class TestToolHandlers:
         provider._client.aretain_batch.assert_called_once()
         call_kwargs = provider._client.aretain_batch.call_args.kwargs
         assert call_kwargs["bank_id"] == "test-bank"
+        assert call_kwargs["retain_async"] is True
         item = call_kwargs["items"][0]
         assert item["content"] == "user likes dark mode"
         # bank_id/retain_async are call-level args, never item keys.
         assert "bank_id" not in item
         assert "retain_async" not in item
+
+    def test_retain_honors_retain_async_config(self, provider_with_config):
+        p = provider_with_config(retain_async=False)
+        p.handle_tool_call("hindsight_retain", {"content": "store synchronously"})
+
+        call_kwargs = p._client.aretain_batch.call_args.kwargs
+        assert call_kwargs["retain_async"] is False
+        assert "retain_async" not in call_kwargs["items"][0]
 
     def test_retain_with_tags(self, provider_with_config):
         p = provider_with_config(retain_tags=["pref", "ui"])

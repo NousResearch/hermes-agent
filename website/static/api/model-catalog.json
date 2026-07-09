@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-07-08T18:59:16Z",
+  "updated_at": "2026-07-08T19:45:27Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -58,10 +58,6 @@
         },
         {
           "id": "x-ai/grok-4.5",
-          "description": ""
-        },
-        {
-          "id": "x-ai/grok-4.3",
           "description": ""
         },
         {
@@ -192,9 +188,6 @@
         },
         {
           "id": "x-ai/grok-4.5"
-        },
-        {
-          "id": "x-ai/grok-4.3"
         },
         {
           "id": "deepseek/deepseek-v4-pro"

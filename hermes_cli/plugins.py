@@ -1042,6 +1042,65 @@ class PluginContext:
 
     # -- auxiliary task registration ---------------------------------------
 
+    def register_telegram_handler(
+        self,
+        handler: Any,
+        group: int = 0,
+    ) -> None:
+        """Register a python-telegram-bot handler from a plugin.
+
+        Hermes' Telegram adapter wires registered handlers into its PTB
+        ``Application`` at connect time, so plugins can react to updates the
+        built-in handlers don't cover — message reactions, edited messages,
+        custom commands, chat-member changes, etc. This mirrors
+        :meth:`register_slack_action_handler` for the Slack adapter.
+
+        Args:
+            handler: A ``telegram.ext.BaseHandler`` instance (e.g.
+                ``MessageHandler``, ``TypeHandler``, ``CommandHandler``,
+                ``CallbackQueryHandler``) exactly as
+                ``Application.add_handler`` accepts.
+            group: PTB handler group. Handlers are organised in groups; 0 or
+                1 handler per group is used per update. Use a non-zero group
+                (e.g. ``1``) to run alongside the built-ins in group 0
+                without displacing them. Defaults to ``0``.
+
+        Raises:
+            ValueError: if ``handler`` is not a BaseHandler instance.
+
+        Example::
+
+            from telegram import Update
+            from telegram.ext import TypeHandler
+
+            async def _on_reaction(update, context):
+                if update.message_reaction:
+                    ...  # e.g. render a table image fallback
+
+            ctx.register_telegram_handler(
+                TypeHandler(Update, _on_reaction), group=1
+            )
+        """
+        # Duck-type to avoid importing python-telegram-bot in environments
+        # that don't use Telegram (it is an optional dependency).
+        if not (
+            callable(getattr(handler, "check_update", None))
+            and callable(getattr(handler, "handle", None))
+        ):
+            raise ValueError(
+                "register_telegram_handler expects a telegram.ext.BaseHandler "
+                "instance (needs check_update/handle)."
+            )
+        self._manager._telegram_handlers.append(
+            (handler, group, self.manifest.name)
+        )
+        logger.debug(
+            "Plugin %s registered Telegram handler: %s (group=%s)",
+            self.manifest.name,
+            type(handler).__name__,
+            group,
+        )
+
     def register_auxiliary_task(
         self,
         key: str,
@@ -1269,6 +1328,10 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        # Plugin-registered python-telegram-bot handlers; the Telegram adapter
+        # wires them into its PTB Application at connect time. Each entry is a
+        # ``(handler, group, plugin_name)`` tuple.
+        self._telegram_handlers: List[tuple] = []
 
     # -----------------------------------------------------------------------
     # Public
@@ -1298,6 +1361,7 @@ class PluginManager:
             self._plugin_skills.clear()
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
+            self._telegram_handlers.clear()
             self._context_engine = None
         # Set the flag up front as a re-entrancy guard (a plugin's register()
         # can transitively trigger discovery again), but reset it if the sweep
@@ -1970,6 +2034,18 @@ class PluginManager:
         :meth:`PluginContext.register_slack_action_handler`.
         """
         return list(self._slack_action_handlers)
+
+    def get_telegram_handlers(self) -> List[tuple]:
+        """Return the list of plugin-registered python-telegram-bot handlers.
+
+        Each entry is a ``(handler, group, plugin_name)`` tuple. Consumed by
+        the Telegram adapter at connect time to wire the handlers into its PTB
+        ``Application`` via ``Application.add_handler``.
+
+        Plugins register handlers via
+        :meth:`PluginContext.register_telegram_handler`.
+        """
+        return list(self._telegram_handlers)
 
     # -----------------------------------------------------------------------
     # Introspection

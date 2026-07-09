@@ -6111,15 +6111,6 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # for operators who want a tighter/looser probe cadence.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
-# Within this window a GitHub PR URL in a comment blocks re-spawn.
-_RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
-
-# Pattern matching a GitHub PR URL in task comments.
-_RESPAWN_GUARD_PR_URL_RE = re.compile(
-    r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
-    re.IGNORECASE,
-)
-
 
 @dataclass
 class DispatchResult:
@@ -6164,9 +6155,8 @@ class DispatchResult:
     within ``dispatch_stale_timeout_seconds``."""
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
     """Tasks skipped by the respawn guard, as ``(task_id, reason)`` pairs.
-    Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
-    ``"recent_success"`` (completed run within guard window),
-    ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked) and
+    ``"recent_success"`` (completed run within guard window)."""
     circuit_breaker_tripped: list[tuple[str, str]] = field(default_factory=list)
     """Tasks blocked (kind=``needs_input``) by the BUILD-261 release/
     remediation circuit breaker, as ``(task_id, signature)`` pairs. Unlike
@@ -6230,7 +6220,7 @@ def summarize_dispatch_causes(results: "Iterable[Optional[DispatchResult]]") -> 
     :class:`DispatchResult` objects into a compact, human-readable breakdown
     (BUILD-263), e.g.::
 
-        "respawn_guarded(active_pr)=3, quota=1"
+        "respawn_guarded(recent_success)=3, quota=1"
 
     Used by the gateway's/CLI's "dispatcher stuck" warning and Telegram
     escalation so an operator sees *why* zero workers spawned instead of
@@ -6241,7 +6231,7 @@ def summarize_dispatch_causes(results: "Iterable[Optional[DispatchResult]]") -> 
     Buckets, ordered by descending count (ties broken alphabetically):
 
     * ``respawn_guarded(<reason>)`` — non-quota respawn-guard reasons
-      (``active_pr``, ``recent_success``, ``forced_skill_validation``).
+      (``recent_success``, ``forced_skill_validation``).
     * ``quota`` — respawn-guard reasons ``blocker_auth`` /
       ``rate_limit_cooldown``, plus post-crash ``rate_limited`` requeues.
       Retrying immediately won't help; the provider needs to cool down.
@@ -7684,11 +7674,6 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         seconds.  Useful work already succeeded for this task; wait for
         human review rather than immediately re-spawning.
 
-    ``"active_pr"``
-        A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
-
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
     reset the task to ``ready`` only after verifying the lock is
@@ -7753,15 +7738,9 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     ).fetchone():
         return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
-
+    # PR URLs in comments are intentionally diagnostic only. Publication lanes
+    # must reconcile duplicate/open PRs idempotently; the dispatcher must not
+    # infer scheduler state from prose and strand ready tasks behind stale PRs.
     return None
 
 

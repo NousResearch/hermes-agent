@@ -13456,7 +13456,7 @@ def main():
     # =========================================================================
     sessions_parser = subparsers.add_parser(
         "sessions",
-        help="Manage session history (list, rename, export, prune, delete)",
+        help="Manage session history (list, rename, copy, export, prune, delete)",
         description="View and manage the SQLite session store",
     )
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
@@ -13645,6 +13645,30 @@ def main():
         help="md/qmd only: overwrite an existing export file",
     )
 
+    sessions_copy = sessions_subparsers.add_parser(
+        "copy",
+        help="Copy one session/conversation to another Hermes profile",
+        description=(
+            "Copy a session row and transcript into another profile's state.db. "
+            "Profile memory, config, skills, credentials, cron, and gateway "
+            "routing are not copied."
+        ),
+    )
+    sessions_copy.add_argument("session_id", help="Session ID or unique prefix to copy")
+    sessions_copy.add_argument(
+        "--to-profile",
+        required=True,
+        help="Target profile name (for example: coder, ponytail, default)",
+    )
+    sessions_copy.add_argument(
+        "--from-profile",
+        help="Source profile name (default: currently active profile)",
+    )
+    sessions_copy.add_argument(
+        "--new-session-id",
+        help="Use this session ID in the target profile instead of auto-suffixing collisions",
+    )
+
     sessions_delete = sessions_subparsers.add_parser(
         "delete", help="Delete a specific session"
     )
@@ -13779,6 +13803,85 @@ def main():
                 if report.get("backup_path"):
                     print(f"  A backup is preserved at: {report['backup_path']}")
                 print("  Keep state.db and the backup; do not delete them.")
+            return
+
+        if action == "copy":
+            try:
+                from hermes_cli.profiles import (
+                    get_profile_dir,
+                    normalize_profile_name,
+                    profile_exists,
+                )
+                from hermes_state import SessionDB
+            except Exception as e:
+                print(f"Error: Could not load profile/session helpers: {e}")
+                return
+
+            def _current_profile_label(home):
+                try:
+                    if home.resolve() == get_profile_dir("default").resolve():
+                        return "default"
+                    if home.parent.name == "profiles":
+                        return home.name
+                except Exception:
+                    pass
+                return "current"
+
+            try:
+                target_profile = normalize_profile_name(args.to_profile)
+                source_profile = (
+                    normalize_profile_name(args.from_profile)
+                    if args.from_profile
+                    else None
+                )
+            except ValueError as e:
+                print(f"Error: {e}")
+                return
+
+            if source_profile and not profile_exists(source_profile):
+                print(f"Error: Source profile '{source_profile}' does not exist.")
+                return
+            if not profile_exists(target_profile):
+                print(f"Error: Target profile '{target_profile}' does not exist.")
+                return
+
+            source_home = get_profile_dir(source_profile) if source_profile else get_hermes_home()
+            source_label = source_profile or _current_profile_label(source_home)
+            target_home = get_profile_dir(target_profile)
+
+            source_db = target_db = None
+            try:
+                source_db = SessionDB(db_path=source_home / "state.db")
+                resolved_session_id = source_db.resolve_session_id(args.session_id)
+                if not resolved_session_id:
+                    print(
+                        f"Session '{args.session_id}' not found in profile '{source_label}'."
+                    )
+                    return
+                target_db = SessionDB(db_path=target_home / "state.db")
+                copied_id = source_db.copy_session_to(
+                    resolved_session_id,
+                    target_db,
+                    new_session_id=getattr(args, "new_session_id", None),
+                )
+            except ValueError as e:
+                print(f"Error: {e}")
+                return
+            except Exception as e:
+                print(f"Error: Could not copy session: {e}")
+                return
+            finally:
+                if source_db is not None:
+                    source_db.close()
+                if target_db is not None:
+                    target_db.close()
+
+            suffix = f" as '{copied_id}'" if copied_id != resolved_session_id else ""
+            print(
+                f"Copied session '{resolved_session_id}' from profile '{source_label}' "
+                f"to profile '{target_profile}'{suffix}."
+            )
+            print("Profile memory, config, skills, credentials, cron, and gateway routing were not copied.")
             return
 
         try:

@@ -2592,6 +2592,103 @@ class SessionDB:
             row = cursor.fetchone()
         return dict(row) if row else None
 
+    def copy_session_to(
+        self,
+        session_id: str,
+        target_db: "SessionDB",
+        *,
+        new_session_id: Optional[str] = None,
+        include_inactive: bool = True,
+    ) -> str:
+        """Copy one session row and its transcript into another SessionDB.
+
+        This is intentionally a session-store operation only: it copies rows
+        from ``sessions`` and ``messages`` and does not touch profile memory,
+        config, skills, credentials, gateway routing, cron, or filesystem
+        session artifacts.  When the target already has ``session_id`` and no
+        explicit ``new_session_id`` was requested, a stable ``-copy`` suffix is
+        generated so repeated imports are non-destructive.
+        """
+
+        if not session_id:
+            raise ValueError("session_id is required")
+
+        with self._lock:
+            conn = self._conn
+            if conn is None:
+                raise RuntimeError("SessionDB is closed")
+            session_row = conn.execute(
+                "SELECT * FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if not session_row:
+                raise ValueError(f"Session '{session_id}' not found")
+            source_session = dict(session_row)
+
+            message_where = "session_id = ?"
+            if not include_inactive:
+                message_where += " AND active = 1"
+            message_rows = conn.execute(
+                f"SELECT * FROM messages WHERE {message_where} ORDER BY timestamp, id",
+                (session_id,),
+            ).fetchall()
+            source_messages = [dict(row) for row in message_rows]
+
+        def _target_columns(conn: sqlite3.Connection, table: str) -> List[str]:
+            return [row["name"] for row in conn.execute(f"PRAGMA table_info({table})")]
+
+        def _copy(conn: sqlite3.Connection) -> str:
+            requested_id = new_session_id.strip() if new_session_id else None
+            target_id = requested_id or session_id
+
+            def _exists(candidate: str) -> bool:
+                row = conn.execute(
+                    "SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (candidate,)
+                ).fetchone()
+                return row is not None
+
+            if _exists(target_id):
+                if requested_id:
+                    raise ValueError(f"Target session '{target_id}' already exists")
+                base = f"{session_id}-copy"
+                target_id = base
+                suffix = 2
+                while _exists(target_id):
+                    target_id = f"{base}-{suffix}"
+                    suffix += 1
+
+            session_columns = [
+                col for col in _target_columns(conn, "sessions") if col in source_session
+            ]
+            session_values = dict(source_session)
+            session_values["id"] = target_id
+            placeholders = ", ".join("?" for _ in session_columns)
+            conn.execute(
+                f"INSERT INTO sessions ({', '.join(session_columns)}) VALUES ({placeholders})",
+                [session_values.get(col) for col in session_columns],
+            )
+
+            message_columns = [
+                col
+                for col in _target_columns(conn, "messages")
+                if col != "id" and (not source_messages or col in source_messages[0])
+            ]
+            if source_messages:
+                message_placeholders = ", ".join("?" for _ in message_columns)
+                conn.executemany(
+                    f"INSERT INTO messages ({', '.join(message_columns)}) "
+                    f"VALUES ({message_placeholders})",
+                    [
+                        [
+                            target_id if col == "session_id" else msg.get(col)
+                            for col in message_columns
+                        ]
+                        for msg in source_messages
+                    ],
+                )
+            return target_id
+
+        return target_db._execute_write(_copy)
+
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.
 

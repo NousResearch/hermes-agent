@@ -1,4 +1,5 @@
 .DS_Store
+.grok/
 # Design System กลาง — ไฟล์ที่ generate (build เอง ไม่ commit)
 design-system-standard-v2/tokens/dist/
 design-system-standard-v2/**/__pycache__/

@@ -3,8 +3,17 @@
 # ใช้: รันที่รากโปรเจกต์  →  bash link-brand-ds.sh
 set -euo pipefail
 
-MASTER="/Users/rattanasak/Documents/Viber Project/Tech Tools/Hermes Agent/design-system-standard-v2"
-HUB="https://gitlab.dev.jigsawgroups.work/Nat-Rattanasak/designsystem_onemanfleet.git"
+# หา master จากหลายที่ (ไม่ฝัง path เครื่องเดียว) · ตั้ง DS_MASTER=<path> เองได้
+MASTER="${DS_MASTER:-}"
+for c in \
+  "/Users/rattanasak/Documents/Viber Project/Tech Tools/Hermes Agent/design-system-standard-v2" \
+  "$HOME/projects/hermes-agent/main/design-system-standard-v2" \
+  "$HOME/SynerryTools/hermes-agent/main/design-system-standard-v2"; do
+  [ -z "$MASTER" ] && [ -d "$c" ] && MASTER="$c"
+done
+# เครื่องที่ไม่มี master → clone ชุดจริงจาก GitHub (ชุดกลางอยู่ที่นี่ · GitLab เดิมเป็น mirror เก่า)
+HUB="https://github.com/rattanasak-ops/hermes-agent.git"
+HUB_SUBDIR="design-system-standard-v2"
 DEST="design/brand-ds"
 
 mkdir -p design
@@ -15,14 +24,17 @@ if [ -d "$MASTER" ]; then
   ln -s "$MASTER" "$DEST"
   echo "✓ ต่อแบบ symlink → $MASTER  (แก้ master = ทุกโปรเจกต์เปลี่ยนทันที)"
 else
-  # เครื่องอื่น/VPS: clone จาก GitLab (ต้องมีสิทธิ์ล็อกอิน)
-  echo "ไม่พบ master ในเครื่อง → ดึงจาก GitLab"
-  if ! git clone --depth 1 "$HUB" "$DEST" 2>/dev/null; then
-    echo "✗ clone ไม่ได้ (repo private · เครื่องนี้ยังไม่มีสิทธิ์ GitLab)"
-    echo "  → แจ้งเจ้าของให้เพิ่มสิทธิ์ หรือ copy โฟลเดอร์ design-system-standard-v2 มาไว้ที่ $MASTER"
-    exit 1
+  # เครื่องอื่น/VPS: ดึงชุดจริงจาก GitHub (ชุดอยู่ subfolder ของ repo hermes-agent)
+  echo "ไม่พบ master ในเครื่อง → ดึงชุดจาก GitHub (hermes-agent)"
+  TMP="$(mktemp -d)"
+  if ! git clone --depth 1 "$HUB" "$TMP" 2>/dev/null; then
+    echo "✗ clone ไม่ได้ (เครื่องนี้เข้า GitHub ไม่ได้ หรือ repo private)"
+    echo "  → แจ้งเจ้าของ หรือ copy โฟลเดอร์ design-system-standard-v2 มาไว้ที่ candidate path ใด path หนึ่ง"
+    rm -rf "$TMP"; exit 1
   fi
-  echo "✓ clone แล้ว"
+  cp -r "$TMP/$HUB_SUBDIR" "$DEST"
+  rm -rf "$TMP"
+  echo "✓ ดึงชุดจาก GitHub แล้ว"
 fi
 
 # build token ให้พร้อมใช้
